@@ -94,6 +94,10 @@ def setup_logger() -> None:
     _logger.remove()
 
     is_debug = settings.APP_DEBUG
+    log_level = "DEBUG" if is_debug else settings.LOG_LEVEL
+    rotation_size = settings.LOG_ROTATION_SIZE
+    rotation_day = settings.LOG_RETENTION_DAYS
+    log_compression = settings.LOG_COMPRESSION
 
     # ==================== 控制台输出 ====================
     if is_debug:
@@ -107,7 +111,7 @@ def setup_logger() -> None:
         _logger.add(
             sys.stderr,
             format=console_format,
-            level="DEBUG",
+            level=log_level,
             colorize=True,
             backtrace=True,
             diagnose=True,
@@ -123,7 +127,7 @@ def setup_logger() -> None:
         _logger.add(
             sys.stderr,
             format=console_format,
-            level="INFO",
+            level=log_level,
             colorize=False,
             filter=add_request_id_filter,
         )
@@ -132,10 +136,10 @@ def setup_logger() -> None:
     _logger.add(
         LOG_DIR / "app.log",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}",
-        level="DEBUG" if is_debug else "INFO",
-        rotation="100 MB",
-        retention="30 days",
-        compression="zip",
+        level=log_level,
+        rotation=rotation_size,
+        retention=rotation_day,
+        compression=log_compression,
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
@@ -147,9 +151,9 @@ def setup_logger() -> None:
         LOG_DIR / "error.log",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}",
         level="ERROR",
-        rotation="50 MB",
-        retention="60 days",
-        compression="zip",
+        rotation=rotation_size,
+        retention=rotation_day,
+        compression=log_compression,
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
@@ -158,14 +162,14 @@ def setup_logger() -> None:
     )
 
     # ==================== 结构化日志（可选） ====================
-    if not is_debug:
+    if not is_debug and settings.LOG_JSON_OUTPUT:
         _logger.add(
             LOG_DIR / "structured.json",
             serialize=True,
-            level="INFO",
-            rotation="200 MB",
-            retention="7 days",
-            compression="zip",
+            level=log_level,
+            rotation=rotation_size,
+            retention=rotation_day,
+            compression=log_compression,
             enqueue=True,
             filter=add_request_id_filter,
         )

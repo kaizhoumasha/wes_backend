@@ -90,11 +90,11 @@ def register_app() -> FastAPI:
 
         return get_swagger_ui_oauth2_redirect_html()
 
-    # register_middleware(app)
-    # 添加请求日志中间件
-    from .core.middleware import request_middleware
-
-    app.middleware("http")(request_middleware)
+    # 注册请求日志中间件
+    # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
+    # 确保 request_id 在整个请求周期内可用
+    from .core.middleware import RequestLogMiddleware
+    app.add_middleware(RequestLogMiddleware)
 
     # register_routers(app)
 
@@ -108,6 +108,7 @@ def register_app() -> FastAPI:
         logger.info("log_test 日志测试")
         logger.debug("调试信息")
         logger.warning("警告信息")
+        logger.error("错误信息")
         return {"status": "healthy", "service": "P9 WES Backend"}
 
     return app
