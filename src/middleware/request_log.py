@@ -10,8 +10,8 @@ from starlette.responses import Response as StarletteResponse
 from fastapi.responses import ORJSONResponse
 from starlette_context import request_cycle_context
 
-from .logger import logger
-from .conf import settings
+from ..core.logger import logger
+from ..core.conf import settings
 
 
 # 需要跳过日志记录的路径前缀

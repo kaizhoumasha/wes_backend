@@ -93,7 +93,7 @@ def register_app() -> FastAPI:
     # 注册请求日志中间件
     # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
     # 确保 request_id 在整个请求周期内可用
-    from .core.middleware import RequestLogMiddleware
+    from .middleware.request_log import RequestLogMiddleware
     app.add_middleware(RequestLogMiddleware)
 
     # register_routers(app)
