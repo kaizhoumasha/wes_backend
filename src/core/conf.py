@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", 8000))
 
+    # 日志配置
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_DIR: str = os.getenv("LOG_DIR", "logs")
+    LOG_ROTATION_SIZE: str = os.getenv("LOG_ROTATION_SIZE", "100 MB")
+    LOG_RETENTION_DAYS: str = os.getenv("LOG_RETENTION_DAYS", "30 days")
+    LOG_JSON_OUTPUT: bool = bool(os.getenv("LOG_JSON_OUTPUT", True))
+    LOG_COMPRESSION: str = os.getenv("LOG_COMPRESSION", "zip")
+
 
 @lru_cache
 def get_settings() -> Settings:

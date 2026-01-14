@@ -4,7 +4,6 @@ import os
 
 # 获取项目根目录的绝对路径
 BasePath = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-print(f"BasePath: {BasePath}")
 
 # 日志文件路径
 LOG_DIR = os.path.join(BasePath, "logs")

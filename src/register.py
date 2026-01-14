@@ -6,24 +6,34 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.core.path_conf import STATIC_DIR
+from src.core.logger import logger
+
 from .core.conf import settings
 
 def register_logger() -> None:
     """
     注册系统日志管理模块
     """
-    # setup_logging()
-    # set_customize_logfile()
+    from .core.logger import setup_logger
+
+    setup_logger()
 
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
     try:
+        logger.info(f"Swagger DOC：http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except Exception as e:
-        raise e
+        # exc_info=True 捕获完整堆栈跟踪
+        # 开发模式下 loguru 会自动显示详细变量值（diagnose=True）
+        logger.error(
+            f"FastAPI 初始化失败: {e}",
+        )
+        raise
     finally:
-        return
+        logger.info("FastAPI 应用关闭")
 
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
@@ -44,9 +54,9 @@ def register_app() -> FastAPI:
         default_response_class=ORJSONResponse,
         lifespan=register_init,
     )
-    print(f"{settings.PROJECT_NAME} v{settings.VERSION}")
+
     # 挂载静态文件目录
-    local_static_path = str(Path(__file__).parent / "static")
+    local_static_path = STATIC_DIR
     app.mount("/static", StaticFiles(directory=local_static_path), name="static")
 
     # 自定义 Swagger UI 路由
@@ -81,11 +91,23 @@ def register_app() -> FastAPI:
         return get_swagger_ui_oauth2_redirect_html()
 
     # register_middleware(app)
+    # 添加请求日志中间件
+    from .core.middleware import request_middleware
+
+    app.middleware("http")(request_middleware)
 
     # register_routers(app)
 
     # register_exception(app)
 
     # register_websocket(app)
+
+    @app.get("/log_test")
+    async def log_test():
+        """测试日志链路追踪"""
+        logger.info("log_test 日志测试")
+        logger.debug("调试信息")
+        logger.warning("警告信息")
+        return {"status": "healthy", "service": "P9 WES Backend"}
 
     return app

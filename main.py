@@ -20,6 +20,7 @@ if __name__ == "__main__":
             reload=settings.APP_DEBUG,
             port=settings.APP_PORT,
             host=settings.APP_HOST,
+            log_config=None,  # 使用已配置的 logging 系统（loguru）
         )
     
         server = uvicorn.Server(config)
