@@ -1,0 +1,249 @@
+"""
+用户服务层
+
+处理用户相关的业务逻辑，包括查询、缓存操作等
+"""
+from typing import Optional, Dict, Any, List
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
+from passlib.context import CryptContext
+
+from src.core.logger import logger
+from src.database.redis_cache import RedisCache
+from src.app.models import User
+from src.app.schemas import UserResponse
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+
+class UserService:
+    """用户服务类"""
+
+    # 缓存配置
+    USER_DETAIL_CACHE_PREFIX = "user:detail"
+    USER_LIST_CACHE_PREFIX = "user:list"
+    USER_CACHE_EXPIRE = 3600  # 1小时
+    USER_LIST_CACHE_EXPIRE = 300  # 5分钟
+    NULL_CACHE_EXPIRE = 300  # 空值缓存5分钟
+
+    @staticmethod
+    def user_to_response(user: User) -> Dict[str, Any]:
+        """将 User 模型转换为响应字典"""
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+            "created_at": user.created_at.isoformat(),
+            "updated_at": user.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def users_to_list_response(users: List[User]) -> List[Dict[str, Any]]:
+        """批量转换用户列表"""
+        return [UserService.user_to_response(u) for u in users]
+
+    @staticmethod
+    async def check_user_exists(
+        db: AsyncSession,
+        username: Optional[str] = None,
+        email: Optional[str] = None,
+        exclude_user_id: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        检查用户是否存在
+
+        :return: 如果存在返回冲突字段名，否则返回 None
+        """
+        conditions = []
+        if username:
+            conditions.append(User.username == username)
+        if email:
+            conditions.append(User.email == email)
+
+        if not conditions:
+            return None
+
+        query = select(User).where(*conditions)
+        if exclude_user_id:
+            query = query.where(User.id != exclude_user_id)
+
+        result = await db.execute(query)
+        if result.scalars().first():
+            if username and result.scalars().first().username == username:
+                return "username"
+            if email and result.scalars().first().email == email:
+                return "email"
+        return None
+
+    @staticmethod
+    async def invalidate_user_cache(
+        cache: RedisCache,
+        user_id: Optional[int] = None,
+        invalidate_list: bool = True
+    ) -> None:
+        """
+        失效用户相关缓存
+
+        :param cache: 缓存实例
+        :param user_id: 用户ID（如果提供，失效该用户详情缓存）
+        :param invalidate_list: 是否失效列表缓存
+        """
+        try:
+            if user_id:
+                cache_key = f"{UserService.USER_DETAIL_CACHE_PREFIX}:{user_id}"
+                await cache.delete(cache_key)
+
+            if invalidate_list:
+                await cache.delete_pattern(f"{UserService.USER_LIST_CACHE_PREFIX}:*")
+        except Exception as e:
+            logger.error(f"失效缓存失败: {e}")
+            # 缓存操作失败不影响主业务
+
+    @staticmethod
+    async def get_user_by_id(
+        db: AsyncSession,
+        user_id: int
+    ) -> Optional[User]:
+        """根据ID获取用户"""
+        result = await db.execute(select(User).where(User.id == user_id))
+        return result.scalars().first()
+
+    @staticmethod
+    async def get_user_by_username(
+        db: AsyncSession,
+        username: str
+    ) -> Optional[User]:
+        """根据用户名获取用户"""
+        result = await db.execute(select(User).where(User.username == username))
+        return result.scalars().first()
+
+    @staticmethod
+    async def get_user_by_email(
+        db: AsyncSession,
+        email: str
+    ) -> Optional[User]:
+        """根据邮箱获取用户"""
+        result = await db.execute(select(User).where(User.email == email))
+        return result.scalars().first()
+
+    @staticmethod
+    async def get_users_paginated(
+        db: AsyncSession,
+        page: int = 1,
+        page_size: int = 10
+    ) -> tuple[int, List[User]]:
+        """
+        分页获取用户列表
+
+        :return: (总数, 用户列表)
+        """
+        # 计算总数
+        count_result = await db.execute(select(func.count(User.id)))
+        total = count_result.scalar()
+
+        # 分页查询
+        offset = (page - 1) * page_size
+        result = await db.execute(
+            select(User).offset(offset).limit(page_size).order_by(User.id)
+        )
+        users = result.scalars().all()
+
+        return total, users
+
+    @staticmethod
+    async def create_user(
+        db: AsyncSession,
+        username: str,
+        email: str,
+        password: str,
+        full_name: Optional[str] = None
+    ) -> User:
+        """
+        创建新用户
+
+        :raises ValueError: 如果用户名或邮箱已存在
+        """
+        # 检查用户名和邮箱是否已存在
+        conflict = await UserService.check_user_exists(db, username=username, email=email)
+        if conflict:
+            field_name = "用户名" if conflict == "username" else "邮箱"
+            raise ValueError(f"{field_name}已存在")
+
+        # 创建用户
+        user = User(
+            username=username,
+            email=email,
+            hashed_password=pwd_context.hash(password),
+            full_name=full_name,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info(f"创建用户成功: {user.username}")
+        return user
+
+    @staticmethod
+    async def update_user(
+        db: AsyncSession,
+        user_id: int,
+        email: Optional[str] = None,
+        full_name: Optional[str] = None,
+        is_active: Optional[bool] = None
+    ) -> User:
+        """
+        更新用户信息
+
+        :raises ValueError: 如果用户不存在或邮箱已被使用
+        """
+        user = await UserService.get_user_by_id(db, user_id)
+        if not user:
+            raise ValueError("用户不存在")
+
+        # 检查邮箱是否被其他用户使用
+        if email and email != user.email:
+            conflict = await UserService.check_user_exists(
+                db, email=email, exclude_user_id=user_id
+            )
+            if conflict:
+                raise ValueError("邮箱已被使用")
+
+        # 更新字段
+        if email is not None:
+            user.email = email
+        if full_name is not None:
+            user.full_name = full_name
+        if is_active is not None:
+            user.is_active = is_active
+
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info(f"更新用户成功: {user.username}")
+        return user
+
+    @staticmethod
+    async def delete_user(
+        db: AsyncSession,
+        user_id: int
+    ) -> str:
+        """
+        删除用户
+
+        :return: 被删除的用户名
+        :raises ValueError: 如果用户不存在
+        """
+        user = await UserService.get_user_by_id(db, user_id)
+        if not user:
+            raise ValueError("用户不存在")
+
+        username = user.username
+        await db.delete(user)
+        await db.commit()
+
+        logger.info(f"删除用户成功: {username}")
+        return username

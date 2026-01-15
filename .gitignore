@@ -1,5 +1,6 @@
 # customer config
 /docker_data/*
+/reports/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

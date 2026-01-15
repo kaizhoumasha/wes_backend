@@ -49,7 +49,7 @@ def register_middleware(app: FastAPI) -> None:
     # GZip
     from fastapi.middleware.gzip import GZipMiddleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
-    
+
     # 注册请求日志中间件
     # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
     # 确保 request_id 在整个请求周期内可用
@@ -69,6 +69,16 @@ def register_middleware(app: FastAPI) -> None:
             allow_headers=['*'],
             expose_headers=settings.CORS_EXPOSE_HEADERS,
         )
+
+
+def register_routers(app: FastAPI) -> None:
+    """注册路由"""
+    from src.app.admin.v1.user import router as user_router
+    from src.app.admin.v1.performance import router as performance_router
+
+    # API v1 路由
+    app.include_router(user_router, prefix="/api/v1")
+    app.include_router(performance_router, prefix="/api/v1")
 
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
@@ -127,7 +137,8 @@ def register_app() -> FastAPI:
 
     register_middleware(app)
 
-    # register_routers(app)
+    # 注册路由
+    register_routers(app)
 
     # register_exception(app)
 
@@ -143,3 +154,7 @@ def register_app() -> FastAPI:
         return {"status": "healthy", "service": "P9 WES Backend"}
 
     return app
+
+
+# 创建应用实例
+app = register_app()
