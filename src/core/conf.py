@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     LOG_JSON_OUTPUT: bool = bool(os.getenv("LOG_JSON_OUTPUT", True))
     LOG_COMPRESSION: str = os.getenv("LOG_COMPRESSION", "zip")
 
+    # CORS
+    CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
+        'http://127.0.0.1:8001',
+        'http://localhost:5173',
+    ]
+    CORS_EXPOSE_HEADERS: list[str] = [
+        'X-Request-ID',
+    ]
+    MIDDLEWARE_CORS: bool = True
 
 @lru_cache
 def get_settings() -> Settings:

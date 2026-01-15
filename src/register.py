@@ -40,11 +40,26 @@ def register_middleware(app: FastAPI) -> None:
     # GZip
     from fastapi.middleware.gzip import GZipMiddleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+    
     # 注册请求日志中间件
     # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
     # 确保 request_id 在整个请求周期内可用
     from .middleware.request_log import RequestLogMiddleware
     app.add_middleware(RequestLogMiddleware)
+
+    # CORS
+    # https://github.com/fastapi-practices/fastapi_best_architecture/pull/789/changes
+    # https://github.com/open-telemetry/opentelemetry-python-contrib/issues/4031
+    from starlette.middleware.cors import CORSMiddleware
+    if settings.MIDDLEWARE_CORS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.CORS_ALLOWED_ORIGINS,
+            allow_credentials=True,
+            allow_methods=['*'],
+            allow_headers=['*'],
+            expose_headers=settings.CORS_EXPOSE_HEADERS,
+        )
 
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
