@@ -22,7 +22,14 @@ def register_logger() -> None:
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
+    from src.database.db import close_db, init_db
+    from src.database.redis_client import close_redis, init_redis
+
     try:
+        logger.info("Initializing application resources...")
+        await init_db()
+        await init_redis()
+        
         logger.info(f"Swagger DOC：http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except Exception as e:
@@ -33,6 +40,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         )
         raise
     finally:
+        await close_db()
+        await close_redis()
         logger.info("FastAPI 应用关闭")
 
 def register_middleware(app: FastAPI) -> None:

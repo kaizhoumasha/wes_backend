@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     ]
     MIDDLEWARE_CORS: bool = True
 
+    # Database
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sql_app.db")
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 @lru_cache
 def get_settings() -> Settings:
     """获取全局配置"""

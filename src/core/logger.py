@@ -181,11 +181,21 @@ def setup_logger() -> None:
         force=True,
     )
 
-    logging.getLogger("uvicorn").setLevel(logging.INFO)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
-    logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # 根据环境设置不同模块的日志级别
+    if is_debug:
+        # 开发环境：显示 INFO 级别，便于调试
+        logging.getLogger("uvicorn").setLevel(logging.INFO)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
+        logging.getLogger("sqlalchemy").setLevel(logging.INFO)  # 显示 SQL 日志
+        logging.getLogger("httpx").setLevel(logging.INFO)
+    else:
+        # 生产环境：只显示 WARNING 及以上
+        logging.getLogger("uvicorn").setLevel(logging.INFO)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
+        logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
     _initialized = True
 
