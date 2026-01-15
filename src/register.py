@@ -35,6 +35,17 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         logger.info("FastAPI 应用关闭")
 
+def register_middleware(app: FastAPI) -> None:
+    """注册中间件"""
+    # GZip
+    from fastapi.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    # 注册请求日志中间件
+    # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
+    # 确保 request_id 在整个请求周期内可用
+    from .middleware.request_log import RequestLogMiddleware
+    app.add_middleware(RequestLogMiddleware)
+
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
 
@@ -90,11 +101,7 @@ def register_app() -> FastAPI:
 
         return get_swagger_ui_oauth2_redirect_html()
 
-    # 注册请求日志中间件
-    # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
-    # 确保 request_id 在整个请求周期内可用
-    from .middleware.request_log import RequestLogMiddleware
-    app.add_middleware(RequestLogMiddleware)
+    register_middleware(app)
 
     # register_routers(app)
 
