@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     DESCRIPTION: str = os.getenv("DESCRIPTION", "FastAPI")
     # 日期时间格式
     DATETIME_FORMAT: str = os.getenv("DATETIME_FORMAT", "%Y-%m-%d")
+    # 时区设置
+    DATETIME_TIMEZONE: str = os.getenv("DATETIME_TIMEZONE", "Asia/Shanghai")
     # 项目API版本
     API_PATH: str = os.getenv("API_PATH", "/api")
     # 项目文档地址

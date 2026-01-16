@@ -8,7 +8,6 @@
 - 用户验证
 """
 
-from datetime import datetime
 from typing import Optional
 
 from fastapi import Request, Response
@@ -28,6 +27,7 @@ from src.core.security import (
     revoke_token,
 )
 from src.core.conf import settings
+from src.core.timezone import timezone
 from src.database.redis_client import get_redis, is_redis_available
 
 
@@ -100,8 +100,7 @@ class AuthService:
         # 验证用户
         user = await AuthService.verify_user(db, username, password)
 
-        # 更新最后登录时间
-        user.updated_at = datetime.now()
+        # 提交事务（updated_at 会通过 SQLAlchemy 事件自动更新）
         await db.commit()
 
         # 创建访问令牌
@@ -259,7 +258,7 @@ class AuthService:
             "is_active": user.is_active,
             "is_superuser": user.is_superuser,
             "created_at": user.created_at,
-            "updated_at": user.updated_at,
+            "updated_at": user.updated_at if user.updated_at else None,
         }
 
 

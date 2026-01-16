@@ -9,7 +9,7 @@ SQLModel Mixin 类
 from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
-from sqlalchemy import Column, DateTime, func, Integer, BigInteger
+from sqlalchemy import Column, DateTime, event, Integer, BigInteger
 from sqlalchemy.dialects.postgresql import BIGINT
 
 
@@ -167,23 +167,51 @@ class TimestampMixin(BaseMixin):
             name: str
     """
 
+    # 延迟导入时区模块避免循环依赖
+    @staticmethod
+    def _get_now() -> datetime:
+        from src.core.timezone import timezone
+
+        # 数据库使用 TIMESTAMP WITHOUT TIME ZONE，需要 UTC naive datetime
+        return timezone.now_for_db()
+
     created_at: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=lambda: TimestampMixin._get_now(),
         sa_column_kwargs={
-            "server_default": func.now(),
             "nullable": False,
-            "comment": "创建时间",
+            "comment": "创建时间 (UTC)",
         },
     )
-    updated_at: datetime = Field(
-        default_factory=datetime.now,
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        # default_factory=lambda: TimestampMixin._get_now(),
         sa_column_kwargs={
-            "server_default": func.now(),
-            "onupdate": func.now(),
-            "nullable": False,
-            "comment": "更新时间",
+            "nullable": True,
+            "comment": "更新时间 (UTC)",
         },
     )
+
+
+# ==================== SQLAlchemy 事件监听器 ====================
+
+
+@event.listens_for(TimestampMixin, "before_update", propagate=True)
+def timestamp_before_update(mapper, connection, target):
+    """
+    自动更新 updated_at 字段
+
+    在任何继承 TimestampMixin 的模型更新之前，
+    自动将 updated_at 设置为当前 UTC 时间。
+
+    使用示例:
+        user = await db.get(User, 1)
+        user.email = 'new@email'
+        await db.commit()
+        # updated_at 自动更新，无需手动设置
+    """
+    from src.core.timezone import timezone
+
+    target.updated_at = timezone.now_for_db()
 
 
 class AuditMixin(TimestampMixin):
@@ -245,8 +273,10 @@ class SoftDeleteMixin(BaseMixin):
 
         :param deleted_by: 删除人ID（如果模型有 AuditMixin）
         """
+        from src.core.timezone import timezone
+
         self.is_deleted = True
-        self.deleted_at = datetime.now()
+        self.deleted_at = timezone.now()
         if deleted_by is not None and hasattr(self, "deleted_by"):
             self.deleted_by = deleted_by
 

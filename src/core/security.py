@@ -28,6 +28,7 @@ from src.core.exceptions import (
     NotFoundException,
 )
 from src.core.logger import logger
+from src.core.timezone import timezone
 from src.database.redis_client import get_redis, is_redis_available
 
 
@@ -176,7 +177,7 @@ async def create_access_token(
     Returns:
         AccessTokenData 对象
     """
-    expire = datetime.now() + timedelta(seconds=settings.JWT_ACCESS_TOKEN_EXPIRE_SECONDS)
+    expire = timezone.now() + timedelta(seconds=settings.JWT_ACCESS_TOKEN_EXPIRE_SECONDS)
     session_uuid = str(uuid.uuid4())
 
     # 生成 JWT token
@@ -236,7 +237,7 @@ async def create_refresh_token(
     Returns:
         RefreshTokenData 对象
     """
-    expire = datetime.now() + timedelta(seconds=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS)
+    expire = timezone.now() + timedelta(seconds=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS)
     refresh_token = jwt_encode({
         "session_uuid": session_uuid,
         "exp": expire.timestamp(),

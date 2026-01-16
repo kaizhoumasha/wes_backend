@@ -92,7 +92,12 @@ class UserService:
 
     @staticmethod
     def user_to_response(user: User) -> Dict[str, Any]:
-        """将 User 模型转换为响应字典"""
+        """
+        将 User 模型转换为响应字典
+
+        注意：datetime 对象转换为 ISO 格式字符串，
+        以便 JSON 序列化和 Redis 缓存存储。
+        """
         return {
             "id": user.id,
             "username": user.username,
@@ -100,8 +105,8 @@ class UserService:
             "full_name": user.full_name,
             "is_active": user.is_active,
             "is_superuser": user.is_superuser,
-            "created_at": user.created_at.isoformat(),
-            "updated_at": user.updated_at.isoformat(),
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "updated_at": user.updated_at.isoformat() if user.updated_at else None,
         }
 
     @staticmethod

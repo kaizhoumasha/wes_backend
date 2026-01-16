@@ -46,8 +46,18 @@ class User(BaseTableModelMixin, UserBase, table=True):
 user_role = Table(
     "user_roles",
     BaseTableModelMixin.metadata,
-    Column("user_id", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-    Column("role_id", BigInteger, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "role_id",
+        BigInteger,
+        ForeignKey("roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     comment="用户-角色关联表",
 )
 
@@ -57,8 +67,18 @@ user_role = Table(
 role_permission = Table(
     "role_permissions",
     BaseTableModelMixin.metadata,
-    Column("role_id", BigInteger, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
-    Column("permission_id", BigInteger, ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+    Column(
+        "role_id",
+        BigInteger,
+        ForeignKey("roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "permission_id",
+        BigInteger,
+        ForeignKey("permissions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     comment="角色-权限关联表",
 )
 
@@ -66,7 +86,9 @@ role_permission = Table(
 class PermissionBase(BaseMixin):
     """权限基础字段"""
 
-    name: str = Field(max_length=100, unique=True, index=True)  # 权限标识，如 "user:read"
+    name: str = Field(
+        max_length=100, unique=True, index=True
+    )  # 权限标识，如 "user:read"
     description: Optional[str] = Field(default=None, max_length=255)
 
 
@@ -142,7 +164,7 @@ class UserRead(UserBase):
     is_active: bool
     is_superuser: bool
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class UserListResponse(BaseMixin):
@@ -188,6 +210,7 @@ class RefreshTokenResponse(BaseMixin):
 
 class PermissionCreate(PermissionBase):
     """权限创建 Schema"""
+
     pass
 
 
@@ -196,7 +219,7 @@ class PermissionRead(PermissionBase):
 
     id: int
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class RoleCreate(RoleBase):
@@ -219,5 +242,5 @@ class RoleRead(RoleBase):
 
     id: int
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
     permissions: list[PermissionRead] = Field(default_factory=list)
