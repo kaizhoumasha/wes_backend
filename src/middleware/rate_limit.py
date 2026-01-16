@@ -5,11 +5,11 @@
 """
 
 import asyncio
-from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from src.core.exceptions import ServiceUnavailableException
 from src.core.logger import logger
 
 
@@ -62,4 +62,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 f"并发限制: 拒绝请求 {request.method} {request.url.path} "
                 f"(当前并发: {self._current_requests}/{self.max_concurrent})"
             )
-            raise HTTPException(status_code=503, detail="服务器繁忙，请稍后重试")
+            raise ServiceUnavailableException("服务器繁忙，请稍后重试")

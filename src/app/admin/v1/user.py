@@ -11,11 +11,17 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.exceptions import (
+    DatabaseException,
+    NotFoundException,
+    ConflictException,
+    raise_not_found,
+)
 from src.core.logger import logger
 from src.app.admin.models import User
 from src.database.dependencies import AsyncSessionDep, CacheDep
@@ -24,16 +30,6 @@ from src.app.admin.services.user_service import UserService
 from src.app.admin.models import UserCreate, UserUpdate, UserRead as UserResponse, UserListResponse
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
-
-
-# ==================== 异常处理 ====================
-
-
-class UserError(HTTPException):
-    """用户相关错误"""
-
-    def __init__(self, message: str, status_code: int = status.HTTP_400_BAD_REQUEST):
-        super().__init__(status_code=status_code, detail=message)
 
 
 # ==================== 辅助函数 ====================
@@ -45,7 +41,7 @@ async def get_user_with_cache(
     """
     获取用户（带缓存）
 
-    :raises UserError: 如果用户不存在
+    :raises NotFoundException: 如果用户不存在
     """
     cache_key = f"{UserService.USER_DETAIL_CACHE_PREFIX}:{user_id}"
 
@@ -70,15 +66,12 @@ async def get_user_with_cache(
                 user = await UserService.get_user_by_id(db, user_id)
             except SQLAlchemyError as e:
                 logger.error(f"查询用户失败: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="查询用户失败"
-                )
+                raise DatabaseException("查询用户失败")
 
             if not user:
                 # 缓存空值，防止穿透
                 await cache.set(cache_key, None, expire=UserService.NULL_CACHE_EXPIRE)
-                raise UserError("用户不存在", status_code=status.HTTP_404_NOT_FOUND)
+                raise NotFoundException("用户不存在")
 
             # 构建响应数据
             response_data = UserService.user_to_response(user)
@@ -100,13 +93,10 @@ async def get_user_with_cache(
             user = await UserService.get_user_by_id(db, user_id)
         except SQLAlchemyError as e:
             logger.error(f"查询用户失败: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="查询用户失败"
-            )
+            raise DatabaseException("查询用户失败")
 
         if not user:
-            raise UserError("用户不存在", status_code=status.HTTP_404_NOT_FOUND)
+            raise NotFoundException("用户不存在")
         return UserService.user_to_response(user)
 
 
@@ -139,7 +129,7 @@ async def create_user(user_in: UserCreate, db: AsyncSessionDep, cache: CacheDep)
             full_name=user_in.full_name,
         )
     except ValueError as e:
-        raise UserError(str(e))
+        raise ConflictException(str(e))
 
     # 失效列表缓存
     await UserService.invalidate_user_cache(cache, invalidate_list=True)
@@ -178,9 +168,7 @@ async def get_users(
         total, users = await UserService.get_users_paginated(db, page, page_size)
     except SQLAlchemyError as e:
         logger.error(f"查询用户列表失败: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="查询用户列表失败"
-        )
+        raise DatabaseException("查询用户列表失败")
 
     # 构建响应
     response_data = {"total": total, "items": UserService.users_to_list_response(users)}
@@ -238,7 +226,7 @@ async def update_user(
             is_active=user_in.is_active,
         )
     except ValueError as e:
-        raise UserError(str(e), status_code=status.HTTP_404_NOT_FOUND)
+        raise NotFoundException(str(e))
 
     # 失效相关缓存
     await UserService.invalidate_user_cache(cache, user_id=user_id)
@@ -262,7 +250,7 @@ async def delete_user(
     try:
         username = await UserService.delete_user(db, user_id)
     except ValueError as e:
-        raise UserError(str(e), status_code=status.HTTP_404_NOT_FOUND)
+        raise NotFoundException(str(e))
 
     # 失效相关缓存
     await UserService.invalidate_user_cache(cache, user_id=user_id)

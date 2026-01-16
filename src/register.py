@@ -98,6 +98,13 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(performance_router, prefix="/api/v1")
 
 
+def register_exception(app: FastAPI) -> None:
+    """注册全局异常处理器"""
+    from .core.error_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
+
+
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
 
@@ -158,18 +165,9 @@ def register_app() -> FastAPI:
     # 注册路由
     register_routers(app)
 
-    # register_exception(app)
+    register_exception(app)
 
     # register_websocket(app)
-
-    @app.get("/log_test")
-    async def log_test():
-        """测试日志链路追踪"""
-        logger.info("log_test 日志测试")
-        logger.debug("调试信息")
-        logger.warning("警告信息")
-        logger.error("错误信息")
-        return {"status": "healthy", "service": "P9 WES Backend"}
 
     return app
 

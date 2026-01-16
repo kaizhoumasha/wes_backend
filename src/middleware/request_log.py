@@ -87,9 +87,19 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                     exc_info=settings.APP_DEBUG,
                 )
 
+                # 返回符合统一错误格式的响应
+                from datetime import datetime, timezone
+
                 return ORJSONResponse(
                     status_code=500,
-                    content={"detail": "Internal Server Error", "request_id": request_id},
+                    content={
+                        "code": "INTERNAL_ERROR",
+                        "message": "服务器内部错误",
+                        "detail": {"request_id": request_id},
+                        "timestamp": datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                    },
                 )
 
 

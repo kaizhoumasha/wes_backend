@@ -1,6 +1,7 @@
 # customer config
 /docker_data/*
 /reports/*
+/claudedocs/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
