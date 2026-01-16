@@ -3,19 +3,18 @@
 
 处理用户相关的业务逻辑，包括查询、缓存操作等
 """
+
 from typing import Optional, Dict, Any, List
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import SQLAlchemyError
-from passlib.context import CryptContext
+from pwdlib import PasswordHash
 
 from src.core.logger import logger
 from src.database.redis_cache import RedisCache
-from src.app.models import User
-from src.app.schemas import UserResponse
+from src.app.admin.models import User
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
+# pwdlib - FastAPI 官方推荐，支持现代密码哈希算法（Argon2）
+password_hash = PasswordHash.recommended()
 
 
 class UserService:
@@ -27,6 +26,29 @@ class UserService:
     USER_CACHE_EXPIRE = 3600  # 1小时
     USER_LIST_CACHE_EXPIRE = 300  # 5分钟
     NULL_CACHE_EXPIRE = 300  # 空值缓存5分钟
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """
+        安全哈希密码
+
+        使用 pwdlib 的 recommended() 模式，自动选择最佳算法（Argon2）
+        - 无 72 字节限制
+        - 无需手动预处理
+        - 行业标准做法
+
+        参考: https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
+        """
+        return password_hash.hash(password)
+
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """
+        验证密码
+
+        与 hash_password 配套使用
+        """
+        return password_hash.verify(plain_password, hashed_password)
 
     @staticmethod
     def user_to_response(user: User) -> Dict[str, Any]:
@@ -51,7 +73,7 @@ class UserService:
         db: AsyncSession,
         username: Optional[str] = None,
         email: Optional[str] = None,
-        exclude_user_id: Optional[int] = None
+        exclude_user_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         检查用户是否存在
@@ -72,18 +94,18 @@ class UserService:
             query = query.where(User.id != exclude_user_id)
 
         result = await db.execute(query)
-        if result.scalars().first():
-            if username and result.scalars().first().username == username:
+        user = result.scalars().first()  # 只调用一次，保存结果
+
+        if user:
+            if username and user.username == username:
                 return "username"
-            if email and result.scalars().first().email == email:
+            if email and user.email == email:
                 return "email"
         return None
 
     @staticmethod
     async def invalidate_user_cache(
-        cache: RedisCache,
-        user_id: Optional[int] = None,
-        invalidate_list: bool = True
+        cache: RedisCache, user_id: Optional[int] = None, invalidate_list: bool = True
     ) -> None:
         """
         失效用户相关缓存
@@ -104,37 +126,26 @@ class UserService:
             # 缓存操作失败不影响主业务
 
     @staticmethod
-    async def get_user_by_id(
-        db: AsyncSession,
-        user_id: int
-    ) -> Optional[User]:
+    async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
         """根据ID获取用户"""
         result = await db.execute(select(User).where(User.id == user_id))
         return result.scalars().first()
 
     @staticmethod
-    async def get_user_by_username(
-        db: AsyncSession,
-        username: str
-    ) -> Optional[User]:
+    async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
         """根据用户名获取用户"""
         result = await db.execute(select(User).where(User.username == username))
         return result.scalars().first()
 
     @staticmethod
-    async def get_user_by_email(
-        db: AsyncSession,
-        email: str
-    ) -> Optional[User]:
+    async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
         """根据邮箱获取用户"""
         result = await db.execute(select(User).where(User.email == email))
         return result.scalars().first()
 
     @staticmethod
     async def get_users_paginated(
-        db: AsyncSession,
-        page: int = 1,
-        page_size: int = 10
+        db: AsyncSession, page: int = 1, page_size: int = 10
     ) -> tuple[int, List[User]]:
         """
         分页获取用户列表
@@ -160,7 +171,7 @@ class UserService:
         username: str,
         email: str,
         password: str,
-        full_name: Optional[str] = None
+        full_name: Optional[str] = None,
     ) -> User:
         """
         创建新用户
@@ -168,7 +179,9 @@ class UserService:
         :raises ValueError: 如果用户名或邮箱已存在
         """
         # 检查用户名和邮箱是否已存在
-        conflict = await UserService.check_user_exists(db, username=username, email=email)
+        conflict = await UserService.check_user_exists(
+            db, username=username, email=email
+        )
         if conflict:
             field_name = "用户名" if conflict == "username" else "邮箱"
             raise ValueError(f"{field_name}已存在")
@@ -177,7 +190,7 @@ class UserService:
         user = User(
             username=username,
             email=email,
-            hashed_password=pwd_context.hash(password),
+            hashed_password=UserService.hash_password(password),
             full_name=full_name,
         )
         db.add(user)
@@ -193,7 +206,7 @@ class UserService:
         user_id: int,
         email: Optional[str] = None,
         full_name: Optional[str] = None,
-        is_active: Optional[bool] = None
+        is_active: Optional[bool] = None,
     ) -> User:
         """
         更新用户信息
@@ -227,10 +240,7 @@ class UserService:
         return user
 
     @staticmethod
-    async def delete_user(
-        db: AsyncSession,
-        user_id: int
-    ) -> str:
+    async def delete_user(db: AsyncSession, user_id: int) -> str:
         """
         删除用户
 

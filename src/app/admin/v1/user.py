@@ -8,35 +8,39 @@
 4. 改进类型安全
 5. 简化路由逻辑
 """
+
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logger import logger
+from src.app.admin.models import User
 from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.database.redis_cache import RedisCache
-from src.app.services.user_service import UserService
-from src.app.schemas import UserCreate, UserUpdate, UserResponse, UserListResponse
+from src.app.admin.services.user_service import UserService
+from src.app.admin.models import UserCreate, UserUpdate, UserRead as UserResponse, UserListResponse
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
 
 
 # ==================== 异常处理 ====================
 
+
 class UserError(HTTPException):
     """用户相关错误"""
+
     def __init__(self, message: str, status_code: int = status.HTTP_400_BAD_REQUEST):
         super().__init__(status_code=status_code, detail=message)
 
 
 # ==================== 辅助函数 ====================
 
+
 async def get_user_with_cache(
-    db: AsyncSession,
-    cache: RedisCache,
-    user_id: int
+    db: AsyncSession, cache: RedisCache, user_id: int
 ) -> dict:
     """
     获取用户（带缓存）
@@ -70,7 +74,12 @@ async def get_user_with_cache(
 
             # 构建响应数据
             response_data = UserService.user_to_response(user)
-            await cache.set(cache_key, response_data, expire=UserService.USER_CACHE_EXPIRE, is_hot=True)
+            await cache.set(
+                cache_key,
+                response_data,
+                expire=UserService.USER_CACHE_EXPIRE,
+                is_hot=True,
+            )
 
             logger.info(f"获取用户详情: {user.username}")
             return response_data
@@ -87,17 +96,14 @@ async def get_user_with_cache(
 
 # ==================== CRUD 路由 ====================
 
+
 @router.post(
     "",
     response_model=UserResponse,
     summary="创建用户",
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
 )
-async def create_user(
-    user_in: UserCreate,
-    db: AsyncSessionDep,
-    cache: CacheDep
-):
+async def create_user(user_in: UserCreate, db: AsyncSessionDep, cache: CacheDep):
     """
     创建新用户
 
@@ -114,7 +120,7 @@ async def create_user(
             username=user_in.username,
             email=user_in.email,
             password=user_in.password,
-            full_name=user_in.full_name
+            full_name=user_in.full_name,
         )
     except ValueError as e:
         raise UserError(str(e))
@@ -157,15 +163,11 @@ async def get_users(
     except SQLAlchemyError as e:
         logger.error(f"查询用户列表失败: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="查询用户列表失败"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="查询用户列表失败"
         )
 
     # 构建响应
-    response_data = {
-        "total": total,
-        "items": UserService.users_to_list_response(users)
-    }
+    response_data = {"total": total, "items": UserService.users_to_list_response(users)}
 
     # 设置缓存
     await cache.set(cache_key, response_data, expire=UserService.USER_LIST_CACHE_EXPIRE)
@@ -217,7 +219,7 @@ async def update_user(
             user_id=user_id,
             email=user_in.email,
             full_name=user_in.full_name,
-            is_active=user_in.is_active
+            is_active=user_in.is_active,
         )
     except ValueError as e:
         raise UserError(str(e), status_code=status.HTTP_404_NOT_FOUND)
@@ -228,11 +230,7 @@ async def update_user(
     return UserService.user_to_response(user)
 
 
-@router.delete(
-    "/{user_id}",
-    summary="删除用户",
-    status_code=status.HTTP_200_OK
-)
+@router.delete("/{user_id}", summary="删除用户", status_code=status.HTTP_200_OK)
 async def delete_user(
     db: AsyncSessionDep,
     cache: CacheDep,
@@ -258,11 +256,9 @@ async def delete_user(
 
 # ==================== 统计路由 ====================
 
+
 @router.get("/stats/cache", summary="获取缓存统计")
-async def get_cache_stats(
-    db: AsyncSessionDep,
-    cache: CacheDep
-):
+async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
     """
     获取缓存统计信息
 
@@ -271,8 +267,6 @@ async def get_cache_stats(
     - cache_status: 缓存服务状态
     - cache_keys_count: 缓存键数量（如果 Redis 可用）
     """
-    from sqlalchemy import func
-
     # 获取总用户数
     result = await db.execute(select(func.count(User.id)))
     total_users = result.scalar()
@@ -284,6 +278,7 @@ async def get_cache_stats(
     cache_keys_count = None
     try:
         from src.database.redis_client import is_redis_available, get_redis
+
         if is_redis_available():
             redis_client = get_redis()
             cache_keys_count = await redis_client.dbsize()

@@ -1,11 +1,19 @@
 from typing import AsyncGenerator
 
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from src.core.conf import settings
 from src.core.logger import logger
+
+# 导入 SQLModel 以确保模型被注册
+from sqlmodel import SQLModel
 
 # 推荐的命名约定，防止 Alembic 自动生成迁移时出现未命名约束问题
 naming_convention = {
@@ -48,12 +56,16 @@ async def init_db() -> None:
         autocommit=False,
         autoflush=False,
     )
-    
+
     # 尝试连接数据库，验证连接是否成功
     try:
         async with engine.begin() as conn:
             # 仅在开发环境或测试环境可以考虑自动创建表，生产环境建议使用 Alembic
-            # await conn.run_sync(Base.metadata.create_all) 
+            if settings.APP_DEBUG:
+                # 使用 SQLModel.metadata 创建所有 SQLModel 表
+                await conn.run_sync(SQLModel.metadata.create_all)
+                # 如果有使用 Base 的传统 SQLAlchemy 模型，也创建它们
+                await conn.run_sync(Base.metadata.create_all)
             pass
         logger.info("Database connection initialized successfully")
     except Exception as e:
@@ -78,7 +90,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     if AsyncSessionLocal is None:
         raise RuntimeError("Database is not initialized")
-        
+
     async with AsyncSessionLocal() as session:
         try:
             yield session
