@@ -62,6 +62,29 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sql_app.db")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+    # 雪花ID配置（分布式唯一ID生成）
+    # 是否启用雪花ID作为默认主键
+    USE_SNOWFLAKE_ID: bool = os.getenv("USE_SNOWFLAKE_ID", "false").lower() in ("true", "1", "yes")
+    # 数据中心ID（0-7）：用于标识不同数据中心或机房
+    SNOWFLAKE_DATACENTER_ID: int = int(os.getenv("SNOWFLAKE_DATACENTER_ID", "0"))
+    # 工作机器ID（0-7）：用于标识同一数据中心内的不同服务器
+    SNOWFLAKE_WORKER_ID: int = int(os.getenv("SNOWFLAKE_WORKER_ID", "0"))
+    # 纪元时间戳（毫秒级Unix时间戳）：雪花ID的时间起点
+    # ⚠️ 警告：所有节点必须使用相同的 EPOCH，否则会生成重复 ID
+    SNOWFLAKE_EPOCH: int = int(os.getenv("SNOWFLAKE_EPOCH", "1704067200000"))
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 验证雪花ID配置
+        if not (0 <= self.SNOWFLAKE_DATACENTER_ID <= 7):
+            raise ValueError(
+                f"SNOWFLAKE_DATACENTER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_DATACENTER_ID}"
+            )
+        if not (0 <= self.SNOWFLAKE_WORKER_ID <= 7):
+            raise ValueError(
+                f"SNOWFLAKE_WORKER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_WORKER_ID}"
+            )
+
 @lru_cache
 def get_settings() -> Settings:
     """获取全局配置"""
