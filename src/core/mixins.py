@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 from sqlalchemy import Column, DateTime, func, Integer, BigInteger
+from sqlalchemy.dialects.postgresql import BIGINT
 
 
 # ==================== 基础 Mixin ====================
@@ -28,23 +29,23 @@ class IntPKMixin(BaseMixin):
     """
     整型自增主键 Mixin
 
-    适用于大多数场景的主键定义
-    使用数据库自增功能
+    使用 BIGINT 类型以保持与雪花 ID 的一致性，
+    确保外键关联时类型匹配。
 
     使用示例:
-        class User(IntPrimaryKeyMixin, table=True):
+        class User(IntPKMixin, table=True):
             name: str
     """
 
     id: Optional[int] = Field(
         default=None,
-        sa_column=Column(
-            Integer,
-            autoincrement="auto",
-            nullable=False,
-            primary_key=True,
-            comment="主键 ID",
-        ),
+        sa_type=BigInteger,  # 统一使用 BIGINT
+        sa_column_kwargs={
+            "autoincrement": "auto",
+            "nullable": False,
+            "primary_key": True,
+            "comment": "主键 ID",
+        },
     )
 
 
@@ -105,11 +106,16 @@ class SnowflakePKMixin(BaseMixin):
 
         return generate_snowflake_id()
 
+    # 使用 BigInteger 类型
     id: Optional[int] = Field(
         default_factory=lambda: SnowflakePKMixin._generate_snowflake_id(),
-        sa_column=Column(
-            BigInteger, nullable=False, primary_key=True, comment="雪花算法主键 ID"
-        ),
+        primary_key=True,
+        index=True,
+        sa_type=BigInteger,
+        sa_column_kwargs={
+            "nullable": False,
+            "comment": "雪花算法主键 ID",
+        },
     )
 
 
@@ -162,20 +168,21 @@ class TimestampMixin(BaseMixin):
     """
 
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(),
-        sa_column=Column(
-            DateTime, server_default=func.now(), nullable=False, comment="创建时间"
-        ),
+        default_factory=datetime.now,
+        sa_column_kwargs={
+            "server_default": func.now(),
+            "nullable": False,
+            "comment": "创建时间",
+        },
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(),
-        sa_column=Column(
-            DateTime,
-            server_default=func.now(),
-            onupdate=func.now(),
-            nullable=False,
-            comment="更新时间",
-        ),
+        default_factory=datetime.now,
+        sa_column_kwargs={
+            "server_default": func.now(),
+            "onupdate": func.now(),
+            "nullable": False,
+            "comment": "更新时间",
+        },
     )
 
 
@@ -196,10 +203,12 @@ class AuditMixin(TimestampMixin):
     """
 
     created_by: Optional[int] = Field(
-        default=None, sa_column=Column(Integer, nullable=True, comment="创建人ID")
+        default=None,
+        sa_column_kwargs={"nullable": True, "comment": "创建人ID"},
     )
     updated_by: Optional[int] = Field(
-        default=None, sa_column=Column(Integer, nullable=True, comment="更新人ID")
+        default=None,
+        sa_column_kwargs={"nullable": True, "comment": "更新人ID"},
     )
 
 
@@ -221,10 +230,12 @@ class SoftDeleteMixin(BaseMixin):
     """
 
     deleted_by: Optional[int] = Field(
-        default=None, sa_column=Column(Integer, nullable=True, comment="删除人ID")
+        default=None,
+        sa_column_kwargs={"nullable": True, "comment": "删除人ID"},
     )
     deleted_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime, nullable=True, comment="删除时间")
+        default=None,
+        sa_column_kwargs={"nullable": True, "comment": "删除时间"},
     )
     is_deleted: bool = Field(default=False, sa_column_kwargs={"comment": "是否已删除"})
 

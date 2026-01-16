@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import ORJSONResponse
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from src.core.exceptions import (
     AppException,
@@ -319,12 +319,17 @@ async def sqlalchemy_exception_handler(
     Returns:
         标准化的错误响应
     """
+    # 记录详细错误信息
+    error_detail = str(exc)
+    if hasattr(exc, "__cause__") and exc.__cause__:
+        error_detail = f"{error_detail} | 原因: {str(exc.__cause__)}"
+
     logger.error(
-        f"SQLAlchemyError: {type(exc).__name__}",
+        f"SQLAlchemyError: {type(exc).__name__} - {error_detail}",
         extra={
             "path": request.url.path,
             "method": request.method,
-            "error": str(exc),
+            "error": error_detail,
         },
     )
 
@@ -332,13 +337,22 @@ async def sqlalchemy_exception_handler(
     if isinstance(exc, IntegrityError):
         return error_response(
             code="INTEGRITY_ERROR",
-            message="数据完整性约束冲突",
+            message=f"数据完整性约束冲突: {error_detail}",
             status_code=status.HTTP_409_CONFLICT,
+        )
+
+    # 处理 DBAPIError，提取原始数据库错误
+    if isinstance(exc, DBAPIError):
+        orig_error = exc.orig
+        return error_response(
+            code="DATABASE_ERROR",
+            message=f"数据库错误: {type(orig_error).__name__}: {str(orig_error)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
     return error_response(
         code="DATABASE_ERROR",
-        message="数据库操作失败",
+        message=f"数据库操作失败: {error_detail}",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 

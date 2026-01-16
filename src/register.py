@@ -92,8 +92,10 @@ def register_routers(app: FastAPI) -> None:
     """注册路由"""
     from src.app.admin.v1.user import router as user_router
     from src.app.admin.v1.performance import router as performance_router
+    from src.app.auth.v1.auth import router as auth_router
 
     # API v1 路由
+    app.include_router(auth_router, prefix="/api/v1")
     app.include_router(user_router, prefix="/api/v1")
     app.include_router(performance_router, prefix="/api/v1")
 

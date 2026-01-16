@@ -73,6 +73,33 @@ class Settings(BaseSettings):
     # ⚠️ 警告：所有节点必须使用相同的 EPOCH，否则会生成重复 ID
     SNOWFLAKE_EPOCH: int = int(os.getenv("SNOWFLAKE_EPOCH", "1704067200000"))
 
+    # JWT 配置
+    # JWT 密钥（生产环境必须使用强随机密钥并通过环境变量设置）
+    JWT_SECRET_KEY: str = os.getenv(
+        "JWT_SECRET_KEY",
+        "your-secret-key-change-in-production-min-32-chars-long",
+    )
+    # JWT 算法
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    # Access Token 过期时间（秒）
+    JWT_ACCESS_TOKEN_EXPIRE_SECONDS: int = int(
+        os.getenv("JWT_ACCESS_TOKEN_EXPIRE_SECONDS", "3600")
+    )  # 默认 1 小时
+    # Refresh Token 过期时间（秒）
+    JWT_REFRESH_TOKEN_EXPIRE_SECONDS: int = int(
+        os.getenv("JWT_REFRESH_TOKEN_EXPIRE_SECONDS", "604800")
+    )  # 默认 7 天
+    # Redis Token 前缀
+    JWT_ACCESS_TOKEN_REDIS_PREFIX: str = os.getenv(
+        "JWT_ACCESS_TOKEN_REDIS_PREFIX", "auth:access_token"
+    )
+    JWT_REFRESH_TOKEN_REDIS_PREFIX: str = os.getenv(
+        "JWT_REFRESH_TOKEN_REDIS_PREFIX", "auth:refresh_token"
+    )
+    JWT_USER_REDIS_PREFIX: str = os.getenv(
+        "JWT_USER_REDIS_PREFIX", "auth:user"
+    )
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # 验证雪花ID配置

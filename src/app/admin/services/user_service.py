@@ -99,6 +99,7 @@ class UserService:
             "email": user.email,
             "full_name": user.full_name,
             "is_active": user.is_active,
+            "is_superuser": user.is_superuser,
             "created_at": user.created_at.isoformat(),
             "updated_at": user.updated_at.isoformat(),
         }
