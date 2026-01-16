@@ -66,7 +66,15 @@ async def get_user_with_cache(
                 return cached_data
 
             # 查询数据库
-            user = await UserService.get_user_by_id(db, user_id)
+            try:
+                user = await UserService.get_user_by_id(db, user_id)
+            except SQLAlchemyError as e:
+                logger.error(f"查询用户失败: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="查询用户失败"
+                )
+
             if not user:
                 # 缓存空值，防止穿透
                 await cache.set(cache_key, None, expire=UserService.NULL_CACHE_EXPIRE)
@@ -88,7 +96,15 @@ async def get_user_with_cache(
     else:
         # 获取锁失败，直接查询数据库（降级策略）
         logger.warning(f"获取锁失败，降级到数据库查询: {cache_key}")
-        user = await UserService.get_user_by_id(db, user_id)
+        try:
+            user = await UserService.get_user_by_id(db, user_id)
+        except SQLAlchemyError as e:
+            logger.error(f"查询用户失败: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="查询用户失败"
+            )
+
         if not user:
             raise UserError("用户不存在", status_code=status.HTTP_404_NOT_FOUND)
         return UserService.user_to_response(user)

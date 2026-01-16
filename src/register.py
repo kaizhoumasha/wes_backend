@@ -1,4 +1,3 @@
-
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -11,6 +10,7 @@ from src.core.logger import logger
 
 from .core.conf import settings
 
+
 def register_logger() -> None:
     """
     注册系统日志管理模块
@@ -18,6 +18,7 @@ def register_logger() -> None:
     from .core.logger import setup_logger
 
     setup_logger()
+
 
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
@@ -29,8 +30,10 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("Initializing application resources...")
         await init_db()
         await init_redis()
-        
-        logger.info(f"Swagger DOC：http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
+
+        logger.info(
+            f"Swagger DOC：http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}"
+        )
         yield
     except Exception as e:
         # exc_info=True 捕获完整堆栈跟踪
@@ -44,29 +47,43 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         await close_redis()
         logger.info("FastAPI 应用关闭")
 
+
 def register_middleware(app: FastAPI) -> None:
     """注册中间件"""
     # GZip
     from fastapi.middleware.gzip import GZipMiddleware
+
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # 方案A: 注册请求限流中间件（最大500并发）
+    from .middleware.rate_limit import RateLimitMiddleware
+
+    app.add_middleware(RateLimitMiddleware, max_concurrent=200)
+
+    # 注册性能监控中间件
+    from .middleware.performance import PerformanceMiddleware
+
+    app.add_middleware(PerformanceMiddleware, slow_request_threshold=1000)
 
     # 注册请求日志中间件
     # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
     # 确保 request_id 在整个请求周期内可用
     from .middleware.request_log import RequestLogMiddleware
+
     app.add_middleware(RequestLogMiddleware)
 
     # CORS
     # https://github.com/fastapi-practices/fastapi_best_architecture/pull/789/changes
     # https://github.com/open-telemetry/opentelemetry-python-contrib/issues/4031
     from starlette.middleware.cors import CORSMiddleware
+
     if settings.MIDDLEWARE_CORS:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.CORS_ALLOWED_ORIGINS,
             allow_credentials=True,
-            allow_methods=['*'],
-            allow_headers=['*'],
+            allow_methods=["*"],
+            allow_headers=["*"],
             expose_headers=settings.CORS_EXPOSE_HEADERS,
         )
 
@@ -79,6 +96,7 @@ def register_routers(app: FastAPI) -> None:
     # API v1 路由
     app.include_router(user_router, prefix="/api/v1")
     app.include_router(performance_router, prefix="/api/v1")
+
 
 def register_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html

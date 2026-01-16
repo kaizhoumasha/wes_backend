@@ -4,6 +4,8 @@
 处理用户相关的业务逻辑，包括查询、缓存操作等
 """
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, List
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,12 @@ from src.app.admin.models import User
 # pwdlib - FastAPI 官方推荐，支持现代密码哈希算法（Argon2）
 password_hash = PasswordHash.recommended()
 
+# 线程池用于 CPU 密集型操作（密码哈希）
+# 方案A优化: 增加到20个worker以支持500并发
+_password_executor = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="password_hash"
+)
+
 
 class UserService:
     """用户服务类"""
@@ -23,14 +31,17 @@ class UserService:
     # 缓存配置
     USER_DETAIL_CACHE_PREFIX = "user:detail"
     USER_LIST_CACHE_PREFIX = "user:list"
-    USER_CACHE_EXPIRE = 3600  # 1小时
-    USER_LIST_CACHE_EXPIRE = 300  # 5分钟
+    USER_CACHE_EXPIRE = 7200  # 2小时（从1小时增加）
+    USER_LIST_CACHE_EXPIRE = 600  # 10分钟（从5分钟增加）
     NULL_CACHE_EXPIRE = 300  # 空值缓存5分钟
 
     @staticmethod
-    def hash_password(password: str) -> str:
+    async def hash_password_async(password: str) -> str:
         """
-        安全哈希密码
+        异步安全哈希密码
+
+        使用 ThreadPoolExecutor 在独立线程中执行 CPU 密集型的密码哈希操作，
+        避免阻塞事件循环，提升并发性能。
 
         使用 pwdlib 的 recommended() 模式，自动选择最佳算法（Argon2）
         - 无 72 字节限制
@@ -39,15 +50,44 @@ class UserService:
 
         参考: https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
         """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _password_executor, password_hash.hash, password
+        )
+
+    @staticmethod
+    async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+        """
+        异步验证密码
+
+        使用 ThreadPoolExecutor 在独立线程中执行密码验证，
+        避免阻塞事件循环。
+
+        与 hash_password_async 配套使用
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _password_executor, password_hash.verify, plain_password, hashed_password
+        )
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """
+        同步密码哈希（已废弃，请使用 hash_password_async）
+
+        保留此方法用于向后兼容，但建议使用异步版本以获得更好的性能。
+        """
+        logger.warning("使用了同步密码哈希方法，建议使用 hash_password_async")
         return password_hash.hash(password)
 
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """
-        验证密码
+        同步密码验证（已废弃，请使用 verify_password_async）
 
-        与 hash_password 配套使用
+        保留此方法用于向后兼容，但建议使用异步版本以获得更好的性能。
         """
+        logger.warning("使用了同步密码验证方法，建议使用 verify_password_async")
         return password_hash.verify(plain_password, hashed_password)
 
     @staticmethod
@@ -190,7 +230,7 @@ class UserService:
         user = User(
             username=username,
             email=email,
-            hashed_password=UserService.hash_password(password),
+            hashed_password=await UserService.hash_password_async(password),
             full_name=full_name,
         )
         db.add(user)

@@ -269,7 +269,7 @@ class RedisCache:
         # 处理空值（缓存穿透防护）
         if value is None:
             serialized_value = self.NULL_VALUE
-            expire = expire or self.NULL_EXPIRE
+            base_expire = expire or self.NULL_EXPIRE
         else:
             serialized_value = json.dumps(value, ensure_ascii=False)
             # 热点数据使用较长过期时间

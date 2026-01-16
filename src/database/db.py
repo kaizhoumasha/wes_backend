@@ -44,9 +44,10 @@ async def init_db() -> None:
         settings.DATABASE_URL,
         echo=False,  # 通过 loguru 统一管理日志，不使用 sqlalchemy 自带的 echo
         pool_pre_ping=True,  # 每次从连接池获取连接前预先 ping 一下，防止连接失效
-        pool_size=20,
-        max_overflow=10,
+        pool_size=50,  # 增加连接池大小（从 20 -> 50）
+        max_overflow=50,  # 增加溢出连接数（从 10 -> 50）
         pool_recycle=3600,
+        pool_timeout=30,  # 添加连接超时时间
     )
 
     AsyncSessionLocal = async_sessionmaker(

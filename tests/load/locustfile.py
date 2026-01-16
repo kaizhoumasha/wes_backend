@@ -9,9 +9,14 @@ Locust 负载测试脚本
 import json
 import random
 import time
+import threading
 from locust import HttpUser, task, between, events
 from locust.runners import MasterRunner
 
+
+# 全局用户 ID 池（用于雪花 ID 模式）
+EXISTING_USER_IDS = []
+user_ids_lock = threading.Lock()
 
 # 测试数据
 TEST_USERNAMES = [f"test_user_{i}" for i in range(1, 1001)]
@@ -70,13 +75,20 @@ class APIUser(HttpUser):
 
         测试缓存命中率和热点数据访问
         """
-        # 随机获取用户 ID（偏向小 ID，模拟热点数据）
-        if random.random() < 0.7:
-            # 70% 概率访问热点数据（ID 1-10）
-            user_id = random.randint(1, 10)
+        # 如果没有可用的用户 ID，跳过测试
+        if not EXISTING_USER_IDS:
+            self.client.get("/api/v1/performance/health", name="跳过详情查询（无可用ID）")
+            return
+
+        # 随机获取用户 ID（偏向前面的 ID，模拟热点数据）
+        # 限制访问范围以提高缓存命中率
+        if random.random() < 0.7 and len(EXISTING_USER_IDS) >= 10:
+            # 70% 概率访问热点数据（前 10 个用户）
+            user_id = random.choice(EXISTING_USER_IDS[:10])
         else:
-            # 30% 概率访问其他数据
-            user_id = random.randint(1, 100)
+            # 30% 概率访问其他数据（限制在前 30 个用户内）
+            max_index = min(30, len(EXISTING_USER_IDS))
+            user_id = random.choice(EXISTING_USER_IDS[:max_index])
 
         with self.client.get(
             f"/api/v1/users/{user_id}",
@@ -121,6 +133,12 @@ class APIUser(HttpUser):
                         if not hasattr(self, "created_user_ids"):
                             self.created_user_ids = []
                         self.created_user_ids.append(data["id"])
+
+                        # 添加到全局 ID 池
+                        with user_ids_lock:
+                            if data["id"] not in EXISTING_USER_IDS:
+                                EXISTING_USER_IDS.append(data["id"])
+
                         response.success()
                     else:
                         response.failure("响应中没有用户 ID")
@@ -136,10 +154,16 @@ class APIUser(HttpUser):
 
         测试更新操作和缓存删除
         """
-        if hasattr(self, "created_user_ids") and self.created_user_ids:
-            # 随机选择一个已创建的用户
-            user_id = random.choice(self.created_user_ids)
+        user_id = None
 
+        # 优先使用自己创建的用户
+        if hasattr(self, "created_user_ids") and self.created_user_ids:
+            user_id = random.choice(self.created_user_ids)
+        # 其次使用全局 ID 池
+        elif EXISTING_USER_IDS:
+            user_id = random.choice(EXISTING_USER_IDS)
+
+        if user_id:
             update_data = {
                 "full_name": f"Updated {int(time.time())}"
             }
@@ -153,8 +177,8 @@ class APIUser(HttpUser):
                 if response.status_code not in [200, 404]:
                     response.failure(f"HTTP {response.status_code}")
         else:
-            # 没有创建的用户，跳过
-            self.client.get("/api/v1/performance/health", name="跳过更新操作")
+            # 没有可用的用户 ID，跳过
+            self.client.get("/api/v1/performance/health", name="跳过更新操作（无可用ID）")
 
     @task(1)
     def get_performance_metrics(self):
@@ -178,7 +202,8 @@ class APIUser(HttpUser):
 
         测试缓存穿透防护
         """
-        user_id = 99999 + random.randint(0, 1000)
+        # 使用明确不存在的大 ID（雪花 ID 范围之外）
+        user_id = 9999999999999999 + random.randint(0, 1000)
 
         with self.client.get(
             f"/api/v1/users/{user_id}",
@@ -208,9 +233,15 @@ class ReadUser(HttpUser):
 
     @task(10)
     def get_user_detail(self):
-        """只访问用户详情"""
-        user_id = random.randint(1, 20)
-        self.client.get(f"/api/v1/users/{user_id}")
+        """只访问用户详情（限制范围以提高缓存命中率）"""
+        if EXISTING_USER_IDS:
+            # 只访问前 20 个用户，提高缓存命中率
+            max_index = min(20, len(EXISTING_USER_IDS))
+            user_id = random.choice(EXISTING_USER_IDS[:max_index])
+            self.client.get(f"/api/v1/users/{user_id}")
+        else:
+            # 没有可用的用户 ID，访问健康检查
+            self.client.get("/api/v1/performance/health")
 
     @task(1)
     def get_health(self):
@@ -235,14 +266,29 @@ class WriteUser(HttpUser):
             "email": f"{username}@example.com",
             "password": "test_password_123"
         }
-        self.client.post("/api/v1/users", json=user_data)
+        response = self.client.post("/api/v1/users", json=user_data)
+
+        # 将新创建的用户 ID 添加到全局池
+        if response.status_code in [200, 201]:
+            try:
+                data = response.json()
+                if "id" in data:
+                    with user_ids_lock:
+                        if data["id"] not in EXISTING_USER_IDS:
+                            EXISTING_USER_IDS.append(data["id"])
+            except:
+                pass
 
     @task(3)
     def update_user(self):
         """更新随机用户"""
-        user_id = random.randint(1, 50)
-        update_data = {"is_active": random.choice([True, False])}
-        self.client.put(f"/api/v1/users/{user_id}", json=update_data)
+        if EXISTING_USER_IDS:
+            user_id = random.choice(EXISTING_USER_IDS)
+            update_data = {"is_active": random.choice([True, False])}
+            self.client.put(f"/api/v1/users/{user_id}", json=update_data)
+        else:
+            # 没有可用的用户 ID，访问健康检查
+            self.client.get("/api/v1/performance/health")
 
 
 # 测试事件处理
@@ -251,6 +297,46 @@ def on_test_start(environment, **kwargs):
     """测试开始时的操作"""
     print("\n" + "="*50)
     print("负载测试开始")
+    print("="*50 + "\n")
+
+    # 获取实际存在的用户 ID（适配雪花 ID 模式）
+    print("正在获取实际用户 ID...")
+    try:
+        import requests
+        base_url = environment.host or "http://localhost:8000"
+
+        # 获取前 5 页用户（约 100 个 ID）
+        for page in range(1, 6):
+            try:
+                response = requests.get(
+                    f"{base_url}/api/v1/users",
+                    params={"page": page, "page_size": 20},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if "items" in data and data["items"]:
+                        user_ids = [user["id"] for user in data["items"]]
+                        with user_ids_lock:
+                            EXISTING_USER_IDS.extend(user_ids)
+                        print(f"  第 {page} 页: 获取 {len(user_ids)} 个用户 ID")
+                    else:
+                        break
+                else:
+                    print(f"  第 {page} 页: HTTP {response.status_code}")
+                    break
+            except Exception as e:
+                print(f"  第 {page} 页获取失败: {e}")
+                break
+
+        if EXISTING_USER_IDS:
+            print(f"✓ 成功获取 {len(EXISTING_USER_IDS)} 个用户 ID")
+            print(f"  ID 范围示例: {EXISTING_USER_IDS[0]} ~ {EXISTING_USER_IDS[-1]}")
+        else:
+            print("⚠️  警告: 未获取到任何用户 ID，部分测试可能失败")
+    except Exception as e:
+        print(f"⚠️  获取用户 ID 失败: {e}")
+
     print("="*50 + "\n")
 
 
