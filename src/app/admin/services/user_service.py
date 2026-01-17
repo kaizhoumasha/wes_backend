@@ -6,14 +6,15 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pwdlib import PasswordHash
 
 from src.core.logger import logger
 from src.database.redis_cache import RedisCache
-from src.app.admin.models import User
+from src.app.admin.models import User, UserRead
+from src.core.schema_loader import get_with_schema, get_all_with_schema, model_to_schema
 
 # pwdlib - FastAPI 官方推荐，支持现代密码哈希算法（Argon2）
 password_hash = PasswordHash.recommended()
@@ -91,28 +92,12 @@ class UserService:
         return password_hash.verify(plain_password, hashed_password)
 
     @staticmethod
-    def user_to_response(user: User) -> Dict[str, Any]:
-        """
-        将 User 模型转换为响应字典
-
-        注意：datetime 对象转换为 ISO 格式字符串，
-        以便 JSON 序列化和 Redis 缓存存储。
-        """
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name,
-            "is_active": user.is_active,
-            "is_superuser": user.is_superuser,
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "updated_at": user.updated_at.isoformat() if user.updated_at else None,
-        }
+    def user_to_response(user: User) -> UserRead:
+        return model_to_schema(user, UserRead)
 
     @staticmethod
-    def users_to_list_response(users: List[User]) -> List[Dict[str, Any]]:
-        """批量转换用户列表"""
-        return [UserService.user_to_response(u) for u in users]
+    def users_to_list_response(users: List[User]) -> List[UserRead]:
+        return [model_to_schema(u, UserRead) for u in users]
 
     @staticmethod
     async def check_user_exists(
@@ -173,9 +158,9 @@ class UserService:
 
     @staticmethod
     async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
-        """根据ID获取用户"""
-        result = await db.execute(select(User).where(User.id == user_id))
-        return result.scalars().first()
+        return await get_with_schema(
+            db, User, UserRead, User.id == user_id, max_depth=2
+        )
 
     @staticmethod
     async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
@@ -193,21 +178,13 @@ class UserService:
     async def get_users_paginated(
         db: AsyncSession, page: int = 1, page_size: int = 10
     ) -> tuple[int, List[User]]:
-        """
-        分页获取用户列表
-
-        :return: (总数, 用户列表)
-        """
-        # 计算总数
         count_result = await db.execute(select(func.count(User.id)))
         total = count_result.scalar()
 
-        # 分页查询
         offset = (page - 1) * page_size
-        result = await db.execute(
-            select(User).offset(offset).limit(page_size).order_by(User.id)
+        users = await get_all_with_schema(
+            db, User, UserRead, limit=page_size, offset=offset
         )
-        users = result.scalars().all()
 
         return total, users
 

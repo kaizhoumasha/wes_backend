@@ -82,10 +82,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             except Exception as e:
                 process_time = (time.time() - start_time) * 1000
                 time_str = f"{process_time:.0f}ms"
-                logger.error(
-                    f"{method} {path} - {str(e)} ({time_str})",
-                    exc_info=settings.APP_DEBUG,
-                )
+
+                # 使用 logger.exception() 自动记录异常堆栈
+                if settings.APP_DEBUG:
+                    logger.exception(f"{method} {path} - Exception occurred ({time_str})")
+                else:
+                    logger.error(f"{method} {path} - {type(e).__name__}: {str(e)} ({time_str})")
 
                 # 返回符合统一错误格式的响应
                 from datetime import datetime, timezone

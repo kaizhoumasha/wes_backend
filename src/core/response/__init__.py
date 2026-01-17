@@ -1,0 +1,174 @@
+"""
+统一响应系统
+
+提供全局统一的模型转换和响应构建功能。
+
+模块组成：
+- response_code: 响应码枚举定义
+- response_schema: 响应模型定义
+- response_util: 响应构建器和模型序列化工具
+
+使用示例：
+```python
+from src.core.response import (
+    response_builder,
+    model_serializer,
+    SuccessCode,
+    ClientErrorCode,
+    ResponseModel,
+    ResponseSchemaModel,
+    PaginationResponseModel,
+)
+
+# 快速构建响应
+@router.get("/users/{user_id}")
+async def get_user(user_id: int):
+    user = await user_service.get_by_id(user_id)
+    user_dict = model_serializer.to_dict(user, exclude={'password'})
+    return response_builder.success(data=user_dict)
+
+# 使用响应模型（类型安全）
+class UserRead(BaseModel):
+    id: int
+    name: str
+
+@router.get("/users/{user_id}", response_model=ResponseSchemaModel[UserRead])
+async def get_user(user_id: int) -> ResponseSchemaModel[UserRead]:
+    user = await user_service.get_by_id(user_id)
+    user_schema = UserRead.model_validate(user)
+    return ResponseSchemaModel[UserRead](
+        code=SuccessCode.SUCCESS,
+        data=user_schema
+    )
+
+# 分页响应
+@router.get("/users", response_model=PaginationResponseModel[UserRead])
+async def get_users(page: int = 1, size: int = 10):
+    users, total = await user_service.get_list(page, size)
+    pagination = model_serializer.paginate_models(
+        models=users,
+        total=total,
+        page=page,
+        size=size
+    )
+    return response_builder.paginate(
+        items=pagination.items,
+        total=total,
+        page=page,
+        size=size
+    )
+```
+"""
+
+from datetime import datetime, timezone
+from typing import Any
+
+# ==================== 响应码 ====================
+
+from .response_code import (
+    ResponseCode,
+    SuccessCode,
+    ClientErrorCode,
+    ResourceErrorCode,
+    BusinessErrorCode,
+    ServerErrorCode,
+    ExternalServiceErrorCode,
+    MiscErrorCode,
+    AllResponseCode as ResponseType,
+    DEFAULT_SUCCESS,
+    DEFAULT_ERROR,
+    DEFAULT_NOT_FOUND,
+    DEFAULT_UNAUTHORIZED,
+    DEFAULT_FORBIDDEN,
+)
+
+# ==================== 响应模型 ====================
+
+from .response_schema import (
+    ResponseModel,
+    ResponseSchemaModel,
+    PaginationData,
+    PaginationResponseModel,
+    BatchOperationResult,
+    BatchOperationResponseModel,
+)
+
+# ==================== 响应工具 ====================
+
+from .response_util import (
+    ResponseBuilder,
+    ModelSerializer,
+    response_builder,
+    model_serializer,
+)
+
+# ==================== 便捷别名 ====================
+
+# 为了向后兼容，提供与error_response格式一致的导出
+def error_response_dict(
+    code: str,
+    message: str,
+    detail: Any = None,
+) -> dict:
+    """
+    构建错误响应字典（与error_response格式一致）
+
+    Args:
+        code: 错误码
+        message: 错误消息
+        detail: 详细信息
+
+    Returns:
+        错误响应字典
+    """
+    response = {
+        "code": code,
+        "message": message,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+    if detail is not None:
+        response["detail"] = detail
+
+    return response
+
+
+# ==================== 公共导出 ====================
+
+__all__ = [
+    # 响应码
+    "ResponseCode",
+    "SuccessCode",
+    "ClientErrorCode",
+    "ResourceErrorCode",
+    "BusinessErrorCode",
+    "ServerErrorCode",
+    "ExternalServiceErrorCode",
+    "MiscErrorCode",
+    "ResponseType",
+    "DEFAULT_SUCCESS",
+    "DEFAULT_ERROR",
+    "DEFAULT_NOT_FOUND",
+    "DEFAULT_UNAUTHORIZED",
+    "DEFAULT_FORBIDDEN",
+    # 响应模型
+    "ResponseModel",
+    "ResponseSchemaModel",
+    "PaginationData",
+    "PaginationResponseModel",
+    "BatchOperationResult",
+    "BatchOperationResponseModel",
+    # 响应工具
+    "ResponseBuilder",
+    "ModelSerializer",
+    "response_builder",
+    "model_serializer",
+    # 便捷函数
+    "error_response_dict",
+]
+
+# ==================== 版本信息 ====================
+
+__version__ = "1.0.0"
+__author__ = "WES Backend Team"
+__description__ = "统一响应系统 - 提供全局一致的API响应格式和模型序列化工具"

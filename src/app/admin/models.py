@@ -117,7 +117,6 @@ User.roles = relationship(
     "Role",
     secondary=user_role,
     back_populates="users",
-    lazy="selectin",
 )
 
 Role.users = relationship(
@@ -130,7 +129,6 @@ Role.permissions = relationship(
     "Permission",
     secondary=role_permission,
     back_populates="roles",
-    lazy="selectin",
 )
 
 Permission.roles = relationship(
@@ -165,6 +163,7 @@ class UserRead(UserBase):
     is_superuser: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
+    roles: list["RoleRead"] = Field(default_factory=list)
 
 
 class UserListResponse(BaseMixin):
@@ -235,6 +234,14 @@ class RoleUpdate(BaseMixin):
     description: Optional[str] = Field(default=None, max_length=255)
     is_active: Optional[bool] = None
     permission_ids: Optional[list[int]] = None
+
+
+class RoleReadSimple(RoleBase):
+    """角色响应 Schema（简化版，不含权限）"""
+
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class RoleRead(RoleBase):

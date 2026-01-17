@@ -37,7 +37,7 @@ router = APIRouter(prefix="/users", tags=["用户管理"])
 
 async def get_user_with_cache(
     db: AsyncSession, cache: RedisCache, user_id: int
-) -> dict:
+) -> UserResponse:
     """
     获取用户（带缓存）
 
@@ -45,23 +45,19 @@ async def get_user_with_cache(
     """
     cache_key = f"{UserService.USER_DETAIL_CACHE_PREFIX}:{user_id}"
 
-    # 尝试从缓存获取
     cached_data = await cache.get(cache_key)
     if cached_data is not None:
         logger.info(f"缓存命中: {cache_key}")
-        return cached_data
+        return UserResponse(**cached_data)
 
-    # 缓存未命中，使用分布式锁防止击穿
     lock_acquired = await cache.acquire_lock(cache_key, timeout=10, wait_timeout=5)
 
     if lock_acquired:
         try:
-            # 双重检查
             cached_data = await cache.get(cache_key)
             if cached_data is not None:
-                return cached_data
+                return UserResponse(**cached_data)
 
-            # 查询数据库
             try:
                 user = await UserService.get_user_by_id(db, user_id)
             except SQLAlchemyError as e:
@@ -69,15 +65,13 @@ async def get_user_with_cache(
                 raise DatabaseException("查询用户失败")
 
             if not user:
-                # 缓存空值，防止穿透
                 await cache.set(cache_key, None, expire=UserService.NULL_CACHE_EXPIRE)
                 raise NotFoundException("用户不存在")
 
-            # 构建响应数据
             response_data = UserService.user_to_response(user)
             await cache.set(
                 cache_key,
-                response_data,
+                response_data.model_dump(mode='json'),
                 expire=UserService.USER_CACHE_EXPIRE,
                 is_hot=True,
             )
@@ -87,7 +81,6 @@ async def get_user_with_cache(
         finally:
             await cache.release_lock(cache_key)
     else:
-        # 获取锁失败，直接查询数据库（降级策略）
         logger.warning(f"获取锁失败，降级到数据库查询: {cache_key}")
         try:
             user = await UserService.get_user_by_id(db, user_id)
@@ -163,21 +156,19 @@ async def get_users(
         logger.info(f"缓存命中: {cache_key}")
         return UserListResponse(**cached_data)
 
-    # 缓存未命中，查询数据库
     try:
         total, users = await UserService.get_users_paginated(db, page, page_size)
     except SQLAlchemyError as e:
         logger.error(f"查询用户列表失败: {e}")
         raise DatabaseException("查询用户列表失败")
 
-    # 构建响应
-    response_data = {"total": total, "items": UserService.users_to_list_response(users)}
+    items = UserService.users_to_list_response(users)
+    response_data = {"total": total, "items": [item.model_dump(mode='json') for item in items]}
 
-    # 设置缓存
     await cache.set(cache_key, response_data, expire=UserService.USER_LIST_CACHE_EXPIRE)
 
     logger.info(f"获取用户列表: page={page}, page_size={page_size}, total={total}")
-    return UserListResponse(**response_data)
+    return UserListResponse(total=total, items=items)
 
 
 @router.get("/{user_id}", response_model=UserResponse, summary="获取用户详情")
@@ -186,18 +177,8 @@ async def get_user(
     cache: CacheDep,
     user_id: int,
 ):
-    """
-    根据 ID 获取用户详情（带缓存，防止击穿）
-
-    缓存策略：
-    - 缓存键：user:detail:{user_id}
-    - 过期时间：1小时
-    - 使用分布式锁：防止缓存击穿
-    - 空值缓存：防止缓存穿透
-
-    - **user_id**: 用户 ID
-    """
-    return UserResponse(**await get_user_with_cache(db, cache, user_id))
+    user_response = await get_user_with_cache(db, cache, user_id)
+    return user_response
 
 
 @router.put("/{user_id}", response_model=UserResponse, summary="更新用户")

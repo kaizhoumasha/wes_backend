@@ -380,11 +380,14 @@ async def general_exception_handler(request: Request, exc: Exception) -> ORJSONR
         },
     )
 
+    # DEBUG 模式显示详细错误，否则显示通用消息
+    from src.core.conf import settings
+
+    message = str(exc) if settings.APP_DEBUG else "服务器内部错误"
+
     return error_response(
         code="INTERNAL_ERROR",
-        message="服务器内部错误"
-        if not logger.level <= 10
-        else str(exc),  # DEBUG 模式显示详细错误
+        message=message,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
