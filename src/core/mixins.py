@@ -7,9 +7,9 @@ SQLModel Mixin 类
 """
 
 from datetime import datetime
-from typing import Optional
+
+from sqlalchemy import BigInteger, event
 from sqlmodel import Field, SQLModel
-from sqlalchemy import event, BigInteger
 
 
 # ==================== 基础 Mixin ====================
@@ -19,8 +19,6 @@ class BaseMixin(SQLModel):
 
     系统内所有数据类的通用基类
     """
-
-    pass
 
 
 # ==================== 主键 Mixin ====================
@@ -36,7 +34,7 @@ class IntPKMixin(BaseMixin):
             name: str
     """
 
-    id: Optional[int] = Field(
+    id: int | None = Field(
         default=None,
         sa_type=BigInteger,  # 统一使用 BIGINT
         sa_column_kwargs={
@@ -106,7 +104,7 @@ class SnowflakePKMixin(BaseMixin):
         return generate_snowflake_id()
 
     # 使用 BigInteger 类型
-    id: Optional[int] = Field(
+    id: int | None = Field(
         default_factory=lambda: SnowflakePKMixin._generate_snowflake_id(),
         primary_key=True,
         index=True,
@@ -144,8 +142,7 @@ def _create_primary_key_mixin():
 
     if use_snowflake:
         return SnowflakePKMixin
-    else:
-        return IntPKMixin
+    return IntPKMixin
 
 
 # 动态主键 Mixin（根据配置自动选择）
@@ -181,7 +178,7 @@ class TimestampMixin(BaseMixin):
             "comment": "创建时间 (UTC)",
         },
     )
-    updated_at: Optional[datetime] = Field(
+    updated_at: datetime | None = Field(
         default=None,
         # default_factory=lambda: TimestampMixin._get_now(),
         sa_column_kwargs={
@@ -229,11 +226,11 @@ class AuditMixin(TimestampMixin):
             name: str
     """
 
-    created_by: Optional[int] = Field(
+    created_by: int | None = Field(
         default=None,
         sa_column_kwargs={"nullable": True, "comment": "创建人ID"},
     )
-    updated_by: Optional[int] = Field(
+    updated_by: int | None = Field(
         default=None,
         sa_column_kwargs={"nullable": True, "comment": "更新人ID"},
     )
@@ -256,7 +253,7 @@ class SoftDeleteMixin(BaseMixin):
         article.restore()     # 恢复已删除的记录
     """
 
-    deleted_by: Optional[int] = Field(
+    deleted_by: int | None = Field(
         default=None,
         sa_column_kwargs={"nullable": True, "comment": "删除人ID"},
     )
@@ -266,7 +263,7 @@ class SoftDeleteMixin(BaseMixin):
     )
     is_deleted: bool = Field(default=False, sa_column_kwargs={"comment": "是否已删除"})
 
-    def soft_delete(self, deleted_by: Optional[int] = None) -> None:
+    def soft_delete(self, deleted_by: int | None = None) -> None:
         """
         标记为已删除
 
@@ -303,9 +300,7 @@ class ReprMixin(BaseMixin):
 
     def __repr__(self) -> str:
         class_name = self.__class__.__name__
-        attributes = [
-            f"{k}={repr(v)}" for k, v in self.__dict__.items() if not k.startswith("_")
-        ]
+        attributes = [f"{k}={v!r}" for k, v in self.__dict__.items() if not k.startswith("_")]
         return f"<{class_name}({', '.join(attributes)})>"
 
 
@@ -325,8 +320,6 @@ class BaseModelMixin(TimestampMixin, ReprMixin):
             name: str
     """
 
-    pass
-
 
 class AuditModelMixin(AuditMixin, ReprMixin):
     """
@@ -343,8 +336,6 @@ class AuditModelMixin(AuditMixin, ReprMixin):
         # 创建时记录创建人
         article = Article(title="测试", created_by=user_id)
     """
-
-    pass
 
 
 class FullModelMixin(AuditModelMixin, SoftDeleteMixin):
@@ -370,8 +361,6 @@ class FullModelMixin(AuditModelMixin, SoftDeleteMixin):
         article.soft_delete(deleted_by=3)
     """
 
-    pass
-
 
 # ==================== 带主键的组合 Mixin ====================
 
@@ -390,5 +379,3 @@ class BaseTableModelMixin(PrimaryKeyMixin, BaseModelMixin):
 
         # 无需定义 id，自动继承
     """
-
-    pass

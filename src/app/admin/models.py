@@ -8,10 +8,10 @@ SQLModel 最佳实践：
 """
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import BigInteger, Column, ForeignKey, Table
 from sqlalchemy.orm import relationship
+
 from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
 
 
@@ -20,7 +20,7 @@ class UserBase(BaseMixin):
 
     username: str = Field(min_length=3, max_length=50, index=True)
     email: str = Field(max_length=100, index=True)
-    full_name: Optional[str] = Field(default=None, max_length=100)
+    full_name: str | None = Field(default=None, max_length=100)
 
 
 class User(BaseTableModelMixin, UserBase, table=True):
@@ -86,10 +86,8 @@ role_permission = Table(
 class PermissionBase(BaseMixin):
     """权限基础字段"""
 
-    name: str = Field(
-        max_length=100, unique=True, index=True
-    )  # 权限标识，如 "user:read"
-    description: Optional[str] = Field(default=None, max_length=255)
+    name: str = Field(max_length=100, unique=True, index=True)  # 权限标识，如 "user:read"
+    description: str | None = Field(default=None, max_length=255)
 
 
 class Permission(BaseTableModelMixin, PermissionBase, table=True):
@@ -102,7 +100,7 @@ class RoleBase(BaseMixin):
     """角色基础字段"""
 
     name: str = Field(max_length=100, unique=True, index=True)  # 角色名称
-    description: Optional[str] = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=255)
     is_active: bool = Field(default=True)  # 角色是否启用
 
 
@@ -150,9 +148,9 @@ class UserCreate(UserBase):
 class UserUpdate(BaseMixin):
     """用户更新 Schema - 所有字段可选"""
 
-    email: Optional[str] = Field(default=None, max_length=100)
-    full_name: Optional[str] = Field(default=None, max_length=100)
-    is_active: Optional[bool] = None
+    email: str | None = Field(default=None, max_length=100)
+    full_name: str | None = Field(default=None, max_length=100)
+    is_active: bool | None = None
 
 
 class UserRead(UserBase):
@@ -162,7 +160,7 @@ class UserRead(UserBase):
     is_active: bool
     is_superuser: bool
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
     roles: list["RoleRead"] = Field(default_factory=list)
 
 
@@ -210,30 +208,28 @@ class RefreshTokenResponse(BaseMixin):
 class PermissionCreate(PermissionBase):
     """权限创建 Schema"""
 
-    pass
-
 
 class PermissionRead(PermissionBase):
     """权限响应 Schema"""
 
     id: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class RoleCreate(RoleBase):
     """角色创建 Schema"""
 
-    permission_ids: Optional[list[int]] = Field(default=None)
+    permission_ids: list[int] | None = Field(default=None)
 
 
 class RoleUpdate(BaseMixin):
     """角色更新 Schema"""
 
-    name: Optional[str] = Field(default=None, max_length=100)
-    description: Optional[str] = Field(default=None, max_length=255)
-    is_active: Optional[bool] = None
-    permission_ids: Optional[list[int]] = None
+    name: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=255)
+    is_active: bool | None = None
+    permission_ids: list[int] | None = None
 
 
 class RoleReadSimple(RoleBase):
@@ -241,7 +237,7 @@ class RoleReadSimple(RoleBase):
 
     id: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class RoleRead(RoleBase):
@@ -249,5 +245,5 @@ class RoleRead(RoleBase):
 
     id: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
     permissions: list[PermissionRead] = Field(default_factory=list)

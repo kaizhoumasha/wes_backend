@@ -4,11 +4,12 @@ Redis 连接管理器（支持优雅降级 + 自动重连）
 当 Redis 不可用时，应用可以正常启动，缓存功能会自动降级。
 当 Redis 恢复时，系统会自动检测并重新连接，恢复缓存功能。
 """
+
 import asyncio
 import time
-from typing import Optional
+
 from redis.asyncio import ConnectionPool, Redis
-from redis.exceptions import AuthenticationError, TimeoutError, ConnectionError
+from redis.exceptions import AuthenticationError, ConnectionError, TimeoutError
 
 from src.core.conf import settings
 from src.core.logger import logger
@@ -18,9 +19,10 @@ class RedisManager:
     """
     Redis 连接管理器（支持优雅降级 + 自动重连）
     """
+
     def __init__(self):
-        self.redis_client: Optional[Redis] = None
-        self.connection_pool: Optional[ConnectionPool] = None
+        self.redis_client: Redis | None = None
+        self.connection_pool: ConnectionPool | None = None
         self.is_available: bool = False  # Redis 是否可用
         self._last_reconnect_attempt: float = 0  # 上次重连尝试时间
         self._reconnect_interval: int = 30  # 重连间隔（秒）
@@ -39,7 +41,7 @@ class RedisManager:
                 decode_responses=True,
                 max_connections=50,
                 retry_on_timeout=True,
-                health_check_interval=30
+                health_check_interval=30,
             )
             self.redis_client = Redis(connection_pool=self.connection_pool)
 
@@ -108,7 +110,11 @@ class RedisManager:
                 # 快速检查连接
                 await asyncio.wait_for(self.redis_client.ping(), timeout=1.0)
                 return True
-            except (asyncio.TimeoutError, Exception):
+            except TimeoutError:
+                logger.warning("Redis 连接超时，尝试重连...")
+                self.is_available = False
+                return await self.reconnect()
+            except Exception:
                 logger.warning("Redis 连接中断，尝试重连...")
                 self.is_available = False
                 return await self.reconnect()
@@ -136,7 +142,7 @@ class RedisManager:
         self.is_available = False
         logger.info("Redis 连接已关闭")
 
-    def get_redis(self) -> Optional[Redis]:
+    def get_redis(self) -> Redis | None:
         """
         获取 Redis 客户端实例
 
@@ -167,7 +173,7 @@ async def close_redis() -> None:
     await redis_manager.close_redis()
 
 
-def get_redis() -> Optional[Redis]:
+def get_redis() -> Redis | None:
     """获取 Redis 客户端（可能为 None）"""
     return redis_manager.get_redis()
 

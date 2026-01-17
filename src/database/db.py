@@ -1,4 +1,4 @@
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from src.core.conf import settings
-from src.core.logger import logger
-
 # 导入 SQLModel 以确保模型被注册
 from sqlmodel import SQLModel
+
+from src.core.conf import settings
+from src.core.logger import logger
 
 # 推荐的命名约定，防止 Alembic 自动生成迁移时出现未命名约束问题
 naming_convention = {
@@ -67,25 +67,22 @@ async def init_db() -> None:
                 await conn.run_sync(SQLModel.metadata.create_all)
                 # 如果有使用 Base 的传统 SQLAlchemy 模型，也创建它们
                 await conn.run_sync(Base.metadata.create_all)
-            pass
         logger.info("Database connection initialized successfully")
     except Exception as e:
         logger.error(f"Database connection initialization failed: {e}")
-        raise e
+        raise
 
 
 async def close_db() -> None:
     """
     关闭数据库连接
     """
-    global engine
-
     if engine:
         await engine.dispose()
         logger.info("Database connection closed")
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     获取数据库会话依赖
     """

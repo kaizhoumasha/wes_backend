@@ -4,6 +4,7 @@ Redis 故障降级测试脚本
 
 演示当 Redis 不可用时，系统如何自动降级到直接查询数据库
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 async def test_redis_degradation():
     """测试 Redis 故障降级"""
-    from src.database.redis_cache import get_cache, CircuitState
+    from src.database.redis_cache import CircuitState, get_cache
 
     print("=" * 60)
     print("Redis 故障降级测试")
@@ -80,11 +81,11 @@ async def test_redis_degradation():
 
     # 连续尝试多次，触发熔断器
     for i in range(10):
-        print(f"\n尝试 #{i+1}:")
+        print(f"\n尝试 #{i + 1}:")
         cached_value = await cache.get(test_key)
 
         status = cache.get_status()
-        cb_state = status['circuit_breaker_state']
+        cb_state = status["circuit_breaker_state"]
 
         if cb_state == CircuitState.CLOSED.value:
             print(f"  熔断器状态: {cb_state} (正常)")
@@ -107,7 +108,7 @@ async def test_redis_degradation():
     print(f"最终熔断器状态: {final_status['circuit_breaker_state']}")
     print(f"最终失败计数: {final_status['failure_count']}")
 
-    if final_status['circuit_breaker_state'] == CircuitState.OPEN.value:
+    if final_status["circuit_breaker_state"] == CircuitState.OPEN.value:
         print()
         print("✓ 熔断器已打开，系统自动降级")
         print("✓ 所有请求绕过缓存，直接查询数据库")
@@ -134,11 +135,11 @@ async def test_redis_degradation():
     for i in range(5):
         cached_value = await cache.get(test_key)
         status = cache.get_status()
-        print(f"尝试 #{i+1}: 状态={status['circuit_breaker_state']}, 值={cached_value}")
+        print(f"尝试 #{i + 1}: 状态={status['circuit_breaker_state']}, 值={cached_value}")
         await asyncio.sleep(2)
 
     final_status = cache.get_status()
-    if final_status['circuit_breaker_state'] == CircuitState.CLOSED.value:
+    if final_status["circuit_breaker_state"] == CircuitState.CLOSED.value:
         print("\n✓ 缓存服务已恢复正常")
     else:
         print(f"\n当前状态: {final_status['circuit_breaker_state']}")

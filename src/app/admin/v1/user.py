@@ -16,22 +16,24 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.admin.models import (
+    User,
+    UserCreate,
+    UserListResponse,
+    UserUpdate,
+)
+from src.app.admin.models import (
+    UserRead as UserResponse,
+)
+from src.app.admin.services.user_service import UserService
 from src.core.exceptions import (
+    ConflictException,
     DatabaseException,
     NotFoundException,
-    ConflictException,
 )
 from src.core.logger import logger
-from src.app.admin.models import User
 from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.database.redis_cache import RedisCache
-from src.app.admin.services.user_service import UserService
-from src.app.admin.models import (
-    UserCreate,
-    UserUpdate,
-    UserRead as UserResponse,
-    UserListResponse,
-)
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
 
@@ -39,9 +41,7 @@ router = APIRouter(prefix="/users", tags=["用户管理"])
 # ==================== 辅助函数 ====================
 
 
-async def get_user_with_cache(
-    db: AsyncSession, cache: RedisCache, user_id: int
-) -> UserResponse:
+async def get_user_with_cache(db: AsyncSession, cache: RedisCache, user_id: int) -> UserResponse:
     """
     获取用户（带缓存）
 
@@ -66,7 +66,7 @@ async def get_user_with_cache(
                 user = await UserService.get_user_by_id(db, user_id)
             except SQLAlchemyError as e:
                 logger.error(f"查询用户失败: {e}")
-                raise DatabaseException("查询用户失败")
+                raise DatabaseException("查询用户失败") from e
 
             if not user:
                 await cache.set(cache_key, None, expire=UserService.NULL_CACHE_EXPIRE)
@@ -90,7 +90,7 @@ async def get_user_with_cache(
             user = await UserService.get_user_by_id(db, user_id)
         except SQLAlchemyError as e:
             logger.error(f"查询用户失败: {e}")
-            raise DatabaseException("查询用户失败")
+            raise DatabaseException("查询用户失败") from e
 
         if not user:
             raise NotFoundException("用户不存在")
@@ -126,7 +126,7 @@ async def create_user(user_in: UserCreate, db: AsyncSessionDep, cache: CacheDep)
             full_name=user_in.full_name,
         )
     except ValueError as e:
-        raise ConflictException(str(e))
+        raise ConflictException(str(e)) from e
 
     # 失效列表缓存
     await UserService.invalidate_user_cache(cache, invalidate_list=True)
@@ -164,7 +164,7 @@ async def get_users(
         total, users = await UserService.get_users_paginated(db, page, page_size)
     except SQLAlchemyError as e:
         logger.error(f"查询用户列表失败: {e}")
-        raise DatabaseException("查询用户列表失败")
+        raise DatabaseException("查询用户列表失败") from e
 
     items = UserService.users_to_list_response(users)
     response_data = {
@@ -184,8 +184,7 @@ async def get_user(
     cache: CacheDep,
     user_id: int,
 ):
-    user_response = await get_user_with_cache(db, cache, user_id)
-    return user_response
+    return await get_user_with_cache(db, cache, user_id)
 
 
 @router.put("/{user_id}", response_model=UserResponse, summary="更新用户")
@@ -214,7 +213,7 @@ async def update_user(
             is_active=user_in.is_active,
         )
     except ValueError as e:
-        raise NotFoundException(str(e))
+        raise NotFoundException(str(e)) from e
 
     # 失效相关缓存
     await UserService.invalidate_user_cache(cache, user_id=user_id)
@@ -238,7 +237,7 @@ async def delete_user(
     try:
         await UserService.delete_user(db, user_id)
     except ValueError as e:
-        raise NotFoundException(str(e))
+        raise NotFoundException(str(e)) from e
 
     # 失效相关缓存
     await UserService.invalidate_user_cache(cache, user_id=user_id)
@@ -269,7 +268,7 @@ async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
     # 尝试获取 Redis 键数量
     cache_keys_count = None
     try:
-        from src.database.redis_client import is_redis_available, get_redis
+        from src.database.redis_client import get_redis, is_redis_available
 
         if is_redis_available():
             redis_client = get_redis()

@@ -12,19 +12,19 @@
 }
 """
 
-from datetime import datetime, timezone
-from typing import Any, Generic, TypeVar, List
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict
-
+from pydantic import BaseModel, ConfigDict, Field
 
 # ==================== 类型变量 ====================
 
-SchemaT = TypeVar('SchemaT')
-T = TypeVar('T')
+SchemaT = TypeVar("SchemaT")
+T = TypeVar("T")
 
 
 # ==================== 基础响应模型 ====================
+
 
 class ResponseModel(BaseModel):
     """
@@ -55,30 +55,22 @@ class ResponseModel(BaseModel):
         populate_by_name=True,
     )
 
-    code: str = Field(
-        default="1000",
-        description="响应码",
-        examples=["1000", "2000"]
-    )
+    code: str = Field(default="1000", description="响应码", examples=["1000", "2000"])
     message: str = Field(
-        default="操作成功",
-        description="响应消息",
-        examples=["操作成功", "参数错误"]
+        default="操作成功", description="响应消息", examples=["操作成功", "参数错误"]
     )
-    data: Any | None = Field(
-        default=None,
-        description="响应数据"
-    )
+    data: Any | None = Field(default=None, description="响应数据")
     timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         description="响应时间戳(ISO 8601格式)",
-        examples=["2024-01-01T00:00:00Z"]
+        examples=["2024-01-01T00:00:00Z"],
     )
 
 
 # ==================== 泛型响应模型 ====================
 
-class ResponseSchemaModel(ResponseModel, Generic[SchemaT]):
+
+class ResponseSchemaModel[SchemaT](ResponseModel):
     """
     泛型响应模型
 
@@ -111,7 +103,8 @@ class ResponseSchemaModel(ResponseModel, Generic[SchemaT]):
 
 # ==================== 分页数据模型 ====================
 
-class PaginationData(BaseModel, Generic[T]):
+
+class PaginationData[T](BaseModel):
     """
     分页数据模型
 
@@ -139,39 +132,15 @@ class PaginationData(BaseModel, Generic[T]):
         ```
     """
 
-    items: List[T] = Field(
-        default=[],
-        description="数据列表"
-    )
-    total: int = Field(
-        default=0,
-        ge=0,
-        description="总记录数"
-    )
-    page: int = Field(
-        default=1,
-        ge=1,
-        description="当前页码"
-    )
-    size: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="每页大小"
-    )
-    pages: int = Field(
-        default=0,
-        ge=0,
-        description="总页数"
-    )
+    items: list[T] = Field(default=[], description="数据列表")
+    total: int = Field(default=0, ge=0, description="总记录数")
+    page: int = Field(default=1, ge=1, description="当前页码")
+    size: int = Field(default=10, ge=1, le=100, description="每页大小")
+    pages: int = Field(default=0, ge=0, description="总页数")
 
     @classmethod
     def create(
-        cls,
-        items: List[T],
-        total: int,
-        page: int = 1,
-        size: int = 10
+        cls, items: list[T], total: int, page: int = 1, size: int = 10
     ) -> "PaginationData[T]":
         """
         创建分页数据
@@ -186,18 +155,13 @@ class PaginationData(BaseModel, Generic[T]):
             分页数据实例
         """
         pages = (total + size - 1) // size if size > 0 else 0
-        return cls(
-            items=items,
-            total=total,
-            page=page,
-            size=size,
-            pages=pages
-        )
+        return cls(items=items, total=total, page=page, size=size, pages=pages)
 
 
 # ==================== 分页响应模型 ====================
 
-class PaginationResponseModel(ResponseSchemaModel[PaginationData[T]], Generic[T]):
+
+class PaginationResponseModel[T](ResponseSchemaModel[PaginationData[T]]):
     """
     分页响应模型
 
@@ -218,10 +182,9 @@ class PaginationResponseModel(ResponseSchemaModel[PaginationData[T]], Generic[T]
         ```
     """
 
-    pass
-
 
 # ==================== 批量操作响应模型 ====================
+
 
 class BatchOperationResult(BaseModel):
     """
@@ -250,37 +213,19 @@ class BatchOperationResult(BaseModel):
         ```
     """
 
-    success: int = Field(
-        default=0,
-        ge=0,
-        description="成功数量"
-    )
-    failed: int = Field(
-        default=0,
-        ge=0,
-        description="失败数量"
-    )
-    total: int = Field(
-        default=0,
-        ge=0,
-        description="总数量"
-    )
-    results: List[Any] | None = Field(
-        default=None,
-        description="详细结果列表"
-    )
-    errors: List[dict] | None = Field(
-        default=None,
-        description="错误信息列表"
-    )
+    success: int = Field(default=0, ge=0, description="成功数量")
+    failed: int = Field(default=0, ge=0, description="失败数量")
+    total: int = Field(default=0, ge=0, description="总数量")
+    results: list[Any] | None = Field(default=None, description="详细结果列表")
+    errors: list[dict] | None = Field(default=None, description="错误信息列表")
 
     @classmethod
     def create(
         cls,
         success: int,
         failed: int,
-        results: List[Any] | None = None,
-        errors: List[dict] | None = None
+        results: list[Any] | None = None,
+        errors: list[dict] | None = None,
     ) -> "BatchOperationResult":
         """
         创建批量操作结果
@@ -295,11 +240,7 @@ class BatchOperationResult(BaseModel):
             批量操作结果实例
         """
         return cls(
-            success=success,
-            failed=failed,
-            total=success + failed,
-            results=results,
-            errors=errors
+            success=success, failed=failed, total=success + failed, results=results, errors=errors
         )
 
 
@@ -321,16 +262,14 @@ class BatchOperationResponseModel(ResponseSchemaModel[BatchOperationResult]):
         ```
     """
 
-    pass
-
 
 # ==================== 导出 ====================
 
 __all__ = [
-    "ResponseModel",
-    "ResponseSchemaModel",
+    "BatchOperationResponseModel",
+    "BatchOperationResult",
     "PaginationData",
     "PaginationResponseModel",
-    "BatchOperationResult",
-    "BatchOperationResponseModel",
+    "ResponseModel",
+    "ResponseSchemaModel",
 ]

@@ -4,19 +4,20 @@ FastAPI 中间件模块
 
 import time
 import uuid
-from typing import Callable, List
+from collections.abc import Callable
+from datetime import UTC
+
+from fastapi.responses import ORJSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from fastapi.responses import ORJSONResponse
 from starlette_context import request_cycle_context
 
-from ..core.logger import logger
-from ..core.conf import settings
-
+from src.core.conf import settings
+from src.core.logger import logger
 
 # 需要跳过日志记录的路径前缀
-SKIP_LOG_PATHS: List[str] = [
+SKIP_LOG_PATHS: list[str] = [
     "/static",
     "/favicon.ico",
     "/robots.txt",
@@ -42,9 +43,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
     实现自动链路追踪
     """
 
-    async def dispatch(
-        self, request: StarletteRequest, call_next: Callable
-    ) -> StarletteResponse:
+    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> StarletteResponse:
         method = request.method
         path = request.url.path
         # client_ip = request.client.host if request.client else "unknown"
@@ -92,16 +91,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
                 # 使用 logger.exception() 自动记录异常堆栈
                 if settings.APP_DEBUG:
-                    logger.exception(
-                        f"{method} {path} - Exception occurred ({time_str})"
-                    )
+                    logger.exception(f"{method} {path} - Exception occurred ({time_str})")
                 else:
-                    logger.error(
-                        f"{method} {path} - {type(e).__name__}: {str(e)} ({time_str})"
-                    )
+                    logger.error(f"{method} {path} - {type(e).__name__}: {e!s} ({time_str})")
 
                 # 返回符合统一错误格式的响应
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 return ORJSONResponse(
                     status_code=500,
@@ -109,9 +104,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                         "code": "INTERNAL_ERROR",
                         "message": "服务器内部错误",
                         "detail": {"request_id": request_id},
-                        "timestamp": datetime.now(timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
+                        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     },
                 )
 

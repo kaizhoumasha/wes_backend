@@ -11,11 +11,11 @@ JWT 认证和密码哈希核心模块
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta, datetime
-from typing import Any, Optional
+from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import Depends, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import ExpiredSignatureError, JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers import argon2
@@ -27,7 +27,6 @@ from src.core.exceptions import (
 from src.core.logger import logger
 from src.core.timezone import timezone
 from src.database.redis_client import get_redis, is_redis_available
-
 
 # Argon2 密码哈希器
 pwd_hasher = PasswordHash([argon2.Argon2Hasher()])
@@ -148,10 +147,10 @@ def jwt_decode(token: str) -> TokenPayload:
         if not session_uuid or not user_id or not expire:
             raise AuthException("Token 无效")
     except ExpiredSignatureError:
-        raise AuthException("Token 已过期")
+        raise AuthException("Token 已过期") from None
     except (JWTError, Exception) as e:
         logger.error(f"Token 解析失败: {e}")
-        raise AuthException("Token 无效")
+        raise AuthException("Token 无效") from e
 
     return TokenPayload(
         id=int(user_id),
@@ -178,11 +177,13 @@ async def create_access_token(
     session_uuid = str(uuid.uuid4())
 
     # 生成 JWT token
-    access_token = jwt_encode({
-        "session_uuid": session_uuid,
-        "exp": expire.timestamp(),
-        "sub": str(user_id),
-    })
+    access_token = jwt_encode(
+        {
+            "session_uuid": session_uuid,
+            "exp": expire.timestamp(),
+            "sub": str(user_id),
+        }
+    )
 
     # Redis 存储
     if is_redis_available():
@@ -235,11 +236,13 @@ async def create_refresh_token(
         RefreshTokenData 对象
     """
     expire = timezone.now() + timedelta(seconds=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS)
-    refresh_token = jwt_encode({
-        "session_uuid": session_uuid,
-        "exp": expire.timestamp(),
-        "sub": str(user_id),
-    })
+    refresh_token = jwt_encode(
+        {
+            "session_uuid": session_uuid,
+            "exp": expire.timestamp(),
+            "sub": str(user_id),
+        }
+    )
 
     if is_redis_available():
         redis_client = get_redis()
@@ -302,12 +305,8 @@ async def create_new_token(
         raise AuthException("Refresh Token 已过期，请重新登录")
 
     # 删除旧令牌
-    await redis_client.delete(
-        f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}"
-    )
-    await redis_client.delete(
-        f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}"
-    )
+    await redis_client.delete(f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}")
+    await redis_client.delete(f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}")
 
     # 创建新令牌
     new_access = await create_access_token(user_id, multi_login=multi_login, **extra_info)
@@ -336,12 +335,8 @@ async def revoke_token(user_id: int, session_uuid: str) -> None:
         return
 
     redis_client = get_redis()
-    await redis_client.delete(
-        f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}"
-    )
-    await redis_client.delete(
-        f"{settings.JWT_USER_REDIS_PREFIX}:{user_id}:{session_uuid}"
-    )
+    await redis_client.delete(f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}")
+    await redis_client.delete(f"{settings.JWT_USER_REDIS_PREFIX}:{user_id}:{session_uuid}")
 
 
 # ==================== FastAPI 依赖注入 ====================
@@ -352,8 +347,8 @@ security = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-) -> Optional[int]:
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> int | None:
     """
     获取当前用户 ID（依赖注入）
 

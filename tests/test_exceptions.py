@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from main import app
 from src.core.exceptions import (
     AdminRequiredException,
     AppException,
@@ -32,8 +33,6 @@ from src.core.exceptions import (
     raise_forbidden,
     raise_not_found,
 )
-from main import app
-
 
 # ==================== 测试客户端 ====================
 
@@ -333,7 +332,7 @@ class TestExceptionHandlers:
 
         @app.get("/test/unauthorized")
         async def test_unauthorized():
-            raise UnauthorizedException()
+            raise UnauthorizedException
 
         response = client.get("/test/unauthorized")
         assert response.status_code == 401
@@ -345,7 +344,7 @@ class TestExceptionHandlers:
 
         @app.get("/test/forbidden")
         async def test_forbidden():
-            raise ForbiddenException()
+            raise ForbiddenException
 
         response = client.get("/test/forbidden")
         assert response.status_code == 403
@@ -357,7 +356,7 @@ class TestExceptionHandlers:
 
         @app.get("/test/rate-limit")
         async def test_rate_limit():
-            raise RateLimitException()
+            raise RateLimitException
 
         response = client.get("/test/rate-limit")
         assert response.status_code == 429

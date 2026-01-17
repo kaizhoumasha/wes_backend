@@ -8,34 +8,36 @@
 4. 响应时间统计
 5. 并发请求数
 """
+
 import time
+from typing import Any
+
 import psutil
-from typing import Dict, Any
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.logger import logger
 from src.core.conf import settings
+from src.core.logger import logger
 from src.database.db import get_db
-from src.database.redis_client import get_redis
 from src.database.redis_cache import get_cache
+from src.database.redis_client import get_redis
 
 
 def get_engine():
     """获取数据库引擎"""
     from src.database.db import engine
+
     if engine is None:
         raise RuntimeError("数据库引擎未初始化")
     return engine
+
 
 router = APIRouter(prefix="/performance", tags=["性能监控"])
 
 
 @router.get("/metrics", summary="获取系统性能指标")
-async def get_performance_metrics(
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
     获取系统性能指标
 
@@ -48,7 +50,7 @@ async def get_performance_metrics(
     # 系统指标
     cpu_percent = psutil.cpu_percent(interval=0.1)
     memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
+    disk = psutil.disk_usage("/")
 
     system_metrics = {
         "cpu": {
@@ -94,7 +96,7 @@ async def get_performance_metrics(
 
     # Redis 指标
     try:
-        from src.database.redis_client import is_redis_available, ensure_redis_connection
+        from src.database.redis_client import ensure_redis_connection, is_redis_available
 
         # 尝试确保 Redis 连接（会自动重连）
         await ensure_redis_connection()
@@ -114,18 +116,15 @@ async def get_performance_metrics(
                     "status": "connected",
                     "response_time_ms": round(redis_response_time, 2),
                     "db_size": db_size,
-                    "used_memory": info.get('used_memory_human', 'N/A'),
-                    "connected_clients": info.get('connected_clients', 0),
+                    "used_memory": info.get("used_memory_human", "N/A"),
+                    "connected_clients": info.get("connected_clients", 0),
                 }
             else:
-                redis_metrics = {
-                    "status": "degraded",
-                    "message": "Redis 客户端未初始化"
-                }
+                redis_metrics = {"status": "degraded", "message": "Redis 客户端未初始化"}
         else:
             redis_metrics = {
                 "status": "degraded",
-                "message": "Redis 不可用，应用以降级模式运行（系统会自动检测恢复）"
+                "message": "Redis 不可用，应用以降级模式运行（系统会自动检测恢复）",
             }
     except Exception as e:
         logger.error(f"Redis 健康检查失败: {e}")
@@ -165,9 +164,7 @@ async def get_performance_metrics(
 
 
 @router.get("/health", summary="健康检查")
-async def health_check(
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+async def health_check(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
     简单健康检查
 
@@ -210,9 +207,7 @@ async def health_check(
 
 
 @router.post("/load-test/reset", summary="重置性能测试数据")
-async def reset_load_test_data(
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+async def reset_load_test_data(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """
     重置性能测试数据
 
@@ -237,7 +232,7 @@ async def reset_load_test_data(
 
 
 @router.get("/config", summary="获取性能测试配置")
-async def get_performance_config() -> Dict[str, Any]:
+async def get_performance_config() -> dict[str, Any]:
     """
     获取系统配置信息
 
@@ -250,10 +245,14 @@ async def get_performance_config() -> Dict[str, Any]:
             "debug": settings.APP_DEBUG,
         },
         "database": {
-            "url": str(settings.DATABASE_URL).split('@')[-1] if '@' in str(settings.DATABASE_URL) else 'configured',
+            "url": str(settings.DATABASE_URL).split("@")[-1]
+            if "@" in str(settings.DATABASE_URL)
+            else "configured",
         },
         "redis": {
-            "url": str(settings.REDIS_URL).split('@')[-1] if '@' in str(settings.REDIS_URL) else 'configured',
+            "url": str(settings.REDIS_URL).split("@")[-1]
+            if "@" in str(settings.REDIS_URL)
+            else "configured",
         },
         "performance": {
             "db_pool_size": 20,

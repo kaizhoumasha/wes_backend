@@ -4,22 +4,22 @@
 测试 JWT 认证和 RBAC 权限控制功能
 """
 
-import pytest
 from datetime import datetime, timedelta
-from fastapi import status
-from httpx import AsyncClient, ASGITransport
 
-from main import app
-from src.core.security import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    create_refresh_token,
-    jwt_decode,
-)
-from src.app.admin.models import User
+import pytest
+from fastapi import status
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from main import app
+from src.app.admin.models import User
+from src.core.security import (
+    create_access_token,
+    create_refresh_token,
+    get_password_hash,
+    jwt_decode,
+    verify_password,
+)
 
 # ==================== 密码哈希测试 ====================
 
@@ -57,7 +57,7 @@ class TestPasswordHashing:
 class TestJWTTokens:
     """JWT 令牌测试"""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_create_access_token(self):
         """测试：创建访问令牌"""
         user_id = 1
@@ -69,7 +69,7 @@ class TestJWTTokens:
         assert isinstance(token_data.session_uuid, str)
         assert token_data.access_token_expire_time > datetime.now()
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_create_refresh_token(self):
         """测试：创建刷新令牌"""
         user_id = 1
@@ -117,7 +117,7 @@ class TestJWTTokens:
 class TestAuthAPI:
     """认证 API 测试"""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_login_success(self, client: AsyncClient, test_user: User):
         """测试：登录成功"""
         response = await client.post(
@@ -132,7 +132,7 @@ class TestAuthAPI:
         assert "user" in data
         assert data["user"]["username"] == "testuser"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_login_wrong_password(self, client: AsyncClient, test_user: User):
         """测试：登录失败 - 错误密码"""
         response = await client.post(
@@ -142,7 +142,7 @@ class TestAuthAPI:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_login_user_not_found(self, client: AsyncClient):
         """测试：登录失败 - 用户不存在"""
         response = await client.post(
@@ -152,7 +152,7 @@ class TestAuthAPI:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_logout_success(self, auth_client: AsyncClient):
         """测试：登出成功"""
         response = await auth_client.post("/api/v1/auth/logout")
@@ -167,7 +167,7 @@ class TestAuthAPI:
 class TestRBAC:
     """RBAC 权限测试"""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_user_without_permission(self, auth_client: AsyncClient):
         """测试：无权限用户访问受保护资源"""
         # 假设有一个需要 "user:delete" 权限的端点
@@ -176,7 +176,7 @@ class TestRBAC:
         # 应该返回 403 Forbidden
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_superuser_has_all_permissions(self, db: AsyncSession, client: AsyncClient):
         """测试：超级用户拥有所有权限"""
         from src.core.security import create_access_token
@@ -212,7 +212,7 @@ class TestRBAC:
 class TestAuthIntegration:
     """认证集成测试"""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio()
     async def test_full_auth_flow(self, client: AsyncClient):
         """测试：完整的认证流程"""
         # 1. 登录

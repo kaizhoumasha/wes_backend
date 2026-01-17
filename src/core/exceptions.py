@@ -12,7 +12,7 @@
                 └── ValidationException (数据验证异常)
 """
 
-from typing import Any, Optional
+from typing import Any
 
 
 class AppException(Exception):
@@ -32,14 +32,14 @@ class AppException(Exception):
     message: str = "服务器内部错误"
 
     # 详细信息（可选，用于调试）
-    detail: Optional[dict[str, Any]] = None
+    detail: dict[str, Any] | None = None
 
     def __init__(
         self,
-        message: Optional[str] = None,
-        code: Optional[str] = None,
-        status_code: Optional[int] = None,
-        detail: Optional[dict[str, Any]] = None,
+        message: str | None = None,
+        code: str | None = None,
+        status_code: int | None = None,
+        detail: dict[str, Any] | None = None,
     ):
         """
         初始化异常
@@ -171,9 +171,9 @@ class NotFoundException(ResourceException):
 
     def __init__(
         self,
-        message: Optional[str] = None,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[Any] = None,
+        message: str | None = None,
+        resource_type: str | None = None,
+        resource_id: Any | None = None,
         **kwargs,
     ):
         """
@@ -209,9 +209,9 @@ class DuplicateException(ConflictException):
 
     def __init__(
         self,
-        message: Optional[str] = None,
-        field: Optional[str] = None,
-        value: Optional[Any] = None,
+        message: str | None = None,
+        field: str | None = None,
+        value: Any | None = None,
         **kwargs,
     ):
         """
@@ -254,8 +254,8 @@ class InvalidParameterException(ValidationException):
 
     def __init__(
         self,
-        message: Optional[str] = None,
-        field: Optional[str] = None,
+        message: str | None = None,
+        field: str | None = None,
         **kwargs,
     ):
         """
@@ -358,7 +358,7 @@ def raise_duplicate(field: str, value: Any) -> None:
     raise DuplicateException(field=field, value=value)
 
 
-def raise_forbidden(message: Optional[str] = None) -> None:
+def raise_forbidden(message: str | None = None) -> None:
     """
     抛出禁止访问异常的便捷函数
 

@@ -10,28 +10,29 @@
 4. 批量操作工具 - 构建批量操作响应
 """
 
-from datetime import datetime, timezone
-from typing import Any, List, Optional, TypeVar, Union, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any, TypeVar, Union
 
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlmodel import SQLModel
 
-from .response_code import ResponseCode, DEFAULT_SUCCESS
+from .response_code import DEFAULT_SUCCESS, ResponseCode
 from .response_schema import (
-    PaginationData,
     BatchOperationResult,
+    PaginationData,
 )
-
 
 # ==================== 类型变量 ====================
 
-T = TypeVar('T', bound=BaseModel)
-ModelT = TypeVar('ModelT', bound=Union[SQLModel, BaseModel])
+T = TypeVar("T", bound=BaseModel)
+ModelT = TypeVar("ModelT", bound=Union[SQLModel, BaseModel])
 
 
 # ==================== 响应构建器 ====================
+
 
 class ResponseBuilder:
     """
@@ -62,10 +63,7 @@ class ResponseBuilder:
 
     @staticmethod
     def _build_response_dict(
-        code: str,
-        message: str,
-        data: Any = None,
-        timestamp: Optional[str] = None
+        code: str, message: str, data: Any = None, timestamp: str | None = None
     ) -> dict:
         """
         构建响应字典
@@ -80,13 +78,9 @@ class ResponseBuilder:
             响应字典
         """
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
-        response_dict = {
-            "code": code,
-            "message": message,
-            "timestamp": timestamp
-        }
+        response_dict = {"code": code, "message": message, "timestamp": timestamp}
 
         if data is not None:
             response_dict["data"] = data
@@ -94,10 +88,7 @@ class ResponseBuilder:
         return response_dict
 
     def success(
-        self,
-        data: Any = None,
-        code: ResponseCode = DEFAULT_SUCCESS,
-        message: Optional[str] = None
+        self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
     ) -> dict:
         """
         构建成功响应
@@ -116,18 +107,9 @@ class ResponseBuilder:
             ```
         """
         msg = message if message is not None else code.message
-        return self._build_response_dict(
-            code=code.code,
-            message=msg,
-            data=data
-        )
+        return self._build_response_dict(code=code.code, message=msg, data=data)
 
-    def fail(
-        self,
-        code: ResponseCode,
-        message: Optional[str] = None,
-        data: Any = None
-    ) -> dict:
+    def fail(self, code: ResponseCode, message: str | None = None, data: Any = None) -> dict:
         """
         构建失败响应
 
@@ -148,19 +130,15 @@ class ResponseBuilder:
             ```
         """
         msg = message if message is not None else code.message
-        return self._build_response_dict(
-            code=code.code,
-            message=msg,
-            data=data
-        )
+        return self._build_response_dict(code=code.code, message=msg, data=data)
 
     def paginate(
         self,
-        items: List[Any],
+        items: list[Any],
         total: int,
         page: int = 1,
         size: int = 10,
-        code: ResponseCode = DEFAULT_SUCCESS
+        code: ResponseCode = DEFAULT_SUCCESS,
     ) -> dict:
         """
         构建分页响应
@@ -186,26 +164,19 @@ class ResponseBuilder:
             )
             ```
         """
-        pagination_data = PaginationData.create(
-            items=items,
-            total=total,
-            page=page,
-            size=size
-        )
+        pagination_data = PaginationData.create(items=items, total=total, page=page, size=size)
 
         return self._build_response_dict(
-            code=code.code,
-            message=code.message,
-            data=pagination_data.model_dump()
+            code=code.code, message=code.message, data=pagination_data.model_dump()
         )
 
     def batch_operation(
         self,
         success: int,
         failed: int,
-        results: Optional[List[Any]] = None,
-        errors: Optional[List[dict]] = None,
-        code: ResponseCode = DEFAULT_SUCCESS
+        results: list[Any] | None = None,
+        errors: list[dict] | None = None,
+        code: ResponseCode = DEFAULT_SUCCESS,
     ) -> dict:
         """
         构建批量操作响应
@@ -233,23 +204,15 @@ class ResponseBuilder:
             ```
         """
         batch_result = BatchOperationResult.create(
-            success=success,
-            failed=failed,
-            results=results,
-            errors=errors
+            success=success, failed=failed, results=results, errors=errors
         )
 
         return self._build_response_dict(
-            code=code.code,
-            message=code.message,
-            data=batch_result.model_dump()
+            code=code.code, message=code.message, data=batch_result.model_dump()
         )
 
     def fast_success(
-        self,
-        data: Any = None,
-        code: ResponseCode = DEFAULT_SUCCESS,
-        message: Optional[str] = None
+        self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
     ) -> ORJSONResponse:
         """
         快速成功响应（性能优化）
@@ -275,19 +238,13 @@ class ResponseBuilder:
             ```
         """
         msg = message if message is not None else code.message
-        response_dict = self._build_response_dict(
-            code=code.code,
-            message=msg,
-            data=data
-        )
+        response_dict = self._build_response_dict(code=code.code, message=msg, data=data)
 
-        return ORJSONResponse(
-            status_code=code.status,
-            content=response_dict
-        )
+        return ORJSONResponse(status_code=code.status, content=response_dict)
 
 
 # ==================== 模型序列化器 ====================
+
 
 class ModelSerializer:
     """
@@ -341,7 +298,7 @@ class ModelSerializer:
         """
         try:
             # 检查是否有_sqla_registry属性（SQLAlchemy 2.0）
-            if hasattr(obj, '__tablename__'):
+            if hasattr(obj, "__tablename__"):
                 return True
             # 使用sqlalchemy的inspect检查
             sqlalchemy_inspect(obj)
@@ -350,10 +307,7 @@ class ModelSerializer:
             return False
 
     def to_dict(
-        self,
-        model: ModelT,
-        exclude: Optional[set[str]] = None,
-        exclude_none: bool = False
+        self, model: ModelT, exclude: set[str] | None = None, exclude_none: bool = False
     ) -> dict:
         """
         将模型转换为字典
@@ -383,7 +337,7 @@ class ModelSerializer:
             return model.model_dump(
                 exclude=exclude,
                 exclude_none=exclude_none,
-                mode='json'  # JSON模式，处理datetime等特殊类型
+                mode="json",  # JSON模式，处理datetime等特殊类型
             )
 
         # SQLAlchemy模型
@@ -411,16 +365,12 @@ class ModelSerializer:
             return model
 
         raise ValueError(
-            f"不支持的模型类型: {type(model)}. "
-            "仅支持 Pydantic/SQLAlchemy/SQLModel 模型或字典"
+            f"不支持的模型类型: {type(model)}. 仅支持 Pydantic/SQLAlchemy/SQLModel 模型或字典"
         )
 
     def to_dict_list(
-        self,
-        models: Sequence[ModelT],
-        exclude: Optional[set[str]] = None,
-        exclude_none: bool = False
-    ) -> List[dict]:
+        self, models: Sequence[ModelT], exclude: set[str] | None = None, exclude_none: bool = False
+    ) -> list[dict]:
         """
         将模型列表转换为字典列表
 
@@ -440,10 +390,7 @@ class ModelSerializer:
             )
             ```
         """
-        return [
-            self.to_dict(model, exclude=exclude, exclude_none=exclude_none)
-            for model in models
-        ]
+        return [self.to_dict(model, exclude=exclude, exclude_none=exclude_none) for model in models]
 
     def paginate_models(
         self,
@@ -451,8 +398,8 @@ class ModelSerializer:
         total: int,
         page: int = 1,
         size: int = 10,
-        exclude: Optional[set[str]] = None,
-        exclude_none: bool = False
+        exclude: set[str] | None = None,
+        exclude_none: bool = False,
     ) -> PaginationData:
         """
         将模型列表转换为分页数据
@@ -480,18 +427,9 @@ class ModelSerializer:
             )
             ```
         """
-        items = self.to_dict_list(
-            models=models,
-            exclude=exclude,
-            exclude_none=exclude_none
-        )
+        items = self.to_dict_list(models=models, exclude=exclude, exclude_none=exclude_none)
 
-        return PaginationData.create(
-            items=items,
-            total=total,
-            page=page,
-            size=size
-        )
+        return PaginationData.create(items=items, total=total, page=page, size=size)
 
 
 # ==================== 全局实例 ====================
@@ -506,8 +444,8 @@ model_serializer: ModelSerializer = ModelSerializer()
 # ==================== 导出 ====================
 
 __all__ = [
-    "ResponseBuilder",
     "ModelSerializer",
-    "response_builder",
+    "ResponseBuilder",
     "model_serializer",
+    "response_builder",
 ]

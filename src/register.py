@@ -1,11 +1,12 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.core.path_conf import STATIC_DIR
 from src.core.logger import logger
+from src.core.path_conf import STATIC_DIR
 
 from .core.conf import settings
 
@@ -89,8 +90,8 @@ def register_middleware(app: FastAPI) -> None:
 
 def register_routers(app: FastAPI) -> None:
     """注册路由"""
-    from src.app.admin.v1.user import router as user_router
     from src.app.admin.v1.performance import router as performance_router
+    from src.app.admin.v1.user import router as user_router
     from src.app.auth.v1.auth import router as auth_router
 
     # API v1 路由

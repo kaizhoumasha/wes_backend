@@ -48,6 +48,7 @@ class ResponseCode(str, Enum):
 
 # ==================== 成功响应 (1xxx) ====================
 
+
 class SuccessCode(ResponseCode):
     """成功响应码"""
 
@@ -59,6 +60,7 @@ class SuccessCode(ResponseCode):
 
 
 # ==================== 客户端错误 (2xxx) ====================
+
 
 class ClientErrorCode(ResponseCode):
     """客户端错误码"""
@@ -85,6 +87,7 @@ class ClientErrorCode(ResponseCode):
 
 # ==================== 资源错误 (3xxx) ====================
 
+
 class ResourceErrorCode(ResponseCode):
     """资源相关错误码"""
 
@@ -102,6 +105,7 @@ class ResourceErrorCode(ResponseCode):
 
 
 # ==================== 业务逻辑错误 (4xxx) ====================
+
 
 class BusinessErrorCode(ResponseCode):
     """业务逻辑错误码"""
@@ -121,6 +125,7 @@ class BusinessErrorCode(ResponseCode):
 
 
 # ==================== 服务器错误 (5xxx) ====================
+
 
 class ServerErrorCode(ResponseCode):
     """服务器内部错误码"""
@@ -145,6 +150,7 @@ class ServerErrorCode(ResponseCode):
 
 # ==================== 第三方服务错误 (8xxx) ====================
 
+
 class ExternalServiceErrorCode(ResponseCode):
     """第三方服务错误码"""
 
@@ -154,6 +160,7 @@ class ExternalServiceErrorCode(ResponseCode):
 
 
 # ==================== 其他错误 (9xxx) ====================
+
 
 class MiscErrorCode(ResponseCode):
     """其他错误码"""

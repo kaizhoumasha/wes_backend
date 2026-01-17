@@ -7,7 +7,6 @@ RBAC 权限控制模块
 - require_superuser: 超级用户装饰器
 """
 
-
 from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +16,6 @@ from src.app.admin.models import User
 from src.core.exceptions import AuthException, PermissionException
 from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
-
 
 # ==================== 权限装饰器 ====================
 
@@ -48,7 +46,7 @@ class RequirePermission:
 
     async def __call__(
         self,
-        request: Request,
+        _request: Request,
         user_id: int = Depends(require_auth),
         db: AsyncSession = Depends(AsyncSessionDep),
     ) -> None:

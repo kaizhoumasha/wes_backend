@@ -24,17 +24,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.app.admin.models import (
+    Permission,
+    Role,
+    User,
+)
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.security import get_password_hash
-from src.app.admin.models import (
-    User,
-    Role,
-    Permission,
-)
-
 
 # 创建数据库引擎和会话工厂
 engine = create_async_engine(
@@ -95,10 +94,12 @@ INITIAL_ROLES = [
         "description": "系统管理员，拥有大部分管理权限",
         "is_active": True,
         "permissions": [
-            "user:read", "user:update",
+            "user:read",
+            "user:update",
             "role:read",
             "permission:read",
-            "file:upload", "file:download",
+            "file:upload",
+            "file:download",
         ],
     },
     {
@@ -221,9 +222,7 @@ async def create_roles(
         permissions = role_data.pop("permissions")
 
         # 检查角色是否已存在
-        result = await session.execute(
-            select(Role).where(Role.name == role_name)
-        )
+        result = await session.execute(select(Role).where(Role.name == role_name))
         existing = result.scalar_one_or_none()
 
         if existing:
@@ -259,9 +258,7 @@ async def create_roles(
     return role_map
 
 
-async def create_users(
-    session: AsyncSession, role_map: dict[str, Role]
-) -> dict[str, User]:
+async def create_users(session: AsyncSession, role_map: dict[str, Role]) -> dict[str, User]:
     """
     创建初始用户数据及其角色关联
 
@@ -281,9 +278,7 @@ async def create_users(
         plain_password = user_data.pop("password")
 
         # 检查用户是否已存在
-        result = await session.execute(
-            select(User).where(User.username == username)
-        )
+        result = await session.execute(select(User).where(User.username == username))
         existing = result.scalar_one_or_none()
 
         if existing:
@@ -292,10 +287,7 @@ async def create_users(
             continue
 
         # 创建用户（密码哈希）
-        user = User(
-            **user_data,
-            hashed_password=get_password_hash(plain_password)
-        )
+        user = User(**user_data, hashed_password=get_password_hash(plain_password))
         session.add(user)
         await session.flush()
         await session.refresh(user)
@@ -343,9 +335,7 @@ async def init_all_data():
             logger.info("")
             logger.info("默认登录账号:")
             for cred in INITIAL_USERS_CREDENTIALS:
-                logger.info(
-                    f"  - {cred['username']} / {cred['password']}"
-                )
+                logger.info(f"  - {cred['username']} / {cred['password']}")
             logger.info("")
             logger.warning("⚠️  生产环境请立即修改默认密码!")
 

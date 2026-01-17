@@ -4,19 +4,20 @@
 根据 Pydantic ResponseSchema 自动推断并加载 SQLAlchemy 关系。
 """
 
-from typing import Type, Any, get_origin, get_args, TypeVar
+from typing import Any, TypeVar, get_args, get_origin
+
 from pydantic import BaseModel
 from sqlalchemy import Select, select
-from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.inspection import inspect as sa_inspect
+from sqlalchemy.orm import joinedload, selectinload
 
 T = TypeVar("T")
 
 
 def get_relationship_fields(
-    schema: Type[BaseModel],
-) -> dict[str, Type[BaseModel] | None]:
+    schema: type[BaseModel],
+) -> dict[str, type[BaseModel] | None]:
     relationships = {}
 
     for field_name, field_info in schema.model_fields.items():
@@ -35,22 +36,19 @@ def get_relationship_fields(
                     try:
                         arg = schema.model_fields[field_name].annotation.__args__[0]
                         if hasattr(schema, "__annotations__"):
-                            import sys
+                            from typing import get_type_hints
 
-                            if sys.version_info >= (3, 10):
-                                from typing import get_type_hints
-
-                                hints = get_type_hints(schema)
-                                if field_name in hints:
-                                    hint_origin = get_origin(hints[field_name])
-                                    if hint_origin is list:
-                                        hint_args = get_args(hints[field_name])
-                                        if (
-                                            hint_args
-                                            and isinstance(hint_args[0], type)
-                                            and issubclass(hint_args[0], BaseModel)
-                                        ):
-                                            relationships[field_name] = hint_args[0]
+                            hints = get_type_hints(schema)
+                            if field_name in hints:
+                                hint_origin = get_origin(hints[field_name])
+                                if hint_origin is list:
+                                    hint_args = get_args(hints[field_name])
+                                    if (
+                                        hint_args
+                                        and isinstance(hint_args[0], type)
+                                        and issubclass(hint_args[0], BaseModel)
+                                    ):
+                                        relationships[field_name] = hint_args[0]
                     except (AttributeError, IndexError, TypeError):
                         pass
                 elif isinstance(arg, type) and issubclass(arg, BaseModel):
@@ -61,8 +59,8 @@ def get_relationship_fields(
 
 def apply_schema_loads(
     query: Select,
-    model: Type[Any],
-    schema: Type[BaseModel],
+    model: type[Any],
+    schema: type[BaseModel],
     strategy: str = "selectin",
     max_depth: int = 2,
 ) -> Select:
@@ -86,7 +84,7 @@ def apply_schema_loads(
                 loader = load_func(rel_attr)
 
                 nested_rels = get_relationship_fields(nested_schema)
-                for nested_field, _ in nested_rels.items():
+                for nested_field in nested_rels:
                     if hasattr(nested_model, nested_field):
                         nested_attr = getattr(nested_model, nested_field)
                         loader = loader.selectinload(nested_attr)
@@ -104,10 +102,10 @@ def apply_schema_loads(
     return query
 
 
-async def get_with_schema(
+async def get_with_schema[T](
     db: AsyncSession,
-    model: Type[T],
-    schema: Type[BaseModel],
+    model: type[T],
+    schema: type[BaseModel],
     *where_clauses,
     strategy: str = "selectin",
     max_depth: int = 2,
@@ -135,10 +133,10 @@ async def get_with_schema(
     return result.scalars().first()
 
 
-async def get_all_with_schema(
+async def get_all_with_schema[T](
     db: AsyncSession,
-    model: Type[T],
-    schema: Type[BaseModel],
+    model: type[T],
+    schema: type[BaseModel],
     *where_clauses,
     strategy: str = "selectin",
     max_depth: int = 2,
@@ -176,7 +174,7 @@ async def get_all_with_schema(
     return list(result.scalars().all())
 
 
-def model_to_schema(obj: Any, schema: Type[BaseModel]) -> BaseModel:
+def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
     """
     将 SQLAlchemy 模型转换为 Pydantic schema，只序列化已加载的关系
 
@@ -208,7 +206,7 @@ def model_to_schema(obj: Any, schema: Type[BaseModel]) -> BaseModel:
                 data[field_name] = None
             elif isinstance(value, list):
                 relationships = get_relationship_fields(schema)
-                if field_name in relationships and relationships[field_name]:
+                if relationships.get(field_name):
                     nested_schema = relationships[field_name]
                     data[field_name] = [
                         model_to_schema(item, nested_schema).__dict__ for item in value
@@ -217,7 +215,7 @@ def model_to_schema(obj: Any, schema: Type[BaseModel]) -> BaseModel:
                     data[field_name] = value
             else:
                 relationships = get_relationship_fields(schema)
-                if field_name in relationships and relationships[field_name]:
+                if relationships.get(field_name):
                     nested_schema = relationships[field_name]
                     data[field_name] = model_to_schema(value, nested_schema).__dict__
                 else:

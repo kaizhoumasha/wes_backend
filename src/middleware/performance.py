@@ -7,8 +7,10 @@
 3. 记录缓存命中率
 4. 提供性能分析数据
 """
+
 import time
-from typing import Callable
+from collections.abc import Callable
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response

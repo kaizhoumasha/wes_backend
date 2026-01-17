@@ -18,6 +18,7 @@ ID 结构（53 位）:
 
 参考: https://developer.twitter.com/en/docs/twitter-ids
 """
+
 import threading
 import time
 from typing import Optional
@@ -25,10 +26,11 @@ from typing import Optional
 
 class SnowflakeConfig:
     """雪花算法配置（53位方案 - JavaScript 安全）"""
+
     # 位分配（总共53位）
-    WORKER_ID_BITS: int = 3   # 工作机器3位（0-7）
+    WORKER_ID_BITS: int = 3  # 工作机器3位（0-7）
     DATACENTER_ID_BITS: int = 3  # 数据中心3位（0-7）
-    SEQUENCE_BITS: int = 6    # 序列号6位（0-63）
+    SEQUENCE_BITS: int = 6  # 序列号6位（0-63）
 
     # 最大值
     MAX_WORKER_ID: int = (1 << WORKER_ID_BITS) - 1  # 7
@@ -56,6 +58,7 @@ class SnowflakeConfig:
         """从配置文件加载 EPOCH 等配置参数"""
         try:
             from src.core.conf import settings
+
             SnowflakeConfig.EPOCH = settings.SNOWFLAKE_EPOCH
         except ImportError:
             # 如果配置模块不可用，使用默认值
@@ -102,10 +105,10 @@ class SnowflakeIDGenerator:
     - 每毫秒64个ID对大多数场景足够
     """
 
-    _instance: Optional['SnowflakeIDGenerator'] = None
+    _instance: Optional["SnowflakeIDGenerator"] = None
     _lock = threading.Lock()
 
-    def __new__(cls, datacenter_id: int = 0, worker_id: int = 0):
+    def __new__(cls, _datacenter_id: int = 0, _worker_id: int = 0):
         """单例模式"""
         if cls._instance is None:
             with cls._lock:
@@ -123,7 +126,7 @@ class SnowflakeIDGenerator:
         :param worker_id: 工作机器 ID (0-7)
         """
         with self._lock:
-            if hasattr(self, '_initialized') and self._initialized:
+            if hasattr(self, "_initialized") and self._initialized:
                 return
 
             self.datacenter_id = datacenter_id
@@ -175,10 +178,7 @@ class SnowflakeIDGenerator:
                     # 在容忍范围内，等待恢复
                     timestamp = self._till_next_millis(self.last_timestamp)
                 else:
-                    raise SystemError(
-                        f"时钟回拨超过容忍阈值 ({back_ms} ms)，"
-                        f"无法生成雪花 ID"
-                    )
+                    raise SystemError(f"时钟回拨超过容忍阈值 ({back_ms} ms)，无法生成雪花 ID")
 
             # 同一毫秒内，序列号递增
             if timestamp == self.last_timestamp:
@@ -220,17 +220,18 @@ class SnowflakeIDGenerator:
         :return: 包含时间戳、数据中心、工作机器、序列号的字典
         """
         timestamp = (snowflake_id >> SnowflakeConfig.TIMESTAMP_LEFT_SHIFT) + SnowflakeConfig.EPOCH
-        datacenter_id = (snowflake_id >> SnowflakeConfig.DATACENTER_ID_SHIFT) & SnowflakeConfig.MAX_DATACENTER_ID
-        worker_id = (snowflake_id >> SnowflakeConfig.WORKER_ID_SHIFT) & SnowflakeConfig.MAX_WORKER_ID
+        datacenter_id = (
+            snowflake_id >> SnowflakeConfig.DATACENTER_ID_SHIFT
+        ) & SnowflakeConfig.MAX_DATACENTER_ID
+        worker_id = (
+            snowflake_id >> SnowflakeConfig.WORKER_ID_SHIFT
+        ) & SnowflakeConfig.MAX_WORKER_ID
         sequence = snowflake_id & SnowflakeConfig.SEQUENCE_MASK
 
         return {
             "id": snowflake_id,
             "timestamp": timestamp,
-            "datetime": time.strftime(
-                "%Y-%m-%d %H:%M:%S",
-                time.gmtime(timestamp / 1000)
-            ),
+            "datetime": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(timestamp / 1000)),
             "datacenter_id": datacenter_id,
             "worker_id": worker_id,
             "sequence": sequence,
@@ -238,12 +239,11 @@ class SnowflakeIDGenerator:
 
 
 # 全局默认实例（从配置文件读取，默认使用 datacenter_id=0, worker_id=0）
-_default_generator: Optional[SnowflakeIDGenerator] = None
+_default_generator: SnowflakeIDGenerator | None = None
 
 
 def get_snowflake_generator(
-    datacenter_id: int = None,
-    worker_id: int = None
+    datacenter_id: int | None = None, worker_id: int | None = None
 ) -> SnowflakeIDGenerator:
     """
     获取雪花 ID 生成器实例
@@ -258,6 +258,7 @@ def get_snowflake_generator(
     if datacenter_id is None or worker_id is None:
         try:
             from src.core.conf import settings
+
             if datacenter_id is None:
                 datacenter_id = settings.SNOWFLAKE_DATACENTER_ID
             if worker_id is None:
@@ -274,10 +275,7 @@ def get_snowflake_generator(
     return _default_generator
 
 
-def generate_snowflake_id(
-    datacenter_id: int = None,
-    worker_id: int = None
-) -> int:
+def generate_snowflake_id(datacenter_id: int | None = None, worker_id: int | None = None) -> int:
     """
     生成雪花 ID（便捷函数）
 

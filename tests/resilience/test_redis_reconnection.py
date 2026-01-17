@@ -4,6 +4,7 @@ Redis 自动重连测试脚本
 
 演示 Redis 故障恢复时，系统如何自动重连并恢复缓存功能
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -14,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 async def test_redis_reconnection():
     """测试 Redis 自动重连"""
-    from src.database.redis_client import ensure_redis_connection
     from src.database.redis_cache import get_cache
+    from src.database.redis_client import ensure_redis_connection
 
     print("=" * 60)
     print("Redis 自动重连测试")

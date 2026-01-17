@@ -7,7 +7,7 @@
 """
 
 import zoneinfo
-from datetime import datetime, timezone as datetime_timezone
+from datetime import UTC, datetime
 
 from src.core.conf import settings
 
@@ -44,7 +44,7 @@ class TimeZone:
         Returns:
             UTC naive datetime 对象
         """
-        return datetime.now(datetime_timezone.utc).replace(tzinfo=None)
+        return datetime.now(UTC).replace(tzinfo=None)
 
     def from_datetime(self, t: datetime) -> datetime:
         """
@@ -58,10 +58,10 @@ class TimeZone:
         """
         if t.tzinfo is None:
             # naive datetime，假定为 UTC
-            t = t.replace(tzinfo=datetime_timezone.utc)
+            t = t.replace(tzinfo=UTC)
         return t.astimezone(self.tz_info)
 
-    def from_str(self, t_str: str, format_str: str = None) -> datetime:
+    def from_str(self, t_str: str, format_str: str | None = None) -> datetime:
         """
         将时间字符串转换为当前时区的 datetime 对象
 
@@ -79,7 +79,7 @@ class TimeZone:
         return dt.replace(tzinfo=self.tz_info)
 
     @staticmethod
-    def to_str(t: datetime, format_str: str = None) -> str:
+    def to_str(t: datetime, format_str: str | None = None) -> str:
         """
         将 datetime 对象转换为指定格式的时间字符串
 
@@ -106,15 +106,9 @@ class TimeZone:
             UTC 时区的 aware datetime 对象
         """
         if isinstance(t, datetime):
-            if t.tzinfo is None:
-                # naive datetime，假定为本地时区
-                t = t.replace(tzinfo=datetime_timezone.utc)
-            else:
-                # 已有时区信息，转换为 UTC
-                t = t.astimezone(datetime_timezone.utc)
-            return t
+            return t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
         # 时间戳（整数或浮点）
-        return datetime.fromtimestamp(t, tz=datetime_timezone.utc)
+        return datetime.fromtimestamp(t, tz=UTC)
 
     @staticmethod
     def to_utc_timestamp(t: datetime) -> int:
@@ -127,11 +121,7 @@ class TimeZone:
         Returns:
             UTC 时间戳（秒）
         """
-        if t.tzinfo is None:
-            # naive datetime，假定为本地时区
-            t = t.replace(tzinfo=datetime_timezone.utc)
-        else:
-            t = t.astimezone(datetime_timezone.utc)
+        t = t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
         return int(t.timestamp())
 
 

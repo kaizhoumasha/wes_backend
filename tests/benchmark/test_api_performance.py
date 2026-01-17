@@ -4,9 +4,11 @@ API 性能基准测试
 使用方法：
 pytest tests/benchmark/test_api_performance.py --benchmark-json=benchmark.json
 """
-import pytest
+
 import asyncio
 import time
+
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -14,12 +16,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from src.core.conf import settings
 from src.database.redis_client import get_redis
 
-
 # 基准测试配置
 BASE_URL = "http://localhost:8001"
 
 
-@pytest.mark.benchmark
+@pytest.mark.benchmark()
 class TestAPIPerformance:
     """API 性能基准测试"""
 
@@ -64,7 +65,7 @@ class TestAPIPerformance:
         print(f"用户详情 - 平均: {result.mean * 1000:.2f}ms")
 
 
-@pytest.mark.benchmark
+@pytest.mark.benchmark()
 class TestDatabasePerformance:
     """数据库性能基准测试"""
 
@@ -82,7 +83,7 @@ class TestDatabasePerformance:
         print(f"DB 查询 - 平均: {result.mean * 1000:.2f}ms")
 
 
-@pytest.mark.benchmark
+@pytest.mark.benchmark()
 class TestCachePerformance:
     """缓存性能基准测试"""
 
@@ -102,18 +103,14 @@ class TestCachePerformance:
 
         async def _redis_set():
             redis_client = get_redis()
-            await redis_client.setex(
-                f"bench_test_{time.time()}",
-                60,
-                "benchmark_value"
-            )
+            await redis_client.setex(f"bench_test_{time.time()}", 60, "benchmark_value")
             return True
 
         result = benchmark.pedantic(_redis_set, iterations=1000, rounds=10)
         print(f"Redis SET - 平均: {result.mean * 1000:.2f}ms")
 
 
-@pytest.mark.benchmark
+@pytest.mark.benchmark()
 class TestConcurrentRequests:
     """并发请求性能测试"""
 
@@ -137,10 +134,7 @@ class TestConcurrentRequests:
         for concurrency in [10, 50, 100]:
             start = time.time()
 
-            tasks = [
-                _make_request(self.client, "/api/v1/users")
-                for _ in range(concurrency)
-            ]
+            tasks = [_make_request(self.client, "/api/v1/users") for _ in range(concurrency)]
 
             results = await asyncio.gather(*tasks)
             elapsed_times = [r[0] for r in results]

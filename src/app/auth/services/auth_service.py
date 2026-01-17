@@ -8,24 +8,23 @@
 - 用户验证
 """
 
-
 from fastapi import Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import User, LoginResponse, RefreshTokenResponse
+from src.app.admin.models import LoginResponse, RefreshTokenResponse, User
+from src.core.conf import settings
 from src.core.exceptions import AuthException, NotFoundException
 from src.core.logger import logger
 from src.core.security import (
-    verify_password,
     create_access_token,
-    create_refresh_token,
     create_new_token,
+    create_refresh_token,
     jwt_decode,
     revoke_token,
+    verify_password,
 )
-from src.core.conf import settings
 from src.database.redis_client import get_redis, is_redis_available
 
 
@@ -51,9 +50,7 @@ class AuthService:
         """
         # 查询用户（预加载角色）
         result = await db.execute(
-            select(User)
-            .where(User.username == username)
-            .options(selectinload(User.roles))
+            select(User).where(User.username == username).options(selectinload(User.roles))
         )
         user = result.scalar_one_or_none()
 
@@ -164,13 +161,11 @@ class AuthService:
         try:
             token_payload = jwt_decode(refresh_token)
         except AuthException:
-            raise AuthException("Refresh Token 无效，请重新登录")
+            raise AuthException("Refresh Token 无效，请重新登录") from None
 
         # 查询用户（预加载角色）
         result = await db.execute(
-            select(User)
-            .where(User.id == token_payload.id)
-            .options(selectinload(User.roles))
+            select(User).where(User.id == token_payload.id).options(selectinload(User.roles))
         )
         user = result.scalar_one_or_none()
 

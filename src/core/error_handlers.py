@@ -12,7 +12,7 @@
 }
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, Request, status
@@ -58,7 +58,7 @@ def error_response(
     response = {
         "code": code,
         "message": message,
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
     if detail is not None:
@@ -104,9 +104,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> ORJSONRe
     )
 
 
-async def auth_exception_handler(
-    request: Request, exc: AuthException
-) -> ORJSONResponse:
+async def auth_exception_handler(request: Request, exc: AuthException) -> ORJSONResponse:
     """处理认证异常"""
     logger.warning(
         f"AuthException: {exc.code} - {exc.message}",
@@ -144,9 +142,7 @@ async def permission_exception_handler(
     )
 
 
-async def not_found_exception_handler(
-    request: Request, exc: NotFoundException
-) -> ORJSONResponse:
+async def not_found_exception_handler(request: Request, exc: NotFoundException) -> ORJSONResponse:
     """处理资源未找到异常"""
     logger.info(
         f"NotFoundException: {exc.message}",
@@ -165,9 +161,7 @@ async def not_found_exception_handler(
     )
 
 
-async def conflict_exception_handler(
-    request: Request, exc: ConflictException
-) -> ORJSONResponse:
+async def conflict_exception_handler(request: Request, exc: ConflictException) -> ORJSONResponse:
     """处理资源冲突异常"""
     logger.warning(
         f"ConflictException: {exc.code} - {exc.message}",
@@ -207,9 +201,7 @@ async def validation_exception_handler(
     )
 
 
-async def rate_limit_exception_handler(
-    request: Request, exc: RateLimitException
-) -> ORJSONResponse:
+async def rate_limit_exception_handler(request: Request, exc: RateLimitException) -> ORJSONResponse:
     """处理请求频率限制异常"""
     logger.warning(
         f"RateLimitException: {exc.code} - {exc.message}",
@@ -306,9 +298,7 @@ async def pydantic_validation_exception_handler(
 # ==================== 数据库异常处理 ====================
 
 
-async def sqlalchemy_exception_handler(
-    request: Request, exc: SQLAlchemyError
-) -> ORJSONResponse:
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> ORJSONResponse:
     """
     处理 SQLAlchemy 异常
 
@@ -322,7 +312,7 @@ async def sqlalchemy_exception_handler(
     # 记录详细错误信息
     error_detail = str(exc)
     if hasattr(exc, "__cause__") and exc.__cause__:
-        error_detail = f"{error_detail} | 原因: {str(exc.__cause__)}"
+        error_detail = f"{error_detail} | 原因: {exc.__cause__!s}"
 
     logger.error(
         f"SQLAlchemyError: {type(exc).__name__} - {error_detail}",
@@ -346,7 +336,7 @@ async def sqlalchemy_exception_handler(
         orig_error = exc.orig
         return error_response(
             code="DATABASE_ERROR",
-            message=f"数据库错误: {type(orig_error).__name__}: {str(orig_error)}",
+            message=f"数据库错误: {type(orig_error).__name__}: {orig_error!s}",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
@@ -412,9 +402,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RateLimitException, rate_limit_exception_handler)
 
     # FastAPI 内置异常
-    app.add_exception_handler(
-        RequestValidationError, request_validation_exception_handler
-    )
+    app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     app.add_exception_handler(ValidationError, pydantic_validation_exception_handler)
 
     # 数据库异常

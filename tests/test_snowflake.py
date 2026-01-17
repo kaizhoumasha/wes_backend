@@ -17,10 +17,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytest
 
 from src.core.snowflake import (
+    SnowflakeConfig,
     SnowflakeIDGenerator,
     generate_snowflake_id,
     get_snowflake_generator,
-    SnowflakeConfig,
 )
 
 
@@ -165,9 +165,7 @@ class TestSnowflakePerformance:
         # 对于有多个 ID 的毫秒，检查序列号递增
         for timestamp, sequences in timestamp_groups.items():
             if len(sequences) > 1:
-                assert sequences == sorted(sequences), (
-                    f"时间戳 {timestamp} 的序列号应该递增"
-                )
+                assert sequences == sorted(sequences), f"时间戳 {timestamp} 的序列号应该递增"
 
 
 class TestSnowflakeValidation:
@@ -204,8 +202,9 @@ class TestSnowflakeValidation:
         """测试 JavaScript 安全整数范围"""
         for _ in range(10000):
             snowflake_id = generate_snowflake_id()
-            assert snowflake_id <= SnowflakeConfig.MAX_SAFE_INTEGER, \
+            assert snowflake_id <= SnowflakeConfig.MAX_SAFE_INTEGER, (
                 f"ID {snowflake_id} 超出 JavaScript 安全范围"
+            )
 
 
 class TestSnowflakeMixinIntegration:

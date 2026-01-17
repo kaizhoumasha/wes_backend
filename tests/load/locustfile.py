@@ -9,10 +9,10 @@ Locust 负载测试脚本
 
 import json
 import random
-import time
 import threading
-from locust import HttpUser, task, between, events
+import time
 
+from locust import HttpUser, between, events, task
 
 # 全局用户 ID 池（用于雪花 ID 模式）
 EXISTING_USER_IDS = []
@@ -78,9 +78,7 @@ class APIUser(HttpUser):
         """
         # 如果没有可用的用户 ID，跳过测试
         if not EXISTING_USER_IDS:
-            self.client.get(
-                "/api/v1/performance/health", name="跳过详情查询（无可用ID）"
-            )
+            self.client.get("/api/v1/performance/health", name="跳过详情查询（无可用ID）")
             return
 
         # 随机获取用户 ID（偏向前面的 ID，模拟热点数据）
@@ -127,7 +125,7 @@ class APIUser(HttpUser):
             name="/api/v1/users (创建)",
             catch_response=True,
         ) as response:
-            if response.status_code == 201 or response.status_code == 200:
+            if response.status_code in {201, 200}:
                 # 验证用户是否创建成功
                 try:
                     data = response.json()
@@ -179,9 +177,7 @@ class APIUser(HttpUser):
                     response.failure(f"HTTP {response.status_code}")
         else:
             # 没有可用的用户 ID，跳过
-            self.client.get(
-                "/api/v1/performance/health", name="跳过更新操作（无可用ID）"
-            )
+            self.client.get("/api/v1/performance/health", name="跳过更新操作（无可用ID）")
 
     @task(1)
     def get_performance_metrics(self):
@@ -321,7 +317,7 @@ def on_test_start(environment, **kwargs):
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    if "items" in data and data["items"]:
+                    if data.get("items"):
                         user_ids = [user["id"] for user in data["items"]]
                         with user_ids_lock:
                             EXISTING_USER_IDS.extend(user_ids)

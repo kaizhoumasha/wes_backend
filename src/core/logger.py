@@ -4,14 +4,15 @@ Loguru 日志配置模块
 提供统一的日志配置，集成 FastAPI 和标准 logging
 自动从请求上下文中注入 request_id，实现链路追踪
 """
+
 import logging
 import sys
 from pathlib import Path
+
 from loguru import logger as _logger
 
-from .path_conf import BasePath
 from .conf import settings
-
+from .path_conf import BasePath
 
 # 日志目录
 LOG_DIR = Path(BasePath) / "logs"
@@ -48,9 +49,7 @@ class InterceptHandler(logging.Handler):
             depth += 1
 
         # 使用 opt(depth=depth) 正确显示调用位置
-        _logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def add_request_id_filter(record):
@@ -65,6 +64,7 @@ def add_request_id_filter(record):
     if "request_id" not in record["extra"]:
         try:
             from .context import RequestContext
+
             record["extra"]["request_id"] = RequestContext.get_request_id()
         except (ImportError, RuntimeError):
             # context 模块不可用或不在请求上下文中
@@ -119,10 +119,7 @@ def setup_logger() -> None:
         )
     else:
         console_format = (
-            "{time:YYYY-MM-DD HH:mm:ss} | "
-            "{level: <8} | "
-            "[{extra[request_id]}] | "
-            "{message}"
+            "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
         )
         _logger.add(
             sys.stderr,
@@ -210,4 +207,4 @@ def setup_logger() -> None:
 logger = _logger
 
 
-__all__ = ["logger", "setup_logger", "InterceptHandler"]
+__all__ = ["InterceptHandler", "logger", "setup_logger"]

@@ -6,24 +6,22 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from pwdlib import PasswordHash
 
-from src.core.logger import logger
-from src.database.redis_cache import RedisCache
+from pwdlib import PasswordHash
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.app.admin.models import User, UserRead
-from src.core.schema_loader import get_with_schema, get_all_with_schema, model_to_schema
+from src.core.logger import logger
+from src.core.schema_loader import get_all_with_schema, get_with_schema, model_to_schema
+from src.database.redis_cache import RedisCache
 
 # pwdlib - FastAPI 官方推荐，支持现代密码哈希算法（Argon2）
 password_hash = PasswordHash.recommended()
 
 # 线程池用于 CPU 密集型操作（密码哈希）
 # 方案A优化: 增加到20个worker以支持500并发
-_password_executor = ThreadPoolExecutor(
-    max_workers=8, thread_name_prefix="password_hash"
-)
+_password_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="password_hash")
 
 
 class UserService:
@@ -52,9 +50,7 @@ class UserService:
         参考: https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
         """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            _password_executor, password_hash.hash, password
-        )
+        return await loop.run_in_executor(_password_executor, password_hash.hash, password)
 
     @staticmethod
     async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
@@ -96,16 +92,16 @@ class UserService:
         return model_to_schema(user, UserRead)
 
     @staticmethod
-    def users_to_list_response(users: List[User]) -> List[UserRead]:
+    def users_to_list_response(users: list[User]) -> list[UserRead]:
         return [model_to_schema(u, UserRead) for u in users]
 
     @staticmethod
     async def check_user_exists(
         db: AsyncSession,
-        username: Optional[str] = None,
-        email: Optional[str] = None,
-        exclude_user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        username: str | None = None,
+        email: str | None = None,
+        exclude_user_id: int | None = None,
+    ) -> str | None:
         """
         检查用户是否存在
 
@@ -136,7 +132,7 @@ class UserService:
 
     @staticmethod
     async def invalidate_user_cache(
-        cache: RedisCache, user_id: Optional[int] = None, invalidate_list: bool = True
+        cache: RedisCache, user_id: int | None = None, invalidate_list: bool = True
     ) -> None:
         """
         失效用户相关缓存
@@ -157,19 +153,17 @@ class UserService:
             # 缓存操作失败不影响主业务
 
     @staticmethod
-    async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
-        return await get_with_schema(
-            db, User, UserRead, User.id == user_id, max_depth=2
-        )
+    async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
+        return await get_with_schema(db, User, UserRead, User.id == user_id, max_depth=2)
 
     @staticmethod
-    async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
+    async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
         """根据用户名获取用户"""
         result = await db.execute(select(User).where(User.username == username))
         return result.scalars().first()
 
     @staticmethod
-    async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
         """根据邮箱获取用户"""
         result = await db.execute(select(User).where(User.email == email))
         return result.scalars().first()
@@ -177,14 +171,12 @@ class UserService:
     @staticmethod
     async def get_users_paginated(
         db: AsyncSession, page: int = 1, page_size: int = 10
-    ) -> tuple[int, List[User]]:
+    ) -> tuple[int, list[User]]:
         count_result = await db.execute(select(func.count(User.id)))
         total = count_result.scalar()
 
         offset = (page - 1) * page_size
-        users = await get_all_with_schema(
-            db, User, UserRead, limit=page_size, offset=offset
-        )
+        users = await get_all_with_schema(db, User, UserRead, limit=page_size, offset=offset)
 
         return total, users
 
@@ -194,7 +186,7 @@ class UserService:
         username: str,
         email: str,
         password: str,
-        full_name: Optional[str] = None,
+        full_name: str | None = None,
     ) -> User:
         """
         创建新用户
@@ -202,9 +194,7 @@ class UserService:
         :raises ValueError: 如果用户名或邮箱已存在
         """
         # 检查用户名和邮箱是否已存在
-        conflict = await UserService.check_user_exists(
-            db, username=username, email=email
-        )
+        conflict = await UserService.check_user_exists(db, username=username, email=email)
         if conflict:
             field_name = "用户名" if conflict == "username" else "邮箱"
             raise ValueError(f"{field_name}已存在")
@@ -227,9 +217,9 @@ class UserService:
     async def update_user(
         db: AsyncSession,
         user_id: int,
-        email: Optional[str] = None,
-        full_name: Optional[str] = None,
-        is_active: Optional[bool] = None,
+        email: str | None = None,
+        full_name: str | None = None,
+        is_active: bool | None = None,
     ) -> User:
         """
         更新用户信息
@@ -242,9 +232,7 @@ class UserService:
 
         # 检查邮箱是否被其他用户使用
         if email and email != user.email:
-            conflict = await UserService.check_user_exists(
-                db, email=email, exclude_user_id=user_id
-            )
+            conflict = await UserService.check_user_exists(db, email=email, exclude_user_id=user_id)
             if conflict:
                 raise ValueError("邮箱已被使用")
 

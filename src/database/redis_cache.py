@@ -9,12 +9,14 @@ Redis 缓存服务（支持自动降级）
 5. 数据一致性：Cache-Aside 模式
 6. **自动降级：Redis 故障时自动降级到直接查询数据库**
 """
+
+import asyncio
 import json
 import random
-import asyncio
 import time
-from typing import Any, Optional
 from enum import Enum
+from typing import Any
+
 from redis.asyncio import Redis
 
 from src.core.logger import logger
@@ -22,8 +24,9 @@ from src.core.logger import logger
 
 class CircuitState(Enum):
     """熔断器状态"""
-    CLOSED = "closed"      # 正常工作
-    OPEN = "open"          # 熔断打开（拒绝请求）
+
+    CLOSED = "closed"  # 正常工作
+    OPEN = "open"  # 熔断打开（拒绝请求）
     HALF_OPEN = "half_open"  # 半开（尝试恢复）
 
 
@@ -37,9 +40,9 @@ class CircuitBreaker:
 
     def __init__(
         self,
-        failure_threshold: int = 5,      # 失败阈值
-        timeout: int = 60,                # 熔断打开时长（秒）
-        half_open_max_calls: int = 3     # 半开状态最大尝试次数
+        failure_threshold: int = 5,  # 失败阈值
+        timeout: int = 60,  # 熔断打开时长（秒）
+        half_open_max_calls: int = 3,  # 半开状态最大尝试次数
     ):
         self.failure_threshold = failure_threshold
         self.timeout = timeout
@@ -47,7 +50,7 @@ class CircuitBreaker:
 
         self.state = CircuitState.CLOSED
         self.failure_count = 0
-        self.last_failure_time: Optional[float] = None
+        self.last_failure_time: float | None = None
         self.half_open_calls = 0
 
     def record_success(self):
@@ -76,8 +79,7 @@ class CircuitBreaker:
             # 达到失败阈值，打开熔断器
             self.state = CircuitState.OPEN
             logger.error(
-                f"熔断器已打开（失败次数: {self.failure_count}，"
-                f"阈值: {self.failure_threshold}）"
+                f"熔断器已打开（失败次数: {self.failure_count}，阈值: {self.failure_threshold}）"
             )
 
     def can_attempt(self) -> bool:
@@ -129,9 +131,9 @@ class RedisCache:
         self.redis = redis
         self.prefix = prefix
         self.circuit_breaker = CircuitBreaker(
-            failure_threshold=5,    # 5 次连续失败后熔断
-            timeout=60,             # 熔断 60 秒
-            half_open_max_calls=3   # 半开状态尝试 3 次
+            failure_threshold=5,  # 5 次连续失败后熔断
+            timeout=60,  # 熔断 60 秒
+            half_open_max_calls=3,  # 半开状态尝试 3 次
         )
         self._last_health_check = 0
         self._is_healthy = redis is not None
@@ -159,11 +161,13 @@ class RedisCache:
         # 如果 Redis 客户端为 None，尝试重连
         if self.redis is None:
             from src.database.redis_client import ensure_redis_connection
+
             logger.info("检测到 Redis 未初始化，尝试重连...")
             reconnected = await ensure_redis_connection()
             if reconnected:
                 # 重连成功，更新 redis 客户端引用
                 from src.database.redis_client import get_redis
+
                 self.redis = get_redis()
                 self._is_healthy = True
                 logger.info("✅ Redis 重连成功，缓存服务已恢复")
@@ -180,17 +184,19 @@ class RedisCache:
             await asyncio.wait_for(self.redis.ping(), timeout=1.0)
             self._is_healthy = True
             return True
-        except (asyncio.TimeoutError, Exception) as e:
+        except (TimeoutError, Exception) as e:
             self._is_healthy = False
             logger.warning(f"Redis 健康检查失败: {e}")
 
             # 尝试重连
             from src.database.redis_client import ensure_redis_connection
+
             logger.info("Redis 连接中断，尝试重连...")
             reconnected = await ensure_redis_connection()
             if reconnected:
                 # 重连成功，更新 redis 客户端引用
                 from src.database.redis_client import get_redis
+
                 self.redis = get_redis()
                 self._is_healthy = True
                 logger.info("✅ Redis 重连成功，缓存服务已恢复")
@@ -211,7 +217,7 @@ class RedisCache:
         # 健康检查会自动尝试重连
         return await self._check_health()
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """
         获取缓存（支持自动降级）
 
@@ -243,11 +249,7 @@ class RedisCache:
             return None
 
     async def set(
-        self,
-        key: str,
-        value: Any,
-        expire: Optional[int] = None,
-        is_hot: bool = False
+        self, key: str, value: Any, expire: int | None = None, is_hot: bool = False
     ) -> bool:
         """
         设置缓存（支持自动降级）
@@ -324,9 +326,7 @@ class RedisCache:
 
         redis_pattern = self._make_key(pattern)
         try:
-            keys = []
-            async for key in self.redis.scan_iter(match=redis_pattern):
-                keys.append(key)
+            keys = [key async for key in self.redis.scan_iter(match=redis_pattern)]
             if keys:
                 result = await self.redis.delete(*keys)
                 self.circuit_breaker.record_success()
@@ -357,12 +357,7 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return False
 
-    async def acquire_lock(
-        self,
-        lock_key: str,
-        timeout: int = 10,
-        wait_timeout: int = 5
-    ) -> bool:
+    async def acquire_lock(self, lock_key: str, timeout: int = 10, wait_timeout: int = 5) -> bool:
         """
         获取分布式锁（缓存击穿防护，支持自动降级）
 
@@ -377,18 +372,17 @@ class RedisCache:
             return False
 
         redis_key = self._make_key(f"lock:{lock_key}")
-        identifier = str(asyncio.current_task().get_name() if asyncio.current_task() else id(asyncio.current_task()))
+        identifier = str(
+            asyncio.current_task().get_name()
+            if asyncio.current_task()
+            else id(asyncio.current_task())
+        )
 
         start_time = asyncio.get_event_loop().time()
         while True:
             # 尝试获取锁
             try:
-                acquired = await self.redis.set(
-                    redis_key,
-                    identifier,
-                    nx=True,
-                    ex=timeout
-                )
+                acquired = await self.redis.set(redis_key, identifier, nx=True, ex=timeout)
                 if acquired:
                     logger.debug(f"获取锁成功: {lock_key}")
                     self.circuit_breaker.record_success()
@@ -442,7 +436,7 @@ class RedisCache:
 
 
 # 全局缓存实例（延迟初始化）
-_cache_instance: Optional[RedisCache] = None
+_cache_instance: RedisCache | None = None
 
 
 def get_cache() -> RedisCache:
@@ -466,6 +460,6 @@ def get_cache() -> RedisCache:
             # 这样可以避免在 get_cache() 时抛出异常
             # 所有缓存操作会自动降级
             logger.warning("Redis 不可用，缓存服务已降级（将自动检测恢复）")
-            _cache_instance = RedisCache(None, prefix="app")  # type: ignore
+            _cache_instance = RedisCache(None, prefix="app")  # type: ignore[arg-type]
 
     return _cache_instance

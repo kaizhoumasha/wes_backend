@@ -1,22 +1,20 @@
-
 # 在类定义外先加载环境变量
-from functools import lru_cache
 import os
+from functools import lru_cache
 
-from ..core.path_conf import BasePath
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-env_path = os.path.join(BasePath, ".env")
-load_dotenv(env_path, override=True)  # 添加 override=True 强制覆盖已存在的环境变量
+from src.core.path_conf import BasePath
+
+load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆盖已存在的环境变量
+
 
 class Settings(BaseSettings):
     """Global Settings"""
 
     model_config = SettingsConfigDict(
-        env_file=f"{BasePath}/.env", 
-        env_file_encoding="utf-8", 
-        extra="ignore"
+        env_file=f"{BasePath}/.env", env_file_encoding="utf-8", extra="ignore"
     )
 
     # 项目名称
@@ -38,25 +36,25 @@ class Settings(BaseSettings):
     # 项目文档地址
     REDOC_URL: str = f"{API_PATH}/redoc"
 
-    APP_DEBUG: bool = bool(os.getenv("APP_DEBUG", False))
+    APP_DEBUG: bool = bool(os.getenv("APP_DEBUG", "false"))
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
-    APP_PORT: int = int(os.getenv("APP_PORT", 8000))
+    APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
 
     # 日志配置
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_DIR: str = os.getenv("LOG_DIR", "logs")
     LOG_ROTATION_SIZE: str = os.getenv("LOG_ROTATION_SIZE", "100 MB")
     LOG_RETENTION_DAYS: str = os.getenv("LOG_RETENTION_DAYS", "30 days")
-    LOG_JSON_OUTPUT: bool = bool(os.getenv("LOG_JSON_OUTPUT", True))
+    LOG_JSON_OUTPUT: bool = bool(os.getenv("LOG_JSON_OUTPUT", "true"))
     LOG_COMPRESSION: str = os.getenv("LOG_COMPRESSION", "zip")
 
     # CORS
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
-        'http://127.0.0.1:8001',
-        'http://localhost:5173',
+        "http://127.0.0.1:8001",
+        "http://localhost:5173",
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
-        'X-Request-ID',
+        "X-Request-ID",
     ]
     MIDDLEWARE_CORS: bool = True
 
@@ -98,9 +96,7 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_REDIS_PREFIX: str = os.getenv(
         "JWT_REFRESH_TOKEN_REDIS_PREFIX", "auth:refresh_token"
     )
-    JWT_USER_REDIS_PREFIX: str = os.getenv(
-        "JWT_USER_REDIS_PREFIX", "auth:user"
-    )
+    JWT_USER_REDIS_PREFIX: str = os.getenv("JWT_USER_REDIS_PREFIX", "auth:user")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -113,6 +109,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SNOWFLAKE_WORKER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_WORKER_ID}"
             )
+
 
 @lru_cache
 def get_settings() -> Settings:

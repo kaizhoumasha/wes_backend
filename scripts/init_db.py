@@ -3,11 +3,13 @@
 
 创建所有数据表
 """
+
 import asyncio
+
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from src.core.conf import settings
 from src.app.models import Base
+from src.core.conf import settings
 from src.core.logger import logger
 
 

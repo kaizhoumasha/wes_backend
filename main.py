@@ -22,7 +22,7 @@ if __name__ == "__main__":
             host=settings.APP_HOST,
             log_config=None,  # 使用已配置的 logging 系统（loguru）
         )
-    
+
         server = uvicorn.Server(config)
         server.run()
     except Exception as e:

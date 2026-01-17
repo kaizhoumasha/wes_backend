@@ -1,0 +1,13 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",
+    "ms-python.python",
+    "ms-python.testing-partner",
+    "ms-python.vscode-pylance",
+    "eamodio.gitlens",
+    "usernamehw.errorlens",
+    "ms-python.jupyter",
+    "redhat.vscode-yaml",
+    "be5invis.toml"
+  ]
+}

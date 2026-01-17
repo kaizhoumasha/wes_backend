@@ -5,6 +5,7 @@
 """
 
 import asyncio
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -47,12 +48,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 try:
                     # 记录高并发情况
                     if current > self.max_concurrent * 0.8:
-                        logger.warning(
-                            f"高并发警告: 当前并发 {current}/{self.max_concurrent}"
-                        )
+                        logger.warning(f"高并发警告: 当前并发 {current}/{self.max_concurrent}")
 
-                    response = await call_next(request)
-                    return response
+                    return await call_next(request)
                 finally:
                     async with self._lock:
                         self._current_requests -= 1
