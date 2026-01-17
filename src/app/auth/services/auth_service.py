@@ -8,7 +8,6 @@
 - 用户验证
 """
 
-from typing import Optional
 
 from fastapi import Request, Response
 from sqlalchemy import select
@@ -27,7 +26,6 @@ from src.core.security import (
     revoke_token,
 )
 from src.core.conf import settings
-from src.core.timezone import timezone
 from src.database.redis_client import get_redis, is_redis_available
 
 

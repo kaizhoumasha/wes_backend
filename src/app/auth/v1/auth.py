@@ -7,9 +7,8 @@
 - POST /api/v1/auth/refresh - 刷新访问令牌
 """
 
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, Request, status
+from fastapi import APIRouter, Response, Request, status
 
 from src.app.admin.models import LoginRequest, LoginResponse, RefreshTokenResponse
 from src.app.auth.services.auth_service import auth_service

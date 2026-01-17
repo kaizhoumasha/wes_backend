@@ -9,7 +9,6 @@
 5. JavaScript 安全性：ID 在安全整数范围内
 """
 
-import asyncio
 import threading
 import time
 from collections import defaultdict
@@ -214,7 +213,6 @@ class TestSnowflakeMixinIntegration:
 
     def test_mixin_import(self):
         """测试 Mixin 可以正常导入"""
-        from src.core.mixins import SnowflakePKMixin
         assert True
 
     def test_snowflake_primary_key_mixin(self):

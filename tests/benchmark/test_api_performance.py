@@ -12,7 +12,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.core.conf import settings
-from src.database.db import get_db
 from src.database.redis_client import get_redis
 
 

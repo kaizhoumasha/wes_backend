@@ -1,6 +1,7 @@
 """
 FastAPI 中间件模块
 """
+
 import time
 import uuid
 from typing import Callable, List
@@ -41,10 +42,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
     实现自动链路追踪
     """
 
-    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> StarletteResponse:
+    async def dispatch(
+        self, request: StarletteRequest, call_next: Callable
+    ) -> StarletteResponse:
         method = request.method
         path = request.url.path
-        client_ip = request.client.host if request.client else "unknown"
+        # client_ip = request.client.host if request.client else "unknown"
 
         # 跳过静态资源日志
         if should_skip_log(path):
@@ -55,7 +58,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
         # 使用 request_cycle_context 管理整个请求周期的上下文
         # 这会创建一个新上下文，确保后续所有代码都能访问到 request_id
-        with request_cycle_context({'request_id': request_id}):
+        with request_cycle_context({"request_id": request_id}):
             start_time = time.time()
 
             try:
@@ -63,7 +66,11 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
                 # 计算处理时间
                 process_time = (time.time() - start_time) * 1000
-                time_str = f"{process_time:.0f}ms" if process_time < 1000 else f"{process_time/1000:.2f}s"
+                time_str = (
+                    f"{process_time:.0f}ms"
+                    if process_time < 1000
+                    else f"{process_time / 1000:.2f}s"
+                )
 
                 # 根据状态码决定日志级别
                 status = response.status_code
@@ -85,9 +92,13 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
                 # 使用 logger.exception() 自动记录异常堆栈
                 if settings.APP_DEBUG:
-                    logger.exception(f"{method} {path} - Exception occurred ({time_str})")
+                    logger.exception(
+                        f"{method} {path} - Exception occurred ({time_str})"
+                    )
                 else:
-                    logger.error(f"{method} {path} - {type(e).__name__}: {str(e)} ({time_str})")
+                    logger.error(
+                        f"{method} {path} - {type(e).__name__}: {str(e)} ({time_str})"
+                    )
 
                 # 返回符合统一错误格式的响应
                 from datetime import datetime, timezone

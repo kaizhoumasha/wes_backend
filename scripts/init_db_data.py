@@ -33,8 +33,6 @@ from src.app.admin.models import (
     User,
     Role,
     Permission,
-    user_role,
-    role_permission,
 )
 
 

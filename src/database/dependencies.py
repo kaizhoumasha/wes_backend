@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 from fastapi import Depends
 
 from .db import AsyncSession, get_db
-from .redis_client import get_redis, is_redis_available
+from .redis_client import get_redis
 from .redis_cache import RedisCache, get_cache
 from redis.asyncio import Redis
 

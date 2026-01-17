@@ -6,12 +6,12 @@ Locust 负载测试脚本
 2. 运行测试: locust -f tests/load/locustfile.py
 3. 访问 Web UI: http://localhost:8089
 """
+
 import json
 import random
 import time
 import threading
 from locust import HttpUser, task, between, events
-from locust.runners import MasterRunner
 
 
 # 全局用户 ID 池（用于雪花 ID 模式）
@@ -34,6 +34,7 @@ class APIUser(HttpUser):
     4. 更新用户信息
     5. 删除用户
     """
+
     # 等待时间：1-3 秒之间
     wait_time = between(1, 3)
 
@@ -55,7 +56,7 @@ class APIUser(HttpUser):
         with self.client.get(
             f"/api/v1/users?page={page}&page_size={page_size}",
             name="/api/v1/users (列表)",
-            catch_response=True
+            catch_response=True,
         ) as response:
             if response.status_code == 200:
                 # 验证响应格式
@@ -77,7 +78,9 @@ class APIUser(HttpUser):
         """
         # 如果没有可用的用户 ID，跳过测试
         if not EXISTING_USER_IDS:
-            self.client.get("/api/v1/performance/health", name="跳过详情查询（无可用ID）")
+            self.client.get(
+                "/api/v1/performance/health", name="跳过详情查询（无可用ID）"
+            )
             return
 
         # 随机获取用户 ID（偏向前面的 ID，模拟热点数据）
@@ -93,7 +96,7 @@ class APIUser(HttpUser):
         with self.client.get(
             f"/api/v1/users/{user_id}",
             name="/api/v1/users/:id (详情)",
-            catch_response=True
+            catch_response=True,
         ) as response:
             if response.status_code == 404:
                 # 用户不存在是正常的
@@ -115,14 +118,14 @@ class APIUser(HttpUser):
             "username": username,
             "email": email,
             "full_name": f"Load Test {random.randint(1, 100)}",
-            "password": "test_password_123"
+            "password": "test_password_123",
         }
 
         with self.client.post(
             "/api/v1/users",
             json=user_data,
             name="/api/v1/users (创建)",
-            catch_response=True
+            catch_response=True,
         ) as response:
             if response.status_code == 201 or response.status_code == 200:
                 # 验证用户是否创建成功
@@ -164,21 +167,21 @@ class APIUser(HttpUser):
             user_id = random.choice(EXISTING_USER_IDS)
 
         if user_id:
-            update_data = {
-                "full_name": f"Updated {int(time.time())}"
-            }
+            update_data = {"full_name": f"Updated {int(time.time())}"}
 
             with self.client.put(
                 f"/api/v1/users/{user_id}",
                 json=update_data,
                 name="/api/v1/users/:id (更新)",
-                catch_response=True
+                catch_response=True,
             ) as response:
                 if response.status_code not in [200, 404]:
                     response.failure(f"HTTP {response.status_code}")
         else:
             # 没有可用的用户 ID，跳过
-            self.client.get("/api/v1/performance/health", name="跳过更新操作（无可用ID）")
+            self.client.get(
+                "/api/v1/performance/health", name="跳过更新操作（无可用ID）"
+            )
 
     @task(1)
     def get_performance_metrics(self):
@@ -190,7 +193,7 @@ class APIUser(HttpUser):
         with self.client.get(
             "/api/v1/performance/metrics",
             name="/api/v1/performance/metrics",
-            catch_response=True
+            catch_response=True,
         ) as response:
             if response.status_code != 200:
                 response.failure(f"HTTP {response.status_code}")
@@ -208,7 +211,7 @@ class APIUser(HttpUser):
         with self.client.get(
             f"/api/v1/users/{user_id}",
             name="/api/v1/users/:id (不存在)",
-            catch_response=True
+            catch_response=True,
         ) as response:
             if response.status_code == 404:
                 # 正常返回 404
@@ -223,6 +226,7 @@ class ReadUser(HttpUser):
 
     模拟只读场景，用于测试缓存性能
     """
+
     wait_time = between(0.5, 2)
 
     @task(10)
@@ -255,6 +259,7 @@ class WriteUser(HttpUser):
 
     模拟写操作场景，用于测试写性能和缓存一致性
     """
+
     wait_time = between(2, 5)
 
     @task(5)
@@ -264,7 +269,7 @@ class WriteUser(HttpUser):
         user_data = {
             "username": username,
             "email": f"{username}@example.com",
-            "password": "test_password_123"
+            "password": "test_password_123",
         }
         response = self.client.post("/api/v1/users", json=user_data)
 
@@ -276,7 +281,7 @@ class WriteUser(HttpUser):
                     with user_ids_lock:
                         if data["id"] not in EXISTING_USER_IDS:
                             EXISTING_USER_IDS.append(data["id"])
-            except:
+            except json.JSONDecodeError:
                 pass
 
     @task(3)
@@ -295,14 +300,15 @@ class WriteUser(HttpUser):
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     """测试开始时的操作"""
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("负载测试开始")
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")
 
     # 获取实际存在的用户 ID（适配雪花 ID 模式）
     print("正在获取实际用户 ID...")
     try:
         import requests
+
         base_url = environment.host or "http://localhost:8000"
 
         # 获取前 5 页用户（约 100 个 ID）
@@ -311,7 +317,7 @@ def on_test_start(environment, **kwargs):
                 response = requests.get(
                     f"{base_url}/api/v1/users",
                     params={"page": page, "page_size": 20},
-                    timeout=5
+                    timeout=5,
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -337,13 +343,13 @@ def on_test_start(environment, **kwargs):
     except Exception as e:
         print(f"⚠️  获取用户 ID 失败: {e}")
 
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
     """测试结束时的操作"""
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("负载测试结束")
 
     # 输出统计信息
@@ -356,7 +362,7 @@ def on_test_stop(environment, **kwargs):
     print(f"平均响应时间: {environment.stats.total.avg_response_time:.0f}ms")
     print(f"中位数响应时间: {environment.stats.total.median_response_time:.0f}ms")
     print(f"RPS: {environment.stats.total.total_rps:.2f}")
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")
 
 
 @events.request.add_listener

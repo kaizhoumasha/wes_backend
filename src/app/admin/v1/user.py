@@ -20,14 +20,18 @@ from src.core.exceptions import (
     DatabaseException,
     NotFoundException,
     ConflictException,
-    raise_not_found,
 )
 from src.core.logger import logger
 from src.app.admin.models import User
 from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.database.redis_cache import RedisCache
 from src.app.admin.services.user_service import UserService
-from src.app.admin.models import UserCreate, UserUpdate, UserRead as UserResponse, UserListResponse
+from src.app.admin.models import (
+    UserCreate,
+    UserUpdate,
+    UserRead as UserResponse,
+    UserListResponse,
+)
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
 
@@ -71,7 +75,7 @@ async def get_user_with_cache(
             response_data = UserService.user_to_response(user)
             await cache.set(
                 cache_key,
-                response_data.model_dump(mode='json'),
+                response_data.model_dump(mode="json"),
                 expire=UserService.USER_CACHE_EXPIRE,
                 is_hot=True,
             )
@@ -163,7 +167,10 @@ async def get_users(
         raise DatabaseException("查询用户列表失败")
 
     items = UserService.users_to_list_response(users)
-    response_data = {"total": total, "items": [item.model_dump(mode='json') for item in items]}
+    response_data = {
+        "total": total,
+        "items": [item.model_dump(mode="json") for item in items],
+    }
 
     await cache.set(cache_key, response_data, expire=UserService.USER_LIST_CACHE_EXPIRE)
 
@@ -229,7 +236,7 @@ async def delete_user(
     - **user_id**: 用户 ID
     """
     try:
-        username = await UserService.delete_user(db, user_id)
+        await UserService.delete_user(db, user_id)
     except ValueError as e:
         raise NotFoundException(str(e))
 

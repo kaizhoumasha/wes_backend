@@ -13,8 +13,7 @@ import json
 import random
 import asyncio
 import time
-from typing import Any, Optional, Callable
-from functools import wraps
+from typing import Any, Optional
 from enum import Enum
 from redis.asyncio import Redis
 
@@ -455,7 +454,7 @@ def get_cache() -> RedisCache:
     """
     global _cache_instance
     if _cache_instance is None:
-        from src.database.redis_client import get_redis, is_redis_available
+        from src.database.redis_client import get_redis
 
         redis_client = get_redis()
 

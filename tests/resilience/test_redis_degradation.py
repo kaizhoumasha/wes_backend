@@ -14,8 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 async def test_redis_degradation():
     """测试 Redis 故障降级"""
-    from src.database.redis_cache import get_cache, CircuitBreaker, CircuitState
-    from src.core.logger import logger
+    from src.database.redis_cache import get_cache, CircuitState
 
     print("=" * 60)
     print("Redis 故障降级测试")

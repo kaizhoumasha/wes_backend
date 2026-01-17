@@ -7,7 +7,6 @@ RBAC 权限控制模块
 - require_superuser: 超级用户装饰器
 """
 
-from typing import Callable, Optional
 
 from fastapi import Depends, Request
 from sqlalchemy import select
@@ -66,9 +65,7 @@ class RequirePermission:
         """
         # 查询用户（预加载角色）
         result = await db.execute(
-            select(User)
-            .where(User.id == user_id)
-            .options(selectinload(User.roles))
+            select(User).where(User.id == user_id).options(selectinload(User.roles))
         )
         user = result.scalar_one_or_none()
 
@@ -96,8 +93,8 @@ class RequirePermission:
 
 async def require_superuser(
     request: Request,
-    user_id: int = Depends(require_auth),
     db: AsyncSessionDep,
+    user_id: int = Depends(require_auth),
 ) -> None:
     """
     要求超级用户权限
@@ -132,9 +129,7 @@ async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
         权限标识集合
     """
     result = await db.execute(
-        select(User)
-        .where(User.id == user_id)
-        .options(selectinload(User.roles))
+        select(User).where(User.id == user_id).options(selectinload(User.roles))
     )
     user = result.scalar_one_or_none()
 

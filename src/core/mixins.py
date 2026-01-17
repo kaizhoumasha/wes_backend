@@ -9,8 +9,7 @@ SQLModel Mixin 类
 from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
-from sqlalchemy import Column, DateTime, event, Integer, BigInteger
-from sqlalchemy.dialects.postgresql import BIGINT
+from sqlalchemy import event, BigInteger
 
 
 # ==================== 基础 Mixin ====================

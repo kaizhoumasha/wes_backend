@@ -16,10 +16,8 @@ from src.core.security import (
     create_access_token,
     create_refresh_token,
     jwt_decode,
-    revoke_token,
 )
-from src.core.conf import settings
-from src.app.admin.models import User, Role, Permission
+from src.app.admin.models import User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 

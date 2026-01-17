@@ -5,7 +5,6 @@
 """
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
-from typing import Any
 
 
 class RequestContext:

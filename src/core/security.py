@@ -19,13 +19,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import ExpiredSignatureError, JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers import argon2
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.conf import settings
 from src.core.exceptions import (
     AuthException,
-    PermissionException,
-    NotFoundException,
 )
 from src.core.logger import logger
 from src.core.timezone import timezone
