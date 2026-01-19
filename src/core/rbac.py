@@ -3,87 +3,96 @@ RBAC 权限控制模块
 
 提供基于角色的访问控制（RBAC）装饰器和工具：
 - require_auth: 认证装饰器
-- require_permission: 权限装饰器
+- RequirePermission: 权限装饰器工厂
 - require_superuser: 超级用户装饰器
 """
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.app.admin.models import User
-from src.core.exceptions import AuthException, PermissionException
-from src.core.security import require_auth
+from src.core.exceptions import AuthException, DatabaseException, PermissionException
+from src.core.security import jwt_decode, require_auth
 from src.database.dependencies import AsyncSessionDep
+
+security = HTTPBearer(auto_error=False)
 
 # ==================== 权限装饰器 ====================
 
 
-class RequirePermission:
+def RequirePermission(permission_name: str):
     """
-    权限验证装饰器
+    权限验证依赖工厂函数
 
     使用方式：
     ```python
-    @router.get("/users")
-    async def list_users(
-        _: None = Depends(RequirePermission("user:read")),
-        db: AsyncSessionDep,
-    ):
+    @router.post("/users", dependencies=[Security(RequirePermission("user:create"))])
+    async def create_user(...):
         ...
     ```
+
+    Args:
+        permission_name: 权限标识，如 "user:read"
+
+    Returns:
+        权限验证依赖函数
     """
 
-    def __init__(self, permission_name: str):
-        """
-        初始化权限验证器
-
-        Args:
-            permission_name: 权限标识，如 "user:read"
-        """
-        self.permission_name = permission_name
-
-    async def __call__(
-        self,
-        _request: Request,
-        user_id: int = Depends(require_auth),
-        db: AsyncSession = Depends(AsyncSessionDep),
+    async def verify_permission(
+        credentials: HTTPAuthorizationCredentials = Security(security),
     ) -> None:
         """
         验证用户权限
 
+        使用 Security + HTTPBearer 会在 Swagger UI 中显示认证图标
+
         Args:
-            request: FastAPI 请求对象
-            user_id: 当前用户 ID
-            db: 数据库会话
+            credentials: HTTP Bearer 认证凭证
 
         Raises:
             PermissionException: 权限不足
         """
-        # 查询用户（预加载角色）
-        result = await db.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles))
-        )
-        user = result.scalar_one_or_none()
+        from src.database.db import AsyncSessionLocal
 
-        if not user:
-            raise AuthException("用户不存在")
+        # 验证 token
+        if credentials is None:
+            raise AuthException("未提供认证令牌")
 
-        # 超级用户拥有所有权限
-        if user.is_superuser:
-            return
+        token = credentials.credentials
+        token_payload = jwt_decode(token)
+        user_id = token_payload.id
 
-        # 收集用户所有权限
-        user_permissions = set()
-        for role in user.roles:
-            if role.is_active:
-                for perm in role.permissions:
-                    user_permissions.add(perm.name)
+        # 直接创建 db session（不依赖 request.state，因为此时还未设置）
+        if AsyncSessionLocal is None:
+            raise DatabaseException("数据库未初始化")
 
-        # 检查权限
-        if self.permission_name not in user_permissions:
-            raise PermissionException(f"需要权限: {self.permission_name}")
+        async with AsyncSessionLocal() as db:
+            # 查询用户（预加载角色）
+            result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
+            user = result.scalar_one_or_none()
+
+            if not user:
+                raise AuthException("用户不存在")
+
+            # 超级用户拥有所有权限
+            if user.is_superuser:
+                return
+
+            # 收集用户所有权限
+            user_permissions = set()
+            for role in user.roles:
+                if role.is_active:
+                    for perm in role.permissions:
+                        user_permissions.add(perm.name)
+
+            # 检查权限
+            if permission_name not in user_permissions:
+                raise PermissionException(f"需要权限: {permission_name}")
+
+    return verify_permission
 
 
 # ==================== 超级用户装饰器 ====================
@@ -126,9 +135,7 @@ async def get_user_permissions(db: AsyncSession, user_id: int) -> set[str]:
     Returns:
         权限标识集合
     """
-    result = await db.execute(
-        select(User).where(User.id == user_id).options(selectinload(User.roles))
-    )
+    result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.roles)))
     user = result.scalar_one_or_none()
 
     if not user:

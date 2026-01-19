@@ -4,16 +4,16 @@
 改进：
 1. 使用新的依赖注入（CacheDep, AsyncSessionDep）
 2. 提取服务层，消除代码重复
-3. 统一错误处理
+3. 统一错误处理（依赖全局异常处理器）
 4. 改进类型安全
 5. 简化路由逻辑
+6. 使用缓存装饰器简化缓存逻辑
 """
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, Security, status
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import (
@@ -28,12 +28,13 @@ from src.app.admin.models import (
 from src.app.admin.services.user_service import UserService
 from src.core.exceptions import (
     ConflictException,
-    DatabaseException,
     NotFoundException,
 )
 from src.core.logger import logger
+from src.core.rbac import RequirePermission
+from src.core.security import require_auth
+from src.database.cache_decorator import cached_null
 from src.database.dependencies import AsyncSessionDep, CacheDep
-from src.database.redis_cache import RedisCache
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
 
@@ -41,60 +42,27 @@ router = APIRouter(prefix="/users", tags=["用户管理"])
 # ==================== 辅助函数 ====================
 
 
-async def get_user_with_cache(db: AsyncSession, cache: RedisCache, user_id: int) -> UserResponse:
+@cached_null(
+    key_prefix=UserService.USER_DETAIL_CACHE_PREFIX,
+    expire=UserService.USER_CACHE_EXPIRE,
+    null_expire=UserService.NULL_CACHE_EXPIRE,
+    lock=True,
+)
+async def get_user_with_cache(db: AsyncSession, cache, user_id: int) -> UserResponse:
     """
     获取用户（带缓存）
 
+    使用缓存装饰器自动处理缓存逻辑，包括：
+    - 缓存读取和写入
+    - 分布式锁防止缓存击穿
+    - 空值缓存防止缓存穿透
+
     :raises NotFoundException: 如果用户不存在
     """
-    cache_key = f"{UserService.USER_DETAIL_CACHE_PREFIX}:{user_id}"
-
-    cached_data = await cache.get(cache_key)
-    if cached_data is not None:
-        logger.info(f"缓存命中: {cache_key}")
-        return UserResponse(**cached_data)
-
-    lock_acquired = await cache.acquire_lock(cache_key, timeout=10, wait_timeout=5)
-
-    if lock_acquired:
-        try:
-            cached_data = await cache.get(cache_key)
-            if cached_data is not None:
-                return UserResponse(**cached_data)
-
-            try:
-                user = await UserService.get_user_by_id(db, user_id)
-            except SQLAlchemyError as e:
-                logger.error(f"查询用户失败: {e}")
-                raise DatabaseException("查询用户失败") from e
-
-            if not user:
-                await cache.set(cache_key, None, expire=UserService.NULL_CACHE_EXPIRE)
-                raise NotFoundException("用户不存在")
-
-            response_data = UserService.user_to_response(user)
-            await cache.set(
-                cache_key,
-                response_data.model_dump(mode="json"),
-                expire=UserService.USER_CACHE_EXPIRE,
-                is_hot=True,
-            )
-
-            logger.info(f"获取用户详情: {user.username}")
-            return response_data
-        finally:
-            await cache.release_lock(cache_key)
-    else:
-        logger.warning(f"获取锁失败，降级到数据库查询: {cache_key}")
-        try:
-            user = await UserService.get_user_by_id(db, user_id)
-        except SQLAlchemyError as e:
-            logger.error(f"查询用户失败: {e}")
-            raise DatabaseException("查询用户失败") from e
-
-        if not user:
-            raise NotFoundException("用户不存在")
-        return UserService.user_to_response(user)
+    user = await UserService.get_user_by_id(db, user_id)
+    if not user:
+        return None
+    return UserService.user_to_response(user)
 
 
 # ==================== CRUD 路由 ====================
@@ -105,10 +73,15 @@ async def get_user_with_cache(db: AsyncSession, cache: RedisCache, user_id: int)
     response_model=UserResponse,
     summary="创建用户",
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Security(RequirePermission("user:create"))],
 )
-async def create_user(user_in: UserCreate, db: AsyncSessionDep, cache: CacheDep):
+async def create_user(
+    user_in: UserCreate,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+):
     """
-    创建新用户
+    创建新用户（需要 user:create 权限）
 
     缓存策略：Cache-Aside（创建后删除列表缓存）
 
@@ -134,7 +107,12 @@ async def create_user(user_in: UserCreate, db: AsyncSessionDep, cache: CacheDep)
     return UserService.user_to_response(user)
 
 
-@router.get("", response_model=UserListResponse, summary="获取用户列表")
+@router.get(
+    "",
+    response_model=UserListResponse,
+    summary="获取用户列表",
+    dependencies=[Depends(require_auth)],
+)
 async def get_users(
     db: AsyncSessionDep,
     cache: CacheDep,
@@ -142,7 +120,7 @@ async def get_users(
     page_size: Annotated[int, Query(ge=1, le=100, description="每页数量")] = 10,
 ):
     """
-    获取用户列表（分页，带缓存）
+    获取用户列表（分页，带缓存，需要登录）
 
     缓存策略：
     - 缓存键：user:list:{page}:{page_size}
@@ -160,11 +138,7 @@ async def get_users(
         logger.info(f"缓存命中: {cache_key}")
         return UserListResponse(**cached_data)
 
-    try:
-        total, users = await UserService.get_users_paginated(db, page, page_size)
-    except SQLAlchemyError as e:
-        logger.error(f"查询用户列表失败: {e}")
-        raise DatabaseException("查询用户列表失败") from e
+    total, users = await UserService.get_users_paginated(db, page, page_size)
 
     items = UserService.users_to_list_response(users)
     response_data = {
@@ -178,24 +152,35 @@ async def get_users(
     return UserListResponse(total=total, items=items)
 
 
-@router.get("/{user_id}", response_model=UserResponse, summary="获取用户详情")
+@router.get(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="获取用户详情",
+    dependencies=[Depends(require_auth)],
+)
 async def get_user(
+    user_id: int,
     db: AsyncSessionDep,
     cache: CacheDep,
-    user_id: int,
 ):
+    """获取用户详情（需要登录）"""
     return await get_user_with_cache(db, cache, user_id)
 
 
-@router.put("/{user_id}", response_model=UserResponse, summary="更新用户")
+@router.put(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="更新用户",
+    dependencies=[Security(RequirePermission("user:update"))],
+)
 async def update_user(
-    db: AsyncSessionDep,
-    cache: CacheDep,
     user_id: int,
     user_in: UserUpdate,
+    db: AsyncSessionDep,
+    cache: CacheDep,
 ):
     """
-    更新用户信息
+    更新用户信息（需要 user:update 权限）
 
     缓存策略：Cache-Aside（更新数据库后删除缓存）
 
@@ -221,14 +206,19 @@ async def update_user(
     return UserService.user_to_response(user)
 
 
-@router.delete("/{user_id}", summary="删除用户", status_code=status.HTTP_200_OK)
+@router.delete(
+    "/{user_id}",
+    summary="删除用户",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Security(RequirePermission("user:delete"))],
+)
 async def delete_user(
+    user_id: int,
     db: AsyncSessionDep,
     cache: CacheDep,
-    user_id: int,
 ):
     """
-    删除用户
+    删除用户（需要 user:delete 权限）
 
     缓存策略：Cache-Aside（删除数据库后删除缓存）
 

@@ -69,11 +69,27 @@ async def logout(
 )
 async def refresh_token(
     request: Request,
+    response: Response,
     db: AsyncSessionDep,
 ):
     """
     刷新访问令牌
 
     使用刷新令牌（从 Cookie 中获取）获取新的访问令牌和刷新令牌。
+    新的刷新令牌会自动更新到 HttpOnly Cookie 中。
     """
-    return await auth_service.refresh_token(db=db, request=request)
+    from src.core.conf import settings
+
+    result = await auth_service.refresh_token(db=db, request=request)
+
+    # 更新 Cookie 中的刷新令牌
+    response.set_cookie(
+        key="refresh_token",
+        value=result.refresh_token,
+        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
+        httponly=True,
+        secure=not settings.APP_DEBUG,
+        samesite="lax",
+    )
+
+    return result

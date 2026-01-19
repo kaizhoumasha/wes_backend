@@ -78,9 +78,7 @@ class CircuitBreaker:
         elif self.failure_count >= self.failure_threshold:
             # 达到失败阈值，打开熔断器
             self.state = CircuitState.OPEN
-            logger.error(
-                f"熔断器已打开（失败次数: {self.failure_count}，阈值: {self.failure_threshold}）"
-            )
+            logger.error(f"熔断器已打开（失败次数: {self.failure_count}，阈值: {self.failure_threshold}）")
 
     def can_attempt(self) -> bool:
         """检查是否可以尝试请求"""
@@ -248,9 +246,7 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return None
 
-    async def set(
-        self, key: str, value: Any, expire: int | None = None, is_hot: bool = False
-    ) -> bool:
+    async def set(self, key: str, value: Any, expire: int | None = None, is_hot: bool = False) -> bool:
         """
         设置缓存（支持自动降级）
 
@@ -372,11 +368,7 @@ class RedisCache:
             return False
 
         redis_key = self._make_key(f"lock:{lock_key}")
-        identifier = str(
-            asyncio.current_task().get_name()
-            if asyncio.current_task()
-            else id(asyncio.current_task())
-        )
+        identifier = str(asyncio.current_task().get_name() if asyncio.current_task() else id(asyncio.current_task()))
 
         start_time = asyncio.get_event_loop().time()
         while True:

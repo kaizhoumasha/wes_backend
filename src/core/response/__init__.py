@@ -95,9 +95,7 @@ from .response_schema import (
 
 # ==================== 响应工具 ====================
 from .response_util import (
-    ModelSerializer,
     ResponseBuilder,
-    model_serializer,
     response_builder,
 )
 
@@ -147,7 +145,6 @@ __all__ = [
     "ClientErrorCode",
     "ExternalServiceErrorCode",
     "MiscErrorCode",
-    "ModelSerializer",
     "PaginationData",
     "PaginationResponseModel",
     "ResourceErrorCode",
@@ -163,7 +160,6 @@ __all__ = [
     "SuccessCode",
     # 便捷函数
     "error_response_dict",
-    "model_serializer",
     "response_builder",
 ]
 

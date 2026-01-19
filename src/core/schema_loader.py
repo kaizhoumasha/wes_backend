@@ -208,9 +208,7 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
                 relationships = get_relationship_fields(schema)
                 if relationships.get(field_name):
                     nested_schema = relationships[field_name]
-                    data[field_name] = [
-                        model_to_schema(item, nested_schema).__dict__ for item in value
-                    ]
+                    data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in value]
                 else:
                     data[field_name] = value
             else:

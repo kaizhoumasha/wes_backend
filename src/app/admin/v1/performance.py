@@ -14,24 +14,13 @@ from typing import Any
 
 import psutil
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.conf import settings
+from src.core.health import check_database_health, check_database_pool_status, check_redis_health
 from src.core.logger import logger
 from src.database.db import get_db
 from src.database.redis_cache import get_cache
-from src.database.redis_client import get_redis
-
-
-def get_engine():
-    """获取数据库引擎"""
-    from src.database.db import engine
-
-    if engine is None:
-        raise RuntimeError("数据库引擎未初始化")
-    return engine
-
 
 router = APIRouter(prefix="/performance", tags=["性能监控"])
 
@@ -72,66 +61,26 @@ async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[st
     }
 
     # 数据库指标
-    try:
-        # 测试数据库连接
-        start_time = time.time()
-        await db.execute(text("SELECT 1"))
-        db_response_time = (time.time() - start_time) * 1000
-
-        # 获取引擎并检查连接池状态
-        engine = get_engine()
-        pool = engine.pool
-        db_metrics = {
-            "status": "connected",
-            "response_time_ms": round(db_response_time, 2),
-            "pool_size": pool.size(),
-            "checked_out": pool.checkedout(),
-        }
-    except Exception as e:
-        logger.error(f"数据库健康检查失败: {e}")
-        db_metrics = {
-            "status": "error",
-            "error": str(e),
-        }
+    db_health = await check_database_health(db)
+    if db_health["status"] == "healthy":
+        # 获取连接池状态
+        pool_status = await check_database_pool_status(db)
+        if pool_status:
+            db_metrics = {
+                "status": "connected",
+                "response_time_ms": db_health["response_time_ms"],
+                **pool_status,
+            }
+        else:
+            db_metrics = {
+                "status": "connected",
+                "response_time_ms": db_health["response_time_ms"],
+            }
+    else:
+        db_metrics = db_health
 
     # Redis 指标
-    try:
-        from src.database.redis_client import ensure_redis_connection, is_redis_available
-
-        # 尝试确保 Redis 连接（会自动重连）
-        await ensure_redis_connection()
-
-        if is_redis_available():
-            redis_client = get_redis()
-            if redis_client is not None:
-                start_time = time.time()
-                await redis_client.ping()
-                redis_response_time = (time.time() - start_time) * 1000
-
-                # 获取 Redis 信息
-                info = await redis_client.info()
-                db_size = await redis_client.dbsize()
-
-                redis_metrics = {
-                    "status": "connected",
-                    "response_time_ms": round(redis_response_time, 2),
-                    "db_size": db_size,
-                    "used_memory": info.get("used_memory_human", "N/A"),
-                    "connected_clients": info.get("connected_clients", 0),
-                }
-            else:
-                redis_metrics = {"status": "degraded", "message": "Redis 客户端未初始化"}
-        else:
-            redis_metrics = {
-                "status": "degraded",
-                "message": "Redis 不可用，应用以降级模式运行（系统会自动检测恢复）",
-            }
-    except Exception as e:
-        logger.error(f"Redis 健康检查失败: {e}")
-        redis_metrics = {
-            "status": "error",
-            "error": str(e),
-        }
+    redis_metrics = await check_redis_health()
 
     # 缓存指标
     try:
@@ -170,40 +119,26 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
 
     返回各组件的健康状态
     """
-    health_status = {
-        "status": "healthy",
-        "timestamp": time.time(),
-        "components": {},
-    }
+    overall_status = "healthy"
+    components = {}
 
     # 检查数据库
-    try:
-        await db.execute(text("SELECT 1"))
-        health_status["components"]["database"] = {
-            "status": "healthy",
-        }
-    except Exception as e:
-        health_status["status"] = "unhealthy"
-        health_status["components"]["database"] = {
-            "status": "unhealthy",
-            "error": str(e),
-        }
+    db_health = await check_database_health(db)
+    components["database"] = db_health
+    if db_health["status"] != "healthy":
+        overall_status = "unhealthy"
 
     # 检查 Redis
-    try:
-        redis_client = get_redis()
-        await redis_client.ping()
-        health_status["components"]["redis"] = {
-            "status": "healthy",
-        }
-    except Exception as e:
-        health_status["status"] = "unhealthy"
-        health_status["components"]["redis"] = {
-            "status": "unhealthy",
-            "error": str(e),
-        }
+    redis_health = await check_redis_health()
+    components["redis"] = redis_health
+    if redis_health["status"] not in ("healthy", "degraded"):
+        overall_status = "unhealthy"
 
-    return health_status
+    return {
+        "status": overall_status,
+        "timestamp": time.time(),
+        "components": components,
+    }
 
 
 @router.post("/load-test/reset", summary="重置性能测试数据")
@@ -245,14 +180,10 @@ async def get_performance_config() -> dict[str, Any]:
             "debug": settings.APP_DEBUG,
         },
         "database": {
-            "url": str(settings.DATABASE_URL).split("@")[-1]
-            if "@" in str(settings.DATABASE_URL)
-            else "configured",
+            "url": str(settings.DATABASE_URL).split("@")[-1] if "@" in str(settings.DATABASE_URL) else "configured",
         },
         "redis": {
-            "url": str(settings.REDIS_URL).split("@")[-1]
-            if "@" in str(settings.REDIS_URL)
-            else "configured",
+            "url": str(settings.REDIS_URL).split("@")[-1] if "@" in str(settings.REDIS_URL) else "configured",
         },
         "performance": {
             "db_pool_size": 20,

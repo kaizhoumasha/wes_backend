@@ -118,9 +118,7 @@ def setup_logger() -> None:
             filter=add_request_id_filter,
         )
     else:
-        console_format = (
-            "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
-        )
+        console_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
         _logger.add(
             sys.stderr,
             format=console_format,
@@ -130,9 +128,14 @@ def setup_logger() -> None:
         )
 
     # ==================== 文件输出 ====================
+    # 文件日志格式字符串（避免超过行长度限制）
+    file_log_format = (
+        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}"
+    )
+
     _logger.add(
         LOG_DIR / "app.log",
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}",
+        format=file_log_format,
         level=log_level,
         rotation=rotation_size,
         retention=rotation_day,
@@ -146,7 +149,7 @@ def setup_logger() -> None:
 
     _logger.add(
         LOG_DIR / "error.log",
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}",
+        format=file_log_format,
         level="ERROR",
         rotation=rotation_size,
         retention=rotation_day,

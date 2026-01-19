@@ -55,9 +55,7 @@ class RedisManager:
             self.redis_client = None
             self.connection_pool = None
             logger.warning(
-                f"⚠️  Redis 连接失败: {e}\n"
-                f"   应用将以降级模式运行（无缓存）\n"
-                f"   系统将自动检测 Redis 恢复并重连"
+                f"⚠️  Redis 连接失败: {e}\n   应用将以降级模式运行（无缓存）\n   系统将自动检测 Redis 恢复并重连"
             )
 
         except Exception as e:

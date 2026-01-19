@@ -113,9 +113,7 @@ class TestSnowflakeConcurrency:
         expected_count = num_threads * ids_per_thread
         actual_count = len(ids)
 
-        assert actual_count == expected_count, (
-            f"期望 {expected_count} 个唯一 ID，实际 {actual_count} 个"
-        )
+        assert actual_count == expected_count, f"期望 {expected_count} 个唯一 ID，实际 {actual_count} 个"
 
     def test_high_concurrency(self):
         """测试高并发场景"""
@@ -202,9 +200,7 @@ class TestSnowflakeValidation:
         """测试 JavaScript 安全整数范围"""
         for _ in range(10000):
             snowflake_id = generate_snowflake_id()
-            assert snowflake_id <= SnowflakeConfig.MAX_SAFE_INTEGER, (
-                f"ID {snowflake_id} 超出 JavaScript 安全范围"
-            )
+            assert snowflake_id <= SnowflakeConfig.MAX_SAFE_INTEGER, f"ID {snowflake_id} 超出 JavaScript 安全范围"
 
 
 class TestSnowflakeMixinIntegration:

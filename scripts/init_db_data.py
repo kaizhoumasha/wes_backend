@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
 from src.app.admin.models import (
     Permission,
@@ -179,9 +180,7 @@ async def create_permissions(session: AsyncSession) -> dict[str, Permission]:
 
     for perm_data in INITIAL_PERMISSIONS:
         # 检查权限是否已存在
-        result = await session.execute(
-            select(Permission).where(Permission.name == perm_data["name"])
-        )
+        result = await session.execute(select(Permission).where(Permission.name == perm_data["name"]))
         existing = result.scalar_one_or_none()
 
         if existing:
@@ -201,9 +200,7 @@ async def create_permissions(session: AsyncSession) -> dict[str, Permission]:
     return permission_map
 
 
-async def create_roles(
-    session: AsyncSession, permission_map: dict[str, Permission]
-) -> dict[str, Role]:
+async def create_roles(session: AsyncSession, permission_map: dict[str, Permission]) -> dict[str, Role]:
     """
     创建初始角色数据及其权限关联
 
@@ -215,7 +212,8 @@ async def create_roles(
     """
     logger.info(f"开始创建角色数据，共 {len(INITIAL_ROLES)} 条")
 
-    role_map = {}
+    # 第一阶段：创建所有角色（不处理关系）
+    role_permission_map = {}  # 存储角色和权限的映射关系
 
     for role_data in INITIAL_ROLES:
         role_name = role_data["name"]
@@ -227,14 +225,42 @@ async def create_roles(
 
         if existing:
             logger.info(f"角色已存在，跳过: {role_name}")
-            role_map[role_name] = existing
+            role_permission_map[role_name] = {"role": existing, "permissions": permissions, "exists": True}
+        else:
+            # 创建角色（不包含 permissions 字段）
+            role = Role(**role_data)
+            session.add(role)
+            await session.flush()
+            await session.refresh(role)
+            logger.info(f"创建角色: {role_name}")
+            role_permission_map[role_name] = {"role": role, "permissions": permissions, "exists": False}
+
+    await session.commit()
+
+    # 第二阶段：为角色添加权限关系
+    role_map = {}
+
+    for role_name, role_info in role_permission_map.items():
+        role = role_info["role"]
+        permissions = role_info["permissions"]
+        exists = role_info["exists"]
+
+        # 如果是已存在的角色，跳过关系添加（假设已有正确的关系）
+        if exists:
+            role_map[role_name] = role
             continue
 
-        # 创建角色（不包含 permissions 字段）
-        role = Role(**role_data)
-        session.add(role)
-        await session.flush()
-        await session.refresh(role)
+        # 重新查询角色以获取会话中的实例
+        result = await session.execute(
+            select(Role)
+            .where(Role.name == role_name)
+            .options(selectinload(Role.permissions))
+        )
+        role = result.scalar_one_or_none()
+
+        if not role:
+            logger.warning(f"无法找到刚创建的角色: {role_name}")
+            continue
 
         # 关联权限（通过 relationship）
         if permissions == "*":
@@ -250,7 +276,6 @@ async def create_roles(
             logger.info(f"角色 {role_name} 拥有 {len(role.permissions)} 个权限")
 
         role_map[role_name] = role
-        logger.info(f"创建角色: {role_name}")
 
     await session.commit()
     logger.info(f"角色数据创建完成，共 {len(role_map)} 条")
@@ -270,7 +295,8 @@ async def create_users(session: AsyncSession, role_map: dict[str, Role]) -> dict
     """
     logger.info(f"开始创建用户数据，共 {len(INITIAL_USERS)} 条")
 
-    user_map = {}
+    # 第一阶段：创建所有用户（不处理关系）
+    user_role_map = {}  # 存储用户和角色的映射关系
 
     for user_data in INITIAL_USERS:
         username = user_data["username"]
@@ -283,14 +309,42 @@ async def create_users(session: AsyncSession, role_map: dict[str, Role]) -> dict
 
         if existing:
             logger.info(f"用户已存在，跳过: {username}")
-            user_map[username] = existing
+            user_role_map[username] = {"user": existing, "roles": role_names, "exists": True}
+        else:
+            # 创建用户（密码哈希）
+            user = User(**user_data, hashed_password=get_password_hash(plain_password))
+            session.add(user)
+            await session.flush()
+            await session.refresh(user)
+            logger.info(f"创建用户: {username} (密码: {plain_password})")
+            user_role_map[username] = {"user": user, "roles": role_names, "exists": False}
+
+    await session.commit()
+
+    # 第二阶段：为用户添加角色关系
+    user_map = {}
+
+    for username, user_info in user_role_map.items():
+        user = user_info["user"]
+        role_names = user_info["roles"]
+        exists = user_info["exists"]
+
+        # 如果是已存在的用户，跳过关系添加
+        if exists:
+            user_map[username] = user
             continue
 
-        # 创建用户（密码哈希）
-        user = User(**user_data, hashed_password=get_password_hash(plain_password))
-        session.add(user)
-        await session.flush()
-        await session.refresh(user)
+        # 重新查询用户以获取会话中的实例
+        result = await session.execute(
+            select(User)
+            .where(User.username == username)
+            .options(selectinload(User.roles).selectinload(Role.permissions))
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            logger.warning(f"无法找到刚创建的用户: {username}")
+            continue
 
         # 关联角色（通过 relationship）
         for role_name in role_names:
@@ -299,7 +353,6 @@ async def create_users(session: AsyncSession, role_map: dict[str, Role]) -> dict
         logger.info(f"用户 {username} 拥有角色: {', '.join(role_names)}")
 
         user_map[username] = user
-        logger.info(f"创建用户: {username} (密码: {plain_password})")
 
     await session.commit()
     logger.info(f"用户数据创建完成，共 {len(user_map)} 条")

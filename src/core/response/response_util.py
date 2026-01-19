@@ -10,26 +10,16 @@
 4. 批量操作工具 - 构建批量操作响应
 """
 
-from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, TypeVar, Union
+from typing import Any
 
 from fastapi.responses import ORJSONResponse
-from pydantic import BaseModel
-from sqlalchemy.inspection import inspect as sqlalchemy_inspect
-from sqlmodel import SQLModel
 
 from .response_code import DEFAULT_SUCCESS, ResponseCode
 from .response_schema import (
     BatchOperationResult,
     PaginationData,
 )
-
-# ==================== 类型变量 ====================
-
-T = TypeVar("T", bound=BaseModel)
-ModelT = TypeVar("ModelT", bound=Union[SQLModel, BaseModel])
-
 
 # ==================== 响应构建器 ====================
 
@@ -62,9 +52,7 @@ class ResponseBuilder:
     """
 
     @staticmethod
-    def _build_response_dict(
-        code: str, message: str, data: Any = None, timestamp: str | None = None
-    ) -> dict:
+    def _build_response_dict(code: str, message: str, data: Any = None, timestamp: str | None = None) -> dict:
         """
         构建响应字典
 
@@ -87,9 +75,7 @@ class ResponseBuilder:
 
         return response_dict
 
-    def success(
-        self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
-    ) -> dict:
+    def success(self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None) -> dict:
         """
         构建成功响应
 
@@ -166,9 +152,7 @@ class ResponseBuilder:
         """
         pagination_data = PaginationData.create(items=items, total=total, page=page, size=size)
 
-        return self._build_response_dict(
-            code=code.code, message=code.message, data=pagination_data.model_dump()
-        )
+        return self._build_response_dict(code=code.code, message=code.message, data=pagination_data.model_dump())
 
     def batch_operation(
         self,
@@ -203,13 +187,9 @@ class ResponseBuilder:
             )
             ```
         """
-        batch_result = BatchOperationResult.create(
-            success=success, failed=failed, results=results, errors=errors
-        )
+        batch_result = BatchOperationResult.create(success=success, failed=failed, results=results, errors=errors)
 
-        return self._build_response_dict(
-            code=code.code, message=code.message, data=batch_result.model_dump()
-        )
+        return self._build_response_dict(code=code.code, message=code.message, data=batch_result.model_dump())
 
     def fast_success(
         self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
@@ -243,209 +223,15 @@ class ResponseBuilder:
         return ORJSONResponse(status_code=code.status, content=response_dict)
 
 
-# ==================== 模型序列化器 ====================
-
-
-class ModelSerializer:
-    """
-    模型序列化器
-
-    将SQLAlchemy/SQLModel/Pydantic模型转换为字典格式。
-
-    支持的模型类型：
-    - Pydantic BaseModel
-    - SQLModel
-    - SQLAlchemy模型
-    - 普通dict
-
-    Example:
-        ```python
-        # Pydantic模型
-        user_schema = UserRead.model_validate(user_obj)
-        user_dict = model_serializer.to_dict(user_schema)
-
-        # SQLAlchemy模型
-        user_dict = model_serializer.to_dict(user_obj)
-
-        # 列表
-        users_dict = model_serializer.to_dict_list([user1, user2])
-        ```
-    """
-
-    @staticmethod
-    def is_pydantic_model(obj: Any) -> bool:
-        """
-        判断对象是否为Pydantic模型
-
-        Args:
-            obj: 待判断的对象
-
-        Returns:
-            是否为Pydantic模型
-        """
-        return isinstance(obj, BaseModel)
-
-    @staticmethod
-    def is_sqlalchemy_model(obj: Any) -> bool:
-        """
-        判断对象是否为SQLAlchemy/SQLModel模型
-
-        Args:
-            obj: 待判断的对象
-
-        Returns:
-            是否为SQLAlchemy模型
-        """
-        try:
-            # 检查是否有_sqla_registry属性（SQLAlchemy 2.0）
-            if hasattr(obj, "__tablename__"):
-                return True
-            # 使用sqlalchemy的inspect检查
-            sqlalchemy_inspect(obj)
-            return True
-        except Exception:
-            return False
-
-    def to_dict(
-        self, model: ModelT, exclude: set[str] | None = None, exclude_none: bool = False
-    ) -> dict:
-        """
-        将模型转换为字典
-
-        Args:
-            model: 模型实例（Pydantic/SQLAlchemy/SQLModel）
-            exclude: 要排除的字段集合
-            exclude_none: 是否排除None值字段
-
-        Returns:
-            字典格式的数据
-
-        Raises:
-            ValueError: 不支持的模型类型
-
-        Example:
-            ```python
-            user_dict = model_serializer.to_dict(
-                user_obj,
-                exclude={'password', 'deleted_at'},
-                exclude_none=True
-            )
-            ```
-        """
-        # Pydantic/SQLModel模型
-        if self.is_pydantic_model(model):
-            return model.model_dump(
-                exclude=exclude,
-                exclude_none=exclude_none,
-                mode="json",  # JSON模式，处理datetime等特殊类型
-            )
-
-        # SQLAlchemy模型
-        if self.is_sqlalchemy_model(model):
-            result = {}
-            for column in model.__table__.columns:
-                key = column.name
-                if exclude and key in exclude:
-                    continue
-                value = getattr(model, key, None)
-                if exclude_none and value is None:
-                    continue
-                # 处理datetime等特殊类型
-                if isinstance(value, datetime):
-                    value = value.isoformat()
-                result[key] = value
-            return result
-
-        # 已经是字典
-        if isinstance(model, dict):
-            if exclude:
-                model = {k: v for k, v in model.items() if k not in exclude}
-            if exclude_none:
-                model = {k: v for k, v in model.items() if v is not None}
-            return model
-
-        raise ValueError(
-            f"不支持的模型类型: {type(model)}. 仅支持 Pydantic/SQLAlchemy/SQLModel 模型或字典"
-        )
-
-    def to_dict_list(
-        self, models: Sequence[ModelT], exclude: set[str] | None = None, exclude_none: bool = False
-    ) -> list[dict]:
-        """
-        将模型列表转换为字典列表
-
-        Args:
-            models: 模型实例列表
-            exclude: 要排除的字段集合
-            exclude_none: 是否排除None值字段
-
-        Returns:
-            字典列表
-
-        Example:
-            ```python
-            users_dict = model_serializer.to_dict_list(
-                user_list,
-                exclude={'password'}
-            )
-            ```
-        """
-        return [self.to_dict(model, exclude=exclude, exclude_none=exclude_none) for model in models]
-
-    def paginate_models(
-        self,
-        models: Sequence[ModelT],
-        total: int,
-        page: int = 1,
-        size: int = 10,
-        exclude: set[str] | None = None,
-        exclude_none: bool = False,
-    ) -> PaginationData:
-        """
-        将模型列表转换为分页数据
-
-        Args:
-            models: 模型实例列表
-            total: 总记录数
-            page: 当前页码
-            size: 每页大小
-            exclude: 要排除的字段集合
-            exclude_none: 是否排除None值字段
-
-        Returns:
-            分页数据对象
-
-        Example:
-            ```python
-            users, total = fetch_users(page=1, size=10)
-            pagination = model_serializer.paginate_models(
-                models=users,
-                total=total,
-                page=1,
-                size=10,
-                exclude={'password'}
-            )
-            ```
-        """
-        items = self.to_dict_list(models=models, exclude=exclude, exclude_none=exclude_none)
-
-        return PaginationData.create(items=items, total=total, page=page, size=size)
-
-
 # ==================== 全局实例 ====================
 
 # 全局响应构建器实例
 response_builder: ResponseBuilder = ResponseBuilder()
 
-# 全局模型序列化器实例
-model_serializer: ModelSerializer = ModelSerializer()
-
 
 # ==================== 导出 ====================
 
 __all__ = [
-    "ModelSerializer",
     "ResponseBuilder",
-    "model_serializer",
     "response_builder",
 ]

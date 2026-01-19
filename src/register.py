@@ -31,9 +31,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         await init_db()
         await init_redis()
 
-        logger.info(
-            f"Swagger DOC：http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}"
-        )
+        logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except Exception as e:
         # exc_info=True 捕获完整堆栈跟踪

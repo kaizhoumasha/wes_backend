@@ -138,14 +138,10 @@ class SnowflakeIDGenerator:
             # 验证参数
             if not (0 <= self.datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
                 raise ValueError(
-                    f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，"
-                    f"当前值: {self.datacenter_id}"
+                    f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，当前值: {self.datacenter_id}"
                 )
             if not (0 <= self.worker_id <= SnowflakeConfig.MAX_WORKER_ID):
-                raise ValueError(
-                    f"worker_id 必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间，"
-                    f"当前值: {self.worker_id}"
-                )
+                raise ValueError(f"worker_id 必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间，当前值: {self.worker_id}")
 
             self._initialized = True
 
@@ -205,8 +201,7 @@ class SnowflakeIDGenerator:
             # 验证 JavaScript 安全性
             if snowflake_id > SnowflakeConfig.MAX_SAFE_INTEGER:
                 raise ValueError(
-                    f"生成的 ID {snowflake_id} 超出 JavaScript 安全整数范围 "
-                    f"({SnowflakeConfig.MAX_SAFE_INTEGER})"
+                    f"生成的 ID {snowflake_id} 超出 JavaScript 安全整数范围 ({SnowflakeConfig.MAX_SAFE_INTEGER})"
                 )
 
             return snowflake_id
@@ -220,12 +215,8 @@ class SnowflakeIDGenerator:
         :return: 包含时间戳、数据中心、工作机器、序列号的字典
         """
         timestamp = (snowflake_id >> SnowflakeConfig.TIMESTAMP_LEFT_SHIFT) + SnowflakeConfig.EPOCH
-        datacenter_id = (
-            snowflake_id >> SnowflakeConfig.DATACENTER_ID_SHIFT
-        ) & SnowflakeConfig.MAX_DATACENTER_ID
-        worker_id = (
-            snowflake_id >> SnowflakeConfig.WORKER_ID_SHIFT
-        ) & SnowflakeConfig.MAX_WORKER_ID
+        datacenter_id = (snowflake_id >> SnowflakeConfig.DATACENTER_ID_SHIFT) & SnowflakeConfig.MAX_DATACENTER_ID
+        worker_id = (snowflake_id >> SnowflakeConfig.WORKER_ID_SHIFT) & SnowflakeConfig.MAX_WORKER_ID
         sequence = snowflake_id & SnowflakeConfig.SEQUENCE_MASK
 
         return {
@@ -242,9 +233,7 @@ class SnowflakeIDGenerator:
 _default_generator: SnowflakeIDGenerator | None = None
 
 
-def get_snowflake_generator(
-    datacenter_id: int | None = None, worker_id: int | None = None
-) -> SnowflakeIDGenerator:
+def get_snowflake_generator(datacenter_id: int | None = None, worker_id: int | None = None) -> SnowflakeIDGenerator:
     """
     获取雪花 ID 生成器实例
 

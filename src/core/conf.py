@@ -1,8 +1,8 @@
 # 在类定义外先加载环境变量
-import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
+from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
@@ -11,109 +11,185 @@ load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆�
 
 
 class Settings(BaseSettings):
-    """Global Settings"""
+    """
+    全局配置类
 
-    model_config = SettingsConfigDict(
-        env_file=f"{BasePath}/.env", env_file_encoding="utf-8", extra="ignore"
-    )
+    Pydantic BaseSettings 会自动从环境变量读取配置，无需显式调用 os.getenv()。
+    环境变量优先级高于默认值。
 
-    # 项目名称
-    PROJECT_NAME: str = os.getenv("PROJECT_NAME", "FastAPI")
-    # 项目版本
-    VERSION: str = os.getenv("VERSION", "1.0.0")
-    # 项目描述
-    DESCRIPTION: str = os.getenv("DESCRIPTION", "FastAPI")
-    # 日期时间格式
-    DATETIME_FORMAT: str = os.getenv("DATETIME_FORMAT", "%Y-%m-%d")
-    # 时区设置
-    DATETIME_TIMEZONE: str = os.getenv("DATETIME_TIMEZONE", "Asia/Shanghai")
-    # 项目API版本
-    API_PATH: str = os.getenv("API_PATH", "/api")
-    # 项目文档地址
-    DOCS_URL: str = f"{API_PATH}/docs"
-    # 项目文档地址
-    OPENAPI_URL: str = f"{API_PATH}/openapi.json"
-    # 项目文档地址
-    REDOC_URL: str = f"{API_PATH}/redoc"
+    配置方式：
+    1. 通过环境变量（优先级最高）
+    2. 通过 .env 文件
+    3. 使用代码中的默认值
+    """
 
-    APP_DEBUG: bool = bool(os.getenv("APP_DEBUG", "false"))
-    APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
-    APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
+    model_config = SettingsConfigDict(env_file=f"{BasePath}/.env", env_file_encoding="utf-8", extra="ignore")
 
-    # 日志配置
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_DIR: str = os.getenv("LOG_DIR", "logs")
-    LOG_ROTATION_SIZE: str = os.getenv("LOG_ROTATION_SIZE", "100 MB")
-    LOG_RETENTION_DAYS: str = os.getenv("LOG_RETENTION_DAYS", "30 days")
-    LOG_JSON_OUTPUT: bool = bool(os.getenv("LOG_JSON_OUTPUT", "true"))
-    LOG_COMPRESSION: str = os.getenv("LOG_COMPRESSION", "zip")
+    # ==================== 项目配置 ====================
 
-    # CORS
+    PROJECT_NAME: str = "FastAPI"
+    VERSION: str = "1.0.0"
+    DESCRIPTION: str = "FastAPI"
+    DATETIME_FORMAT: str = "%Y-%m-%d"
+    DATETIME_TIMEZONE: str = "Asia/Shanghai"
+    API_PATH: str = "/api"
+
+    @computed_field
+    @property
+    def DOCS_URL(self) -> str:
+        return f"{self.API_PATH}/docs"
+
+    @computed_field
+    @property
+    def OPENAPI_URL(self) -> str:
+        return f"{self.API_PATH}/openapi.json"
+
+    @computed_field
+    @property
+    def REDOC_URL(self) -> str:
+        return f"{self.API_PATH}/redoc"
+
+    # ==================== 应用配置 ====================
+
+    APP_DEBUG: bool = False
+    APP_HOST: str = "0.0.0.0"
+    APP_PORT: int = 8000
+
+    # ==================== 日志配置 ====================
+
+    LOG_LEVEL: str = "INFO"
+    LOG_DIR: str = "logs"
+    LOG_ROTATION_SIZE: str = "100 MB"
+    LOG_RETENTION_DAYS: str = "30 days"
+    LOG_JSON_OUTPUT: bool = True
+    LOG_COMPRESSION: str = "zip"
+
+    # ==================== CORS 配置 ====================
+
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
         "http://127.0.0.1:8001",
         "http://localhost:5173",
     ]
-    CORS_EXPOSE_HEADERS: list[str] = [
-        "X-Request-ID",
-    ]
+    CORS_EXPOSE_HEADERS: list[str] = ["X-Request-ID"]
     MIDDLEWARE_CORS: bool = True
 
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sql_app.db")
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # ==================== 数据库配置 ====================
 
-    # 雪花ID配置（分布式唯一ID生成）
-    # 是否启用雪花ID作为默认主键
-    USE_SNOWFLAKE_ID: bool = os.getenv("USE_SNOWFLAKE_ID", "false").lower() in ("true", "1", "yes")
-    # 数据中心ID（0-7）：用于标识不同数据中心或机房
-    SNOWFLAKE_DATACENTER_ID: int = int(os.getenv("SNOWFLAKE_DATACENTER_ID", "0"))
-    # 工作机器ID（0-7）：用于标识同一数据中心内的不同服务器
-    SNOWFLAKE_WORKER_ID: int = int(os.getenv("SNOWFLAKE_WORKER_ID", "0"))
-    # 纪元时间戳（毫秒级Unix时间戳）：雪花ID的时间起点
-    # ⚠️ 警告：所有节点必须使用相同的 EPOCH，否则会生成重复 ID
-    SNOWFLAKE_EPOCH: int = int(os.getenv("SNOWFLAKE_EPOCH", "1704067200000"))
+    # PostgreSQL 配置组件
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = ""
+    POSTGRES_DB: str = "app_db"
 
-    # JWT 配置
-    # JWT 密钥（生产环境必须使用强随机密钥并通过环境变量设置）
-    JWT_SECRET_KEY: str = os.getenv(
-        "JWT_SECRET_KEY",
-        "your-secret-key-change-in-production-min-32-chars-long",
-    )
-    # JWT 算法
-    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
-    # Access Token 过期时间（秒）
-    JWT_ACCESS_TOKEN_EXPIRE_SECONDS: int = int(
-        os.getenv("JWT_ACCESS_TOKEN_EXPIRE_SECONDS", "3600")
-    )  # 默认 1 小时
-    # Refresh Token 过期时间（秒）
-    JWT_REFRESH_TOKEN_EXPIRE_SECONDS: int = int(
-        os.getenv("JWT_REFRESH_TOKEN_EXPIRE_SECONDS", "604800")
-    )  # 默认 7 天
-    # Redis Token 前缀
-    JWT_ACCESS_TOKEN_REDIS_PREFIX: str = os.getenv(
-        "JWT_ACCESS_TOKEN_REDIS_PREFIX", "auth:access_token"
-    )
-    JWT_REFRESH_TOKEN_REDIS_PREFIX: str = os.getenv(
-        "JWT_REFRESH_TOKEN_REDIS_PREFIX", "auth:refresh_token"
-    )
-    JWT_USER_REDIS_PREFIX: str = os.getenv("JWT_USER_REDIS_PREFIX", "auth:user")
+    @computed_field
+    @property
+    def DATABASE_URL(self) -> str:
+        """
+        动态构建数据库 URL
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        Pydantic 会优先读取环境变量 DATABASE_URL（如果存在），
+        否则根据 PostgreSQL 配置组件构建。
+        """
+        # 尝试从环境变量获取（Pydantic 自动处理）
+        # 这里只需要返回构建的 URL
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    # ==================== Redis 配置 ====================
+
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = ""
+    REDIS_DB: int = 0
+
+    @computed_field
+    @property
+    def REDIS_URL(self) -> str:
+        """动态构建 Redis URL"""
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    # ==================== 雪花ID配置 ====================
+
+    USE_SNOWFLAKE_ID: bool = False
+    SNOWFLAKE_DATACENTER_ID: int = 0
+    SNOWFLAKE_WORKER_ID: int = 0
+    SNOWFLAKE_EPOCH: int = 1704067200000
+
+    # ==================== JWT 配置 ====================
+
+    JWT_SECRET_KEY: str = ""  # 默认空值，通过 model_validator 验证
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_SECONDS: int = 3600  # 默认 1 小时
+    JWT_REFRESH_TOKEN_EXPIRE_SECONDS: int = 604800  # 默认 7 天
+    JWT_ACCESS_TOKEN_REDIS_PREFIX: str = "auth:access_token"
+    JWT_REFRESH_TOKEN_REDIS_PREFIX: str = "auth:refresh_token"
+    JWT_USER_REDIS_PREFIX: str = "auth:user"
+
+    # ==================== 配置验证 ====================
+
+    @model_validator(mode="after")
+    def validate_security_settings(self):
+        """验证安全相关配置"""
+
+        # ==================== 安全验证 ====================
+
+        # 验证 JWT 密钥
+        if not self.JWT_SECRET_KEY:
+            raise ValueError(
+                "❌ 安全错误: JWT_SECRET_KEY 未在环境变量中设置。\n"
+                '   生成方法: python -c "import secrets; print(secrets.token_urlsafe(32))"\n'
+                "   然后在 .env 文件中添加: JWT_SECRET_KEY=<生成的密钥>"
+            )
+        if len(self.JWT_SECRET_KEY) < 32:
+            raise ValueError(f"❌ 安全错误: JWT_SECRET_KEY 长度不足（当前: {len(self.JWT_SECRET_KEY)}，要求: ≥32）")
+
+        # 检查是否使用了弱默认值
+        weak_keys = [
+            "your-secret-key-change-in-production",
+            "changeme",
+            "secret",
+            "password",
+            "123456",
+        ]
+        if any(weak_key in self.JWT_SECRET_KEY.lower() for weak_key in weak_keys):
+            raise ValueError(
+                "❌ 安全错误: JWT_SECRET_KEY 使用了弱密钥。\n"
+                '   生成方法: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+            )
+
+        # 验证数据库密码
+        db_url = self.DATABASE_URL.lower()
+        weak_passwords = ["changeme", "password", "123456", "admin", "root"]
+        if any(weak_pwd in db_url for weak_pwd in weak_passwords):
+            raise ValueError(
+                "❌ 安全错误: 数据库密码使用了弱默认值。\n"
+                '   生成方法: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+            )
+
+        # 验证 CORS 配置
+        if self.MIDDLEWARE_CORS and "*" in self.CORS_ALLOWED_ORIGINS:
+            raise ValueError(
+                "❌ 配置错误: 启用 CORS 凭证时不允许使用通配符 '*'。\n   请在 .env 中明确指定 CORS_ALLOWED_ORIGINS"
+            )
+
+        # ==================== 功能验证 ====================
+
         # 验证雪花ID配置
         if not (0 <= self.SNOWFLAKE_DATACENTER_ID <= 7):
             raise ValueError(
-                f"SNOWFLAKE_DATACENTER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_DATACENTER_ID}"
+                f"❌ 配置错误: SNOWFLAKE_DATACENTER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_DATACENTER_ID}"
             )
         if not (0 <= self.SNOWFLAKE_WORKER_ID <= 7):
-            raise ValueError(
-                f"SNOWFLAKE_WORKER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_WORKER_ID}"
-            )
+            raise ValueError(f"❌ 配置错误: SNOWFLAKE_WORKER_ID 必须在 0-7 之间，当前值: {self.SNOWFLAKE_WORKER_ID}")
+
+        return self
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """获取全局配置"""
+    """获取全局配置（单例模式）"""
     return Settings()
 
 

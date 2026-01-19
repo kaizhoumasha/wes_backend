@@ -49,9 +49,7 @@ class AuthService:
             AuthException: 密码错误或用户被禁用
         """
         # 查询用户（预加载角色）
-        result = await db.execute(
-            select(User).where(User.username == username).options(selectinload(User.roles))
-        )
+        result = await db.execute(select(User).where(User.username == username).options(selectinload(User.roles)))
         user = result.scalar_one_or_none()
 
         if not user:
@@ -164,9 +162,7 @@ class AuthService:
             raise AuthException("Refresh Token 无效，请重新登录") from None
 
         # 查询用户（预加载角色）
-        result = await db.execute(
-            select(User).where(User.id == token_payload.id).options(selectinload(User.roles))
-        )
+        result = await db.execute(select(User).where(User.id == token_payload.id).options(selectinload(User.roles)))
         user = result.scalar_one_or_none()
 
         if not user:

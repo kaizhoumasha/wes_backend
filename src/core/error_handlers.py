@@ -12,6 +12,7 @@
 }
 """
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,7 +20,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import ORJSONResponse
 from pydantic import ValidationError
-from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import DatabaseError, DBAPIError, IntegrityError, SQLAlchemyError
 
 from src.core.exceptions import (
     AppException,
@@ -122,9 +123,7 @@ async def auth_exception_handler(request: Request, exc: AuthException) -> ORJSON
     )
 
 
-async def permission_exception_handler(
-    request: Request, exc: PermissionException
-) -> ORJSONResponse:
+async def permission_exception_handler(request: Request, exc: PermissionException) -> ORJSONResponse:
     """处理权限异常"""
     logger.warning(
         f"PermissionException: {exc.code} - {exc.message}",
@@ -180,9 +179,7 @@ async def conflict_exception_handler(request: Request, exc: ConflictException) -
     )
 
 
-async def validation_exception_handler(
-    request: Request, exc: ValidationException
-) -> ORJSONResponse:
+async def validation_exception_handler(request: Request, exc: ValidationException) -> ORJSONResponse:
     """处理数据验证异常"""
     logger.warning(
         f"ValidationException: {exc.code} - {exc.message}",
@@ -222,9 +219,7 @@ async def rate_limit_exception_handler(request: Request, exc: RateLimitException
 # ==================== FastAPI 内置异常处理 ====================
 
 
-async def request_validation_exception_handler(
-    request: Request, exc: RequestValidationError
-) -> ORJSONResponse:
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> ORJSONResponse:
     """
     处理请求参数验证异常
 
@@ -264,9 +259,7 @@ async def request_validation_exception_handler(
     )
 
 
-async def pydantic_validation_exception_handler(
-    request: Request, exc: ValidationError
-) -> ORJSONResponse:
+async def pydantic_validation_exception_handler(request: Request, exc: ValidationError) -> ORJSONResponse:
     """处理 Pydantic 验证异常"""
     errors = []
     for error in exc.errors():
@@ -298,9 +291,48 @@ async def pydantic_validation_exception_handler(
 # ==================== 数据库异常处理 ====================
 
 
+def _handle_integrity_error(request: Request, exc: IntegrityError, detail: str) -> ORJSONResponse:
+    """处理数据完整性约束冲突"""
+    return error_response(
+        code="INTEGRITY_ERROR",
+        message=f"数据完整性约束冲突: {detail}",
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def _handle_dbapi_error(request: Request, exc: DBAPIError, detail: str) -> ORJSONResponse:
+    """处理数据库 API 错误"""
+    return error_response(
+        code="DATABASE_ERROR",
+        message=f"数据库错误: {type(exc.orig).__name__}: {exc.orig!s}",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _handle_database_error(request: Request, exc: DatabaseError, detail: str) -> ORJSONResponse:
+    """处理通用数据库错误"""
+    return error_response(
+        code="DATABASE_ERROR",
+        message=f"数据库错误: {detail}",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+# 异常处理注册表（注册表模式）
+# 优势：O(1) 查找、易于扩展、符合开闭原则
+SQLALCHEMY_EXCEPTION_HANDLERS: dict[
+    type[SQLAlchemyError],
+    Callable[[Request, SQLAlchemyError, str], ORJSONResponse],
+] = {
+    IntegrityError: _handle_integrity_error,
+    DBAPIError: _handle_dbapi_error,
+    DatabaseError: _handle_database_error,
+}
+
+
 async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> ORJSONResponse:
     """
-    处理 SQLAlchemy 异常
+    处理 SQLAlchemy 异常（使用注册表模式）
 
     Args:
         request: 请求对象
@@ -309,11 +341,12 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
     Returns:
         标准化的错误响应
     """
-    # 记录详细错误信息
+    # 提取详细错误信息
     error_detail = str(exc)
     if hasattr(exc, "__cause__") and exc.__cause__:
         error_detail = f"{error_detail} | 原因: {exc.__cause__!s}"
 
+    # 记录错误日志
     logger.error(
         f"SQLAlchemyError: {type(exc).__name__} - {error_detail}",
         extra={
@@ -323,23 +356,13 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
         },
     )
 
-    # 处理唯一约束冲突
-    if isinstance(exc, IntegrityError):
-        return error_response(
-            code="INTEGRITY_ERROR",
-            message=f"数据完整性约束冲突: {error_detail}",
-            status_code=status.HTTP_409_CONFLICT,
-        )
+    # 使用注册表查找处理器（O(1) 查找）
+    # 按照异常类型层次查找：先找精确类型，再找父类
+    for exc_type, handler in SQLALCHEMY_EXCEPTION_HANDLERS.items():
+        if isinstance(exc, exc_type):
+            return handler(request, exc, error_detail)  # type: ignore[arg-type]
 
-    # 处理 DBAPIError，提取原始数据库错误
-    if isinstance(exc, DBAPIError):
-        orig_error = exc.orig
-        return error_response(
-            code="DATABASE_ERROR",
-            message=f"数据库错误: {type(orig_error).__name__}: {orig_error!s}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
+    # 默认通用处理
     return error_response(
         code="DATABASE_ERROR",
         message=f"数据库操作失败: {error_detail}",

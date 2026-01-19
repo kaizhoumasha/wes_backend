@@ -159,9 +159,7 @@ def jwt_decode(token: str) -> TokenPayload:
     )
 
 
-async def create_access_token(
-    user_id: int, *, multi_login: bool = True, **extra_info
-) -> AccessTokenData:
+async def create_access_token(user_id: int, *, multi_login: bool = True, **extra_info) -> AccessTokenData:
     """
     创建访问令牌
 
@@ -192,9 +190,7 @@ async def create_access_token(
         # 如果不允许多端登录，删除该用户所有旧 token
         if not multi_login:
             # 使用 scan 删除所有匹配的键
-            async for key in redis_client.scan_iter(
-                match=f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:*"
-            ):
+            async for key in redis_client.scan_iter(match=f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{user_id}:*"):
                 await redis_client.delete(key)
 
         # 存储新 token
@@ -221,9 +217,7 @@ async def create_access_token(
     )
 
 
-async def create_refresh_token(
-    session_uuid: str, user_id: int, *, multi_login: bool = True
-) -> RefreshTokenData:
+async def create_refresh_token(session_uuid: str, user_id: int, *, multi_login: bool = True) -> RefreshTokenData:
     """
     创建刷新令牌
 
@@ -249,9 +243,7 @@ async def create_refresh_token(
 
         # 如果不允许多端登录，删除旧刷新令牌
         if not multi_login:
-            async for key in redis_client.scan_iter(
-                match=f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:*"
-            ):
+            async for key in redis_client.scan_iter(match=f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:*"):
                 await redis_client.delete(key)
 
         # 存储新刷新令牌
@@ -298,9 +290,7 @@ async def create_new_token(
     redis_client = get_redis()
 
     # 验证刷新令牌
-    stored_refresh_token = await redis_client.get(
-        f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}"
-    )
+    stored_refresh_token = await redis_client.get(f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{user_id}:{session_uuid}")
     if not stored_refresh_token or stored_refresh_token != refresh_token:
         raise AuthException("Refresh Token 已过期，请重新登录")
 
@@ -310,9 +300,7 @@ async def create_new_token(
 
     # 创建新令牌
     new_access = await create_access_token(user_id, multi_login=multi_login, **extra_info)
-    new_refresh = await create_refresh_token(
-        new_access.session_uuid, user_id, multi_login=multi_login
-    )
+    new_refresh = await create_refresh_token(new_access.session_uuid, user_id, multi_login=multi_login)
 
     return NewTokenData(
         new_access_token=new_access.access_token,
@@ -345,6 +333,38 @@ async def revoke_token(user_id: int, session_uuid: str) -> None:
 security = HTTPBearer(auto_error=False)
 
 
+async def _verify_token(token: str, request: Request) -> TokenPayload:
+    """
+    验证 JWT 令牌（内部辅助函数）
+
+    Args:
+        token: JWT 令牌字符串
+        request: FastAPI 请求对象
+
+    Returns:
+        TokenPayload 对象
+
+    Raises:
+        AuthException: Token 无效、已过期或已失效
+    """
+    token_payload = jwt_decode(token)
+
+    # 验证 Redis 中的 token
+    if is_redis_available():
+        redis_client = get_redis()
+        stored_token = await redis_client.get(
+            f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
+        )
+        if not stored_token or stored_token != token:
+            raise AuthException("Token 已失效")
+
+    # 将用户信息附加到 request.state
+    request.state.user_id = token_payload.id
+    request.state.session_uuid = token_payload.session_uuid
+
+    return token_payload
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
@@ -365,22 +385,7 @@ async def get_current_user(
     if credentials is None:
         return None
 
-    token = credentials.credentials
-    token_payload = jwt_decode(token)
-
-    # 验证 Redis 中的 token
-    if is_redis_available():
-        redis_client = get_redis()
-        stored_token = await redis_client.get(
-            f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
-        )
-        if not stored_token or stored_token != token:
-            raise AuthException("Token 已失效")
-
-    # 将用户信息附加到 request.state
-    request.state.user_id = token_payload.id
-    request.state.session_uuid = token_payload.session_uuid
-
+    token_payload = await _verify_token(credentials.credentials, request)
     return token_payload.id
 
 
@@ -404,22 +409,7 @@ async def require_auth(
     if credentials is None:
         raise AuthException("未提供认证令牌")
 
-    token = credentials.credentials
-    token_payload = jwt_decode(token)
-
-    # 验证 Redis 中的 token
-    if is_redis_available():
-        redis_client = get_redis()
-        stored_token = await redis_client.get(
-            f"{settings.JWT_ACCESS_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
-        )
-        if not stored_token or stored_token != token:
-            raise AuthException("Token 已失效")
-
-    # 将用户信息附加到 request.state
-    request.state.user_id = token_payload.id
-    request.state.session_uuid = token_payload.session_uuid
-
+    token_payload = await _verify_token(credentials.credentials, request)
     return token_payload.id
 
 

@@ -56,9 +56,7 @@ class ResponseModel(BaseModel):
     )
 
     code: str = Field(default="1000", description="响应码", examples=["1000", "2000"])
-    message: str = Field(
-        default="操作成功", description="响应消息", examples=["操作成功", "参数错误"]
-    )
+    message: str = Field(default="操作成功", description="响应消息", examples=["操作成功", "参数错误"])
     data: Any | None = Field(default=None, description="响应数据")
     timestamp: str = Field(
         default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -139,9 +137,7 @@ class PaginationData[T](BaseModel):
     pages: int = Field(default=0, ge=0, description="总页数")
 
     @classmethod
-    def create(
-        cls, items: list[T], total: int, page: int = 1, size: int = 10
-    ) -> "PaginationData[T]":
+    def create(cls, items: list[T], total: int, page: int = 1, size: int = 10) -> "PaginationData[T]":
         """
         创建分页数据
 
@@ -239,9 +235,7 @@ class BatchOperationResult(BaseModel):
         Returns:
             批量操作结果实例
         """
-        return cls(
-            success=success, failed=failed, total=success + failed, results=results, errors=errors
-        )
+        return cls(success=success, failed=failed, total=success + failed, results=results, errors=errors)
 
 
 class BatchOperationResponseModel(ResponseSchemaModel[BatchOperationResult]):

@@ -40,7 +40,7 @@ dev = [
 target-version = "py313"
 
 # 代码行长度（FastAPI 社区推荐 88 或 100）
-line-length = 100
+line-length = 120
 
 # 扫描的文件扩展名
 extend-include = ["*.py", "*.pyi", "ipynb"]
@@ -149,6 +149,17 @@ ignore = [
 fixable = ["ALL"]
 
 [tool.ruff.lint.per-file-ignores]
+# Pydantic Settings 类的特殊规则
+"src/core/conf.py" = [
+    "N802",       # 允许 @computed_field 使用大写命名 (属性常量)
+    "S105",       # 允许 Redis key 前缀 (非密码)
+]
+
+# RBAC 模块的特殊规则
+"src/core/rbac.py" = [
+    "N802",       # 允许函数工厂使用 PascalCase (RequirePermission)
+]
+
 # 测试文件的特殊规则（宽松模式）
 "tests/**/*.py" = [
     # === 测试框架相关 ===

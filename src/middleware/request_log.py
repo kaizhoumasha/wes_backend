@@ -65,11 +65,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
                 # 计算处理时间
                 process_time = (time.time() - start_time) * 1000
-                time_str = (
-                    f"{process_time:.0f}ms"
-                    if process_time < 1000
-                    else f"{process_time / 1000:.2f}s"
-                )
+                time_str = f"{process_time:.0f}ms" if process_time < 1000 else f"{process_time / 1000:.2f}s"
 
                 # 根据状态码决定日志级别
                 status = response.status_code
