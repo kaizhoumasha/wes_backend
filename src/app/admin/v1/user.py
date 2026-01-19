@@ -1,20 +1,20 @@
 """
-用户 CRUD API（优化版）
+用户 CRUD API（类式服务架构）
+
+架构设计：
+API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 
 改进：
-1. 使用新的依赖注入（CacheDep, AsyncSessionDep）
-2. 提取服务层，消除代码重复
-3. 统一错误处理（依赖全局异常处理器）
-4. 改进类型安全
-5. 简化路由逻辑
-6. 使用缓存装饰器简化缓存逻辑
+1. 使用类式服务 + 依赖注入
+2. Service 层处理业务逻辑和缓存
+3. Repository 层负责数据访问
+4. 统一错误处理（依赖全局异常处理器）
 """
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Security, status
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import (
     User,
@@ -25,7 +25,12 @@ from src.app.admin.models import (
 from src.app.admin.models import (
     UserRead as UserResponse,
 )
-from src.app.admin.services.user_service import UserService
+from src.app.admin.services.user_service import (
+    USER_LIST_CACHE_EXPIRE,
+    USER_LIST_CACHE_PREFIX,
+    UserService,
+    get_user_service,
+)
 from src.core.exceptions import (
     ConflictException,
     NotFoundException,
@@ -33,36 +38,9 @@ from src.core.exceptions import (
 from src.core.logger import logger
 from src.core.rbac import RequirePermission
 from src.core.security import require_auth
-from src.database.cache_decorator import cached_null
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
-
-
-# ==================== 辅助函数 ====================
-
-
-@cached_null(
-    key_prefix=UserService.USER_DETAIL_CACHE_PREFIX,
-    expire=UserService.USER_CACHE_EXPIRE,
-    null_expire=UserService.NULL_CACHE_EXPIRE,
-    lock=True,
-)
-async def get_user_with_cache(db: AsyncSession, cache, user_id: int) -> UserResponse:
-    """
-    获取用户（带缓存）
-
-    使用缓存装饰器自动处理缓存逻辑，包括：
-    - 缓存读取和写入
-    - 分布式锁防止缓存击穿
-    - 空值缓存防止缓存穿透
-
-    :raises NotFoundException: 如果用户不存在
-    """
-    user = await UserService.get_user_by_id(db, user_id)
-    if not user:
-        return None
-    return UserService.user_to_response(user)
 
 
 # ==================== CRUD 路由 ====================
@@ -79,6 +57,7 @@ async def create_user(
     user_in: UserCreate,
     db: AsyncSessionDep,
     cache: CacheDep,
+    service: Annotated[UserService, Depends(get_user_service)],
 ):
     """
     创建新用户（需要 user:create 权限）
@@ -91,7 +70,7 @@ async def create_user(
     - **password**: 密码（6-50字符）
     """
     try:
-        user = await UserService.create_user(
+        user = await service.create_user(
             db,
             username=user_in.username,
             email=user_in.email,
@@ -102,9 +81,9 @@ async def create_user(
         raise ConflictException(str(e)) from e
 
     # 失效列表缓存
-    await UserService.invalidate_user_cache(cache, invalidate_list=True)
+    await service.invalidate_user_cache(cache, invalidate_list=True)
 
-    return UserService.user_to_response(user)
+    return service.user_to_response(user)
 
 
 @router.get(
@@ -118,19 +97,20 @@ async def get_users(
     cache: CacheDep,
     page: Annotated[int, Query(ge=1, description="页码")] = 1,
     page_size: Annotated[int, Query(ge=1, le=100, description="每页数量")] = 10,
+    service: UserService = Depends(get_user_service),
 ):
     """
     获取用户列表（分页，带缓存，需要登录）
 
     缓存策略：
     - 缓存键：user:list:{page}:{page_size}
-    - 过期时间：5分钟
+    - 过期时间：10分钟
     - 不使用锁：列表数据允许短暂不一致
 
     - **page**: 页码，从 1 开始
     - **page_size**: 每页数量，最大 100
     """
-    cache_key = f"{UserService.USER_LIST_CACHE_PREFIX}:{page}:{page_size}"
+    cache_key = f"{USER_LIST_CACHE_PREFIX}:{page}:{page_size}"
 
     # 尝试从缓存获取
     cached_data = await cache.get(cache_key)
@@ -138,15 +118,15 @@ async def get_users(
         logger.info(f"缓存命中: {cache_key}")
         return UserListResponse(**cached_data)
 
-    total, users = await UserService.get_users_paginated(db, page, page_size)
+    total, users = await service.get_users_paginated(db, page, page_size)
 
-    items = UserService.users_to_list_response(users)
+    items = service.users_to_list_response(users)
     response_data = {
         "total": total,
         "items": [item.model_dump(mode="json") for item in items],
     }
 
-    await cache.set(cache_key, response_data, expire=UserService.USER_LIST_CACHE_EXPIRE)
+    await cache.set(cache_key, response_data, expire=USER_LIST_CACHE_EXPIRE)
 
     logger.info(f"获取用户列表: page={page}, page_size={page_size}, total={total}")
     return UserListResponse(total=total, items=items)
@@ -162,9 +142,13 @@ async def get_user(
     user_id: int,
     db: AsyncSessionDep,
     cache: CacheDep,
+    service: UserService = Depends(get_user_service),
 ):
     """获取用户详情（需要登录）"""
-    return await get_user_with_cache(db, cache, user_id)
+    user = await service.get_user_by_id(db, cache, user_id)
+    if not user:
+        raise NotFoundException("用户不存在")
+    return service.user_to_response(user)
 
 
 @router.put(
@@ -178,6 +162,7 @@ async def update_user(
     user_in: UserUpdate,
     db: AsyncSessionDep,
     cache: CacheDep,
+    service: UserService = Depends(get_user_service),
 ):
     """
     更新用户信息（需要 user:update 权限）
@@ -190,7 +175,7 @@ async def update_user(
     - **is_active**: 是否激活（可选）
     """
     try:
-        user = await UserService.update_user(
+        user = await service.update_user(
             db,
             user_id=user_id,
             email=user_in.email,
@@ -201,9 +186,9 @@ async def update_user(
         raise NotFoundException(str(e)) from e
 
     # 失效相关缓存
-    await UserService.invalidate_user_cache(cache, user_id=user_id)
+    await service.invalidate_user_cache(cache, user_id=user_id)
 
-    return UserService.user_to_response(user)
+    return service.user_to_response(user)
 
 
 @router.delete(
@@ -216,6 +201,7 @@ async def delete_user(
     user_id: int,
     db: AsyncSessionDep,
     cache: CacheDep,
+    service: UserService = Depends(get_user_service),
 ):
     """
     删除用户（需要 user:delete 权限）
@@ -225,12 +211,12 @@ async def delete_user(
     - **user_id**: 用户 ID
     """
     try:
-        await UserService.delete_user(db, user_id)
+        await service.delete_user(db, user_id)
     except ValueError as e:
         raise NotFoundException(str(e)) from e
 
     # 失效相关缓存
-    await UserService.invalidate_user_cache(cache, user_id=user_id)
+    await service.invalidate_user_cache(cache, user_id=user_id)
 
     return {"message": "用户删除成功"}
 
