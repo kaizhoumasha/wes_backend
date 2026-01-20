@@ -1,34 +1,30 @@
 """
-用户服务层（类式架构）
+用户服务层（User Service）
 
 处理用户相关的业务逻辑，协调 Repository 和其他服务组件。
 
 架构设计：
 API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 
-职责：
+职责:
 1. 协调多个 Repository 和服务组件
 2. 实现业务逻辑和规则
 3. 缓存管理
 4. 事务协调
 
-优势：
-- 依赖注入：通过 __init__ 注入依赖，符合 DIP 原则
-- 易于测试：可以轻松 mock 依赖
-- 可扩展性：通过继承扩展功能
-- 清晰的职责：Service 层专注于业务逻辑
+优化：
+- 继承 BaseService 获得通用 CRUD 方法
+- 使用 @cached 装饰器实现缓存
+- 单例模式提高性能
 """
-
-# ruff: noqa: ARG002
-# - ARG002: cache 参数由 @cached 装饰器使用，exclude_user_id 是预留参数
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import User, UserRead
+from src.app.admin.models import User
 from src.app.admin.repositories.user_repository import UserRepository, user_repository
 from src.app.admin.services.user_auth_service import PasswordHasher, password_hasher
+from src.core.base_service import BaseService
 from src.core.logger import logger
-from src.core.schema_loader import get_with_schema, model_to_schema
 from src.database.cache_decorator import cached
 
 # ==================== 缓存配置常量 ====================
@@ -43,16 +39,26 @@ NULL_CACHE_EXPIRE = 300  # 空值缓存5分钟
 # ==================== 用户服务类 ====================
 
 
-class UserService:
+class UserService(BaseService[User, UserRepository]):
     """
     用户服务类
 
-    协调 Repository 和其他服务组件，实现用户相关的业务逻辑。
+    继承 BaseService 获得通用 CRUD 方法：
+    - get_by_id(db, cache, id): 根据 ID 获取用户（带缓存）
+    - get_paginated(db, page, page_size): 分页查询
+    - create(db, data): 创建用户
+    - update(db, id, data): 更新用户
+    - delete(db, id): 删除用户
+    - exists(db, **kwargs): 检查用户是否存在
+    - count(db, where_clauses): 统计用户数量
+    - to_response(model, schema): 转换为响应对象
+    - to_list_response(models, schema): 批量转换
 
-    示例：
-        service = UserService(user_repository, password_hasher)
-        user = await service.get_user_by_id(db, cache, user_id)
+    扩展用户特定的业务方法。
     """
+
+    CACHE_PREFIX = USER_DETAIL_CACHE_PREFIX
+    CACHE_EXPIRE = USER_CACHE_EXPIRE
 
     def __init__(
         self,
@@ -66,10 +72,15 @@ class UserService:
             user_repo: 用户仓库实例
             password_hasher: 密码哈希服务实例
         """
-        self.user_repo = user_repo
+        super().__init__(
+            user_repo,
+            enable_cache=True,
+            cache_prefix=USER_DETAIL_CACHE_PREFIX,
+            cache_expire=USER_CACHE_EXPIRE,
+        )
         self.password_hasher = password_hasher
 
-    # ==================== 查询方法 ====================
+    # ==================== 查询方法（使用缓存）====================
 
     @cached(
         key_prefix=USER_DETAIL_CACHE_PREFIX,
@@ -78,7 +89,10 @@ class UserService:
         lock=True,
     )
     async def get_user_by_id(
-        self, db: AsyncSession, cache: object, user_id: int
+        self,
+        db: AsyncSession,
+        cache: object,
+        user_id: int,  # noqa: ARG002
     ) -> User | None:
         """
         根据 ID 获取用户（带缓存）
@@ -91,7 +105,7 @@ class UserService:
         Returns:
             用户对象或 None
         """
-        return await get_with_schema(db, User, UserRead, User.id == user_id, max_depth=2)
+        return await self.repo.get_by_id(db, user_id)
 
     async def get_user_by_username(self, db: AsyncSession, username: str) -> User | None:
         """
@@ -104,7 +118,7 @@ class UserService:
         Returns:
             用户对象或 None
         """
-        return await self.user_repo.get_by_username(db, username)
+        return await self.repo.get_by_username(db, username)
 
     async def get_user_by_email(self, db: AsyncSession, email: str) -> User | None:
         """
@@ -117,46 +131,22 @@ class UserService:
         Returns:
             用户对象或 None
         """
-        return await self.user_repo.get_by_email(db, email)
+        return await self.repo.get_by_email(db, email)
 
-    async def get_users_paginated(
-        self, db: AsyncSession, page: int = 1, page_size: int = 10
-    ) -> tuple[int, list[User]]:
+    async def get_active_users(self, db: AsyncSession, limit: int | None = None) -> list[User]:
         """
-        分页获取用户列表
+        获取激活用户列表
 
         Args:
             db: 数据库会话
-            page: 页码（从 1 开始）
-            page_size: 每页数量
+            limit: 限制数量
 
         Returns:
-            (总数, 用户列表)
+            用户列表
         """
-        return await self.user_repo.get_paginated(db, page, page_size)
+        return await self.repo.get_active_users(db, limit)
 
-    async def check_user_exists(
-        self,
-        db: AsyncSession,
-        username: str | None = None,
-        email: str | None = None,
-        exclude_user_id: int | None = None,
-    ) -> str | None:
-        """
-        检查用户是否存在
-
-        Args:
-            db: 数据库会话
-            username: 用户名
-            email: 邮箱
-            exclude_user_id: 排除的用户 ID（预留参数）
-
-        Returns:
-            如果存在返回冲突字段名，否则返回 None
-        """
-        return await self.user_repo.exists(db, username=username, email=email)
-
-    # ==================== CRUD 方法 ====================
+    # ==================== 业务方法 ====================
 
     async def create_user(
         self,
@@ -188,10 +178,11 @@ class UserService:
             ValueError: 如果用户名或邮箱已存在
         """
         # 检查用户名和邮箱是否已存在
-        conflict = await self.check_user_exists(db, username=username, email=email)
-        if conflict:
-            field_name = "用户名" if conflict == "username" else "邮箱"
-            raise ValueError(f"{field_name}已存在")
+        if await self.exists(db, username=username):
+            raise ValueError("用户名已存在")
+
+        if await self.exists(db, email=email):
+            raise ValueError("邮箱已存在")
 
         # 哈希密码
         hashed_password = await self.password_hasher.hash_async(password)
@@ -204,8 +195,8 @@ class UserService:
             "full_name": full_name,
         }
 
-        # 使用仓库创建用户
-        return await self.user_repo.create(db, user_data)
+        # 使用父类 create 方法
+        return await self.create(db, user_data)
 
     async def update_user(
         self,
@@ -233,11 +224,11 @@ class UserService:
         """
         # 检查邮箱是否被其他用户使用
         if email:
-            conflict = await self.check_user_exists(db, email=email, exclude_user_id=user_id)
-            if conflict:
+            existing = await self.get_user_by_email(db, email)
+            if existing and existing.id != user_id:
                 raise ValueError("邮箱已被使用")
 
-        # 构建更新数据
+        # 构建更新数据（只包含非 None 的字段）
         update_data = {}
         if email is not None:
             update_data["email"] = email
@@ -246,99 +237,65 @@ class UserService:
         if is_active is not None:
             update_data["is_active"] = is_active
 
-        # 使用仓库更新用户
-        return await self.user_repo.update(db, user_id, update_data)
+        # 使用父类 update 方法
+        return await self.update(db, user_id, update_data)
 
-    async def delete_user(self, db: AsyncSession, user_id: int) -> str:
+    async def check_user_exists(
+        self,
+        db: AsyncSession,
+        username: str | None = None,
+        email: str | None = None,
+        exclude_user_id: int | None = None,
+    ) -> str | None:
         """
-        删除用户
+        检查用户是否存在
 
         Args:
             db: 数据库会话
-            user_id: 用户 ID
+            username: 用户名
+            email: 邮箱
+            exclude_user_id: 排除的用户 ID（更新时使用）
 
         Returns:
-            被删除的用户名
-
-        Raises:
-            ValueError: 如果用户不存在
+            如果存在返回冲突字段名，否则返回 None
         """
-        success = await self.user_repo.delete(db, user_id)
-        if not success:
-            raise ValueError("用户不存在")
-        return "已删除"
+        if username:
+            existing = await self.get_user_by_username(db, username)
+            if existing and (exclude_user_id is None or existing.id != exclude_user_id):
+                return "username"
 
-    # ==================== 响应转换方法 ====================
+        if email:
+            existing = await self.get_user_by_email(db, email)
+            if existing and (exclude_user_id is None or existing.id != exclude_user_id):
+                return "email"
 
-    @staticmethod
-    def user_to_response(user: User) -> UserRead:
-        """
-        将用户模型转换为响应对象
+        return None
 
-        Args:
-            user: 用户模型
-
-        Returns:
-            用户响应对象
-        """
-        return model_to_schema(user, UserRead)
-
-    @staticmethod
-    def users_to_list_response(users: list[User]) -> list[UserRead]:
-        """
-        将用户模型列表转换为响应对象列表
-
-        Args:
-            users: 用户模型列表
-
-        Returns:
-            用户响应对象列表
-        """
-        return [model_to_schema(u, UserRead) for u in users]
-
-    # ==================== 缓存管理方法 ====================
-
-    async def invalidate_user_cache(
-        self, cache, user_id: int | None = None, invalidate_list: bool = True
-    ) -> None:
-        """
-        失效用户相关缓存
-
-        Args:
-            cache: 缓存实例
-            user_id: 用户 ID（如果提供，失效该用户详情缓存）
-            invalidate_list: 是否失效列表缓存
-        """
-        try:
-            if user_id:
-                cache_key = f"{USER_DETAIL_CACHE_PREFIX}:{user_id}"
-                await cache.delete(cache_key)
-
-            if invalidate_list:
-                await cache.delete_pattern(f"{USER_LIST_CACHE_PREFIX}:*")
-        except Exception as e:
-            logger.error(f"失效缓存失败: {e}")
-            # 缓存操作失败不影响主业务
+    # ==================== 缓存管理 ====================
+    # BaseService 已提供 invalidate_cache 方法，无需重写
 
 
-# ==================== 依赖注入函数 ====================
+# ==================== 单例实例 ====================
+
+user_service = UserService()
+
+
+# ==================== 依赖注入 ====================
 
 
 def get_user_service() -> UserService:
     """
     获取 UserService 实例（FastAPI 依赖注入）
 
-    用于 FastAPI 的 Depends() 依赖注入系统。
-
     Returns:
         UserService 实例
     """
-    return UserService()
+    return user_service
 
 
 # ==================== 导出 ====================
 
-__all__ = [  # noqa: RUF022  # 按功能分组，非字母顺序
+__all__ = [
     # 缓存配置
     "NULL_CACHE_EXPIRE",
     "USER_CACHE_EXPIRE",
@@ -349,7 +306,6 @@ __all__ = [  # noqa: RUF022  # 按功能分组，非字母顺序
     "UserService",
     # 依赖注入
     "get_user_service",
-    # 向后兼容（单例实例）
-    "user_repository",
-    "password_hasher",
+    # 单例
+    "user_service",
 ]

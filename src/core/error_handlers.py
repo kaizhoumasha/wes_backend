@@ -12,6 +12,7 @@
 }
 """
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -291,12 +292,76 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
 # ==================== 数据库异常处理 ====================
 
 
+def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any] | None]:
+    """
+    解析数据库完整性错误，返回错误信息
+
+    Args:
+        exc: SQLAlchemy IntegrityError 实例
+
+    Returns:
+        (错误代码, 错误消息, 详细信息字典)
+    """
+    error_msg = str(exc.orig) if hasattr(exc, "orig") else str(exc)
+
+    # 唯一约束冲突
+    if "unique constraint" in error_msg.lower():
+        # PostgreSQL: "Key (column_name)=(value) already exists"
+        match = re.search(r"Key \((\w+)\)=.*already exists", error_msg)
+        field = match.group(1) if match else None
+        return (
+            "CONFLICT",
+            f"数据已存在，不能重复添加" + (f"（字段：{field}）" if field else ""),
+            {"field": field, "constraint": "unique"} if field else {"constraint": "unique"},
+        )
+
+    # 外键约束冲突
+    if "foreign key constraint" in error_msg.lower():
+        return (
+            "CONFLICT",
+            "删除失败：存在关联数据",
+            {"constraint": "foreign_key"},
+        )
+
+    # 非空约束冲突
+    if "not-null constraint" in error_msg.lower():
+        # PostgreSQL: 'Null value in column "column_name" violates not-null constraint'
+        match = re.search(r'column "(\w+)"', error_msg)
+        field = match.group(1) if match else None
+        if field:
+            return (
+                "VALIDATION_ERROR",
+                f"字段 '{field}' 不能为空",
+                {"field": field, "constraint": "not_null"},
+            )
+        return (
+            "VALIDATION_ERROR",
+            "必填字段不能为空",
+            {"constraint": "not_null"},
+        )
+
+    # 默认：其他完整性错误
+    return (
+        "VALIDATION_ERROR",
+        "数据完整性错误",
+        {"error": error_msg},
+    )
+
+
 def _handle_integrity_error(request: Request, exc: IntegrityError, detail: str) -> ORJSONResponse:
     """处理数据完整性约束冲突"""
+    code, message, detail_dict = _parse_integrity_error(exc)
+
+    # 根据 code 选择状态码
+    from fastapi import status
+
+    status_code = status.HTTP_409_CONFLICT if code == "CONFLICT" else status.HTTP_422_UNPROCESSABLE_ENTITY
+
     return error_response(
-        code="INTEGRITY_ERROR",
-        message=f"数据完整性约束冲突: {detail}",
-        status_code=status.HTTP_409_CONFLICT,
+        code=code,
+        message=message,
+        detail=detail_dict,
+        status_code=status_code,
     )
 
 

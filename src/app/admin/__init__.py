@@ -1,0 +1,14 @@
+from fastapi import APIRouter
+
+from src.app.admin.v1.performance import router as performance_router
+from src.app.admin.v1.role import router as role_router
+from src.app.admin.v1.user import router as user_router
+
+router_v1 = APIRouter(prefix="/v1")
+
+# API v1 路由
+router_v1.include_router(user_router)
+router_v1.include_router(role_router)
+router_v1.include_router(performance_router)
+
+__ALL__ = ["router_v1"]

@@ -3,13 +3,13 @@
 
 负责用户数据访问层（CRUD 操作），继承通用 BaseRepository。
 
-职责：
+职责:
 1. 数据库查询和操作
 2. 数据持久化
 3. 事务管理
 4. 用户特定的查询方法
 
-架构：
+架构:
 - 继承 BaseRepository 获得通用 CRUD 能力
 - 扩展用户特定的业务查询方法
 """
@@ -69,34 +69,6 @@ class UserRepository(BaseRepository[User]):
             用户对象或 None
         """
         return await self.get_by_field(db, "email", email)
-
-    async def exists_by_username(
-        self, db: AsyncSession, username: str
-    ) -> bool:
-        """
-        检查用户名是否存在
-
-        Args:
-            db: 数据库会话
-            username: 用户名
-
-        Returns:
-            是否存在
-        """
-        return await self.exists(db, username=username)
-
-    async def exists_by_email(self, db: AsyncSession, email: str) -> bool:
-        """
-        检查邮箱是否存在
-
-        Args:
-            db: 数据库会话
-            email: 邮箱
-
-        Returns:
-            是否存在
-        """
-        return await self.exists(db, email=email)
 
     async def get_active_users(
         self, db: AsyncSession, limit: int | None = None

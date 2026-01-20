@@ -187,7 +187,9 @@ def setup_logger() -> None:
         logging.getLogger("uvicorn").setLevel(logging.INFO)
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
-        logging.getLogger("sqlalchemy").setLevel(logging.INFO)  # 显示 SQL 日志
+        logging.getLogger("sqlalchemy").setLevel(logging.WARNING)  # 抑制 pool 日志
+        logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # 仅显示 SQL 查询
+        logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)  # 抑制 pool 详细日志
         logging.getLogger("httpx").setLevel(logging.INFO)
     else:
         # 生产环境：只显示 WARNING 及以上
@@ -195,6 +197,7 @@ def setup_logger() -> None:
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
         logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+        logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)  # 抑制 pool 日志
         logging.getLogger("httpx").setLevel(logging.WARNING)
 
     _initialized = True

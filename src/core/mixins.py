@@ -146,7 +146,8 @@ def _create_primary_key_mixin():
 
 
 # 动态主键 Mixin（根据配置自动选择）
-PrimaryKeyMixin = _create_primary_key_mixin()
+# type: ignore - 动态生成的类，无法进行静态类型检查
+PrimaryKeyMixin = _create_primary_key_mixin()  # type: ignore[misc]
 
 
 class TimestampMixin(BaseMixin):
@@ -180,7 +181,6 @@ class TimestampMixin(BaseMixin):
     )
     updated_at: datetime | None = Field(
         default=None,
-        # default_factory=lambda: TimestampMixin._get_now(),
         sa_column_kwargs={
             "nullable": True,
             "comment": "更新时间 (UTC)",
@@ -365,7 +365,8 @@ class FullModelMixin(AuditModelMixin, SoftDeleteMixin):
 # ==================== 带主键的组合 Mixin ====================
 
 
-class BaseTableModelMixin(PrimaryKeyMixin, BaseModelMixin):
+# type: ignore - PrimaryKeyMixin 是动态生成的类
+class BaseTableModelMixin(PrimaryKeyMixin, BaseModelMixin):  # type: ignore[misc]
     """
     基础表模型 Mixin（主键）
 

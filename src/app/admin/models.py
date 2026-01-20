@@ -86,7 +86,7 @@ role_permission = Table(
 class PermissionBase(BaseMixin):
     """权限基础字段"""
 
-    name: str = Field(max_length=100, unique=True, index=True)  # 权限标识，如 "user:read"
+    name: str = Field(max_length=100, unique=True, index=True)
     description: str | None = Field(default=None, max_length=255)
 
 
@@ -99,15 +99,24 @@ class Permission(BaseTableModelMixin, PermissionBase, table=True):
 class RoleBase(BaseMixin):
     """角色基础字段"""
 
-    name: str = Field(max_length=100, unique=True, index=True)  # 角色名称
+    name: str = Field(max_length=100, unique=True, index=True)
     description: str | None = Field(default=None, max_length=255)
-    is_active: bool = Field(default=True)  # 角色是否启用
+    is_active: bool = Field(default=True)
 
 
 class Role(BaseTableModelMixin, RoleBase, table=True):
     """角色表"""
 
     __tablename__ = "roles"
+
+
+class RoleResponse(RoleBase):
+    """角色响应 Schema"""
+
+    id: int
+    created_at: datetime
+    updated_at: datetime | None = None
+    permissions: list["PermissionRead"] = Field(default_factory=list)
 
 
 # 在类外部定义关系（SQLModel 兼容方式）

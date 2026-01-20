@@ -46,7 +46,6 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next: Callable) -> StarletteResponse:
         method = request.method
         path = request.url.path
-        # client_ip = request.client.host if request.client else "unknown"
 
         # 跳过静态资源日志
         if should_skip_log(path):

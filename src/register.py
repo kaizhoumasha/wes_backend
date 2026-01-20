@@ -88,14 +88,11 @@ def register_middleware(app: FastAPI) -> None:
 
 def register_routers(app: FastAPI) -> None:
     """注册路由"""
-    from src.app.admin.v1.performance import router as performance_router
-    from src.app.admin.v1.user import router as user_router
-    from src.app.auth.v1.auth import router as auth_router
+    from src.app.admin import router_v1 as admin_router
+    from src.app.auth import router_v1 as auth_router
 
-    # API v1 路由
-    app.include_router(auth_router, prefix="/api/v1")
-    app.include_router(user_router, prefix="/api/v1")
-    app.include_router(performance_router, prefix="/api/v1")
+    app.include_router(auth_router, prefix=settings.API_PATH)
+    app.include_router(admin_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:
@@ -166,8 +163,6 @@ def register_app() -> FastAPI:
     register_routers(app)
 
     register_exception(app)
-
-    # register_websocket(app)
 
     return app
 
