@@ -142,6 +142,7 @@ async def get_all_with_schema[T](
     max_depth: int = 2,
     limit: int | None = None,
     offset: int | None = None,
+    order_by: list[Any] | None = None,
 ) -> list[T]:
     """
     根据 schema 自动加载关系并查询多个对象
@@ -155,17 +156,21 @@ async def get_all_with_schema[T](
         max_depth: 最大递归深度
         limit: 限制数量
         offset: 偏移量
+        order_by: 排序条件列表
 
     Returns:
         查询结果列表
 
     Example:
         users = await get_all_with_schema(db, User, UserRead, limit=10)
+        users = await get_all_with_schema(db, User, UserRead, order_by=[User.id.desc()])
     """
     query = select(model)
     if where_clauses:
         query = query.where(*where_clauses)
     query = apply_schema_loads(query, model, schema, strategy, max_depth)
+    if order_by:
+        query = query.order_by(*order_by)
     if offset:
         query = query.offset(offset)
     if limit:

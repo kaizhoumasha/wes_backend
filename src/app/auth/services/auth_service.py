@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import LoginResponse, RefreshTokenResponse, User
+from src.app.admin.models import User
+from src.app.auth.models import LoginResponse, RefreshTokenResponse
 from src.core.conf import settings
 from src.core.exceptions import AuthException, NotFoundException
 from src.core.logger import logger

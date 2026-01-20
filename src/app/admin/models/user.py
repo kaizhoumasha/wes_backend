@@ -6,6 +6,7 @@
 
 from datetime import datetime
 
+from src.app.admin.models.role import RoleRead
 from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
 
 
@@ -54,7 +55,7 @@ class UserRead(UserBase):
     is_superuser: bool
     created_at: datetime
     updated_at: datetime | None = None
-    roles: list["RoleRead"] = Field(default_factory=list)  # 前向引用，将在 __init__.py 中重建
+    roles: list[RoleRead] = Field(default_factory=list)  # 前向引用，将在 __init__.py 中重建
 
 
 class UserListResponse(BaseMixin):

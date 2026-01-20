@@ -319,7 +319,7 @@ class BaseRepository[T]:
             from src.core.schema_loader import get_all_with_schema
 
             items = await get_all_with_schema(
-                db, self.model, schema, *where_clauses, limit=limit, offset=offset, max_depth=max_depth
+                db, self.model, schema, *where_clauses, limit=limit, offset=offset, max_depth=max_depth, order_by=order_by
             )
         else:
             query = select(self.model)

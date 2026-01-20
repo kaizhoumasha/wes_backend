@@ -9,8 +9,9 @@
 
 from fastapi import APIRouter, Request, Response, status
 
-from src.app.admin.models import LoginRequest, LoginResponse, RefreshTokenResponse
+from src.app.auth.models import LoginRequest, LoginResponse, RefreshTokenResponse
 from src.app.auth.services.auth_service import auth_service
+from src.core.security import DependsAuth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -43,11 +44,7 @@ async def login(
     )
 
 
-@router.post(
-    "/logout",
-    summary="用户登出",
-    status_code=status.HTTP_200_OK,
-)
+@router.post("/logout", summary="用户登出", status_code=status.HTTP_200_OK, dependencies=[DependsAuth])
 async def logout(
     response: Response,
     request: Request,
@@ -66,6 +63,7 @@ async def logout(
     response_model=RefreshTokenResponse,
     summary="刷新访问令牌",
     status_code=status.HTTP_200_OK,
+    dependencies=[DependsAuth],
 )
 async def refresh_token(
     request: Request,

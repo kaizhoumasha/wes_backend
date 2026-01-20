@@ -7,7 +7,6 @@ Admin 模型模块
 from sqlalchemy.orm import relationship
 
 # 导入所有模型
-from .auth import LoginRequest, LoginResponse, RefreshTokenResponse
 from .role import (
     Permission,
     PermissionBase,
@@ -48,7 +47,6 @@ Role.users = relationship(
 
 # ==================== 重建 Pydantic 模型 ====================
 # 重建使用前向引用的 Pydantic 模型，解决类型注解问题
-LoginResponse.model_rebuild()
 UserRead.model_rebuild()
 
 # ==================== 导出所有公开内容 ====================
@@ -77,8 +75,4 @@ __all__ = [
     # 关联表
     "user_role",
     "role_permission",
-    # 认证 Schema
-    "LoginRequest",
-    "LoginResponse",
-    "RefreshTokenResponse",
 ]
