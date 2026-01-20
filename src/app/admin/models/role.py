@@ -1,10 +1,7 @@
 """
-SQLModel 数据模型
+角色和权限相关模型
 
-SQLModel 最佳实践：
-- 合并数据库模型和 Pydantic schemas
-- 使用 Mixin 类复用通用字段和行为
-- 使用继承层次分离不同用途的类
+包含 Role、Permission 数据库表模型、关联表和相关的 Pydantic Schemas
 """
 
 from datetime import datetime
@@ -15,30 +12,7 @@ from sqlalchemy.orm import relationship
 from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
 
 
-class UserBase(BaseMixin):
-    """用户基础字段 - 用于共享"""
-
-    username: str = Field(min_length=3, max_length=50, index=True)
-    email: str = Field(max_length=100, index=True)
-    full_name: str | None = Field(default=None, max_length=100)
-
-
-class User(BaseTableModelMixin, UserBase, table=True):
-    """
-    用户数据库表模型
-
-    继承 BaseModelMixin 获得时间戳字段和 repr 方法
-    """
-
-    __tablename__ = "users"
-
-    hashed_password: str = Field(max_length=255)
-    is_active: bool = Field(default=True)
-    is_superuser: bool = Field(default=False)
-    is_multi_login: bool = Field(default=True)  # 是否允许多端登录
-
-
-# ==================== RBAC 模型 ====================
+# ==================== 关联表定义 ====================
 
 
 # User-Role 多对多关联表
@@ -83,6 +57,9 @@ role_permission = Table(
 )
 
 
+# ==================== Permission 模型 ====================
+
+
 class PermissionBase(BaseMixin):
     """权限基础字段"""
 
@@ -94,6 +71,9 @@ class Permission(BaseTableModelMixin, PermissionBase, table=True):
     """权限表"""
 
     __tablename__ = "permissions"
+
+
+# ==================== Role 模型 ====================
 
 
 class RoleBase(BaseMixin):
@@ -110,27 +90,9 @@ class Role(BaseTableModelMixin, RoleBase, table=True):
     __tablename__ = "roles"
 
 
-class RoleResponse(RoleBase):
-    """角色响应 Schema"""
-
-    id: int
-    created_at: datetime
-    updated_at: datetime | None = None
-    permissions: list["PermissionRead"] = Field(default_factory=list)
-
-
+# ==================== Relationships ====================
 # 在类外部定义关系（SQLModel 兼容方式）
-User.roles = relationship(
-    "Role",
-    secondary=user_role,
-    back_populates="users",
-)
 
-Role.users = relationship(
-    "User",
-    secondary=user_role,
-    back_populates="roles",
-)
 
 Role.permissions = relationship(
     "Permission",
@@ -145,73 +107,7 @@ Permission.roles = relationship(
 )
 
 
-# ==================== Pydantic Schemas ====================
-
-
-class UserCreate(UserBase):
-    """用户创建 Schema - 接收客户端输入"""
-
-    password: str = Field(min_length=6, max_length=100)
-
-
-class UserUpdate(BaseMixin):
-    """用户更新 Schema - 所有字段可选"""
-
-    email: str | None = Field(default=None, max_length=100)
-    full_name: str | None = Field(default=None, max_length=100)
-    is_active: bool | None = None
-
-
-class UserRead(UserBase):
-    """用户响应 Schema - 返回给客户端"""
-
-    id: int
-    is_active: bool
-    is_superuser: bool
-    created_at: datetime
-    updated_at: datetime | None = None
-    roles: list["RoleRead"] = Field(default_factory=list)
-
-
-class UserListResponse(BaseMixin):
-    """用户列表响应 Schema"""
-
-    total: int
-    items: list[UserRead]
-
-
-# ==================== 认证 Schemas ====================
-
-
-class LoginRequest(BaseMixin):
-    """登录请求 Schema"""
-
-    username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=6, max_length=100)
-
-
-class LoginResponse(BaseMixin):
-    """登录响应 Schema"""
-
-    access_token: str
-    refresh_token: str
-    access_token_expire_time: datetime
-    refresh_token_expire_time: datetime
-    session_uuid: str
-    user: UserRead
-
-
-class RefreshTokenResponse(BaseMixin):
-    """刷新令牌响应 Schema"""
-
-    access_token: str
-    refresh_token: str
-    access_token_expire_time: datetime
-    refresh_token_expire_time: datetime
-    session_uuid: str
-
-
-# ==================== Role/Permission Schemas ====================
+# ==================== Schemas ====================
 
 
 class PermissionCreate(PermissionBase):
@@ -255,4 +151,13 @@ class RoleRead(RoleBase):
     id: int
     created_at: datetime
     updated_at: datetime | None = None
-    permissions: list[PermissionRead] = Field(default_factory=list)
+    permissions: list[PermissionRead] = Field(default_factory=list)  # 同文件引用，无需前向引用
+
+
+class RoleResponse(RoleBase):
+    """角色响应 Schema"""
+
+    id: int
+    created_at: datetime
+    updated_at: datetime | None = None
+    permissions: list["PermissionRead"] = Field(default_factory=list)

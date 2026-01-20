@@ -57,3 +57,6 @@ class QueryOptions(BaseModel):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=100)
     max_depth: int = Field(default=1, ge=0, le=3)
+
+
+__ALL__ = ["FilterOperator", "FilterCondition", "FilterGroup", "SortField", "QueryOptions"]

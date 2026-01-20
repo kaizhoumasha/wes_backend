@@ -30,10 +30,10 @@ from inspect import iscoroutinefunction
 from typing import Any, TypeVar
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logger import logger
+from src.core.query_models import FilterGroup, SortField
 
 # 泛型类型变量
 T = TypeVar("T")
@@ -175,7 +175,6 @@ class BaseRepository[T]:
 
     async def _handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
         """处理关联对象（简化版本，子类可重写）"""
-        pass
 
     # ==================== 基础 CRUD 方法 ====================
 
@@ -278,8 +277,8 @@ class BaseRepository[T]:
         db: AsyncSession,
         limit: int = 10,
         offset: int = 0,
-        filters: "FilterGroup | None" = None,
-        sort: "list[SortField] | None" = None,
+        filters: FilterGroup | None = None,
+        sort: list[SortField] | None = None,
         schema: type | None = None,
         max_depth: int = 1,
     ) -> tuple[int, list[T]]:
