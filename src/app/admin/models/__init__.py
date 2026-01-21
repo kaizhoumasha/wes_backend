@@ -12,6 +12,9 @@ from .permission import (
     PermissionBase,
     PermissionCreate,
     PermissionRead,
+    PermissionReadSimple,
+    PermissionTree,
+    PermissionUpdate,
 )
 from .relationships import role_permission, user_role
 from .role import (
@@ -49,31 +52,35 @@ Role.users = relationship(
 # ==================== 重建 Pydantic 模型 ====================
 # 重建使用前向引用的 Pydantic 模型，解决类型注解问题
 UserRead.model_rebuild()
+PermissionTree.model_rebuild()
 
 # ==================== 导出所有公开内容 ====================
 
 __all__ = [
-    # User 模型
-    "User",
-    "UserBase",
-    "UserCreate",
-    "UserUpdate",
-    "UserRead",
-    "UserListResponse",
-    # Role 模型
-    "Role",
-    "RoleBase",
-    "RoleCreate",
-    "RoleUpdate",
-    "RoleRead",
-    "RoleReadSimple",
-    "RoleResponse",
     # Permission 模型
     "Permission",
     "PermissionBase",
     "PermissionCreate",
     "PermissionRead",
+    "PermissionReadSimple",
+    "PermissionTree",
+    "PermissionUpdate",
+    # Role 模型
+    "Role",
+    "RoleBase",
+    "RoleCreate",
+    "RoleRead",
+    "RoleReadSimple",
+    "RoleResponse",
+    "RoleUpdate",
+    # User 模型
+    "User",
+    "UserBase",
+    "UserCreate",
+    "UserListResponse",
+    "UserRead",
+    "UserUpdate",
+    "role_permission",
     # 关联表
     "user_role",
-    "role_permission",
 ]

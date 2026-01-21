@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, Path, Query
 from src.core.base_service import BaseService
 from src.core.logger import logger
 from src.core.query_models import QueryOptions
+from src.core.rbac import RequirePermission
 from src.core.response.response_util import response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
@@ -86,21 +87,6 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         perm_code = self._get_permission_code(action)
         return f"[{perm_code}] {description}" if perm_code else description
 
-    def _get_permission_deps(self, action: str) -> list[Any]:
-        """获取权限依赖"""
-        logger.debug(f"_get_permission_deps called: action={action}, enable_permission={self.enable_permission}")
-        if not self.enable_permission:
-            logger.debug(f"权限已禁用，跳过: {self.perm_prefix}:{action}")
-            return []
-        try:
-            from src.core.rbac import RequirePermission
-
-            logger.info(f"获取权限依赖: {self.perm_prefix}:{action}")
-            return [Depends(RequirePermission(f"{self.perm_prefix}:{action}"))]
-        except ImportError as e:
-            logger.warning(f"导入权限模块失败: {e}")
-            return []
-
     def _register_create(self) -> None:
         """注册创建接口"""
         summary = self._build_summary("create", f"创建{self.resource_name}")
@@ -108,7 +94,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.post(
             "",
             summary=summary,
-            dependencies=self._get_permission_deps("create"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:create"))] if self.enable_permission else [],
         )
         async def create(
             obj_in: Annotated[self.create_schema, Body(...)],  # type: ignore
@@ -129,7 +115,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.put(
             "/{id}",
             summary=summary,
-            dependencies=self._get_permission_deps("update"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:update"))] if self.enable_permission else [],
         )
         async def update(
             id: Annotated[int, Path(...)],
@@ -155,7 +141,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.delete(
             "/{id}",
             summary=summary,
-            dependencies=self._get_permission_deps("delete"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
         )
         async def delete(
             id: Annotated[int, Path(...)],
@@ -174,7 +160,9 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.delete(
             "/bulk",
             summary=summary,
-            dependencies=self._get_permission_deps("bulk_delete"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:bulk_delete"))]
+            if self.enable_permission
+            else [],  # dependencies=[PermissionDep(f"{self.perm_prefix}:bulk_delete")] if self.enable_permission else [],
         )
         async def bulk_delete(
             ids: list[int],
@@ -205,7 +193,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/{id}",
             summary=summary,
-            dependencies=self._get_permission_deps("get"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:detail"))] if self.enable_permission else [],
         )
         async def get(
             id: Annotated[int, Path(...)],
@@ -228,7 +216,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         @self.router.post(
             "/query",
             summary=summary,
-            dependencies=self._get_permission_deps("list"),
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:list"))] if self.enable_permission else [],
         )
         async def query_items(
             db: AsyncSessionDep,
