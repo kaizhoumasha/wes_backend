@@ -16,10 +16,11 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
         "PYTHONUNBUFFERED": "1"
       },
-      "preLaunchTask": "uv-sync"
+      "preLaunchTask": ""
     },
     {
       "name": "FastAPI: Python (开发)",
