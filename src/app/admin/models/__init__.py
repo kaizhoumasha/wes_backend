@@ -7,11 +7,14 @@ Admin 模型模块
 from sqlalchemy.orm import relationship
 
 # 导入所有模型
-from .role import (
+from .permission import (
     Permission,
     PermissionBase,
     PermissionCreate,
     PermissionRead,
+)
+from .relationships import role_permission, user_role
+from .role import (
     Role,
     RoleBase,
     RoleCreate,
@@ -19,8 +22,6 @@ from .role import (
     RoleReadSimple,
     RoleResponse,
     RoleUpdate,
-    role_permission,
-    user_role,
 )
 from .user import (
     User,
