@@ -36,6 +36,7 @@ from sqlalchemy.orm import relationship
 
 from src.app.admin.models.relationships import role_permission
 from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
+from src.database.model_factory import ModelFactory
 
 # ==================== Permission 模型 ====================
 
@@ -108,7 +109,7 @@ class PermissionBase(BaseMixin):
             raise ValueError("name 格式错误，应为 'module:resource:action'")
         return v
 
-    @field_validator("type")
+    @field_validator("type", mode="before")
     @classmethod
     def validate_type(cls, v: str) -> str:
         """验证权限类型"""
@@ -133,31 +134,41 @@ class PermissionBase(BaseMixin):
     @model_validator(mode="after")
     def validate_button_permissions(self) -> "PermissionBase":
         """button 类型必须有关联的 API 权限"""
-        if self.type == "button" and not self.api_permissions:
+        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        is_create = self.__class__.__name__.endswith("Create")
+        if self.type == "button" and (is_create or "api_permissions" in fields_set) and not self.api_permissions:
             raise ValueError("button 类型必须指定 api_permissions")
         return self
 
     @model_validator(mode="after")
     def validate_external_link_consistency(self) -> "PermissionBase":
         """外部链接一致性验证"""
-        if self.is_external and not self.external_url:
+        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        is_create = self.__class__.__name__.endswith("Create")
+        if self.is_external and (is_create or "external_url" in fields_set) and not self.external_url:
             raise ValueError("is_external=True 时必须指定 external_url")
         return self
 
     @model_validator(mode="after")
     def validate_menu_fields(self) -> "PermissionBase":
         """菜单类型字段验证"""
-        if self.type == "menu" and not self.path:
+        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        is_create = self.__class__.__name__.endswith("Create")
+        if self.type == "menu" and (is_create or "path" in fields_set) and not self.path:
             raise ValueError("menu 类型必须指定 path")
         return self
 
     @model_validator(mode="after")
     def validate_api_fields(self) -> "PermissionBase":
         """API 类型字段验证"""
+        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        is_create = self.__class__.__name__.endswith("Create")
         if self.type == "api":
-            if not self.method:
+            if is_create and (not self.method or not self.path):
+                raise ValueError("api 类型必须指定 method 和 path")
+            if "method" in fields_set and not self.method:
                 raise ValueError("api 类型必须指定 method")
-            if not self.path:
+            if "path" in fields_set and not self.path:
                 raise ValueError("api 类型必须指定 path")
         return self
 
@@ -180,47 +191,9 @@ class Permission(BaseTableModelMixin, PermissionBase, table=True):
 
 # ==================== Schemas ====================
 
-
-class PermissionCreate(PermissionBase):
-    """权限创建 Schema"""
-
-
-class PermissionUpdate(BaseMixin):
-    """权限更新 Schema（所有字段可选）"""
-
-    # 基础字段
-    name: str | None = Field(default=None, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
-    type: str | None = None
-    category: str | None = Field(default=None, max_length=50)
-
-    # API 权限字段
-    resource: str | None = Field(default=None, max_length=50)
-    action: str | None = Field(default=None, max_length=50)
-    method: str | None = Field(default=None, max_length=10)
-    path: str | None = Field(default=None, max_length=255)
-
-    # 菜单权限字段
-    component: str | None = Field(default=None, max_length=255)
-    icon: str | None = Field(default=None, max_length=50)
-    redirect: str | None = Field(default=None, max_length=255)
-    title: str | None = Field(default=None, max_length=100)
-
-    # 层级结构
-    parent_id: int | None = None
-    sort_order: int | None = None
-
-    # 状态控制
-    is_active: bool | None = None
-    is_hidden: bool | None = None
-    is_cached: bool | None = None
-    is_affix: bool | None = None
-    is_external: bool | None = None
-    external_url: str | None = Field(default=None, max_length=500)
-
-    # 元数据和关联
-    meta: dict[str, Any] | None = None
-    api_permissions: list[str] | None = None
+# 使用 ModelFactory 创建 Permission Schema（单例模式）
+PermissionCreate = ModelFactory(PermissionBase).for_create()
+PermissionUpdate = ModelFactory(PermissionBase).for_update()
 
 
 class PermissionRead(PermissionBase):
@@ -235,6 +208,10 @@ class PermissionRead(PermissionBase):
     def full_name(self) -> str:
         """生成完整的权限标识（包含类型前缀）"""
         return f"[{self.type.upper()}] {self.name}"
+
+
+# 别名，保持 API 命名一致性
+PermissionResponse = PermissionRead
 
 
 class PermissionReadSimple(PermissionBase):

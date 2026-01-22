@@ -13,6 +13,7 @@ from .permission import (
     PermissionCreate,
     PermissionRead,
     PermissionReadSimple,
+    PermissionResponse,
     PermissionTree,
     PermissionUpdate,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "PermissionCreate",
     "PermissionRead",
     "PermissionReadSimple",
+    "PermissionResponse",
     "PermissionTree",
     "PermissionUpdate",
     # Role 模型
