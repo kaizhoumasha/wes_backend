@@ -18,7 +18,7 @@ class UserBase(BaseMixin):
     full_name: str | None = Field(default=None, max_length=100)
 
 
-class User(BaseTableModelMixin, UserBase, table=True):
+class User(BaseTableModelMixin, UserBase, table=True):  # type: ignore[misc]
     """
     用户数据库表模型
 

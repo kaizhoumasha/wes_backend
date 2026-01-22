@@ -7,7 +7,7 @@ Admin 模型模块
 from sqlalchemy.orm import relationship
 
 # 导入所有模型
-from .permission import (
+from .perm import (
     Permission,
     PermissionBase,
     PermissionCreate,

@@ -4,9 +4,9 @@
 
 from src.app.admin.models import Permission, PermissionCreate, PermissionResponse, PermissionUpdate
 from src.app.admin.services.perm_service import permission_service
-from src.core.base_api import BaseAPI
+from src.core.tree_api import TreeAPI
 
-perm_api = BaseAPI(
+perm_api = TreeAPI(
     module_name="admin",
     model=Permission,
     service=permission_service,

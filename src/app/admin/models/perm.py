@@ -35,14 +35,16 @@ from sqlalchemy import JSON, Index
 from sqlalchemy.orm import relationship
 
 from src.app.admin.models.relationships import role_permission
-from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
+from src.core.mixins import BaseMixin, BaseTableModelMixin, Field, TreeMixin
 from src.database.model_factory import ModelFactory
 
 # ==================== Permission 模型 ====================
 
 
-class PermissionBase(BaseMixin):
+class PermissionBase(TreeMixin, BaseMixin):
     """权限基础字段"""
+
+    parent_id: int | None = Field(default=None, foreign_key="permissions.id", index=True)
 
     name: str = Field(max_length=100, unique=True, index=True, description="权限标识，如 admin:role:create")
     description: str | None = Field(default=None, max_length=255, description="权限描述")
@@ -66,10 +68,6 @@ class PermissionBase(BaseMixin):
     icon: str | None = Field(default=None, max_length=50, description="菜单图标")
     redirect: str | None = Field(default=None, max_length=255, description="重定向路径")
     title: str | None = Field(default=None, max_length=100, description="菜单标题/页面标题（用于前端显示）")
-
-    # 层级结构
-    parent_id: int | None = Field(default=None, foreign_key="permissions.id", description="父权限 ID")
-    sort_order: int = Field(default=0, description="排序，数字越小越靠前")
 
     # 状态控制
     is_active: bool = Field(default=True, description="是否启用")
@@ -131,11 +129,16 @@ class PermissionBase(BaseMixin):
                 pass
         return v
 
+    def _get_validation_context(self) -> tuple[set[str], bool]:
+        """获取验证上下文（DRY 优化：避免重复获取 fields_set 和 is_create）"""
+        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        is_create = self.__class__.__name__.endswith("Create")
+        return fields_set, is_create
+
     @model_validator(mode="after")
     def validate_button_permissions(self) -> "PermissionBase":
         """button 类型必须有关联的 API 权限"""
-        fields_set = getattr(self, "__pydantic_fields_set__", set())
-        is_create = self.__class__.__name__.endswith("Create")
+        fields_set, is_create = self._get_validation_context()
         if self.type == "button" and (is_create or "api_permissions" in fields_set) and not self.api_permissions:
             raise ValueError("button 类型必须指定 api_permissions")
         return self
@@ -143,8 +146,7 @@ class PermissionBase(BaseMixin):
     @model_validator(mode="after")
     def validate_external_link_consistency(self) -> "PermissionBase":
         """外部链接一致性验证"""
-        fields_set = getattr(self, "__pydantic_fields_set__", set())
-        is_create = self.__class__.__name__.endswith("Create")
+        fields_set, is_create = self._get_validation_context()
         if self.is_external and (is_create or "external_url" in fields_set) and not self.external_url:
             raise ValueError("is_external=True 时必须指定 external_url")
         return self
@@ -152,8 +154,7 @@ class PermissionBase(BaseMixin):
     @model_validator(mode="after")
     def validate_menu_fields(self) -> "PermissionBase":
         """菜单类型字段验证"""
-        fields_set = getattr(self, "__pydantic_fields_set__", set())
-        is_create = self.__class__.__name__.endswith("Create")
+        fields_set, is_create = self._get_validation_context()
         if self.type == "menu" and (is_create or "path" in fields_set) and not self.path:
             raise ValueError("menu 类型必须指定 path")
         return self
@@ -161,8 +162,7 @@ class PermissionBase(BaseMixin):
     @model_validator(mode="after")
     def validate_api_fields(self) -> "PermissionBase":
         """API 类型字段验证"""
-        fields_set = getattr(self, "__pydantic_fields_set__", set())
-        is_create = self.__class__.__name__.endswith("Create")
+        fields_set, is_create = self._get_validation_context()
         if self.type == "api":
             if is_create and (not self.method or not self.path):
                 raise ValueError("api 类型必须指定 method 和 path")
@@ -173,7 +173,7 @@ class PermissionBase(BaseMixin):
         return self
 
 
-class Permission(BaseTableModelMixin, PermissionBase, table=True):
+class Permission(BaseTableModelMixin, PermissionBase, table=True):  # type: ignore[misc]
     """权限表"""
 
     __tablename__ = "permissions"
@@ -261,22 +261,6 @@ class PermissionTree(PermissionBase):
 
     @computed_field
     @property
-    def level(self) -> int:
-        """当前节点在树中的层级（从 1 开始）"""
-        return self._calculate_level(self, 1)
-
-    @classmethod
-    def _calculate_level(cls, node: "PermissionTree", current_level: int) -> int:
-        """递归计算节点层级"""
-        # 对于树的任意节点，我们需要向上追溯 parent_id
-        # 但在序列化的树结构中，我们只能知道当前节点的深度
-        # 这里简化处理：返回子树的相对深度
-        if not node.children:
-            return current_level
-        return current_level
-
-    @computed_field
-    @property
     def is_leaf(self) -> bool:
         """是否为叶子节点（无子权限）"""
         return len(self.children) == 0
@@ -360,13 +344,13 @@ Permission.parent = relationship(
     "Permission",
     remote_side="Permission.id",
     back_populates="children",
-    foreign_keys=[Permission.parent_id],
+    foreign_keys="Permission.parent_id",  # type: ignore[arg-type]
 )
 
 Permission.children = relationship(
     "Permission",
     back_populates="parent",
-    foreign_keys=[Permission.parent_id],
+    foreign_keys="Permission.parent_id",  # type: ignore[arg-type]
     order_by="Permission.sort_order",
 )
 

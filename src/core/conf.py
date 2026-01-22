@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_REDIS_PREFIX: str = "auth:refresh_token"
     JWT_USER_REDIS_PREFIX: str = "auth:user"
 
+    # ==================== Cookie 安全配置 ====================
+    # 控制 Cookie 的 secure 标志，生产环境应设置为 True
+    # True: Cookie 仅通过 HTTPS 传输（推荐用于生产环境）
+    # False: Cookie 可通过 HTTP 或 HTTPS 传输（仅用于本地开发）
+    COOKIE_SECURE: bool | None = None  # None 表示自动根据 APP_DEBUG 判断
+
     # ==================== 配置验证 ====================
 
     @model_validator(mode="after")
