@@ -2,7 +2,7 @@
 
 from typing import TypeVar
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.base_repository import BaseRepository
@@ -20,11 +20,16 @@ class HierarchyRepository[T](BaseRepository[T]):
         include_inactive: bool = False,
     ) -> list[T]:
         """获取直接子节点"""
-        where_clauses = [self.model.parent_id == parent_id]
-        if not include_inactive and hasattr(self.model, "is_active"):
-            where_clauses.append(self.model.is_active == True)  # noqa: E712
+        # 使用 getattr 避免泛型类型的属性访问错误
+        parent_id_attr = getattr(self.model, "parent_id")  # noqa: B009
+        where_clauses = [parent_id_attr == parent_id]
 
-        return await self.get_all(db, where_clauses=where_clauses, order_by=self.model.sort_order)
+        is_active_attr = getattr(self.model, "is_active", None)
+        if not include_inactive and is_active_attr is not None:
+            where_clauses.append(is_active_attr == True)  # noqa: E712
+
+        sort_order_attr = getattr(self.model, "sort_order")  # noqa: B009
+        return await self.get_all(db, where_clauses=where_clauses, order_by=sort_order_attr)
 
     async def get_descendants(
         self,
@@ -38,26 +43,39 @@ class HierarchyRepository[T](BaseRepository[T]):
             return []
 
         # 使用 bind parameter 防止 SQL 注入
-        stmt = select(self.model).where(self.model.tree_path.like(f"{parent.tree_path}%"))  # type: ignore
+        # 使用 getattr 避免泛型类型的属性访问错误
+        tree_path_attr = getattr(parent, "tree_path")  # noqa: B009
+        stmt = select(self.model).where(
+            getattr(self.model, "tree_path").like(f"{tree_path_attr}%")  # type: ignore[attr-defined]  # noqa: B009
+        )
         if max_depth:
-            stmt = stmt.where(self.model.level <= parent.level + max_depth)  # type: ignore
+            parent_level = getattr(parent, "level")  # noqa: B009
+            stmt = stmt.where(
+                getattr(self.model, "level") <= parent_level + max_depth  # type: ignore[attr-defined]  # noqa: B009
+            )
 
-        stmt = stmt.order_by(self.model.tree_path, self.model.sort_order)  # type: ignore
+        stmt = stmt.order_by(
+            getattr(self.model, "tree_path"),  # noqa: B009
+            getattr(self.model, "sort_order"),  # noqa: B009
+        )  # type: ignore[attr-defined]
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
     async def get_ancestors(self, db: AsyncSession, node_id: int) -> list[T]:
         """获取祖先路径"""
         node = await self.get_by_id(db, node_id)
-        if not node or not node.tree_path or node.tree_path == "/":  # type: ignore
+        tree_path = getattr(node, "tree_path", None) if node else None
+        if not node or not tree_path or tree_path == "/":
             return []
 
-        ancestor_ids = [int(id_) for id_ in node.tree_path.strip("/").split("/") if id_]  # type: ignore
+        ancestor_ids = [int(id_) for id_ in tree_path.strip("/").split("/") if id_]
         if not ancestor_ids:
             return []
 
         result = await db.execute(
-            select(self.model).where(self.model.id.in_(ancestor_ids)).order_by(self.model.level)  # type: ignore
+            select(self.model)
+            .where(getattr(self.model, "id").in_(ancestor_ids))  # type: ignore[attr-defined]  # noqa: B009
+            .order_by(getattr(self.model, "level"))  # type: ignore[attr-defined]  # noqa: B009
         )
         return list(result.scalars().all())
 
@@ -73,7 +91,7 @@ class HierarchyRepository[T](BaseRepository[T]):
                 raise ValueError("节点不能成为自己的父节点")
 
             descendants = await self.get_descendants(db, node_id)
-            if any(d.id == new_parent_id for d in descendants):
+            if any(getattr(d, "id") == new_parent_id for d in descendants):  # noqa: B009
                 raise ValueError("不能将节点移动到其后代节点下")
 
         return await self.update(db, node_id, {"parent_id": new_parent_id})
@@ -81,7 +99,8 @@ class HierarchyRepository[T](BaseRepository[T]):
     async def get_depth(self, db: AsyncSession, node_id: int) -> int:
         """获取节点深度"""
         node = await self.get_by_id(db, node_id)
-        return node.level - 1 if node else 0  # type: ignore
+        level = getattr(node, "level", 1) if node else 1
+        return level - 1
 
     async def is_leaf(self, db: AsyncSession, node_id: int) -> bool:
         """判断是否叶子节点"""

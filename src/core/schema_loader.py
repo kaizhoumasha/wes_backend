@@ -34,7 +34,9 @@ def get_relationship_fields(
                 arg = args[0]
                 if isinstance(arg, str):
                     try:
-                        arg = schema.model_fields[field_name].annotation.__args__[0]
+                        field_annotation = schema.model_fields[field_name].annotation
+                        if field_annotation is not None and hasattr(field_annotation, "__args__"):
+                            arg = field_annotation.__args__[0]
                         if hasattr(schema, "__annotations__"):
                             from typing import get_type_hints
 
@@ -61,33 +63,68 @@ def apply_schema_loads(
     query: Select,
     model: type[Any],
     schema: type[BaseModel],
-    strategy: str = "selectin",
     max_depth: int = 2,
 ) -> Select:
-    load_func = selectinload if strategy == "selectin" else joinedload
+    """
+    根据 schema 应用智能关系加载策略
 
-    def _build_loaders(current_model, current_schema, current_depth):
+    自动根据关系类型选择最优加载策略：
+    - 一对一关系：使用 joinedload（单次 JOIN 查询）
+    - 一对多/多对多：使用 selectinload（避免笛卡尔积）
+
+    Args:
+        query: SQLAlchemy 查询对象
+        model: SQLAlchemy 模型类
+        schema: Pydantic ResponseSchema 类
+        max_depth: 最大递归深度
+
+    Returns:
+        应用了加载选项的查询对象
+    """
+    from src.database.relation_metadata import RelationMetadata, RelationType
+
+    def _get_optimal_loader(relation_name: str, current_model: type[Any]) -> Any:
+        """根据关系类型选择最优加载策略"""
+        relation_type = RelationMetadata.get_relation_type(current_model, relation_name)
+        if relation_type == RelationType.ONETOONE:
+            return joinedload  # 一对一：单次 JOIN，性能最优
+        return selectinload  # 一对多/多对多：避免笛卡尔积
+
+    def _build_loaders(current_model: type[Any], current_schema: type[BaseModel], current_depth: int) -> list[Any]:
+        """递归构建关系加载器"""
         if current_depth > max_depth:
             return []
 
-        loaders = []
-        relationships = get_relationship_fields(current_schema)
+        # 验证模型是否有关系
+        if not RelationMetadata.has_relations(current_model):
+            return []
 
-        for field_name, nested_schema in relationships.items():
-            if not hasattr(current_model, field_name):
+        loaders = []
+        schema_relationships = get_relationship_fields(current_schema)
+        model_relationships = RelationMetadata.get_relation_info(current_model)
+
+        for field_name, nested_schema in schema_relationships.items():
+            # 验证关系在模型中真实存在
+            if field_name not in model_relationships:
                 continue
 
             rel_attr = getattr(current_model, field_name)
+            load_func = _get_optimal_loader(field_name, current_model)
 
             if current_depth < max_depth and nested_schema:
+                # 递归处理嵌套关系
                 nested_model = rel_attr.property.mapper.class_
                 loader = load_func(rel_attr)
 
-                nested_rels = get_relationship_fields(nested_schema)
-                for nested_field in nested_rels:
-                    if hasattr(nested_model, nested_field):
+                # 为嵌套关系也应用智能加载
+                nested_schema_rels = get_relationship_fields(nested_schema)
+                nested_model_rels = RelationMetadata.get_relation_info(nested_model)
+
+                for nested_field in nested_schema_rels:
+                    if nested_field in nested_model_rels:
                         nested_attr = getattr(nested_model, nested_field)
-                        loader = loader.selectinload(nested_attr)
+                        nested_load_func = _get_optimal_loader(nested_field, nested_model)
+                        loader = loader.options(nested_load_func(nested_attr))
 
                 loaders.append(loader)
             else:
@@ -107,18 +144,20 @@ async def get_with_schema[T](
     model: type[T],
     schema: type[BaseModel],
     *where_clauses,
-    strategy: str = "selectin",
     max_depth: int = 2,
 ) -> T | None:
     """
     根据 schema 自动加载关系并查询单个对象
+
+    自动根据关系类型选择最优加载策略：
+    - 一对一关系：使用 joinedload（单次 JOIN 查询）
+    - 一对多/多对多：使用 selectinload（避免笛卡尔积）
 
     Args:
         db: 数据库会话
         model: SQLAlchemy 模型类
         schema: Pydantic ResponseSchema 类
         *where_clauses: WHERE 条件
-        strategy: 加载策略
         max_depth: 最大递归深度
 
     Returns:
@@ -128,7 +167,7 @@ async def get_with_schema[T](
         user = await get_with_schema(db, User, UserRead, User.id == 1)
     """
     query = select(model).where(*where_clauses)
-    query = apply_schema_loads(query, model, schema, strategy, max_depth)
+    query = apply_schema_loads(query, model, schema, max_depth)
     result = await db.execute(query)
     return result.scalars().first()
 
@@ -138,7 +177,6 @@ async def get_all_with_schema[T](
     model: type[T],
     schema: type[BaseModel],
     *where_clauses,
-    strategy: str = "selectin",
     max_depth: int = 2,
     limit: int | None = None,
     offset: int | None = None,
@@ -147,12 +185,15 @@ async def get_all_with_schema[T](
     """
     根据 schema 自动加载关系并查询多个对象
 
+    自动根据关系类型选择最优加载策略：
+    - 一对一关系：使用 joinedload（单次 JOIN 查询）
+    - 一对多/多对多：使用 selectinload（避免笛卡尔积）
+
     Args:
         db: 数据库会话
         model: SQLAlchemy 模型类
         schema: Pydantic ResponseSchema 类
         *where_clauses: WHERE 条件
-        strategy: 加载策略
         max_depth: 最大递归深度
         limit: 限制数量
         offset: 偏移量
@@ -168,7 +209,7 @@ async def get_all_with_schema[T](
     query = select(model)
     if where_clauses:
         query = query.where(*where_clauses)
-    query = apply_schema_loads(query, model, schema, strategy, max_depth)
+    query = apply_schema_loads(query, model, schema, max_depth)
     if order_by:
         query = query.order_by(*order_by)
     if offset:
@@ -211,15 +252,15 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
                 data[field_name] = None
             elif isinstance(value, list):
                 relationships = get_relationship_fields(schema)
-                if relationships.get(field_name):
-                    nested_schema = relationships[field_name]
+                nested_schema = relationships.get(field_name)
+                if nested_schema:
                     data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in value]
                 else:
                     data[field_name] = value
             else:
                 relationships = get_relationship_fields(schema)
-                if relationships.get(field_name):
-                    nested_schema = relationships[field_name]
+                nested_schema = relationships.get(field_name)
+                if nested_schema:
                     data[field_name] = model_to_schema(value, nested_schema).__dict__
                 else:
                     data[field_name] = value

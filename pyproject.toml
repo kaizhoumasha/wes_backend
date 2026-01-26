@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "aiosqlite>=0.20.0",
     "locust>=2.33.0",
     "pytest>=8.0.0",
     "pytest-benchmark>=5.1.0",
@@ -303,3 +304,12 @@ classmethod-decorators = [
 staticmethod-decorators = [
     "staticmethod",
 ]
+
+[tool.pytest.ini_options]
+# pytest 配置
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
