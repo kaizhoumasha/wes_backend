@@ -90,11 +90,13 @@ def register_routers(app: FastAPI) -> None:
     """注册路由"""
     from src.app.admin import router_v1 as admin_router
     from src.app.auth import router_v1 as auth_router
+    from src.app.demo import router_v1 as demo_router
     from src.app.sys import router_v1 as sys_router
 
     app.include_router(auth_router, prefix=settings.API_PATH)
     app.include_router(admin_router, prefix=settings.API_PATH)
     app.include_router(sys_router, prefix=settings.API_PATH)
+    app.include_router(demo_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:
