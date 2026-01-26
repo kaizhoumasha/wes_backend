@@ -4,24 +4,57 @@
 提供简单的装饰器来简化缓存逻辑，避免在每个函数中重复编写缓存代码。
 """
 
-# ruff: noqa: SIM108
+# ruff: noqa: SIM108, PLR0912
 # - SIM108: 优先使用 if-else 而不是三元运算符，提高可读性
+# - PLR0912: 缓存装饰器需要处理多种情况（锁、空值、序列化等），分支数合理
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from inspect import signature
+from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
-from src.database.redis_cache import RedisCache
 
 if TYPE_CHECKING:
     from src.database.redis_cache import RedisCache
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+# 空值缓存标记：用于区分"键不存在"和"值为空"
+_NULL_CACHE_MARKER = "__NULL_CACHE_MARKER__"
+
+
+def _get_return_type(func: Callable) -> type | None:
+    """
+    获取函数的返回类型（处理 Optional 类型）
+
+    Args:
+        func: 函数对象
+
+    Returns:
+        返回类型，如果无法确定则返回 None
+    """
+    if not hasattr(func, "__annotations__") or "return" not in func.__annotations__:
+        return None
+
+    return_annotation = func.__annotations__["return"]
+
+    # 处理 Optional[T] 或 T | None 类型
+    origin = get_origin(return_annotation)
+    if origin is not None:
+        # 对于 Union 类型（包括 Optional）
+        args = get_args(return_annotation)
+        if args:
+            # 过滤掉 None 类型，返回实际的类型
+            non_none_types = [arg for arg in args if arg is not type(None)]
+            if non_none_types:
+                return non_none_types[0]
+
+    return return_annotation
 
 
 def cached(
@@ -30,7 +63,7 @@ def cached(
     lock: bool = True,
     null_expire: int | None = None,
     is_hot: bool = True,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """
     缓存装饰器
 
@@ -66,18 +99,33 @@ def cached(
             return await UserService.get_user_by_id(db, user_id)
     """
 
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+    def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             # 从 kwargs 中获取 cache 参数
-            cache: RedisCache | None = kwargs.get("cache")
+            cache = cast("RedisCache | None", kwargs.get("cache"))
             if not cache:
                 # 如果没有 cache，直接调用原函数
                 return await func(*args, **kwargs)
 
-            # 构建缓存键（跳过 db 参数，使用其他参数）
-            cache_args = [arg for i, arg in enumerate(args) if i != 1]  # 跳过 db 参数
-            cache_key_parts = [str(arg) for arg in cache_args]
+            # 构建缓存键（排除 db 和 cache 参数）
+            sig = signature(func)
+            param_names = list(sig.parameters.keys())
+
+            # 收集用于缓存键的参数
+            cache_key_parts = []
+            for i, arg in enumerate(args):
+                if i < len(param_names):
+                    param_name = param_names[i]
+                    # 跳过 db 和 cache 参数
+                    if param_name not in ("db", "cache"):
+                        cache_key_parts.append(str(arg))
+
+            # 添加 kwargs 中的参数（排除 db 和 cache）
+            for key, value in kwargs.items():
+                if key not in ("db", "cache"):
+                    cache_key_parts.append(f"{key}={value}")
+
             cache_key = f"{key_prefix}:{':'.join(cache_key_parts)}"
 
             # 尝试从缓存获取
@@ -86,14 +134,16 @@ def cached(
             # 处理缓存命中
             if cached_data is not None:
                 logger.info(f"缓存命中: {cache_key}")
-                # 空值缓存处理
-                if null_expire is not None and cached_data is None:
+
+                # 空值缓存处理：检查是否是空值标记
+                if cached_data == _NULL_CACHE_MARKER:
                     raise NotFoundException("资源不存在")
+
                 # Pydantic 模型反序列化
-                if hasattr(func, "__annotations__") and "return" in func.__annotations__:
-                    return_annotation = func.__annotations__["return"]
-                    if hasattr(return_annotation, "model_validate"):
-                        return return_annotation.model_validate(cached_data)
+                return_type = _get_return_type(func)
+                if return_type and hasattr(return_type, "model_validate"):
+                    return return_type.model_validate(cached_data)
+
                 return cached_data
 
             # 如果需要锁
@@ -104,16 +154,23 @@ def cached(
                         # 双重检查
                         cached_data = await cache.get(cache_key)
                         if cached_data is not None:
-                            if null_expire is not None and cached_data is None:
+                            # 空值缓存处理
+                            if cached_data == _NULL_CACHE_MARKER:
                                 raise NotFoundException("资源不存在")
+
+                            # Pydantic 模型反序列化
+                            return_type = _get_return_type(func)
+                            if return_type and hasattr(return_type, "model_validate"):
+                                return return_type.model_validate(cached_data)
+
                             return cached_data
 
                         # 执行函数
                         result = await func(*args, **kwargs)
 
-                        # 空值缓存处理
+                        # 空值缓存处理：使用标记存储空值
                         if null_expire is not None and result is None:
-                            await cache.set(cache_key, None, expire=null_expire)
+                            await cache.set(cache_key, _NULL_CACHE_MARKER, expire=null_expire)
                             raise NotFoundException("资源不存在")
 
                         # 序列化结果（如果是 Pydantic 模型）
@@ -137,9 +194,9 @@ def cached(
                 # 无锁模式
                 result = await func(*args, **kwargs)
 
-                # 空值缓存处理
+                # 空值缓存处理：使用标记存储空值
                 if null_expire is not None and result is None:
-                    await cache.set(cache_key, None, expire=null_expire)
+                    await cache.set(cache_key, _NULL_CACHE_MARKER, expire=null_expire)
                     raise NotFoundException("资源不存在")
 
                 # 序列化结果

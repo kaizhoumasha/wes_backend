@@ -228,10 +228,12 @@ class AuditMixin(TimestampMixin):
 
     created_by: int | None = Field(
         default=None,
+        sa_type=BigInteger,
         sa_column_kwargs={"nullable": True, "comment": "创建人ID"},
     )
     updated_by: int | None = Field(
         default=None,
+        sa_type=BigInteger,
         sa_column_kwargs={"nullable": True, "comment": "更新人ID"},
     )
 
