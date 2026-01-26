@@ -15,6 +15,7 @@ from starlette_context import request_cycle_context
 
 from src.core.conf import settings
 from src.core.logger import logger
+from src.utils.request_parse import parse_ip_info, parse_user_agent_info
 
 # 需要跳过日志记录的路径前缀
 SKIP_LOG_PATHS: list[str] = [
@@ -33,6 +34,22 @@ SKIP_LOG_PATHS: list[str] = [
 def should_skip_log(path: str) -> bool:
     """判断是否应该跳过日志记录"""
     return any(path.startswith(prefix) for prefix in SKIP_LOG_PATHS)
+
+
+async def attend_state_info(request: StarletteRequest):
+    """附加请求信息"""
+    ip_info = await parse_ip_info(request)
+    ua_info = parse_user_agent_info(request)
+
+    # 设置附加请求信息
+    request.state.ip = ip_info.ip
+    request.state.country = ip_info.country
+    request.state.region = ip_info.region
+    request.state.city = ip_info.city
+    request.state.user_agent = ua_info.user_agent
+    request.state.os = ua_info.os
+    request.state.browser = ua_info.browser
+    request.state.device = ua_info.device
 
 
 class RequestLogMiddleware(BaseHTTPMiddleware):
@@ -55,11 +72,12 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         request_id = str(uuid.uuid4())[:8]
 
         # 使用 request_cycle_context 管理整个请求周期的上下文
-        # 这会创建一个新上下文，确保后续所有代码都能访问到 request_id
-        with request_cycle_context({"request_id": request_id}):
+        # 这会创建一个新上下文，确保后续所有代码都能访问到 request_id 和 request 对象
+        with request_cycle_context({"request_id": request_id, "request": request}):
             start_time = time.time()
 
             try:
+                await attend_state_info(request)
                 response = await call_next(request)
 
                 # 计算处理时间

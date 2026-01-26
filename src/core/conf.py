@@ -1,5 +1,6 @@
 # 在类定义外先加载环境变量
 from functools import lru_cache
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import computed_field, model_validator
@@ -132,6 +133,11 @@ class Settings(BaseSettings):
     # True: Cookie 仅通过 HTTPS 传输（推荐用于生产环境）
     # False: Cookie 可通过 HTTP 或 HTTPS 传输（仅用于本地开发）
     COOKIE_SECURE: bool | None = None  # None 表示自动根据 APP_DEBUG 判断
+
+    # ==================== Ip location ====================
+    IP_LOCATION_PARSE: Literal["online", "offline", "false"] = "offline"
+    IP_LOCATION_REDIS_PREFIX: str | None = "ip:location"
+    IP_LOCATION_EXPIRE_SECONDS: int | None = 60 * 60 * 24 * 1  # 过期时间，单位：秒
 
     # ==================== 配置验证 ====================
 

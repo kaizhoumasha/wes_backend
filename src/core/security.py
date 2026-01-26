@@ -358,6 +358,20 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
         if not stored_token or stored_token != token:
             raise AuthException("Token 已失效")
 
+        # 获取用户额外信息（username, email 等）
+        extra_key = f"{settings.JWT_USER_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
+        extra_info_str = await redis_client.get(extra_key)
+        if extra_info_str:
+            try:
+                extra_info = json.loads(extra_info_str)
+                # 将 username 设置到 request.state
+                if "username" in extra_info:
+                    request.state.username = extra_info["username"]
+                if "email" in extra_info:
+                    request.state.email = extra_info["email"]
+            except json.JSONDecodeError:
+                logger.warning(f"无法解析用户额外信息: {extra_info_str}")
+
     # 将用户信息附加到 request.state
     request.state.user_id = token_payload.id
     request.state.session_uuid = token_payload.session_uuid

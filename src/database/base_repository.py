@@ -153,6 +153,11 @@ class BaseRepository[T]:
 
         Args:
             model: SQLModel 类（如 User）
+
+        自动功能：
+        - 如果模型混入了状态验证 Mixin，自动注册状态验证 Hook
+        - 如果模型混入了 AuditMixin，自动注册审计字段填充 Hook
+        - 如果模型混入了 AuditModelMixin，自动注册审计日志记录 Hook
         """
         self.model = model
         self._model_name = model.__name__
@@ -162,6 +167,25 @@ class BaseRepository[T]:
 
         # 自动注册状态验证 Hook
         self._register_status_validation_hooks()
+
+        # 自动注册审计字段填充 Hook
+        self._register_audit_hooks()
+
+        # 自动检测并注册审计日志 Hook
+        if self._has_audit_model_mixin():
+            self._register_audit_log_hooks()
+
+    def _has_audit_model_mixin(self) -> bool:
+        """
+        检测模型是否混入了 AuditModelMixin
+
+        通过检查模型的 MRO (Method Resolution Order) 来判断是否继承自 AuditModelMixin。
+
+        Returns:
+            如果模型混入了 AuditModelMixin 则返回 True，否则返回 False
+        """
+        # 检查模型的所有基类
+        return any(base.__name__ in ("AuditModelMixin", "AuditMixin") for base in self.model.__mro__)
 
     def _register_status_validation_hooks(self) -> None:
         """
@@ -223,6 +247,132 @@ class BaseRepository[T]:
                 validator(operation)
 
         return status_validation_hook
+
+    def _register_audit_hooks(self) -> None:
+        """
+        自动注册审计字段填充 Hook
+
+        检测模型是否混入了 AuditMixin，如果有，则自动注册
+        created_by 和 updated_by 的填充 Hook。
+        """
+        # 检查模型是否有 created_by 和 updated_by 字段
+        has_created_by = hasattr(self.model, "created_by")
+        has_updated_by = hasattr(self.model, "updated_by")
+
+        if has_created_by:
+            # 注册 BEFORE_CREATE Hook 填充 created_by
+            self.add_hook(
+                HookType.BEFORE_CREATE,
+                self._create_audit_fill_hook("created_by"),
+                priority=-1,  # 较高优先级，在其他 Hook 之前执行
+            )
+
+        if has_updated_by:
+            # 注册 BEFORE_UPDATE Hook 填充 updated_by
+            self.add_hook(
+                HookType.BEFORE_UPDATE,
+                self._create_audit_fill_hook("updated_by"),
+                priority=-1,
+            )
+
+    def _create_audit_fill_hook(self, field_name: str) -> HookFunc:
+        """
+        创建审计字段填充 Hook 函数
+
+        Args:
+            field_name: 字段名称（created_by 或 updated_by）
+
+        Returns:
+            Hook 函数
+        """
+
+        async def audit_fill_hook(ctx: HookContext) -> None:
+            from src.utils.audit import get_current_user_id
+
+            user_id = get_current_user_id()
+            if user_id is None:
+                return
+
+            # 对于 create 操作，从 data 中设置
+            if field_name == "created_by" and "data" in ctx.params:
+                data = ctx.params["data"]
+                if isinstance(data, dict) and field_name not in data:
+                    data[field_name] = user_id
+
+            # 对于 update 操作，从 instance 或 data 中设置
+            if field_name == "updated_by":
+                if "instance" in ctx.params:
+                    instance = ctx.params["instance"]
+                    if hasattr(instance, field_name):
+                        setattr(instance, field_name, user_id)
+                if "data" in ctx.params:
+                    data = ctx.params["data"]
+                    if isinstance(data, dict):
+                        data[field_name] = user_id
+
+        return audit_fill_hook
+
+    def _register_audit_log_hooks(self) -> None:
+        """
+        注册审计日志 Hook
+
+        在 AFTER_CREATE、AFTER_UPDATE、AFTER_DELETE 时记录审计日志
+        """
+        # 注册 AFTER_CREATE Hook
+        self.add_hook(
+            HookType.AFTER_CREATE,
+            self._create_audit_log_hook("create"),
+            priority=100,  # 最低优先级，在所有其他 Hook 之后执行
+        )
+
+        # 注册 AFTER_UPDATE Hook
+        self.add_hook(
+            HookType.AFTER_UPDATE,
+            self._create_audit_log_hook("update"),
+            priority=100,
+        )
+
+        # 注册 AFTER_DELETE Hook
+        self.add_hook(
+            HookType.AFTER_DELETE,
+            self._create_audit_log_hook("delete"),
+            priority=100,
+        )
+
+    def _create_audit_log_hook(self, operation: str) -> HookFunc:
+        """
+        创建审计日志 Hook 函数
+
+        Args:
+            operation: 操作类型（create/update/delete）
+
+        Returns:
+            Hook 函数
+        """
+
+        async def audit_log_hook(ctx: HookContext) -> None:
+            try:
+                from src.app.sys.services.audit_service import audit_log_service
+
+                instance = ctx.params.get("instance")
+                data = ctx.params.get("data")
+                record_id = getattr(instance, self._pk_column, None) if instance else None
+
+                await audit_log_service.create_operation_log(
+                    ctx.session,
+                    operation=operation,
+                    model_name=self._model_name,
+                    record_id=record_id,
+                    data=data,
+                    success=True,
+                )
+            except Exception as e:
+                # 审计日志失败不应该影响主业务
+                from src.core.logger import logger
+
+                logger.error(f"记录审计日志失败: {e}")
+
+        return audit_log_hook
 
     async def _run_hooks(self, hook_type: HookType, **kwargs: Any) -> dict[str, Any]:
         """运行指定类型的 hooks"""
@@ -502,9 +652,7 @@ class BaseRepository[T]:
 
             # 目前只处理一对多关系
             if relation_type == RelationType.ONETOMANY:
-                await self._handle_one_to_many_relation(
-                    db, instance, relation_name, relation_data, info
-                )
+                await self._handle_one_to_many_relation(db, instance, relation_name, relation_data, info)
 
     async def _handle_one_to_many_relation(
         self,
@@ -711,7 +859,14 @@ class BaseRepository[T]:
             from src.core.schema_loader import get_all_with_schema
 
             items = await get_all_with_schema(
-                db, self.model, schema, *where_clauses, limit=limit, offset=offset, max_depth=max_depth, order_by=order_by
+                db,
+                self.model,
+                schema,
+                *where_clauses,
+                limit=limit,
+                offset=offset,
+                max_depth=max_depth,
+                order_by=order_by,
             )
         else:
             query = select(self.model)
@@ -1056,9 +1211,7 @@ class BaseRepository[T]:
         # 获取关联模型类
         relation_model = relation_attr.property.mapper.class_
 
-        stmt = delete(relation_model).where(
-            relation_model.id.in_(ids_to_delete)
-        )
+        stmt = delete(relation_model).where(relation_model.id.in_(ids_to_delete))
         await db.execute(stmt)
         await db.flush()
 

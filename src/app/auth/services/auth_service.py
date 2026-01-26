@@ -50,7 +50,9 @@ class AuthService:
             AuthException: 密码错误或用户被禁用
         """
         # 查询用户（预加载角色）
-        result = await db.execute(select(User).where(User.username == username).options(selectinload(User.roles)))
+        result = await db.execute(
+            select(User).where(User.username == username).options(selectinload(User.roles))  # type: ignore[arg-type]
+        )
         user = result.scalar_one_or_none()
 
         if not user:
@@ -163,7 +165,9 @@ class AuthService:
             raise AuthException("Refresh Token 无效，请重新登录") from None
 
         # 查询用户（预加载角色）
-        result = await db.execute(select(User).where(User.id == token_payload.id).options(selectinload(User.roles)))
+        result = await db.execute(
+            select(User).where(User.id == token_payload.id).options(selectinload(User.roles))  # type: ignore[arg-type]
+        )
         user = result.scalar_one_or_none()
 
         if not user:
@@ -223,9 +227,10 @@ class AuthService:
                     try:
                         token_payload = jwt_decode(refresh_token)
                         redis_client = get_redis()
-                        await redis_client.delete(
-                            f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
-                        )
+                        if redis_client:
+                            await redis_client.delete(
+                                f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
+                            )
                     except Exception as e:
                         logger.warning(f"删除刷新令牌失败: {e}")
 

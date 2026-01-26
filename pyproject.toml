@@ -25,6 +25,9 @@ dependencies = [
     "starlette-context>=0.4.0",
     "transitions>=0.9.3",
     "uvicorn>=0.40.0",
+    "user-agents>=2.2.0",
+    "xdbsearchip>=1.0.2",
+    "asgiref>=3.11.0",
 ]
 
 [project.optional-dependencies]
@@ -136,6 +139,7 @@ ignore = [
     "COM812",     # 与 ruff format 冲突
     "ISC001",     # 与 ruff format 冲突
     "PYI025",     # 允许所有导出
+    "G004",       # 允许 logger.info 使用 f-string
 
     # 项目特定：允许延迟导入以避免循环依赖
     "PLC0415",    # 允许函数内 import (register_* 模式)
