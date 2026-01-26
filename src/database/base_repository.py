@@ -349,6 +349,7 @@ class BaseRepository[T]:
         Returns:
             Hook 函数
         """
+        import time
 
         async def audit_log_hook(ctx: HookContext) -> None:
             try:
@@ -358,13 +359,53 @@ class BaseRepository[T]:
                 data = ctx.params.get("data")
                 record_id = getattr(instance, self._pk_column, None) if instance else None
 
+                # 计算操作耗时
+                start_time = ctx.params.get("_audit_start_time")
+                cost_time = 0.0
+                if start_time:
+                    cost_time = time.time() - start_time
+
+                # 准备更详细的数据记录
+                audit_data = None
+
+                if operation == "create":
+                    # 创建操作：记录所有创建数据
+                    audit_data = data
+
+                elif operation == "update":
+                    # 更新操作：记录修改前后的值对比
+                    old_values = ctx.params.get("_audit_old_values", {})
+                    if data and old_values:
+                        audit_data = {}
+                        for key, new_value in data.items():
+                            old_value = old_values.get(key)
+                            # 只记录实际发生变化的字段
+                            if old_value != new_value:
+                                audit_data[key] = {
+                                    "old": str(old_value) if old_value is not None else None,
+                                    "new": str(new_value) if new_value is not None else None,
+                                }
+
+                elif operation == "delete":
+                    # 删除操作：记录被删除的原始数据
+                    old_values = ctx.params.get("_audit_old_values", {})
+                    if old_values:
+                        # 过滤掉不需要的字段
+                        sensitive_fields = {"password", "token", "secret", "key"}
+                        audit_data = {
+                            k: str(v) if v is not None else None
+                            for k, v in old_values.items()
+                            if k not in sensitive_fields and not k.startswith("_")
+                        }
+
                 await audit_log_service.create_operation_log(
                     ctx.session,
                     operation=operation,
                     model_name=self._model_name,
                     record_id=record_id,
-                    data=data,
+                    data=audit_data,
                     success=True,
+                    cost_time=cost_time,
                 )
             except Exception as e:
                 # 审计日志失败不应该影响主业务
@@ -894,7 +935,11 @@ class BaseRepository[T]:
         Raises:
             ValueError: 数据完整性约束冲突（友好提示）
         """
-        await self._run_hooks(HookType.BEFORE_CREATE, session=db, data=data)
+        import time
+
+        # 记录开始时间用于审计日志
+        start_time = time.time()
+        await self._run_hooks(HookType.BEFORE_CREATE, session=db, data=data, _audit_start_time=start_time)
 
         try:
             instance = self.model(**data)
@@ -905,7 +950,13 @@ class BaseRepository[T]:
             pk_value = getattr(instance, self._pk_column)
             logger.info(f"创建 {self._model_name} 成功: {self._pk_column}={pk_value}")
 
-            await self._run_hooks(HookType.AFTER_CREATE, session=db, instance=instance)
+            await self._run_hooks(
+                HookType.AFTER_CREATE,
+                session=db,
+                instance=instance,
+                data=data,
+                _audit_start_time=start_time,
+            )
 
             return instance
         except IntegrityError as e:
@@ -927,12 +978,30 @@ class BaseRepository[T]:
         Raises:
             ValueError: 记录不存在、状态不允许修改或数据完整性约束冲突（友好提示）
         """
+        import time
+
         instance = await self.get_by_id(db, id)
         if not instance:
             raise ValueError(f"{self._model_name} 不存在")
 
+        # 记录开始时间用于审计日志
+        start_time = time.time()
+
+        # 保存旧值用于审计日志对比
+        old_values = {}
+        for key in data:
+            if hasattr(instance, key):
+                old_values[key] = getattr(instance, key)
+
         # 状态验证通过 Hook 系统自动执行（如果模型混入了状态验证 Mixin）
-        await self._run_hooks(HookType.BEFORE_UPDATE, session=db, instance=instance, data=data)
+        await self._run_hooks(
+            HookType.BEFORE_UPDATE,
+            session=db,
+            instance=instance,
+            data=data,
+            _audit_start_time=start_time,
+            _audit_old_values=old_values,
+        )
 
         try:
             for field, value in data.items():
@@ -944,7 +1013,14 @@ class BaseRepository[T]:
 
             logger.info(f"更新 {self._model_name} 成功: id={id}")
 
-            await self._run_hooks(HookType.AFTER_UPDATE, session=db, instance=instance)
+            await self._run_hooks(
+                HookType.AFTER_UPDATE,
+                session=db,
+                instance=instance,
+                data=data,
+                _audit_start_time=start_time,
+                _audit_old_values=old_values,
+            )
 
             return instance
         except IntegrityError as e:
@@ -965,12 +1041,37 @@ class BaseRepository[T]:
         Raises:
             ValueError: 状态不允许删除或数据完整性约束冲突（友好提示）
         """
+        import time
+
         instance = await self.get_by_id(db, id)
         if not instance:
             return False
 
+        # 记录开始时间用于审计日志
+        start_time = time.time()
+
+        # 保存原始数据用于审计日志（只保存实际的数据字段）
+        old_values = {}
+        model_fields = getattr(instance, "model_fields", None)
+        if model_fields:
+            # 使用 model_fields 获取实际定义的字段
+            for field_name in model_fields:
+                if hasattr(instance, field_name):
+                    try:
+                        value = getattr(instance, field_name)
+                        old_values[field_name] = value
+                    except Exception as e:
+                        logger.debug(f"无法获取字段 {field_name} 的值: {e}")
+                        continue
+
         # 状态验证通过 Hook 系统自动执行（如果模型混入了状态验证 Mixin）
-        await self._run_hooks(HookType.BEFORE_DELETE, session=db, instance=instance)
+        await self._run_hooks(
+            HookType.BEFORE_DELETE,
+            session=db,
+            instance=instance,
+            _audit_start_time=start_time,
+            _audit_old_values=old_values,
+        )
 
         try:
             await db.delete(instance)
@@ -978,7 +1079,13 @@ class BaseRepository[T]:
 
             logger.info(f"删除 {self._model_name} 成功: id={id}")
 
-            await self._run_hooks(HookType.AFTER_DELETE, session=db, instance=instance)
+            await self._run_hooks(
+                HookType.AFTER_DELETE,
+                session=db,
+                instance=instance,
+                _audit_start_time=start_time,
+                _audit_old_values=old_values,
+            )
 
             return True
         except IntegrityError as e:

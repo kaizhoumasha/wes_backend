@@ -72,6 +72,22 @@ def get_current_username() -> str | None:
         return None
 
 
+def get_request_method() -> str | None:
+    """
+    从请求上下文中获取 HTTP 方法
+
+    Returns:
+        HTTP 方法（GET/POST/PUT/DELETE等），如果不存在则返回 None
+    """
+    try:
+        request = context.get("request")
+        if request and hasattr(request, "method"):
+            return request.method
+    except (ContextDoesNotExistError, RuntimeError, AttributeError):
+        pass
+    return None
+
+
 def get_request_info() -> dict[str, Any]:
     """
     从上下文中获取请求信息
@@ -127,5 +143,6 @@ __all__ = [
     "get_current_user_id",
     "get_current_username",
     "get_request_id",
+    "get_request_method",
     "get_request_info",
 ]

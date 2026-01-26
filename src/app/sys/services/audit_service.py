@@ -97,6 +97,7 @@ class AuditLogService(BaseService[AuditLog, AuditLogRepository]):
         data: dict[str, Any] | None = None,
         success: bool = True,
         error_msg: str | None = None,
+        cost_time: float = 0.0,
     ) -> AuditLog | None:
         """
         创建操作日志（用于 Repository Hook）
@@ -109,35 +110,61 @@ class AuditLogService(BaseService[AuditLog, AuditLogRepository]):
             data: 操作数据
             success: 是否成功
             error_msg: 错误消息
+            cost_time: 操作耗时（秒）
 
         Returns:
             创建的审计日志对象，如果创建失败则返回 None
         """
         try:
+            from src.utils.audit import get_request_method
+
             title = f"{operation.upper()} {model_name}"
             if record_id:
                 title += f" (ID: {record_id})"
 
-            # 构建参数信息
-            args: dict[str, Any] = {"model": model_name, "operation": operation}
+            # 构建参数信息 - 记录更详细的数据
+            args: dict[str, Any] = {
+                "model": model_name,
+                "operation": operation,
+            }
             if record_id:
                 args["record_id"] = str(record_id)
+            
+            # 记录实际修改的数据（而不是所有数据）
             if data:
-                args["data"] = data
+                # 过滤掉敏感字段
+                sensitive_fields = {"password", "token", "secret", "key"}
+                filtered_data = {
+                    k: v for k, v in data.items() 
+                    if k not in sensitive_fields and not k.startswith("_")
+                }
+                args["changes"] = filtered_data
 
             status = OperaStatus.SUCCESS if success else OperaStatus.FAIL
             code = "200" if success else "500"
 
+            # 获取实际的 HTTP 方法，如果无法获取则使用操作类型映射
+            http_method = get_request_method()
+            if not http_method:
+                # 根据操作类型映射到 HTTP 方法
+                method_mapping = {
+                    "create": "POST",
+                    "update": "PUT",
+                    "delete": "DELETE",
+                    "read": "GET",
+                }
+                http_method = method_mapping.get(operation.lower(), "POST")
+
             return await self.create_audit_log(
                 db,
-                method="REPOSITORY",
+                method=http_method,
                 title=title,
                 path=f"/repository/{model_name.lower()}",
                 args=args,
                 status=status,
                 code=code,
                 msg=error_msg,
-                cost_time=0.0,
+                cost_time=cost_time,
             )
         except Exception as e:
             # 审计日志创建失败不应该影响主业务
