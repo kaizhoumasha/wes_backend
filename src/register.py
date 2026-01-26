@@ -1,12 +1,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.core.logger import logger
 from src.core.path_conf import STATIC_DIR
+from src.utils.background_tasks import inject_background_tasks
 
 from .core.conf import settings
 
@@ -124,6 +125,9 @@ def register_app() -> FastAPI:
         openapi_url=settings.OPENAPI_URL,
         default_response_class=ORJSONResponse,
         lifespan=register_init,
+        # 全局依赖：自动为所有路由注入 BackgroundTasks 到上下文
+        # 使得 Repository 层可以透明地使用后台任务功能
+        dependencies=[Depends(inject_background_tasks)],
     )
 
     # 挂载静态文件目录

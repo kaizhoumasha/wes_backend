@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
@@ -81,6 +82,8 @@ async def close_db() -> None:
 async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     获取数据库会话依赖
+
+    用于 FastAPI 依赖注入系统。
     """
     if AsyncSessionLocal is None:
         raise RuntimeError("Database is not initialized")
@@ -92,5 +95,32 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+        finally:
+            await session.close()
+
+
+@asynccontextmanager
+async def get_db_context() -> AsyncGenerator[AsyncSession]:
+    """
+    获取数据库会话上下文管理器
+
+    用于在后台任务或其他非依赖注入场景中创建数据库会话。
+
+    Usage:
+        async with get_db_context() as session:
+            # 使用 session 进行数据库操作
+            await session.execute(...)
+            await session.commit()
+
+    Note:
+        - 需要手动调用 commit() 或 rollback()
+        - 会话会在退出上下文时自动关闭
+    """
+    if AsyncSessionLocal is None:
+        raise RuntimeError("Database is not initialized")
+
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
         finally:
             await session.close()

@@ -341,7 +341,10 @@ class BaseRepository[T]:
 
     def _create_audit_log_hook(self, operation: str) -> HookFunc:
         """
-        创建审计日志 Hook 函数
+        创建审计日志 Hook 函数（支持后台任务模式）
+
+        优先使用 BackgroundTasks 后台任务模式，提升响应速度。
+        如果 BackgroundTasks 不可用，则降级为同步执行模式。
 
         Args:
             operation: 操作类型（create/update/delete）
@@ -349,71 +352,180 @@ class BaseRepository[T]:
         Returns:
             Hook 函数
         """
-        import time
 
         async def audit_log_hook(ctx: HookContext) -> None:
-            try:
-                from src.app.sys.services.audit_service import audit_log_service
+            from src.utils.background_tasks import get_background_tasks
 
-                instance = ctx.params.get("instance")
-                data = ctx.params.get("data")
-                record_id = getattr(instance, self._pk_column, None) if instance else None
+            # 准备审计数据（可序列化）
+            audit_data = self._prepare_audit_data(ctx, operation)
 
-                # 计算操作耗时
-                start_time = ctx.params.get("_audit_start_time")
-                cost_time = 0.0
-                if start_time:
-                    cost_time = time.time() - start_time
+            # 检查是否有 BackgroundTasks 可用
+            background_tasks = get_background_tasks()
 
-                # 准备更详细的数据记录
-                audit_data = None
-
-                if operation == "create":
-                    # 创建操作：记录所有创建数据
-                    audit_data = data
-
-                elif operation == "update":
-                    # 更新操作：记录修改前后的值对比
-                    old_values = ctx.params.get("_audit_old_values", {})
-                    if data and old_values:
-                        audit_data = {}
-                        for key, new_value in data.items():
-                            old_value = old_values.get(key)
-                            # 只记录实际发生变化的字段
-                            if old_value != new_value:
-                                audit_data[key] = {
-                                    "old": str(old_value) if old_value is not None else None,
-                                    "new": str(new_value) if new_value is not None else None,
-                                }
-
-                elif operation == "delete":
-                    # 删除操作：记录被删除的原始数据
-                    old_values = ctx.params.get("_audit_old_values", {})
-                    if old_values:
-                        # 过滤掉不需要的字段
-                        sensitive_fields = {"password", "token", "secret", "key"}
-                        audit_data = {
-                            k: str(v) if v is not None else None
-                            for k, v in old_values.items()
-                            if k not in sensitive_fields and not k.startswith("_")
-                        }
-
-                await audit_log_service.create_operation_log(
-                    ctx.session,
+            if background_tasks:
+                # 使用后台任务（异步非阻塞，提升响应速度）
+                background_tasks.add_task(
+                    self._write_audit_log_background,
                     operation=operation,
                     model_name=self._model_name,
+                    **audit_data,
+                )
+            else:
+                # 降级为同步执行（保持向后兼容）
+                await self._write_audit_log_sync(ctx.session, operation, audit_data)
+
+        return audit_log_hook
+
+    def _prepare_audit_data(self, ctx: HookContext, operation: str) -> dict[str, Any]:
+        """
+        准备审计数据（可序列化格式）
+
+        将审计所需的数据转换为可序列化的字典格式，
+        以便在后台任务中使用（后台任务无法访问原始 ORM 对象）。
+
+        Args:
+            ctx: Hook 执行上下文
+            operation: 操作类型（create/update/delete）
+
+        Returns:
+            包含审计数据的字典，包括：
+            - record_id: 记录 ID
+            - data: 审计数据（根据操作类型不同而不同）
+            - cost_time: 操作耗时（秒）
+        """
+        import time
+
+        instance = ctx.params.get("instance")
+        data = ctx.params.get("data")
+        record_id = getattr(instance, self._pk_column, None) if instance else None
+
+        # 计算操作耗时
+        start_time = ctx.params.get("_audit_start_time")
+        cost_time = 0.0
+        if start_time:
+            cost_time = time.time() - start_time
+
+        # 准备审计数据（根据操作类型）
+        audit_data = None
+
+        if operation == "create":
+            # 创建操作：记录所有创建数据
+            audit_data = data
+
+        elif operation == "update":
+            # 更新操作：记录修改前后的值对比
+            old_values = ctx.params.get("_audit_old_values", {})
+            if data and old_values:
+                audit_data = {}
+                for key, new_value in data.items():
+                    old_value = old_values.get(key)
+                    # 只记录实际发生变化的字段
+                    if old_value != new_value:
+                        audit_data[key] = {
+                            "old": str(old_value) if old_value is not None else None,
+                            "new": str(new_value) if new_value is not None else None,
+                        }
+
+        elif operation == "delete":
+            # 删除操作：记录被删除的原始数据
+            old_values = ctx.params.get("_audit_old_values", {})
+            if old_values:
+                # 过滤掉不需要的字段
+                sensitive_fields = {"password", "token", "secret", "key"}
+                audit_data = {
+                    k: str(v) if v is not None else None
+                    for k, v in old_values.items()
+                    if k not in sensitive_fields and not k.startswith("_")
+                }
+
+        return {
+            "record_id": record_id,
+            "data": audit_data,
+            "cost_time": cost_time,
+        }
+
+    async def _write_audit_log_background(
+        self,
+        operation: str,
+        model_name: str,
+        record_id: int | None,
+        data: dict[str, Any] | None,
+        cost_time: float,
+    ) -> None:
+        """
+        后台任务：写入审计日志
+
+        在后台任务中执行，不阻塞主请求。
+        创建新的数据库会话来写入审计日志。
+
+        Args:
+            operation: 操作类型（create/update/delete）
+            model_name: 模型名称
+            record_id: 记录 ID
+            data: 审计数据
+            cost_time: 操作耗时（秒）
+
+        Note:
+            - 此方法在后台任务中执行，原请求的数据库会话已关闭
+            - 需要创建新的数据库会话
+            - 失败不影响主业务，只记录错误日志
+        """
+        try:
+            from src.app.sys.services.audit_service import audit_log_service
+            from src.database.db import get_db_context
+
+            # 创建新的数据库会话（后台任务中原会话已关闭）
+            async with get_db_context() as session:
+                await audit_log_service.create_operation_log(
+                    session,
+                    operation=operation,
+                    model_name=model_name,
                     record_id=record_id,
-                    data=audit_data,
+                    data=data,
                     success=True,
                     cost_time=cost_time,
                 )
-            except Exception as e:
-                # 审计日志失败不应该影响主业务
-                from src.core.logger import logger
+                await session.commit()
+        except Exception as e:
+            # 审计日志失败不应该影响主业务
+            logger.error(f"后台写入审计日志失败 [{model_name}:{record_id}]: {e}")
 
-                logger.error(f"记录审计日志失败: {e}")
+    async def _write_audit_log_sync(
+        self,
+        session: AsyncSession,
+        operation: str,
+        audit_data: dict[str, Any],
+    ) -> None:
+        """
+        同步模式：写入审计日志
 
-        return audit_log_hook
+        使用现有的数据库会话写入审计日志。
+        用于降级场景（BackgroundTasks 不可用时）。
+
+        Args:
+            session: 数据库会话
+            operation: 操作类型（create/update/delete）
+            audit_data: 审计数据字典（包含 record_id、data、cost_time）
+
+        Note:
+            - 使用现有会话，不需要 commit
+            - 失败不影响主业务，只记录错误日志
+        """
+        try:
+            from src.app.sys.services.audit_service import audit_log_service
+
+            await audit_log_service.create_operation_log(
+                session,
+                operation=operation,
+                model_name=self._model_name,
+                record_id=audit_data.get("record_id"),
+                data=audit_data.get("data"),
+                success=True,
+                cost_time=audit_data.get("cost_time", 0.0),
+            )
+        except Exception as e:
+            # 审计日志失败不应该影响主业务
+            logger.error(f"同步写入审计日志失败 [{self._model_name}]: {e}")
 
     async def _run_hooks(self, hook_type: HookType, **kwargs: Any) -> dict[str, Any]:
         """运行指定类型的 hooks"""
