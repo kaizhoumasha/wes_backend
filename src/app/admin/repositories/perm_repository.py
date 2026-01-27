@@ -3,10 +3,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models.perm import Permission
-from src.database.hierarchy_repository import HierarchyRepository
+from src.database.tree_repository import TreeRepository
 
 
-class PermissionRepository(HierarchyRepository[Permission]):
+class PermissionRepository(TreeRepository[Permission]):
     def __init__(self):
         super().__init__(Permission)
 

@@ -33,9 +33,10 @@ from typing import Any, ClassVar
 from pydantic import ValidationInfo, computed_field, field_validator, model_validator
 from sqlalchemy import JSON, Index
 from sqlalchemy.orm import relationship
+from sqlmodel import Field
 
 from src.app.admin.models.relationships import role_permission
-from src.core.mixins import BaseMixin, BaseTableModelMixin, Field, TreeMixin
+from src.core.mixins import BaseMixin, BaseTableModelMixin, TreeMixin
 from src.database.model_factory import ModelFactory
 
 # ==================== Permission 模型 ====================

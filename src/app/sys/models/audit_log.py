@@ -2,8 +2,9 @@ from datetime import datetime
 from enum import IntEnum
 
 import sqlalchemy as sa
+from sqlmodel import Field
 
-from src.core.mixins import BaseMixin, Field, PrimaryKeyMixin
+from src.core.mixins import BaseMixin, PrimaryKeyMixin
 from src.database.model_factory import ModelFactory
 from src.utils.timezone import timezone
 

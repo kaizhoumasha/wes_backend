@@ -10,7 +10,6 @@
 # 导入认证模型
 # ==================== 处理跨模块引用 ====================
 # 导入 admin 模块的 UserRead 来解析 LoginResponse 的前向引用
-from src.app.admin.models import UserRead
 
 from .auth import LoginRequest, LoginResponse, RefreshTokenResponse
 

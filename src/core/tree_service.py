@@ -3,11 +3,11 @@ from datetime import datetime
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.hierarchy_repository import HierarchyRepository
+from src.database.tree_repository import TreeRepository
 
 
 class TreeServiceMixin:
-    repo: HierarchyRepository
+    repo: TreeRepository
 
     async def get_tree(
         self,

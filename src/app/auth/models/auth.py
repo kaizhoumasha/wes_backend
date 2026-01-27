@@ -9,7 +9,10 @@
 
 from datetime import datetime
 
-from src.core.mixins import BaseMixin, Field
+from sqlmodel import Field
+
+from src.app.admin.models import UserRead
+from src.core.mixins import BaseMixin
 
 
 class LoginRequest(BaseMixin):
@@ -32,7 +35,7 @@ class LoginResponse(BaseMixin):
     access_token_expire_time: datetime
     refresh_token_expire_time: datetime
     session_uuid: str
-    user: "UserRead"  # 跨模块引用，在 __init__.py 中重建
+    user: UserRead  # 跨模块引用，在 __init__.py 中重建
 
 
 class RefreshTokenResponse(BaseMixin):

@@ -1,4 +1,4 @@
-"""层级数据 Repository（物化路径模式）"""
+"""树形数据 Repository（物化路径模式）"""
 
 from typing import TypeVar
 
@@ -10,8 +10,8 @@ from src.database.base_repository import BaseRepository
 T = TypeVar("T")
 
 
-class HierarchyRepository[T](BaseRepository[T]):
-    """层级数据 Repository（基于 tree_path 物化路径）"""
+class TreeRepository[T](BaseRepository[T]):
+    """树形数据 Repository（基于 TreeMixin 的 tree_path 物化路径）"""
 
     async def get_children(
         self,
@@ -108,4 +108,4 @@ class HierarchyRepository[T](BaseRepository[T]):
         return len(children) == 0
 
 
-__all__ = ["HierarchyRepository"]
+__all__ = ["TreeRepository"]

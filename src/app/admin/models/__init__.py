@@ -22,9 +22,8 @@ from .role import (
     Role,
     RoleBase,
     RoleCreate,
-    RoleRead,
-    RoleReadSimple,
     RoleResponse,
+    RoleResponseSimple,
     RoleUpdate,
 )
 from .user import (
@@ -71,8 +70,8 @@ __all__ = [
     "Role",
     "RoleBase",
     "RoleCreate",
-    "RoleRead",
-    "RoleReadSimple",
+    "RoleResponse",
+    "RoleResponseSimple",
     "RoleResponse",
     "RoleUpdate",
     # User 模型

@@ -7,10 +7,11 @@
 from datetime import datetime
 
 from sqlalchemy.orm import relationship
+from sqlmodel import Field
 
 from src.app.admin.models.perm import Permission, PermissionRead
 from src.app.admin.models.relationships import role_permission
-from src.core.mixins import BaseMixin, BaseTableModelMixin, Field
+from src.core.mixins import BaseMixin, BaseTableModelMixin
 
 # ==================== Role 模型 ====================
 
@@ -58,7 +59,7 @@ class RoleUpdate(BaseMixin):
     permission_ids: list[int] | None = None
 
 
-class RoleReadSimple(RoleBase):
+class RoleResponseSimple(RoleBase):
     """角色响应 Schema（简化版，不含权限）"""
 
     id: int
@@ -66,14 +67,10 @@ class RoleReadSimple(RoleBase):
     updated_at: datetime | None = None
 
 
-class RoleRead(RoleBase):
+class RoleResponse(RoleBase):
     """角色响应 Schema"""
 
     id: int
     created_at: datetime
     updated_at: datetime | None = None
     permissions: list[PermissionRead] = Field(default_factory=list)
-
-
-# 别名：RoleResponse 与 RoleRead 完全相同，避免重复定义（DRY 原则）
-RoleResponse = RoleRead  # type: ignore
