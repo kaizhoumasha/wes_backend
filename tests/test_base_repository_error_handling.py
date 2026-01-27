@@ -9,9 +9,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, SQLModel
 
 from src.database.base_repository import BaseRepository
+from src.database.handlers.error_translator import ErrorTranslator
 
 
-class TestModel(SQLModel, table=True):
+class ErrorTestModel(SQLModel, table=True):
     """测试用模型"""
 
     __tablename__ = "test_table"
@@ -22,19 +23,19 @@ class TestModel(SQLModel, table=True):
     name: str = Field(sa_column_kwargs={"comment": "名称"})
 
 
-class TestBaseRepositoryErrorHandling:
-    """测试 BaseRepository 的错误处理功能"""
+class TestErrorTranslator:
+    """测试 ErrorTranslator 类"""
 
     def setup_method(self):
         """设置测试环境"""
-        self.repo = BaseRepository[TestModel](TestModel)
+        self.translator = ErrorTranslator(ErrorTestModel)
 
     def test_check_foreign_key_constraint_pattern1(self):
         """测试外键约束错误识别 - 模式1"""
         error_msg = 'violates foreign key constraint "fk_test" on table "related_table"'
 
         with pytest.raises(ValueError) as exc_info:
-            self.repo._check_foreign_key_constraint(error_msg)
+            self.translator._check_foreign_key_constraint(error_msg)
 
         assert "related_table" in str(exc_info.value)
         assert "关联" in str(exc_info.value)
@@ -44,7 +45,7 @@ class TestBaseRepositoryErrorHandling:
         error_msg = 'still referenced from table "wms_inbound_detail"'
 
         with pytest.raises(ValueError) as exc_info:
-            self.repo._check_foreign_key_constraint(error_msg)
+            self.translator._check_foreign_key_constraint(error_msg)
 
         assert "wms_inbound_detail" in str(exc_info.value)
         assert "关联" in str(exc_info.value)
@@ -54,7 +55,7 @@ class TestBaseRepositoryErrorHandling:
         error_msg = 'duplicate key value violates unique constraint "uq_code"\nDETAIL:  Key (code)=(TEST001) already exists.'
 
         with pytest.raises(ValueError) as exc_info:
-            self.repo._check_duplicate_key_constraint(error_msg)
+            self.translator._check_duplicate_key_constraint(error_msg)
 
         assert "已存在" in str(exc_info.value)
         assert "不能重复添加" in str(exc_info.value)
@@ -64,7 +65,7 @@ class TestBaseRepositoryErrorHandling:
         error_msg = 'duplicate key value violates unique constraint "uq_code_name"\nDETAIL:  Key (code, name)=(TEST001, Test) already exists.'
 
         with pytest.raises(ValueError) as exc_info:
-            self.repo._check_duplicate_key_constraint(error_msg)
+            self.translator._check_duplicate_key_constraint(error_msg)
 
         assert "已存在" in str(exc_info.value)
         assert "不能重复添加" in str(exc_info.value)
@@ -74,29 +75,37 @@ class TestBaseRepositoryErrorHandling:
         error_msg = 'null value in column "code" violates not-null constraint'
 
         with pytest.raises(ValueError) as exc_info:
-            self.repo._check_not_null_constraint(error_msg)
+            self.translator._check_not_null_constraint(error_msg)
 
         assert "不能为空" in str(exc_info.value)
 
     def test_get_table_cn_name_with_comment(self):
         """测试获取中文表名 - 有注释"""
-        cn_name = self.repo._get_table_cn_name("test_table")
+        cn_name = self.translator._get_table_cn_name("test_table")
         assert cn_name == "测试表"
 
     def test_get_table_cn_name_without_comment(self):
         """测试获取中文表名 - 无注释"""
-        cn_name = self.repo._get_table_cn_name("unknown_table")
+        cn_name = self.translator._get_table_cn_name("unknown_table")
         assert cn_name == "unknown_table"
 
     def test_get_column_cn_name_with_comment(self):
         """测试获取中文字段名 - 有注释"""
-        cn_name = self.repo._get_column_cn_name("code")
+        cn_name = self.translator._get_column_cn_name("code")
         assert cn_name == "编码"
 
     def test_get_column_cn_name_without_comment(self):
         """测试获取中文字段名 - 无注释"""
-        cn_name = self.repo._get_column_cn_name("unknown_column")
+        cn_name = self.translator._get_column_cn_name("unknown_column")
         assert cn_name == "unknown_column"
+
+
+class TestBaseRepositoryErrorHandling:
+    """测试 BaseRepository 的错误处理集成"""
+
+    def setup_method(self):
+        """设置测试环境"""
+        self.repo = BaseRepository[ErrorTestModel](ErrorTestModel)
 
     def test_handle_integrity_error_foreign_key(self):
         """测试处理外键约束错误"""

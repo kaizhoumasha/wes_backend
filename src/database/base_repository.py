@@ -22,13 +22,8 @@
     user_repo = UserRepository()
 """
 
-import re
-from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
-from enum import Enum
-from inspect import iscoroutinefunction
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -36,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logger import logger
 from src.core.query_models import FilterGroup, SortField
+from src.database.handlers.error_translator import ErrorTranslator
+from src.database.hooks import Hook, HookContext, HookFunc, HookManager, HookType
 
 if TYPE_CHECKING:
     from src.database.relation_metadata import RelationInfo
@@ -45,84 +42,6 @@ else:
 
 # 泛型类型变量
 T = TypeVar("T")
-
-
-# ==================== Hook System ====================
-
-
-class HookType(str, Enum):
-    """Hook 类型枚举"""
-
-    BEFORE_CREATE = "before_create"
-    AFTER_CREATE = "after_create"
-    BEFORE_UPDATE = "before_update"
-    AFTER_UPDATE = "after_update"
-    BEFORE_DELETE = "before_delete"
-    AFTER_DELETE = "after_delete"
-
-
-@dataclass
-class HookContext:
-    """Hook 执行上下文"""
-
-    session: AsyncSession
-    params: dict[str, Any]
-    results: dict[str, Any]
-
-
-HookFunc = Callable[[HookContext], Any]
-
-
-@dataclass
-class Hook:
-    """Hook 配置"""
-
-    func: HookFunc
-    priority: int = 0
-    condition: Callable[[HookContext], bool] | None = None
-    error_handler: Callable[[Exception, HookContext], Any] | None = None
-
-
-class HookManager:
-    """Hook 管理器"""
-
-    def __init__(self):
-        self.hooks: dict[HookType, list[Hook]] = defaultdict(list)
-
-    def add_hook(
-        self,
-        hook_type: HookType,
-        func: HookFunc,
-        priority: int = 0,
-        condition: Callable[[HookContext], bool] | None = None,
-        error_handler: Callable[[Exception, HookContext], Any] | None = None,
-    ) -> None:
-        """添加 hook"""
-        hook = Hook(
-            func=func,
-            priority=priority,
-            condition=condition,
-            error_handler=error_handler,
-        )
-        self.hooks[hook_type].append(hook)
-        self.hooks[hook_type].sort(key=lambda x: x.priority)
-
-    async def execute_hooks(self, hook_type: HookType, context: HookContext) -> None:
-        """执行指定类型的 hooks"""
-        for hook in self.hooks[hook_type]:
-            if hook.condition and not hook.condition(context):
-                continue
-
-            try:
-                if iscoroutinefunction(hook.func):
-                    await hook.func(context)
-                else:
-                    hook.func(context)
-            except Exception as e:
-                if hook.error_handler:
-                    hook.error_handler(e, context)
-                else:
-                    raise
 
 
 class BaseRepository[T]:
@@ -164,6 +83,9 @@ class BaseRepository[T]:
         self._pk_column = "id"
         self._pk_attr = getattr(model, self._pk_column)
         self.hook_manager = HookManager()
+
+        # 组合模式：使用专门的处理器
+        self.error_translator = ErrorTranslator(model)
 
         # 自动注册状态验证 Hook
         self._register_status_validation_hooks()
@@ -548,11 +470,9 @@ class BaseRepository[T]:
         """添加 hook"""
         self.hook_manager.add_hook(hook_type, func, priority, condition, error_handler)
 
-    def _handle_integrity_error(self, e: IntegrityError) -> NoReturn:
+    def _handle_integrity_error(self, e: IntegrityError) -> None:
         """
-        统一处理数据库完整性约束错误
-
-        将数据库错误转换为用户友好的中文提示。
+        统一处理数据库完整性约束错误（委托给 ErrorTranslator）
 
         Args:
             e: IntegrityError 异常
@@ -560,143 +480,7 @@ class BaseRepository[T]:
         Raises:
             ValueError: 转换后的友好错误提示
         """
-        error_msg = str(e.orig) if hasattr(e, "orig") else str(e)
-
-        # 尝试匹配各种约束错误
-        self._check_foreign_key_constraint(error_msg)
-        self._check_duplicate_key_constraint(error_msg)
-        self._check_not_null_constraint(error_msg)
-
-        # 如果都未命中，抛出原始异常
-        raise ValueError(f"数据库操作失败: {error_msg}")
-
-    def _check_foreign_key_constraint(self, error_msg: str) -> None:
-        """
-        检查外键约束错误
-
-        Args:
-            error_msg: 错误消息
-
-        Raises:
-            ValueError: 友好的外键约束错误提示
-        """
-        # PostgreSQL 外键约束错误模式
-        # 示例: update or delete on table "xxx" violates foreign key constraint "yyy" on table "zzz"
-        pattern = r'violates foreign key constraint.*on table "([^"]+)"'
-        match = re.search(pattern, error_msg, re.IGNORECASE)
-
-        if match:
-            table_name = match.group(1)
-            table_cn_name = self._get_table_cn_name(table_name)
-            raise ValueError(f"当前删除的数据与[{table_cn_name}]中的数据有关联，请先删除[{table_cn_name}]关联的数据")
-
-        # 另一种模式: still referenced from table "xxx"
-        pattern2 = r'still referenced from table "([^"]+)"'
-        match2 = re.search(pattern2, error_msg, re.IGNORECASE)
-
-        if match2:
-            table_name = match2.group(1)
-            table_cn_name = self._get_table_cn_name(table_name)
-            raise ValueError(f"当前删除的数据与[{table_cn_name}]中的数据有关联，请先删除[{table_cn_name}]关联的数据")
-
-    def _check_duplicate_key_constraint(self, error_msg: str) -> None:
-        """
-        检查唯一约束错误
-
-        Args:
-            error_msg: 错误消息
-
-        Raises:
-            ValueError: 友好的唯一约束错误提示
-        """
-        # PostgreSQL 唯一约束错误模式
-        # 示例: duplicate key value violates unique constraint "uq_xxx"
-        # DETAIL:  Key (column1, column2)=(value1, value2) already exists.
-        if "duplicate key value violates unique constraint" not in error_msg.lower():
-            return
-
-        # 提取字段名
-        pattern = r"Key \(([^)]+)\)="
-        match = re.search(pattern, error_msg)
-
-        if match:
-            columns = match.group(1)
-            # 分割多个字段
-            column_list = [col.strip() for col in columns.split(",")]
-            # 转换为中文名称
-            column_cn_names = [self._get_column_cn_name(col) for col in column_list]
-
-            raise ValueError(f"[{', '.join(column_cn_names)}]已存在，不能重复添加")
-
-        # 如果无法提取字段名，使用通用提示
-        raise ValueError("数据已存在，不能重复添加")
-
-    def _check_not_null_constraint(self, error_msg: str) -> None:
-        """
-        检查非空约束错误
-
-        Args:
-            error_msg: 错误消息
-
-        Raises:
-            ValueError: 友好的非空约束错误提示
-        """
-        # PostgreSQL 非空约束错误模式
-        # 示例: null value in column "xxx" violates not-null constraint
-        pattern = r'null value in column "([^"]+)" violates not-null constraint'
-        match = re.search(pattern, error_msg, re.IGNORECASE)
-
-        if match:
-            column_name = match.group(1)
-            column_cn_name = self._get_column_cn_name(column_name)
-            raise ValueError(f"[{column_cn_name}]不能为空")
-
-    def _get_table_cn_name(self, table_en_name: str) -> str:
-        """
-        通过英文表名找到中文表名
-
-        Args:
-            table_en_name: 英文表名
-
-        Returns:
-            中文表名（如果找不到则返回英文表名）
-        """
-        # 尝试从模型的 metadata 中查找表的 comment
-        if hasattr(self.model, "__table__"):
-            table = self.model.__table__  # type: ignore[attr-defined]
-            if table.name == table_en_name and table.comment:
-                return table.comment
-
-        # 如果找不到，返回英文表名
-        return table_en_name
-
-    def _get_column_cn_name(self, column_en_name: str) -> str:
-        """
-        通过英文字段名找到中文字段名
-
-        Args:
-            column_en_name: 英文字段名
-
-        Returns:
-            中文字段名（如果找不到则返回英文字段名）
-        """
-        # 尝试从模型的字段定义中获取 description 或 comment
-        model_fields = getattr(self.model, "model_fields", None)
-        if model_fields:
-            field = model_fields.get(column_en_name)
-            if field and hasattr(field, "description") and field.description:
-                return field.description
-
-        # 尝试从 SQLAlchemy 的 column comment 中获取
-        if hasattr(self.model, "__table__"):
-            table = self.model.__table__  # type: ignore[attr-defined]
-            if column_en_name in table.columns:
-                column = table.columns[column_en_name]
-                if column.comment:
-                    return column.comment
-
-        # 如果找不到，返回英文字段名
-        return column_en_name
+        self.error_translator.handle_integrity_error(e)
 
     def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
         """
@@ -1033,7 +817,7 @@ class BaseRepository[T]:
 
         return total, items
 
-    async def create(self, db: AsyncSession, data: dict[str, Any]) -> T:
+    async def create(self, db: AsyncSession, data: dict[str, Any]) -> T | None:
         """
         创建新记录
 
@@ -1075,7 +859,7 @@ class BaseRepository[T]:
             await db.rollback()
             self._handle_integrity_error(e)
 
-    async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> T:
+    async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> T | None:
         """
         更新记录
 
@@ -1139,7 +923,7 @@ class BaseRepository[T]:
             await db.rollback()
             self._handle_integrity_error(e)
 
-    async def delete(self, db: AsyncSession, id: int) -> bool:
+    async def delete(self, db: AsyncSession, id: int) -> bool | None:
         """
         删除记录
 
@@ -1528,4 +1312,4 @@ class BaseRepository[T]:
         logger.info(f"创建关联对象: 数量={len(objects_to_create)}")
 
 
-__all__ = ["BaseRepository", "HookContext", "HookManager", "HookType"]
+__all__ = ["BaseRepository", "Hook", "HookContext", "HookFunc", "HookManager", "HookType"]
