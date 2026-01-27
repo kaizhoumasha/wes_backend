@@ -5,7 +5,7 @@
 from src.app.admin.models import Role
 from src.app.admin.repositories.role_repository import role_repository
 from src.core.base_service import BaseService
-from src.core.cache_config import cache_settings
+from src.common.cache_config import cache_settings
 from src.database.base_repository import BaseRepository
 
 

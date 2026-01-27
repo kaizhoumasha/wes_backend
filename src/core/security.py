@@ -25,8 +25,8 @@ from src.core.exceptions import (
     AuthException,
 )
 from src.core.logger import logger
-from src.core.timezone import timezone
 from src.database.redis_client import get_redis, is_redis_available
+from src.utils.timezone import timezone
 
 # Argon2 密码哈希器
 pwd_hasher = PasswordHash([argon2.Argon2Hasher()])

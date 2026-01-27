@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.admin.models import Permission, PermissionTree
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.core.base_service import BaseService
-from src.core.cache_config import cache_settings
+from src.common.cache_config import cache_settings
 from src.core.tree_service import TreeServiceMixin
 
 

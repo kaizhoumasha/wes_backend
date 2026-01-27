@@ -4,8 +4,8 @@ from enum import IntEnum
 import sqlalchemy as sa
 
 from src.core.mixins import BaseMixin, Field, PrimaryKeyMixin
-from src.core.timezone import timezone
 from src.database.model_factory import ModelFactory
+from src.utils.timezone import timezone
 
 
 class OperaStatus(IntEnum):

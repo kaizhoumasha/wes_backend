@@ -99,7 +99,7 @@ class SnowflakePKMixin(BaseMixin):
         可在子类中重写此方法以自定义生成逻辑
         """
         # 延迟导入避免循环依赖
-        from src.core.snowflake import generate_snowflake_id
+        from src.utils.snowflake import generate_snowflake_id
 
         return generate_snowflake_id()
 
@@ -167,7 +167,7 @@ class TimestampMixin(BaseMixin):
     # 延迟导入时区模块避免循环依赖
     @staticmethod
     def _get_now() -> datetime:
-        from src.core.timezone import timezone
+        from src.utils.timezone import timezone
 
         # 数据库使用 TIMESTAMP WITHOUT TIME ZONE，需要 UTC naive datetime
         return timezone.now_for_db()
@@ -205,7 +205,7 @@ def timestamp_before_update(mapper, connection, target):
         await db.commit()
         # updated_at 自动更新，无需手动设置
     """
-    from src.core.timezone import timezone
+    from src.utils.timezone import timezone
 
     target.updated_at = timezone.now_for_db()
 
@@ -271,7 +271,7 @@ class SoftDeleteMixin(BaseMixin):
 
         :param deleted_by: 删除人ID（如果模型有 AuditMixin）
         """
-        from src.core.timezone import timezone
+        from src.utils.timezone import timezone
 
         self.is_deleted = True
         self.deleted_at = timezone.now()

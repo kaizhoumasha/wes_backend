@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
-from src.core.snowflake import (
+from src.utils.snowflake import (
     SnowflakeConfig,
     SnowflakeIDGenerator,
     generate_snowflake_id,

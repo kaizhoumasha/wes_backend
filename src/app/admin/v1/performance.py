@@ -17,9 +17,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.conf import settings
-from src.core.health import check_database_health, check_database_pool_status, check_redis_health
 from src.core.logger import logger
 from src.database.db import get_db
+from src.utils.health import check_database_health, check_database_pool_status, check_redis_health
 from src.database.redis_cache import get_cache
 
 router = APIRouter(prefix="/performance", tags=["性能监控"])
