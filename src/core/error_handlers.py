@@ -63,8 +63,26 @@ def error_response(
         "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
+    # 自动添加 request_id 到 detail
+    final_detail: dict[str, Any] = {}
     if detail is not None:
-        response["detail"] = detail
+        if isinstance(detail, dict):
+            final_detail = dict(detail)  # type: ignore[assignment]
+        else:
+            final_detail = {"info": detail}
+
+    # 尝试获取 request_id
+    try:
+        from src.core.context import RequestContext
+
+        request_id = RequestContext.get_request_id()
+        if request_id and request_id != "SYSTEM":
+            final_detail["request_id"] = request_id
+    except (ImportError, RuntimeError):
+        pass
+
+    if final_detail:
+        response["detail"] = final_detail
 
     return ORJSONResponse(
         status_code=status_code,

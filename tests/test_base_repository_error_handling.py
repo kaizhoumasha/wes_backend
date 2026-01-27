@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, SQLModel
 
+from src.core.exceptions import ConflictException, ValidationException
 from src.database.base_repository import BaseRepository
 from src.database.handlers.error_translator import ErrorTranslator
 
@@ -34,7 +35,7 @@ class TestErrorTranslator:
         """测试外键约束错误识别 - 模式1"""
         error_msg = 'violates foreign key constraint "fk_test" on table "related_table"'
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.translator._check_foreign_key_constraint(error_msg)
 
         assert "related_table" in str(exc_info.value)
@@ -44,7 +45,7 @@ class TestErrorTranslator:
         """测试外键约束错误识别 - 模式2"""
         error_msg = 'still referenced from table "wms_inbound_detail"'
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.translator._check_foreign_key_constraint(error_msg)
 
         assert "wms_inbound_detail" in str(exc_info.value)
@@ -54,27 +55,34 @@ class TestErrorTranslator:
         """测试唯一约束错误识别 - 单列"""
         error_msg = 'duplicate key value violates unique constraint "uq_code"\nDETAIL:  Key (code)=(TEST001) already exists.'
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.translator._check_duplicate_key_constraint(error_msg)
 
-        assert "已存在" in str(exc_info.value)
-        assert "不能重复添加" in str(exc_info.value)
+        # 验证消息包含字段值且使用中性表达
+        assert "TEST001" in str(exc_info.value)
+        assert "已被使用" in str(exc_info.value)
+        # 验证 detail 包含值
+        assert exc_info.value.detail["values"] == ["TEST001"]
 
     def test_check_duplicate_key_constraint_multiple_columns(self):
         """测试唯一约束错误识别 - 多列"""
         error_msg = 'duplicate key value violates unique constraint "uq_code_name"\nDETAIL:  Key (code, name)=(TEST001, Test) already exists.'
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.translator._check_duplicate_key_constraint(error_msg)
 
-        assert "已存在" in str(exc_info.value)
-        assert "不能重复添加" in str(exc_info.value)
+        # 验证消息包含字段值且使用中性表达
+        assert "TEST001" in str(exc_info.value)
+        assert "Test" in str(exc_info.value)
+        assert "已被使用" in str(exc_info.value)
+        # 验证 detail 包含值
+        assert exc_info.value.detail["values"] == ["TEST001", "Test"]
 
     def test_check_not_null_constraint(self):
         """测试非空约束错误识别"""
         error_msg = 'null value in column "code" violates not-null constraint'
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             self.translator._check_not_null_constraint(error_msg)
 
         assert "不能为空" in str(exc_info.value)
@@ -123,7 +131,7 @@ class TestBaseRepositoryErrorHandling:
 
         error = MockIntegrityError('still referenced from table "wms_inbound_detail"')
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.repo._handle_integrity_error(error)
 
         assert "关联" in str(exc_info.value)
@@ -146,7 +154,7 @@ class TestBaseRepositoryErrorHandling:
             'duplicate key value violates unique constraint "uq_code"\nDETAIL:  Key (code)=(TEST001) already exists.'
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ConflictException) as exc_info:
             self.repo._handle_integrity_error(error)
 
         assert "已存在" in str(exc_info.value)
@@ -167,7 +175,7 @@ class TestBaseRepositoryErrorHandling:
 
         error = MockIntegrityError('null value in column "code" violates not-null constraint')
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             self.repo._handle_integrity_error(error)
 
         assert "不能为空" in str(exc_info.value)
@@ -188,7 +196,7 @@ class TestBaseRepositoryErrorHandling:
 
         error = MockIntegrityError("some unknown database error")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValidationException) as exc_info:
             self.repo._handle_integrity_error(error)
 
         assert "数据库操作失败" in str(exc_info.value)
