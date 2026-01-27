@@ -591,6 +591,70 @@ class BaseRepository[T]:
             if relation_type == RelationType.ONETOMANY:
                 await self._handle_one_to_many_relation(db, instance, relation_name, relation_data, info)
 
+    async def _preload_relations(
+        self, db: AsyncSession, instance: T, relation_info: dict[str, Any]
+    ) -> None:
+        """
+        预加载关联对象（用于首次加载，避免懒加载错误）
+
+        使用 selectinload 方式加载关联对象，不触发额外的主表查询。
+
+        Args:
+            db: 数据库会话
+            instance: 模型实例
+            relation_info: 关联关系信息
+        """
+        if not relation_info:
+            return
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        # 构建加载选项
+        options = []
+        for relation_name in relation_info.keys():
+            if hasattr(self.model, relation_name):
+                options.append(selectinload(getattr(self.model, relation_name)))
+
+        if options:
+            # 使用 selectinload 重新查询并加载关联对象
+            stmt = select(self.model).where(
+                getattr(self.model, self._pk_column) == getattr(instance, self._pk_column)
+            )
+            for option in options:
+                stmt = stmt.options(option)
+
+            result = await db.execute(stmt)
+            loaded_instance = result.scalar_one_or_none()
+
+            if loaded_instance:
+                # 将加载的关联对象复制到原实例
+                for relation_name in relation_info.keys():
+                    if hasattr(loaded_instance, relation_name):
+                        setattr(instance, relation_name, getattr(loaded_instance, relation_name))
+
+    async def _refresh_with_relations(
+        self, db: AsyncSession, instance: T, relation_info: dict[str, Any]
+    ) -> None:
+        """
+        刷新实例并加载关联对象（用于更新后刷新）
+
+        使用 refresh 方法直接刷新关联属性，避免重复查询主表。
+
+        Args:
+            db: 数据库会话
+            instance: 模型实例
+            relation_info: 关联关系信息
+        """
+        if relation_info:
+            # 刷新主表字段和所有关联对象
+            # 使用 attribute_names 参数指定要刷新的关联属性
+            relation_names = list(relation_info.keys())
+            await db.refresh(instance, attribute_names=relation_names)
+        else:
+            # 没有关联对象，只刷新实例
+            await db.refresh(instance)
+
     async def _handle_one_to_many_relation(
         self,
         db: AsyncSession,
@@ -819,11 +883,11 @@ class BaseRepository[T]:
 
     async def create(self, db: AsyncSession, data: dict[str, Any]) -> T | None:
         """
-        创建新记录
+        创建新记录（支持主从表关系）
 
         Args:
             db: 数据库会话
-            data: 数据字典
+            data: 数据字典（可包含关联对象数据）
 
         Returns:
             创建的模型实例
@@ -833,15 +897,30 @@ class BaseRepository[T]:
         """
         import time
 
+        from src.database.relation_metadata import RelationMetadata
+
         # 记录开始时间用于审计日志
         start_time = time.time()
         await self._run_hooks(HookType.BEFORE_CREATE, session=db, data=data, _audit_start_time=start_time)
 
         try:
-            instance = self.model(**data)
+            # 分离主表字段和关联对象字段
+            relation_info = RelationMetadata.get_relation_info(self.model)
+            main_data = {k: v for k, v in data.items() if k not in relation_info}
+            relation_data = {k: v for k, v in data.items() if k in relation_info}
+
+            # 创建主表实例
+            instance = self.model(**main_data)
             db.add(instance)
             await db.flush()
             await db.refresh(instance)
+
+            # 处理关联对象
+            if relation_data:
+                await self._handle_relations(db, instance, relation_data)
+                await db.flush()
+                # 刷新实例并加载关联对象
+                await self._refresh_with_relations(db, instance, relation_info)
 
             pk_value = getattr(instance, self._pk_column)
             logger.info(f"创建 {self._model_name} 成功: {self._pk_column}={pk_value}")
@@ -861,12 +940,12 @@ class BaseRepository[T]:
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> T | None:
         """
-        更新记录
+        更新记录（支持主从表关系）
 
         Args:
             db: 数据库会话
             id: 主键 ID
-            data: 更新数据字典
+            data: 更新数据字典（可包含关联对象数据）
 
         Returns:
             更新后的模型实例
@@ -876,17 +955,44 @@ class BaseRepository[T]:
         """
         import time
 
-        instance = await self.get_by_id(db, id)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
+        from src.database.relation_metadata import RelationMetadata
 
         # 记录开始时间用于审计日志
         start_time = time.time()
 
-        # 保存旧值用于审计日志对比
+        # 分离主表字段和关联对象字段
+        relation_info = RelationMetadata.get_relation_info(self.model)
+        has_relations = any(k in relation_info for k in data.keys())
+
+        # 如果有关联对象，使用 selectinload 一次性加载，避免重复查询
+        if has_relations:
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            # 构建加载选项
+            options = []
+            for relation_name in relation_info.keys():
+                if hasattr(self.model, relation_name):
+                    options.append(selectinload(getattr(self.model, relation_name)))
+
+            # 使用 selectinload 查询主表和关联对象
+            stmt = select(self.model).where(getattr(self.model, self._pk_column) == id)
+            for option in options:
+                stmt = stmt.options(option)
+
+            result = await db.execute(stmt)
+            instance = result.scalar_one_or_none()
+        else:
+            # 没有关联对象，使用普通查询
+            instance = await self.get_by_id(db, id)
+
+        if not instance:
+            raise ValueError(f"{self._model_name} 不存在")
+
+        # 保存旧值用于审计日志对比（只保存主表字段）
         old_values = {}
         for key in data:
-            if hasattr(instance, key):
+            if key not in relation_info and hasattr(instance, key):
                 old_values[key] = getattr(instance, key)
 
         # 状态验证通过 Hook 系统自动执行（如果模型混入了状态验证 Mixin）
@@ -900,12 +1006,30 @@ class BaseRepository[T]:
         )
 
         try:
+            # 更新主表字段
             for field, value in data.items():
+                # 跳过关联对象字段
+                if field in relation_info:
+                    continue
                 if hasattr(instance, field):
                     setattr(instance, field, value)
 
+            # 处理关联对象（如果有）
+            if has_relations:
+                # 关联对象已在查询时通过 selectinload 加载，直接更新
+                await self._update_relations(db, instance, data)
+
             await db.flush()
-            await db.refresh(instance)
+
+            # 刷新实例并加载关联对象（如果有）
+            if has_relations:
+                # 先 expire 掉关联属性，强制从数据库重新加载
+                for relation_name in relation_info.keys():
+                    if hasattr(instance, relation_name):
+                        db.expire(instance, [relation_name])
+                await self._refresh_with_relations(db, instance, relation_info)
+            else:
+                await db.refresh(instance)
 
             logger.info(f"更新 {self._model_name} 成功: id={id}")
 
@@ -925,7 +1049,7 @@ class BaseRepository[T]:
 
     async def delete(self, db: AsyncSession, id: int) -> bool | None:
         """
-        删除记录
+        删除记录（支持主从表关系）
 
         Args:
             db: 数据库会话
@@ -938,6 +1062,8 @@ class BaseRepository[T]:
             ValueError: 状态不允许删除或数据完整性约束冲突（友好提示）
         """
         import time
+
+        from src.database.relation_metadata import RelationMetadata, RelationType
 
         instance = await self.get_by_id(db, id)
         if not instance:
@@ -970,6 +1096,28 @@ class BaseRepository[T]:
         )
 
         try:
+            # 显式删除关联对象（不依赖数据库级联删除）
+            if RelationMetadata.has_relations(self.model):
+                relation_info = RelationMetadata.get_relation_info(self.model)
+                for relation_name, info in relation_info.items():
+                    relation_type = info.get("relation_type", "ONETOMANY")
+                    
+                    # 只处理一对多关系（一对一和多对多由数据库处理）
+                    if relation_type == RelationType.ONETOMANY:
+                        relation_attr = getattr(self.model, relation_name, None)
+                        if relation_attr:
+                            # 获取当前关联对象
+                            current_relations = getattr(instance, relation_name, [])
+                            if current_relations:
+                                ids_to_delete = {
+                                    rel.id for rel in current_relations 
+                                    if hasattr(rel, "id") and rel.id is not None
+                                }
+                                if ids_to_delete:
+                                    await self._delete_relation_objects(db, relation_attr, ids_to_delete)
+                                    logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
+
+            # 删除主表记录
             await db.delete(instance)
             await db.flush()
 
@@ -1065,6 +1213,9 @@ class BaseRepository[T]:
         """
         更新记录及其关联对象（主从表 Diff 更新）
 
+        注意：此方法现在与 update() 方法功能相同，保留是为了向后兼容和明确语义。
+        推荐直接使用 update() 方法，它会自动检测并处理关联对象。
+
         自动处理主从表的增删改操作：
         - 有 ID 的项：更新现有记录
         - 无 ID 的项：创建新记录
@@ -1089,36 +1240,11 @@ class BaseRepository[T]:
                 ]
             }
             inbound = await repo.update_with_relations(db, 1, data)
+            # 或者直接使用 update() 方法，效果相同
+            inbound = await repo.update(db, 1, data)
         """
-        from src.database.relation_metadata import RelationMetadata
-
-        # 获取主表实例
-        instance = await self.get_by_id(db, id)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
-
-        await self._run_hooks(HookType.BEFORE_UPDATE, session=db, instance=instance, data=data)
-
-        # 更新主表字段
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        for field, value in data.items():
-            # 跳过关联对象字段
-            if field in relation_info:
-                continue
-            if hasattr(instance, field):
-                setattr(instance, field, value)
-
-        # 处理关联对象
-        await self._update_relations(db, instance, data)
-
-        await db.flush()
-        await db.refresh(instance)
-
-        logger.info(f"更新 {self._model_name}（含关联对象）成功: id={id}")
-
-        await self._run_hooks(HookType.AFTER_UPDATE, session=db, instance=instance)
-
-        return instance
+        # 直接调用 update() 方法，功能完全相同
+        return await self.update(db, id, data)
 
     async def _update_relations(
         self,
@@ -1254,7 +1380,10 @@ class BaseRepository[T]:
                 # 更新字段
                 update_data = obj_data if isinstance(obj_data, dict) else obj_data.model_dump(exclude_unset=True)
                 for field, value in update_data.items():
-                    if field != "id" and hasattr(db_obj, field):
+                    # 跳过 id 和外键字段（外键字段通常以 _id 结尾）
+                    if field == "id" or field.endswith("_id"):
+                        continue
+                    if hasattr(db_obj, field):
                         setattr(db_obj, field, value)
                 db.add(db_obj)
 
@@ -1272,6 +1401,8 @@ class BaseRepository[T]:
         """
         创建关联对象（自动设置外键）
 
+        自动从模型实例的 __foreign_info__ 或 SQLAlchemy 列定义中提取外键信息，并设置外键值。
+
         Args:
             db: 数据库会话
             relation_attr: 关联属性
@@ -1282,29 +1413,106 @@ class BaseRepository[T]:
         if not objects_to_create:
             return
 
-        from src.database.relation_metadata import RelationMetadata
+        from sqlalchemy import inspect as sa_inspect
 
         # 获取关联模型类
         relation_model = relation_attr.property.mapper.class_
 
-        for item_data in objects_to_create:
-            # 自动设置外键
-            if hasattr(relation_model, "__foreign_info__"):
-                foreign_info = RelationMetadata.get_foreign_info(relation_model)
-                parent_tablename = getattr(parent_obj.__class__, "__tablename__", None)
-                for foreign_key, fk_info in foreign_info.items():
-                    if parent_tablename == fk_info["target_table"]:
-                        target_column = fk_info["target_column"]
-                        if isinstance(item_data, dict):
-                            item_data[foreign_key] = getattr(parent_obj, target_column)
-                        else:
-                            setattr(item_data, foreign_key, getattr(parent_obj, target_column))
+        # 获取主表的表名
+        parent_tablename = getattr(parent_obj.__class__, "__tablename__", None)
 
-            # 创建对象
+        for item_data in objects_to_create:
+            # 方法1: 尝试使用 __foreign_info__ 元数据（如果存在）
+            foreign_key_set = False
+            if hasattr(relation_model, "__foreign_info__"):
+                # 创建模型实例来获取 __foreign_info__
+                try:
+                    foreign_info = relation_model().__foreign_info__
+                    for foreign_key, fk_info in foreign_info.items():
+                        if parent_tablename == fk_info["target_table"]:
+                            target_column = fk_info["target_column"]
+                            parent_value = getattr(parent_obj, target_column, None)
+                            if parent_value is not None:
+                                if isinstance(item_data, dict):
+                                    # 在创建主表时创建从表的场景中，强制设置外键为主表 ID
+                                    # 忽略用户传递的任何外键值，确保数据一致性
+                                    item_data[foreign_key] = parent_value
+                                    foreign_key_set = True
+                                    logger.debug(
+                                        f"强制设置外键(方法1): {foreign_key}={parent_value} "
+                                        f"(从 {parent_tablename}.{target_column})"
+                                    )
+                                else:
+                                    if not hasattr(item_data, foreign_key) or getattr(item_data, foreign_key) is None:
+                                        setattr(item_data, foreign_key, parent_value)
+                                        foreign_key_set = True
+                                        logger.debug(
+                                            f"自动设置外键(方法1): {foreign_key}={parent_value} "
+                                            f"(从 {parent_tablename}.{target_column})"
+                                        )
+                except Exception as e:
+                    logger.debug(f"使用 __foreign_info__ 设置外键失败: {e}")
+
+            # 方法2: 从 SQLAlchemy 列定义中自动提取外键信息
+            if not foreign_key_set:
+                try:
+                    relation_mapper = sa_inspect(relation_model)
+                    # 遍历关联模型的所有列
+                    for column in relation_mapper.columns:
+                        # 检查列是否有外键约束
+                        if column.foreign_keys:
+                            for fk in column.foreign_keys:
+                                # 获取外键指向的表名和列名
+                                target_table = fk.column.table.name
+                                target_column_name = fk.column.name
+
+                                # 如果外键指向主表
+                                if target_table == parent_tablename:
+                                    # 获取主表的对应列值
+                                    parent_value = getattr(parent_obj, target_column_name, None)
+                                    
+                                    # 调试日志：检查获取的值
+                                    logger.debug(
+                                        f"获取主表列值: {target_column_name}={parent_value}, "
+                                        f"类型={type(parent_value)}"
+                                    )
+                                    
+                                    # 确保获取的是实际的 ID 值，而不是其他对象
+                                    if parent_value is not None and isinstance(parent_value, (int, str)):
+                                        # 获取关联模型中的外键字段名
+                                        fk_field_name = column.name
+
+                                        # 设置外键值
+                                        if isinstance(item_data, dict):
+                                            # 在创建主表时创建从表的场景中，强制设置外键为主表 ID
+                                            # 忽略用户传递的任何外键值，确保数据一致性
+                                            item_data[fk_field_name] = parent_value
+                                            logger.debug(
+                                                f"强制设置外键(方法2): {fk_field_name}={parent_value} "
+                                                f"(从 {parent_tablename}.{target_column_name})"
+                                            )
+                                        else:
+                                            if not hasattr(item_data, fk_field_name) or getattr(item_data, fk_field_name) is None:
+                                                setattr(item_data, fk_field_name, parent_value)
+                                                logger.debug(
+                                                    f"自动设置外键(方法2): {fk_field_name}={parent_value} "
+                                                    f"(从 {parent_tablename}.{target_column_name})"
+                                                )
+                except Exception as e:
+                    logger.debug(f"使用 SQLAlchemy 列定义设置外键失败: {e}")
+
+            # 创建对象实例
             if isinstance(item_data, dict):
                 new_obj = relation_model(**item_data)
             else:
-                new_obj = relation_model(**item_data.model_dump())
+                # 如果是 Pydantic 模型，转换为字典再创建
+                if hasattr(item_data, "model_dump"):
+                    model_data = item_data.model_dump()
+                    new_obj = relation_model(**model_data)
+                else:
+                    # 处理其他类型的对象，转换为字典
+                    model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
+                    new_obj = relation_model(**model_data)
 
             db.add(new_obj)
 
