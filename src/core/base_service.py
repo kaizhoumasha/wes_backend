@@ -39,7 +39,7 @@
 """
 
 from collections.abc import Callable
-from typing import Any, TypeVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -173,7 +173,6 @@ class BaseService[M, R]:
 
     # ==================== 查询方法 ====================
 
-    # ruff: noqa: ARG002
     # - ARG002: cache 参数由缓存逻辑使用
     async def get_by_id(self, db: AsyncSession, cache: object, id: int, max_depth: int = 2) -> M | None:
         """

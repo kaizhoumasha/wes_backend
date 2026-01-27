@@ -22,18 +22,8 @@ from src.app.admin.models import User
 from src.app.admin.repositories.user_repository import UserRepository, user_repository
 from src.app.admin.services.user_auth_service import PasswordHasher, password_hasher
 from src.core.base_service import BaseService
+from src.core.cache_config import cache_settings
 from src.database.base_repository import HookContext, HookType
-
-# ==================== 缓存配置常量 ====================
-
-USER_DETAIL_CACHE_PREFIX = "user:detail"
-USER_LIST_CACHE_PREFIX = "user:list"
-USER_CACHE_EXPIRE = 7200  # 2小时
-USER_LIST_CACHE_EXPIRE = 600  # 10分钟
-NULL_CACHE_EXPIRE = 300  # 空值缓存5分钟
-
-
-# ==================== 用户服务类 ====================
 
 
 class UserService(BaseService[User, UserRepository]):
@@ -54,9 +44,6 @@ class UserService(BaseService[User, UserRepository]):
     扩展用户特定的业务方法。
     """
 
-    CACHE_PREFIX = USER_DETAIL_CACHE_PREFIX
-    CACHE_EXPIRE = USER_CACHE_EXPIRE
-
     def __init__(
         self,
         user_repo: UserRepository = user_repository,
@@ -72,12 +59,11 @@ class UserService(BaseService[User, UserRepository]):
         super().__init__(
             user_repo,
             enable_cache=True,
-            cache_prefix=USER_DETAIL_CACHE_PREFIX,
-            cache_expire=USER_CACHE_EXPIRE,
+            cache_prefix=cache_settings.USER.prefix,
+            cache_expire=cache_settings.USER.expire,
         )
         self.password_hasher = password_hasher
 
-        # 注册 before_create hook - 在创建用户前哈希密码
         self.add_hook(HookType.BEFORE_CREATE, self._before_create_password_hash)
 
     async def _before_create_password_hash(self, context: HookContext) -> None:
@@ -88,17 +74,12 @@ class UserService(BaseService[User, UserRepository]):
             context: Hook 上下文，包含 session 和 params
                    params 结构: {"session": db, "data": {...}}
         """
-        # context.params 包含 kwargs，其中 data 是实际数据字典
         data = context.params.get("data", {})
         password = data.get("password")
 
         if password:
-            # 将明文密码哈希后赋值给 hashed_password 字段
             data["hashed_password"] = await self.password_hasher.hash_async(password)
-            # 从 data 中移除明文密码，避免污染数据
             data.pop("password", None)
 
-
-# ==================== 单例实例 ====================
 
 user_service = UserService()

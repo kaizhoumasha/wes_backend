@@ -9,17 +9,18 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
-from src.app.sys.repositories.audit_log_repository import AuditLogRepository, audit_log_repository
+from src.app.sys.repositories.audit_log_repository import audit_log_repository
 from src.core.base_service import BaseService
 from src.core.logger import logger
 from src.core.timezone import timezone
+from src.database.base_repository import BaseRepository
 from src.utils.audit import get_current_username, get_request_id, get_request_info
 
 
-class AuditLogService(BaseService[AuditLog, AuditLogRepository]):
+class AuditLogService(BaseService[AuditLog, BaseRepository]):
     """审计日志服务类"""
 
-    def __init__(self, repo: AuditLogRepository = audit_log_repository):
+    def __init__(self, repo: BaseRepository = audit_log_repository):
         super().__init__(repo)
 
     async def create_audit_log(
@@ -129,15 +130,12 @@ class AuditLogService(BaseService[AuditLog, AuditLogRepository]):
             }
             if record_id:
                 args["record_id"] = str(record_id)
-            
+
             # 记录实际修改的数据（而不是所有数据）
             if data:
                 # 过滤掉敏感字段
                 sensitive_fields = {"password", "token", "secret", "key"}
-                filtered_data = {
-                    k: v for k, v in data.items() 
-                    if k not in sensitive_fields and not k.startswith("_")
-                }
+                filtered_data = {k: v for k, v in data.items() if k not in sensitive_fields and not k.startswith("_")}
                 args["changes"] = filtered_data
 
             status = OperaStatus.SUCCESS if success else OperaStatus.FAIL

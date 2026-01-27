@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.admin.models import Permission, PermissionTree
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.core.base_service import BaseService
+from src.core.cache_config import cache_settings
 from src.core.tree_service import TreeServiceMixin
 
 
@@ -20,7 +21,12 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
     """权限 Service"""
 
     def __init__(self, repo: PermissionRepository = permission_repository):
-        super().__init__(repo, enable_cache=True, cache_prefix="permission:detail", cache_expire=3600)
+        super().__init__(
+            repo,
+            enable_cache=True,
+            cache_prefix=cache_settings.PERMISSION.prefix,
+            cache_expire=cache_settings.PERMISSION.expire,
+        )
         self.repo: PermissionRepository = repo
 
     async def get_menu_tree(
@@ -77,9 +83,7 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
 
         # 普通用户：过滤有权限的菜单
         perm_dict = {perm.id: perm for perm in all_menus}
-        user_menus = [
-            perm for perm in all_menus if self._check_menu_permission(perm, user_perm_names, perm_dict)
-        ]
+        user_menus = [perm for perm in all_menus if self._check_menu_permission(perm, user_perm_names, perm_dict)]
 
         # 转换为 PermissionTree 对象
         return self._build_permission_tree(user_menus, include_hidden)
@@ -128,9 +132,7 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
         if perm.is_active and not perm.is_hidden:
             # 查找所有子菜单（type=menu 且 parent_id=perm.id）
             return any(
-                child_perm.type == "menu"
-                and child_perm.parent_id == perm.id
-                and child_perm.name in user_permissions
+                child_perm.type == "menu" and child_perm.parent_id == perm.id and child_perm.name in user_permissions
                 for child_perm in perm_dict.values()
             )
 
@@ -155,12 +157,33 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
 
         # 定义需要从 Permission 复制到 PermissionTree 的字段（DRY 优化：避免重复列举）
         tree_fields = [
-            "id", "name", "title", "description", "path", "parent_id",
-            "level", "sort_order", "tree_path", "type", "category",
-            "resource", "action", "method", "component", "icon",
-            "redirect", "is_active", "is_hidden", "is_cached",
-            "is_affix", "is_external", "external_url", "meta",
-            "api_permissions", "created_at", "updated_at",
+            "id",
+            "name",
+            "title",
+            "description",
+            "path",
+            "parent_id",
+            "level",
+            "sort_order",
+            "tree_path",
+            "type",
+            "category",
+            "resource",
+            "action",
+            "method",
+            "component",
+            "icon",
+            "redirect",
+            "is_active",
+            "is_hidden",
+            "is_cached",
+            "is_affix",
+            "is_external",
+            "external_url",
+            "meta",
+            "api_permissions",
+            "created_at",
+            "updated_at",
         ]
 
         # 构建 PermissionTree 对象（完全避免访问 SQLAlchemy 关系）

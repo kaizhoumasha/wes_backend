@@ -13,7 +13,7 @@ class PermissionRepository(HierarchyRepository[Permission]):
     def _add_active_filter(self, where_clauses: list, active_only: bool) -> None:
         """添加活跃状态过滤条件（DRY 原则）"""
         if active_only and hasattr(self.model, "is_active"):
-            where_clauses.append(self.model.is_active == True)  # noqa: E712
+            where_clauses.append(self.model.is_active == True)
 
     async def get_menu_tree(
         self,
@@ -36,7 +36,7 @@ class PermissionRepository(HierarchyRepository[Permission]):
         where_clauses = [Permission.type == "menu"]
         self._add_active_filter(where_clauses, active_only)
         if not include_hidden:
-            where_clauses.append(Permission.is_hidden == False)  # noqa: E712
+            where_clauses.append(Permission.is_hidden == False)
 
         return await self.get_all(db, where_clauses=where_clauses, order_by=Permission.sort_order)
 

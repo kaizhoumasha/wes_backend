@@ -311,7 +311,7 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
         field = match.group(1) if match else None
         return (
             "CONFLICT",
-            f"数据已存在，不能重复添加" + (f"（字段：{field}）" if field else ""),
+            "数据已存在，不能重复添加" + (f"（字段：{field}）" if field else ""),
             {"field": field, "constraint": "unique"} if field else {"constraint": "unique"},
         )
 

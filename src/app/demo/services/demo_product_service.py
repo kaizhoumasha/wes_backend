@@ -8,8 +8,8 @@ class DemoProductService(BaseService[DemoProduct, DemoProductRepository]):
     DemoProduct 服务类
     """
 
-    def __init__(self):
-        super().__init__(demo_product_repository)
+    def __init__(self, repo: DemoProductRepository = demo_product_repository):
+        super().__init__(repo, enable_cache=True)
 
 
 demo_product_service = DemoProductService()

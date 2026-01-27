@@ -86,6 +86,7 @@ class BaseRepository[T]:
 
         # 组合模式：使用专门的处理器
         self.error_translator = ErrorTranslator(model)
+        self.relation_manager = None  # 延迟初始化（避免循环导入）
 
         # 自动注册状态验证 Hook
         self._register_status_validation_hooks()
@@ -93,9 +94,20 @@ class BaseRepository[T]:
         # 自动注册审计字段填充 Hook
         self._register_audit_hooks()
 
-        # 自动检测并注册审计日志 Hook
+        # 自动检测并注册审计日志 Hook（委托给 AuditHookRegistrar）
         if self._has_audit_model_mixin():
-            self._register_audit_log_hooks()
+            from src.database.audit import AuditHookRegistrar
+
+            audit_registrar = AuditHookRegistrar(self._model_name, self._pk_column, self.hook_manager)
+            audit_registrar.register_hooks()
+
+    def _get_relation_manager(self):
+        """获取关系管理器（延迟初始化）"""
+        if self.relation_manager is None:
+            from src.database.relations import RelationManager
+
+            self.relation_manager = RelationManager(self.model, self._pk_column)
+        return self.relation_manager
 
     def _has_audit_model_mixin(self) -> bool:
         """
@@ -234,221 +246,6 @@ class BaseRepository[T]:
 
         return audit_fill_hook
 
-    def _register_audit_log_hooks(self) -> None:
-        """
-        注册审计日志 Hook
-
-        在 AFTER_CREATE、AFTER_UPDATE、AFTER_DELETE 时记录审计日志
-        """
-        # 注册 AFTER_CREATE Hook
-        self.add_hook(
-            HookType.AFTER_CREATE,
-            self._create_audit_log_hook("create"),
-            priority=100,  # 最低优先级，在所有其他 Hook 之后执行
-        )
-
-        # 注册 AFTER_UPDATE Hook
-        self.add_hook(
-            HookType.AFTER_UPDATE,
-            self._create_audit_log_hook("update"),
-            priority=100,
-        )
-
-        # 注册 AFTER_DELETE Hook
-        self.add_hook(
-            HookType.AFTER_DELETE,
-            self._create_audit_log_hook("delete"),
-            priority=100,
-        )
-
-    def _create_audit_log_hook(self, operation: str) -> HookFunc:
-        """
-        创建审计日志 Hook 函数（支持后台任务模式）
-
-        优先使用 BackgroundTasks 后台任务模式，提升响应速度。
-        如果 BackgroundTasks 不可用，则降级为同步执行模式。
-
-        Args:
-            operation: 操作类型（create/update/delete）
-
-        Returns:
-            Hook 函数
-        """
-
-        async def audit_log_hook(ctx: HookContext) -> None:
-            from src.utils.background_tasks import get_background_tasks
-
-            # 准备审计数据（可序列化）
-            audit_data = self._prepare_audit_data(ctx, operation)
-
-            # 检查是否有 BackgroundTasks 可用
-            background_tasks = get_background_tasks()
-
-            if background_tasks:
-                # 使用后台任务（异步非阻塞，提升响应速度）
-                background_tasks.add_task(
-                    self._write_audit_log_background,
-                    operation=operation,
-                    model_name=self._model_name,
-                    **audit_data,
-                )
-            else:
-                # 降级为同步执行（保持向后兼容）
-                await self._write_audit_log_sync(ctx.session, operation, audit_data)
-
-        return audit_log_hook
-
-    def _prepare_audit_data(self, ctx: HookContext, operation: str) -> dict[str, Any]:
-        """
-        准备审计数据（可序列化格式）
-
-        将审计所需的数据转换为可序列化的字典格式，
-        以便在后台任务中使用（后台任务无法访问原始 ORM 对象）。
-
-        Args:
-            ctx: Hook 执行上下文
-            operation: 操作类型（create/update/delete）
-
-        Returns:
-            包含审计数据的字典，包括：
-            - record_id: 记录 ID
-            - data: 审计数据（根据操作类型不同而不同）
-            - cost_time: 操作耗时（秒）
-        """
-        import time
-
-        instance = ctx.params.get("instance")
-        data = ctx.params.get("data")
-        record_id = getattr(instance, self._pk_column, None) if instance else None
-
-        # 计算操作耗时
-        start_time = ctx.params.get("_audit_start_time")
-        cost_time = 0.0
-        if start_time:
-            cost_time = time.time() - start_time
-
-        # 准备审计数据（根据操作类型）
-        audit_data = None
-
-        if operation == "create":
-            # 创建操作：记录所有创建数据
-            audit_data = data
-
-        elif operation == "update":
-            # 更新操作：记录修改前后的值对比
-            old_values = ctx.params.get("_audit_old_values", {})
-            if data and old_values:
-                audit_data = {}
-                for key, new_value in data.items():
-                    old_value = old_values.get(key)
-                    # 只记录实际发生变化的字段
-                    if old_value != new_value:
-                        audit_data[key] = {
-                            "old": str(old_value) if old_value is not None else None,
-                            "new": str(new_value) if new_value is not None else None,
-                        }
-
-        elif operation == "delete":
-            # 删除操作：记录被删除的原始数据
-            old_values = ctx.params.get("_audit_old_values", {})
-            if old_values:
-                # 过滤掉不需要的字段
-                sensitive_fields = {"password", "token", "secret", "key"}
-                audit_data = {
-                    k: str(v) if v is not None else None
-                    for k, v in old_values.items()
-                    if k not in sensitive_fields and not k.startswith("_")
-                }
-
-        return {
-            "record_id": record_id,
-            "data": audit_data,
-            "cost_time": cost_time,
-        }
-
-    async def _write_audit_log_background(
-        self,
-        operation: str,
-        model_name: str,
-        record_id: int | None,
-        data: dict[str, Any] | None,
-        cost_time: float,
-    ) -> None:
-        """
-        后台任务：写入审计日志
-
-        在后台任务中执行，不阻塞主请求。
-        创建新的数据库会话来写入审计日志。
-
-        Args:
-            operation: 操作类型（create/update/delete）
-            model_name: 模型名称
-            record_id: 记录 ID
-            data: 审计数据
-            cost_time: 操作耗时（秒）
-
-        Note:
-            - 此方法在后台任务中执行，原请求的数据库会话已关闭
-            - 需要创建新的数据库会话
-            - 失败不影响主业务，只记录错误日志
-        """
-        try:
-            from src.app.sys.services.audit_service import audit_log_service
-            from src.database.db import get_db_context
-
-            # 创建新的数据库会话（后台任务中原会话已关闭）
-            async with get_db_context() as session:
-                await audit_log_service.create_operation_log(
-                    session,
-                    operation=operation,
-                    model_name=model_name,
-                    record_id=record_id,
-                    data=data,
-                    success=True,
-                    cost_time=cost_time,
-                )
-                await session.commit()
-        except Exception as e:
-            # 审计日志失败不应该影响主业务
-            logger.error(f"后台写入审计日志失败 [{model_name}:{record_id}]: {e}")
-
-    async def _write_audit_log_sync(
-        self,
-        session: AsyncSession,
-        operation: str,
-        audit_data: dict[str, Any],
-    ) -> None:
-        """
-        同步模式：写入审计日志
-
-        使用现有的数据库会话写入审计日志。
-        用于降级场景（BackgroundTasks 不可用时）。
-
-        Args:
-            session: 数据库会话
-            operation: 操作类型（create/update/delete）
-            audit_data: 审计数据字典（包含 record_id、data、cost_time）
-
-        Note:
-            - 使用现有会话，不需要 commit
-            - 失败不影响主业务，只记录错误日志
-        """
-        try:
-            from src.app.sys.services.audit_service import audit_log_service
-
-            await audit_log_service.create_operation_log(
-                session,
-                operation=operation,
-                model_name=self._model_name,
-                record_id=audit_data.get("record_id"),
-                data=audit_data.get("data"),
-                success=True,
-                cost_time=audit_data.get("cost_time", 0.0),
-            )
-        except Exception as e:
-            # 审计日志失败不应该影响主业务
-            logger.error(f"同步写入审计日志失败 [{self._model_name}]: {e}")
-
     async def _run_hooks(self, hook_type: HookType, **kwargs: Any) -> dict[str, Any]:
         """运行指定类型的 hooks"""
         context = HookContext(
@@ -483,177 +280,22 @@ class BaseRepository[T]:
         self.error_translator.handle_integrity_error(e)
 
     def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
-        """
-        根据关系类型选择最优加载策略
-
-        Args:
-            statement: SQLAlchemy 查询语句
-            relation_name: 关联属性名
-            relation_info: 关联关系信息
-
-        Returns:
-            添加了加载选项的查询语句
-        """
-        from sqlalchemy.orm import joinedload, selectinload
-
-        from src.database.relation_metadata import RelationType
-
-        relation_attr = getattr(self.model, relation_name, None)
-        if relation_attr is None:
-            return statement
-
-        relation_type = relation_info.get("relation_type", "ONETOMANY")
-
-        if relation_type == RelationType.ONETOONE:
-            # 一对一：使用 joinedload（单次 JOIN 查询）
-            statement = statement.options(joinedload(relation_attr))
-        else:
-            # 一对多/多对多：使用 selectinload（避免笛卡尔积）
-            statement = statement.options(selectinload(relation_attr))
-
-        return statement
+        return self._get_relation_manager().add_relation_load(statement, relation_name, relation_info)
 
     def _add_all_relation_loads(self, statement: Any) -> Any:
-        """
-        加载所有关联对象
-
-        Args:
-            statement: SQLAlchemy 查询语句
-
-        Returns:
-            添加了所有关联对象加载选项的查询语句
-        """
-        from src.database.relation_metadata import RelationMetadata
-
-        if not RelationMetadata.has_relations(self.model):
-            return statement
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-
-        for relation_name, info in relation_info.items():
-            statement = self._add_relation_load(statement, relation_name, info)
-
-        return statement
+        return self._get_relation_manager().add_all_relation_loads(statement)
 
     def _add_specific_relation_loads(self, statement: Any, relation_names: list[str]) -> Any:
-        """
-        只加载指定的关联对象
-
-        Args:
-            statement: SQLAlchemy 查询语句
-            relation_names: 需要加载的关联对象名称列表
-
-        Returns:
-            添加了指定关联对象加载选项的查询语句
-        """
-        from src.database.relation_metadata import RelationMetadata
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-
-        for relation_name in relation_names:
-            if relation_name in relation_info:
-                info = relation_info[relation_name]
-                statement = self._add_relation_load(statement, relation_name, info)
-
-        return statement
+        return self._get_relation_manager().add_specific_relation_loads(statement, relation_names)
 
     async def _handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
-        """
-        处理关联对象（自动处理主从表关系）
+        await self._get_relation_manager().handle_relations(db, instance, data)
 
-        根据模型的 __relation_info__ 元数据自动处理关联对象的创建和更新。
-        支持一对多、一对一、多对多关系。
+    async def _preload_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+        await self._get_relation_manager().preload_relations(db, instance, relation_info)
 
-        Args:
-            db: 数据库会话
-            instance: 主表实例
-            data: 包含关联对象数据的字典
-        """
-        from src.database.relation_metadata import RelationMetadata, RelationType
-
-        if not RelationMetadata.has_relations(self.model):
-            return
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-
-        for relation_name, info in relation_info.items():
-            # 检查数据中是否包含此关联对象
-            if relation_name not in data:
-                continue
-
-            relation_data = data[relation_name]
-            if relation_data is None:
-                continue
-
-            relation_type = info.get("relation_type", "ONETOMANY")
-
-            # 目前只处理一对多关系
-            if relation_type == RelationType.ONETOMANY:
-                await self._handle_one_to_many_relation(db, instance, relation_name, relation_data, info)
-
-    async def _preload_relations(
-        self, db: AsyncSession, instance: T, relation_info: dict[str, Any]
-    ) -> None:
-        """
-        预加载关联对象（用于首次加载，避免懒加载错误）
-
-        使用 selectinload 方式加载关联对象，不触发额外的主表查询。
-
-        Args:
-            db: 数据库会话
-            instance: 模型实例
-            relation_info: 关联关系信息
-        """
-        if not relation_info:
-            return
-
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
-
-        # 构建加载选项
-        options = []
-        for relation_name in relation_info.keys():
-            if hasattr(self.model, relation_name):
-                options.append(selectinload(getattr(self.model, relation_name)))
-
-        if options:
-            # 使用 selectinload 重新查询并加载关联对象
-            stmt = select(self.model).where(
-                getattr(self.model, self._pk_column) == getattr(instance, self._pk_column)
-            )
-            for option in options:
-                stmt = stmt.options(option)
-
-            result = await db.execute(stmt)
-            loaded_instance = result.scalar_one_or_none()
-
-            if loaded_instance:
-                # 将加载的关联对象复制到原实例
-                for relation_name in relation_info.keys():
-                    if hasattr(loaded_instance, relation_name):
-                        setattr(instance, relation_name, getattr(loaded_instance, relation_name))
-
-    async def _refresh_with_relations(
-        self, db: AsyncSession, instance: T, relation_info: dict[str, Any]
-    ) -> None:
-        """
-        刷新实例并加载关联对象（用于更新后刷新）
-
-        使用 refresh 方法直接刷新关联属性，避免重复查询主表。
-
-        Args:
-            db: 数据库会话
-            instance: 模型实例
-            relation_info: 关联关系信息
-        """
-        if relation_info:
-            # 刷新主表字段和所有关联对象
-            # 使用 attribute_names 参数指定要刷新的关联属性
-            relation_names = list(relation_info.keys())
-            await db.refresh(instance, attribute_names=relation_names)
-        else:
-            # 没有关联对象，只刷新实例
-            await db.refresh(instance)
+    async def _refresh_with_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+        await self._get_relation_manager().refresh_with_relations(db, instance, relation_info)
 
     async def _handle_one_to_many_relation(
         self,
@@ -661,23 +303,8 @@ class BaseRepository[T]:
         instance: T,
         relation_name: str,
         relation_data: list[dict[str, Any]],
-        relation_info: RelationInfo,
     ) -> None:
-        """
-        处理一对多关系的创建
-
-        Args:
-            db: 数据库会话
-            instance: 主表实例
-            relation_name: 关联属性名
-            relation_data: 关联对象数据列表
-            relation_info: 关联关系信息
-        """
-        relation_attr = getattr(self.model, relation_name, None)
-        if relation_attr is None:
-            return
-
-        await self._create_relation_objects(db, relation_attr, instance, relation_data, relation_info)
+        await self._get_relation_manager().handle_one_to_many_relation(db, instance, relation_name, relation_data)
 
     # ==================== 基础 CRUD 方法 ====================
 
@@ -955,47 +582,63 @@ class BaseRepository[T]:
         """
         import time
 
+        start_time = time.time()
+        relation_info, has_relations = self._analyze_update_data(data)
+
+        instance = await self._load_instance_for_update(db, id, relation_info, has_relations)
+        if not instance:
+            raise ValueError(f"{self._model_name} 不存在")
+
+        old_values = self._capture_old_values(instance, data, relation_info)
+        await self._run_before_update_hooks(db, instance, data, start_time, old_values)
+
+        try:
+            await self._execute_update(db, instance, data, relation_info, has_relations)
+            await self._finalize_update(db, instance, data, start_time, old_values)
+            return instance
+        except IntegrityError as e:
+            await db.rollback()
+            self._handle_integrity_error(e)
+
+    def _analyze_update_data(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         from src.database.relation_metadata import RelationMetadata
 
-        # 记录开始时间用于审计日志
-        start_time = time.time()
-
-        # 分离主表字段和关联对象字段
         relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = any(k in relation_info for k in data.keys())
+        has_relations = any(k in relation_info for k in data)
+        return relation_info, has_relations
 
-        # 如果有关联对象，使用 selectinload 一次性加载，避免重复查询
+    async def _load_instance_for_update(
+        self, db: AsyncSession, id: int, relation_info: dict[str, Any], has_relations: bool
+    ) -> T | None:
         if has_relations:
             from sqlalchemy import select
             from sqlalchemy.orm import selectinload
 
-            # 构建加载选项
-            options = []
-            for relation_name in relation_info.keys():
-                if hasattr(self.model, relation_name):
-                    options.append(selectinload(getattr(self.model, relation_name)))
+            options = [
+                selectinload(getattr(self.model, relation_name))
+                for relation_name in relation_info
+                if hasattr(self.model, relation_name)
+            ]
 
-            # 使用 selectinload 查询主表和关联对象
             stmt = select(self.model).where(getattr(self.model, self._pk_column) == id)
             for option in options:
                 stmt = stmt.options(option)
 
             result = await db.execute(stmt)
-            instance = result.scalar_one_or_none()
+            return result.scalar_one_or_none()
         else:
-            # 没有关联对象，使用普通查询
-            instance = await self.get_by_id(db, id)
+            return await self.get_by_id(db, id)
 
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
-
-        # 保存旧值用于审计日志对比（只保存主表字段）
+    def _capture_old_values(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> dict[str, Any]:
         old_values = {}
         for key in data:
             if key not in relation_info and hasattr(instance, key):
                 old_values[key] = getattr(instance, key)
+        return old_values
 
-        # 状态验证通过 Hook 系统自动执行（如果模型混入了状态验证 Mixin）
+    async def _run_before_update_hooks(
+        self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
+    ) -> None:
         await self._run_hooks(
             HookType.BEFORE_UPDATE,
             session=db,
@@ -1005,47 +648,46 @@ class BaseRepository[T]:
             _audit_old_values=old_values,
         )
 
-        try:
-            # 更新主表字段
-            for field, value in data.items():
-                # 跳过关联对象字段
-                if field in relation_info:
-                    continue
-                if hasattr(instance, field):
-                    setattr(instance, field, value)
+    async def _execute_update(
+        self, db: AsyncSession, instance: T, data: dict[str, Any], relation_info: dict[str, Any], has_relations: bool
+    ) -> None:
+        for field, value in data.items():
+            if field in relation_info:
+                continue
+            if hasattr(instance, field):
+                setattr(instance, field, value)
 
-            # 处理关联对象（如果有）
-            if has_relations:
-                # 关联对象已在查询时通过 selectinload 加载，直接更新
-                await self._update_relations(db, instance, data)
+        if has_relations:
+            await self._update_relations(db, instance, data)
 
-            await db.flush()
+        await db.flush()
 
-            # 刷新实例并加载关联对象（如果有）
-            if has_relations:
-                # 先 expire 掉关联属性，强制从数据库重新加载
-                for relation_name in relation_info.keys():
-                    if hasattr(instance, relation_name):
-                        db.expire(instance, [relation_name])
-                await self._refresh_with_relations(db, instance, relation_info)
-            else:
-                await db.refresh(instance)
+    async def _finalize_update(
+        self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
+    ) -> None:
+        from src.database.relation_metadata import RelationMetadata
 
-            logger.info(f"更新 {self._model_name} 成功: id={id}")
+        relation_info = RelationMetadata.get_relation_info(self.model)
+        has_relations = any(k in relation_info for k in data)
 
-            await self._run_hooks(
-                HookType.AFTER_UPDATE,
-                session=db,
-                instance=instance,
-                data=data,
-                _audit_start_time=start_time,
-                _audit_old_values=old_values,
-            )
+        if has_relations:
+            for relation_name in relation_info:
+                if hasattr(instance, relation_name):
+                    db.expire(instance, [relation_name])
+            await self._refresh_with_relations(db, instance, relation_info)
+        else:
+            await db.refresh(instance)
 
-            return instance
-        except IntegrityError as e:
-            await db.rollback()
-            self._handle_integrity_error(e)
+        logger.info(f"更新 {self._model_name} 成功: id={getattr(instance, self._pk_column)}")
+
+        await self._run_hooks(
+            HookType.AFTER_UPDATE,
+            session=db,
+            instance=instance,
+            data=data,
+            _audit_start_time=start_time,
+            _audit_old_values=old_values,
+        )
 
     async def delete(self, db: AsyncSession, id: int) -> bool | None:
         """
@@ -1063,20 +705,28 @@ class BaseRepository[T]:
         """
         import time
 
-        from src.database.relation_metadata import RelationMetadata, RelationType
-
         instance = await self.get_by_id(db, id)
         if not instance:
             return False
 
-        # 记录开始时间用于审计日志
         start_time = time.time()
+        old_values = self._capture_old_values_for_delete(instance)
 
-        # 保存原始数据用于审计日志（只保存实际的数据字段）
+        await self._run_before_delete_hooks(db, instance, start_time, old_values)
+
+        try:
+            await self._delete_related_objects(db, instance)
+            await self._delete_main_record(db, instance, id)
+            await self._run_after_delete_hooks(db, instance, start_time, old_values)
+            return True
+        except IntegrityError as e:
+            await db.rollback()
+            self._handle_integrity_error(e)
+
+    def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
         old_values = {}
         model_fields = getattr(instance, "model_fields", None)
         if model_fields:
-            # 使用 model_fields 获取实际定义的字段
             for field_name in model_fields:
                 if hasattr(instance, field_name):
                     try:
@@ -1085,8 +735,11 @@ class BaseRepository[T]:
                     except Exception as e:
                         logger.debug(f"无法获取字段 {field_name} 的值: {e}")
                         continue
+        return old_values
 
-        # 状态验证通过 Hook 系统自动执行（如果模型混入了状态验证 Mixin）
+    async def _run_before_delete_hooks(
+        self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]
+    ) -> None:
         await self._run_hooks(
             HookType.BEFORE_DELETE,
             session=db,
@@ -1095,46 +748,43 @@ class BaseRepository[T]:
             _audit_old_values=old_values,
         )
 
-        try:
-            # 显式删除关联对象（不依赖数据库级联删除）
-            if RelationMetadata.has_relations(self.model):
-                relation_info = RelationMetadata.get_relation_info(self.model)
-                for relation_name, info in relation_info.items():
-                    relation_type = info.get("relation_type", "ONETOMANY")
-                    
-                    # 只处理一对多关系（一对一和多对多由数据库处理）
-                    if relation_type == RelationType.ONETOMANY:
-                        relation_attr = getattr(self.model, relation_name, None)
-                        if relation_attr:
-                            # 获取当前关联对象
-                            current_relations = getattr(instance, relation_name, [])
-                            if current_relations:
-                                ids_to_delete = {
-                                    rel.id for rel in current_relations 
-                                    if hasattr(rel, "id") and rel.id is not None
-                                }
-                                if ids_to_delete:
-                                    await self._delete_relation_objects(db, relation_attr, ids_to_delete)
-                                    logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
+    async def _delete_related_objects(self, db: AsyncSession, instance: T) -> None:
+        from src.database.relation_metadata import RelationMetadata, RelationType
 
-            # 删除主表记录
-            await db.delete(instance)
-            await db.flush()
+        if not RelationMetadata.has_relations(self.model):
+            return
 
-            logger.info(f"删除 {self._model_name} 成功: id={id}")
+        relation_info = RelationMetadata.get_relation_info(self.model)
+        for relation_name, info in relation_info.items():
+            relation_type = info.get("relation_type", "ONETOMANY")
 
-            await self._run_hooks(
-                HookType.AFTER_DELETE,
-                session=db,
-                instance=instance,
-                _audit_start_time=start_time,
-                _audit_old_values=old_values,
-            )
+            if relation_type == RelationType.ONETOMANY:
+                relation_attr = getattr(self.model, relation_name, None)
+                if relation_attr:
+                    current_relations = getattr(instance, relation_name, [])
+                    if current_relations:
+                        ids_to_delete = {
+                            rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None
+                        }
+                        if ids_to_delete:
+                            await self._delete_relation_objects(db, relation_attr, ids_to_delete)
+                            logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
 
-            return True
-        except IntegrityError as e:
-            await db.rollback()
-            self._handle_integrity_error(e)
+    async def _delete_main_record(self, db: AsyncSession, instance: T, id: int) -> None:
+        await db.delete(instance)
+        await db.flush()
+        logger.info(f"删除 {self._model_name} 成功: id={id}")
+
+    async def _run_after_delete_hooks(
+        self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]
+    ) -> None:
+        await self._run_hooks(
+            HookType.AFTER_DELETE,
+            session=db,
+            instance=instance,
+            _audit_start_time=start_time,
+            _audit_old_values=old_values,
+        )
 
     async def exists(self, db: AsyncSession, **kwargs: Any) -> bool:
         """
@@ -1209,41 +859,7 @@ class BaseRepository[T]:
         db: AsyncSession,
         id: int,
         data: dict[str, Any],
-    ) -> T:
-        """
-        更新记录及其关联对象（主从表 Diff 更新）
-
-        注意：此方法现在与 update() 方法功能相同，保留是为了向后兼容和明确语义。
-        推荐直接使用 update() 方法，它会自动检测并处理关联对象。
-
-        自动处理主从表的增删改操作：
-        - 有 ID 的项：更新现有记录
-        - 无 ID 的项：创建新记录
-        - 数据库中有但输入中没有的项：删除记录
-
-        Args:
-            db: 数据库会话
-            id: 主键 ID
-            data: 更新数据字典（包含关联对象）
-
-        Returns:
-            更新后的模型实例
-
-        Example:
-            # 更新入库单及其明细
-            data = {
-                "type": "purchase",
-                "items": [
-                    {"id": 1, "sku_code": "SKU001", "qty": 10},  # 更新
-                    {"sku_code": "SKU002", "qty": 20},  # 新增
-                    # ID=2 的项不在列表中，将被删除
-                ]
-            }
-            inbound = await repo.update_with_relations(db, 1, data)
-            # 或者直接使用 update() 方法，效果相同
-            inbound = await repo.update(db, 1, data)
-        """
-        # 直接调用 update() 方法，功能完全相同
+    ) -> T | None:
         return await self.update(db, id, data)
 
     async def _update_relations(
@@ -1252,71 +868,7 @@ class BaseRepository[T]:
         instance: T,
         data: dict[str, Any],
     ) -> None:
-        """
-        更新关联对象（Diff 算法）
-
-        Args:
-            db: 数据库会话
-            instance: 主表实例
-            data: 包含关联对象数据的字典
-        """
-        from src.database.relation_metadata import RelationMetadata, RelationType
-
-        if not RelationMetadata.has_relations(self.model):
-            return
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-
-        for relation_name, info in relation_info.items():
-            # 检查数据中是否包含此关联对象
-            if relation_name not in data:
-                continue
-
-            new_relation_data = data[relation_name]
-            if new_relation_data is None:
-                continue
-
-            relation_type = info.get("relation_type", "ONETOMANY")
-
-            # 目前只处理一对多关系
-            if relation_type != RelationType.ONETOMANY:
-                continue
-
-            # 获取关联模型类（从 Relationship 属性中获取）
-            relation_attr = getattr(self.model, relation_name, None)
-            if relation_attr is None:
-                continue
-
-            # 获取当前数据库中的关联对象
-            current_relations = getattr(instance, relation_name, [])
-            current_ids = {rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None}
-
-            # 分析操作类型
-            new_ids = set()
-            to_create = []
-            to_update = []
-
-            for item_data in new_relation_data:
-                item_id = item_data.get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
-
-                if item_id is None:
-                    to_create.append(item_data)  # 新增
-                else:
-                    new_ids.add(item_id)
-                    to_update.append(item_data)  # 更新
-
-            # 找出需要删除的 ID
-            to_delete_ids = current_ids - new_ids
-
-            # 执行操作
-            if to_delete_ids:
-                await self._delete_relation_objects(db, relation_attr, to_delete_ids)
-
-            if to_update:
-                await self._update_relation_objects(db, relation_attr, to_update)
-
-            if to_create:
-                await self._create_relation_objects(db, relation_attr, instance, to_create, info)
+        await self._get_relation_manager().update_relations(db, instance, data)
 
     async def _delete_relation_objects(
         self,
@@ -1324,27 +876,7 @@ class BaseRepository[T]:
         relation_attr: Any,
         ids_to_delete: set[int],
     ) -> None:
-        """
-        删除关联对象（使用 DELETE 语句，无需先查询）
-
-        Args:
-            db: 数据库会话
-            relation_attr: 关联属性
-            ids_to_delete: 要删除的 ID 集合
-        """
-        if not ids_to_delete:
-            return
-
-        from sqlalchemy import delete
-
-        # 获取关联模型类
-        relation_model = relation_attr.property.mapper.class_
-
-        stmt = delete(relation_model).where(relation_model.id.in_(ids_to_delete))
-        await db.execute(stmt)
-        await db.flush()
-
-        logger.info(f"删除关联对象: 数量={len(ids_to_delete)}")
+        await self._get_relation_manager().delete_relation_objects(db, relation_attr, ids_to_delete)
 
     async def _update_relation_objects(
         self,
@@ -1352,43 +884,7 @@ class BaseRepository[T]:
         relation_attr: Any,
         objects_to_update: list[dict[str, Any]],
     ) -> None:
-        """
-        更新关联对象
-
-        Args:
-            db: 数据库会话
-            relation_attr: 关联属性
-            objects_to_update: 要更新的对象数据列表
-        """
-        if not objects_to_update:
-            return
-
-        from sqlalchemy import select
-
-        # 获取关联模型类
-        relation_model = relation_attr.property.mapper.class_
-
-        for obj_data in objects_to_update:
-            obj_id = obj_data.get("id") if isinstance(obj_data, dict) else obj_data.id
-
-            # 查询对象
-            stmt = select(relation_model).where(relation_model.id == obj_id)
-            result = await db.execute(stmt)
-            db_obj = result.scalar_one_or_none()
-
-            if db_obj:
-                # 更新字段
-                update_data = obj_data if isinstance(obj_data, dict) else obj_data.model_dump(exclude_unset=True)
-                for field, value in update_data.items():
-                    # 跳过 id 和外键字段（外键字段通常以 _id 结尾）
-                    if field == "id" or field.endswith("_id"):
-                        continue
-                    if hasattr(db_obj, field):
-                        setattr(db_obj, field, value)
-                db.add(db_obj)
-
-        await db.flush()
-        logger.info(f"更新关联对象: 数量={len(objects_to_update)}")
+        await self._get_relation_manager().update_relation_objects(db, relation_attr, objects_to_update)
 
     async def _create_relation_objects(
         self,
@@ -1396,128 +892,20 @@ class BaseRepository[T]:
         relation_attr: Any,
         parent_obj: T,
         objects_to_create: list[dict[str, Any]],
-        relation_info: RelationInfo,  # noqa: ARG002
     ) -> None:
-        """
-        创建关联对象（自动设置外键）
+        await self._get_relation_manager().create_relation_objects(db, relation_attr, parent_obj, objects_to_create)
 
-        自动从模型实例的 __foreign_info__ 或 SQLAlchemy 列定义中提取外键信息，并设置外键值。
+    def _set_foreign_key_value(
+        self,
+        item_data: dict[str, Any] | Any,
+        foreign_key_field: str,
+        parent_obj: T,
+        parent_tablename: str | None,
+    ) -> None:
+        self._get_relation_manager()._set_foreign_key_value(item_data, foreign_key_field, parent_obj, parent_tablename)
 
-        Args:
-            db: 数据库会话
-            relation_attr: 关联属性
-            parent_obj: 父对象（主表实例）
-            objects_to_create: 要创建的对象数据列表
-            relation_info: 关联关系信息（保留用于未来扩展）
-        """
-        if not objects_to_create:
-            return
-
-        from sqlalchemy import inspect as sa_inspect
-
-        # 获取关联模型类
-        relation_model = relation_attr.property.mapper.class_
-
-        # 获取主表的表名
-        parent_tablename = getattr(parent_obj.__class__, "__tablename__", None)
-
-        for item_data in objects_to_create:
-            # 方法1: 尝试使用 __foreign_info__ 元数据（如果存在）
-            foreign_key_set = False
-            if hasattr(relation_model, "__foreign_info__"):
-                # 创建模型实例来获取 __foreign_info__
-                try:
-                    foreign_info = relation_model().__foreign_info__
-                    for foreign_key, fk_info in foreign_info.items():
-                        if parent_tablename == fk_info["target_table"]:
-                            target_column = fk_info["target_column"]
-                            parent_value = getattr(parent_obj, target_column, None)
-                            if parent_value is not None:
-                                if isinstance(item_data, dict):
-                                    # 在创建主表时创建从表的场景中，强制设置外键为主表 ID
-                                    # 忽略用户传递的任何外键值，确保数据一致性
-                                    item_data[foreign_key] = parent_value
-                                    foreign_key_set = True
-                                    logger.debug(
-                                        f"强制设置外键(方法1): {foreign_key}={parent_value} "
-                                        f"(从 {parent_tablename}.{target_column})"
-                                    )
-                                else:
-                                    if not hasattr(item_data, foreign_key) or getattr(item_data, foreign_key) is None:
-                                        setattr(item_data, foreign_key, parent_value)
-                                        foreign_key_set = True
-                                        logger.debug(
-                                            f"自动设置外键(方法1): {foreign_key}={parent_value} "
-                                            f"(从 {parent_tablename}.{target_column})"
-                                        )
-                except Exception as e:
-                    logger.debug(f"使用 __foreign_info__ 设置外键失败: {e}")
-
-            # 方法2: 从 SQLAlchemy 列定义中自动提取外键信息
-            if not foreign_key_set:
-                try:
-                    relation_mapper = sa_inspect(relation_model)
-                    # 遍历关联模型的所有列
-                    for column in relation_mapper.columns:
-                        # 检查列是否有外键约束
-                        if column.foreign_keys:
-                            for fk in column.foreign_keys:
-                                # 获取外键指向的表名和列名
-                                target_table = fk.column.table.name
-                                target_column_name = fk.column.name
-
-                                # 如果外键指向主表
-                                if target_table == parent_tablename:
-                                    # 获取主表的对应列值
-                                    parent_value = getattr(parent_obj, target_column_name, None)
-                                    
-                                    # 调试日志：检查获取的值
-                                    logger.debug(
-                                        f"获取主表列值: {target_column_name}={parent_value}, "
-                                        f"类型={type(parent_value)}"
-                                    )
-                                    
-                                    # 确保获取的是实际的 ID 值，而不是其他对象
-                                    if parent_value is not None and isinstance(parent_value, (int, str)):
-                                        # 获取关联模型中的外键字段名
-                                        fk_field_name = column.name
-
-                                        # 设置外键值
-                                        if isinstance(item_data, dict):
-                                            # 在创建主表时创建从表的场景中，强制设置外键为主表 ID
-                                            # 忽略用户传递的任何外键值，确保数据一致性
-                                            item_data[fk_field_name] = parent_value
-                                            logger.debug(
-                                                f"强制设置外键(方法2): {fk_field_name}={parent_value} "
-                                                f"(从 {parent_tablename}.{target_column_name})"
-                                            )
-                                        else:
-                                            if not hasattr(item_data, fk_field_name) or getattr(item_data, fk_field_name) is None:
-                                                setattr(item_data, fk_field_name, parent_value)
-                                                logger.debug(
-                                                    f"自动设置外键(方法2): {fk_field_name}={parent_value} "
-                                                    f"(从 {parent_tablename}.{target_column_name})"
-                                                )
-                except Exception as e:
-                    logger.debug(f"使用 SQLAlchemy 列定义设置外键失败: {e}")
-
-            # 创建对象实例
-            if isinstance(item_data, dict):
-                new_obj = relation_model(**item_data)
-            else:
-                # 如果是 Pydantic 模型，转换为字典再创建
-                if hasattr(item_data, "model_dump"):
-                    model_data = item_data.model_dump()
-                    new_obj = relation_model(**model_data)
-                else:
-                    # 处理其他类型的对象，转换为字典
-                    model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
-                    new_obj = relation_model(**model_data)
-
-            db.add(new_obj)
-
-        await db.flush()
-        logger.info(f"创建关联对象: 数量={len(objects_to_create)}")
+    def _create_model_instance(self, model: type, item_data: dict[str, Any] | Any) -> Any:
+        return self._get_relation_manager()._create_model_instance(model, item_data)
 
 
 __all__ = ["BaseRepository", "Hook", "HookContext", "HookFunc", "HookManager", "HookType"]

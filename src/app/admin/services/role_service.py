@@ -3,15 +3,22 @@
 """
 
 from src.app.admin.models import Role
-from src.app.admin.repositories.role_repository import RoleRepository, role_repository
+from src.app.admin.repositories.role_repository import role_repository
 from src.core.base_service import BaseService
+from src.core.cache_config import cache_settings
+from src.database.base_repository import BaseRepository
 
 
-class RoleService(BaseService[Role, RoleRepository]):
+class RoleService(BaseService[Role, BaseRepository]):
     """角色 Service"""
 
-    def __init__(self, repo: RoleRepository = role_repository):
-        super().__init__(repo, enable_cache=True, cache_prefix="role:detail", cache_expire=3600)
+    def __init__(self, repo: BaseRepository = role_repository):
+        super().__init__(
+            repo,
+            enable_cache=True,
+            cache_prefix=cache_settings.ROLE.prefix,
+            cache_expire=cache_settings.ROLE.expire,
+        )
 
 
 role_service = RoleService()

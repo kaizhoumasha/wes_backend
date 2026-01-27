@@ -21,14 +21,14 @@ class HierarchyRepository[T](BaseRepository[T]):
     ) -> list[T]:
         """获取直接子节点"""
         # 使用 getattr 避免泛型类型的属性访问错误
-        parent_id_attr = getattr(self.model, "parent_id")  # noqa: B009
+        parent_id_attr = getattr(self.model, "parent_id")
         where_clauses = [parent_id_attr == parent_id]
 
         is_active_attr = getattr(self.model, "is_active", None)
         if not include_inactive and is_active_attr is not None:
-            where_clauses.append(is_active_attr == True)  # noqa: E712
+            where_clauses.append(is_active_attr == True)
 
-        sort_order_attr = getattr(self.model, "sort_order")  # noqa: B009
+        sort_order_attr = getattr(self.model, "sort_order")
         return await self.get_all(db, where_clauses=where_clauses, order_by=sort_order_attr)
 
     async def get_descendants(
@@ -44,19 +44,19 @@ class HierarchyRepository[T](BaseRepository[T]):
 
         # 使用 bind parameter 防止 SQL 注入
         # 使用 getattr 避免泛型类型的属性访问错误
-        tree_path_attr = getattr(parent, "tree_path")  # noqa: B009
+        tree_path_attr = getattr(parent, "tree_path")
         stmt = select(self.model).where(
-            getattr(self.model, "tree_path").like(f"{tree_path_attr}%")  # type: ignore[attr-defined]  # noqa: B009
+            getattr(self.model, "tree_path").like(f"{tree_path_attr}%")  # type: ignore[attr-defined]
         )
         if max_depth:
-            parent_level = getattr(parent, "level")  # noqa: B009
+            parent_level = getattr(parent, "level")
             stmt = stmt.where(
-                getattr(self.model, "level") <= parent_level + max_depth  # type: ignore[attr-defined]  # noqa: B009
+                getattr(self.model, "level") <= parent_level + max_depth  # type: ignore[attr-defined]
             )
 
         stmt = stmt.order_by(
-            getattr(self.model, "tree_path"),  # noqa: B009
-            getattr(self.model, "sort_order"),  # noqa: B009
+            getattr(self.model, "tree_path"),
+            getattr(self.model, "sort_order"),
         )  # type: ignore[attr-defined]
         result = await db.execute(stmt)
         return list(result.scalars().all())
@@ -74,8 +74,8 @@ class HierarchyRepository[T](BaseRepository[T]):
 
         result = await db.execute(
             select(self.model)
-            .where(getattr(self.model, "id").in_(ancestor_ids))  # type: ignore[attr-defined]  # noqa: B009
-            .order_by(getattr(self.model, "level"))  # type: ignore[attr-defined]  # noqa: B009
+            .where(getattr(self.model, "id").in_(ancestor_ids))  # type: ignore[attr-defined]
+            .order_by(getattr(self.model, "level"))  # type: ignore[attr-defined]
         )
         return list(result.scalars().all())
 
@@ -91,7 +91,7 @@ class HierarchyRepository[T](BaseRepository[T]):
                 raise ValueError("节点不能成为自己的父节点")
 
             descendants = await self.get_descendants(db, node_id)
-            if any(getattr(d, "id") == new_parent_id for d in descendants):  # noqa: B009
+            if any(getattr(d, "id") == new_parent_id for d in descendants):
                 raise ValueError("不能将节点移动到其后代节点下")
 
         return await self.update(db, node_id, {"parent_id": new_parent_id})
