@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import BigInteger
 from sqlmodel import Field, Relationship
 
-from src.core.mixins import BaseMixin, BaseTableModelMixin, FullModelMixin
+from src.core.mixins import BaseMixin, BaseTableModelMixin
 from src.database.model_factory import ModelFactory
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ class DemoProductList(DemoProductListBase, BaseTableModelMixin, table=True):  # 
     注意：子表不继承 FullModelMixin，只保留基础字段：
     - id（主键）
     - created_at, updated_at（时间戳）
-    
+
     不包含审计和软删除字段，因为：
     - 审计信息由主表 DemoProduct 记录
     - 删除操作由主表控制，不需要独立软删除

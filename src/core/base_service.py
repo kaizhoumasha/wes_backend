@@ -140,7 +140,7 @@ class BaseService[M, R]:
             condition: 执行条件
             error_handler: 错误处理器
         """
-        self.repo.add_hook(hook_type, func, priority, condition, error_handler)
+        self.repo.add_hook(hook_type, func, priority, condition, error_handler)  # type: ignore[attr-defined]
 
     async def invalidate_cache(self, cache: object, id: int | None = None, invalidate_list: bool = False) -> None:
         """
@@ -203,7 +203,7 @@ class BaseService[M, R]:
                 logger.debug(f"缓存命中: {cache_key}")
                 if isinstance(cached_data, dict) and hasattr(self.repo.model, "model_validate"):  # type: ignore[attr-defined]
                     return self.repo.model.model_validate(cached_data)  # type: ignore[attr-defined]
-                return cached_data
+                return cached_data  # type: ignore[return-value]
 
             result = await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
 
@@ -213,7 +213,7 @@ class BaseService[M, R]:
                 else:
                     await cache.set(cache_key, result, expire=self.cache_expire)
 
-            return result
+            return result  # type: ignore[return-value]
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
             return await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
@@ -229,25 +229,25 @@ class BaseService[M, R]:
         max_depth: int = 1,
     ) -> tuple[int, list[M]]:
         if not self.enable_cache or not cache:
-            return await self.repo.get_list(
+            return await self.repo.get_list(  # type: ignore[attr-defined]
                 db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
-            )  # type: ignore[attr-defined]
+            )
 
         try:
             from src.database.redis_cache import RedisCache
 
             if not isinstance(cache, RedisCache):
-                return await self.repo.get_list(
+                return await self.repo.get_list(  # type: ignore[attr-defined]
                     db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
-                )  # type: ignore[attr-defined]
+                )
 
             import hashlib
             import json
 
-            filter_hash = hashlib.md5(
+            filter_hash = hashlib.sha256(
                 json.dumps(filters.model_dump() if filters else {}, sort_keys=True).encode()
             ).hexdigest()[:8]
-            sort_hash = hashlib.md5(
+            sort_hash = hashlib.sha256(
                 json.dumps([s.model_dump() for s in sort] if sort else [], sort_keys=True).encode()
             ).hexdigest()[:8]
             list_prefix = self.cache_prefix.replace(":detail", ":list")
@@ -262,11 +262,11 @@ class BaseService[M, R]:
                     if items_data and hasattr(self.repo.model, "model_validate"):  # type: ignore[attr-defined]
                         items = [self.repo.model.model_validate(item) for item in items_data]  # type: ignore[attr-defined]
                         return total, items
-                return cached_data
+                return 0, []  # 缓存数据格式不符，返回空列表
 
-            total, items = await self.repo.get_list(
+            total, items = await self.repo.get_list(  # type: ignore[attr-defined]
                 db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
-            )  # type: ignore[attr-defined]
+            )
 
             if items:
                 items_data = [item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in items]
@@ -275,9 +275,9 @@ class BaseService[M, R]:
             return total, items
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
-            return await self.repo.get_list(
+            return await self.repo.get_list(  # type: ignore[attr-defined]
                 db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
-            )  # type: ignore[attr-defined]
+            )
 
     async def exists(self, db: AsyncSession, **kwargs: Any) -> bool:
         """
@@ -294,7 +294,7 @@ class BaseService[M, R]:
             exists = await service.exists(db, name="仓库A")
             exists = await service.exists(db, code="WH001", is_active=True)
         """
-        return await self.repo.exists(db, **kwargs)
+        return await self.repo.exists(db, **kwargs)  # type: ignore[attr-defined]
 
     async def count(self, db: AsyncSession, where_clauses: list[Any] | None = None) -> int:
         """
@@ -311,7 +311,7 @@ class BaseService[M, R]:
             total = await service.count(db)
             active_count = await service.count(db, where_clauses=[Warehouse.is_active])
         """
-        return await self.repo.count(db, where_clauses)
+        return await self.repo.count(db, where_clauses)  # type: ignore[attr-defined]
 
     # ==================== CRUD 方法 ====================
 
@@ -340,7 +340,7 @@ class BaseService[M, R]:
         Raises:
             IntegrityError: 数据完整性约束冲突
         """
-        result = await self.repo.create(db, data)
+        result = await self.repo.create(db, data)  # type: ignore[attr-defined]
         if cache:
             await self.invalidate_cache(cache, invalidate_list=True)
         return result
@@ -361,7 +361,7 @@ class BaseService[M, R]:
         Raises:
             ValueError: 记录不存在
         """
-        result = await self.repo.update(db, id, data)
+        result = await self.repo.update(db, id, data)  # type: ignore[attr-defined]
         if cache:
             await self.invalidate_cache(cache, id)
         return result
@@ -378,7 +378,7 @@ class BaseService[M, R]:
         Returns:
             是否删除成功
         """
-        success = await self.repo.delete(db, id)
+        success = await self.repo.delete(db, id)  # type: ignore[attr-defined]
         if not success:
             logger.warning(f"删除 {self._model_name} 失败: id={id} 不存在")
         elif cache:

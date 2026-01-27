@@ -626,8 +626,7 @@ class BaseRepository[T]:
 
             result = await db.execute(stmt)
             return result.scalar_one_or_none()
-        else:
-            return await self.get_by_id(db, id)
+        return await self.get_by_id(db, id)
 
     def _capture_old_values(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> dict[str, Any]:
         old_values = {}

@@ -143,6 +143,6 @@ __all__ = [
     "get_current_user_id",
     "get_current_username",
     "get_request_id",
-    "get_request_method",
     "get_request_info",
+    "get_request_method",
 ]

@@ -173,10 +173,7 @@ def cached(
                             raise NotFoundException("资源不存在")
 
                         # 序列化结果（如果是 Pydantic 模型）
-                        if isinstance(result, BaseModel):
-                            serialized = result.model_dump(mode="json")
-                        else:
-                            serialized = result
+                        serialized = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
 
                         await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                         return result
@@ -199,10 +196,7 @@ def cached(
                     raise NotFoundException("资源不存在")
 
                 # 序列化结果
-                if isinstance(result, BaseModel):
-                    serialized = result.model_dump(mode="json")
-                else:
-                    serialized = result
+                serialized = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
 
                 await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                 return result

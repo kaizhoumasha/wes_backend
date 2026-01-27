@@ -19,7 +19,6 @@ from src.app.admin.models.user import User, UserRead
 from src.core.mixins import BaseTableModelMixin
 from src.core.schema_loader import apply_schema_loads, get_all_with_schema, get_with_schema
 
-
 # ==================== Fixtures ====================
 
 

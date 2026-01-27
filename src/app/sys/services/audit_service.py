@@ -13,8 +13,8 @@ from src.app.sys.repositories.audit_log_repository import audit_log_repository
 from src.core.base_service import BaseService
 from src.core.logger import logger
 from src.database.base_repository import BaseRepository
-from src.utils.timezone import timezone
 from src.utils.audit import get_current_username, get_request_id, get_request_info
+from src.utils.timezone import timezone
 
 
 class AuditLogService(BaseService[AuditLog, BaseRepository]):

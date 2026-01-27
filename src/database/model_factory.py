@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import Union, get_args, get_origin, get_type_hints
+from typing import ClassVar, Union, get_args, get_origin, get_type_hints
 
 from pydantic import ConfigDict
 from sqlmodel import Field, SQLModel
@@ -38,7 +38,7 @@ class ModelFactory:
     """Update 模型工厂类（单例模式）"""
 
     # 类级别的实例缓存，为每个 base_model 保存唯一工厂实例
-    _instances: dict[type[BaseMixin], "ModelFactory"] = {}
+    _instances: ClassVar[dict[type[BaseMixin], "ModelFactory"]] = {}
 
     def __new__(cls, base_model: type[BaseMixin]) -> "ModelFactory":
         """单例模式：为每个 base_model 只创建一个工厂实例"""

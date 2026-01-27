@@ -13,7 +13,6 @@
 """
 
 import re
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,7 +56,7 @@ def error_response(
     """
     from fastapi.responses import ORJSONResponse
 
-    response = {
+    response: dict[str, Any] = {
         "code": code,
         "message": message,
         "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -66,10 +65,7 @@ def error_response(
     # 自动添加 request_id 到 detail
     final_detail: dict[str, Any] = {}
     if detail is not None:
-        if isinstance(detail, dict):
-            final_detail = dict(detail)  # type: ignore[assignment]
-        else:
-            final_detail = {"info": detail}
+        final_detail = dict(detail) if isinstance(detail, dict) else {"info": detail}
 
     # 尝试获取 request_id
     try:
@@ -366,7 +362,7 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
     )
 
 
-def _handle_integrity_error(request: Request, exc: IntegrityError, detail: str) -> ORJSONResponse:
+def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str) -> ORJSONResponse:
     """处理数据完整性约束冲突"""
     code, message, detail_dict = _parse_integrity_error(exc)
 
@@ -383,7 +379,7 @@ def _handle_integrity_error(request: Request, exc: IntegrityError, detail: str) 
     )
 
 
-def _handle_dbapi_error(request: Request, exc: DBAPIError, detail: str) -> ORJSONResponse:
+def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> ORJSONResponse:
     """处理数据库 API 错误"""
     return error_response(
         code="DATABASE_ERROR",
@@ -392,7 +388,7 @@ def _handle_dbapi_error(request: Request, exc: DBAPIError, detail: str) -> ORJSO
     )
 
 
-def _handle_database_error(request: Request, exc: DatabaseError, detail: str) -> ORJSONResponse:
+def _handle_database_error(_request: Request, _exc: DatabaseError, detail: str) -> ORJSONResponse:
     """处理通用数据库错误"""
     return error_response(
         code="DATABASE_ERROR",
@@ -403,10 +399,7 @@ def _handle_database_error(request: Request, exc: DatabaseError, detail: str) ->
 
 # 异常处理注册表（注册表模式）
 # 优势：O(1) 查找、易于扩展、符合开闭原则
-SQLALCHEMY_EXCEPTION_HANDLERS: dict[
-    type[SQLAlchemyError],
-    Callable[[Request, SQLAlchemyError, str], ORJSONResponse],
-] = {
+SQLALCHEMY_EXCEPTION_HANDLERS: dict[type[SQLAlchemyError], Any] = {
     IntegrityError: _handle_integrity_error,
     DBAPIError: _handle_dbapi_error,
     DatabaseError: _handle_database_error,
@@ -499,20 +492,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         app: FastAPI 应用实例
     """
     # 自定义应用异常
-    app.add_exception_handler(AppException, app_exception_handler)
-    app.add_exception_handler(AuthException, auth_exception_handler)
-    app.add_exception_handler(PermissionException, permission_exception_handler)
-    app.add_exception_handler(NotFoundException, not_found_exception_handler)
-    app.add_exception_handler(ConflictException, conflict_exception_handler)
-    app.add_exception_handler(ValidationException, validation_exception_handler)
-    app.add_exception_handler(RateLimitException, rate_limit_exception_handler)
+    app.add_exception_handler(AppException, app_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(AuthException, auth_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(PermissionException, permission_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(NotFoundException, not_found_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ConflictException, conflict_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ValidationException, validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RateLimitException, rate_limit_exception_handler)  # type: ignore[arg-type]
 
     # FastAPI 内置异常
-    app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
-    app.add_exception_handler(ValidationError, pydantic_validation_exception_handler)
+    app.add_exception_handler(RequestValidationError, request_validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ValidationError, pydantic_validation_exception_handler)  # type: ignore[arg-type]
 
     # 数据库异常
-    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)
+    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)  # type: ignore[arg-type]
 
     # 通用异常（兜底处理）
     app.add_exception_handler(Exception, general_exception_handler)

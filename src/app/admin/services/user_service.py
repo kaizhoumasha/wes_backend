@@ -21,8 +21,8 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 from src.app.admin.models import User
 from src.app.admin.repositories.user_repository import UserRepository, user_repository
 from src.app.admin.services.user_auth_service import PasswordHasher, password_hasher
-from src.core.base_service import BaseService
 from src.common.cache_config import cache_settings
+from src.core.base_service import BaseService
 from src.database.base_repository import HookContext, HookType
 
 

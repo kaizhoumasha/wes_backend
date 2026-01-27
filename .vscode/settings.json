@@ -5,6 +5,7 @@
         "asyncpg",
         "dbsize",
         "dotenv",
+        "ILIKE",
         "joinedload",
         "loguru",
         "MANYTOONE",

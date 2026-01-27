@@ -16,7 +16,6 @@ from src.database.relation_metadata import (
     RelationType,
 )
 
-
 # ==================== 测试模型定义 ====================
 
 

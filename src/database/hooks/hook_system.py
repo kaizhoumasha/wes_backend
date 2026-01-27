@@ -11,10 +11,11 @@ Hook 系统基础设施
 """
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from inspect import iscoroutinefunction
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 

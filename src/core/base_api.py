@@ -4,7 +4,7 @@
 基于 glass_backend 的优雅实现，提供更灵活的 API 生成器。
 """
 
-from typing import Annotated, Any, Generic, TypeVar
+from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, Path, Query
 
@@ -20,7 +20,7 @@ CreateModelType = TypeVar("CreateModelType")
 UpdateModelType = TypeVar("UpdateModelType")
 
 
-class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
+class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     """基础 API 生成器"""
 
     def __init__(
@@ -60,7 +60,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         if hasattr(service, "response_schema"):
             service.response_schema = response_schema
 
-        self.router = APIRouter(prefix=prefix, tags=tags or [])
+        self.router = APIRouter(prefix=prefix, tags=tags or [])  # type: ignore[arg-type]
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -97,7 +97,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:create"))] if self.enable_permission else [],
         )
         async def create(
-            obj_in: Annotated[self.create_schema, Body(...)],  # type: ignore
+            obj_in: Annotated[self.create_schema, Body(...)],  # type: ignore[type-var]
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
@@ -119,7 +119,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
         )
         async def update(
             id: Annotated[int, Path(...)],
-            obj_in: Annotated[self.update_schema, Body(...)],  # type: ignore
+            obj_in: Annotated[self.update_schema, Body(...)],  # type: ignore[type-var]
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
@@ -127,7 +127,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
                 {k: v for k, v in obj_in.model_dump().items() if v is not None}
                 if hasattr(obj_in, "model_dump")
                 else obj_in
-            )  # type: ignore
+            )
             resource = await self.service.update(db, id, data, cache)
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
@@ -204,7 +204,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
             resource = await self.service.get_by_id(db, cache, id, max_depth=max_depth)
             if not resource:
                 return response_builder.fail(
-                    code=response_builder._build_response_dict("4004", f"{self.resource_name}不存在")  # type: ignore
+                    code=response_builder._build_response_dict("4004", f"{self.resource_name}不存在")  # type: ignore[arg-type]
                 )
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder.success(data=response_data)
@@ -227,7 +227,7 @@ class BaseAPI(Generic[ModelType, CreateModelType, UpdateModelType]):
                 db, cache, options.limit, options.offset, options.filters, options.sort, options.max_depth
             )
             items = self.service.to_list_response(resources, self.response_schema)
-            items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]  # type: ignore
+            items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
 
             logger.info(f"获取{self.resource_name}列表: limit={options.limit}, offset={options.offset}, total={total}")
             return response_builder.success(

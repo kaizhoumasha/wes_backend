@@ -56,9 +56,9 @@ class TreeServiceMixin:
         node = await self.repo.get_by_id(db, node_id)
         if not node:
             return []
-        children = await self.repo.get_children(db, node.parent_id)  # type: ignore
+        children = await self.repo.get_children(db, node.parent_id)  # type: ignore[attr-defined]
         if not include_self:
-            children = [c for c in children if c.id != node_id]  # type: ignore
+            children = [c for c in children if c.id != node_id]  # type: ignore[attr-defined]
         return [self._to_dict(c) for c in children]
 
     async def get_ancestors(
@@ -69,7 +69,7 @@ class TreeServiceMixin:
     ) -> list:
         ancestors = await self.repo.get_ancestors(db, node_id)
         if not include_self:
-            ancestors = [a for a in ancestors if a.id != node_id]  # type: ignore
+            ancestors = [a for a in ancestors if a.id != node_id]  # type: ignore[attr-defined]
         return [self._to_dict(a) for a in ancestors]
 
     async def move_node(

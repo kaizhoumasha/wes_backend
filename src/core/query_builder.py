@@ -2,7 +2,7 @@
 查询构建器
 """
 
-from typing import Any
+from typing import Any, ClassVar
 
 import sqlalchemy as sa
 from sqlalchemy.orm import InstrumentedAttribute
@@ -13,6 +13,29 @@ from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, 
 
 class QueryBuilder:
     """查询构建器"""
+
+    # 字段操作符映射：operator -> lambda function
+    _FIELD_OPERATOR_MAP: ClassVar[dict] = {
+        FilterOperator.EQ: lambda f, v: f == v,
+        FilterOperator.NE: lambda f, v: f != v,
+        FilterOperator.GT: lambda f, v: f > v,
+        FilterOperator.GE: lambda f, v: f >= v,
+        FilterOperator.LT: lambda f, v: f < v,
+        FilterOperator.LE: lambda f, v: f <= v,
+        FilterOperator.IN: lambda f, v: f.in_(v),
+        FilterOperator.NIN: lambda f, v: ~f.in_(v),
+        FilterOperator.ILIKE: lambda f, v: f.ilike(f"%{v}%"),
+        FilterOperator.BETWEEN: lambda f, v: f.between(v[0], v[1]),
+        FilterOperator.IS_NULL: lambda f, _: f.is_(None),
+        FilterOperator.NOT_NULL: lambda f, _: f.is_not(None),
+    }
+
+    # 关联操作符映射
+    _REL_OPERATOR_MAP: ClassVar[dict] = {
+        FilterOperator.EQ: lambda ra, rf, v: ra.any(rf == v),
+        FilterOperator.IN: lambda ra, rf, v: ra.any(rf.in_(v)),
+        FilterOperator.ILIKE: lambda ra, rf, v: ra.any(rf.ilike(f"%{v}%")),
+    }
 
     def __init__(self, model: type):
         self.model = model
@@ -49,32 +72,9 @@ class QueryBuilder:
             return None
 
         field = getattr(self.model, condition.field)
+        builder = self._FIELD_OPERATOR_MAP.get(condition.op)
 
-        match condition.op:
-            case FilterOperator.EQ:
-                return field == condition.value
-            case FilterOperator.NE:
-                return field != condition.value
-            case FilterOperator.GT:
-                return field > condition.value
-            case FilterOperator.GE:
-                return field >= condition.value
-            case FilterOperator.LT:
-                return field < condition.value
-            case FilterOperator.LE:
-                return field <= condition.value
-            case FilterOperator.IN:
-                return field.in_(condition.value)
-            case FilterOperator.NIN:
-                return ~field.in_(condition.value)
-            case FilterOperator.ILIKE:
-                return field.ilike(f"%{condition.value}%")
-            case FilterOperator.BETWEEN:
-                return field.between(condition.value[0], condition.value[1])
-            case FilterOperator.IS_NULL:
-                return field.is_(None)
-            case FilterOperator.NOT_NULL:
-                return field.is_not(None)
+        return builder(field, condition.value) if builder else None
 
     def _build_relation_condition(self, condition: FilterCondition) -> Any | None:
         """构建关联条件"""
@@ -96,14 +96,9 @@ class QueryBuilder:
                 return None
 
             rel_field_attr = getattr(rel_model, rel_field)
+            builder = self._REL_OPERATOR_MAP.get(condition.op)
 
-            match condition.op:
-                case FilterOperator.EQ:
-                    return rel_attr.any(rel_field_attr == condition.value)
-                case FilterOperator.IN:
-                    return rel_attr.any(rel_field_attr.in_(condition.value))
-                case FilterOperator.ILIKE:
-                    return rel_attr.any(rel_field_attr.ilike(f"%{condition.value}%"))
+            return builder(rel_attr, rel_field_attr, condition.value) if builder else None
 
         return None
 

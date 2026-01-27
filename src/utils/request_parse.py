@@ -47,10 +47,7 @@ def get_request_ip(request: Request) -> str:
         ip = real
     else:
         forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            ip = forwarded.split(",")[0]
-        else:
-            ip = request.client.host if request.client else "Unknown Host"
+        ip = forwarded.split(",")[0] if forwarded else request.client.host if request.client else "Unknown Host"
     # 忽略 pytest
     if ip == "testclient":
         ip = "127.0.0.1"
