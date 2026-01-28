@@ -6,7 +6,7 @@ from src.app.demo.models.demo_product_list import (
     DemoProductListResponse,
     DemoProductListUpdate,
 )
-from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, OptimisticLockMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, OptimisticLockMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 
 
@@ -20,7 +20,7 @@ class DemoProductBase(BaseMixin):
     stock: int = Field(ge=0)
 
 
-class DemoProduct(DemoProductBase, EnterpriseMixin, DataTableMixin, table=True):  # type: ignore[misc]
+class DemoProduct(DemoProductBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """
     DemoProduct 模型
 
@@ -29,7 +29,9 @@ class DemoProduct(DemoProductBase, EnterpriseMixin, DataTableMixin, table=True):
 
     __tablename__ = "demo_products"  # type: ignore[misc]
 
-    product_lists: list[DemoProductList] = Relationship(back_populates="product")
+    product_lists: list[DemoProductList] = Relationship(
+        back_populates="product", passive_deletes=True  # 依赖数据库 ON DELETE CASCADE
+    )
 
 
 class DemoProductCreate(ModelFactory(DemoProductBase).for_create()):
@@ -51,7 +53,7 @@ class DemoProductUpdate(OptimisticLockMixin, ModelFactory(DemoProductBase).for_u
     version: int = Field(default=0)
 
 
-class DemoProductResponse(OptimisticLockMixin, DemoProductBase):
+class DemoProductResponse(DemoProductBase, EnterpriseMixin, SoftDeleteMixin):
     """
     DemoProduct 响应模型
 

@@ -57,6 +57,7 @@ class QueryOptions(BaseModel):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=100)
     max_depth: int = Field(default=1, ge=0, le=3)
+    include_deleted: bool = Field(default=False, description="是否包含已删除记录")
 
 
 __ALL__ = ["FilterOperator", "FilterCondition", "FilterGroup", "SortField", "QueryOptions"]

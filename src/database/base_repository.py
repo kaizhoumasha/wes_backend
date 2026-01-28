@@ -113,6 +113,17 @@ class BaseRepository[T]:
             self.relation_manager = RelationManager(self.model, self._pk_column)
         return self.relation_manager
 
+    def _has_soft_delete_mixin(self) -> bool:
+        """
+        检测模型是否混入了 SoftDeleteMixin
+
+        通过检查模型是否有 is_deleted 字段来判断。
+
+        Returns:
+            如果模型混入了 SoftDeleteMixin 则返回 True，否则返回 False
+        """
+        return hasattr(self.model, "is_deleted")
+
     def _has_audit_model_mixin(self) -> bool:
         """
         检测模型是否混入了 AuditableMixin（用于审计日志）
@@ -395,6 +406,7 @@ class BaseRepository[T]:
         max_depth: int = 2,
         include_relations: bool = False,
         relation_names: list[str] | None = None,
+        include_deleted: bool = False,
     ) -> T | None:
         """
         根据 ID 获取单条记录
@@ -406,6 +418,7 @@ class BaseRepository[T]:
             max_depth: 关系加载最大深度
             include_relations: 是否包含关联对象
             relation_names: 需要包含的关联对象名称列表，None 表示全部
+            include_deleted: 是否包含已删除记录
 
         Returns:
             模型实例或 None
@@ -426,6 +439,13 @@ class BaseRepository[T]:
                 include_relations=True,
                 relation_names=None  # 加载全部
             )
+
+            # 包含已删除的记录
+            inbound = await repo.get_by_id(
+                db,
+                id=1,
+                include_deleted=True
+            )
         """
         if schema:
             from src.core.schema_loader import get_with_schema
@@ -433,6 +453,10 @@ class BaseRepository[T]:
             return await get_with_schema(db, self.model, schema, self._pk_attr == id, max_depth=max_depth)
 
         statement = select(self.model).where(self._pk_attr == id)
+
+        # 自动过滤软删除记录
+        if self._has_soft_delete_mixin() and not include_deleted:
+            statement = statement.where(self.model.is_deleted == False)  # type: ignore[attr-defined]
 
         # 添加关联对象加载
         if include_relations:
@@ -469,6 +493,7 @@ class BaseRepository[T]:
         limit: int | None = None,
         offset: int | None = None,
         order_by: Any | None = None,
+        include_deleted: bool = False,
     ) -> list[T]:
         """
         获取所有记录（支持过滤和分页）
@@ -479,6 +504,7 @@ class BaseRepository[T]:
             limit: 限制数量
             offset: 偏移量
             order_by: 排序字段
+            include_deleted: 是否包含已删除记录
 
         Returns:
             模型实例列表
@@ -501,8 +527,15 @@ class BaseRepository[T]:
                 offset=20,
                 order_by=User.created_at.desc()
             )
+
+            # 包含已删除的记录
+            users = await repo.get_all(db, include_deleted=True)
         """
         query = select(self.model)
+
+        # 自动过滤软删除记录
+        if self._has_soft_delete_mixin() and not include_deleted:
+            query = query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
 
         if where_clauses:
             query = query.where(*where_clauses)
@@ -528,6 +561,7 @@ class BaseRepository[T]:
         sort: list[SortField] | None = None,
         schema: type | None = None,
         max_depth: int = 1,
+        include_deleted: bool = False,
     ) -> tuple[int, list[T]]:
         """
         获取记录列表
@@ -540,6 +574,7 @@ class BaseRepository[T]:
             sort: 排序字段列表
             schema: 响应 Schema (用于自动加载关系)
             max_depth: 关系加载最大深度
+            include_deleted: 是否包含已删除记录
 
         Returns:
             (总数, 记录列表)
@@ -554,7 +589,10 @@ class BaseRepository[T]:
             if filter_clause is not None:
                 where_clauses.append(filter_clause)
 
+        # 自动添加软删除过滤到计数查询
         count_query = select(func.count(self._pk_attr))
+        if self._has_soft_delete_mixin() and not include_deleted:
+            count_query = count_query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
         if where_clauses:
             count_query = count_query.where(*where_clauses)
         count_result = await db.execute(count_query)
@@ -565,11 +603,16 @@ class BaseRepository[T]:
         if schema:
             from src.core.schema_loader import get_all_with_schema
 
+            # 构建完整的 where_clauses，包括软删除过滤
+            all_where_clauses = list(where_clauses)
+            if self._has_soft_delete_mixin() and not include_deleted:
+                all_where_clauses.append(not self.model.is_deleted)  # type: ignore[attr-defined]
+
             items = await get_all_with_schema(
                 db,
                 self.model,
                 schema,
-                *where_clauses,
+                *all_where_clauses,
                 limit=limit,
                 offset=offset,
                 max_depth=max_depth,
@@ -577,6 +620,9 @@ class BaseRepository[T]:
             )
         else:
             query = select(self.model)
+            # 自动添加软删除过滤到数据查询
+            if self._has_soft_delete_mixin() and not include_deleted:
+                query = query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
             if where_clauses:
                 query = query.where(*where_clauses)
             if order_by:
@@ -800,6 +846,9 @@ class BaseRepository[T]:
         """
         删除记录（支持主从表关系）
 
+        如果模型混入了 SoftDeleteMixin，则执行软删除
+        否则执行物理删除
+
         Args:
             db: 数据库会话
             id: 主键 ID
@@ -812,6 +861,35 @@ class BaseRepository[T]:
         """
         import time
 
+        # 检测是否支持软删除
+        if self._has_soft_delete_mixin():
+            # 使用软删除
+            instance = await self.get_by_id(db, id)
+            if not instance:
+                return False
+
+            # 获取当前用户ID（如果有 AuditMixin）
+            deleted_by = None
+            if hasattr(self.model, "deleted_by"):
+                from src.utils.audit import get_current_user_id
+
+                deleted_by = get_current_user_id()
+
+            start_time = time.time()
+            old_values = self._capture_old_values_for_delete(instance)
+
+            await self._run_before_delete_hooks(db, instance, start_time, old_values)
+
+            # 调用 Mixin 的 soft_delete 方法
+            instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
+            await db.flush()
+
+            await self._run_after_delete_hooks(db, instance, start_time, old_values)
+
+            logger.info(f"软删除 {self._model_name}: id={id}")
+            return True
+
+        # 使用原有物理删除逻辑
         instance = await self.get_by_id(db, id, include_relations=True)
         if not instance:
             return False
@@ -958,6 +1036,131 @@ class BaseRepository[T]:
 
         logger.info(f"批量创建 {self._model_name} 成功: 数量={len(instances)}")
         return instances
+
+    # ==================== 软删除方法 ====================
+
+    async def soft_delete(self, db: AsyncSession, id: int, deleted_by: int | None = None) -> T | None:
+        """
+        软删除记录（仅支持有 SoftDeleteMixin 的模型）
+
+        Args:
+            db: 数据库会话
+            id: 主键 ID
+            deleted_by: 删除人ID
+
+        Returns:
+            更新后的模型实例
+
+        Raises:
+            ValueError: 模型不支持软删除或记录不存在
+        """
+        if not self._has_soft_delete_mixin():
+            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+
+        instance = await self.get_by_id(db, id)
+        if not instance:
+            raise ValueError(f"{self._model_name} 不存在")
+
+        # 调用 Mixin 的 soft_delete 方法
+        instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
+        await db.flush()
+        await db.refresh(instance)
+
+        logger.info(f"软删除 {self._model_name}: id={id}, deleted_by={deleted_by}")
+        return instance
+
+    async def restore(self, db: AsyncSession, id: int) -> T | None:
+        """
+        恢复已删除的记录
+
+        Args:
+            db: 数据库会话
+            id: 主键 ID
+
+        Returns:
+            恢复后的模型实例
+
+        Raises:
+            ValueError: 模型不支持软删除或记录不存在
+        """
+        if not self._has_soft_delete_mixin():
+            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+
+        # 查询包括已删除的记录
+        instance = await self.get_by_id(db, id, include_deleted=True)
+        if not instance:
+            raise ValueError(f"{self._model_name} 不存在")
+
+        if not instance.is_deleted:  # type: ignore[attr-defined]
+            raise ValueError(f"{self._model_name} 未被删除，无需恢复")
+
+        # 调用 Mixin 的 restore 方法
+        instance.restore()  # type: ignore[attr-defined]
+        await db.flush()
+        await db.refresh(instance)
+
+        logger.info(f"恢复 {self._model_name}: id={id}")
+        return instance
+
+    async def get_deleted(
+        self, db: AsyncSession, limit: int = 10, offset: int = 0
+    ) -> tuple[int, list[T]]:
+        """
+        获取已删除记录列表
+
+        Args:
+            db: 数据库会话
+            limit: 限制数量
+            offset: 偏移量
+
+        Returns:
+            (总数, 记录列表)
+
+        Raises:
+            ValueError: 模型不支持软删除
+        """
+        if not self._has_soft_delete_mixin():
+            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+
+        # 统计已删除记录数量
+        count_query = select(func.count(self._pk_attr)).where(self.model.is_deleted)  # type: ignore[attr-defined]
+        count_result = await db.execute(count_query)
+        total = count_result.scalar() or 0
+
+        # 查询已删除记录
+        query = (
+            select(self.model)
+            .where(self.model.is_deleted)  # type: ignore[attr-defined]
+            .order_by(self.model.deleted_at.desc())  # type: ignore[attr-defined]
+        )
+        query = query.offset(offset).limit(limit)
+        result = await db.execute(query)
+        items = list(result.scalars().all())
+
+        return total, items
+
+    async def permanent_delete(self, db: AsyncSession, id: int) -> bool:
+        """
+        永久删除记录（物理删除）
+
+        ⚠️ 警告：此操作不可逆！
+
+        Args:
+            db: 数据库会话
+            id: 主键 ID
+
+        Returns:
+            是否删除成功
+        """
+        # 先查询包括已删除的记录
+        instance = await self.get_by_id(db, id, include_deleted=True)
+        if not instance:
+            return False
+
+        await db.delete(instance)
+        await db.flush()
+        logger.warning(f"永久删除 {self._model_name}: id={id}")
+        return True
 
     # ==================== 主从表关系处理方法 ====================
 

@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger
+from sqlalchemy import BigInteger, Column, ForeignKey
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
@@ -15,7 +15,7 @@ class DemoProductListBase(BaseMixin):
     DemoProduct 基础字段
     """
 
-    product_id: int = Field(foreign_key="demo_products.id", sa_type=BigInteger)
+    product_id: int = Field(sa_column=Column(BigInteger, ForeignKey("demo_products.id", ondelete="CASCADE")))
     quantity: int = Field(ge=0)
 
 

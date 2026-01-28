@@ -12,6 +12,7 @@ from src.core.base_service import BaseService
 from src.core.logger import logger
 from src.core.query_models import QueryOptions
 from src.core.rbac import RequirePermission
+from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.core.response.response_util import response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
@@ -73,6 +74,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             self._register_delete()
         if self.gen_bulk_delete:
             self._register_bulk_delete()
+        self._register_soft_delete_routes()
         self._register_get()
         self._register_list()
 
@@ -128,14 +130,27 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 if hasattr(obj_in, "model_dump")
                 else obj_in
             )
-            resource = await self.service.update(db, id, data, cache)
+            try:
+                resource = await self.service.update(db, id, data, cache)
+            except ValueError as e:
+                # 处理记录不存在的情况
+                if "不存在" in str(e):
+                    return response_builder.fail(
+                        code=ResourceErrorCode.NOT_FOUND,
+                        message=f"{self.resource_name} (ID: {id}) 不存在"
+                    )
+                # 其他验证错误
+                return response_builder.fail(
+                    code=BusinessErrorCode.INVALID_STATE,
+                    message=str(e)
+                )
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder.success(data=response_data)
 
     def _register_delete(self) -> None:
-        """注册删除接口"""
+        """注册删除接口（自动检测软删除支持）"""
         summary = self._build_summary("delete", f"删除{self.resource_name}")
 
         @self.router.delete(
@@ -147,11 +162,28 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
+            permanent: bool = Query(False, description="是否永久删除"),
         ) -> dict[str, Any]:
-            await self.service.delete(db, id, cache)
-
-            logger.info(f"删除{self.resource_name}成功: id={id}")
-            return response_builder.success(data={"message": f"{self.resource_name}删除成功"})
+            if permanent:
+                # 永久删除
+                success = await self.service.permanent_delete(db, id, cache)
+                if not success:
+                    return response_builder.fail(
+                        code=ResourceErrorCode.NOT_FOUND,
+                        message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
+                    )
+                logger.info(f"永久删除{self.resource_name}成功: id={id}")
+                return response_builder.success(data={"message": f"{self.resource_name}已永久删除"})
+            else:
+                # 软删除或物理删除（根据模型支持情况）
+                success = await self.service.delete(db, id, cache)
+                if not success:
+                    return response_builder.fail(
+                        code=ResourceErrorCode.NOT_FOUND,
+                        message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
+                    )
+                logger.info(f"删除{self.resource_name}成功: id={id}")
+                return response_builder.success(data={"message": f"{self.resource_name}删除成功"})
 
     def _register_bulk_delete(self) -> None:
         """注册批量删除接口"""
@@ -204,7 +236,8 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             resource = await self.service.get_by_id(db, cache, id, max_depth=max_depth)
             if not resource:
                 return response_builder.fail(
-                    code=response_builder._build_response_dict("4004", f"{self.resource_name}不存在")  # type: ignore[arg-type]
+                    code=ResourceErrorCode.NOT_FOUND,
+                    message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                 )
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder.success(data=response_data)
@@ -224,7 +257,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             options: Annotated[QueryOptions, Body(...)],
         ) -> dict[str, Any]:
             total, resources = await self.service.get_list(
-                db, cache, options.limit, options.offset, options.filters, options.sort, options.max_depth
+                db, cache, options.limit, options.offset, options.filters, options.sort, options.max_depth, options.include_deleted
             )
             items = self.service.to_list_response(resources, self.response_schema)
             items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
@@ -232,6 +265,115 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             logger.info(f"获取{self.resource_name}列表: limit={options.limit}, offset={options.offset}, total={total}")
             return response_builder.success(
                 data={"total": total, "items": items_data, "limit": options.limit, "offset": options.offset}
+            )
+
+    def _register_soft_delete_routes(self) -> None:
+        """注册软删除相关路由（仅当模型支持时）"""
+        # 检测模型是否支持软删除
+        if not hasattr(self.model, "is_deleted"):
+            return
+
+        # 1. 恢复接口
+        restore_summary = self._build_summary("restore", f"恢复{self.resource_name}")
+
+        @self.router.post(
+            "/{id}/restore",
+            summary=restore_summary,
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
+        )
+        async def restore(
+            id: Annotated[int, Path(...)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+        ) -> dict[str, Any]:
+            resource = await self.service.restore(db, id, cache)
+            logger.info(f"恢复{self.resource_name}成功: id={id}")
+            response_data = self.service.to_response(resource, self.response_schema)
+            return response_builder.success(data=response_data)
+
+        # 2. 回收站接口
+        trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
+
+        @self.router.get(
+            "/trash",
+            summary=trash_summary,
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:trash"))] if self.enable_permission else [],
+        )
+        async def get_deleted(
+            db: AsyncSessionDep,
+            cache: CacheDep,
+            limit: int = Query(10, ge=1, le=100),
+            offset: int = Query(0, ge=0),
+        ) -> dict[str, Any]:
+            total, resources = await self.service.get_deleted(db, cache, limit, offset)
+            items = self.service.to_list_response(resources, self.response_schema)
+            items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
+
+            logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
+            return response_builder.success(
+                data={"total": total, "items": items_data, "limit": limit, "offset": offset}
+            )
+
+        # 3. 批量恢复接口
+        batch_restore_summary = self._build_summary("batch_restore", f"批量恢复{self.resource_name}")
+
+        @self.router.post(
+            "/trash/restore",
+            summary=batch_restore_summary,
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
+        )
+        async def batch_restore(
+            ids: Annotated[list[int], Body(...)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+        ) -> dict[str, Any]:
+            success_count = 0
+            failed_count = 0
+            errors = []
+
+            for id in ids:
+                try:
+                    await self.service.restore(db, id, cache)
+                    success_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    errors.append({"id": id, "message": str(e)})
+
+            logger.info(f"批量恢复{self.resource_name}: success={success_count}, failed={failed_count}")
+            return response_builder.batch_operation(
+                success=success_count, failed=failed_count, errors=errors if errors else None
+            )
+
+        # 4. 批量永久删除接口
+        batch_permanent_delete_summary = self._build_summary(
+            "batch_permanent_delete", f"批量永久删除{self.resource_name}"
+        )
+
+        @self.router.delete(
+            "/trash/permanent",
+            summary=batch_permanent_delete_summary,
+            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
+        )
+        async def batch_permanent_delete(
+            ids: Annotated[list[int], Body(...)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+        ) -> dict[str, Any]:
+            success_count = 0
+            failed_count = 0
+            errors = []
+
+            for id in ids:
+                try:
+                    await self.service.permanent_delete(db, id, cache)
+                    success_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    errors.append({"id": id, "message": str(e)})
+
+            logger.info(f"批量永久删除{self.resource_name}: success={success_count}, failed={failed_count}")
+            return response_builder.batch_operation(
+                success=success_count, failed=failed_count, errors=errors if errors else None
             )
 
 

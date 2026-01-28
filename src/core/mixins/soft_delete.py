@@ -47,7 +47,7 @@ class SoftDeleteMixin(BaseMixin):
         from src.utils.timezone import timezone
 
         self.is_deleted = True
-        self.deleted_at = timezone.now()
+        self.deleted_at = timezone.now_for_db()  # 使用 naive datetime 用于数据库存储
         if deleted_by is not None and hasattr(self, "deleted_by"):
             self.deleted_by = deleted_by
 

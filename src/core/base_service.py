@@ -174,7 +174,9 @@ class BaseService[M, R]:
     # ==================== 查询方法 ====================
 
     # - ARG002: cache 参数由缓存逻辑使用
-    async def get_by_id(self, db: AsyncSession, cache: object, id: int, max_depth: int = 2) -> M | None:
+    async def get_by_id(
+        self, db: AsyncSession, cache: object, id: int, max_depth: int = 2, include_deleted: bool = False
+    ) -> M | None:
         """
         根据 ID 获取记录（支持缓存）
 
@@ -183,20 +185,25 @@ class BaseService[M, R]:
             cache: 缓存实例
             id: 记录 ID
             max_depth: 关系加载最大深度
+            include_deleted: 是否包含已删除记录
 
         Returns:
             模型实例或 None
         """
         if not self.enable_cache or not cache:
-            return await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
+            return await self.repo.get_by_id(
+                db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
+            )  # type: ignore[attr-defined]
 
         try:
             from src.database.redis_cache import RedisCache
 
             if not isinstance(cache, RedisCache):
-                return await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
+                return await self.repo.get_by_id(
+                    db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
+                )  # type: ignore[attr-defined]
 
-            cache_key = f"{self.cache_prefix}:{id}:depth{max_depth}"
+            cache_key = f"{self.cache_prefix}:{id}:depth{max_depth}:del{include_deleted}"
             cached_data = await cache.get(cache_key)
 
             if cached_data is not None:
@@ -205,7 +212,9 @@ class BaseService[M, R]:
                     return self.repo.model.model_validate(cached_data)  # type: ignore[attr-defined]
                 return cached_data  # type: ignore[return-value]
 
-            result = await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
+            result = await self.repo.get_by_id(
+                db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
+            )  # type: ignore[attr-defined]
 
             if result:
                 if isinstance(result, BaseModel):
@@ -216,7 +225,9 @@ class BaseService[M, R]:
             return result  # type: ignore[return-value]
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
-            return await self.repo.get_by_id(db, id, schema=self.response_schema, max_depth=max_depth)  # type: ignore[attr-defined]
+            return await self.repo.get_by_id(
+                db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
+            )  # type: ignore[attr-defined]
 
     async def get_list(
         self,
@@ -227,10 +238,18 @@ class BaseService[M, R]:
         filters: "FilterGroup | None" = None,
         sort: "list[SortField] | None" = None,
         max_depth: int = 1,
+        include_deleted: bool = False,
     ) -> tuple[int, list[M]]:
         if not self.enable_cache or not cache:
             return await self.repo.get_list(  # type: ignore[attr-defined]
-                db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
+                db,
+                limit,
+                offset,
+                filters,
+                sort,
+                schema=self.response_schema,
+                max_depth=max_depth,
+                include_deleted=include_deleted,
             )
 
         try:
@@ -238,7 +257,14 @@ class BaseService[M, R]:
 
             if not isinstance(cache, RedisCache):
                 return await self.repo.get_list(  # type: ignore[attr-defined]
-                    db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
+                    db,
+                    limit,
+                    offset,
+                    filters,
+                    sort,
+                    schema=self.response_schema,
+                    max_depth=max_depth,
+                    include_deleted=include_deleted,
                 )
 
             import hashlib
@@ -251,7 +277,9 @@ class BaseService[M, R]:
                 json.dumps([s.model_dump() for s in sort] if sort else [], sort_keys=True).encode()
             ).hexdigest()[:8]
             list_prefix = self.cache_prefix.replace(":detail", ":list")
-            cache_key = f"{list_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}"
+            cache_key = (
+                f"{list_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}:del{include_deleted}"
+            )
             cached_data = await cache.get(cache_key)
 
             if cached_data is not None:
@@ -265,7 +293,14 @@ class BaseService[M, R]:
                 return 0, []  # 缓存数据格式不符，返回空列表
 
             total, items = await self.repo.get_list(  # type: ignore[attr-defined]
-                db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
+                db,
+                limit,
+                offset,
+                filters,
+                sort,
+                schema=self.response_schema,
+                max_depth=max_depth,
+                include_deleted=include_deleted,
             )
 
             if items:
@@ -382,7 +417,7 @@ class BaseService[M, R]:
         if not success:
             logger.warning(f"删除 {self._model_name} 失败: id={id} 不存在")
         elif cache:
-            await self.invalidate_cache(cache, id)
+            await self.invalidate_cache(cache, id, invalidate_list=True)
         return success
 
     # ==================== 响应转换方法 ====================
@@ -412,6 +447,80 @@ class BaseService[M, R]:
             响应对象列表
         """
         return [self.to_response(m, response_schema) for m in models]
+
+    # ==================== 软删除方法 ====================
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> M:
+        """
+        软删除记录
+
+        Args:
+            db: 数据库会话
+            id: 记录 ID
+            cache: 缓存实例
+
+        Returns:
+            删除后的模型实例
+        """
+        from src.utils.audit import get_current_user_id
+
+        result = await self.repo.soft_delete(db, id, get_current_user_id())  # type: ignore[attr-defined]
+        if cache:
+            await self.invalidate_cache(cache, id, invalidate_list=True)
+        return result
+
+    async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> M:
+        """
+        恢复已删除记录
+
+        Args:
+            db: 数据库会话
+            id: 记录 ID
+            cache: 缓存实例
+
+        Returns:
+            恢复后的模型实例
+        """
+        result = await self.repo.restore(db, id)  # type: ignore[attr-defined]
+        if cache:
+            await self.invalidate_cache(cache, id, invalidate_list=True)
+        return result
+
+    async def get_deleted(
+        self, db: AsyncSession, cache: object, limit: int = 10, offset: int = 0
+    ) -> tuple[int, list[M]]:
+        """
+        获取已删除记录列表
+
+        Args:
+            db: 数据库会话
+            cache: 缓存实例（回收站列表通常不缓存）
+            limit: 限制数量
+            offset: 偏移量
+
+        Returns:
+            (总数, 记录列表)
+        """
+        return await self.repo.get_deleted(db, limit, offset)  # type: ignore[attr-defined]
+
+    async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+        """
+        永久删除记录（物理删除）
+
+        ⚠️ 警告：此操作不可逆！
+
+        Args:
+            db: 数据库会话
+            id: 记录 ID
+            cache: 缓存实例
+
+        Returns:
+            是否删除成功
+        """
+        success = await self.repo.permanent_delete(db, id)  # type: ignore[attr-defined]
+        if success and cache:
+            await self.invalidate_cache(cache, id, invalidate_list=True)
+        return success
 
 
 __all__ = ["BaseService", "HookContext", "HookType"]
