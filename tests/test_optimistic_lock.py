@@ -11,14 +11,14 @@
 """
 
 import pytest
-
-from src.core.exceptions import OptimisticLockException
-from src.core.mixins import BaseTableModelMixin, OptimisticLockMixin
-from src.database.base_repository import BaseRepository
 from sqlmodel import Field, SQLModel
 
+from src.core.exceptions import OptimisticLockException
+from src.core.mixins import DataTableMixin, OptimisticLockMixin
+from src.database.base_repository import BaseRepository
 
-class Product(BaseTableModelMixin, OptimisticLockMixin, table=True):
+
+class Product(DataTableMixin, OptimisticLockMixin, table=True):
     """测试产品模型（带乐观锁）"""
 
     __tablename__ = "test_products"
@@ -251,11 +251,12 @@ async def test_optimistic_lock_partial_update(db_session):
 @pytest.mark.asyncio
 async def test_model_without_optimistic_lock(db_session):
     """测试没有 OptimisticLockMixin 的模型不受影响"""
-    from src.core.mixins import BaseTableModelMixin
-    from sqlmodel import Field
     from sqlalchemy import Table
+    from sqlmodel import Field
 
-    class SimpleProduct(BaseTableModelMixin, table=True):
+    from src.core.mixins import DataTableMixin
+
+    class SimpleProduct(DataTableMixin, table=True):
         """没有乐观锁的产品模型"""
 
         __tablename__ = "test_simple_products"
@@ -266,9 +267,7 @@ async def test_model_without_optimistic_lock(db_session):
     # 手动创建表（因为类是动态定义的，不在 SQLModel.metadata 中）
     async with db_session.begin():
         conn = await db_session.connection()
-        await conn.run_sync(
-            lambda sync_conn: SimpleProduct.__table__.create(sync_conn, checkfirst=True)
-        )
+        await conn.run_sync(lambda sync_conn: SimpleProduct.__table__.create(sync_conn, checkfirst=True))
 
     simple_repo = BaseRepository[SimpleProduct](SimpleProduct)
 

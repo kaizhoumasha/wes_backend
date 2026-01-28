@@ -3,7 +3,7 @@
 
 包含登录、令牌刷新等认证相关的 Pydantic Schemas
 
-注意：LoginResponse.user 引用 admin 模块的 UserRead
+注意：LoginResponse.user 引用 admin 模块的 UserResponse
 在 src/app/auth/models/__init__.py 中会处理跨模块引用
 """
 
@@ -11,7 +11,7 @@ from datetime import datetime
 
 from sqlmodel import Field
 
-from src.app.admin.models import UserRead
+from src.app.admin.models import UserResponse
 from src.core.mixins import BaseMixin
 
 
@@ -26,7 +26,7 @@ class LoginResponse(BaseMixin):
     """
     登录响应 Schema
 
-    注意：user 字段引用 admin 模块的 UserRead
+    注意：user 字段引用 admin 模块的 UserResponse
     使用字符串形式的前向引用避免循环导入
     """
 
@@ -35,7 +35,7 @@ class LoginResponse(BaseMixin):
     access_token_expire_time: datetime
     refresh_token_expire_time: datetime
     session_uuid: str
-    user: UserRead  # 跨模块引用，在 __init__.py 中重建
+    user: UserResponse  # 跨模块引用，在 __init__.py 中重建
 
 
 class RefreshTokenResponse(BaseMixin):

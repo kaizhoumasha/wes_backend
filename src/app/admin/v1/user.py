@@ -14,7 +14,7 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 from sqlalchemy import func, select
 
 from src.app.admin.models import User, UserCreate, UserUpdate
-from src.app.admin.models import UserRead as UserResponse
+from src.app.admin.models import UserResponse as UserResponse
 from src.app.admin.services.user_service import user_service
 from src.core.base_api import BaseAPI
 from src.core.logger import logger

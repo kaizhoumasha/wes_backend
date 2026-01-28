@@ -27,16 +27,14 @@
 - 安全考虑和性能优化
 """
 
-from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import ValidationInfo, computed_field, field_validator, model_validator
 from sqlalchemy import JSON, Index
 from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
-from src.app.admin.models.relationships import role_permission
-from src.core.mixins import BaseMixin, BaseTableModelMixin, TreeMixin
+from src.core.mixins import BaseMixin, DataTableMixin, TreeMixin
 from src.database.model_factory import ModelFactory
 
 # ==================== Permission 模型 ====================
@@ -174,10 +172,10 @@ class PermissionBase(TreeMixin, BaseMixin):
         return self
 
 
-class Permission(BaseTableModelMixin, PermissionBase, table=True):  # type: ignore[misc]
+class Permission(PermissionBase, DataTableMixin, table=True):  # type: ignore[misc]
     """权限表"""
 
-    __tablename__ = "permissions"
+    __tablename__: Literal["permissions"] = "permissions"
 
     # 复合索引优化
     __table_args__ = (
@@ -192,17 +190,20 @@ class Permission(BaseTableModelMixin, PermissionBase, table=True):  # type: igno
 
 # ==================== Schemas ====================
 
+
 # 使用 ModelFactory 创建 Permission Schema（单例模式）
-PermissionCreate = ModelFactory(PermissionBase).for_create()
-PermissionUpdate = ModelFactory(PermissionBase).for_update()
+class PermissionCreate(ModelFactory(PermissionBase).for_create()):
+    """权限创建 Schema"""
 
 
-class PermissionRead(PermissionBase):
+class PermissionUpdate(ModelFactory(PermissionBase).for_update()):
+    """权限更新 Schema"""
+
+
+class PermissionResponse(PermissionBase):
     """权限响应 Schema（完整版，含子权限信息）"""
 
     id: int
-    created_at: datetime
-    updated_at: datetime | None = None
 
     @computed_field
     @property
@@ -211,16 +212,10 @@ class PermissionRead(PermissionBase):
         return f"[{self.type.upper()}] {self.name}"
 
 
-# 别名，保持 API 命名一致性
-PermissionResponse = PermissionRead
-
-
-class PermissionReadSimple(PermissionBase):
+class PermissionResponseSimple(PermissionBase):
     """权限响应 Schema（简化版，不含子权限）"""
 
     id: int
-    created_at: datetime
-    updated_at: datetime | None = None
 
     @computed_field
     @property
@@ -236,8 +231,6 @@ class PermissionTree(PermissionBase):
     """
 
     id: int
-    created_at: datetime
-    updated_at: datetime | None = None
     children: list["PermissionTree"] = Field(default_factory=list, description="子权限列表")
 
     # 树形结构深度限制（防止菜单层级过深导致性能问题）
@@ -353,11 +346,4 @@ Permission.children = relationship(
     back_populates="parent",
     foreign_keys="Permission.parent_id",  # type: ignore[arg-type]
     order_by="Permission.sort_order",
-)
-
-# 与 Role 的多对多关系
-Permission.roles = relationship(
-    "Role",
-    secondary=role_permission,
-    back_populates="permissions",
 )

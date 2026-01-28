@@ -28,21 +28,21 @@ async def get_user(user_id: int):
     return response_builder.success(data=user_dict)
 
 # 使用响应模型（类型安全）
-class UserRead(BaseModel):
+class UserResponse(BaseModel):
     id: int
     name: str
 
-@router.get("/users/{user_id}", response_model=ResponseSchemaModel[UserRead])
-async def get_user(user_id: int) -> ResponseSchemaModel[UserRead]:
+@router.get("/users/{user_id}", response_model=ResponseSchemaModel[UserResponse])
+async def get_user(user_id: int) -> ResponseSchemaModel[UserResponse]:
     user = await user_service.get_by_id(user_id)
-    user_schema = UserRead.model_validate(user)
-    return ResponseSchemaModel[UserRead](
+    user_schema = UserResponse.model_validate(user)
+    return ResponseSchemaModel[UserResponse](
         code=SuccessCode.SUCCESS,
         data=user_schema
     )
 
 # 分页响应
-@router.get("/users", response_model=PaginationResponseModel[UserRead])
+@router.get("/users", response_model=PaginationResponseModel[UserResponse])
 async def get_users(page: int = 1, size: int = 10):
     users, total = await user_service.get_list(page, size)
     pagination = model_serializer.paginate_models(

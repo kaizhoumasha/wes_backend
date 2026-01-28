@@ -4,14 +4,13 @@
 包含 Role 数据库表模型和相关的 Pydantic Schemas
 """
 
-from datetime import datetime
+from typing import Literal
 
-from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
-from src.app.admin.models.perm import Permission, PermissionRead
-from src.app.admin.models.relationships import role_permission
-from src.core.mixins import BaseMixin, BaseTableModelMixin
+from src.app.admin.models.perm import PermissionResponse
+from src.core.mixins import BaseMixin, DataTableMixin
+from src.database.model_factory import ModelFactory
 
 # ==================== Role 模型 ====================
 
@@ -24,53 +23,31 @@ class RoleBase(BaseMixin):
     is_active: bool = Field(default=True)
 
 
-class Role(BaseTableModelMixin, RoleBase, table=True):  # type: ignore[misc]
+class Role(RoleBase, DataTableMixin, table=True):  # type: ignore[misc]
     """角色表"""
 
-    __tablename__ = "roles"
-
-
-# ==================== Relationships ====================
-# 在类外部定义关系（SQLModel 兼容方式）
-
-
-Role.permissions = relationship(
-    Permission,
-    secondary=role_permission,
-    back_populates="roles",
-)
+    __tablename__: Literal["roles"] = "roles"
 
 
 # ==================== Schemas ====================
 
 
-class RoleCreate(RoleBase):
+class RoleCreate(ModelFactory(RoleBase).for_create()):
     """角色创建 Schema"""
 
-    permission_ids: list[int] | None = Field(default=None)
 
-
-class RoleUpdate(BaseMixin):
+class RoleUpdate(ModelFactory(RoleBase).for_update()):
     """角色更新 Schema"""
-
-    name: str | None = Field(default=None, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
-    is_active: bool | None = None
-    permission_ids: list[int] | None = None
 
 
 class RoleResponseSimple(RoleBase):
     """角色响应 Schema（简化版，不含权限）"""
 
     id: int
-    created_at: datetime
-    updated_at: datetime | None = None
 
 
 class RoleResponse(RoleBase):
     """角色响应 Schema"""
 
     id: int
-    created_at: datetime
-    updated_at: datetime | None = None
-    permissions: list[PermissionRead] = Field(default_factory=list)
+    permissions: list[PermissionResponse] = Field(default_factory=list)

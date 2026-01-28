@@ -20,7 +20,7 @@ class TreeMixin(BaseMixin):
     - sort_order: 同级排序
 
     使用示例:
-        class Category(TreeMixin, BaseTableModelMixin, table=True):
+        class Category(TreeMixin, DataTableMixin, table=True):
             name: str
     """
 

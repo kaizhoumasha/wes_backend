@@ -3,13 +3,13 @@
 
 导出所有认证相关的 Pydantic Schemas
 
-注意：LoginResponse 引用 admin 模块的 UserRead，
+注意：LoginResponse 引用 admin 模块的 UserResponse，
 需要在此处导入并重建模型以解决跨模块引用
 """
 
 # 导入认证模型
 # ==================== 处理跨模块引用 ====================
-# 导入 admin 模块的 UserRead 来解析 LoginResponse 的前向引用
+# 导入 admin 模块的 UserResponse 来解析 LoginResponse 的前向引用
 
 from .auth import LoginRequest, LoginResponse, RefreshTokenResponse
 

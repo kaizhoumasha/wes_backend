@@ -76,7 +76,7 @@ class BaseRepository[T]:
         自动功能：
         - 如果模型混入了状态验证 Mixin，自动注册状态验证 Hook
         - 如果模型混入了 AuditMixin，自动注册审计字段填充 Hook
-        - 如果模型混入了 AuditModelMixin，自动注册审计日志记录 Hook
+        - 如果模型混入了 AuditableMixin，自动注册审计日志记录 Hook
         - 如果模型混入了 OptimisticLockMixin，自动注册乐观锁验证 Hook
         """
         self.model = model
@@ -115,20 +115,20 @@ class BaseRepository[T]:
 
     def _has_audit_model_mixin(self) -> bool:
         """
-        检测模型是否混入了 AuditModelMixin（用于审计日志）
+        检测模型是否混入了 AuditableMixin（用于审计日志）
 
-        通过检查模型的 MRO (Method Resolution Order) 来判断是否继承自 AuditModelMixin。
+        通过检查模型的 MRO (Method Resolution Order) 来判断是否继承自 AuditableMixin。
 
         注意：
-        - AuditModelMixin：提供审计日志功能（记录操作历史）
+        - AuditableMixin：提供审计日志功能（记录操作历史）
         - AuditMixin：提供审计字段（created_by/updated_by）
-        - 此方法只检测 AuditModelMixin，不检测 AuditMixin
+        - 此方法只检测 AuditableMixin，不检测 AuditMixin
 
         Returns:
-            如果模型混入了 AuditModelMixin 则返回 True，否则返回 False
+            如果模型混入了 AuditableMixin 则返回 True，否则返回 False
         """
-        # 只检查 AuditModelMixin，不包括 AuditMixin
-        return any(base.__name__ == "AuditModelMixin" for base in self.model.__mro__)
+        # 只检查 AuditableMixin，不包括 AuditMixin
+        return any(base.__name__ == "AuditableMixin" for base in self.model.__mro__)
 
     def _register_status_validation_hooks(self) -> None:
         """
@@ -764,8 +764,7 @@ class BaseRepository[T]:
             instance.increment_version()  # type: ignore[attr-defined]
             pk_value = getattr(instance, self._pk_column)
             logger.debug(
-                f"乐观锁：{self._model_name} (ID: {pk_value}) "
-                f"版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
+                f"乐观锁：{self._model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
             )
 
         await db.flush()

@@ -11,15 +11,15 @@
 
 使用示例：
     # 单据状态验证
-    class Inbound(DocumentStatusMixin, BaseTableModelMixin, table=True):
+    class Inbound(DocumentStatusMixin, DataTableMixin, table=True):
         doc_status: str = Field(default="draft")
 
     # 货架状态验证
-    class Shelf(ShelfStatusMixin, BaseTableModelMixin, table=True):
+    class Shelf(ShelfStatusMixin, DataTableMixin, table=True):
         shelf_status: str = Field(default="empty")
 
     # 多状态验证
-    class Container(DocumentStatusMixin, ContainerStatusMixin, BaseTableModelMixin, table=True):
+    class Container(DocumentStatusMixin, ContainerStatusMixin, DataTableMixin, table=True):
         doc_status: str = Field(default="draft")
         container_status: str = Field(default="empty")
 """
@@ -145,9 +145,7 @@ class ContainerStatusMixin:
                     f"料箱状态 [{self.container_status}] 不允许修改，只有 {editable_statuses} 状态可以修改"
                 )
         elif operation == "delete" and self.container_status not in deletable_statuses:
-            raise ValueError(
-                f"料箱状态 [{self.container_status}] 不允许删除，只有 {deletable_statuses} 状态可以删除"
-            )
+            raise ValueError(f"料箱状态 [{self.container_status}] 不允许删除，只有 {deletable_statuses} 状态可以删除")
 
 
 class MaterialStatusMixin:
@@ -187,13 +185,9 @@ class MaterialStatusMixin:
 
         if operation == "edit":
             if self.material_status not in editable_statuses:
-                raise ValueError(
-                    f"物料状态 [{self.material_status}] 不允许修改，只有 {editable_statuses} 状态可以修改"
-                )
+                raise ValueError(f"物料状态 [{self.material_status}] 不允许修改，只有 {editable_statuses} 状态可以修改")
         elif operation == "delete" and self.material_status not in deletable_statuses:
-            raise ValueError(
-                f"物料状态 [{self.material_status}] 不允许删除，只有 {deletable_statuses} 状态可以删除"
-            )
+            raise ValueError(f"物料状态 [{self.material_status}] 不允许删除，只有 {deletable_statuses} 状态可以删除")
 
 
 __all__ = [

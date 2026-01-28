@@ -10,7 +10,7 @@
 
 使用示例：
     # 在模型中定义状态字段
-    class Inbound(DocumentStatusMixin, BaseTableModelMixin, table=True):
+    class Inbound(DocumentStatusMixin, DataTableMixin, table=True):
         doc_status: str = Field(default=DocStatus.DRAFT)
 
     # Repository 会自动验证状态

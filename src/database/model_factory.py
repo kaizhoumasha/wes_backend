@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import ClassVar, Union, get_args, get_origin, get_type_hints
 
 from pydantic import ConfigDict
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.core.mixins import BaseMixin
 
@@ -55,7 +55,7 @@ class ModelFactory:
             self._cache: dict = {}
             self._initialized = True
 
-    def create_update_model(
+    def create_model(
         self,
         base_model: type[BaseMixin] | None = None,
         model_name: str | None = None,
@@ -176,9 +176,9 @@ class ModelFactory:
             # 设置字段对象
             namespace[field_name] = field_obj
 
-        # 创建新类，继承自 base_model 和 SQLModel
+        # 创建新类，继承自 base_model 和 BaseMixin
         # 这样可以保留 base_model 的所有验证器
-        return type(model_name, (model, SQLModel), namespace)
+        return type(model_name, (model, BaseMixin), namespace)
 
     def create(
         self,
@@ -204,7 +204,7 @@ class ModelFactory:
             exclude_set = set(exclude) if exclude else set()
             keep_required_set = set(keep_required) if keep_required else set()
 
-            self._cache[cache_key] = self.create_update_model(
+            self._cache[cache_key] = self.create_model(
                 base_model=self.base_model,
                 model_name=f"{self.base_model.__name__}{name_suffix}",
                 exclude_fields=exclude_set,
@@ -215,10 +215,24 @@ class ModelFactory:
 
         return self._cache[cache_key]
 
-    def for_create(self) -> type[BaseMixin]:
+    def for_create(
+        self,
+        exclude: tuple[str, ...] | None = None,
+    ) -> type[BaseMixin]:
         """创建用于创建的模型（所有字段必需）"""
-        return self.create(name_suffix="Create", make_optional=False)
+        if exclude:
+            exclude = tuple(set(exclude) - {"id", "created_at", "updated_at"})
+        else:
+            exclude = ("id", "created_at", "updated_at")
+        return self.create(name_suffix="Create", exclude=exclude, make_optional=False)
 
-    def for_update(self) -> type[BaseMixin]:
+    def for_update(
+        self,
+        exclude: tuple[str, ...] | None = None,
+    ) -> type[BaseMixin]:
         """创建用于更新的模型（所有字段可选）"""
-        return self.create(name_suffix="Update", exclude=("id", "created_at", "updated_at"), make_optional=True)
+        if exclude:
+            exclude = tuple(set(exclude) - {"id", "created_at", "updated_at"})
+        else:
+            exclude = ("id", "created_at", "updated_at")
+        return self.create(name_suffix="Update", exclude=exclude, make_optional=True)

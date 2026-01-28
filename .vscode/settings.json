@@ -3,6 +3,7 @@
         "aiosqlite",
         "alembic",
         "asyncpg",
+        "datatable",
         "dbsize",
         "dotenv",
         "ILIKE",
@@ -21,6 +22,7 @@
         "selectinload",
         "sqlalchemy",
         "sqlmodel",
+        "uselist",
         "uvicorn"
     ],
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",

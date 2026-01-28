@@ -82,14 +82,14 @@ class ResponseSchemaModel[SchemaT](ResponseModel):
 
     Example:
         ```python
-        class UserRead(BaseModel):
+        class UserResponse(BaseModel):
             id: int
             name: str
 
-        @router.get('/users/{user_id}', response_model=ResponseSchemaModel[UserRead])
-        def get_user(user_id: int) -> ResponseSchemaModel[UserRead]:
+        @router.get('/users/{user_id}', response_model=ResponseSchemaModel[UserResponse])
+        def get_user(user_id: int) -> ResponseSchemaModel[UserResponse]:
             user = fetch_user(user_id)
-            return ResponseSchemaModel[UserRead](
+            return ResponseSchemaModel[UserResponse](
                 code=SuccessCode.SUCCESS,
                 data=user
             )
@@ -120,7 +120,7 @@ class PaginationData[T](BaseModel):
 
     Example:
         ```python
-        pagination = PaginationData[UserRead](
+        pagination = PaginationData[UserResponse](
             items=[user1, user2],
             total=100,
             page=1,
@@ -168,10 +168,10 @@ class PaginationResponseModel[T](ResponseSchemaModel[PaginationData[T]]):
 
     Example:
         ```python
-        @router.get('/users', response_model=PaginationResponseModel[UserRead])
-        def get_users(page: int = 1, size: int = 10) -> PaginationResponseModel[UserRead]:
+        @router.get('/users', response_model=PaginationResponseModel[UserResponse])
+        def get_users(page: int = 1, size: int = 10) -> PaginationResponseModel[UserResponse]:
             users, total = fetch_users(page, size)
-            return PaginationResponseModel[UserRead](
+            return PaginationResponseModel[UserResponse](
                 code=SuccessCode.SUCCESS,
                 data=PaginationData.create(users, total, page, size)
             )

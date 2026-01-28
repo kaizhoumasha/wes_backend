@@ -6,13 +6,13 @@
 
 from sqlalchemy import BigInteger, Column, ForeignKey, Table
 
-from src.core.mixins import BaseTableModelMixin
+from src.core.mixins import DataTableMixin
 
 # User-Role 多对多关联表
 # 注意：外键列使用 BigInteger 以匹配主键类型
 user_role = Table(
     "user_roles",
-    BaseTableModelMixin.metadata,
+    DataTableMixin.metadata,
     Column(
         "user_id",
         BigInteger,
@@ -33,7 +33,7 @@ user_role = Table(
 # 注意：外键列使用 BigInteger 以匹配主键类型
 role_permission = Table(
     "role_permissions",
-    BaseTableModelMixin.metadata,
+    DataTableMixin.metadata,
     Column(
         "role_id",
         BigInteger,

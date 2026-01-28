@@ -5,9 +5,10 @@
 """
 
 # type: ignore - PrimaryKeyMixin 是动态生成的类
+
 from src.core.mixins.audit import AuditMixin
+from src.core.mixins.base import BaseMixin
 from src.core.mixins.optimistic_lock import OptimisticLockMixin
-from src.core.mixins.primary_key import PrimaryKeyMixin  # type: ignore[misc]
 from src.core.mixins.repr import ReprMixin
 from src.core.mixins.soft_delete import SoftDeleteMixin
 from src.core.mixins.timestamp import TimestampMixin
@@ -15,7 +16,11 @@ from src.core.mixins.timestamp import TimestampMixin
 # ==================== 组合 Mixin ====================
 
 
-class BaseModelMixin(TimestampMixin, ReprMixin):
+class StandardMixin(
+    ReprMixin,
+    TimestampMixin,
+    BaseMixin,
+):
     """
     基础模型 Mixin
 
@@ -23,21 +28,21 @@ class BaseModelMixin(TimestampMixin, ReprMixin):
     适用于大多数业务模型
 
     使用示例:
-        class User(BaseModelMixin, table=True):
+        class User(StandardMixin, table=True):
             id: Optional[int] = Field(default=None, primary_key=True)
             name: str
     """
 
 
-class AuditModelMixin(AuditMixin, ReprMixin):
+class AuditableMixin(AuditMixin, StandardMixin):
     """
     审计模型 Mixin
 
-    组合了审计字段 + repr
+    组合了 标准模型 + 审计字段
     适用于需要审计追踪的业务模型
 
     使用示例:
-        class Article(AuditModelMixin, table=True):
+        class Article(AuditableMixin, table=True):
             id: Optional[int] = Field(default=None, primary_key=True)
             title: str
 
@@ -46,15 +51,24 @@ class AuditModelMixin(AuditMixin, ReprMixin):
     """
 
 
-class FullModelMixin(AuditModelMixin, SoftDeleteMixin, OptimisticLockMixin):
+class EnterpriseMixin(AuditableMixin, OptimisticLockMixin):
+    """
+    业务模型 Mixin
+
+    组合 Mixin:审计 + 乐观锁
+    适用于基础业务模型
+    """
+
+
+class FullModelMixin(EnterpriseMixin, SoftDeleteMixin):
     """
     完整模型 Mixin
 
-    组合了所有 Mixin:时间戳 + 审计 + 软删除 + repr
+    组合 Mixin:业务模型 + 软删除
     适用于需要完整功能的模型
 
     使用示例:
-        class Article(FullModelMixin, table=True):
+        class Article(EnterpriseMixin, table=True):
             id: Optional[int] = Field(default=None, primary_key=True)
             title: str
 
@@ -67,24 +81,4 @@ class FullModelMixin(AuditModelMixin, SoftDeleteMixin, OptimisticLockMixin):
 
         # 软删除(自动设置 deleted_by)
         article.soft_delete(deleted_by=3)
-    """
-
-
-# ==================== 带主键的组合 Mixin ====================
-
-
-# type: ignore - PrimaryKeyMixin 是动态生成的类
-class BaseTableModelMixin(PrimaryKeyMixin, BaseModelMixin):  # type: ignore[misc]
-    """
-    基础表模型 Mixin(主键)
-
-    组合了:主键(自增/雪花) + 时间戳 + repr
-    最常用的表模型配置
-
-    使用示例:
-        class User(BaseTableModelMixin, table=True):
-            username: str
-            email: str
-
-        # 无需定义 id,自动继承
     """

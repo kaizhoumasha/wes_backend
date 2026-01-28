@@ -6,7 +6,7 @@ from src.app.demo.models.demo_product_list import (
     DemoProductListResponse,
     DemoProductListUpdate,
 )
-from src.core.mixins import BaseMixin, BaseTableModelMixin, FullModelMixin, OptimisticLockMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, OptimisticLockMixin
 from src.database.model_factory import ModelFactory
 
 
@@ -20,7 +20,7 @@ class DemoProductBase(BaseMixin):
     stock: int = Field(ge=0)
 
 
-class DemoProduct(DemoProductBase, FullModelMixin, BaseTableModelMixin, OptimisticLockMixin, table=True):  # type: ignore[misc]
+class DemoProduct(DemoProductBase, EnterpriseMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """
     DemoProduct 模型
 
@@ -48,6 +48,7 @@ class DemoProductUpdate(OptimisticLockMixin, ModelFactory(DemoProductBase).for_u
     """
 
     product_lists: list[DemoProductListUpdate] = Field(default_factory=list)
+    version: int = Field(default=0)
 
 
 class DemoProductResponse(OptimisticLockMixin, DemoProductBase):

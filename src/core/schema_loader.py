@@ -164,7 +164,7 @@ async def get_with_schema[T](
         查询结果或 None
 
     Example:
-        user = await get_with_schema(db, User, UserRead, User.id == 1)
+        user = await get_with_schema(db, User, UserResponse, User.id == 1)
     """
     query = select(model).where(*where_clauses)
     query = apply_schema_loads(query, model, schema, max_depth)
@@ -203,8 +203,8 @@ async def get_all_with_schema[T](
         查询结果列表
 
     Example:
-        users = await get_all_with_schema(db, User, UserRead, limit=10)
-        users = await get_all_with_schema(db, User, UserRead, order_by=[User.id.desc()])
+        users = await get_all_with_schema(db, User, UserResponse, limit=10)
+        users = await get_all_with_schema(db, User, UserResponse, order_by=[User.id.desc()])
     """
     query = select(model)
     if where_clauses:
@@ -232,7 +232,7 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
         Pydantic schema 实例
 
     Example:
-        user_read = model_to_schema(user, UserRead)
+        user_read = model_to_schema(user, UserResponse)
     """
     data = {}
     insp = sa_inspect(obj)

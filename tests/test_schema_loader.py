@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from src.app.admin.models.perm import Permission, PermissionTree
 from src.app.admin.models.role import Role
-from src.app.admin.models.user import User, UserRead
-from src.core.mixins import BaseTableModelMixin
+from src.app.admin.models.user import User, UserResponse
+from src.core.mixins import DataTableMixin
 from src.core.schema_loader import apply_schema_loads, get_all_with_schema, get_with_schema
 
 # ==================== Fixtures ====================
@@ -32,7 +32,7 @@ async def db_engine():
 
     # 创建所有表
     async with engine.begin() as conn:
-        await conn.run_sync(BaseTableModelMixin.metadata.create_all)
+        await conn.run_sync(DataTableMixin.metadata.create_all)
 
     yield engine
 
@@ -153,15 +153,17 @@ async def sample_data(db_session: AsyncSession):
 
     # 使用关联表直接插入关系（避免触发 lazy load）
     await db_session.execute(
-        insert(role_permission).values([
-            {"role_id": admin_role.id, "permission_id": perm_admin.id},
-            {"role_id": admin_role.id, "permission_id": perm_user_menu.id},
-            {"role_id": admin_role.id, "permission_id": perm_user_create.id},
-            {"role_id": admin_role.id, "permission_id": perm_user_read.id},
-            {"role_id": admin_role.id, "permission_id": perm_role_menu.id},
-            {"role_id": admin_role.id, "permission_id": perm_role_create.id},
-            {"role_id": user_role.id, "permission_id": perm_user_read.id},
-        ])
+        insert(role_permission).values(
+            [
+                {"role_id": admin_role.id, "permission_id": perm_admin.id},
+                {"role_id": admin_role.id, "permission_id": perm_user_menu.id},
+                {"role_id": admin_role.id, "permission_id": perm_user_create.id},
+                {"role_id": admin_role.id, "permission_id": perm_user_read.id},
+                {"role_id": admin_role.id, "permission_id": perm_role_menu.id},
+                {"role_id": admin_role.id, "permission_id": perm_role_create.id},
+                {"role_id": user_role.id, "permission_id": perm_user_read.id},
+            ]
+        )
     )
 
     # 创建用户
@@ -185,10 +187,12 @@ async def sample_data(db_session: AsyncSession):
     from src.app.admin.models.relationships import user_role as user_role_table
 
     await db_session.execute(
-        insert(user_role_table).values([
-            {"user_id": admin_user.id, "role_id": admin_role.id},
-            {"user_id": normal_user.id, "role_id": user_role.id},
-        ])
+        insert(user_role_table).values(
+            [
+                {"user_id": admin_user.id, "role_id": admin_role.id},
+                {"user_id": normal_user.id, "role_id": user_role.id},
+            ]
+        )
     )
 
     await db_session.commit()
@@ -217,7 +221,7 @@ class TestApplySchemaLoads:
         """测试加载用户及其角色（多对多关系）"""
         # 构建查询
         query = select(User).where(User.username == "admin")
-        query = apply_schema_loads(query, User, UserRead, max_depth=2)
+        query = apply_schema_loads(query, User, UserResponse, max_depth=2)
 
         # 执行查询
         result = await db_session.execute(query)
@@ -233,7 +237,7 @@ class TestApplySchemaLoads:
         """测试加载用户及其角色和权限（嵌套关系）"""
         # 构建查询
         query = select(User).where(User.username == "admin")
-        query = apply_schema_loads(query, User, UserRead, max_depth=3)
+        query = apply_schema_loads(query, User, UserResponse, max_depth=3)
 
         # 执行查询
         result = await db_session.execute(query)
@@ -264,7 +268,7 @@ class TestApplySchemaLoads:
         """测试最大深度限制"""
         # max_depth=1 应该只加载直接关系
         query = select(User).where(User.username == "admin")
-        query = apply_schema_loads(query, User, UserRead, max_depth=1)
+        query = apply_schema_loads(query, User, UserResponse, max_depth=1)
 
         result = await db_session.execute(query)
         user = result.scalars().first()
@@ -283,7 +287,7 @@ class TestGetWithSchema:
         user = await get_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.username == "admin",
             max_depth=2,
         )
@@ -297,7 +301,7 @@ class TestGetWithSchema:
         user = await get_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.username == "nonexistent",
         )
 
@@ -308,7 +312,7 @@ class TestGetWithSchema:
         user = await get_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.username == "admin",
             max_depth=3,
         )
@@ -326,7 +330,7 @@ class TestGetAllWithSchema:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             max_depth=2,
         )
 
@@ -338,7 +342,7 @@ class TestGetAllWithSchema:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.is_superuser == True,  # noqa: E712
             max_depth=2,
         )
@@ -351,7 +355,7 @@ class TestGetAllWithSchema:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             limit=1,
             offset=0,
             max_depth=2,
@@ -364,7 +368,7 @@ class TestGetAllWithSchema:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             order_by=[User.username.desc()],
             max_depth=2,
         )
@@ -381,7 +385,7 @@ class TestIntelligentLoadingStrategy:
         """测试多对多关系使用 selectinload"""
         # 构建查询
         query = select(User).where(User.username == "admin")
-        query = apply_schema_loads(query, User, UserRead, max_depth=2)
+        query = apply_schema_loads(query, User, UserResponse, max_depth=2)
 
         # 检查查询选项
         # 注意：这是一个间接测试，我们验证查询能正常工作
@@ -421,7 +425,7 @@ class TestEdgeCases:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.username == "nonexistent",
         )
 
@@ -485,7 +489,7 @@ class TestPerformance:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             max_depth=3,
         )
 
@@ -510,7 +514,7 @@ class TestIntegration:
         user = await get_with_schema(
             db_session,
             User,
-            UserRead,
+            UserResponse,
             User.username == "admin",
             max_depth=3,
         )

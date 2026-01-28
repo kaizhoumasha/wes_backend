@@ -10,9 +10,9 @@
 - 符合 FastAPI 和 SQLAlchemy 最佳实践
 
 使用示例:
-    from src.core.mixins import BaseTableModelMixin, OptimisticLockMixin
+    from src.core.mixins import DataTableMixin, OptimisticLockMixin
 
-    class Product(BaseTableModelMixin, OptimisticLockMixin, table=True):
+    class Product(DataTableMixin, OptimisticLockMixin, table=True):
         name: str
         price: float
 

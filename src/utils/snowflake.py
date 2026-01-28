@@ -1,20 +1,43 @@
 """
-雪花 ID (Snowflake ID) 生成器
+雪花算法主键 Mixin(53位方案 - JavaScript 安全)
 
-Twitter Snowflake 算法的优化实现
-适用于 JavaScript/TypeScript（安全整数范围）
+使用 Twitter Snowflake 算法生成分布式唯一 ID
+优点:
+- 全局唯一(分布式系统)
+- 趋势递增(按时间排序)
+- 高性能(本地生成,无需网络交互)
+- 长期使用(69年无需迁移)
+- JavaScript 安全整数范围内,前端无需使用 BigInt
 
-ID 结构（53 位）:
-- 41 位时间戳（毫秒级，从纪元开始，可使用约 69 年）
-- 3 位数据中心 ID（0-7，共 8 个）
-- 3 位工作机器 ID（0-7，共 8 个）
-- 6 位序列号（0-63，每毫秒最多 64 个 ID）
+ID 结构(53 位):
+- 41 位时间戳(毫秒,可使用约 69 年)
+- 3 位数据中心 ID(0-7)
+- 3 位工作机器 ID(0-7)
+- 6 位序列号(0-63)
 
-前端兼容性:
-- 生成的 ID ≤ 9007199254740991 (Number.MAX_SAFE_INTEGER)
-- JavaScript 安全整数，前端可直接使用 Number 类型
-- 15-16位十进制数字（如：123456789012345）
-- 无需使用 BigInt
+JavaScript 兼容性:
+- 生成的 ID 保证在安全整数范围内(≤ 9007199254740991)
+- 前端可直接使用 Number 类型处理
+- 15-16位十进制数字(如: 123456789012345)
+- 无需 BigInt
+
+节点配置:
+- 最多 8×8 = 64 个节点
+- 适合中小型分布式系统
+- 每个节点每毫秒可生成 64 个 ID
+
+使用示例:
+    class Product(SnowflakePKMixin, table=True):
+        name: str
+
+    # 自动生成雪花 ID
+    product = Product(name="iPhone")
+    print(product.id)  # 例如: 123456789012345
+
+注意:
+- 这是 JavaScript 安全的标准方案
+- 64个节点对大多数项目完全够用
+- 从2024年开始可用到2093年
 
 参考: https://developer.twitter.com/en/docs/twitter-ids
 """

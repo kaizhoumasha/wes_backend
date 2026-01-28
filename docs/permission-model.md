@@ -127,12 +127,12 @@ BaseMixin
     ↓
 PermissionBase (定义所有字段 + Pydantic 验证器)
     ↓
-Permission (BaseTableModelMixin, PermissionBase, table=True)
+Permission (DataTableMixin, PermissionBase, table=True)
     ↓
     ├── PermissionCreate (PermissionBase)
     ├── PermissionUpdate (动态生成，所有字段可选)
-    ├── PermissionRead (PermissionBase + id + timestamps)
-    ├── PermissionReadSimple (PermissionBase + id + timestamps)
+    ├── PermissionResponse (PermissionBase + id + timestamps)
+    ├── PermissionResponseSimple (PermissionBase + id + timestamps)
     └── PermissionTree (PermissionBase + children + 计算属性)
 ```
 
@@ -239,7 +239,7 @@ def require_permission(permission_name: str):
     return check_permission
 
 # 使用
-@router.post("/users", response_model=UserRead)
+@router.post("/users", response_model=UserResponse)
 async def create_user(
     user_data: UserCreate,
     session: Session = Depends(get_session),
@@ -1086,7 +1086,7 @@ hasPermission("admin:user:button:edit")
 from functools import lru_cache
 from sqlalchemy import select
 
-class Permission(BaseTableModelMixin, PermissionBase, table=True):
+class Permission(DataTableMixin, PermissionBase, table=True):
     """权限表"""
 
     @classmethod

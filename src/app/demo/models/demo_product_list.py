@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import BigInteger
 from sqlmodel import Field, Relationship
 
-from src.core.mixins import BaseMixin, BaseTableModelMixin
+from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 
 if TYPE_CHECKING:
@@ -19,11 +19,11 @@ class DemoProductListBase(BaseMixin):
     quantity: int = Field(ge=0)
 
 
-class DemoProductList(DemoProductListBase, BaseTableModelMixin, table=True):  # type: ignore[misc]
+class DemoProductList(DemoProductListBase, DataTableMixin, table=True):  # type: ignore[misc]
     """
     DemoProductList 模型（子表）
 
-    注意：子表不继承 FullModelMixin，只保留基础字段：
+    注意：子表不继承 EnterpriseMixin，只保留基础字段：
     - id（主键）
     - created_at, updated_at（时间戳）
 
