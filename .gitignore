@@ -56,6 +56,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+reports/  # HTML 测试报告和覆盖率报告
 
 # Translations
 *.mo

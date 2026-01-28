@@ -122,7 +122,7 @@ class TestAuthAPI:
         """测试：登录成功"""
         response = await client.post(
             "/api/v1/auth/login",
-            json={"username": "testuser", "password": "testpass123"},
+            json={"username": "user", "password": "admin123"},
         )
 
         assert response.status_code == status.HTTP_200_OK

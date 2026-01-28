@@ -1,3 +1,74 @@
+# 测试指南
+
+本项目提供完整的测试方案，包括单元测试、集成测试、覆盖率报告和性能测试。
+
+## 快速开始
+
+### 运行所有测试
+
+```bash
+# 基础测试
+pytest
+
+# 生成 HTML 报告 + 覆盖率
+pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+```
+
+### 测试报告
+
+测试报告生成在 `reports/` 目录：
+
+| 报告类型 | 文件 | 说明 |
+|---------|------|------|
+| **HTML 测试报告** | `reports/report.html` | 测试结果、详情、日志 |
+| **覆盖率报告** | `reports/coverage/index.html` | 代码覆盖率统计和详细分析 |
+
+### 查看报告
+
+```bash
+# macOS
+open reports/report.html
+open reports/coverage/index.html
+
+# Linux
+xdg-open reports/report.html
+xdg-open reports/coverage/index.html
+```
+
+## 测试报告配置
+
+项目已配置以下测试报告插件：
+
+- **pytest-html**: 生成 HTML 格式的测试报告
+- **pytest-cov**: 生成代码覆盖率报告
+
+### 常用命令
+
+```bash
+# 只运行某个测试文件
+pytest tests/test_relation_metadata.py
+
+# 只运行某个测试类
+pytest tests/test_relation_metadata.py::TestRelationMetadata
+
+# 只运行某个测试方法
+pytest tests/test_relation_metadata.py::TestRelationMetadata::test_get_relation_info_one_to_many
+
+# 运行并显示详细输出
+pytest -v -s
+
+# 运行最慢的 10 个测试
+pytest --durations=10
+
+# 运行上次失败的测试
+pytest --lf
+
+# 运行带标记的测试
+pytest -m slow
+```
+
+---
+
 # 性能测试指南
 
 本项目提供完整的性能测试方案，包括负载测试、压力测试和基准测试。

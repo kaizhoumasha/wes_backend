@@ -317,3 +317,24 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+# 测试报告配置
+# 使用方式：pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+addopts = [
+    # 更详细的输出
+    "-v",
+    # 显示最慢的 10 个测试
+    "--durations=10",
+    # 简短的错误信息
+    "--tb=short",
+    # 显示打印输出
+    "-s",
+    # 自动生成覆盖率报告（如果使用了 --cov 参数）
+    "--cov-report=term-missing",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+    "pytest-html>=4.2.0",
+]
