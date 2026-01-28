@@ -77,6 +77,7 @@ class BaseRepository[T]:
         - 如果模型混入了状态验证 Mixin，自动注册状态验证 Hook
         - 如果模型混入了 AuditMixin，自动注册审计字段填充 Hook
         - 如果模型混入了 AuditModelMixin，自动注册审计日志记录 Hook
+        - 如果模型混入了 OptimisticLockMixin，自动注册乐观锁验证 Hook
         """
         self.model = model
         self._model_name = model.__name__
@@ -92,7 +93,10 @@ class BaseRepository[T]:
         self._register_status_validation_hooks()
 
         # 自动注册审计字段填充 Hook
-        self._register_audit_hooks()
+        self._register_audit_field_hooks()
+
+        # 自动注册乐观锁验证 Hook
+        self._register_optimistic_lock_hooks()
 
         # 自动检测并注册审计日志 Hook（委托给 AuditHookRegistrar）
         if self._has_audit_model_mixin():
@@ -111,15 +115,20 @@ class BaseRepository[T]:
 
     def _has_audit_model_mixin(self) -> bool:
         """
-        检测模型是否混入了 AuditModelMixin
+        检测模型是否混入了 AuditModelMixin（用于审计日志）
 
         通过检查模型的 MRO (Method Resolution Order) 来判断是否继承自 AuditModelMixin。
+
+        注意：
+        - AuditModelMixin：提供审计日志功能（记录操作历史）
+        - AuditMixin：提供审计字段（created_by/updated_by）
+        - 此方法只检测 AuditModelMixin，不检测 AuditMixin
 
         Returns:
             如果模型混入了 AuditModelMixin 则返回 True，否则返回 False
         """
-        # 检查模型的所有基类
-        return any(base.__name__ in ("AuditModelMixin", "AuditMixin") for base in self.model.__mro__)
+        # 只检查 AuditModelMixin，不包括 AuditMixin
+        return any(base.__name__ == "AuditModelMixin" for base in self.model.__mro__)
 
     def _register_status_validation_hooks(self) -> None:
         """
@@ -182,7 +191,7 @@ class BaseRepository[T]:
 
         return status_validation_hook
 
-    def _register_audit_hooks(self) -> None:
+    def _register_audit_field_hooks(self) -> None:
         """
         自动注册审计字段填充 Hook
 
@@ -245,6 +254,76 @@ class BaseRepository[T]:
                         data[field_name] = user_id
 
         return audit_fill_hook
+
+    def _register_optimistic_lock_hooks(self) -> None:
+        """
+        自动注册乐观锁验证 Hook
+
+        检测模型是否混入了 OptimisticLockMixin，如果有，则自动注册版本验证 Hook。
+        这样设计的好处：
+        1. 零性能开销：没有 OptimisticLockMixin 的模型不会执行任何检查
+        2. 自动化：无需手动注册 Hook
+        3. 类型安全：Mixin 定义了必需的 version 字段
+        4. 符合 FastAPI 最佳实践：使用 Hook 系统而非硬编码
+        """
+        # 检查模型是否有 version 字段（即混入了 OptimisticLockMixin）
+        has_version = hasattr(self.model, "version")
+
+        if has_version:
+            # 注册 BEFORE_UPDATE Hook 验证版本号
+            self.add_hook(
+                HookType.BEFORE_UPDATE,
+                self._create_optimistic_lock_validation_hook(),
+                priority=0,  # 最高优先级，确保在其他 Hook 之前执行
+            )
+
+    def _create_optimistic_lock_validation_hook(self) -> HookFunc:
+        """
+        创建乐观锁验证 Hook 函数
+
+        Returns:
+            Hook 函数
+        """
+
+        async def optimistic_lock_validation_hook(ctx: HookContext) -> None:
+            from src.core.exceptions import OptimisticLockException
+
+            instance = ctx.params.get("instance")
+            data = ctx.params.get("data")
+
+            if not instance or not data or not isinstance(data, dict):
+                return
+
+            # 检查模型是否有 version 字段
+            if not hasattr(instance, "version") or not hasattr(self.model, "version"):
+                return
+
+            # 获取当前数据库中的版本号
+            current_version = instance.version  # type: ignore[attr-defined]
+
+            # 获取客户端提供的版本号
+            provided_version = data.get("version")
+
+            # 如果客户端没有提供 version 字段，抛出异常
+            # 这是必需的，因为缺少 version 字段意味着客户端使用了旧的数据
+            if provided_version is None:
+                raise OptimisticLockException(
+                    resource_type=self._model_name,
+                    resource_id=getattr(instance, self._pk_column),
+                    current_version=current_version,
+                    message=f"{self._model_name} 更新失败：缺少 version 字段，请刷新数据后重试",
+                )
+
+            # 验证版本号是否匹配
+            if current_version != provided_version:
+                raise OptimisticLockException(
+                    resource_type=self._model_name,
+                    resource_id=getattr(instance, self._pk_column),
+                    current_version=current_version,
+                    provided_version=provided_version,
+                )
+
+        return optimistic_lock_validation_hook
 
     async def _run_hooks(self, hook_type: HookType, **kwargs: Any) -> dict[str, Any]:
         """运行指定类型的 hooks"""
@@ -585,9 +664,26 @@ class BaseRepository[T]:
         start_time = time.time()
         relation_info, has_relations = self._analyze_update_data(data)
 
+        # 加载实例（只查询一次数据库）
         instance = await self._load_instance_for_update(db, id, relation_info, has_relations)
         if not instance:
             raise ValueError(f"{self._model_name} 不存在")
+
+        # 乐观锁预验证：在 Hook 之前快速检查，提供更早的反馈
+        # 注意：完整的验证逻辑在 Hook 中（_create_optimistic_lock_validation_hook）
+        # 这里只是提前验证，避免在 Hook 阶段才发现冲突
+        if hasattr(instance, "version") and "version" in data:
+            current_version = instance.version  # type: ignore[attr-defined]
+            provided_version = data["version"]
+            if current_version != provided_version:
+                from src.core.exceptions import OptimisticLockException
+
+                raise OptimisticLockException(
+                    resource_type=self._model_name,
+                    resource_id=id,
+                    current_version=current_version,
+                    provided_version=provided_version,
+                )
 
         old_values = self._capture_old_values(instance, data, relation_info)
         await self._run_before_update_hooks(db, instance, data, start_time, old_values)
@@ -653,11 +749,24 @@ class BaseRepository[T]:
         for field, value in data.items():
             if field in relation_info:
                 continue
+            # 跳过 version 字段，因为它将在后面自动递增
+            if field == "version":
+                continue
             if hasattr(instance, field):
                 setattr(instance, field, value)
 
         if has_relations:
             await self._update_relations(db, instance, data)
+
+        # 乐观锁：自动递增版本号（委托给 Mixin 处理）
+        if hasattr(instance, "increment_version"):
+            old_version = instance.version  # type: ignore[attr-defined]
+            instance.increment_version()  # type: ignore[attr-defined]
+            pk_value = getattr(instance, self._pk_column)
+            logger.debug(
+                f"乐观锁：{self._model_name} (ID: {pk_value}) "
+                f"版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
+            )
 
         await db.flush()
 
@@ -853,14 +962,6 @@ class BaseRepository[T]:
 
     # ==================== 主从表关系处理方法 ====================
 
-    async def update_with_relations(
-        self,
-        db: AsyncSession,
-        id: int,
-        data: dict[str, Any],
-    ) -> T | None:
-        return await self.update(db, id, data)
-
     async def _update_relations(
         self,
         db: AsyncSession,
@@ -876,35 +977,6 @@ class BaseRepository[T]:
         ids_to_delete: set[int],
     ) -> None:
         await self._get_relation_manager().delete_relation_objects(db, relation_attr, ids_to_delete)
-
-    async def _update_relation_objects(
-        self,
-        db: AsyncSession,
-        relation_attr: Any,
-        objects_to_update: list[dict[str, Any]],
-    ) -> None:
-        await self._get_relation_manager().update_relation_objects(db, relation_attr, objects_to_update)
-
-    async def _create_relation_objects(
-        self,
-        db: AsyncSession,
-        relation_attr: Any,
-        parent_obj: T,
-        objects_to_create: list[dict[str, Any]],
-    ) -> None:
-        await self._get_relation_manager().create_relation_objects(db, relation_attr, parent_obj, objects_to_create)
-
-    def _set_foreign_key_value(
-        self,
-        item_data: dict[str, Any] | Any,
-        foreign_key_field: str,
-        parent_obj: T,
-        parent_tablename: str | None,
-    ) -> None:
-        self._get_relation_manager()._set_foreign_key_value(item_data, foreign_key_field, parent_obj, parent_tablename)
-
-    def _create_model_instance(self, model: type, item_data: dict[str, Any] | Any) -> Any:
-        return self._get_relation_manager()._create_model_instance(model, item_data)
 
 
 __all__ = ["BaseRepository", "Hook", "HookContext", "HookFunc", "HookManager", "HookType"]

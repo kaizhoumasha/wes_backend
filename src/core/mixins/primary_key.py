@@ -138,4 +138,4 @@ def _create_primary_key_mixin():
 
 # 动态主键 Mixin(根据配置自动选择)
 # type: ignore - 动态生成的类,无法进行静态类型检查
-PrimaryKeyMixin = _create_primary_key_mixin()  # type: ignore[misc]
+PrimaryKeyMixin = _create_primary_key_mixin()

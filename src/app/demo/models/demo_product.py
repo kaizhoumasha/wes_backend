@@ -6,7 +6,7 @@ from src.app.demo.models.demo_product_list import (
     DemoProductListResponse,
     DemoProductListUpdate,
 )
-from src.core.mixins import BaseMixin, BaseTableModelMixin, FullModelMixin
+from src.core.mixins import BaseMixin, BaseTableModelMixin, FullModelMixin, OptimisticLockMixin
 from src.database.model_factory import ModelFactory
 
 
@@ -20,9 +20,11 @@ class DemoProductBase(BaseMixin):
     stock: int = Field(ge=0)
 
 
-class DemoProduct(DemoProductBase, BaseTableModelMixin, FullModelMixin, table=True):  # type: ignore[misc]
+class DemoProduct(DemoProductBase, FullModelMixin, BaseTableModelMixin, OptimisticLockMixin, table=True):  # type: ignore[misc]
     """
     DemoProduct 模型
+
+    使用 OptimisticLockMixin 实现乐观锁，防止并发修改冲突
     """
 
     __tablename__ = "demo_products"  # type: ignore[misc]
@@ -30,10 +32,7 @@ class DemoProduct(DemoProductBase, BaseTableModelMixin, FullModelMixin, table=Tr
     product_lists: list[DemoProductList] = Relationship(back_populates="product")
 
 
-_DemoProductCreate = ModelFactory(DemoProductBase).for_create()
-
-
-class DemoProductCreate(_DemoProductCreate):
+class DemoProductCreate(ModelFactory(DemoProductBase).for_create()):
     """
     DemoProduct 创建模型
     """
@@ -41,20 +40,21 @@ class DemoProductCreate(_DemoProductCreate):
     product_lists: list[DemoProductListCreate] = Field(default_factory=list)
 
 
-_DemoProductUpdate = ModelFactory(DemoProductBase).for_update()
-
-
-class DemoProductUpdate(_DemoProductUpdate):
+class DemoProductUpdate(OptimisticLockMixin, ModelFactory(DemoProductBase).for_update()):
     """
     DemoProduct 更新模型
+
+    注意：更新时必须包含 version 字段（乐观锁）
     """
 
     product_lists: list[DemoProductListUpdate] = Field(default_factory=list)
 
 
-class DemoProductResponse(DemoProductBase):
+class DemoProductResponse(OptimisticLockMixin, DemoProductBase):
     """
     DemoProduct 响应模型
+
+    包含 version 字段，前端在更新时必须传回该字段
     """
 
     id: int

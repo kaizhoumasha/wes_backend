@@ -6,6 +6,7 @@
 
 # type: ignore - PrimaryKeyMixin 是动态生成的类
 from src.core.mixins.audit import AuditMixin
+from src.core.mixins.optimistic_lock import OptimisticLockMixin
 from src.core.mixins.primary_key import PrimaryKeyMixin  # type: ignore[misc]
 from src.core.mixins.repr import ReprMixin
 from src.core.mixins.soft_delete import SoftDeleteMixin
@@ -45,7 +46,7 @@ class AuditModelMixin(AuditMixin, ReprMixin):
     """
 
 
-class FullModelMixin(AuditModelMixin, SoftDeleteMixin):
+class FullModelMixin(AuditModelMixin, SoftDeleteMixin, OptimisticLockMixin):
     """
     完整模型 Mixin
 

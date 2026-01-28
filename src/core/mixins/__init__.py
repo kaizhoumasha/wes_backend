@@ -11,6 +11,7 @@ SQLModel Mixin 模块
     soft_delete.py   - 软删除 Mixin
     tree.py          - 树形结构 Mixin
     repr.py          - Repr Mixin
+    optimistic_lock.py - 乐观锁 Mixin
     composite.py     - 组合 Mixin (BaseModelMixin, AuditModelMixin, FullModelMixin, BaseTableModelMixin)
 
 使用示例:
@@ -33,6 +34,9 @@ from src.core.mixins.composite import (
     BaseTableModelMixin,
     FullModelMixin,
 )
+
+# ==================== 乐观锁 Mixin ====================
+from src.core.mixins.optimistic_lock import OptimisticLockMixin
 
 # ==================== 主键 Mixin ====================
 from src.core.mixins.primary_key import (
@@ -75,4 +79,6 @@ __all__ = [
     "TimestampMixin",
     # 树形结构
     "TreeMixin",
+    # 乐观锁
+    "OptimisticLockMixin",
 ]

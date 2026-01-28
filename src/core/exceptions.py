@@ -231,6 +231,65 @@ class DuplicateException(ConflictException):
             super().__init__(message=message, **kwargs)
 
 
+class OptimisticLockException(ConflictException):
+    """
+    乐观锁异常
+
+    当检测到并发修改时抛出，表示记录已被其他用户修改。
+
+    使用场景:
+        - 用户 A 和用户 B 同时读取同一条记录
+        - 用户 A 先提交修改
+        - 用户 B 提交修改时检测到版本号不匹配
+        - 抛出此异常，提示用户刷新后重试
+
+    示例:
+        raise OptimisticLockException(
+            resource_type="Product",
+            resource_id=123,
+            current_version=2,
+            provided_version=1
+        )
+    """
+
+    code = "OPTIMISTIC_LOCK"
+    message = "记录已被其他用户修改，请刷新后重试"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        resource_type: str | None = None,
+        resource_id: Any | None = None,
+        current_version: int | None = None,
+        provided_version: int | None = None,
+        **kwargs,
+    ):
+        """
+        初始化乐观锁异常
+
+        Args:
+            message: 错误消息
+            resource_type: 资源类型（如 "User", "Order"）
+            resource_id: 资源 ID
+            current_version: 当前数据库中的版本号
+            provided_version: 客户端提供的版本号
+        """
+        if resource_type and resource_id:
+            if message is None:
+                message = f"{resource_type} (ID: {resource_id}) 已被其他用户修改，请刷新后重试"
+            detail = {
+                "resource_type": resource_type,
+                "resource_id": str(resource_id),
+            }
+            if current_version is not None:
+                detail["current_version"] = current_version
+            if provided_version is not None:
+                detail["provided_version"] = provided_version
+            super().__init__(message=message, detail=detail, **kwargs)
+        else:
+            super().__init__(message=message, **kwargs)
+
+
 # ==================== 数据验证异常 ====================
 
 
