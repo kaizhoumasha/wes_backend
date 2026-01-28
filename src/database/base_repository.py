@@ -813,7 +813,7 @@ class BaseRepository[T]:
         """
         import time
 
-        instance = await self.get_by_id(db, id)
+        instance = await self.get_by_id(db, id, include_relations=True)
         if not instance:
             return False
 
