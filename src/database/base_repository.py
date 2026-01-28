@@ -458,8 +458,9 @@ class BaseRepository[T]:
         statement = select(self.model).where(self._pk_attr == id)
 
         # 自动过滤软删除记录
+        # 使用 .is_(False) 而不是 not，避免 Python 的 not 关键字将表达式求值为布尔值
         if self._has_soft_delete_mixin() and not include_deleted:
-            statement = statement.where(not self.model.is_deleted)  # type: ignore[attr-defined]
+            statement = statement.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
 
         # 添加关联对象加载
         if include_relations:
@@ -550,7 +551,7 @@ class BaseRepository[T]:
         # 自动添加软删除过滤到计数查询
         count_query = select(func.count(self._pk_attr))
         if self._has_soft_delete_mixin() and not include_deleted:
-            count_query = count_query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
+            count_query = count_query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
         if where_clauses:
             count_query = count_query.where(*where_clauses)
         count_result = await db.execute(count_query)
@@ -565,7 +566,7 @@ class BaseRepository[T]:
             # 构建完整的 where_clauses，包括软删除过滤
             all_where_clauses = list(where_clauses)
             if self._has_soft_delete_mixin() and not include_deleted:
-                all_where_clauses.append(not self.model.is_deleted)  # type: ignore[attr-defined]
+                all_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
 
             items = await get_all_with_schema(
                 db,
@@ -581,7 +582,7 @@ class BaseRepository[T]:
             query = select(self.model)
             # 自动添加软删除过滤到数据查询
             if self._has_soft_delete_mixin() and not include_deleted:
-                query = query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
+                query = query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
             if where_clauses:
                 query = query.where(*where_clauses)
             if order_by:

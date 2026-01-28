@@ -106,7 +106,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             data = obj_in.model_dump() if hasattr(obj_in, "model_dump") else obj_in
             resource = await self.service.create(db, data, cache)
 
-            logger.info(f"创建{self.resource_name}成功: id={resource.id}")
+            logger.info(f"创建{self.resource_name}成功: id={resource.id if resource else ''}")
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder.success(data=response_data)
 
@@ -125,8 +125,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
+            # exclude_unset=True: 只包含用户显式设置的字段，忽略使用默认值的字段
+            # 这样当用户不传递 product_lists 时，不会被包含在 data 中
             data = (
-                {k: v for k, v in obj_in.model_dump().items() if v is not None}
+                {k: v for k, v in obj_in.model_dump(exclude_unset=True).items() if v is not None}
                 if hasattr(obj_in, "model_dump")
                 else obj_in
             )
@@ -136,14 +138,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 # 处理记录不存在的情况
                 if "不存在" in str(e):
                     return response_builder.fail(
-                        code=ResourceErrorCode.NOT_FOUND,
-                        message=f"{self.resource_name} (ID: {id}) 不存在"
+                        code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在"
                     )
                 # 其他验证错误
-                return response_builder.fail(
-                    code=BusinessErrorCode.INVALID_STATE,
-                    message=str(e)
-                )
+                return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)
@@ -169,21 +167,18 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 success = await self.service.permanent_delete(db, id, cache)
                 if not success:
                     return response_builder.fail(
-                        code=ResourceErrorCode.NOT_FOUND,
-                        message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
+                        code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                     )
                 logger.info(f"永久删除{self.resource_name}成功: id={id}")
                 return response_builder.success(data={"message": f"{self.resource_name}已永久删除"})
-            else:
-                # 软删除或物理删除（根据模型支持情况）
-                success = await self.service.delete(db, id, cache)
-                if not success:
-                    return response_builder.fail(
-                        code=ResourceErrorCode.NOT_FOUND,
-                        message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
-                    )
-                logger.info(f"删除{self.resource_name}成功: id={id}")
-                return response_builder.success(data={"message": f"{self.resource_name}删除成功"})
+            # 软删除或物理删除（根据模型支持情况）
+            success = await self.service.delete(db, id, cache)
+            if not success:
+                return response_builder.fail(
+                    code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
+                )
+            logger.info(f"删除{self.resource_name}成功: id={id}")
+            return response_builder.success(data={"message": f"{self.resource_name}删除成功"})
 
     def _register_bulk_delete(self) -> None:
         """注册批量删除接口"""
@@ -236,8 +231,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             resource = await self.service.get_by_id(db, cache, id, max_depth=max_depth)
             if not resource:
                 return response_builder.fail(
-                    code=ResourceErrorCode.NOT_FOUND,
-                    message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
+                    code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                 )
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder.success(data=response_data)
@@ -257,7 +251,14 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             options: Annotated[QueryOptions, Body(...)],
         ) -> dict[str, Any]:
             total, resources = await self.service.get_list(
-                db, cache, options.limit, options.offset, options.filters, options.sort, options.max_depth, options.include_deleted
+                db,
+                cache,
+                options.limit,
+                options.offset,
+                options.filters,
+                options.sort,
+                options.max_depth,
+                options.include_deleted,
             )
             items = self.service.to_list_response(resources, self.response_schema)
             items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
@@ -301,11 +302,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         )
         async def get_deleted(
             db: AsyncSessionDep,
-            cache: CacheDep,
             limit: int = Query(10, ge=1, le=100),
             offset: int = Query(0, ge=0),
         ) -> dict[str, Any]:
-            total, resources = await self.service.get_deleted(db, cache, limit, offset)
+            total, resources = await self.service.get_deleted(db, limit, offset)
             items = self.service.to_list_response(resources, self.response_schema)
             items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
 
