@@ -46,7 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logger import logger
 from src.core.schema_loader import model_to_schema
-from src.database.base_repository import HookContext, HookType
+from src.database.base_repository import BaseRepository, HookContext, HookType
 
 if TYPE_CHECKING:
     from src.core.query_models import FilterGroup, SortField
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 M = TypeVar("M")
 
 # Repository 类型 (如 WarehouseRepository, ContainerRepository 等)
-R = TypeVar("R")
+R = TypeVar("R", bound=BaseRepository)
 
 
 # ==================== 通用 Service 基类 ====================
@@ -115,7 +115,7 @@ class BaseService[M, R]:
             cache_expire: 缓存过期时间(秒)
             response_schema: 响应 Schema (用于自动加载关系)
         """
-        self.repo = repository
+        self.repo: R = repository
         self._model_name = repository._model_name  # type: ignore[attr-defined]
         self.enable_cache = enable_cache
         self.cache_prefix = cache_prefix or f"{self._model_name.lower()}:detail"
@@ -191,17 +191,17 @@ class BaseService[M, R]:
             模型实例或 None
         """
         if not self.enable_cache or not cache:
-            return await self.repo.get_by_id(
+            return await self.repo.get_by_id(  # type: ignore[attr-defined]
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
-            )  # type: ignore[attr-defined]
+            )
 
         try:
             from src.database.redis_cache import RedisCache
 
             if not isinstance(cache, RedisCache):
-                return await self.repo.get_by_id(
+                return await self.repo.get_by_id(  # type: ignore[attr-defined]
                     db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
-                )  # type: ignore[attr-defined]
+                )  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
             cache_key = f"{self.cache_prefix}:{id}:depth{max_depth}:del{include_deleted}"
             cached_data = await cache.get(cache_key)
@@ -212,7 +212,7 @@ class BaseService[M, R]:
                     return self.repo.model.model_validate(cached_data)  # type: ignore[attr-defined]
                 return cached_data  # type: ignore[return-value]
 
-            result = await self.repo.get_by_id(
+            result = await self.repo.get_by_id(  # type: ignore[attr-defined]
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
             )  # type: ignore[attr-defined]
 
@@ -225,7 +225,7 @@ class BaseService[M, R]:
             return result  # type: ignore[return-value]
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
-            return await self.repo.get_by_id(
+            return await self.repo.get_by_id(  # type: ignore[attr-defined]
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
             )  # type: ignore[attr-defined]
 
@@ -350,7 +350,7 @@ class BaseService[M, R]:
 
     # ==================== CRUD 方法 ====================
 
-    async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> M:
+    async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> M | None:
         """
         创建记录
 
@@ -380,7 +380,7 @@ class BaseService[M, R]:
             await self.invalidate_cache(cache, invalidate_list=True)
         return result
 
-    async def update(self, db: AsyncSession, id: int, data: dict[str, Any], cache: object | None = None) -> M:
+    async def update(self, db: AsyncSession, id: int, data: dict[str, Any], cache: object | None = None) -> M | None:
         """
         更新记录
 
@@ -401,7 +401,7 @@ class BaseService[M, R]:
             await self.invalidate_cache(cache, id)
         return result
 
-    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
         """
         删除记录
 
@@ -450,7 +450,7 @@ class BaseService[M, R]:
 
     # ==================== 软删除方法 ====================
 
-    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> M:
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> M | None:
         """
         软删除记录
 
@@ -469,7 +469,7 @@ class BaseService[M, R]:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
 
-    async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> M:
+    async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> M | None:
         """
         恢复已删除记录
 
@@ -486,15 +486,12 @@ class BaseService[M, R]:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
 
-    async def get_deleted(
-        self, db: AsyncSession, cache: object, limit: int = 10, offset: int = 0
-    ) -> tuple[int, list[M]]:
+    async def get_deleted(self, db: AsyncSession, limit: int = 10, offset: int = 0) -> tuple[int, list[M]]:
         """
         获取已删除记录列表
 
         Args:
             db: 数据库会话
-            cache: 缓存实例（回收站列表通常不缓存）
             limit: 限制数量
             offset: 偏移量
 
