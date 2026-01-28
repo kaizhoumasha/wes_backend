@@ -29,7 +29,7 @@ user_repo = BaseRepository[User](User)
 
 # CRUD 操作
 user = await user_repo.get_by_id(db, 1)
-users = await user_repo.get_all(db)
+users = await user_repo.get_list(db)
 new_user = await user_repo.create(db, {"username": "test", "email": "test@example.com"})
 ```
 
@@ -50,7 +50,8 @@ class UserRepository(BaseRepository[User]):
         return await self.get_by_field(db, "username", username)
 
     async def get_active_users(self, db: AsyncSession):
-        return await self.get_all(db, where_clauses=[User.is_active])
+        _, users = await self.get_list(db, limit=1000, where_clauses_raw=[User.is_active])
+        return users
 
 # 使用
 user_repo = UserRepository()
@@ -65,7 +66,7 @@ active_users = await user_repo.get_active_users(db)
 |------|------|------|
 | `get_by_id(db, id)` | 根据 ID 查询 | `await repo.get_by_id(db, 1)` |
 | `get_by_field(db, field_name, value)` | 根据字段查询 | `await repo.get_by_field(db, "username", "admin")` |
-| `get_all(db, where_clauses, limit, offset, order_by)` | 获取所有记录 | `await repo.get_all(db, where_clauses=[User.is_active], limit=10)` |
+| `get_list(db, limit, offset, filters, sort)` | 获取记录列表 | `await repo.get_list(db, limit=10)` |
 | `get_paginated(db, page, page_size)` | 分页查询 | `await repo.get_paginated(db, page=1, page_size=10)` |
 | `exists(db, **kwargs)` | 检查是否存在 | `await repo.exists(db, username="admin")` |
 | `count(db, where_clauses)` | 统计数量 | `await repo.count(db, where_clauses=[User.is_active])` |
@@ -95,19 +96,21 @@ class ProductRepository(BaseRepository[Product]):
 
     async def get_by_category(self, db: AsyncSession, category_id: int):
         """获取指定分类的产品"""
-        return await self.get_all(
-            db,
-            where_clauses=[Product.category_id == category_id],
-            order_by=Product.created_at.desc()
+        _, products = await self.get_list(
+            db, limit=1000,
+            where_clauses_raw=[Product.category_id == category_id],
+            order_by_raw=[Product.created_at.desc()]
         )
+        return products
 
     async def get_in_stock(self, db: AsyncSession):
         """获取有库存的产品"""
-        return await self.get_all(
-            db,
-            where_clauses=[Product.stock > 0],
-            order_by=Product.stock.desc()
+        _, products = await self.get_list(
+            db, limit=1000,
+            where_clauses_raw=[Product.stock > 0],
+            order_by_raw=[Product.stock.desc()]
         )
+        return products
 
 # 使用
 product_repo = ProductRepository()
@@ -128,19 +131,21 @@ class OrderRepository(BaseRepository[Order]):
 
     async def get_by_status(self, db: AsyncSession, status: str):
         """根据状态获取订单"""
-        return await self.get_all(
-            db,
-            where_clauses=[Order.status == status],
-            order_by=Order.created_at.desc()
+        _, orders = await self.get_list(
+            db, limit=1000,
+            where_clauses_raw=[Order.status == status],
+            order_by_raw=[Order.created_at.desc()]
         )
+        return orders
 
     async def get_user_orders(self, db: AsyncSession, user_id: int):
         """获取用户订单"""
-        return await self.get_all(
-            db,
-            where_clauses=[Order.user_id == user_id],
-            order_by=Order.created_at.desc()
+        _, orders = await self.get_list(
+            db, limit=1000,
+            where_clauses_raw=[Order.user_id == user_id],
+            order_by_raw=[Order.created_at.desc()]
         )
+        return orders
 
 # 使用
 order_repo = OrderRepository()
@@ -165,12 +170,13 @@ class UserService:
 
     async def search_users(self, db, keyword: str):
         """搜索用户"""
-        return await self.user_repo.get_all(
-            db,
-            where_clauses=[
+        _, users = await self.user_repo.get_list(
+            db, limit=1000,
+            where_clauses_raw=[
                 User.username.contains(keyword) | User.email.contains(keyword)
             ]
         )
+        return users
 ```
 
 ## 优势总结

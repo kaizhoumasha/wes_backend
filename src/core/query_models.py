@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,16 @@ class SortField(BaseModel):
 
     field: str
     order: Literal["asc", "desc"] = "desc"
+
+    class Config:
+        """配置"""
+
+        json_schema_extra: ClassVar[dict[str, dict[str, str]]] = {
+            "example": {
+                "field": "id",
+                "order": "desc",
+            }
+        }
 
 
 class QueryOptions(BaseModel):

@@ -18,7 +18,7 @@ class TreeServiceMixin:
         if root_id:
             items = await self.repo.get_descendants(db, root_id, max_depth if max_depth > 0 else None)
         else:
-            items = await self.repo.get_all(db)
+            _, items = await self.repo.get_list(db, limit=10000)
 
         dict_items = [self._to_dict(item) for item in items]
         return self._build_tree_optimized(dict_items)

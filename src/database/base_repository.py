@@ -61,7 +61,10 @@ class BaseRepository[T]:
         # 方式2：继承扩展（推荐）
         class UserRepository(BaseRepository[User]):
             async def find_active_users(self, db):
-                return await self.get_all(db, where_clauses=[User.is_active == True])
+                _, users = await self.get_list(
+                    db, limit=1000, where_clauses_raw=[User.is_active == True]
+                )
+                return users
 
         user_repo = UserRepository()
     """
@@ -456,7 +459,7 @@ class BaseRepository[T]:
 
         # 自动过滤软删除记录
         if self._has_soft_delete_mixin() and not include_deleted:
-            statement = statement.where(self.model.is_deleted == False)  # type: ignore[attr-defined]
+            statement = statement.where(not self.model.is_deleted)  # type: ignore[attr-defined]
 
         # 添加关联对象加载
         if include_relations:
@@ -485,73 +488,6 @@ class BaseRepository[T]:
         result = await db.execute(select(self.model).where(getattr(self.model, field_name) == value))
         return result.scalars().first()
 
-    async def get_all(
-        self,
-        db: AsyncSession,
-        *,
-        where_clauses: list[Any] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-        order_by: Any | None = None,
-        include_deleted: bool = False,
-    ) -> list[T]:
-        """
-        获取所有记录（支持过滤和分页）
-
-        Args:
-            db: 数据库会话
-            where_clauses: WHERE 条件列表
-            limit: 限制数量
-            offset: 偏移量
-            order_by: 排序字段
-            include_deleted: 是否包含已删除记录
-
-        Returns:
-            模型实例列表
-
-        Example:
-            # 获取所有
-            users = await repo.get_all(db)
-
-            # 带条件
-            active_users = await repo.get_all(
-                db,
-                where_clauses=[User.is_active == True]
-            )
-
-            # 分页
-            users = await repo.get_all(
-                db,
-                where_clauses=[User.is_active == True],
-                limit=10,
-                offset=20,
-                order_by=User.created_at.desc()
-            )
-
-            # 包含已删除的记录
-            users = await repo.get_all(db, include_deleted=True)
-        """
-        query = select(self.model)
-
-        # 自动过滤软删除记录
-        if self._has_soft_delete_mixin() and not include_deleted:
-            query = query.where(not self.model.is_deleted)  # type: ignore[attr-defined]
-
-        if where_clauses:
-            query = query.where(*where_clauses)
-
-        if order_by is not None:
-            query = query.order_by(order_by)
-
-        if offset is not None:
-            query = query.offset(offset)
-
-        if limit is not None:
-            query = query.limit(limit)
-
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
     async def get_list(
         self,
         db: AsyncSession,
@@ -562,6 +498,8 @@ class BaseRepository[T]:
         schema: type | None = None,
         max_depth: int = 1,
         include_deleted: bool = False,
+        where_clauses_raw: list[Any] | None = None,
+        order_by_raw: list[Any] | None = None,
     ) -> tuple[int, list[T]]:
         """
         获取记录列表
@@ -570,21 +508,41 @@ class BaseRepository[T]:
             db: 数据库会话
             limit: 限制数量
             offset: 偏移量
-            filters: 过滤条件组
-            sort: 排序字段列表
+            filters: 过滤条件组 (FilterGroup)
+            sort: 排序字段列表 (SortField)
             schema: 响应 Schema (用于自动加载关系)
             max_depth: 关系加载最大深度
             include_deleted: 是否包含已删除记录
+            where_clauses_raw: 原始 WHERE 条件列表 (SQLAlchemy 表达式)
+                如果提供，filters 参数将被忽略
+            order_by_raw: 原始 ORDER BY 列表 (SQLAlchemy 表达式)
+                如果提供，sort 参数将被忽略
 
         Returns:
             (总数, 记录列表)
+
+        Note:
+            原始参数 (where_clauses_raw, order_by_raw) 与高级参数 (filters, sort) 互斥。
+            提供原始参数时，高级参数将被忽略。
+
+        Example:
+            # 使用 FilterGroup
+            total, items = await repo.get_list(db, filters=FilterGroup(...))
+
+            # 使用原始 where_clauses (用于向后兼容)
+            total, items = await repo.get_list(
+                db,
+                where_clauses_raw=[User.is_active == True],
+                order_by_raw=[User.created_at.desc()]
+            )
         """
         from src.core.query_builder import QueryBuilder
 
         builder = QueryBuilder(self.model)
 
-        where_clauses = []
-        if filters:
+        # 处理过滤条件：where_clauses_raw 和 filters 互斥
+        where_clauses = list(where_clauses_raw) if where_clauses_raw is not None else []
+        if filters and not where_clauses_raw:
             filter_clause = builder.build_filters(filters)
             if filter_clause is not None:
                 where_clauses.append(filter_clause)
@@ -598,7 +556,8 @@ class BaseRepository[T]:
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
-        order_by = builder.build_sort(sort) if sort else []
+        # 处理排序：order_by_raw 和 sort 互斥
+        order_by = list(order_by_raw) if order_by_raw is not None else (builder.build_sort(sort) if sort else [])
 
         if schema:
             from src.core.schema_loader import get_all_with_schema

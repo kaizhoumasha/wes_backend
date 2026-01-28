@@ -7,7 +7,7 @@
 - delete: 删除记录
 - get_by_id: 根据 ID 获取
 - get_by_field: 根据字段获取
-- get_all: 获取所有记录
+- get_list: 获取记录列表
 - get_list: 分页获取列表
 - exists: 检查是否存在
 - count: 统计数量
@@ -89,8 +89,8 @@ class TestCrudOperations:
         assert found.code == "TEST001"
 
     @pytest.mark.asyncio
-    async def test_get_all(self, db_session: AsyncSession):
-        """测试获取所有记录"""
+    async def test_get_list_basic(self, db_session: AsyncSession):
+        """测试获取记录列表（基本功能）"""
         # 创建多条记录
         await self.repo.create(db_session, {"code": "TEST001", "name": "Item 1"})
         await self.repo.create(db_session, {"code": "TEST002", "name": "Item 2"})
@@ -98,13 +98,14 @@ class TestCrudOperations:
         await db_session.commit()
 
         # 获取所有记录
-        items = await self.repo.get_all(db_session)
+        total, items = await self.repo.get_list(db_session, limit=100)
 
+        assert total == 3
         assert len(items) == 3
 
     @pytest.mark.asyncio
-    async def test_get_all_with_filter(self, db_session: AsyncSession):
-        """测试带过滤条件获取记录"""
+    async def test_get_list_with_filter_raw(self, db_session: AsyncSession):
+        """测试带原始过滤条件获取列表"""
         # 创建多条记录
         await self.repo.create(
             db_session, {"code": "TEST001", "name": "Item 1", "is_active": True}
@@ -118,14 +119,15 @@ class TestCrudOperations:
         await db_session.commit()
 
         # 只获取 is_active=True 的记录
-        items = await self.repo.get_all(
-            db_session, where_clauses=[CrudTestModel.is_active == True]  # noqa: E712
+        total, items = await self.repo.get_list(
+            db_session, limit=100, where_clauses_raw=[CrudTestModel.is_active == True]  # noqa: E712
         )
 
+        assert total == 2
         assert len(items) == 2
 
     @pytest.mark.asyncio
-    async def test_get_all_with_pagination(self, db_session: AsyncSession):
+    async def test_get_list_with_pagination(self, db_session: AsyncSession):
         """测试分页获取记录"""
         # 创建多条记录
         for i in range(10):
@@ -135,8 +137,9 @@ class TestCrudOperations:
         await db_session.commit()
 
         # 分页获取
-        items = await self.repo.get_all(db_session, limit=5, offset=3)
+        total, items = await self.repo.get_list(db_session, limit=5, offset=3)
 
+        assert total == 10
         assert len(items) == 5
 
     @pytest.mark.asyncio

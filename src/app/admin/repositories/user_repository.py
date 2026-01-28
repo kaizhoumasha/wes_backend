@@ -83,9 +83,10 @@ class UserRepository(BaseRepository[User]):
         Returns:
             用户列表
         """
-        return await self.get_all(
-            db, where_clauses=[User.is_active], limit=limit
+        _, users = await self.get_list(
+            db, limit=limit or 1000, where_clauses_raw=[User.is_active]
         )
+        return users
 
     async def count_active(self, db: AsyncSession) -> int:
         """

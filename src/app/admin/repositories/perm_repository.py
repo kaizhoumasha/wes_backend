@@ -24,7 +24,10 @@ class PermissionRepository(TreeRepository[Permission]):
         where_clauses = [Permission.type == "menu"]
         self._add_active_filter(where_clauses, not include_inactive)
 
-        return await self.get_all(db, where_clauses=where_clauses, order_by=Permission.sort_order)
+        _, items = await self.get_list(
+            db, limit=1000, where_clauses_raw=where_clauses, order_by_raw=[Permission.sort_order]
+        )
+        return items
 
     async def get_menu_permissions(
         self,
@@ -38,7 +41,10 @@ class PermissionRepository(TreeRepository[Permission]):
         if not include_hidden:
             where_clauses.append(not Permission.is_hidden)
 
-        return await self.get_all(db, where_clauses=where_clauses, order_by=Permission.sort_order)
+        _, items = await self.get_list(
+            db, limit=1000, where_clauses_raw=where_clauses, order_by_raw=[Permission.sort_order]
+        )
+        return items
 
     async def get_api_permissions(
         self,
@@ -49,7 +55,8 @@ class PermissionRepository(TreeRepository[Permission]):
         where_clauses = [Permission.type == "api"]
         self._add_active_filter(where_clauses, active_only)
 
-        return await self.get_all(db, where_clauses=where_clauses)
+        _, items = await self.get_list(db, limit=1000, where_clauses_raw=where_clauses)
+        return items
 
     async def get_by_type(
         self,
@@ -61,7 +68,8 @@ class PermissionRepository(TreeRepository[Permission]):
         where_clauses = [Permission.type == perm_type]
         self._add_active_filter(where_clauses, active_only)
 
-        return await self.get_all(db, where_clauses=where_clauses)
+        _, items = await self.get_list(db, limit=1000, where_clauses_raw=where_clauses)
+        return items
 
     async def get_by_name(self, db: AsyncSession, name: str) -> Permission | None:
         """按名称获取权限"""
