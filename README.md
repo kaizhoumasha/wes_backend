@@ -20,7 +20,14 @@
    uv sync
    ```
 
-3. **Run Application**
+3. **Run Database Migrations**
+   Apply database schema migrations:
+   ```bash
+   ./scripts/migrate.sh upgrade
+   ```
+   See [Database Migration Guide](docs/database_migration.md) for more details.
+
+4. **Run Application**
    ```bash
    uvicorn main:app --reload
    ```
