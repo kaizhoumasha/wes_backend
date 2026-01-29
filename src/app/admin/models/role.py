@@ -11,6 +11,7 @@ from sqlmodel import Field, Index
 from src.app.admin.models.perm import PermissionResponse
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 
 # ==================== Role 模型 ====================
 
@@ -26,6 +27,7 @@ class Role(RoleBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=Tru
     """角色表"""
 
     __tablename__: Literal["roles"] = "roles"
+    __schema__ = SchemaType.SYS.value  # 系统管理表
 
     __table_args__ = (
         # 角色名称唯一索引（软删除后可重用名称）

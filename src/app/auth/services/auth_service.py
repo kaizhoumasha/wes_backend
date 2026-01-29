@@ -70,8 +70,8 @@ class AuthService:
         if not user:
             raise NotFoundException("用户名或密码错误")
 
-        # 检查用户状态
-        if not user.is_active:
+        # 检查用户状态（is_deleted=True 表示已删除/禁用）
+        if user.is_deleted:
             raise AuthException("用户已被禁用")
 
         # 验证密码
@@ -204,7 +204,8 @@ class AuthService:
         if not user:
             raise AuthException("用户不存在")
 
-        if not user.is_active:
+        # 检查用户状态（is_deleted=True 表示已删除/禁用）
+        if user.is_deleted:
             raise AuthException("用户已被禁用")
 
         # 验证用户 ID 有效性
@@ -464,7 +465,6 @@ class AuthService:
             username=user.username,
             email=user.email,
             full_name=user.full_name,
-            is_active=user.is_active,
             is_superuser=user.is_superuser,
             is_multi_login=user.is_multi_login,
             roles=[],  # roles 会通过预加载自动填充

@@ -326,8 +326,8 @@ class BaseService[M, R]:
             是否存在
 
         Example:
-            exists = await service.exists(db, name="仓库A")
-            exists = await service.exists(db, code="WH001", is_active=True)
+            exists = await service.exists(db, name=\"仓库A\")
+            exists = await service.exists(db, code=\"WH001\", is_deleted=False)
         """
         return await self.repo.exists(db, **kwargs)  # type: ignore[attr-defined]
 
@@ -344,7 +344,7 @@ class BaseService[M, R]:
 
         Example:
             total = await service.count(db)
-            active_count = await service.count(db, where_clauses=[Warehouse.is_active])
+            active_count = await service.count(db, where_clauses=[Warehouse.is_deleted == False])
         """
         return await self.repo.count(db, where_clauses)  # type: ignore[attr-defined]
 

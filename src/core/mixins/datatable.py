@@ -20,11 +20,12 @@ from typing import Any
 from sqlalchemy.orm import declared_attr
 
 from src.core.mixins.primary_key import PrimaryKeyMixin
+from src.core.mixins.schema import SchemaMixin
 from src.core.mixins.timestamp import TimestampMixin
 from src.database.relation_metadata import RelationMetadata
 
 
-class DataTableMixin(PrimaryKeyMixin, TimestampMixin):
+class DataTableMixin(SchemaMixin, PrimaryKeyMixin, TimestampMixin):
     """
     基础表模型 Mixin
 

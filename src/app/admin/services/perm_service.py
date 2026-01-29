@@ -74,7 +74,7 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
         user_perm_names = await get_user_permissions(db, user_id)
 
         # 获取所有菜单权限
-        all_menus = await self.repo.get_menu_permissions(db, active_only=True, include_hidden=include_hidden)
+        all_menus = await self.repo.get_menu_permissions(db, exclude_deleted=True, include_hidden=include_hidden)
 
         # 超级用户检查：拥有 "*" 权限可以访问所有菜单
         if self._is_superuser(user_perm_names):
@@ -174,7 +174,6 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
             "component",
             "icon",
             "redirect",
-            "is_active",
             "is_hidden",
             "is_cached",
             "is_affix",

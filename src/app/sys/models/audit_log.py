@@ -1,11 +1,13 @@
 from datetime import datetime
 from enum import IntEnum
+from typing import Literal
 
 import sqlalchemy as sa
 from sqlmodel import Field
 
-from src.core.mixins import BaseMixin, PrimaryKeyMixin
+from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
 
 
@@ -46,12 +48,14 @@ class AuditLogBase(BaseMixin):
     )
 
 
-class AuditLog(PrimaryKeyMixin, AuditLogBase, table=True):  # type: ignore[misc]
+class AuditLog(AuditLogBase, DataTableMixin, table=True):  # type: ignore[misc]
     """
     AuditLog 数据库表模型
     """
 
-    __tablename__ = "audit_logs"
+    __tablename__: Literal["audit_logs"] = "audit_logs"
+
+    __schema__ = SchemaType.SYS.value
 
 
 AuditLogCreate = ModelFactory(AuditLogBase).for_create()

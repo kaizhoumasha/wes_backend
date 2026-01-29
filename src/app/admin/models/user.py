@@ -9,8 +9,9 @@ from typing import Literal
 from sqlmodel import Field
 
 from src.app.admin.models.role import RoleResponse
-from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 
 
 class UserBase(BaseMixin):
@@ -21,7 +22,7 @@ class UserBase(BaseMixin):
     full_name: str | None = Field(default=None, max_length=100)
 
 
-class User(UserBase, DataTableMixin, table=True):
+class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
     """
     用户数据库表模型
 
@@ -29,9 +30,9 @@ class User(UserBase, DataTableMixin, table=True):
     """
 
     __tablename__: Literal["users"] = "users"
+    __schema__ = SchemaType.SYS.value  # 系统管理表
 
     hashed_password: str = Field(max_length=255)
-    is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
     is_multi_login: bool = Field(default=False)  # 是否允许多端登录
 
@@ -45,14 +46,11 @@ class UserCreate(ModelFactory(UserBase).for_create()):
 class UserUpdate(ModelFactory(UserBase).for_update()):
     """用户更新 Schema - 所有字段可选"""
 
-    is_active: bool | None = None
-
 
 class UserResponse(UserBase):
     """用户响应 Schema - 返回给客户端"""
 
     id: int
-    is_active: bool
     is_superuser: bool
     is_multi_login: bool
     roles: list[RoleResponse] = Field(default_factory=list)

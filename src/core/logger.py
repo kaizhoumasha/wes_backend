@@ -141,7 +141,7 @@ def setup_logger() -> None:
         retention=rotation_day,
         compression=log_compression,
         encoding="utf-8",
-        enqueue=True,
+        enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
         backtrace=True,
         diagnose=is_debug,
         filter=add_request_id_filter,
@@ -155,7 +155,7 @@ def setup_logger() -> None:
         retention=rotation_day,
         compression=log_compression,
         encoding="utf-8",
-        enqueue=True,
+        enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
         backtrace=True,
         diagnose=True,
         filter=add_request_id_filter,
@@ -170,7 +170,7 @@ def setup_logger() -> None:
             rotation=rotation_size,
             retention=rotation_day,
             compression=log_compression,
-            enqueue=True,
+            enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
             filter=add_request_id_filter,
         )
 

@@ -12,12 +12,15 @@ SQLModel Mixin 模块
     tree.py          - 树形结构 Mixin
     repr.py          - Repr Mixin
     optimistic_lock.py - 乐观锁 Mixin
+    schema.py        - Schema Mixin (PostgreSQL schema 支持)
     composite.py     - 组合 Mixin (StandardMixin, AuditableMixin, EnterpriseMixin, DataTableMixin)
 
 使用示例:
-    from src.core.mixins import DataTableMixin
+    from src.core.mixins import DataTableMixin, SchemaMixin
+    from src.database.schema_conf import SchemaType
 
-    class User(DataTableMixin, table=True):
+    class User(SchemaMixin, DataTableMixin, table=True):
+        __schema__ = SchemaType.AUTH.value
         username: str
         email: str
 """
@@ -26,6 +29,7 @@ SQLModel Mixin 模块
 # ==================== 审计 Mixin (Model 层) ====================
 from src.core.mixins.audit import AuditMixin
 from src.core.mixins.base import BaseMixin
+from src.core.mixins.schema import SchemaMixin
 
 # ==================== 组合 Mixin ====================
 from src.core.mixins.composite import (
@@ -66,6 +70,7 @@ __all__ = [
     "OptimisticLockMixin",
     "PrimaryKeyMixin",
     "ReprMixin",
+    "SchemaMixin",
     "SoftDeleteMixin",
     "StandardMixin",
     "TimestampMixin",

@@ -13,6 +13,7 @@ from sqlalchemy.orm import DeclarativeBase
 # 导入 SQLModel 以确保模型被注册
 from src.core.conf import settings
 from src.core.logger import logger
+from src.database.schema_conf import get_schema_search_path
 
 # 推荐的命名约定，防止 Alembic 自动生成迁移时出现未命名约束问题
 naming_convention = {
@@ -36,6 +37,8 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] | None = None
 async def init_db() -> None:
     """
     初始化数据库连接
+
+    配置自定义 schema 搜索路径，避免使用默认的 public schema。
     """
     global engine, AsyncSessionLocal
 
@@ -47,6 +50,12 @@ async def init_db() -> None:
         max_overflow=50,  # 增加溢出连接数（从 10 -> 50）
         pool_recycle=3600,
         pool_timeout=30,  # 添加连接超时时间
+        # 设置 schema 搜索路径
+        connect_args={
+            "server_settings": {
+                "search_path": get_schema_search_path()
+            }
+        },
     )
 
     AsyncSessionLocal = async_sessionmaker(
@@ -65,7 +74,7 @@ async def init_db() -> None:
     #         await conn.run_sync(SQLModel.metadata.create_all)
     #         # 如果有使用 Base 的传统 SQLAlchemy 模型，也创建它们
     #         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database connection initialized successfully")
+    logger.info(f"Database connection initialized successfully with search_path: {get_schema_search_path()}")
 
 
 async def close_db() -> None:

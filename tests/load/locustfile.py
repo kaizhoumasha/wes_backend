@@ -285,7 +285,8 @@ class WriteUser(HttpUser):
         """更新随机用户"""
         if EXISTING_USER_IDS:
             user_id = random.choice(EXISTING_USER_IDS)
-            update_data = {"is_active": random.choice([True, False])}
+            # 更新用户的其他字段（不再使用 is_active）
+            update_data = {"full_name": f"User {random.randint(1, 1000)}"}
             self.client.put(f"/api/v1/users/{user_id}", json=update_data)
         else:
             # 没有可用的用户 ID，访问健康检查

@@ -24,9 +24,11 @@ class TreeRepository[T](BaseRepository[T]):
         parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
         where_clauses = [parent_id_attr == parent_id]
 
-        is_active_attr = getattr(self.model, "is_active", None)
-        if not include_inactive and is_active_attr is not None:
-            where_clauses.append(is_active_attr)
+        # 使用软删除控制状态
+        if not include_inactive:
+            is_deleted_attr = getattr(self.model, "is_deleted", None)
+            if is_deleted_attr is not None:
+                where_clauses.append(is_deleted_attr == False)  # noqa: E712
 
         sort_order_attr = self.model.sort_order  # type: ignore[attr-defined]
         _, children = await self.get_list(

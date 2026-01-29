@@ -71,7 +71,7 @@ class OptimisticLockMixin(BaseMixin):
         sa_column_kwargs={
             "nullable": False,
             "comment": "版本号",
-            "default": 0,
+            "server_default": "0",
         },
     )
 

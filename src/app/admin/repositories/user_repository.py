@@ -74,7 +74,7 @@ class UserRepository(BaseRepository[User]):
         self, db: AsyncSession, limit: int | None = None
     ) -> list[User]:
         """
-        获取激活用户列表
+        获取激活用户列表（未被软删除的用户）
 
         Args:
             db: 数据库会话
@@ -84,13 +84,13 @@ class UserRepository(BaseRepository[User]):
             用户列表
         """
         _, users = await self.get_list(
-            db, limit=limit or 1000, where_clauses_raw=[User.is_active]
+            db, limit=limit or 1000, where_clauses_raw=[User.is_deleted == False]  # noqa: E712
         )
         return users
 
     async def count_active(self, db: AsyncSession) -> int:
         """
-        统计激活用户数量
+        统计激活用户数量（未被软删除的用户）
 
         Args:
             db: 数据库会话
@@ -98,7 +98,7 @@ class UserRepository(BaseRepository[User]):
         Returns:
             激活用户数量
         """
-        return await self.count(db, where_clauses=[User.is_active])
+        return await self.count(db, where_clauses=[User.is_deleted == False])  # noqa: E712
 
 
 # 单例模式的仓库实例

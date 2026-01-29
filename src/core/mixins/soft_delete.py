@@ -36,7 +36,14 @@ class SoftDeleteMixin(BaseMixin):
         default=None,
         sa_column_kwargs={"nullable": True, "comment": "删除时间"},
     )
-    is_deleted: bool = Field(default=False, sa_column_kwargs={"comment": "是否已删除"})
+    is_deleted: bool = Field(
+        default=False,
+        sa_column_kwargs={
+            "nullable": False,
+            "comment": "是否已删除",
+            "server_default": "FALSE",
+        },
+    )
 
     def soft_delete(self, deleted_by: int | None = None) -> None:
         """

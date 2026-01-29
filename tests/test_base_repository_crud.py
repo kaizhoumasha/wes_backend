@@ -31,7 +31,7 @@ class CrudTestModel(SQLModel, table=True):
     code: str = Field(index=True)
     name: str
     value: int = 0
-    is_active: bool = True
+    is_deleted: bool = False
 
 
 class TestCrudOperations:
@@ -51,7 +51,7 @@ class TestCrudOperations:
         assert instance.code == "TEST001"
         assert instance.name == "Test Item"
         assert instance.value == 100
-        assert instance.is_active is True  # 默认值
+        assert instance.is_deleted is False  # 默认值
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, db_session: AsyncSession):
@@ -108,19 +108,19 @@ class TestCrudOperations:
         """测试带原始过滤条件获取列表"""
         # 创建多条记录
         await self.repo.create(
-            db_session, {"code": "TEST001", "name": "Item 1", "is_active": True}
+            db_session, {"code": "TEST001", "name": "Item 1", "is_deleted": False}
         )
         await self.repo.create(
-            db_session, {"code": "TEST002", "name": "Item 2", "is_active": False}
+            db_session, {"code": "TEST002", "name": "Item 2", "is_deleted": True}
         )
         await self.repo.create(
-            db_session, {"code": "TEST003", "name": "Item 3", "is_active": True}
+            db_session, {"code": "TEST003", "name": "Item 3", "is_deleted": False}
         )
         await db_session.commit()
 
-        # 只获取 is_active=True 的记录
+        # 只获取未删除的记录
         total, items = await self.repo.get_list(
-            db_session, limit=100, where_clauses_raw=[CrudTestModel.is_active == True]  # noqa: E712
+            db_session, limit=100, where_clauses_raw=[CrudTestModel.is_deleted == False]  # noqa: E712
         )
 
         assert total == 2
@@ -168,7 +168,7 @@ class TestCrudOperations:
                 {
                     "code": f"TEST{i:03d}",
                     "name": f"Item {i}",
-                    "is_active": i % 2 == 0,
+                    "is_deleted": i % 2 != 0,
                 },
             )
         await db_session.commit()
@@ -176,14 +176,14 @@ class TestCrudOperations:
         # 使用过滤条件
         filters = FilterGroup(
             conditions=[
-                FilterCondition(field="is_active", op=FilterOperator.EQ, value=True)
+                FilterCondition(field="is_deleted", op=FilterOperator.EQ, value=False)
             ]
         )
 
         total, items = await self.repo.get_list(db_session, filters=filters)
 
-        assert total == 5  # 只有偶数索引的记录
-        assert all(item.is_active for item in items)
+        assert total == 5  # 只有未删除的记录
+        assert all(not item.is_deleted for item in items)
 
     @pytest.mark.asyncio
     async def test_get_list_with_sort(self, db_session: AsyncSession):
@@ -291,14 +291,14 @@ class TestCrudOperations:
                 {
                     "code": f"TEST{i:03d}",
                     "name": f"Item {i}",
-                    "is_active": i % 2 == 0,
+                    "is_deleted": i % 2 != 0,
                 },
             )
         await db_session.commit()
 
-        # 统计 is_active=True 的数量
+        # 统计未删除记录的数量
         count = await self.repo.count(
-            db_session, where_clauses=[CrudTestModel.is_active == True]  # noqa: E712
+            db_session, where_clauses=[CrudTestModel.is_deleted == False]  # noqa: E712
         )
         assert count == 5
 

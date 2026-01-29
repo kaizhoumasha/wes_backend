@@ -9,6 +9,7 @@ from src.app.demo.models.demo_product_list import (
 )
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, OptimisticLockMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 
 
 class DemoProductBase(BaseMixin):
@@ -44,6 +45,7 @@ class DemoProduct(DemoProductBase, EnterpriseMixin, SoftDeleteMixin, DataTableMi
     """
 
     __tablename__ = "demo_products"  # type: ignore[misc]
+    __schema__ = SchemaType.BIZ.value  # 业务表
 
     # 定义部分唯一索引：只对未删除的记录强制 name 唯一性
     # 这解决了软删除与唯一约束冲突的问题

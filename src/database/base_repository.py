@@ -62,7 +62,7 @@ class BaseRepository[T]:
         class UserRepository(BaseRepository[User]):
             async def find_active_users(self, db):
                 _, users = await self.get_list(
-                    db, limit=1000, where_clauses_raw=[User.is_active == True]
+                    db, limit=1000, where_clauses_raw=[User.is_deleted == False]
                 )
                 return users
 
@@ -533,7 +533,7 @@ class BaseRepository[T]:
             # 使用原始 where_clauses (用于向后兼容)
             total, items = await repo.get_list(
                 db,
-                where_clauses_raw=[User.is_active == True],
+                where_clauses_raw=[User.is_deleted == False],
                 order_by_raw=[User.created_at.desc()]
             )
         """
@@ -944,7 +944,7 @@ class BaseRepository[T]:
 
         Example:
             exists = await repo.exists(db, username="test")
-            exists = await repo.exists(db, email="test@example.com", is_active=True)
+            exists = await repo.exists(db, email="test@example.com", is_deleted=False)
         """
         if not kwargs:
             return False
@@ -966,7 +966,7 @@ class BaseRepository[T]:
 
         Example:
             total = await repo.count(db)
-            active_count = await repo.count(db, where_clauses=[User.is_active == True])
+            active_count = await repo.count(db, where_clauses=[User.is_deleted == False])
         """
         query = select(func.count(self._pk_attr))
 
@@ -1062,9 +1062,7 @@ class BaseRepository[T]:
         logger.info(f"恢复 {self._model_name}: id={id}")
         return instance
 
-    async def get_deleted(
-        self, db: AsyncSession, limit: int = 10, offset: int = 0
-    ) -> tuple[int, list[T]]:
+    async def get_deleted(self, db: AsyncSession, limit: int = 10, offset: int = 0) -> tuple[int, list[T]]:
         """
         获取已删除记录列表
 

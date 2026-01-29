@@ -5,6 +5,7 @@ from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
     from src.app.demo.models.demo_product import DemoProduct
@@ -15,7 +16,7 @@ class DemoProductListBase(BaseMixin):
     DemoProduct 基础字段
     """
 
-    product_id: int = Field(sa_column=Column(BigInteger, ForeignKey("demo_products.id", ondelete="CASCADE")))
+    product_id: int = Field(sa_column=Column(BigInteger, ForeignKey("wes_biz.demo_products.id", ondelete="CASCADE")))
     quantity: int = Field(ge=0)
 
 
@@ -33,6 +34,7 @@ class DemoProductList(DemoProductListBase, DataTableMixin, table=True):  # type:
     """
 
     __tablename__ = "demo_product_lists"  # type: ignore[misc]
+    __schema__ = SchemaType.BIZ.value  # 业务表
 
     product: "DemoProduct" = Relationship(back_populates="product_lists")
 

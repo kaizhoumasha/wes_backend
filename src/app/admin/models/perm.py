@@ -36,6 +36,7 @@ from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
 from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
 
 # ==================== Permission 模型 ====================
 
@@ -43,7 +44,7 @@ from src.database.model_factory import ModelFactory
 class PermissionBase(TreeMixin, BaseMixin):
     """权限基础字段"""
 
-    parent_id: int | None = Field(default=None, foreign_key="permissions.id", index=True)
+    parent_id: int | None = Field(default=None, foreign_key="wes_sys.permissions.id", index=True)
 
     name: str = Field(max_length=100, description="权限标识，如 admin:role:create")
     description: str | None = Field(default=None, max_length=255, description="权限描述")
@@ -175,6 +176,7 @@ class Permission(PermissionBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixi
     """权限表"""
 
     __tablename__: Literal["permissions"] = "permissions"
+    __schema__ = SchemaType.SYS.value  # 系统管理表
 
     # 复合索引优化
     __table_args__ = (

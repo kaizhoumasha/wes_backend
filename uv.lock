@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -1567,6 +1567,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "greenlet" },
     { name = "httpx" },
+    { name = "locust" },
     { name = "loguru" },
     { name = "orjson" },
     { name = "psutil" },
@@ -1610,6 +1611,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "greenlet", specifier = ">=3.3.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "locust", specifier = ">=2.43.1" },
     { name = "locust", marker = "extra == 'dev'", specifier = ">=2.33.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "orjson", specifier = ">=3.11.5" },

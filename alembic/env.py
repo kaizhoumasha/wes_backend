@@ -4,6 +4,7 @@
 - 异步数据库操作（asyncpg）
 - SQLModel 模型自动发现
 - 从项目配置读取数据库 URL
+- 多 Schema 支持
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # 导入 SQLModel 以确保所有模型被注册
 from sqlmodel import SQLModel
+from sqlmodel.sql.sqltypes import AutoString
 
 from alembic import context
 
@@ -31,6 +33,9 @@ from src.core.conf import settings
 
 # 如果有使用传统 SQLAlchemy 模型，也需要导入
 from src.database.db import Base
+
+# 导入 Schema 配置
+from src.database.schema_conf import get_all_schemas
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -52,13 +57,43 @@ if config.config_file_name is not None:
 target_metadata = SQLModel.metadata
 
 # 如果有使用 Base 的传统 SQLAlchemy 模型，合并它们的 metadata
-# 注意：这里假设 Base.metadata 和 SQLModel.metadata 是不同的
-# 如果它们共享同一个 metadata，则不需要合并
-if Base.metadata.tables:
+# 注意：只有当 Base.metadata 和 SQLModel.metadata 是不同对象时才需要合并
+if Base.metadata is not SQLModel.metadata and Base.metadata.tables:
     # 将 Base 的表添加到 SQLModel.metadata
     for table in Base.metadata.tables.values():
         if table.name not in target_metadata.tables:
             table.to_metadata(target_metadata)
+
+
+def render_item(type_, obj, autogen_context):
+    """自定义类型渲染函数
+
+    将 SQLModel 的 AutoString 类型渲染为标准的 sa.String()
+    这样生成的迁移文件就不会依赖 SQLModel，更加标准化
+    """
+    if type_ == "type" and isinstance(obj, AutoString):
+        # 收集 AutoString 的所有参数
+        params = []
+
+        # 处理 length 参数
+        if hasattr(obj, "length") and obj.length is not None:
+            params.append(f"length={obj.length}")
+
+        # 处理 collation 参数
+        if hasattr(obj, "collation") and obj.collation is not None:
+            params.append(f"collation={obj.collation!r}")
+
+        # 处理其他可能的参数
+        # SQLAlchemy String 还支持: _warn_on_bytestring, _expect_unicode 等
+        # 但这些通常不需要在迁移中显式指定
+
+        # 构建渲染字符串
+        if params:
+            return f"sa.String({', '.join(params)})"
+        return "sa.String()"
+
+    # 对于其他类型，返回 False 使用默认渲染
+    return False
 
 
 def run_migrations_offline() -> None:
@@ -82,13 +117,43 @@ def run_migrations_offline() -> None:
         # 支持 PostgreSQL 特性
         compare_type=True,
         compare_server_default=True,
+        # 支持多 schema
+        include_schemas=True,
+        # 忽略 TimescaleDB 内部 schema 和表
+        include_object=lambda obj, name, type_, reflected, compare_to: (
+            not (
+                hasattr(obj, "schema")
+                and obj.schema
+                in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
+            )
+        ),
+        # 支持 version_table_schema
+        version_table_schema="wes_sys",
+        # 自定义类型渲染
+        render_item=render_item,
     )
 
     with context.begin_transaction():
+        # 在 offline 模式下也需要生成创建 schema 的 SQL
+        for schema in get_all_schemas():
+            if schema != "public":
+                context.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
+    """
+    运行在线迁移
+
+    在执行迁移前，确保所有自定义 schema 都已创建。
+    """
+    # 在执行迁移前创建所有自定义 schema
+    # 注意：public schema 默认存在，不需要创建
+    for schema in get_all_schemas():
+        if schema != "public":
+            # 使用 exec_driver_sql 执行原生 SQL
+            connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -97,6 +162,21 @@ def do_run_migrations(connection: Connection) -> None:
         compare_server_default=True,
         # 渲染项目中使用的类型
         render_as_batch=False,
+        # 支持多 schema
+        include_schemas=True,
+        # 忽略 TimescaleDB 内部 schema 和表
+        include_object=lambda obj, name, type_, reflected, compare_to: (
+            # 忽略 TimescaleDB 内部 schema 的所有对象
+            not (
+                hasattr(obj, "schema")
+                and obj.schema
+                in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
+            )
+        ),
+        # 支持 version_table_schema（如果需要）
+        version_table_schema="wes_sys",  # 将 alembic_version 表放在 wes_sys schema 下
+        # 自定义类型渲染
+        render_item=render_item,
     )
 
     with context.begin_transaction():
@@ -115,7 +195,7 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
+    async with connectable.begin() as connection:
         await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()

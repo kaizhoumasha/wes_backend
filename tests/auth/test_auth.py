@@ -187,7 +187,6 @@ class TestRBAC:
             email="admin@example.com",
             hashed_password=get_password_hash("admin123"),
             is_superuser=True,
-            is_active=True,
         )
         db.add(superuser)
         await db.commit()
@@ -282,7 +281,6 @@ async def test_user(db: AsyncSession):
         username="testuser",
         email="test@example.com",
         hashed_password=get_password_hash("testpass123"),
-        is_active=True,
         is_superuser=False,
     )
     db.add(user)
