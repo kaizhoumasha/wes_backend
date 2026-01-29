@@ -17,6 +17,23 @@ SET timezone = 'UTC';
 SET search_path TO wes_sys, wes_biz, public;
 
 -- ================================================================
+-- 0. 清空现有数据（避免重复执行导致数据重复）
+-- ================================================================
+-- 使用 TRUNCATE 清空表，会自动重置序列（自增 ID 模式）
+-- 注意：必须先清空子表（关联表），再清空父表
+
+-- 清空关联表（子表）
+TRUNCATE TABLE wes_sys.user_roles CASCADE;
+TRUNCATE TABLE wes_sys.role_permissions CASCADE;
+
+-- 清空主表
+TRUNCATE TABLE wes_sys.users CASCADE;
+TRUNCATE TABLE wes_sys.roles CASCADE;
+TRUNCATE TABLE wes_sys.permissions CASCADE;
+
+RAISE NOTICE '已清空所有基础数据表';
+
+-- ================================================================
 -- 1. 插入基础权限数据
 -- ================================================================
 --
@@ -246,6 +263,33 @@ INSERT INTO user_roles (user_id, role_id) VALUES (6, 5);
 
 
 -- ================================================================
+-- 重置序列值（防止 ID 冲突）
+-- ================================================================
+-- 由于直接指定了 ID 值插入，需要重置序列的当前值
+-- 确保后续插入数据时 ID 不会冲突
+
+-- 重置 permissions 表的序列
+SELECT setval(
+    pg_get_serial_sequence('wes_sys.permissions', 'id'),
+    (SELECT MAX(id) FROM wes_sys.permissions),
+    true
+);
+
+-- 重置 roles 表的序列
+SELECT setval(
+    pg_get_serial_sequence('wes_sys.roles', 'id'),
+    (SELECT MAX(id) FROM wes_sys.roles),
+    true
+);
+
+-- 重置 users 表的序列
+SELECT setval(
+    pg_get_serial_sequence('wes_sys.users', 'id'),
+    (SELECT MAX(id) FROM wes_sys.users),
+    true
+);
+
+-- ================================================================
 -- 初始化完成
 -- ================================================================
 
@@ -256,9 +300,9 @@ DECLARE
     role_count INT;
     perm_count INT;
 BEGIN
-    SELECT COUNT(*) INTO user_count FROM users;
-    SELECT COUNT(*) INTO role_count FROM roles;
-    SELECT COUNT(*) INTO perm_count FROM permissions;
+    SELECT COUNT(*) INTO user_count FROM wes_sys.users;
+    SELECT COUNT(*) INTO role_count FROM wes_sys.roles;
+    SELECT COUNT(*) INTO perm_count FROM wes_sys.permissions;
 
     RAISE NOTICE '==================================================';
     RAISE NOTICE '数据库初始化完成！';
@@ -266,6 +310,7 @@ BEGIN
     RAISE NOTICE '用户数量: %', user_count;
     RAISE NOTICE '角色数量: %', role_count;
     RAISE NOTICE '权限数量: %', perm_count;
+    RAISE NOTICE '序列已重置，下次插入将使用正确的 ID';
     RAISE NOTICE '--------------------------------------------------';
     RAISE NOTICE '默认管理员账户:';
     RAISE NOTICE '  用户名: admin';
