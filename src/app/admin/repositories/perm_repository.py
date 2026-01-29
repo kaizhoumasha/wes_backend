@@ -39,7 +39,7 @@ class PermissionRepository(TreeRepository[Permission]):
         where_clauses = [Permission.type == "menu"]
         self._add_active_filter(where_clauses, active_only)
         if not include_hidden:
-            where_clauses.append(not Permission.is_hidden)
+            where_clauses.append(Permission.is_hidden.is_(False))  # type: ignore[arg-type]
 
         _, items = await self.get_list(
             db, limit=1000, where_clauses_raw=where_clauses, order_by_raw=[Permission.sort_order]

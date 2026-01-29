@@ -41,6 +41,22 @@ class FilterGroup(BaseModel):
     couple: Literal["and", "or", "not"] = "and"
     conditions: list[FilterCondition | FilterGroup] = Field(default_factory=list)
 
+    class Config:
+        """配置"""
+
+        json_schema_extra: ClassVar[dict[str, dict[str, Any]]] = {
+            "example": {
+                "conditions": [
+                    {
+                        "field": "id",
+                        "op": "gt",
+                        "value": 1,
+                    }
+                ],
+                "couple": "and",
+            }
+        }
+
 
 class SortField(BaseModel):
     """排序字段"""

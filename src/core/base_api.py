@@ -57,6 +57,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.max_depth = max_depth
         self.perm_prefix = f"{module_name}:{model.__name__.lower()}"
         self.resource_name = model.__name__
+        self.supports_soft_delete = hasattr(model, "is_deleted")
 
         if hasattr(service, "response_schema"):
             service.response_schema = response_schema
@@ -250,6 +251,9 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             cache: CacheDep,
             options: Annotated[QueryOptions, Body(...)],
         ) -> dict[str, Any]:
+            # 根据模型是否支持软删除来决定 include_deleted 的值
+            include_deleted = options.include_deleted if self.supports_soft_delete else False
+
             total, resources = await self.service.get_list(
                 db,
                 cache,
@@ -258,7 +262,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 options.filters,
                 options.sort,
                 options.max_depth,
-                options.include_deleted,
+                include_deleted,
             )
             items = self.service.to_list_response(resources, self.response_schema)
             items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
@@ -271,7 +275,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_soft_delete_routes(self) -> None:
         """注册软删除相关路由（仅当模型支持时）"""
         # 检测模型是否支持软删除
-        if not hasattr(self.model, "is_deleted"):
+        if not self.supports_soft_delete:
             return
 
         # 1. 恢复接口
