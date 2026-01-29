@@ -128,8 +128,8 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
         if perm.name in user_permissions:
             return True
 
-        # 检查是否有子菜单权限
-        if perm.is_active and not perm.is_hidden:
+        # 检查是否有子菜单权限（只检查未删除且未隐藏的菜单）
+        if not perm.is_deleted and not perm.is_hidden:
             # 查找所有子菜单（type=menu 且 parent_id=perm.id）
             return any(
                 child_perm.type == "menu" and child_perm.parent_id == perm.id and child_perm.name in user_permissions

@@ -6,10 +6,10 @@
 
 from typing import Literal
 
-from sqlmodel import Field
+from sqlmodel import Field, Index
 
 from src.app.admin.models.perm import PermissionResponse
-from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 
 # ==================== Role 模型 ====================
@@ -18,15 +18,29 @@ from src.database.model_factory import ModelFactory
 class RoleBase(BaseMixin):
     """角色基础字段"""
 
-    name: str = Field(max_length=100, unique=True, index=True)
+    name: str = Field(max_length=100, index=True)
     description: str | None = Field(default=None, max_length=255)
-    is_active: bool = Field(default=True)
 
 
-class Role(RoleBase, DataTableMixin, table=True):  # type: ignore[misc]
+class Role(RoleBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """角色表"""
 
     __tablename__: Literal["roles"] = "roles"
+
+    __table_args__ = (
+        # 角色名称唯一索引（软删除后可重用名称）
+        Index(
+            "ux_roles_name_deleted",  # 索引名称
+            "name",  # 索引列
+            unique=True,  # 唯一索引
+            # PostgreSQL 语法（推荐）
+            postgresql_where="NOT is_deleted",
+            # SQLite 语法
+            # sqlite_where="NOT is_deleted",
+            # SQL Server 语法
+            # mssql_where="NOT is_deleted",
+        ),
+    )
 
 
 # ==================== Schemas ====================

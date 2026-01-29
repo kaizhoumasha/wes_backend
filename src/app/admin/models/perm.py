@@ -34,7 +34,7 @@ from sqlalchemy import JSON, Index
 from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
-from src.core.mixins import BaseMixin, DataTableMixin, TreeMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
 from src.database.model_factory import ModelFactory
 
 # ==================== Permission 模型 ====================
@@ -45,7 +45,7 @@ class PermissionBase(TreeMixin, BaseMixin):
 
     parent_id: int | None = Field(default=None, foreign_key="permissions.id", index=True)
 
-    name: str = Field(max_length=100, unique=True, index=True, description="权限标识，如 admin:role:create")
+    name: str = Field(max_length=100, description="权限标识，如 admin:role:create")
     description: str | None = Field(default=None, max_length=255, description="权限描述")
 
     # 基础分类
@@ -68,8 +68,7 @@ class PermissionBase(TreeMixin, BaseMixin):
     redirect: str | None = Field(default=None, max_length=255, description="重定向路径")
     title: str | None = Field(default=None, max_length=100, description="菜单标题/页面标题（用于前端显示）")
 
-    # 状态控制
-    is_active: bool = Field(default=True, description="是否启用")
+    # 菜单显示控制
     is_hidden: bool = Field(default=False, description="是否隐藏（用于菜单）")
     is_cached: bool = Field(default=False, description="是否缓存路由（用于菜单 keepAlive）")
     is_affix: bool = Field(default=False, description="是否固定标签页（affix）")
@@ -172,19 +171,33 @@ class PermissionBase(TreeMixin, BaseMixin):
         return self
 
 
-class Permission(PermissionBase, DataTableMixin, table=True):  # type: ignore[misc]
+class Permission(PermissionBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """权限表"""
 
     __tablename__: Literal["permissions"] = "permissions"
 
     # 复合索引优化
     __table_args__ = (
-        # 组合查询优化：type + is_active
-        Index("ix_permissions_type_active", "type", "is_active"),
-        # 菜单排序优化：parent_id + sort_order
-        Index("ix_permissions_parent_sort", "parent_id", "sort_order"),
-        # API 权限查询优化：method + path
-        Index("ix_permissions_api", "method", "path"),
+        # 组合查询优化：type + is_deleted（替代 type + is_active）
+        Index("ix_perm_type_deleted", "type", "is_deleted"),
+        # 菜单排序优化：parent_id + sort_order + is_deleted
+        Index("ix_perm_parent_sort_deleted", "parent_id", "sort_order", "is_deleted"),
+        # API 权限查询优化：method + path + is_deleted
+        Index("ix_perm_api_deleted", "method", "path", "is_deleted"),
+        # 菜单查询优化：type + is_hidden + is_deleted
+        Index("ix_perm_menu_deleted", "type", "is_hidden", "is_deleted"),
+        # 权限名称唯一索引（软删除后可重用名称）
+        Index(
+            "ux_perm_name_deleted",  # 索引名称
+            "name",  # 索引列
+            unique=True,  # 唯一索引
+            # PostgreSQL 语法（推荐）
+            postgresql_where="NOT is_deleted",
+            # SQLite 语法
+            # sqlite_where="NOT is_deleted",
+            # SQL Server 语法
+            # mssql_where="NOT is_deleted",
+        ),
     )
 
 

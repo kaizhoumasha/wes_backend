@@ -105,15 +105,23 @@ async def _collect_user_permissions(user: User) -> set[str]:
 
     Returns:
         权限标识集合，超级用户返回 {SUPERUSER_PERMISSION}
+
+    优化说明:
+        - 使用 is_deleted 替代 is_active 简化状态管理
+        - is_deleted=False 表示角色/权限启用
+        - is_deleted=True 表示角色/权限已禁用/删除
     """
     if user.is_superuser:
         return {SUPERUSER_PERMISSION}
 
     permissions = set()
     for role in user.roles:
-        if role.is_active:
+        # 只收集未删除的角色权限
+        if not role.is_deleted:
             for perm in role.permissions:
-                permissions.add(perm.name)
+                # 只收集未删除的权限
+                if not perm.is_deleted:
+                    permissions.add(perm.name)
     return permissions
 
 
