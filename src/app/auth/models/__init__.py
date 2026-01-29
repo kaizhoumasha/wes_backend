@@ -11,7 +11,15 @@
 # ==================== 处理跨模块引用 ====================
 # 导入 admin 模块的 UserResponse 来解析 LoginResponse 的前向引用
 
-from .auth import LoginRequest, LoginResponse, RefreshTokenResponse
+from .auth import (
+    ActiveSessionsResponse,
+    LoginRequest,
+    LoginResponse,
+    LogoutResponse,
+    RefreshTokenResponse,
+    RevokeSessionResponse,
+    SessionInfo,
+)
 
 # 重建 LoginResponse 模型，解析 user 字段的类型注解
 LoginResponse.model_rebuild()
@@ -22,4 +30,8 @@ __all__ = [
     "LoginRequest",
     "LoginResponse",
     "RefreshTokenResponse",
+    "SessionInfo",
+    "ActiveSessionsResponse",
+    "LogoutResponse",
+    "RevokeSessionResponse",
 ]

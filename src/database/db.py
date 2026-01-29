@@ -11,8 +11,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 # 导入 SQLModel 以确保模型被注册
-from sqlmodel import SQLModel
-
 from src.core.conf import settings
 from src.core.logger import logger
 
@@ -59,14 +57,14 @@ async def init_db() -> None:
         autoflush=False,
     )
 
-    # 尝试连接数据库，验证连接是否成功
-    async with engine.begin() as conn:
-        # 仅在开发环境或测试环境可以考虑自动创建表，生产环境建议使用 Alembic
-        if settings.APP_DEBUG:
-            # 使用 SQLModel.metadata 创建所有 SQLModel 表
-            await conn.run_sync(SQLModel.metadata.create_all)
-            # 如果有使用 Base 的传统 SQLAlchemy 模型，也创建它们
-            await conn.run_sync(Base.metadata.create_all)
+    # # 尝试连接数据库，验证连接是否成功
+    # async with engine.begin() as conn:
+    #     # 仅在开发环境或测试环境可以考虑自动创建表，生产环境建议使用 Alembic
+    #     if settings.APP_DEBUG:
+    #         # 使用 SQLModel.metadata 创建所有 SQLModel 表
+    #         await conn.run_sync(SQLModel.metadata.create_all)
+    #         # 如果有使用 Base 的传统 SQLAlchemy 模型，也创建它们
+    #         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database connection initialized successfully")
 
 

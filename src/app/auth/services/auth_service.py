@@ -5,24 +5,36 @@
 - 用户登录
 - 用户登出
 - 令牌刷新
-- 用户验证
+- 会话管理
+- 强制登出所有设备
 """
+
+import json
+from datetime import UTC, datetime
 
 from fastapi import Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import User
-from src.app.auth.models import LoginResponse, RefreshTokenResponse
+from src.app.admin.models import User, UserResponse
+from src.app.auth.models import (
+    ActiveSessionsResponse,
+    LoginResponse,
+    RefreshTokenResponse,
+    SessionInfo,
+)
 from src.core.conf import settings
 from src.core.exceptions import AuthException, NotFoundException
 from src.core.logger import logger
 from src.core.security import (
+    USER_SESSION_PREFIX,
+    TokenType,
     create_access_token,
     create_new_token,
     create_refresh_token,
     jwt_decode,
+    revoke_all_user_tokens,
     revoke_token,
     verify_password,
 )
@@ -99,6 +111,11 @@ class AuthService:
         # 提交事务（updated_at 会通过 SQLAlchemy 事件自动更新）
         await db.commit()
 
+        # 验证用户 ID 有效性
+        if user.id is None:
+            logger.error(f"User {username} has no ID after database query")
+            raise AuthException("用户数据异常，请联系管理员")
+
         # 创建访问令牌
         access_data = await create_access_token(
             user.id,
@@ -107,11 +124,12 @@ class AuthService:
             email=user.email,
         )
 
-        # 创建刷新令牌
+        # 创建刷新令牌（传入 access token JTI 建立关联）
         refresh_data = await create_refresh_token(
-            access_data.session_uuid,
-            user.id,
+            session_uuid=access_data.session_uuid,
+            user_id=user.id,
             multi_login=user.is_multi_login,
+            access_jti=access_data.jti,
         )
 
         # 设置刷新令牌到 HttpOnly Cookie
@@ -129,6 +147,8 @@ class AuthService:
         return LoginResponse(
             access_token=access_data.access_token,
             refresh_token=refresh_data.refresh_token,
+            access_token_jti=access_data.jti,
+            refresh_token_jti=refresh_data.jti,
             access_token_expire_time=access_data.access_token_expire_time,
             refresh_token_expire_time=refresh_data.refresh_token_expire_time,
             session_uuid=access_data.session_uuid,
@@ -139,6 +159,7 @@ class AuthService:
     async def refresh_token(
         db: AsyncSession,
         request: Request,
+        response: Response,
     ) -> RefreshTokenResponse:
         """
         刷新访问令牌
@@ -146,6 +167,7 @@ class AuthService:
         Args:
             db: 数据库会话
             request: FastAPI 请求对象
+            response: FastAPI 响应对象
 
         Returns:
             RefreshTokenResponse 对象
@@ -164,9 +186,18 @@ class AuthService:
         except AuthException:
             raise AuthException("Refresh Token 无效，请重新登录") from None
 
+        # 验证 token 类型
+        if token_payload.token_type != TokenType.REFRESH:
+            raise AuthException("Token 类型错误")
+
+        # 获取用户 ID（安全类型转换）
+        from src.core.security import _safe_user_id_from_token
+
+        user_id = _safe_user_id_from_token(token_payload)
+
         # 查询用户（预加载角色）
         result = await db.execute(
-            select(User).where(User.id == token_payload.id).options(selectinload(User.roles))  # type: ignore[arg-type]
+            select(User).where(User.id == user_id).options(selectinload(User.roles))  # type: ignore[arg-type]
         )
         user = result.scalar_one_or_none()
 
@@ -175,6 +206,11 @@ class AuthService:
 
         if not user.is_active:
             raise AuthException("用户已被禁用")
+
+        # 验证用户 ID 有效性
+        if user.id is None:
+            logger.error(f"User ID {user_id} has no ID after database query")
+            raise AuthException("用户数据异常，请联系管理员")
 
         # 创建新令牌
         new_token_data = await create_new_token(
@@ -187,74 +223,252 @@ class AuthService:
         )
 
         # 更新 Cookie 中的刷新令牌
-        # 注意：这里需要从响应对象获取，但在 FastAPI 依赖注入中
-        # 我们可能需要通过其他方式处理
+        response.set_cookie(
+            key="refresh_token",
+            value=new_token_data.new_refresh_token,
+            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
+            httponly=True,
+            secure=not settings.APP_DEBUG,
+            samesite="lax",
+        )
 
         return RefreshTokenResponse(
             access_token=new_token_data.new_access_token,
             refresh_token=new_token_data.new_refresh_token,
+            access_token_jti=new_token_data.new_access_jti,
+            refresh_token_jti=new_token_data.new_refresh_jti,
             access_token_expire_time=new_token_data.new_access_token_expire_time,
             refresh_token_expire_time=new_token_data.new_refresh_token_expire_time,
             session_uuid=new_token_data.session_uuid,
         )
 
     @staticmethod
-    async def logout(request: Request, response: Response) -> None:
+    async def logout(request: Request, response: Response, current_user_id: int) -> None:
         """
-        用户登出
+        用户登出（撤销当前会话）
 
         Args:
             request: FastAPI 请求对象
             response: FastAPI 响应对象
+            current_user_id: 当前用户 ID
         """
-        # 尝试获取并撤销令牌
+        if not is_redis_available():
+            logger.warning("Redis 不可用，登出时无法清理令牌")
+            response.delete_cookie("refresh_token")
+            return
+
+        redis_client = get_redis()
+        if redis_client is None:
+            logger.warning("Redis 连接失败，登出时无法清理令牌")
+            response.delete_cookie("refresh_token")
+            return
+
+        # 尝试获取并撤销访问令牌和刷新令牌
         try:
             auth_header = request.headers.get("Authorization")
             if auth_header and auth_header.startswith("Bearer "):
                 token = auth_header.split(" ")[1]
                 token_payload = jwt_decode(token)
-                await revoke_token(token_payload.id, token_payload.session_uuid)
-        except Exception as e:
-            logger.warning(f"登出时撤销令牌失败: {e}")
-        finally:
-            # 删除刷新令牌 Cookie
-            response.delete_cookie("refresh_token")
 
-            # 如果 Redis 可用，也删除刷新令牌
-            if is_redis_available():
-                refresh_token = request.cookies.get("refresh_token")
-                if refresh_token:
-                    try:
-                        token_payload = jwt_decode(refresh_token)
-                        redis_client = get_redis()
-                        if redis_client:
-                            await redis_client.delete(
-                                f"{settings.JWT_REFRESH_TOKEN_REDIS_PREFIX}:{token_payload.id}:{token_payload.session_uuid}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"删除刷新令牌失败: {e}")
+                # 1. 删除关联的 Refresh Token（使用辅助函数）
+                from src.core.security import _delete_refresh_token_and_mapping
+
+                await _delete_refresh_token_and_mapping(
+                    redis_client,
+                    current_user_id,
+                    token_payload.jti,
+                )
+
+                # 2. 撤销 Access Token（包括黑名单、会话删除等）
+                await revoke_token(
+                    user_id=current_user_id,
+                    session_uuid=token_payload.session_uuid,
+                    jti=token_payload.jti,
+                )
+
+                logger.info(f"用户 {current_user_id} 登出成功，撤销 session: {token_payload.session_uuid}")
+        except Exception as e:
+            logger.warning(f"登出时撤销访问令牌失败: {e}")
+
+        # 删除刷新令牌 Cookie
+        response.delete_cookie("refresh_token")
 
     @staticmethod
-    def _user_to_response(user: User) -> dict:
+    async def logout_all(response: Response, current_user_id: int) -> int:
         """
-        将 User 对象转换为响应字典
+        强制登出所有设备（撤销所有会话）
+
+        Args:
+            response: FastAPI 响应对象
+            current_user_id: 当前用户 ID
+
+        Returns:
+            撤销的令牌数量
+        """
+        # 撤销用户所有令牌
+        revoked_count = await revoke_all_user_tokens(current_user_id)
+
+        # 删除刷新令牌 Cookie
+        response.delete_cookie("refresh_token")
+
+        logger.info(f"用户 {current_user_id} 强制登出所有设备，撤销 {revoked_count} 个令牌")
+        return revoked_count
+
+    @staticmethod
+    async def get_active_sessions(current_user_id: int) -> ActiveSessionsResponse:
+        """
+        获取用户的所有活跃会话
+
+        Args:
+            current_user_id: 当前用户 ID
+
+        Returns:
+            ActiveSessionsResponse 对象
+        """
+        sessions: list[SessionInfo] = []
+
+        if not is_redis_available():
+            return ActiveSessionsResponse(total=0, sessions=[])
+
+        redis_client = get_redis()
+        if redis_client is None:
+            return ActiveSessionsResponse(total=0, sessions=[])
+
+        try:
+            # 扫描用户的所有会话
+            session_pattern = f"{USER_SESSION_PREFIX}:{current_user_id}:*"
+            session_keys = []
+
+            # 使用 scan_iter 获取所有匹配的键
+            session_keys = [key async for key in redis_client.scan_iter(match=session_pattern)]
+
+            # 批量获取会话数据
+            if session_keys:
+                session_data_list = await redis_client.mget(session_keys)
+
+                for key, data_str in zip(session_keys, session_data_list, strict=False):
+                    if data_str:
+                        try:
+                            session_data = json.loads(data_str)
+
+                            # 提取 session_uuid（从 key 中解析）
+                            # key 格式: auth:user_session:{user_id}:{session_uuid}
+                            session_uuid = key.split(":")[-1]
+
+                            # 解析时间戳
+                            iat = session_data.get("iat", 0)
+                            created_at = datetime.fromtimestamp(iat, UTC)
+
+                            # 获取额外信息
+                            extra = session_data.get("extra", {})
+                            username = extra.get("username", "Unknown")
+                            email = extra.get("email", "")
+
+                            # 构建设备信息
+                            device_info = {
+                                "username": username,
+                                "email": email,
+                            }
+
+                            sessions.append(
+                                SessionInfo(
+                                    session_uuid=session_uuid,
+                                    jti=session_data.get("jti", ""),
+                                    created_at=created_at,
+                                    device_info=device_info,
+                                    last_active=created_at,  # TODO: 可以添加最后活跃时间追踪
+                                )
+                            )
+
+                        except (json.JSONDecodeError, ValueError, KeyError) as e:
+                            logger.warning(f"解析会话数据失败 [{key}]: {e}")
+                            continue
+
+            # 按创建时间倒序排列
+            sessions.sort(key=lambda s: s.created_at, reverse=True)
+
+            logger.info(f"用户 {current_user_id} 有 {len(sessions)} 个活跃会话")
+            return ActiveSessionsResponse(total=len(sessions), sessions=sessions)
+
+        except Exception as e:
+            logger.error(f"获取活跃会话失败: {e}")
+            return ActiveSessionsResponse(total=0, sessions=[])
+
+    @staticmethod
+    async def revoke_session(current_user_id: int, session_uuid: str) -> bool:
+        """
+        撤销指定会话
+
+        Args:
+            current_user_id: 当前用户 ID
+            session_uuid: 会话 UUID
+
+        Returns:
+            是否成功撤销
+        """
+        if not is_redis_available():
+            raise AuthException("Redis 不可用，无法撤销会话")
+
+        redis_client = get_redis()
+        if redis_client is None:
+            raise AuthException("Redis 连接失败，无法撤销会话")
+
+        try:
+            # 获取会话信息
+            session_key = f"{USER_SESSION_PREFIX}:{current_user_id}:{session_uuid}"
+            session_data_str = await redis_client.get(session_key)
+
+            if not session_data_str:
+                raise AuthException("会话不存在")
+
+            session_data = json.loads(session_data_str)
+            access_jti = session_data.get("jti")
+
+            if not access_jti:
+                raise AuthException("会话数据无效")
+
+            # 1. 删除关联的 Refresh Token（使用辅助函数）
+            from src.core.security import _delete_refresh_token_and_mapping
+
+            await _delete_refresh_token_and_mapping(
+                redis_client,
+                current_user_id,
+                access_jti,
+            )
+
+            # 2. 撤销 Access Token（包括黑名单、会话删除等）
+            await revoke_token(user_id=current_user_id, session_uuid=session_uuid, jti=access_jti)
+
+            logger.info(f"用户 {current_user_id} 撤销会话: {session_uuid}, access_jti: {access_jti}")
+            return True
+
+        except AuthException:
+            raise
+        except Exception as e:
+            logger.error(f"撤销会话失败: {e}")
+            raise AuthException("撤销会话失败") from e
+
+    @staticmethod
+    def _user_to_response(user: User) -> UserResponse:
+        """
+        将 User 对象转换为 UserResponse
 
         Args:
             user: User 对象
 
         Returns:
-            响应字典
+            UserResponse 对象
         """
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name,
-            "is_active": user.is_active,
-            "is_superuser": user.is_superuser,
-            "created_at": user.created_at,
-            "updated_at": user.updated_at if user.updated_at else None,
-        }
+        return UserResponse(
+            id=user.id,  # type: ignore[arg-type]
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+            is_multi_login=user.is_multi_login,
+            roles=[],  # roles 会通过预加载自动填充
+        )
 
 
 # 创建服务实例

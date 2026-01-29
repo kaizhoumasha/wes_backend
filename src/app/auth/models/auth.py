@@ -1,48 +1,108 @@
 """
 认证相关 Schema
 
-包含登录、令牌刷新等认证相关的 Pydantic Schemas
+包含登录、令牌刷新、会话管理等认证相关的 Pydantic Schemas
 
 注意：LoginResponse.user 引用 admin 模块的 UserResponse
 在 src/app/auth/models/__init__.py 中会处理跨模块引用
 """
 
 from datetime import datetime
+from typing import ClassVar
 
 from sqlmodel import Field
 
 from src.app.admin.models import UserResponse
 from src.core.mixins import BaseMixin
 
+# ==================== 请求 Schema ====================
+
 
 class LoginRequest(BaseMixin):
     """登录请求 Schema"""
 
-    username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=6, max_length=100)
+    username: str = Field(min_length=3, max_length=50, description="用户名")
+    password: str = Field(min_length=6, max_length=100, description="密码")
+
+    class Config:
+        json_schema_extra: ClassVar[dict[str, dict[str, str]]] = {
+            "example": {
+                "username": "admin",
+                "password": "admin123",
+            }
+        }
+
+
+# ==================== 响应 Schema ====================
 
 
 class LoginResponse(BaseMixin):
     """
     登录响应 Schema
 
-    注意：user 字段引用 admin 模块的 UserResponse
-    使用字符串形式的前向引用避免循环导入
+    包含访问令牌、刷新令牌和用户信息
     """
 
-    access_token: str
-    refresh_token: str
-    access_token_expire_time: datetime
-    refresh_token_expire_time: datetime
-    session_uuid: str
-    user: UserResponse  # 跨模块引用，在 __init__.py 中重建
+    access_token: str = Field(description="访问令牌")
+    refresh_token: str = Field(description="刷新令牌")
+    access_token_jti: str = Field(description="访问令牌唯一标识符（用于撤销）")
+    refresh_token_jti: str = Field(description="刷新令牌唯一标识符（用于撤销）")
+    access_token_expire_time: datetime = Field(description="访问令牌过期时间")
+    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间")
+    session_uuid: str = Field(description="会话 UUID")
+    user: UserResponse = Field(description="用户信息")
 
 
 class RefreshTokenResponse(BaseMixin):
-    """刷新令牌响应 Schema"""
+    """
+    刷新令牌响应 Schema
 
-    access_token: str
-    refresh_token: str
-    access_token_expire_time: datetime
-    refresh_token_expire_time: datetime
-    session_uuid: str
+    包含新的访问令牌和刷新令牌
+    """
+
+    access_token: str = Field(description="新的访问令牌")
+    refresh_token: str = Field(description="新的刷新令牌")
+    access_token_jti: str = Field(description="访问令牌唯一标识符")
+    refresh_token_jti: str = Field(description="刷新令牌唯一标识符")
+    access_token_expire_time: datetime = Field(description="访问令牌过期时间")
+    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间")
+    session_uuid: str = Field(description="会话 UUID")
+
+
+class SessionInfo(BaseMixin):
+    """
+    会话信息 Schema
+
+    描述一个活跃的用户会话
+    """
+
+    session_uuid: str = Field(description="会话 UUID")
+    jti: str = Field(description="JWT ID")
+    created_at: datetime = Field(description="会话创建时间")
+    device_info: dict | None = Field(default=None, description="设备信息（可选）")
+    last_active: datetime | None = Field(default=None, description="最后活跃时间")
+
+
+class ActiveSessionsResponse(BaseMixin):
+    """
+    活跃会话列表响应 Schema
+
+    包含用户所有活跃会话
+    """
+
+    total: int = Field(description="活跃会话总数")
+    sessions: list[SessionInfo] = Field(description="会话列表")
+
+
+class LogoutResponse(BaseMixin):
+    """登出响应 Schema"""
+
+    message: str = Field(description="响应消息")
+    revoked_count: int = Field(default=0, description="撤销的令牌数量")
+
+
+class RevokeSessionResponse(BaseMixin):
+    """撤销会话响应 Schema"""
+
+    message: str = Field(description="响应消息")
+    session_uuid: str = Field(description="被撤销的会话 UUID")

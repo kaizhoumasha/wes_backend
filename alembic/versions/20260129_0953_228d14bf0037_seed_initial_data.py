@@ -5,6 +5,7 @@ Revises: 09e93363376d
 Create Date: 2026-01-29 09:53:00.000000+08:00
 
 """
+
 from collections.abc import Sequence
 from typing import Union
 
@@ -127,9 +128,15 @@ def upgrade() -> None:
     )
 
     # 更新菜单的额外字段
-    op.execute("UPDATE permissions SET title = '用户管理', icon = 'User', component = '/views/admin/users/index.vue' WHERE id = 10;")
-    op.execute("UPDATE permissions SET title = '角色管理', icon = 'Shield', component = '/views/admin/roles/index.vue' WHERE id = 20;")
-    op.execute("UPDATE permissions SET title = '权限管理', icon = 'Key', component = '/views/admin/permissions/index.vue' WHERE id = 30;")
+    op.execute(
+        "UPDATE permissions SET title = '用户管理', icon = 'User', component = '/views/admin/users/index.vue' WHERE id = 10;"
+    )
+    op.execute(
+        "UPDATE permissions SET title = '角色管理', icon = 'Shield', component = '/views/admin/roles/index.vue' WHERE id = 20;"
+    )
+    op.execute(
+        "UPDATE permissions SET title = '权限管理', icon = 'Key', component = '/views/admin/permissions/index.vue' WHERE id = 30;"
+    )
 
     # ================================================================
     # 2. 创建系统角色
@@ -155,12 +162,12 @@ def upgrade() -> None:
         INSERT INTO users (id, username, email, full_name, hashed_password, is_active, is_superuser, is_multi_login, created_at)
         VALUES
         (1, 'admin', 'admin@wes.local', '系统管理员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, true, true, NOW()),
-        (2, 'manager', 'manager@wes.local', '系统管理员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW()),
-        (3, 'operator', 'operator@wes.local', '运营专员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW()),
-        (4, 'finance', 'finance@wes.local', '财务专员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW()),
-        (5, 'user1', 'user1@wes.local', '普通用户一', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW()),
-        (6, 'user2', 'user2@wes.local', '普通用户二', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW()),
-        (7, 'super_manager', 'super_manager@wes.local', '超级经理', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, true, NOW());
+        (2, 'manager', 'manager@wes.local', '系统管理员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW()),
+        (3, 'operator', 'operator@wes.local', '运营专员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW()),
+        (4, 'finance', 'finance@wes.local', '财务专员', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW()),
+        (5, 'user1', 'user1@wes.local', '普通用户一', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW()),
+        (6, 'user2', 'user2@wes.local', '普通用户二', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW()),
+        (7, 'super_manager', 'super_manager@wes.local', '超级经理', '$argon2id$v=19$m=65536,t=3,p=4$FMBTWB4kA+tbCbHmceUlvQ$VVj2huZ9OV1QVuQtcdSW2jmkBEu9BFY2+N/ORN/fyYo', true, false, false, NOW());
         """
     )
 
