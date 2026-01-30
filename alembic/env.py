@@ -24,6 +24,8 @@ from alembic import context
 # 这样 Alembic 才能自动生成迁移
 from src.app.admin.models import Permission, Role, User  # noqa: F401
 from src.app.admin.models.relationships import role_permission, user_role  # noqa: F401
+from src.app.api_auth.models import APIAccessLog, APIApplication  # noqa: F401
+from src.app.api_auth.models.relationships import api_app_permissions  # noqa: F401
 from src.app.demo.models.demo_product import DemoProduct  # noqa: F401
 from src.app.demo.models.demo_product_list import DemoProductList  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
@@ -120,10 +122,10 @@ def run_migrations_offline() -> None:
         # 支持多 schema
         include_schemas=True,
         # 忽略 TimescaleDB 内部 schema 和表
-        include_object=lambda obj, name, type_, reflected, compare_to: (
+        include_object=lambda obj, _name, _type_, _reflected, _compare_to: (  # noqa: ARG005
             not (
                 hasattr(obj, "schema")
-                and obj.schema
+                and obj.schema  # type: ignore[attr-defined]
                 in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
             )
         ),
@@ -165,11 +167,11 @@ def do_run_migrations(connection: Connection) -> None:
         # 支持多 schema
         include_schemas=True,
         # 忽略 TimescaleDB 内部 schema 和表
-        include_object=lambda obj, name, type_, reflected, compare_to: (
+        include_object=lambda obj, _name, _type_, _reflected, _compare_to: (  # noqa: ARG005
             # 忽略 TimescaleDB 内部 schema 的所有对象
             not (
                 hasattr(obj, "schema")
-                and obj.schema
+                and obj.schema  # type: ignore[attr-defined]
                 in ("_timescaledb_catalog", "_timescaledb_cache", "_timescaledb_internal", "_timescaledb_config")
             )
         ),

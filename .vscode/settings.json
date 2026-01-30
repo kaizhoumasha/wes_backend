@@ -29,6 +29,7 @@
         "sqlmodel",
         "sqltypes",
         "srem",
+        "timescaledb",
         "uselist",
         "uvicorn"
     ],
