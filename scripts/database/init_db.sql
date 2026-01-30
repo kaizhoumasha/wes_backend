@@ -31,7 +31,7 @@ TRUNCATE TABLE wes_sys.users CASCADE;
 TRUNCATE TABLE wes_sys.roles CASCADE;
 TRUNCATE TABLE wes_sys.permissions CASCADE;
 
-RAISE NOTICE '已清空所有基础数据表';
+-- RAISE NOTICE '已清空所有基础数据表';
 
 -- ================================================================
 -- 1. 插入基础权限数据

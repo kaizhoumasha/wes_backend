@@ -39,11 +39,14 @@ else:
         id: int | None = Field(
             default=None,
             primary_key=True,
+            index=True,
+            unique=True,
             sa_type=BigInteger,
             sa_column_kwargs={
                 "autoincrement": True,
                 "nullable": False,
                 "index": True,
+                "unique": True,
                 "comment": "主键 ID",
             },
         )  # type: ignore[assignment]
