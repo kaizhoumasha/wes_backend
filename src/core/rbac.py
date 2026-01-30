@@ -18,7 +18,7 @@ RBAC 权限控制模块
 """
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends
 from sqlalchemy import select
@@ -235,7 +235,7 @@ SuperUserDep = Annotated[None, Depends(require_superuser)]
 
 
 # 权限验证类型提示工厂
-def PermissionDep(permission_name: str, use_cache: bool = True) -> Annotated[None, Depends]:
+def PermissionDep(permission_name: str, use_cache: bool = True) -> Annotated[Any, Depends]:
     """权限验证类型提示工厂
 
     Args:
@@ -245,4 +245,4 @@ def PermissionDep(permission_name: str, use_cache: bool = True) -> Annotated[Non
     Returns:
         类型注解对象
     """
-    return Annotated[None, Depends(RequirePermission(permission_name, use_cache))]
+    return Annotated[Any, Depends(RequirePermission(permission_name, use_cache))]

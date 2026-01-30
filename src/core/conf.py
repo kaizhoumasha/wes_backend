@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_REDIS_PREFIX: str = "auth:refresh_token"
     JWT_USER_REDIS_PREFIX: str = "auth:user"
 
+    # ==================== API 认证配置 ====================
+
+    API_SECRET_ENCRYPTION_KEY: str = ""  # Fernet 加密密钥，通过 model_validator 验证
+
     # ==================== Cookie 安全配置 ====================
     # 控制 Cookie 的 secure 标志，生产环境应设置为 True
     # True: Cookie 仅通过 HTTPS 传输（推荐用于生产环境）
@@ -156,6 +160,20 @@ class Settings(BaseSettings):
             )
         if len(self.JWT_SECRET_KEY) < 32:
             raise ValueError(f"❌ 安全错误: JWT_SECRET_KEY 长度不足（当前: {len(self.JWT_SECRET_KEY)}，要求: ≥32）")
+
+        # 验证 API 加密密钥
+        if not self.API_SECRET_ENCRYPTION_KEY:
+            raise ValueError(
+                "❌ 安全错误: API_SECRET_ENCRYPTION_KEY 未在环境变量中设置。\n"
+                '   生成方法: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"\n'
+                "   然后在 .env 文件中添加: API_SECRET_ENCRYPTION_KEY=<生成的密钥>"
+            )
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(self.API_SECRET_ENCRYPTION_KEY.encode())
+        except Exception as e:
+            raise ValueError(f"❌ 安全错误: API_SECRET_ENCRYPTION_KEY 格式无效: {e}")
 
         # 检查是否使用了弱默认值
         weak_keys = [

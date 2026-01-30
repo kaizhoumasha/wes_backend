@@ -282,9 +282,9 @@ class OptimisticLockException(ConflictException):
                 "resource_id": str(resource_id),
             }
             if current_version is not None:
-                detail["current_version"] = current_version
+                detail["current_version"] = str(current_version)
             if provided_version is not None:
-                detail["provided_version"] = provided_version
+                detail["provided_version"] = str(provided_version)
             super().__init__(message=message, detail=detail, **kwargs)
         else:
             super().__init__(message=message, **kwargs)

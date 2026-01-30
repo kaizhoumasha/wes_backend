@@ -179,7 +179,7 @@ class RedisCache:
         self._last_health_check = current_time
 
         try:
-            await asyncio.wait_for(self.redis.ping(), timeout=1.0)
+            await asyncio.wait_for(self.redis.ping(), timeout=1.0)  # type: ignore[arg-type]
             self._is_healthy = True
             return True
         except (TimeoutError, Exception) as e:
@@ -229,7 +229,7 @@ class RedisCache:
 
         redis_key = self._make_key(key)
         try:
-            value = await self.redis.get(redis_key)
+            value = await self.redis.get(redis_key)  # type: ignore[arg-type]
             if value is None:
                 return None
 
@@ -276,7 +276,7 @@ class RedisCache:
         actual_expire = self._random_expire(base_expire)
 
         try:
-            await self.redis.setex(redis_key, actual_expire, serialized_value)
+            await self.redis.setex(redis_key, actual_expire, serialized_value)  # type: ignore[arg-type]
             logger.debug(f"缓存设置: {key}, expire: {actual_expire}s")
             self.circuit_breaker.record_success()
             return True
@@ -299,7 +299,7 @@ class RedisCache:
 
         redis_key = self._make_key(key)
         try:
-            await self.redis.delete(redis_key)
+            await self.redis.delete(redis_key)  # type: ignore[arg-type]
             logger.debug(f"缓存删除: {key}")
             self.circuit_breaker.record_success()
             return True
@@ -322,9 +322,9 @@ class RedisCache:
 
         redis_pattern = self._make_key(pattern)
         try:
-            keys = [key async for key in self.redis.scan_iter(match=redis_pattern)]
+            keys = [key async for key in self.redis.scan_iter(match=redis_pattern)]  # type: ignore[arg-type]
             if keys:
-                result = await self.redis.delete(*keys)
+                result = await self.redis.delete(*keys)  # type: ignore[arg-type]
                 self.circuit_breaker.record_success()
                 return result
             return 0
@@ -345,7 +345,7 @@ class RedisCache:
 
         redis_key = self._make_key(key)
         try:
-            result = await self.redis.exists(redis_key)
+            result = await self.redis.exists(redis_key)  # type: ignore[arg-type]
             self.circuit_breaker.record_success()
             return result > 0
         except Exception as e:
@@ -368,13 +368,13 @@ class RedisCache:
             return False
 
         redis_key = self._make_key(f"lock:{lock_key}")
-        identifier = str(asyncio.current_task().get_name() if asyncio.current_task() else id(asyncio.current_task()))
+        identifier = str(asyncio.current_task().get_name() if asyncio.current_task() else id(asyncio.current_task()))  # type: ignore[arg-type]
 
         start_time = asyncio.get_event_loop().time()
         while True:
             # 尝试获取锁
             try:
-                acquired = await self.redis.set(redis_key, identifier, nx=True, ex=timeout)
+                acquired = await self.redis.set(redis_key, identifier, nx=True, ex=timeout)  # type: ignore[arg-type]
                 if acquired:
                     logger.debug(f"获取锁成功: {lock_key}")
                     self.circuit_breaker.record_success()
@@ -404,7 +404,7 @@ class RedisCache:
 
         redis_key = self._make_key(f"lock:{lock_key}")
         try:
-            await self.redis.delete(redis_key)
+            await self.redis.delete(redis_key)  # type: ignore[arg-type]
             logger.debug(f"释放锁: {lock_key}")
             self.circuit_breaker.record_success()
             return True
@@ -425,6 +425,68 @@ class RedisCache:
             "failure_count": self.circuit_breaker.failure_count,
             "failure_threshold": self.circuit_breaker.failure_threshold,
         }
+
+    async def incr(self, key: str) -> int | None:
+        """
+        原子性递增缓存值（支持自动降级）
+
+        :param key: 缓存键
+        :return: 递增后的值，如果 Redis 不可用则返回 None
+        """
+        if not await self.is_available():
+            return None
+
+        redis_key = self._make_key(key)
+        try:
+            result = await self.redis.incr(redis_key)  # type: ignore[arg-type]
+            self.circuit_breaker.record_success()
+            return int(result)
+        except Exception as e:
+            logger.error(f"递增缓存失败: {key}, error: {e}")
+            self.circuit_breaker.record_failure()
+            return None
+
+    async def expire(self, key: str, expire: int):
+        if not await self.is_available():
+            return
+
+        redis_key = self._make_key(key)
+        try:
+            await self.redis.expire(redis_key, expire)  # type: ignore[arg-type]
+            self.circuit_breaker.record_success()
+        except Exception as e:
+            logger.error(f"设置缓存过期时间失败: {key}, error: {e}")
+            self.circuit_breaker.record_failure()
+
+    async def incr_with_expire(self, key: str, expire: int) -> int | None:
+        """
+        原子性递增并设置过期时间（支持自动降级）
+
+        :param key: 缓存键
+        :param expire: 过期时间（秒）
+        :return: 递增后的值，如果 Redis 不可用则返回 None
+        """
+        if not await self.is_available():
+            # Redis 不可用，降级返回 None
+            logger.debug(f"Redis 不可用，跳过递增操作: {key}")
+            return None
+
+        redis_key = self._make_key(key)
+        lua_script = """
+        local count = redis.call('INCR', KEYS[1])
+        if count == 1 then
+            redis.call('EXPIRE', KEYS[1], ARGV[1])
+        end
+        return count
+        """
+        try:
+            result = await self.redis.eval(lua_script, 1, redis_key, expire)  # type: ignore[arg-type]
+            self.circuit_breaker.record_success()
+            return int(result) if result is not None else None
+        except Exception as e:
+            logger.error(f"递增缓存失败: {key}, error: {e}")
+            self.circuit_breaker.record_failure()
+            return None
 
 
 # 全局缓存实例（延迟初始化）
