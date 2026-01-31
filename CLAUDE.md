@@ -768,6 +768,150 @@ tests/
 - **避免过度设计**：如果继承 BaseRepository 足够，就不要创建抽象层
 - **渐进式优化**：先让代码工作，再优化性能
 
+---
+
+## 分层架构规则（CRITICAL）
+
+### 🚨 严格禁止的架构违规
+
+| 违规行为 | 问题描述 | 后果 |
+|----------|----------|------|
+| **API → Repository** | 路由层直接访问 Repository | 跳过业务逻辑层、无缓存 |
+| **API → Database** | 路由层直接执行 SQL | 无法复用、难测试、职责混乱 |
+| **跨层访问** | 任何跳过中间层的直接调用 | 破坏分层、耦合度过高 |
+
+### ✅ 正确的依赖方向
+
+```
+┌─────────────────────────────────────────────┐
+│           API 层（路由、验证、响应）          │
+│  职责：路由定义、请求验证、响应转换              │
+│  禁止：❌ 直接访问数据库/Repository           │
+└──────────────────┬──────────────────────────┘
+                   │ 只能调用 Service
+                   ↓
+┌─────────────────────────────────────────────┐
+│       Service 层（业务逻辑、缓存、事务）        │
+│  职责：业务协调、缓存管理、事务控制              │
+│  允许：✅ 调用其他 Service（需单向依赖）        │
+└──────────────────┬──────────────────────────┘
+                   │ 只能调用 Repository
+                   ↓
+┌─────────────────────────────────────────────┐
+│      Repository 层（数据访问、CRUD）           │
+│  职责：数据访问、关系加载、Hook 执行            │
+│  禁止：❌ 直接调用 Service（向上依赖）          │
+└──────────────────┬──────────────────────────┘
+                   │
+                   ↓
+              数据库 (PostgreSQL/Redis)
+```
+
+### 📋 架构合规检查清单
+
+在提交代码前，请确认：
+
+- [ ] API 层**没有** `from sqlalchemy import select`
+- [ ] API 层**没有** `db.execute()` 或 `db.scalar()`
+- [ ] API 层**所有**数据操作都通过 `xxx_service.xxx()` 完成
+- [ ] Service 层方法都在 `services/` 目录中
+- [ ] Repository 层方法都在 `repositories/` 目录中
+
+### 🔴 典型违规案例（DO NOT DO THIS）
+
+```python
+# ❌ 错误：API 层直接访问数据库
+from sqlalchemy import select
+from src.app.admin.models import Permission
+
+@router.get("/permissions")
+async def get_permissions(db: AsyncSessionDep):
+    result = await db.execute(
+        select(Permission)
+        .where(Permission.type == "api")
+    )
+    return result.scalars().all()
+```
+
+### 🟢 正确实现（DO THIS）
+
+```python
+# ✅ 正确：API 层调用 Service
+from src.app.admin.services import permission_service
+
+@router.get("/permissions")
+async def get_permissions(db: AsyncSessionDep):
+    # 通过 Service 层获取数据（符合分层架构）
+    return await permission_service.get_api_permissions(db)
+```
+
+---
+
+## Service 相互调用规则
+
+### ✅ 允许的调用模式
+
+| 场景 | 示例 | 条件 |
+|------|------|------|
+| **API → 同模块 Service** | `api_application.py` → `api_app_service` | ✅ 正常 |
+| **API → 跨模块 Service** | `api_application.py` → `permission_service` | ✅ 允许（单向依赖） |
+| **Service → Service** | `InboundService` → `InventoryService` | ⚠️ 谨慎（需单向依赖） |
+
+### 🚨 禁止的调用模式
+
+| 违规行为 | 示例 | 原因 |
+|----------|------|------|
+| **循环依赖** | A → B → A | 启动时导入错误 |
+| **直接初始化注入** | `__init__` 中 `self.service_b = ServiceB()` | 可能循环导入 |
+| **频繁跨模块调用** | 一个方法调用 5+ 个其他 Service | 应用领域事件 |
+
+### 📖 Service 调用最佳实践
+
+```python
+# ✅ 推荐：方法内部懒加载导入（避免循环依赖）
+class InboundService(BaseService):
+    async def confirm_inbound(self, db, inbound_id: int):
+        # 1. 更新入库单
+        await self.update(db, inbound_id, {"status": "confirmed"})
+
+        # 2. 延迟导入（避免启动时循环依赖）
+        from src.app.warehousing.services import inventory_service
+
+        # 3. 调用其他 Service
+        await inventory_service.increase_stock(db, inbound_id)
+```
+
+### 🎯 更好的替代方案（复杂场景）
+
+**方案 1：领域事件（解耦）**
+```python
+# 发布事件，其他 Service 监听并处理
+from src.core.events import EventBus
+
+await EventBus.publish("inbound.confirmed", inbound_id=inbound_id)
+```
+
+**方案 2：Facade 模式（编排）**
+```python
+# 专门的编排层协调多个 Service
+class InboundFacadeService:
+    async def process_inbound(self, db, inbound_id: int):
+        await self.inbound_service.confirm(db, inbound_id)
+        await self.inventory_service.update_stock(db, inbound_id)
+        await self.notification_service.notify(db, inbound_id)
+```
+
+### 🔍 判断标准
+
+使用前请确认：
+
+1. **依赖方向**：是否保持单向？（如：`api_auth` → `admin`，不应反向）
+2. **职责边界**：Service 是否仍在做业务协调（而非变成"万能类"）？
+3. **循环风险**：是否会产生 A → B → A 的依赖链？
+4. **替代方案**：复杂场景是否应该用领域事件解耦？
+
+---
+
 ## 常见任务
 
 ### 创建新模块
@@ -1003,4 +1147,38 @@ users = await repo.get_list(db, schema=UserResponse)
 from src.core.rbac import invalidate_user_permissions
 
 await invalidate_user_permissions(cache, user_id)
+```
+
+### 架构违规检测（CRITICAL）
+
+**症状**：
+- 代码审查中发现 API 层包含数据库操作
+- 业务逻辑分散在多个层级
+- 单元测试困难，需要模拟数据库连接
+
+**检测命令**：
+```bash
+# 检查 API 层是否违规访问数据库
+grep -r "from sqlalchemy import select" src/app/*/v1/
+grep -r "db.execute(" src/app/*/v1/
+grep -r "db.scalar(" src/app/*/v1/
+
+# 检查是否有跨层访问
+grep -r "from.*repositories import" src/app/*/v1/
+```
+
+**修复方法**：
+```python
+# ❌ 错误：API 层直接访问数据库
+from sqlalchemy import select
+
+@router.get("/items")
+async def get_items(db: AsyncSessionDep):
+    result = await db.execute(select(Item))
+    return result.scalars().all()
+
+# ✅ 正确：通过 Service 层访问
+@router.get("/items")
+async def get_items(db: AsyncSessionDep):
+    return await item_service.get_all(db)
 ```
