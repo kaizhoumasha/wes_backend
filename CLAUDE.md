@@ -435,6 +435,63 @@ async def query_users(options: QueryOptions):
     return {"total": total, "items": users}
 ```
 
+### JWT 认证系统
+
+**TokenPayload 结构**：
+
+```python
+@dataclass(frozen=True)
+class TokenPayload:
+    iss: str                  # 签发者
+    sub: str                  # 用户 ID
+    jti: str                  # 唯一标识符（用于撤销）
+    iat: int                  # 签发时间
+    nbf: int                  # 生效时间
+    exp: int                  # 过期时间
+    token_type: TokenType     # ACCESS 或 REFRESH
+    session_uuid: str         # 会话 UUID（多设备管理）
+    is_superuser: bool        # 超级用户标识（性能优化）
+```
+
+**性能优化设计**：
+
+- `is_superuser` 编码在 Token 中，避免 `require_superuser` 查询数据库
+- Token 期间 `is_superuser` 状态稳定，撤销权限时强制重新登录
+- `require_auth` 验证时自动填充 `request.state.is_superuser`
+
+**Token 生命周期**：
+
+```
+登录 → 创建 Token (包含 is_superuser)
+     → 验证 Token (填充 request.state.is_superuser)
+     → 权限检查 (从 request.state 读取)
+     → Token 过期/撤销 → 重新登录
+```
+
+**request.state 可用属性**：
+
+```python
+# require_auth 验证后自动填充
+request.state.user_id        # 用户 ID
+request.state.session_uuid   # 会话 UUID
+request.state.jti            # Token JTI
+request.state.is_superuser   # 超级用户标识
+```
+
+**创建 Token**：
+
+```python
+from src.core.security import create_access_token
+
+# 登录时创建 Token
+access_data = await create_access_token(
+    user_id=user.id,
+    is_superuser=user.is_superuser,  # 编码在 Token 中
+    multi_login=True,
+    username=user.username,
+)
+```
+
 ### RBAC 权限系统
 
 基于角色的访问控制，权限码格式：`模块:资源:操作`
@@ -468,14 +525,48 @@ async def create_user(obj_in: UserCreate):
 - 权限验证在请求处理前自动执行
 - 验证失败自动返回 403 错误
 
-**超级用户**：
+**超级用户**（性能优化）：
+
+`is_superuser` 编码在 JWT Token 中，`require_superuser` 直接从 `request.state` 读取（零数据库查询）：
 
 ```python
-from src.core.rbac import SUPERUSER_PERMISSION
+from src.core.rbac import require_superuser, SuperUserDep
 
-# 超级用户拥有所有权限
-if user.is_superuser:
-    user.permissions = {SUPERUSER_PERMISSION}
+# 方式1：使用类型提示依赖（推荐）
+@router.post(
+    "/admin/settings",
+    dependencies=[Depends(SuperUserDep)]   # 自动验证超级用户
+)
+async def admin_settings(
+):
+    pass
+
+# 方式2：从 request.state 读取
+from fastapi import Request
+
+@router.get("/check-superuser")
+async def check_superuser(request: Request):
+    is_superuser = getattr(request.state, "is_superuser", False)
+    return {"is_superuser": is_superuser}
+```
+
+**Token 撤销**：
+
+撤销超级用户权限后，需要强制用户重新登录：
+
+```python
+# 撤销权限
+await user_service.update(db, user_id, {"is_superuser": False})
+
+# 强制重新登录（撤销所有 Token）
+from src.core.security import revoke_all_user_tokens
+
+await revoke_all_user_tokens(user_id)
+
+# 清除权限缓存
+from src.core.rbac import invalidate_user_permissions
+
+await invalidate_user_permissions(cache, user_id)
 ```
 
 ### 缓存策略
@@ -484,7 +575,8 @@ if user.is_superuser:
 
 1. **Service 层缓存**： BaseService 自动缓存 `get_by_id` 和 `get_list` 结果
 2. **权限缓存**： RBAC 系统缓存用户权限集合（5 分钟）
-3. **分布式锁**：防止缓存击穿（查询热点数据时）
+3. **JWT Token 缓存**： `is_superuser` 编码在 Token 中，Token 期间有效（无需额外缓存）
+4. **分布式锁**：防止缓存击穿（查询热点数据时）
 
 **缓存失效**：
 
@@ -729,7 +821,9 @@ tests/
 
 ### 其他核心组件
 
-- `src/core/rbac.py`：RBAC 权限系统
+- `src/core/security.py`：JWT 认证、密码哈希、Token 管理（TokenPayload 包含 is_superuser）
+- `src/core/rbac.py`：RBAC 权限系统（权限验证依赖、超级用户验证）
+- `src/app/auth/services/auth_service.py`：认证业务逻辑（登录、登出、Token 刷新）
 - `src/core/conf.py`：应用配置（Pydantic Settings）
 - `src/database/db.py`：数据库连接和会话管理
 - `src/database/dependencies.py`：FastAPI 依赖注入（AsyncSessionDep, CacheDep）
@@ -767,6 +861,69 @@ tests/
 - **只实现当前需求**：不要为"将来可能需要"的功能编写代码
 - **避免过度设计**：如果继承 BaseRepository 足够，就不要创建抽象层
 - **渐进式优化**：先让代码工作，再优化性能
+
+---
+
+## 性能优化最佳实践
+
+### 避免冗余数据库查询
+
+**原则**：将高频使用的用户状态编码在 JWT Token 中，避免每次请求都查询数据库。
+
+❌ **错误**：每次权限验证都查询数据库
+
+```python
+# 低效：每次 require_superuser 都查询数据库
+async def require_superuser(db: AsyncSession, user_id: int):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_superuser:
+        raise PermissionException("需要超级用户权限")
+```
+
+✅ **正确**：将 `is_superuser` 编码在 JWT Token 中
+
+```python
+# 高效：登录时编码，验证时零数据库查询
+# 登录
+await create_access_token(
+    user_id=user.id,
+    is_superuser=user.is_superuser,  # 编码在 Token 中
+)
+
+# 验证（零数据库查询）
+async def require_superuser(request: Request):
+    is_superuser = getattr(request.state, "is_superuser", False)
+    if not is_superuser:
+        raise PermissionException("需要超级用户权限")
+```
+
+### Token vs 缓存策略
+
+| 数据类型 | 存储位置 | TTL | 更新时机 | 适用场景 |
+|----------|----------|-----|----------|----------|
+| `is_superuser` | JWT Token | Token 期间 | 重新登录 | 高频访问、状态稳定 |
+| 用户权限集合 | Redis 缓存 | 5 分钟 | 权限变更 | 低频访问、动态变化 |
+| 业务数据 | Service 缓存 | 可配置 | 数据变更 | 通用查询优化 |
+
+**设计原则**：
+
+1. **Token 存储**：将高频使用、Token 期间稳定的状态编码在 Token 中
+2. **缓存存储**：将低频使用、动态变化的数据缓存在 Redis 中
+3. **撤销策略**：Token 期间状态变化需强制重新登录
+
+**示例对比**：
+
+```python
+# ✅ 正确：is_superuser 在 Token 中（高频、稳定）
+is_superuser = getattr(request.state, "is_superuser", False)
+
+# ✅ 正确：用户权限在缓存中（低频、动态）
+permissions = await permission_service.get_user_permissions(db, user_id)
+
+# ❌ 错误：将动态数据编码在 Token 中
+# 用户权限会动态变化，编码在 Token 中会导致权限滞后
+```
 
 ---
 
@@ -909,6 +1066,95 @@ class InboundFacadeService:
 2. **职责边界**：Service 是否仍在做业务协调（而非变成"万能类"）？
 3. **循环风险**：是否会产生 A → B → A 的依赖链？
 4. **替代方案**：复杂场景是否应该用领域事件解耦？
+
+---
+
+## 模块导出原则（CRITICAL）
+
+### 🚨 常见错误：ImportError
+
+**症状**：
+```
+ImportError: cannot import name 'permission_service' from 'src.app.admin.services'
+```
+
+**原因**：模块的 `__init__.py` 没有导出新添加的类/函数。
+
+### ✅ 正确的模块导出模式
+
+```python
+# ❌ 错误：只导入，未导出
+from .user_service import UserService
+
+__all__ = ["UserService"]
+
+# ✅ 正确：同时导入和导出
+from .perm_service import PermissionService, permission_service
+from .role_service import RoleService, role_service
+from .user_service import UserService, user_service
+
+__all__ = [
+    "PermissionService",
+    "RoleService",
+    "UserService",
+    "permission_service",
+    "role_service",
+    "user_service",
+]
+```
+
+### 📋 模块导出检查清单
+
+创建新 Service 时，必须同步更新 `__init__.py`：
+
+1. **导入语句**：添加 `from .xxx_service import XxxService, xxx_service`
+2. **导出列表**：在 `__all__` 中添加类名和实例名
+3. **顺序规范**：按字母排序或功能分组
+4. **一致性**：类名用 PascalCase，实例名用 snake_case
+
+### 🔍 自动检测缺失导出
+
+```bash
+# 检查 services 模块的导出完整性
+find src/app -name "__init__.py" -path "*/services/*" -exec grep -l "__all__" {} \;
+
+# 检查是否有 Service 未导出
+for file in src/app/*/services/*_service.py; do
+    service_name=$(basename "$file" .py)
+    if ! grep -q "$service_name" "$(dirname "$file")/__init__.py"; then
+        echo "⚠️ 未导出: $service_name"
+    fi
+done
+```
+
+### 🎯 最佳实践
+
+| 场景 | 做法 | 示例 |
+|------|------|------|
+| **创建新 Service** | 立即更新 `__init__.py` | 添加 `from .xxx import XxxService, xxx_service` |
+| **重构 Service** | 同步更新导出 | 重命名后同步修改 `__all__` |
+| **跨模块导入** | 验证目标模块导出 | 先检查 `__all__` 再导入 |
+| **删除 Service** | 清理导出 | 移除对应的导入和 `__all__` 条目 |
+
+### 📖 导出命名规范
+
+```python
+# 规范：同时导出类和实例
+from .user_service import UserService, user_service
+from .role_service import RoleService, role_service
+from .perm_service import PermissionService, permission_service
+
+__all__ = [
+    # 类（用于类型注解）
+    "UserService",
+    "RoleService",
+    "PermissionService",
+    # 实例（用于直接调用）
+    "user_service",
+    "role_service",
+    "permission_service",
+]
+```
 
 ---
 

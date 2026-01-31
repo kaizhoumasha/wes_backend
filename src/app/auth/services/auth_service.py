@@ -116,9 +116,10 @@ class AuthService:
             logger.error(f"User {username} has no ID after database query")
             raise AuthException("用户数据异常，请联系管理员")
 
-        # 创建访问令牌
+        # 创建访问令牌（包含 is_superuser 以避免后续数据库查询）
         access_data = await create_access_token(
             user.id,
+            is_superuser=user.is_superuser,
             multi_login=user.is_multi_login,
             username=user.username,
             email=user.email,
@@ -213,11 +214,12 @@ class AuthService:
             logger.error(f"User ID {user_id} has no ID after database query")
             raise AuthException("用户数据异常，请联系管理员")
 
-        # 创建新令牌
+        # 创建新令牌（包含 is_superuser 以避免后续数据库查询）
         new_token_data = await create_new_token(
             refresh_token=refresh_token,
             session_uuid=token_payload.session_uuid,
             user_id=user.id,
+            is_superuser=user.is_superuser,
             multi_login=user.is_multi_login,
             username=user.username,
             email=user.email,

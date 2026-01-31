@@ -86,6 +86,7 @@ class TokenPayload:
     exp: int  # expiration (过期时间)
     token_type: TokenType  # token 类型
     session_uuid: str  # 会话 UUID (多设备管理)
+    is_superuser: bool = False  # 超级用户标识（性能优化：避免数据库查询）
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典（用于 JWT 编码）"""
@@ -98,12 +99,13 @@ class TokenPayload:
             "exp": self.exp,
             "type": self.token_type.value,
             "session_uuid": self.session_uuid,
+            "is_superuser": self.is_superuser,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenPayload:
         """从字典创建（用于 JWT 解码）"""
-        token_type = TokenType(data.get("type", TokenType.ACCESS))
+        token_type = TokenType(data["type"])
         return cls(
             iss=data["iss"],
             sub=data["sub"],
@@ -113,6 +115,7 @@ class TokenPayload:
             exp=int(data["exp"]),
             token_type=token_type,
             session_uuid=data["session_uuid"],
+            is_superuser=data["is_superuser"],
         )
 
 
@@ -192,6 +195,7 @@ def _create_token_payload(
     session_uuid: str,
     expire_seconds: int,
     issuer: str = "wes_backend",
+    is_superuser: bool = False,
 ) -> TokenPayload:
     """
     创建 Token Payload（遵循 JWT RFC 7519）
@@ -202,6 +206,7 @@ def _create_token_payload(
         session_uuid: 会话 UUID
         expire_seconds: 过期时间（秒）
         issuer: 签发者
+        is_superuser: 是否为超级用户（性能优化：避免数据库查询）
 
     Returns:
         TokenPayload 对象
@@ -218,6 +223,7 @@ def _create_token_payload(
         exp=int(expire.timestamp()),
         token_type=token_type,
         session_uuid=session_uuid,
+        is_superuser=is_superuser,
     )
 
 
@@ -254,8 +260,8 @@ def jwt_decode(token: str) -> TokenPayload:
             algorithms=[settings.JWT_ALGORITHM],
             options={
                 "verify_exp": True,
-                "verify_nbf": True,  # 验证 not before
-                "require": ["iss", "sub", "jti", "iat", "nbf", "exp", "type", "session_uuid"],
+                "verify_nbf": True,
+                "require": ["iss", "sub", "jti", "iat", "nbf", "exp", "type", "session_uuid", "is_superuser"],
             },
         )
         return TokenPayload.from_dict(payload)
@@ -419,7 +425,9 @@ async def _safe_redis_operation(operation_name: str, operation, fallback_result=
 # ==================== Token 创建函数 ====================
 
 
-async def create_access_token(user_id: int, *, multi_login: bool = True, **extra_info) -> AccessTokenData:
+async def create_access_token(
+    user_id: int, *, multi_login: bool = True, is_superuser: bool = False, **extra_info
+) -> AccessTokenData:
     """
     创建访问令牌
 
@@ -437,6 +445,7 @@ async def create_access_token(user_id: int, *, multi_login: bool = True, **extra
         token_type=TokenType.ACCESS,
         session_uuid=session_uuid,
         expire_seconds=settings.JWT_ACCESS_TOKEN_EXPIRE_SECONDS,
+        is_superuser=is_superuser,
     )
     access_token = jwt_encode(payload)
 
@@ -579,6 +588,7 @@ async def create_new_token(
     session_uuid: str,
     user_id: int,
     *,
+    is_superuser: bool = False,
     multi_login: bool = True,
     **extra_info,
 ) -> NewTokenData:
@@ -589,6 +599,7 @@ async def create_new_token(
         refresh_token: 刷新令牌
         session_uuid: 会话 UUID
         user_id: 用户 ID
+        is_superuser: 是否为超级用户
         multi_login: 是否允许多端登录
         **extra_info: 额外信息
 
@@ -661,7 +672,7 @@ async def create_new_token(
         logger.debug(f"Cleaned up old mapping: {old_mapping_key}")
 
     # 创建新令牌
-    new_access = await create_access_token(user_id, multi_login=multi_login, **extra_info)
+    new_access = await create_access_token(user_id, is_superuser=is_superuser, multi_login=multi_login, **extra_info)
     new_refresh = await create_refresh_token(
         new_access.session_uuid, user_id, multi_login=multi_login, access_jti=new_access.jti
     )
@@ -839,10 +850,11 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
 
     await _safe_redis_operation("验证 token", _verify_redis)
 
-    # 将用户信息附加到 request.state
+    # 将用户信息附加到 request.state（性能优化：避免重复查询数据库）
     request.state.user_id = int(token_payload.sub)
     request.state.session_uuid = token_payload.session_uuid
     request.state.jti = token_payload.jti
+    request.state.is_superuser = token_payload.is_superuser
 
     return token_payload
 

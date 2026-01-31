@@ -6,15 +6,22 @@
 - 按类型获取权限
 - 权限缓存管理
 - 用户菜单获取（前端集成）
+- 用户权限收集（从 rbac.py 移植）
 """
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import Permission, PermissionTree
+from src.app.admin.models import Permission, PermissionTree, Role, User
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.tree_service import TreeServiceMixin
+
+# ==================== 常量 ====================
+
+SUPERUSER_PERMISSION = "*"  # 超级用户权限标识
 
 
 class PermissionService(BaseService[Permission, PermissionRepository], TreeServiceMixin):
@@ -28,6 +35,49 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
             cache_expire=cache_settings.PERMISSION.expire,
         )
         self.repo: PermissionRepository = repo
+
+    # ==================== 用户权限收集（从 rbac.py 移植） ====================
+
+    async def get_user_permissions(self, db: AsyncSession, user_id: int) -> set[str]:
+        """获取用户的所有权限（从 rbac.py 移植到 Service 层）
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+
+        Returns:
+            权限标识集合，超级用户返回 {SUPERUSER_PERMISSION}
+            用户不存在时返回空集合
+
+        优化说明:
+            - 使用 is_deleted 替代 is_active 简化状态管理
+            - is_deleted=False 表示角色/权限启用
+            - is_deleted=True 表示角色/权限已禁用/删除
+        """
+        # 查询用户（预加载 roles 和 permissions）
+        result = await db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .options(selectinload(User.roles).selectinload(Role.permissions))
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            return set()
+
+        # 收集权限（超级用户返回特殊标识）
+        if user.is_superuser:
+            return {SUPERUSER_PERMISSION}
+
+        permissions = set()
+        for role in user.roles:
+            # 只收集未删除的角色权限
+            if not role.is_deleted:
+                for perm in role.permissions:
+                    # 只收集未删除的权限
+                    if not perm.is_deleted:
+                        permissions.add(perm.name)
+        return permissions
 
     async def get_menu_tree(
         self,
@@ -68,10 +118,8 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
         Returns:
             用户有权限访问的菜单树
         """
-        from src.core.rbac import get_user_permissions
-
-        # 获取用户所有权限（get_user_permissions 已返回 set[str]，无需再转换）
-        user_perm_names = await get_user_permissions(db, user_id)
+        # 获取用户所有权限（直接调用 Service 层方法）
+        user_perm_names = await self.get_user_permissions(db, user_id)
 
         # 获取所有菜单权限
         all_menus = await self.repo.get_menu_permissions(db, exclude_deleted=True, include_hidden=include_hidden)
@@ -137,6 +185,22 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
             )
 
         return False
+
+    async def get_api_permissions(
+        self,
+        db: AsyncSession,
+        exclude_deleted: bool = True,
+    ) -> list[Permission]:
+        """获取 API 权限列表（type=api）
+
+        Args:
+            db: 数据库会话
+            exclude_deleted: 是否排除已删除的权限
+
+        Returns:
+            API 权限列表（按 resource, action 排序）
+        """
+        return await self.repo.get_api_permissions(db, exclude_deleted=exclude_deleted)
 
     def _build_permission_tree(
         self,

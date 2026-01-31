@@ -1,17 +1,20 @@
 """
-用户认证服务（User Auth Service）
+密码哈希工具（Password Hasher）
 
-负责用户认证相关的业务逻辑，主要是密码哈希和验证。
+提供密码哈希和验证能力，使用 pwdlib（FastAPI 官方推荐）支持现代密码哈希算法（Argon2）。
 
 职责：
 1. 密码哈希（使用 Argon2）
 2. 密码验证
 3. 异步密码操作（使用线程池避免阻塞）
 
-分离原因：
-- 单一职责原则：只负责认证逻辑
-- 便于测试：可以独立测试密码逻辑
-- 性能优化：使用线程池处理 CPU 密集型操作
+使用场景：
+- 用户密码哈希和验证
+- API Secret 哈希和验证
+- 其他需要安全哈希的场景
+
+Reference:
+    https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/
 """
 
 import asyncio
@@ -108,6 +111,3 @@ class PasswordHasher:
 
 # 单例模式的密码哈希服务
 password_hasher = PasswordHasher()
-
-
-__all__ = ["PasswordHasher", "password_hasher"]
