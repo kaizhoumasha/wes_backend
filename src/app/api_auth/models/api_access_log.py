@@ -9,7 +9,7 @@ from src.database.schema_conf import SchemaType
 
 
 class APIAccessLogBase(BaseMixin):
-    app_id: str = Field(max_length=50, index=True, description="应用ID")
+    app_id: str = Field(max_length=50, description="应用ID")
     app_name: str = Field(max_length=100, description="应用名称")
     request_id: str = Field(max_length=50, description="请求ID")
     method: str = Field(max_length=10, description="HTTP方法")
@@ -26,9 +26,9 @@ class APIAccessLog(APIAccessLogBase, DataTableMixin, table=True):
     __schema__ = SchemaType.SYS.value
 
     __table_args__ = (
-        Index("ix_api_log_app_time", "app_id", "created_at"),
-        Index("ix_api_log_status", "status_code", "created_at"),
-        Index("ix_api_log_path", "path", "created_at", postgresql_ops={"path": "text_pattern_ops"}),
+        Index("ix_api_access_log_app_time", "app_id", "created_at"),
+        Index("ix_api_access_log_status", "status_code", "created_at"),
+        Index("ix_api_access_log_path", "path", "created_at", postgresql_ops={"path": "text_pattern_ops"}),
     )
 
 

@@ -129,4 +129,7 @@ def RequireAPIPermission(permission_name: str):
         if permission_name not in app_ctx.permissions:
             raise PermissionException(f"需要权限: {permission_name}")
 
+    # 关键点：挂载元数据，方便扫描器读取
+    verify_permission.permission_required = permission_name
+    verify_permission.is_api_auth = True
     return verify_permission

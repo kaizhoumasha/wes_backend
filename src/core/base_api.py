@@ -4,6 +4,7 @@
 基于 glass_backend 的优雅实现，提供更灵活的 API 生成器。
 """
 
+from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, Path, Query
@@ -40,6 +41,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
+        custom_routes: list[Callable[[APIRouter, "BaseAPI"], None]] | None = None,
     ) -> None:
         self.module_name = module_name
         self.model = model
@@ -58,6 +60,8 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.perm_prefix = f"{module_name}:{model.__name__.lower()}"
         self.resource_name = model.__name__
         self.supports_soft_delete = hasattr(model, "is_deleted")
+        # 自定义路由列表（接收 router 和 api 实例作为参数）
+        self._custom_route_funcs = custom_routes or []
 
         if hasattr(service, "response_schema"):
             service.response_schema = response_schema
@@ -66,7 +70,17 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self._register_routes()
 
     def _register_routes(self) -> None:
-        """注册所有路由"""
+        """注册所有路由
+
+        路由注册顺序很重要：
+        1. 先注册自定义路由（具体路径优先）
+        2. 再注册标准 CRUD 路由
+        """
+        # 1. 先注册自定义路由（优先级高，避免被 /{id} 匹配）
+        for route_func in self._custom_route_funcs:
+            route_func(self.router, self)
+
+        # 2. 再注册标准 CRUD 路由
         if self.gen_create:
             self._register_create()
         if self.gen_update:
@@ -78,6 +92,38 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self._register_soft_delete_routes()
         self._register_get()
         self._register_list()
+
+    def add_custom_route(self, route_func: Callable[[APIRouter, "BaseAPI"], None], insert_first: bool = False) -> None:
+        """动态添加自定义路由
+
+        Args:
+            route_func: 路由注册函数，接收 (router, api) 参数
+                        示例: def my_route(router, api): @router.get("/custom") ...
+            insert_first: 是否插入到路由列表开头（默认追加到末尾）
+
+        Example:
+            >>> def register_custom(router, api):
+            ...     @router.get("/available-permissions")
+            ...     async def get_perms(...): ...
+            >>> api.add_custom_route(register_custom, insert_first=True)
+        """
+        if insert_first:
+            self._custom_route_funcs.insert(0, route_func)
+        else:
+            self._custom_route_funcs.append(route_func)
+        # 立即注册到 router
+        route_func(self.router, self)
+
+    def get_permission_code(self, action: str) -> str | None:
+        """获取权限码（供自定义路由使用）
+
+        Args:
+            action: 操作名称，如 "create", "update", "custom_action"
+
+        Returns:
+            权限码字符串，如 "module:model:action"
+        """
+        return self._get_permission_code(action)
 
     def _get_permission_code(self, action: str) -> str | None:
         """获取权限码"""
