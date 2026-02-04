@@ -128,6 +128,33 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_REDIS_PREFIX: str = "auth:refresh_token"
     JWT_USER_REDIS_PREFIX: str = "auth:user"
 
+    # ==================== Celery 配置 ====================
+
+    CELERY_BROKER_URL: str | None = None
+    CELERY_RESULT_BACKEND: str | None = None
+
+    @computed_field
+    @property
+    def CELERY_BROKER(self) -> str:
+        """Celery Broker URL (优先使用环境变量，否则基于 Redis 配置构建)"""
+        if self.CELERY_BROKER_URL:
+            return self.CELERY_BROKER_URL
+        # 基于 Redis 配置构建
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/1"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/1"
+
+    @computed_field
+    @property
+    def CELERY_BACKEND(self) -> str:
+        """Celery Result Backend URL (优先使用环境变量，否则基于 Redis 配置构建)"""
+        if self.CELERY_RESULT_BACKEND:
+            return self.CELERY_RESULT_BACKEND
+        # 基于 Redis 配置构建
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/2"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/2"
+
     # ==================== API 认证配置 ====================
 
     API_SECRET_ENCRYPTION_KEY: str = ""  # Fernet 加密密钥，通过 model_validator 验证
