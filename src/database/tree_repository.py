@@ -2,16 +2,191 @@
 
 from typing import TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.base_repository import BaseRepository
+from src.database.hooks import HookContext, HookFunc, HookType
 
 T = TypeVar("T")
 
 
 class TreeRepository[T](BaseRepository[T]):
-    """树形数据 Repository（基于 TreeMixin 的 tree_path 物化路径）"""
+    """
+    树形数据 Repository（基于 TreeMixin 的 tree_path 物化路径）
+
+    自动维护 tree_path 字段：
+    - 创建节点时自动计算 tree_path
+    - 移动节点时自动更新 tree_path（含所有后代）
+    - 使用 flush() 获取自增 ID 后再计算 tree_path
+
+    使用示例：
+        class PermissionRepository(TreeRepository[Permission]):
+            pass
+
+        repo = PermissionRepository()
+
+        # 创建根节点（自动计算 tree_path = "/1/"）
+        root = await repo.create(db, {"name": "root"})
+
+        # 创建子节点（自动计算 tree_path = "/1/2/"）
+        child = await repo.create(db, {
+            "name": "child",
+            "parent_id": root.id,
+        })
+    """
+
+    def __init__(self, model: type[T]):
+        """
+        初始化 TreeRepository
+
+        自动注册 tree_path 维护 Hook：
+        - BEFORE_CREATE: 创建节点时自动计算 tree_path
+        - BEFORE_UPDATE: 移动节点时自动更新 tree_path
+        """
+        super().__init__(model)
+        self._register_tree_hooks()
+
+    def _register_tree_hooks(self) -> None:
+        """注册 tree_path 自动维护 Hook"""
+        # 检查模型是否有 TreeMixin 的特征字段
+        has_tree_fields = all(
+            hasattr(self.model, field)
+            for field in ["parent_id", "tree_path", "level", "sort_order"]
+        )
+
+        if not has_tree_fields:
+            return
+
+        # 注册创建 Hook：在 refresh 之后自动计算 tree_path
+        # 使用 AFTER_CREATE 确保在 db.refresh() 之后执行
+        # priority=10 确保 AFTER_CREATE Hook 在其他 Hook 之后执行
+        self.add_hook(
+            HookType.AFTER_CREATE,
+            self._create_tree_path_hook(),
+            priority=10,  # 在 refresh 之后执行
+        )
+
+        # 注册更新 Hook：移动节点时更新 tree_path
+        self.add_hook(
+            HookType.BEFORE_UPDATE,
+            self._update_tree_path_hook(),
+            priority=-10,
+        )
+
+    def _create_tree_path_hook(self) -> HookFunc:
+        """创建 tree_path 自动计算 Hook（AFTER_CREATE）"""
+
+        async def hook(ctx: HookContext) -> None:
+            # ⚠️ 重要：BaseRepository 传递的是 session，不是 db
+            db = ctx.params.get("session") or ctx.session
+            instance = ctx.params.get("instance")
+
+            if not instance or not db:
+                return
+
+            # AFTER_CREATE 阶段，instance 已经有 ID 了
+            current_id = instance.id
+            parent_id = getattr(instance, "parent_id", None)
+
+            if parent_id is None:
+                # 根节点
+                new_tree_path = f"/{current_id}/"
+                new_level = 1
+            else:
+                # 子节点：查询父节点获取 tree_path
+                parent = await db.execute(
+                    select(self.model).where(self.model.id == parent_id)  # type: ignore[attr-defined]
+                )
+                parent = parent.scalar_one_or_none()
+
+                if parent:
+                    # 父节点存在：tree_path = parent.tree_path + current_id + /
+                    parent_path = parent.tree_path
+                    new_level = parent.level + 1
+                    new_tree_path = f"{parent_path}{current_id}/"
+                else:
+                    # 父节点不存在：作为根节点处理
+                    new_tree_path = f"/{current_id}/"
+                    new_level = 1
+
+            # 更新实例并同步到数据库
+            instance.tree_path = new_tree_path
+            instance.level = new_level
+            await db.flush()
+
+        return hook
+
+    def _update_tree_path_hook(self) -> HookFunc:
+        """创建 tree_path 更新 Hook（移动节点）"""
+
+        async def hook(ctx: HookContext) -> None:
+            # ⚠️ 重要：BaseRepository 传递的是 session，不是 db
+            db = ctx.params.get("session") or ctx.session
+            data = ctx.params.get("data", {})
+            instance = ctx.params.get("instance")
+
+            if not instance or not db:
+                return
+
+            # 只处理 parent_id 变更的情况
+            if "parent_id" not in data:
+                return
+
+            new_parent_id = data["parent_id"]
+            old_parent_id = instance.parent_id
+
+            if new_parent_id == old_parent_id:
+                return  # 父节点未变化，直接返回
+
+            # 获取当前节点的旧 tree_path
+            old_tree_path = instance.tree_path
+
+            # 计算新的 tree_path
+            if new_parent_id is None:
+                # 移动到根节点
+                await db.flush()
+                instance.tree_path = f"/{instance.id}/"
+                instance.level = 1
+                new_tree_path = instance.tree_path
+            else:
+                # 移动到新的父节点下
+                parent = await db.execute(
+                    select(self.model).where(self.model.id == new_parent_id)  # type: ignore[attr-defined]
+                )
+                parent = parent.scalar_one_or_none()
+
+                await db.flush()
+
+                if parent:
+                    instance.tree_path = f"{parent.tree_path}{instance.id}/"
+                    instance.level = parent.level + 1
+                else:
+                    instance.tree_path = f"/{instance.id}/"
+                    instance.level = 1
+
+                new_tree_path = instance.tree_path
+
+            # 更新所有后代的 tree_path
+            # 新路径 = 旧路径.replace(old_tree_path, new_tree_path)
+            # 例如：old = "/1/5/", new = "/2/10/"
+            #      descendant.tree_path = "/1/5/12/" → "/2/10/12/"
+            descendants = await db.execute(
+                select(self.model).where(
+                    self.model.tree_path.like(f"{old_tree_path}%")  # type: ignore[attr-defined]
+                )
+            )
+            descendants = descendants.scalars().all()
+
+            for descendant in descendants:
+                # 替换路径前缀
+                descendant.tree_path = descendant.tree_path.replace(old_tree_path, new_tree_path)
+                # 更新层级（level = 旧level - 旧parent.level + 新parent.level）
+                old_parent_level = old_parent_id and (await self.get_by_id(db, old_parent_id)).level or 0
+                new_parent_level = new_parent_id and parent.level or 0
+                descendant.level = descendant.level - old_parent_level + new_parent_level
+
+        return hook
 
     async def get_children(
         self,

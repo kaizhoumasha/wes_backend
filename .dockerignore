@@ -109,7 +109,7 @@ Thumbs.db
 desktop.ini
 
 # 项目特定
-alembic/versions/*.pyc
+migrations/versions/*.pyc
 scripts/
 locustfiles/
 nginx/

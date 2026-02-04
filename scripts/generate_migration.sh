@@ -21,7 +21,7 @@ echo -e "${GREEN}正在生成迁移: $1${NC}"
 alembic revision --autogenerate -m "$1"
 
 # 获取最新的迁移文件
-LATEST_MIGRATION=$(ls -t alembic/versions/*.py | head -1)
+LATEST_MIGRATION=$(ls -t migrations/versions/*.py | head -1)
 echo -e "${GREEN}生成的迁移文件: $LATEST_MIGRATION${NC}"
 
 # 检查是否包含 ENUM 类型
@@ -130,7 +130,7 @@ import os
 import glob
 
 historical_enums = set()
-migration_files = sorted(glob.glob('alembic/versions/*.py'))
+migration_files = sorted(glob.glob('migrations/versions/*.py'))
 
 # 排除当前正在处理的迁移文件
 current_migration = os.path.basename('$LATEST_MIGRATION')

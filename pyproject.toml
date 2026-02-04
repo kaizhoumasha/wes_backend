@@ -219,7 +219,7 @@ fixable = ["ALL"]
 ]
 
 # 数据库迁移文件
-"alembic/versions/*.py" = [
+"migrations/versions/*.py" = [
     "F401",      # 未使用的导入
 ]
 

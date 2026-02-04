@@ -50,14 +50,14 @@ alembic upgrade head
 
 ```bash
 # 在数据库容器内执行
-docker exec -i wes_postgres_prod psql -U wesuser -d wesdb < alembic/seed_data/initial_data.sql
+docker exec -i wes_postgres_prod psql -U wesuser -d wesdb < migrations/seed_data/initial_data.sql
 ```
 
 ## 🔄 修改初始数据
 
 如果需要修改初始数据：
 
-1. **编辑 SQL 文件**: `alembic/seed_data/initial_data.sql`
+1. **编辑 SQL 文件**: `migrations/seed_data/initial_data.sql`
 2. **创建新迁移**: `./scripts/generate_migration.sh "update_initial_data"`
 3. **在新迁移中更新数据**:
    ```python

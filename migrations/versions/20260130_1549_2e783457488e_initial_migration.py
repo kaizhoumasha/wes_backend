@@ -245,18 +245,18 @@ def upgrade() -> None:
     )
     # ### end Alembic commands ###
 
-    # # ============================================
-    # # 3. 加载初始数据
-    # # ============================================
-    # # 读取并执行 SQL 文件（遵循 DRY 原则：数据定义与迁移逻辑分离）
-    # seed_sql_path = Path(__file__).parent.parent / "seed_data" / "initial_data.sql"
+    # ============================================
+    # 3. 初始数据说明
+    # ============================================
+    # 数据库表结构已创建完成，需要单独运行初始化脚本
 
-    # if seed_sql_path.exists():
-    #     with open(seed_sql_path, encoding="utf-8") as f:
-    #         initial_data_sql = f.read()
-    #     op.execute(initial_data_sql)
-    # else:
-    #     raise FileNotFoundError(f"初始数据 SQL 文件不存在: {seed_sql_path}")
+    print("\n" + "=" * 60)
+    print("📋 初始数据说明")
+    print("=" * 60)
+    print("✅ 数据库表结构已创建完成！")
+    print("\n📝 请运行以下命令初始化系统数据：")
+    print("  uv run python -m migrations.seed_data.initial_data")
+    print("\n" + "=" * 60 + "\n")
 
 
 def downgrade() -> None:

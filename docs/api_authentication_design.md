@@ -320,7 +320,7 @@ class APIAccessLog(BaseMixin, table=True):
 
 ### 4.2 数据库迁移脚本
 
-**Alembic 迁移文件**: `alembic/versions/xxxx_add_api_authentication.py`
+**Alembic 迁移文件**: `migrations/versions/xxxx_add_api_authentication.py`
 
 ```python
 """Add API authentication tables

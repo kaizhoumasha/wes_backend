@@ -76,7 +76,7 @@ alembic history                               # 查看历史
 
 1. **修改模型**：在 `src/app/*/models/` 中修改 SQLModel 模型
 2. **创建迁移**：`./scripts/migrate.sh create "描述变更"`
-3. **检查迁移文件**：查看 `alembic/versions/` 中生成的迁移文件
+3. **检查迁移文件**：查看 `migrations/versions/` 中生成的迁移文件
 4. **应用迁移**：`./scripts/migrate.sh upgrade`
 5. **测试**：确保应用正常运行
 
@@ -136,7 +136,7 @@ alembic merge <rev1> <rev2> -m "merge branches"
 
 主要配置项：
 
-- `script_location`: 迁移脚本位置（`alembic/`）
+- `script_location`: 迁移脚本位置（`migrations/`）
 - `file_template`: 迁移文件命名格式（包含时间戳）
 - `timezone`: 时区设置（`Asia/Shanghai`）
 - `hooks`: 自动运行 ruff 格式化
