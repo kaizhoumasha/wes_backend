@@ -1,6 +1,5 @@
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Body, Depends, Request
@@ -11,6 +10,7 @@ from src.app.api_auth.services import SignatureService, api_app_service, get_app
 from src.core.encryption import encryption_service
 from src.core.exceptions import AuthException, PermissionException, RateLimitException
 from src.database.dependencies import AsyncSessionDep, CacheDep
+from src.utils.timezone import timezone
 
 
 @dataclass
@@ -48,7 +48,7 @@ async def verify_api_auth(
     if app.status != "active":
         raise AuthException(f"应用已被禁用: {app.status}")
 
-    if app.expires_at and app.expires_at < datetime.now(UTC):
+    if app.expires_at and app.expires_at < timezone.now_for_db():
         raise AuthException("应用已过期")
 
     app_secret = encryption_service.decrypt(app.app_secret_encrypted)

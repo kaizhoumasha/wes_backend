@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -36,6 +36,7 @@ from src.core.conf import settings
 from src.core.exceptions import AuthException
 from src.core.logger import logger
 from src.database.redis_client import get_redis, is_redis_available
+from src.utils.timezone import timezone
 
 # Argon2 密码哈希器（推荐配置）
 pwd_hasher = PasswordHash(
@@ -60,8 +61,8 @@ class TokenType(str, Enum):
 
 
 # Redis Key 前缀
-ACCESS_TOKEN_PREFIX = "auth:access_token"
-REFRESH_TOKEN_PREFIX = "auth:refresh_token"
+ACCESS_TOKEN_PREFIX = "auth:access_token"  # noqa: S105
+REFRESH_TOKEN_PREFIX = "auth:refresh_token"  # noqa: S105
 USER_SESSION_PREFIX = "auth:user_session"
 BLACKLIST_PREFIX = "auth:blacklist"
 MULTI_LOGIN_SET_PREFIX = "auth:multiple_login"
@@ -211,7 +212,7 @@ def _create_token_payload(
     Returns:
         TokenPayload 对象
     """
-    now = datetime.now(UTC)
+    now = timezone.now_utc()
     expire = now + timedelta(seconds=expire_seconds)
 
     return TokenPayload(
@@ -504,7 +505,7 @@ async def create_access_token(
     return AccessTokenData(
         access_token=access_token,
         jti=payload.jti,
-        access_token_expire_time=datetime.fromtimestamp(payload.exp, UTC),
+        access_token_expire_time=timezone.to_utc(payload.exp),
         session_uuid=session_uuid,
     )
 
@@ -578,7 +579,7 @@ async def create_refresh_token(
     return RefreshTokenData(
         refresh_token=refresh_token,
         jti=payload.jti,
-        refresh_token_expire_time=datetime.fromtimestamp(payload.exp, UTC),
+        refresh_token_expire_time=timezone.to_utc(payload.exp),
         session_uuid=session_uuid,
     )
 

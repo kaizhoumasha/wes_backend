@@ -4,12 +4,11 @@
 # 用途: 系统级异步任务 (健康检查、缓存刷新等)
 # ============================================
 
-from datetime import datetime
-
 from celery import current_app
 from loguru import logger
 
 from src.celery_app.app import celery_app
+from src.utils.timezone import timezone
 
 
 @celery_app.task(name="celery_app.tasks.core.health_check")
@@ -24,14 +23,14 @@ def health_check():
 
         return {
             "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timezone.now_utc().isoformat(),
             "worker": current_app.current_worker_task.request.hostname,
         }
     except Exception as e:
         logger.error(f"健康检查失败: {e}")
         return {
             "status": "unhealthy",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timezone.now_utc().isoformat(),
             "error": str(e),
         }
 
@@ -79,7 +78,7 @@ def cleanup_old_logs(days: int = 7):
             return {"status": "success", "cleaned": 0}
 
         count = 0
-        cutoff_time = datetime.now().timestamp() - (days * 86400)
+        cutoff_time = timezone.now_utc().timestamp() - (days * 86400)
 
         for log_file in log_dir.glob("*.log"):
             if log_file.stat().st_mtime < cutoff_time:

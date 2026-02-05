@@ -34,6 +34,15 @@ class TimeZone:
         """
         return datetime.now(self.tz_info)
 
+    def now_utc(self) -> datetime:
+        """
+        获取当前 UTC 时间（aware datetime，用于 API 响应和时间戳计算）
+
+        Returns:
+            UTC 时区的 aware datetime 对象
+        """
+        return datetime.now(UTC)
+
     def now_for_db(self) -> datetime:
         """
         获取当前 UTC 时间（naive datetime，用于数据库存储）

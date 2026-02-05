@@ -13,6 +13,11 @@ FROM python:3.13-slim AS base
 # 设置工作目录
 WORKDIR /app
 
+# 构建参数：支持多时区部署（默认：Asia/Shanghai）
+# ⚠️ 注意：应与 .env 中的 DATETIME_TIMEZONE 保持一致
+# 构建时指定：docker build --build-arg CONTAINER_TIMEZONE=Asia/Shanghai ...
+ARG CONTAINER_TIMEZONE=Asia/Shanghai
+
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -20,11 +25,13 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     # 优化 Python 编译
     PYTHON_O=1 \
-    # 设置时区
-    TZ=Asia/Shanghai
+    # 设置时区（从构建参数传入）
+    TZ=${CONTAINER_TIMEZONE}
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # 时区数据（支持 TZ 环境变量）
+    tzdata \
     # 编译依赖
     gcc \
     g++ \

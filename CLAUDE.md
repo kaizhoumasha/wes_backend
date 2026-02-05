@@ -927,6 +927,161 @@ permissions = await permission_service.get_user_permissions(db, user_id)
 
 ---
 
+## 时区使用最佳实践（CRITICAL）
+
+### 🚨 Naive vs Aware Datetime
+
+**关键区别**：
+
+| 类型 | 定义 | 时区信息 | 使用场景 | 示例 |
+|------|------|----------|----------|------|
+| **Naive Datetime** | 无时区信息的 datetime | ❌ 无 | 数据库存储（TIMESTAMP WITHOUT TIME ZONE） | `datetime(2024, 1, 1, 12, 0, 0)` |
+| **Aware Datetime** | 带时区信息的 datetime | ✅ 有 | API 响应、时间计算、时间戳转换 | `datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)` |
+
+**⚠️ 危险模式**：
+
+```python
+# ❌ 危险：对 naive datetime 调用 .timestamp()
+dt_naive = datetime(2024, 1, 1, 12, 0, 0)  # naive datetime
+timestamp = dt_naive.timestamp()  # 🚨 假设系统本地时区！
+
+# 系统时区为 Asia/Shanghai (UTC+8) 时：
+# dt_naive.timestamp() → 1704081600 (错误！被当作 Asia/Shanghai 时间)
+# 正确的 UTC 时间戳应该是：1704110400
+# 误差：28800 秒 = 8 小时
+
+# ✅ 正确：对 aware datetime 调用 .timestamp()
+dt_aware = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)  # aware datetime
+timestamp = dt_aware.timestamp()  # ✅ 正确的 UTC 时间戳
+```
+
+### 📦 时区工具方法
+
+项目提供了统一的时区工具类 `src/utils/timezone.py`，包含三个核心方法：
+
+| 方法 | 返回类型 | 用途 | ISO 格式 |
+|------|----------|------|----------|
+| `timezone.now_for_db()` | **naive** UTC datetime | 数据库存储（TIMESTAMP WITHOUT TIME ZONE） | `2024-01-01T12:00:00` |
+| `timezone.now_utc()` | **aware** UTC datetime | API 响应、时间戳计算 | `2024-01-01T12:00:00+00:00` |
+| `timezone.to_utc(timestamp)` | **aware** UTC datetime | Unix 时间戳转换 | `2024-01-01T12:00:00+00:00` |
+
+### ✅ 使用场景速查表
+
+| 场景 | 正确方法 | 返回类型 | 示例 |
+|------|----------|----------|------|
+| **数据库存储** | `timezone.now_for_db()` | naive UTC datetime | `INSERT INTO users (created_at) VALUES ($1)` |
+| **API 响应** | `timezone.now_utc().isoformat()` | ISO 8601 字符串 | `2024-01-01T12:00:00+00:00` |
+| **时间戳计算** | `timezone.now_utc().timestamp()` | Unix 时间戳（秒） | `1704110400` |
+| **时间比较** | `timezone.now_for_db()` | naive UTC datetime | `if expires_at < timezone.now_for_db()` |
+| **时间戳转换** | `timezone.to_utc(ts)` | aware UTC datetime | `datetime.fromtimestamp(ts, tz=UTC)` |
+
+### 🔴 典型错误案例
+
+**错误 1：Naive datetime 时间戳计算**
+
+```python
+# ❌ 错误：在 Celery 任务中
+cutoff_time = timezone.now_for_db().timestamp()  # 🚨 假设系统本地时区
+
+# 影响：在 Asia/Shanghai 系统上，会产生 8 小时误差
+# 后果：可能删除错误的日志文件
+```
+
+**错误 2：Naive datetime ISO 格式**
+
+```python
+# ❌ 错误：API 响应中
+return {
+    "timestamp": timezone.now_for_db().isoformat()  # 🚨 缺少时区信息
+}
+# 返回：{"timestamp": "2024-01-01T12:00:00"}  # 客户端无法知道时区
+
+# ✅ 正确：
+return {
+    "timestamp": timezone.now_utc().isoformat()  # ✅ 包含时区信息
+}
+# 返回：{"timestamp": "2024-01-01T12:00:00+00:00"}  # 明确 UTC 时区
+```
+
+**错误 3：类型不匹配比较**
+
+```python
+# ❌ 错误：naive 和 aware datetime 比较
+from datetime import UTC
+
+app.expires_at  # naive datetime
+if app.expires_at < datetime.now(UTC):  # 🚨 TypeError!
+    raise Exception("Token expired")
+
+# ✅ 正确：统一类型
+if app.expires_at < timezone.now_for_db():  # ✅ 都是 naive
+    raise Exception("Token expired")
+```
+
+### 🎯 时区配置系统
+
+**环境变量配置**：
+
+```bash
+# .env, .env.dev, .env.test, .env.prod
+DATETIME_TIMEZONE=Asia/Shanghai  # 应用本地时区
+```
+
+**代码中的使用**：
+
+```python
+from src.core.conf import settings
+from src.utils.timezone import timezone
+
+# Celery 配置
+celery_app = Celery(
+    "tasks",
+    timezone=settings.DATETIME_TIMEZONE,  # ✅ 从环境变量读取
+)
+
+# 时区转换器初始化
+class TimeZone:
+    def __init__(self):
+        tz_name = getattr(settings, "DATETIME_TIMEZONE", "Asia/Shanghai")
+        self.tz_info = zoneinfo.ZoneInfo(tz_name)  # ✅ 可配置
+```
+
+**Docker 多时区支持**：
+
+```dockerfile
+# Dockerfile
+ARG CONTAINER_TIMEZONE=Asia/Shanghai
+ENV TZ=${CONTAINER_TIMEZONE}
+RUN apt-get update && apt-get install -y tzdata
+```
+
+### 📋 时区合规检查清单
+
+在提交代码前，请确认：
+
+- [ ] 数据库操作使用 `timezone.now_for_db()`（返回 naive datetime）
+- [ ] API 响应使用 `timezone.now_utc().isoformat()`（返回带时区的 ISO 格式）
+- [ ] 时间戳计算使用 `timezone.now_utc().timestamp()`（aware datetime）
+- [ ] ❌ **从不**对 naive datetime 调用 `.timestamp()`
+- [ ] ❌ **从不**硬编码时区字符串（如 `"Asia/Shanghai"`）
+- [ ] ❌ **从不**直接使用 `datetime.now(UTC)`（统一通过工具类）
+- [ ] 时间比较保持类型一致（naive vs naive，aware vs aware）
+
+### 🔍 检测命令
+
+```bash
+# 检查是否有硬编码时区
+grep -r "Asia/Shanghai" src/ --include="*.py"
+
+# 检查是否有直接使用 datetime.now(UTC)
+grep -r "datetime.now(UTC)" src/ --include="*.py"
+
+# 检查是否有 naive datetime 的 .timestamp() 调用
+grep -r "\.timestamp()" src/ --include="*.py" | grep -v "now_utc" | grep -v "to_utc"
+```
+
+---
+
 ## 分层架构规则（CRITICAL）
 
 ### 🚨 严格禁止的架构违规

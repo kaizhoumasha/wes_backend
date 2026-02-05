@@ -10,10 +10,11 @@
 4. 批量操作工具 - 构建批量操作响应
 """
 
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.responses import ORJSONResponse
+
+from src.utils.timezone import timezone
 
 from .response_code import DEFAULT_SUCCESS, ResponseCode
 from .response_schema import (
@@ -66,7 +67,7 @@ class ResponseBuilder:
             响应字典
         """
         if timestamp is None:
-            timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            timestamp = timezone.now_utc().isoformat().replace("+00:00", "Z")
 
         response_dict = {"code": code, "message": message, "timestamp": timestamp}
 

@@ -12,10 +12,12 @@
 }
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.utils.timezone import timezone
 
 # ==================== 类型变量 ====================
 
@@ -59,7 +61,7 @@ class ResponseModel(BaseModel):
     message: str = Field(default="操作成功", description="响应消息", examples=["操作成功", "参数错误"])
     data: Any | None = Field(default=None, description="响应数据")
     timestamp: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        default_factory=lambda: timezone.now_utc().isoformat().replace("+00:00", "Z"),
         description="响应时间戳(ISO 8601格式)",
         examples=["2024-01-01T00:00:00Z"],
     )

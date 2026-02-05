@@ -5,7 +5,6 @@ FastAPI 中间件模块
 import time
 import uuid
 from collections.abc import Callable
-from datetime import UTC
 
 from fastapi.responses import ORJSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -109,7 +108,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                     logger.error(f"{method} {path} - {type(e).__name__}: {e!s} ({time_str})")
 
                 # 返回符合统一错误格式的响应
-                from datetime import datetime
+                from src.utils.timezone import timezone
 
                 return ORJSONResponse(
                     status_code=500,
@@ -117,7 +116,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                         "code": "INTERNAL_ERROR",
                         "message": "服务器内部错误",
                         "detail": {"request_id": request_id},
-                        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                        "timestamp": timezone.now_utc().isoformat().replace("+00:00", "Z"),
                     },
                 )
 

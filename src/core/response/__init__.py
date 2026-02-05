@@ -60,8 +60,10 @@ async def get_users(page: int = 1, size: int = 10):
 ```
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
+
+from src.utils.timezone import timezone
 
 # ==================== 响应码 ====================
 from .response_code import (
@@ -122,7 +124,7 @@ def error_response_dict(
     response = {
         "code": code,
         "message": message,
-        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "timestamp": timezone.now_utc().isoformat().replace("+00:00", "Z"),
     }
 
     if detail is not None:

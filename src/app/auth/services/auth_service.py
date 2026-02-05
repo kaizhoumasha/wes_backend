@@ -10,7 +10,6 @@
 """
 
 import json
-from datetime import UTC, datetime
 
 from fastapi import Request, Response
 from sqlalchemy import select
@@ -39,6 +38,7 @@ from src.core.security import (
     verify_password,
 )
 from src.database.redis_client import get_redis, is_redis_available
+from src.utils.timezone import timezone
 
 
 class AuthService:
@@ -360,7 +360,7 @@ class AuthService:
 
                             # 解析时间戳
                             iat = session_data.get("iat", 0)
-                            created_at = datetime.fromtimestamp(iat, UTC)
+                            created_at = timezone.to_utc(iat)
 
                             # 获取额外信息
                             extra = session_data.get("extra", {})

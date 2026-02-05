@@ -7,6 +7,7 @@
 from celery import Celery
 
 from src.core.conf import settings
+
 from . import config
 
 # ============================================
@@ -33,21 +34,18 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
-    timezone="Asia/Shanghai",
+    timezone=settings.DATETIME_TIMEZONE,
     enable_utc=True,
-
     # ================================
     # 任务执行配置
     # ================================
     task_always_eager=False,  # 生产环境设为 False
     task_eager_propagates=True,
     task_ignore_result=True,  # 不保存结果 (减少 Redis 内存使用)
-
     # ================================
     # 任务路由
     # ================================
     task_routes=config.task_routes,
-
     # ================================
     # 任务重试配置
     # ================================
@@ -55,13 +53,11 @@ celery_app.conf.update(
     worker_prefetch_multiplier=4,  # 预取任务数
     task_max_retries=3,
     task_default_retry_delay=60,  # 重试延迟 (秒)
-
     # ================================
     # 结果后端配置
     # ================================
     result_expires=3600,  # 结果保留时间 (秒)
     result_compression="gzip",  # 压缩结果
-
     # ================================
     # Worker 配置
     # ================================
@@ -69,14 +65,12 @@ celery_app.conf.update(
     worker_max_tasks_per_child=1000,  # 每个 Worker 处理的最大任务数
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
-
     # ================================
     # Beat 调度器配置 (定时任务)
     # ================================
     beat_schedule=config.beat_schedule,
     beat_log_format="[%(asctime)s: %(levelname)s] %(message)s",
     beat_max_loop_interval=5.0,  # Beat 循环间隔 (秒)
-
     # ================================
     # 安全配置
     # ================================
@@ -89,11 +83,13 @@ celery_app.conf.update(
 # 调试任务
 # ============================================
 
+
 @celery_app.task(name="celery_app.app.debug_task")
 def debug_task():
     """调试任务 - 用于测试 Celery 是否正常工作"""
     print("Celery 任务执行成功!")
     return {"status": "success", "message": "Celery is working!"}
+
 
 # ============================================
 # 导出

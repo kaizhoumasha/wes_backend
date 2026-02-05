@@ -13,7 +13,6 @@
 """
 
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, Request, status
@@ -32,6 +31,7 @@ from src.core.exceptions import (
     ValidationException,
 )
 from src.core.logger import logger
+from src.utils.timezone import timezone
 
 # ==================== 错误响应模型 ====================
 
@@ -59,7 +59,7 @@ def error_response(
     response: dict[str, Any] = {
         "code": code,
         "message": message,
-        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "timestamp": timezone.now_utc().isoformat().replace("+00:00", "Z"),
     }
 
     # 自动添加 request_id 到 detail
