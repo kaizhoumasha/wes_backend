@@ -70,9 +70,7 @@ class UserRepository(BaseRepository[User]):
         """
         return await self.get_by_field(db, "email", email)
 
-    async def get_active_users(
-        self, db: AsyncSession, limit: int | None = None
-    ) -> list[User]:
+    async def get_active_users(self, db: AsyncSession, limit: int | None = None) -> list[User]:
         """
         获取激活用户列表（未被软删除的用户）
 
@@ -84,7 +82,9 @@ class UserRepository(BaseRepository[User]):
             用户列表
         """
         _, users = await self.get_list(
-            db, limit=limit or 1000, where_clauses_raw=[User.is_deleted == False]  # noqa: E712
+            db,
+            limit=limit or 1000,
+            where_clauses_raw=[User.is_deleted == False],  # noqa: E712
         )
         return users
 

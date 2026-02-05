@@ -22,12 +22,12 @@ async def get_app_permissions(db: AsyncSession, cache: RedisCache, app_id: int) 
             await cache.delete(cache_key)
 
     result = await db.execute(
-        select(Permission.name)  # type: ignore[attr-defined]
+        select(Permission)
         .join(api_app_permissions, api_app_permissions.c.permission_id == Permission.id)
         .where(api_app_permissions.c.app_id == app_id)
         .where(Permission.is_deleted.is_(False))  # type: ignore[attr-defined]
     )
-    permissions = {row[0] for row in result.all()}
+    permissions = {row.name for row in result.scalars()}
 
     await cache.set(cache_key, json.dumps(list(permissions)), expire=CacheExpire.APP_PERMISSIONS)
 

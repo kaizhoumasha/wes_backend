@@ -122,7 +122,32 @@ async def require_api_auth(
 RequireAPIAuth = Annotated[APIAppContext, Depends(require_api_auth)]
 
 
-def RequireAPIPermission(permission_name: str):
+class RequireAPIPermission:
+    """API 权限验证依赖工厂
+
+    用法:
+        dependencies=[Depends(RequireAPIPermission("api:try:invoke"))]
+    """
+
+    def __init__(self, permission_name: str):
+        self.permission_name = permission_name
+
+    def __call__(self, app_ctx: RequireAPIAuth) -> None:  # type: ignore[misc]
+        """FastAPI 依赖函数"""
+        if self.permission_name not in app_ctx.permissions:
+            raise PermissionException(f"需要权限: {self.permission_name}")
+
+    def __class_getitem__(cls, permission_name: str) -> Annotated[None, Depends]:  # type: ignore[misc]
+        """支持 Annotated 类型别名语法"""
+        return Annotated[None, Depends(cls(permission_name))]  # type: ignore[misc]
+
+
+def require_api_permission(permission_name: str):
+    """创建 API 权限验证依赖（函数式 API）
+
+    用法:
+        dependencies=[Depends(require_api_permission("api:try:invoke"))]
+    """
     async def verify_permission(
         app_ctx: RequireAPIAuth,
     ) -> None:
@@ -133,3 +158,9 @@ def RequireAPIPermission(permission_name: str):
     verify_permission.permission_required = permission_name
     verify_permission.is_api_auth = True
     return verify_permission
+
+
+__all__ = [
+    "RequireAPIAuth",
+    "RequireAPIPermission",
+]

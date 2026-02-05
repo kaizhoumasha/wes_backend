@@ -56,9 +56,7 @@ class PermissionService(BaseService[Permission, PermissionRepository], TreeServi
         """
         # 查询用户（预加载 roles 和 permissions）
         result = await db.execute(
-            select(User)
-            .where(User.id == user_id)
-            .options(selectinload(User.roles).selectinload(Role.permissions))
+            select(User).where(User.id == user_id).options(selectinload(User.roles).selectinload(Role.permissions))
         )
         user = result.scalar_one_or_none()
 

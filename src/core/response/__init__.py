@@ -60,7 +60,6 @@ async def get_users(page: int = 1, size: int = 10):
 ```
 """
 
-from datetime import datetime
 from typing import Any
 
 from src.utils.timezone import timezone

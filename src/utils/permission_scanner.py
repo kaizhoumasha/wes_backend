@@ -72,14 +72,11 @@ async def sync_permissions_to_db(app: FastAPI, db: AsyncSession) -> dict[str, in
     if not scanned_perms:
         return {"added": 0, "total": 0}
 
-    # 查询现有权限
-    result = await db.execute(select(Permission.name))
-    existing_perms = {row[0] for row in result.all()}
+    # 查询现有权限（使用 scalars 避免 type ignore）
+    result = await db.execute(select(Permission))
+    existing_perms = {row.name for row in result.scalars()}
 
-    new_perms = []
-    for perm_data in scanned_perms:
-        if perm_data["name"] not in existing_perms:
-            new_perms.append(Permission(**perm_data))
+    new_perms = [Permission(**perm_data) for perm_data in scanned_perms if perm_data["name"] not in existing_perms]
 
     if new_perms:
         db.add_all(new_perms)

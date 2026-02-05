@@ -2,7 +2,7 @@
 
 from typing import TypeVar
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.base_repository import BaseRepository
@@ -50,10 +50,7 @@ class TreeRepository[T](BaseRepository[T]):
     def _register_tree_hooks(self) -> None:
         """注册 tree_path 自动维护 Hook"""
         # 检查模型是否有 TreeMixin 的特征字段
-        has_tree_fields = all(
-            hasattr(self.model, field)
-            for field in ["parent_id", "tree_path", "level", "sort_order"]
-        )
+        has_tree_fields = all(hasattr(self.model, field) for field in ["parent_id", "tree_path", "level", "sort_order"])
 
         if not has_tree_fields:
             return
@@ -182,8 +179,8 @@ class TreeRepository[T](BaseRepository[T]):
                 # 替换路径前缀
                 descendant.tree_path = descendant.tree_path.replace(old_tree_path, new_tree_path)
                 # 更新层级（level = 旧level - 旧parent.level + 新parent.level）
-                old_parent_level = old_parent_id and (await self.get_by_id(db, old_parent_id)).level or 0
-                new_parent_level = new_parent_id and parent.level or 0
+                old_parent_level = (old_parent_id and (await self.get_by_id(db, old_parent_id)).level) or 0
+                new_parent_level = (new_parent_id and parent.level) or 0
                 descendant.level = descendant.level - old_parent_level + new_parent_level
 
         return hook

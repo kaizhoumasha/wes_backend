@@ -4,7 +4,6 @@
 # 用途: Beat 调度器配置和任务路由
 # ============================================
 
-from celery.schedules import crontab
 
 # ============================================
 # 定时任务配置 (Beat Schedule)
@@ -18,7 +17,6 @@ beat_schedule = {
         "task": "src.celery_app.tasks.core.health_check",
         "schedule": 60.0,  # 每分钟
     },
-
     # ============================================
     # TODO: 未来添加的任务
     # ============================================
@@ -39,7 +37,6 @@ beat_schedule = {
 task_routes = {
     # 核心任务 -> default 队列
     "src.celery_app.tasks.core.*": {"queue": "default"},
-
     # TODO: 未来添加的路由
     # "src.celery_app.tasks.inventory.*": {"queue": "inventory"},
     # "src.celery_app.tasks.reporting.*": {"queue": "reporting"},

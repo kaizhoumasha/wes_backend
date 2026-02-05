@@ -29,7 +29,6 @@ SQLModel Mixin 模块
 # ==================== 审计 Mixin (Model 层) ====================
 from src.core.mixins.audit import AuditMixin
 from src.core.mixins.base import BaseMixin
-from src.core.mixins.schema import SchemaMixin
 
 # ==================== 组合 Mixin ====================
 from src.core.mixins.composite import (
@@ -50,6 +49,7 @@ from src.core.mixins.primary_key import PrimaryKeyMixin
 
 # ==================== Repr Mixin ====================
 from src.core.mixins.repr import ReprMixin
+from src.core.mixins.schema import SchemaMixin
 
 # ==================== 软删除 Mixin ====================
 from src.core.mixins.soft_delete import SoftDeleteMixin

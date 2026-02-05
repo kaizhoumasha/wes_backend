@@ -6,8 +6,9 @@
 """
 
 import asyncio
+
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.core.conf import settings
 
@@ -38,6 +39,7 @@ async def test_partial_unique_index():
                 """)
             )
             record = result.fetchone()
+            assert record is not None, "插入应该返回一条记录"
             print(f"   创建成功: ID={record[0]}, name={record[1]}, is_deleted={record[2]}")
 
             # 场景2: 尝试创建第二个同名记录（应该失败）
@@ -48,6 +50,7 @@ async def test_partial_unique_index():
                         INSERT INTO demo_products (name, price, stock, created_by, updated_by)
                         VALUES ('apple', 15.0, 200, 1, 1)
                     """)
+                )
                 print("   ❌ 测试失败：应该抛出唯一约束异常")
             except Exception as e:
                 if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
@@ -63,6 +66,7 @@ async def test_partial_unique_index():
                     SET is_deleted = TRUE, deleted_at = NOW()
                     WHERE id = 1
                 """)
+            )
             print("   软删除成功")
 
             # 场景4: 再次创建同名记录（应该成功）
@@ -75,6 +79,7 @@ async def test_partial_unique_index():
                 """)
             )
             record = result.fetchone()
+            assert record is not None, "插入应该返回一条记录"
             print(f"   创建成功: ID={record[0]}, name={record[1]}, is_deleted={record[2]}")
 
             # 场景5: 验证数据库状态
@@ -96,7 +101,7 @@ async def test_partial_unique_index():
             print("\n🔍 场景6: 验证部分唯一索引是否存在")
             result = await conn.execute(
                 text("""
-                    SELECT indexname, indexdef
+                    SELECT indexname, indexdef  # noqa: disable=VA053 - indexdef 是 PostgreSQL 系统列名
                     FROM pg_indexes
                     WHERE tablename = 'demo_products'
                       AND indexname = 'demo_products_name_active_unique'
@@ -104,7 +109,7 @@ async def test_partial_unique_index():
             )
             index_info = result.fetchone()
             if index_info:
-                print(f"   ✅ 索引存在:")
+                print("   ✅ 索引存在:")
                 print(f"      名称: {index_info[0]}")
                 print(f"      定义: {index_info[1]}")
             else:
@@ -118,6 +123,7 @@ async def test_partial_unique_index():
                     SET is_deleted = TRUE, deleted_at = NOW()
                     WHERE id = 2
                 """)
+            )
             print("   软删除成功")
 
             # 最终状态

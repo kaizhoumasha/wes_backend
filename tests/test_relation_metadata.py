@@ -2,7 +2,11 @@
 测试 RelationMetadata 类
 
 验证从 SQLAlchemy inspect() 自动提取关联关系信息的功能。
+
+注意：SQLModel/SQLAlchemy 的类型系统在测试模型中有限制，因此禁用了部分类型检查。
 """
+
+# pyright: reportUnknownMemberType=false, reportAssignmentType=false, reportGeneralTypeIssues=false, reportArgumentType=false
 
 from typing import ClassVar, Optional
 
@@ -10,7 +14,6 @@ import pytest
 from sqlmodel import Field, Relationship, SQLModel
 
 from src.database.relation_metadata import (
-    ForeignKeyInfo,
     RelationInfo,
     RelationMetadata,
     RelationType,
@@ -28,7 +31,7 @@ class Parent(SQLModel, table=True):
     name: str
 
     # 一对多关系
-    children: list["Child"] = Relationship(back_populates="parent")
+    children: list["Child"] = Relationship(back_populates="parent")  # type: ignore[assignment]
 
 
 class Child(SQLModel, table=True):
@@ -41,7 +44,7 @@ class Child(SQLModel, table=True):
     parent_id: int = Field(foreign_key="test_parent.id")
 
     # 多对一关系
-    parent: Optional["Parent"] = Relationship(back_populates="children")
+    parent: Optional["Parent"] = Relationship(back_populates="children")  # type: ignore[assignment]
 
 
 class User(SQLModel, table=True):
@@ -53,7 +56,9 @@ class User(SQLModel, table=True):
     username: str
 
     # 一对一关系（通过 uselist=False 实现）
-    profile: Optional["UserProfile"] = Relationship(back_populates="user", sa_relationship_kwargs={"uselist": False})
+    profile: Optional["UserProfile"] = Relationship(  # type: ignore[assignment]
+        back_populates="user", sa_relationship_kwargs={"uselist": False}
+    )
 
 
 class UserProfile(SQLModel, table=True):
@@ -66,7 +71,7 @@ class UserProfile(SQLModel, table=True):
     user_id: int = Field(foreign_key="test_user.id")
 
     # 一对一关系
-    user: Optional["User"] = Relationship(back_populates="profile")
+    user: Optional["User"] = Relationship(back_populates="profile")  # type: ignore[assignment]
 
 
 class SimpleModel(SQLModel, table=True):
@@ -522,7 +527,7 @@ class TestEdgeCasesExtended:
         """测试 get_relation_type 处理无效的 relation_type 字符串"""
         # 创建一个模拟场景，手动构造包含无效类型的关系信息
         # 由于我们无法直接修改 inspect 的返回值，这里测试默认回退行为
-        relation_info = RelationMetadata.get_relation_info(Parent)
+        _ = RelationMetadata.get_relation_info(Parent)
 
         # 正常情况下应该返回有效的 RelationType
         relation_type = RelationMetadata.get_relation_type(Parent, "children")

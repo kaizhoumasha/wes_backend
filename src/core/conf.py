@@ -200,7 +200,7 @@ class Settings(BaseSettings):
 
             Fernet(self.API_SECRET_ENCRYPTION_KEY.encode())
         except Exception as e:
-            raise ValueError(f"❌ 安全错误: API_SECRET_ENCRYPTION_KEY 格式无效: {e}")
+            raise ValueError(f"❌ 安全错误: API_SECRET_ENCRYPTION_KEY 格式无效: {e}") from e
 
         # 检查是否使用了弱默认值
         weak_keys = [

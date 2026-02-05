@@ -23,12 +23,11 @@ from src.app.auth.models import (
     LogoutResponse,
     RefreshTokenResponse,
     RevokeSessionResponse,
-    SessionInfo,
 )
 from src.app.auth.services.auth_service import auth_service
 from src.core.conf import settings
 from src.core.response.response_util import response_builder
-from src.core.security import DependsAuth, get_current_user, require_auth
+from src.core.security import get_current_user, require_auth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -96,11 +95,7 @@ async def refresh_token(
     result = await auth_service.refresh_token(db=db, request=request, response=response)
 
     # 确定 Cookie secure 标志：优先使用 COOKIE_SECURE 配置，否则根据 APP_DEBUG 自动判断
-    cookie_secure = (
-        settings.COOKIE_SECURE
-        if settings.COOKIE_SECURE is not None
-        else not settings.APP_DEBUG
-    )
+    cookie_secure = settings.COOKIE_SECURE if settings.COOKIE_SECURE is not None else not settings.APP_DEBUG
 
     # 更新 Cookie 中的刷新令牌
     response.set_cookie(

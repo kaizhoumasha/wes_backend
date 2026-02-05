@@ -9,11 +9,11 @@
 5. permanent_delete() 方法正常工作
 """
 
-import pytest
 from datetime import datetime
 
-from src.core.mixins import SoftDeleteMixin
+import pytest
 
+from src.core.mixins import SoftDeleteMixin
 
 # ==================== Mixin 功能测试 ====================
 

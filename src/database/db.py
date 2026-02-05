@@ -51,11 +51,7 @@ async def init_db() -> None:
         pool_recycle=3600,
         pool_timeout=30,  # 添加连接超时时间
         # 设置 schema 搜索路径
-        connect_args={
-            "server_settings": {
-                "search_path": get_schema_search_path()
-            }
-        },
+        connect_args={"server_settings": {"search_path": get_schema_search_path()}},
     )
 
     AsyncSessionLocal = async_sessionmaker(
