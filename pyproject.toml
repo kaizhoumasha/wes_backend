@@ -29,6 +29,9 @@ dependencies = [
     "xdbsearchip>=1.0.2",
     "asgiref>=3.11.0",
     "locust>=2.43.1",
+    # Celery 异步任务队列（不使用 [redis] 额外，避免与项目 redis 版本冲突）
+    "celery>=5.4.0",
+    "flower>=2.0.1",
 ]
 
 [project.optional-dependencies]

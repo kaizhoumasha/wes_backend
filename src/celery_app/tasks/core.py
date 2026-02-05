@@ -1,29 +1,26 @@
 # ============================================
-# Celery 系统任务 - P9 WES Backend
+# Celery 核心任务 - P9 WES Backend
 # ============================================
 # 用途: 系统级异步任务 (健康检查、缓存刷新等)
 # ============================================
 
 from datetime import datetime
+
 from celery import current_app
 from loguru import logger
 
-from src.core.celery_app import celery_app
+from src.celery_app.app import celery_app
 
 
-@celery_app.task(name="src.core.celery_tasks.health_check")
+@celery_app.task(name="celery_app.tasks.core.health_check")
 def health_check():
     """健康检查任务"""
     try:
         logger.info("执行健康检查任务")
 
-        # 检查数据库连接
-        from src.database.db import async_engine
-        # 这里可以添加实际的数据库健康检查逻辑
-
-        # 检查 Redis 连接
-        from src.core.conf import settings
-        # 这里可以添加实际的 Redis 健康检查逻辑
+        # TODO: 添加实际的数据库和 Redis 健康检查
+        # from src.database.db import async_engine
+        # from src.core.conf import settings
 
         return {
             "status": "healthy",
@@ -39,14 +36,14 @@ def health_check():
         }
 
 
-@celery_app.task(name="src.core.celery_tasks.clear_cache")
+@celery_app.task(name="celery_app.tasks.core.clear_cache")
 def clear_cache(pattern: str = "*"):
     """清除缓存"""
     try:
         logger.info(f"清除缓存: pattern={pattern}")
 
-        # 这里添加实际的缓存清除逻辑
-        # 例如: redis_client.keys(pattern) -> delete
+        # TODO: 添加实际的缓存清除逻辑
+        # redis_client.keys(pattern) -> delete
 
         return {"status": "success", "cleared": pattern}
     except Exception as e:
@@ -54,14 +51,14 @@ def clear_cache(pattern: str = "*"):
         raise
 
 
-@celery_app.task(name="src.core.celery_tasks.send_notification")
+@celery_app.task(name="celery_app.tasks.core.send_notification")
 def send_notification(user_id: int, message: str, notification_type: str = "info"):
     """发送通知"""
     try:
         logger.info(f"发送通知: user_id={user_id}, type={notification_type}")
 
-        # 这里添加实际的通知发送逻辑
-        # 例如: WebSocket、邮件、短信等
+        # TODO: 添加实际的通知发送逻辑
+        # WebSocket、邮件、短信等
 
         return {"status": "success", "user_id": user_id}
     except Exception as e:
@@ -69,10 +66,9 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
         raise
 
 
-@celery_app.task(name="src.core.celery_tasks.cleanup_old_logs")
+@celery_app.task(name="celery_app.tasks.core.cleanup_old_logs")
 def cleanup_old_logs(days: int = 7):
     """清理旧日志文件"""
-    import os
     from pathlib import Path
 
     try:
@@ -97,9 +93,13 @@ def cleanup_old_logs(days: int = 7):
         raise
 
 
+# ============================================
+# 导出
+# ============================================
+
 __all__ = [
-    "health_check",
-    "clear_cache",
-    "send_notification",
     "cleanup_old_logs",
+    "clear_cache",
+    "health_check",
+    "send_notification",
 ]

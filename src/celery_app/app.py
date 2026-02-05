@@ -1,14 +1,13 @@
 # ============================================
-# Celery 应用配置 - P9 WES Backend
+# Celery 应用实例 - P9 WES Backend
 # ============================================
-# 用途: 异步任务处理和定时任务调度
+# 用途: Celery 应用配置和初始化
 # ============================================
 
 from celery import Celery
-from celery.schedules import crontab
-from loguru import logger
 
 from src.core.conf import settings
+from . import config
 
 # ============================================
 # Celery 应用实例
@@ -19,9 +18,7 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER,
     backend=settings.CELERY_BACKEND,
     include=[
-        "src.app.warehousing.tasks",  # 入库任务
-        "src.app.inventory.tasks",     # 库存任务
-        "src.app.reporting.tasks",     # 报表任务
+        "src.celery_app.tasks.core",  # 核心任务
     ],
 )
 
@@ -49,14 +46,7 @@ celery_app.conf.update(
     # ================================
     # 任务路由
     # ================================
-    task_routes={
-        # 入库相关任务 -> warehousing 队列
-        "src.app.warehousing.tasks.*": {"queue": "warehousing"},
-        # 库存相关任务 -> inventory 队列
-        "src.app.inventory.tasks.*": {"queue": "inventory"},
-        # 报表相关任务 -> reporting 队列
-        "src.app.reporting.tasks.*": {"queue": "reporting"},
-    },
+    task_routes=config.task_routes,
 
     # ================================
     # 任务重试配置
@@ -83,7 +73,7 @@ celery_app.conf.update(
     # ================================
     # Beat 调度器配置 (定时任务)
     # ================================
-    beat_scheduler_filename="celerybeat-schedule",
+    beat_schedule=config.beat_schedule,
     beat_log_format="[%(asctime)s: %(levelname)s] %(message)s",
     beat_max_loop_interval=5.0,  # Beat 循环间隔 (秒)
 
@@ -96,60 +86,10 @@ celery_app.conf.update(
 )
 
 # ============================================
-# 定时任务配置 (Beat Schedule)
-# ============================================
-
-celery_app.conf.beat_schedule = {
-    # ============================================
-    # 每日任务
-    # ============================================
-    "daily-inventory-check": {
-        "task": "src.app.inventory.tasks.check_low_stock",
-        "schedule": 3600.0,  # 每小时执行一次
-        # "schedule": crontab(hour=2, minute=0),  # 每天凌晨 2 点
-    },
-
-    "daily-data-summary": {
-        "task": "src.app.reporting.tasks.generate_daily_summary",
-        "schedule": 86400.0,  # 每天执行一次
-        # "schedule": crontab(hour=3, minute=0),  # 每天凌晨 3 点
-    },
-
-    # ============================================
-    # 每周任务
-    # ============================================
-    "weekly-performance-report": {
-        "task": "src.app.reporting.tasks.generate_weekly_report",
-        "schedule": crontab(hour=4, minute=0, day_of_week=1),  # 每周一凌晨 4 点
-    },
-
-    # ============================================
-    # 每月任务
-    # ============================================
-    "monthly-data-cleanup": {
-        "task": "src.app.warehousing.tasks.cleanup_old_records",
-        "schedule": crontab(hour=5, minute=0, day_of_month=1),  # 每月 1 号凌晨 5 点
-    },
-
-    # ============================================
-    # 高频任务
-    # ============================================
-    "cache-refresh": {
-        "task": "src.app.inventory.tasks.refresh_cache",
-        "schedule": 300.0,  # 每 5 分钟
-    },
-
-    "health-check": {
-        "task": "src.core.celery_tasks.health_check",
-        "schedule": 60.0,  # 每分钟
-    },
-}
-
-# ============================================
 # 调试任务
 # ============================================
 
-@celery_app.task(name="src.core.celery_app.debug_task")
+@celery_app.task(name="celery_app.app.debug_task")
 def debug_task():
     """调试任务 - 用于测试 Celery 是否正常工作"""
     print("Celery 任务执行成功!")
