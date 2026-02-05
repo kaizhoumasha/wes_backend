@@ -1,0 +1,367 @@
+# ==============================================
+# GitLab CI/CD 配置 - P9 WES Backend
+# ==============================================
+# 架构:
+#   - DevOps 环境: 192.168.0.220 (GitLab + Jenkins + Runner)
+#   - 测试环境: 192.168.0.221 (自动部署)
+#   - 构建阶段: GitLab Runner (Docker 执行器)
+#   - 镜像仓库: GitLab Container Registry
+# ==============================================
+
+# 定义变量
+variables:
+  # Python 版本
+  PYTHON_VERSION: "3.13"
+  # 包管理器
+  UV_VERSION: "0.5.x"
+  # 缓存key
+  CACHE_KEY_PREFIX: "wes-backend"
+  # Docker 镜像命名
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  IMAGE_TEST: $CI_REGISTRY_IMAGE:test-$CI_COMMIT_SHORT_SHA
+  # 时区
+  DATETIME_TIMEZONE: "Asia/Shanghai"
+
+# ==============================================
+# 全局默认配置
+# ==============================================
+default:
+  # 使用 uv 作为包管理器
+  image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+  # 缓存配置
+  cache:
+    key:
+      prefix: $CACHE_KEY_PREFIX
+      files:
+        - uv.lock
+    paths:
+      - .cache/uv
+      - .cache/pip
+      - .venv/
+    policy: pull-push
+  # 重试策略
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  # Artifacts 保留时间
+  artifacts:
+    expire_in: 7 days
+
+# ==============================================
+# 定义阶段
+# ==============================================
+stages:
+  - prepare    # 准备阶段
+  - lint       # 代码检查
+  - test       # 测试
+  - build      # 构建 Docker 镜像
+  - deploy     # 部署
+
+# ==============================================
+# 准备阶段
+# ==============================================
+prepare:dependencies:
+  stage: prepare
+  script:
+    - echo "📦 安装项目依赖..."
+    - uv sync --frozen --no-dev
+    - echo "✅ 依赖安装完成"
+  artifacts:
+    paths:
+      - .venv/
+      - uv.lock
+    when: always
+
+prepare:dev-dependencies:
+  stage: prepare
+  script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
+    - echo "✅ 开发依赖安装完成"
+  artifacts:
+    paths:
+      - .venv/
+      - uv.lock
+    when: always
+  allow_failure: true
+
+# ==============================================
+# 代码检查阶段
+# ==============================================
+lint:ruff-format:
+  stage: lint
+  dependencies:
+    - prepare:dev-dependencies
+  script:
+    - echo "🔍 检查代码格式 (Ruff Format)..."
+    - uv run ruff format --check .
+    - echo "✅ 代码格式检查通过"
+
+lint:ruff-check:
+  stage: lint
+  dependencies:
+    - prepare:dev-dependencies
+  script:
+    - echo "🔍 检查代码质量 (Ruff Lint)..."
+    - uv run ruff check . --output-format=github
+    - echo "✅ 代码质量检查通过"
+  allow_failure: true
+
+lint:security:
+  stage: lint
+  dependencies:
+    - prepare:dev-dependencies
+  script:
+    - echo "🔍 安全检查 (Bandit)..."
+    - uv run bandit -r src/ -f json -o bandit-report.json || true
+    - uv run bandit -r src/ -f screen
+    - echo "✅ 安全检查完成"
+  artifacts:
+    reports:
+      sast: bandit-report.json
+    paths:
+      - bandit-report.json
+    when: always
+  allow_failure: true
+
+# ==============================================
+# 测试阶段
+# ==============================================
+test:unit:
+  stage: test
+  dependencies:
+    - prepare:dev-dependencies
+  services:
+    - name: postgres:17-alpine
+      alias: postgres
+      variables:
+        POSTGRES_DB: wes_test
+        POSTGRES_USER: wes_user
+        POSTGRES_PASSWORD: wes_password
+    - name: redis:8-alpine
+      alias: redis
+  variables:
+    DATABASE_URL: "postgresql+psycopg://wes_user:wes_password@postgres:5432/wes_test"
+    REDIS_URL: "redis://redis:6379/1"
+    ENVIRONMENT: test
+    DATETIME_TIMEZONE: Asia/Shanghai
+  script:
+    - echo "🧪 运行单元测试..."
+    - uv run pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html:reports/coverage --cov-report=xml:reports/coverage.xml --junitxml=reports/junit.xml
+    - echo "✅ 单元测试通过"
+  coverage: '/(?i)total.*? (100(?:\.0+)?\\%|[1-9]?\\d(?:\\.\\d+)?\\%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: reports/coverage.xml
+      junit: reports/junit.xml
+    paths:
+      - reports/coverage/
+      - reports/junit.xml
+      - reports/coverage.xml
+    when: always
+
+test:api-signature:
+  stage: test
+  dependencies:
+    - prepare:dev-dependencies
+  services:
+    - name: postgres:17-alpine
+      alias: postgres
+      variables:
+        POSTGRES_DB: wes_test
+        POSTGRES_USER: wes_user
+        POSTGRES_PASSWORD: wes_password
+    - name: redis:8-alpine
+      alias: redis
+  variables:
+    DATABASE_URL: "postgresql+psycopg://wes_user:wes_password@postgres:5432/wes_test"
+    REDIS_URL: "redis://redis:6379/1"
+    ENVIRONMENT: test
+  script:
+    - echo "🔐 测试 API 签名认证..."
+    - uv run pytest tests/api/test_signature.py -v --tb=short
+    - echo "✅ API 签名测试通过"
+
+# ==============================================
+# 构建阶段
+# ==============================================
+build:docker-image:
+  stage: build
+  image: docker:27-dind
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: "/certs"
+    BUILDKIT_PROGRESS: "plain"
+    # 构建参数
+    CONTAINER_TIMEZONE: "Asia/Shanghai"
+  before_script:
+    - echo "🔐 登录 Docker Registry..."
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - echo "🐳 构建 Docker 镜像..."
+    # 构建多阶段镜像
+    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST -t $IMAGE_TEST
+      --target production
+      --build-arg CONTAINER_TIMEZONE=$CONTAINER_TIMEZONE
+      --cache-from $IMAGE_LATEST
+      --progress=plain
+      .
+    - echo "📤 推送 Docker 镜像..."
+    - docker push $IMAGE_NAME
+    - docker push $IMAGE_LATEST
+    - docker push $IMAGE_TEST
+    - echo "✅ Docker 镜像构建完成"
+  only:
+    - main
+    - develop
+    - merge_requests
+  tags:
+    - docker
+
+# ==============================================
+# 部署阶段
+# ==============================================
+# 部署到测试环境 (221 服务器)
+deploy:testing:
+  stage: deploy
+  image: alpine:latest
+  variables:
+    DEPLOY_ENV: "test"
+    DEPLOY_HOST: "192.168.0.221"
+    DEPLOY_USER: "root"  # 根据实际情况修改
+    DEPLOY_PATH: "/opt/wes_backend"
+  before_script:
+    # 安装依赖
+    - apk add --no-cache openssh-client docker-compose-plugin
+    # 配置 SSH
+    - mkdir -p ~/.ssh
+    - eval "$(ssh-agent -s)"
+    - echo "$SSH_PRIVATE_KEY_TEST" | tr -d '\r' | ssh-add -
+    - ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - echo "🚀 部署到测试环境 ($DEPLOY_HOST)..."
+    - |
+      ssh $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
+        set -e
+
+        echo "📦 拉取最新镜像..."
+        cd $DEPLOY_PATH
+        docker compose -f docker-compose.yml --env-file .env.test pull
+
+        echo "🔄 停止旧容器..."
+        docker compose -f docker-compose.yml --env-file .env.test --profile test down
+
+        echo "⚙️ 启动新容器..."
+        docker compose -f docker-compose.yml --env-file .env.test --profile test up -d
+
+        echo "🗄️ 运行数据库迁移..."
+        docker compose -f docker-compose.yml --env-file .env.test exec -T api alembic upgrade head || echo "⚠️ 迁移失败或已跳过"
+
+        echo "🏥 健康检查..."
+        sleep 10
+        curl -f http://localhost:8001/api/health || exit 1
+
+        echo "✅ 测试环境部署完成"
+      EOF
+    - echo "✅ 部署成功"
+  environment:
+    name: testing
+    url: http://192.168.0.221:8001
+    on_stop: stop:testing
+  only:
+    - develop
+  when: on_success  # 自动部署
+  tags:
+    - docker
+  needs:
+    - build:docker-image
+
+# 停止测试环境
+stop:testing:
+  stage: deploy
+  image: alpine:latest
+  variables:
+    DEPLOY_ENV: "test"
+    DEPLOY_HOST: "192.168.0.221"
+    DEPLOY_USER: "root"
+    DEPLOY_PATH: "/opt/wes_backend"
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - eval "$(ssh-agent -s)"
+    - echo "$SSH_PRIVATE_KEY_TEST" | tr -d '\r' | ssh-add -
+    - ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
+  script:
+    - echo "🛑 停止测试环境..."
+    - |
+      ssh $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
+        cd $DEPLOY_PATH
+        docker compose -f docker-compose.yml --env-file .env.test --profile test down
+        echo "✅ 测试环境已停止"
+      EOF
+  environment:
+    name: testing
+    action: stop
+  only:
+    - develop
+  when: manual
+  tags:
+    - docker
+
+# ==============================================
+# 辅助任务
+# ==============================================
+# 清理旧镜像
+cleanup:docker-images:
+  stage: .post
+  image: docker:27-dind
+  services:
+    - docker:27-dind
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - echo "🧹 清理旧的 Docker 镜像..."
+    - |
+      # 保留最近 10 个镜像
+      docker image ls $CI_REGISTRY_IMAGE --format "{{.Tag}}" | \
+      tail -n +11 | \
+      xargs -I {} docker rmi $CI_REGISTRY_IMAGE:{} || true
+    - echo "✅ 清理完成"
+  only:
+    - schedules
+  when: manual
+  tags:
+    - docker
+
+# ==============================================
+# 触发规则说明
+# ==============================================
+# 触发条件:
+#   - 所有分支: prepare, lint, test
+#   - main/develop/MR: build
+#   - develop: deploy:testing (自动)
+#
+# 环境变量需求 (在 GitLab Settings → CI/CD → Variables 中配置):
+#   - CI_REGISTRY: Docker Registry 地址 (GitLab 自动提供)
+#   - CI_REGISTRY_USER: Registry 用户名 (GitLab 自动提供)
+#   - CI_REGISTRY_PASSWORD: Registry 密码 (GitLab 自动提供)
+#   - SSH_PRIVATE_KEY_TEST: 测试服务器 (221) SSH 私钥
+#
+# 部署服务器要求:
+#   - 已安装 Docker 和 Docker Compose
+#   - 已配置 SSH 密钥认证
+#   - 项目目录已创建: /opt/wes_backend
+#   - 已配置环境文件: .env.test
+#
+# 注意: 生产环境不在 CI/CD 自动部署范围内
+
