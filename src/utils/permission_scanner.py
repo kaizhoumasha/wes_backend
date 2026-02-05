@@ -11,6 +11,16 @@ from src.app.admin.models import Permission
 logger = logging.getLogger(__name__)
 
 
+def _clean_summary(summary: str | None) -> str | None:
+    """去除 summary 中的权限码前缀 [xxx] """
+    if not summary:
+        return None
+    # 移除 [xxx] 前缀格式
+    if summary.startswith("[") and "] " in summary:
+        return summary.split("] ", 1)[1]
+    return summary
+
+
 def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
     """
     扫描 FastAPI 应用中的所有路由，提取权限信息
@@ -26,18 +36,23 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
         for dep in route.dependencies:
             func = dep.dependency
 
+            # 清理 description（去除权限码前缀）
+            description = _clean_summary(route.summary) or route.name
+
             # 1. 检查 API 认证权限 (RequireAPIPermission)
             if getattr(func, "is_api_auth", False):
                 perm_name = getattr(func, "permission_required", None)
                 if perm_name and perm_name not in seen_permissions:
                     seen_permissions.add(perm_name)
+                    parts = perm_name.split(":")
                     permissions_found.append(
                         {
                             "name": perm_name,
                             "type": "api",  # API 权限类型
-                            "description": route.summary or route.name,
-                            "resource": perm_name.split(":")[0] if ":" in perm_name else "unknown",
-                            "action": perm_name.split(":")[-1] if ":" in perm_name else "unknown",
+                            "category": parts[0] if len(parts) >= 2 else None,  # module = category
+                            "description": description,
+                            "resource": parts[1] if len(parts) >= 2 else "unknown",  # resource
+                            "action": parts[-1] if len(parts) >= 3 else "unknown",  # action
                         }
                     )
 
@@ -46,13 +61,17 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
                 perm_name = getattr(func, "permission_required", None)
                 if perm_name and perm_name not in seen_permissions:
                     seen_permissions.add(perm_name)
+                    parts = perm_name.split(":")
                     permissions_found.append(
                         {
                             "name": perm_name,
-                            "type": "menu",  # 默认为菜单/功能权限
-                            "description": route.summary or route.name,
-                            "resource": perm_name.split(":")[0] if ":" in perm_name else "unknown",
-                            "action": perm_name.split(":")[-1] if ":" in perm_name else "unknown",
+                            "type": "api",  # RBAC 权限也是 API 权限（后端安全边界）
+                            "category": parts[0] if len(parts) >= 2 else None,  # module = category
+                            "description": description,
+                            "resource": parts[1] if len(parts) >= 2 else "unknown",  # resource
+                            "action": parts[-1] if len(parts) >= 3 else "unknown",  # action
+                            "method": list(route.methods)[0] if route.methods else None,  # 提取 HTTP 方法
+                            "path": route.path,  # 提取路由路径
                         }
                     )
 
