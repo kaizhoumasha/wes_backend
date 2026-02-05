@@ -108,7 +108,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:create",
             "description": "创建用户",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users",
@@ -124,7 +124,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:update",
             "description": "更新用户",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users/{id}",
@@ -140,7 +140,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:delete",
             "description": "删除用户",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users/{id}",
@@ -156,7 +156,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:detail",
             "description": "查看用户详情",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users/{id}",
@@ -172,7 +172,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:list",
             "description": "查询用户列表",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users/query",
@@ -188,7 +188,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:user:export",
             "description": "导出用户数据",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": user_menu.id,
             "path": "/api/v1/admin/users/export",
@@ -226,7 +226,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:role:create",
             "description": "创建角色",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": role_menu.id,
             "path": "/api/v1/admin/roles",
@@ -242,7 +242,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:role:update",
             "description": "更新角色",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": role_menu.id,
             "path": "/api/v1/admin/roles/{id}",
@@ -258,7 +258,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:role:delete",
             "description": "删除角色",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": role_menu.id,
             "path": "/api/v1/admin/roles/{id}",
@@ -274,7 +274,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:role:detail",
             "description": "查看角色详情",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": role_menu.id,
             "path": "/api/v1/admin/roles/{id}",
@@ -290,7 +290,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:role:list",
             "description": "查询角色列表",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": role_menu.id,
             "path": "/api/v1/admin/roles/query",
@@ -328,7 +328,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:create",
             "description": "创建权限",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions",
@@ -344,7 +344,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:update",
             "description": "更新权限",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions/{id}",
@@ -360,7 +360,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:delete",
             "description": "删除权限",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions/{id}",
@@ -376,7 +376,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:detail",
             "description": "查看权限详情",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions/{id}",
@@ -392,7 +392,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:list",
             "description": "查询权限列表",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions/query",
@@ -408,7 +408,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:permission:tree",
             "description": "获取权限树",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": perm_menu.id,
             "path": "/api/v1/admin/permissions/tree",
@@ -446,7 +446,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:audit:list",
             "description": "查询审计日志",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": audit_menu.id,
             "path": "/api/v1/admin/audit-logs/query",
@@ -462,7 +462,7 @@ async def seed_permissions(db: AsyncSession) -> None:
         {
             "name": "admin:audit:export",
             "description": "导出审计日志",
-            "type": "api",
+            "type": "user_api",
             "category": "admin",
             "parent_id": audit_menu.id,
             "path": "/api/v1/admin/audit-logs/export",

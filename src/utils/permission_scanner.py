@@ -34,49 +34,55 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
 
         # 检查路由的依赖项
         for dep in route.dependencies:
-            func = dep.dependency
+            dependency_obj = dep.dependency
 
             # 清理 description（去除权限码前缀）
             description = _clean_summary(route.summary) or route.name
 
+            # 统一获取元数据：优先检查实例属性，再检查函数属性
+            is_api_auth = getattr(dependency_obj, "is_api_auth", False)
+            is_rbac = getattr(dependency_obj, "is_rbac", False)
+            is_superuser = getattr(dependency_obj, "is_superuser", False)
+            perm_name = getattr(dependency_obj, "permission_required", None)
+
             # 1. 检查 API 认证权限 (RequireAPIPermission)
-            if getattr(func, "is_api_auth", False):
-                perm_name = getattr(func, "permission_required", None)
+            if is_api_auth:
                 if perm_name and perm_name not in seen_permissions:
                     seen_permissions.add(perm_name)
                     parts = perm_name.split(":")
                     permissions_found.append(
                         {
                             "name": perm_name,
-                            "type": "api",  # API 权限类型
+                            "type": "external_api",  # 外部 API 应用权限
                             "category": parts[0] if len(parts) >= 2 else None,  # module = category
                             "description": description,
                             "resource": parts[1] if len(parts) >= 2 else "unknown",  # resource
                             "action": parts[-1] if len(parts) >= 3 else "unknown",  # action
+                            "method": next(iter(route.methods)) if route.methods else None,  # 提取 HTTP 方法
+                            "path": route.path,  # 提取路由路径
                         }
                     )
 
             # 2. 检查用户 RBAC 权限 (RequirePermission)
-            elif getattr(func, "is_rbac", False):
-                perm_name = getattr(func, "permission_required", None)
+            elif is_rbac:
                 if perm_name and perm_name not in seen_permissions:
                     seen_permissions.add(perm_name)
                     parts = perm_name.split(":")
                     permissions_found.append(
                         {
                             "name": perm_name,
-                            "type": "api",  # RBAC 权限也是 API 权限（后端安全边界）
+                            "type": "user_api",  # 用户 RBAC 权限
                             "category": parts[0] if len(parts) >= 2 else None,  # module = category
                             "description": description,
                             "resource": parts[1] if len(parts) >= 2 else "unknown",  # resource
                             "action": parts[-1] if len(parts) >= 3 else "unknown",  # action
-                            "method": list(route.methods)[0] if route.methods else None,  # 提取 HTTP 方法
+                            "method": next(iter(route.methods)) if route.methods else None,  # 提取 HTTP 方法
                             "path": route.path,  # 提取路由路径
                         }
                     )
 
             # 3. 检查超级用户权限 (require_superuser)
-            elif getattr(func, "is_superuser", False):
+            elif is_superuser:
                 # 超级用户权限通常不需要录入数据库，或者录入为特殊类型
                 pass
 

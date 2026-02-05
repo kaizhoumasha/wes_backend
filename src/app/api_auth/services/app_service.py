@@ -54,19 +54,24 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
     async def assign_permissions(self, db: AsyncSession, cache: RedisCache, id: int, permission_ids: list[int]) -> None:
         """分配权限"""
-        # 1. 获取应用
+        from src.app.api_auth.models.relationships import api_app_permissions
+
+        # 1. 验证应用存在
         app = await self.repo.get_by_id(db, id)
         if not app:
             raise ValueError(f"应用 {id} 不存在")
 
-        # 2. 获取权限列表
-        result = await db.execute(select(Permission).where(Permission.id.in_(permission_ids)))  # type: ignore[no-untyped-call]
-        permissions = result.scalars().all()
+        # 2. 删除旧的权限关联
+        await db.execute(
+            api_app_permissions.delete().where(api_app_permissions.c.app_id == id)
+        )
 
-        # 3. 更新关联
-        # 显式加载 permissions 关系以确保更新正确
-        await db.refresh(app, attribute_names=["permissions"])
-        app.permissions = permissions  # type: ignore[attr-defined]
+        # 3. 插入新的权限关联
+        if permission_ids:
+            await db.execute(
+                api_app_permissions.insert(),
+                [{"app_id": id, "permission_id": pid} for pid in permission_ids],
+            )
 
         await db.commit()
 

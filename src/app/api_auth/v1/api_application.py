@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from pydantic import BaseModel
 
 from src.app.admin.services import permission_service
 from src.app.api_auth.models import (
@@ -128,20 +129,34 @@ def register_custom_route(router: APIRouter, api: "BaseAPI") -> None:
 
         return response_builder.success(data=APIApplicationResponse.model_validate(app), message="有效期重置成功")
 
+    class TryInvokeApplication(BaseModel):
+        """测试 API 调用数据模型"""
+
+        command_name: str
+        command_description: str
+        command_parameters: list[str]
+        command_response: str
+
+    class TryInvokeApplicationRequest(BaseModel):
+        """测试 API 调用请求模型（包裹格式）"""
+
+        data: TryInvokeApplication
+
     @router.post(
         "/try/invoke",
         summary="[api:try:invoke] 测试 API 调用",
         dependencies=[Depends(RequireAPIPermission("api:try:invoke"))],  # 只需要 API 认证
     )
-    async def try_invoke_application(app_ctx: RequireAPIAuth):
-        return response_builder.success(
-            data={
-                "app_id": app_ctx.app_id,
-                "app_name": app_ctx.app_name,
-                "permissions": list(app_ctx.permissions),
-            },
-            message="API 调用成功",
-        )
+    async def try_invoke_application(
+        app_ctx: RequireAPIAuth,
+        request_data: TryInvokeApplicationRequest,
+    ):
+        """测试 API 调用
+
+        请求格式：{"data": {...}}
+        """
+        result_data = {"app_ctx": app_ctx, "data": request_data.data}
+        return response_builder.success(data=result_data, message="API 调用成功")
 
     @router.post(
         "/{id}/permissions",

@@ -2,7 +2,7 @@ import time
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Body, Depends, Request
+from fastapi import Depends, Request
 
 from src.app.api_auth.constants import CacheExpire, CacheKeys
 from src.app.api_auth.models import APIApplication
@@ -22,7 +22,7 @@ class APIAppContext:
 
 
 async def verify_api_auth(
-    request: Request, db: AsyncSessionDep, cache: CacheDep, body: bytes = Body(default=b"")
+    request: Request, db: AsyncSessionDep, cache: CacheDep
 ) -> APIAppContext | None:
     app_id: str | None = request.headers.get("X-App-ID")
     timestamp: str | None = request.headers.get("X-Timestamp")
@@ -59,7 +59,6 @@ async def verify_api_auth(
         timestamp=str(timestamp),
         method=request.method,
         path=str(request.url.path),
-        body=body.decode("utf-8"),
     )
 
     if not SignatureService.verify(expected_signature, signature):
@@ -131,6 +130,10 @@ class RequireAPIPermission:
 
     def __init__(self, permission_name: str):
         self.permission_name = permission_name
+        # 关键点：为实例挂载元数据，方便扫描器读取
+        # 注意：不能在 __call__ 方法上设置属性（方法对象不支持动态属性）
+        self.permission_required = permission_name  # type: ignore[attr-defined]
+        self.is_api_auth = True  # type: ignore[attr-defined]
 
     def __call__(self, app_ctx: RequireAPIAuth) -> None:  # type: ignore[misc]
         """FastAPI 依赖函数"""

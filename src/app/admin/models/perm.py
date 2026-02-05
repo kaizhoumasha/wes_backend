@@ -51,9 +51,9 @@ class PermissionBase(TreeMixin, BaseMixin):
 
     # 基础分类
     type: str = Field(
-        default="api",
+        default="user_api",
         index=True,
-        description="权限类型：api（API接口）、menu（菜单）、button（按钮）",
+        description="权限类型：user_api（用户API）、external_api（外部API）、menu（菜单）、button（按钮）",
     )
     category: str | None = Field(default=None, max_length=50, description="权限分类：admin、system、business 等")
 
@@ -110,8 +110,8 @@ class PermissionBase(TreeMixin, BaseMixin):
     @classmethod
     def validate_type(cls, v: str) -> str:
         """验证权限类型"""
-        if v not in ("api", "menu", "button"):
-            raise ValueError("type 必须是 'api', 'menu', 或 'button'")
+        if v not in ("user_api", "external_api", "menu", "button"):
+            raise ValueError("type 必须是 'user_api', 'external_api', 'menu', 或 'button'")
         return v
 
     @field_validator("external_url")
@@ -162,13 +162,13 @@ class PermissionBase(TreeMixin, BaseMixin):
     def validate_api_fields(self) -> "PermissionBase":
         """API 类型字段验证"""
         fields_set, is_create = self._get_validation_context()
-        if self.type == "api":
+        if self.type in ("user_api", "external_api"):
             if is_create and (not self.method or not self.path):
-                raise ValueError("api 类型必须指定 method 和 path")
+                raise ValueError(f"{self.type} 类型必须指定 method 和 path")
             if "method" in fields_set and not self.method:
-                raise ValueError("api 类型必须指定 method")
+                raise ValueError(f"{self.type} 类型必须指定 method")
             if "path" in fields_set and not self.path:
-                raise ValueError("api 类型必须指定 path")
+                raise ValueError(f"{self.type} 类型必须指定 path")
         return self
 
 

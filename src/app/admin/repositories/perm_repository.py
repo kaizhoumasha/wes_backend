@@ -56,8 +56,8 @@ class PermissionRepository(TreeRepository[Permission]):
         db: AsyncSession,
         exclude_deleted: bool = True,
     ) -> list[Permission]:
-        """获取 API 权限（type=api）"""
-        where_clauses = [Permission.type == "api"]
+        """获取 API 权限（type=user_api 或 type=external_api）"""
+        where_clauses = [Permission.type.in_(["user_api", "external_api"])]
         self._add_deleted_filter(where_clauses, exclude_deleted)
 
         _, items = await self.get_list(db, limit=1000, where_clauses_raw=where_clauses)
