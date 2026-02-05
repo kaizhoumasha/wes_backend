@@ -38,15 +38,15 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8001
 
-      # 数据库配置
-      POSTGRES_HOST: ${POSTGRES_HOST}
+      # 数据库配置 ${POSTGRES_HOST}
+      POSTGRES_HOST: db
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
 
-      # Redis 配置
-      REDIS_HOST: ${REDIS_HOST}
+      # Redis 配置 ${REDIS_HOST}
+      REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
@@ -105,25 +105,25 @@ services:
       target: ${BUILD_TARGET:-production}
     image: wes-backend:${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    command: celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
+    command: celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery
     env_file:
       - .env
     environment:
       # 数据库配置
-      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_HOST: db
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
 
-      # Redis 配置
-      REDIS_HOST: ${REDIS_HOST}
+      # Redis 配置（容器内使用 docker 服务名）
+      REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
       # Celery 配置
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/2
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -180,14 +180,14 @@ services:
     env_file:
       - .env
     environment:
-      # Redis 配置
-      REDIS_HOST: ${REDIS_HOST}
+      # Redis 配置（容器内使用 docker 服务名）
+      REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
       # Celery 配置
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/2
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -238,19 +238,19 @@ services:
     command: >
       celery -A src.celery_app.app flower
       --port=5555
-      --broker=redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/1
+      --broker=redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
     env_file:
       - .env
     environment:
-      # Redis 配置
-      REDIS_HOST: ${REDIS_HOST}
+      # Redis 配置（容器内使用 docker 服务名）
+      REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
       # Celery 配置
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/2
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
     volumes:
       # 源码目录（开发环境热重载）
       - ./src:/app/src:rw

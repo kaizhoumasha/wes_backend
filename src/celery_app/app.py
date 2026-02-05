@@ -41,7 +41,7 @@ celery_app.conf.update(
     # ================================
     task_always_eager=False,  # 生产环境设为 False
     task_eager_propagates=True,
-    task_ignore_result=True,  # 不保存结果 (减少 Redis 内存使用)
+    task_ignore_result=False,  # 保存结果以便 Flower 显示任务历史
     # ================================
     # 任务路由
     # ================================

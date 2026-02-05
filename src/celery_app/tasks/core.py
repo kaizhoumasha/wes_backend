@@ -4,14 +4,14 @@
 # 用途: 系统级异步任务 (健康检查、缓存刷新等)
 # ============================================
 
-from celery import current_app
+from celery import current_task
 from loguru import logger
 
 from src.celery_app.app import celery_app
 from src.utils.timezone import timezone
 
 
-@celery_app.task(name="celery_app.tasks.core.health_check")
+@celery_app.task(name="src.celery_app.tasks.core.health_check")
 def health_check():
     """健康检查任务"""
     try:
@@ -21,10 +21,14 @@ def health_check():
         # from src.database.db import async_engine
         # from src.core.conf import settings
 
+        hostname = "unknown"
+        if current_task and current_task.request:
+            hostname = current_task.request.hostname  # type: ignore[attr-defined]
+
         return {
             "status": "healthy",
             "timestamp": timezone.now_utc().isoformat(),
-            "worker": current_app.current_worker_task.request.hostname,
+            "worker": hostname,
         }
     except Exception as e:
         logger.error(f"健康检查失败: {e}")
@@ -35,7 +39,7 @@ def health_check():
         }
 
 
-@celery_app.task(name="celery_app.tasks.core.clear_cache")
+@celery_app.task(name="src.celery_app.tasks.core.clear_cache")
 def clear_cache(pattern: str = "*"):
     """清除缓存"""
     try:
@@ -50,7 +54,7 @@ def clear_cache(pattern: str = "*"):
         raise
 
 
-@celery_app.task(name="celery_app.tasks.core.send_notification")
+@celery_app.task(name="src.celery_app.tasks.core.send_notification")
 def send_notification(user_id: int, message: str, notification_type: str = "info"):
     """发送通知"""
     try:
@@ -65,7 +69,7 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
         raise
 
 
-@celery_app.task(name="celery_app.tasks.core.cleanup_old_logs")
+@celery_app.task(name="src.celery_app.tasks.core.cleanup_old_logs")
 def cleanup_old_logs(days: int = 7):
     """清理旧日志文件"""
     from pathlib import Path
