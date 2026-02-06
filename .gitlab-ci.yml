@@ -85,6 +85,8 @@ prepare:dependencies:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 prepare:dev-dependencies:
   stage: prepare
@@ -101,6 +103,8 @@ prepare:dev-dependencies:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 # ==============================================
 # 质量阶段：代码检查（并行执行）
@@ -117,6 +121,8 @@ lint:format:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 lint:check:
   stage: quality
@@ -131,6 +137,8 @@ lint:check:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 lint:security:
   stage: quality
@@ -153,6 +161,8 @@ lint:security:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 # ==============================================
 # 质量阶段：单元测试（并行执行）
@@ -196,6 +206,8 @@ test:unit:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 test:api-signature:
   stage: quality
@@ -222,6 +234,8 @@ test:api-signature:
     - develop
     - main
     - merge_requests
+  tags:
+    - docker
 
 # ==============================================
 # 部署阶段：部署到测试环境
