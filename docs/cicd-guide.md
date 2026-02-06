@@ -28,12 +28,20 @@
 
 ### 前置条件检查
 
+**服务器环境**：
+- **操作系统**：Rocky Linux 9.7 (Blue Onyx)
+- **包管理器**：dnf (RHEL 系列)
+- **防火墙**：firewalld
+
 ```bash
 # 1. 检查服务器连接
 ssh root@192.168.0.220  # DevOps 服务器 (GitLab + Jenkins + Runner)
 ssh root@192.168.0.221  # 测试服务器 (自动部署目标)
 
-# 2. 确认 Docker 已安装
+# 2. 检查操作系统版本
+ssh root@192.168.0.221 "cat /etc/os-release | grep PRETTY_NAME"
+
+# 3. 确认 Docker 已安装
 ssh root@192.168.0.220 "docker --version"
 ssh root@192.168.0.221 "docker --version"
 ```
@@ -55,14 +63,14 @@ ssh-copy-id -i ~/.ssh/gitlab_test_rsa_221.pub root@192.168.0.221
 ssh -i ~/.ssh/gitlab_test_rsa_221 root@192.168.0.221 "echo '测试环境连接成功'"
 ```
 
-### 步骤 2: 在测试服务器上安装 Docker（2 分钟）
+### 步骤 2: 在测试服务器上安装 Docker（3 分钟）
 **位置**: 🧪 221 服务器
 
 ```bash
 # SSH 登录到测试服务器
 ssh root@192.168.0.221
 
-# 使用 Docker 官方安装脚本（支持多种 Linux 发行版）
+# 使用 Docker 官方安装脚本（自动适配 Rocky Linux）
 curl -fsSL https://get.docker.com -o get-docker.sh
 sh get-docker.sh
 rm get-docker.sh
@@ -74,9 +82,27 @@ systemctl start docker
 # 验证安装
 docker --version
 docker compose version
+
+# 配置防火墙（Rocky Linux 使用 firewalld）
+firewall-cmd --permanent --add-port=8001/tcp
+firewall-cmd --reload
 ```
 
-**预期结果**: 显示 Docker 和 Docker Compose 版本号
+**预期结果**:
+- 显示 Docker 和 Docker Compose 版本号
+- 防火墙已开放 8001 端口
+
+**如果遇到问题**:
+```bash
+# 检查 SELinux 状态（Rocky Linux 默认启用）
+getenforce
+
+# 如果需要，临时设置为 Permissive 模式
+setenforce 0
+
+# 或永久禁用（不推荐，建议配置 SELinux 策略）
+# sed -i 's/SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+```
 
 ### 步骤 3: 创建项目目录（1 分钟）
 **位置**: 🧪 221 服务器
@@ -450,17 +476,28 @@ cat ~/.ssh/gitlab_test_rsa_221
 ```bash
 ssh root@192.168.0.220
 
-# 添加 GitLab Runner 仓库
-curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
+# 添加 GitLab Runner 仓库（Rocky Linux / RHEL）
+curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.rpm.sh" | sudo bash
 
 # 安装 GitLab Runner
-apt-get install gitlab-runner
+sudo dnf install gitlab-runner
 
 # 验证安装
 gitlab-runner --version
 ```
 
-**预期结果**: 显示 GitLab Runner 版本号
+**预期结果**: 显示 GitLab Runner 版本号（如：Version: 16.x.x）
+
+**如果遇到问题**:
+```bash
+# 检查仓库配置
+cat /etc/yum.repos.d/runner_gitlab-runner.repo
+
+# 手动安装（如果自动安装失败）
+sudo dnf install -y curl
+curl -LJO "https://gitlab-runner-downloads.s3.amazonaws.com/latest/rpm/gitlab-runner_amd64.rpm"
+sudo rpm -i gitlab-runner_amd64.rpm
+```
 
 #### 步骤 4.2: 获取 Runner 注册令牌
 **位置**: 🌐 GitLab UI
@@ -784,6 +821,55 @@ docker stop $(docker ps -q -f publish=8001)
 
 # 修改端口
 # 在 .env 文件中修改 APP_PORT=8002
+```
+
+#### 问题 8: Rocky Linux 防火墙问题
+
+**症状**:
+```
+curl: (7) Failed to connect to 192.168.0.221 port 8001
+```
+
+**解决方案**:
+```bash
+# 检查防火墙状态
+ssh root@192.168.0.221 "firewall-cmd --state"
+
+# 查看已开放的端口
+ssh root@192.168.0.221 "firewall-cmd --list-ports"
+
+# 开放 8001 端口
+ssh root@192.168.0.221 "firewall-cmd --permanent --add-port=8001/tcp"
+ssh root@192.168.0.221 "firewall-cmd --reload"
+
+# 验证端口已开放
+ssh root@192.168.0.221 "firewall-cmd --list-ports | grep 8001"
+```
+
+#### 问题 9: SELinux 权限问题
+
+**症状**:
+```
+Permission denied (Docker 容器无法访问文件)
+```
+
+**解决方案**:
+```bash
+# 检查 SELinux 状态
+ssh root@192.168.0.221 "getenforce"
+
+# 查看 SELinux 日志
+ssh root@192.168.0.221 "ausearch -m avc -ts recent"
+
+# 临时解决：设置为 Permissive 模式
+ssh root@192.168.0.221 "setenforce 0"
+
+# 永久解决：配置 SELinux 上下文
+ssh root@192.168.0.221 "chcon -Rt svirt_sandbox_file_t /opt/wes_backend"
+
+# 或为 Docker 数据目录设置正确的上下文
+ssh root@192.168.0.221 "semanage fcontext -a -t container_file_t '/opt/wes_backend(/.*)?'"
+ssh root@192.168.0.221 "restorecon -Rv /opt/wes_backend"
 ```
 
 ### 调试技巧
