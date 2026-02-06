@@ -190,40 +190,8 @@ test:api-signature:
 # ==============================================
 # 构建阶段
 # ==============================================
-build:docker-image:
-  stage: build
-  image: docker:27-dind
-  services:
-    - docker:27-dind
-  variables:
-    DOCKER_DRIVER: overlay2
-    DOCKER_TLS_CERTDIR: "/certs"
-    BUILDKIT_PROGRESS: "plain"
-    # 构建参数
-    CONTAINER_TIMEZONE: "Asia/Shanghai"
-  before_script:
-    - echo "🔐 登录 Docker Registry..."
-    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-  script:
-    - echo "🐳 构建 Docker 镜像..."
-    # 构建多阶段镜像
-    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST -t $IMAGE_TEST
-      --target production
-      --build-arg CONTAINER_TIMEZONE=$CONTAINER_TIMEZONE
-      --cache-from $IMAGE_LATEST
-      --progress=plain
-      .
-    - echo "📤 推送 Docker 镜像..."
-    - docker push $IMAGE_NAME
-    - docker push $IMAGE_LATEST
-    - docker push $IMAGE_TEST
-    - echo "✅ Docker 镜像构建完成"
-  only:
-    - main
-    - develop
-    - merge_requests
-  tags:
-    - docker
+# 注意：Docker 镜像在测试服务器上直接构建，不在 GitLab Runner 上构建
+# 这样可以避免 Registry 配置问题，简化部署流程
 
 # ==============================================
 # 部署阶段
@@ -235,11 +203,11 @@ deploy:testing:
   variables:
     DEPLOY_ENV: "test"
     DEPLOY_HOST: "192.168.0.221"
-    DEPLOY_USER: "root"  # 根据实际情况修改
+    DEPLOY_USER: "root"
     DEPLOY_PATH: "/opt/wes_backend"
   before_script:
     # 安装依赖
-    - apk add --no-cache openssh-client docker-compose-plugin
+    - apk add --no-cache openssh-client
     # 配置 SSH
     - mkdir -p ~/.ssh
     - eval "$(ssh-agent -s)"
@@ -252,9 +220,33 @@ deploy:testing:
       ssh $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
         set -e
 
-        echo "📦 拉取最新镜像..."
         cd $DEPLOY_PATH
-        docker compose -f docker-compose.yml --env-file .env.test pull
+
+        echo "📥 更新代码..."
+        # 拉取最新代码
+        git fetch origin
+        # 检出本次部署的提交
+        git checkout $CI_COMMIT_SHA
+        # 显示当前提交信息
+        echo "📌 当前提交: $(git log -1 --oneline)"
+
+        echo "🔧 配置 Docker 镜像加速器..."
+        # 配置 Docker 镜像加速器（加速基础镜像拉取）
+        if [ ! -f /etc/docker/daemon.json ] || ! grep -q "docker.happyjack.cn" /etc/docker/daemon.json; then
+          mkdir -p /etc/docker
+          cat > /etc/docker/daemon.json << 'DOCKER_EOF'
+{
+  "registry-mirrors": ["https://docker.happyjack.cn"]
+}
+DOCKER_EOF
+          systemctl restart docker
+          sleep 3
+          echo "✅ Docker 镜像加速器配置完成"
+        fi
+
+        echo "🐳 构建 Docker 镜像..."
+        # 使用 docker compose 直接构建镜像
+        docker compose -f docker-compose.yml --env-file .env.test build
 
         echo "🔄 停止旧容器..."
         docker compose -f docker-compose.yml --env-file .env.test --profile test down
@@ -262,14 +254,24 @@ deploy:testing:
         echo "⚙️ 启动新容器..."
         docker compose -f docker-compose.yml --env-file .env.test --profile test up -d
 
+        echo "⏳ 等待容器启动..."
+        sleep 15
+
         echo "🗄️ 运行数据库迁移..."
         docker compose -f docker-compose.yml --env-file .env.test exec -T api alembic upgrade head || echo "⚠️ 迁移失败或已跳过"
 
         echo "🏥 健康检查..."
-        sleep 10
-        curl -f http://localhost:8001/api/health || exit 1
+        if curl -f http://localhost:8001/api/health; then
+          echo "✅ 健康检查通过"
+        else
+          echo "❌ 健康检查失败"
+          docker compose -f docker-compose.yml --env-file .env.test --profile test logs --tail=50 api
+          exit 1
+        fi
 
         echo "✅ 测试环境部署完成"
+        echo "📊 容器状态："
+        docker compose -f docker-compose.yml --env-file .env.test --profile test ps
       EOF
     - echo "✅ 部署成功"
   environment:
@@ -317,45 +319,27 @@ stop:testing:
     - docker
 
 # ==============================================
-# 辅助任务
-# ==============================================
-# 清理旧镜像
-cleanup:docker-images:
-  stage: .post
-  image: docker:27-dind
-  services:
-    - docker:27-dind
-  variables:
-    GIT_STRATEGY: none
-  before_script:
-    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-  script:
-    - echo "🧹 清理旧的 Docker 镜像..."
-    - |
-      # 保留最近 10 个镜像
-      docker image ls $CI_REGISTRY_IMAGE --format "{{.Tag}}" | \
-      tail -n +11 | \
-      xargs -I {} docker rmi $CI_REGISTRY_IMAGE:{} || true
-    - echo "✅ 清理完成"
-  only:
-    - schedules
-  when: manual
-  tags:
-    - docker
-
-# ==============================================
 # 触发规则说明
 # ==============================================
 # 触发条件:
 #   - 所有分支: prepare, lint, test
-#   - main/develop/MR: build
-#   - develop: deploy:testing (自动)
+#   - develop: deploy:testing (自动部署)
+#   - main: 部署到生产环境（需要手动配置）
 #
 # 环境变量需求 (在 GitLab Settings → CI/CD → Variables 中配置):
-#   - CI_REGISTRY: Docker Registry 地址 (GitLab 自动提供)
-#   - CI_REGISTRY_USER: Registry 用户名 (GitLab 自动提供)
-#   - CI_REGISTRY_PASSWORD: Registry 密码 (GitLab 自动提供)
-#   - SSH_PRIVATE_KEY_TEST: 测试服务器 (221) SSH 私钥
+#   - SSH_PRIVATE_KEY_TEST: 测试服务器 (221) SSH 私钥 (Type: File)
+#
+# 部署流程说明:
+#   1. Docker 镜像在测试服务器上直接构建（不在 GitLab Runner 上构建）
+#   2. 避免了 Registry 配置问题
+#   3. 每次部署都会重新构建镜像，确保使用最新代码
+#   4. 使用 Docker 镜像加速器加速基础镜像拉取
+#
+# 部署服务器要求:
+#   - 已安装 Docker 和 Docker Compose
+#   - 已配置 SSH 密钥认证
+#   - 项目目录已创建: /opt/wes_backend
+#   - 已配置环境文件: .env.test
 #
 # 部署服务器要求:
 #   - 已安装 Docker 和 Docker Compose

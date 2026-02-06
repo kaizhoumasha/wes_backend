@@ -201,6 +201,10 @@ cat .env.test | grep -v PASSWORD | grep -v SECRET
 
 **位置**: 🌐 GitLab UI
 
+由于 Docker 镜像在测试服务器上直接构建，**无需配置 Docker Registry**。
+
+只需要配置 SSH 私钥：
+
 1. **打开 GitLab 项目**：Settings → CI/CD → Variables
 2. **添加测试环境私钥**：
 
@@ -214,7 +218,9 @@ cat .env.test | grep -v PASSWORD | grep -v SECRET
    - Type: **File**（重要！）
    - Flags: ✅ Protect variable, ✅ Mask variable
 
-### 步骤 4: 测试部署
+**验证**: 应该看到一个变量，类型是 **File**，有 🔒 和 👁️ 图标
+
+### 步骤 7: 测试部署
 
 **位置**: 🖥️ 本地机器
 
@@ -247,49 +253,59 @@ open http://192.168.0.221:8001/docs
 ### CI/CD 架构图
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     CI/CD 架构图                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐ │
-│  │   GitLab    │─────▶│ GitLab CI   │─────▶│  Registry   │ │
-│  │  (代码仓库)  │      │   (构建)     │      │ (镜像仓库)   │ │
-│  └─────────────┘      └─────────────┘      └─────────────┘ │
-│                                │                             │
-│                                ▼                             │
-│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐ │
-│  │ 220 Server  │      │ GitLab CI   │─────▶│ 221 Server  │ │
-│  │ (DevOps环境) │      │   (部署)     │      │ (测试环境)   │ │
-│  │             │      │             │      │             │ │
-│  │ • GitLab    │      │             │      │ • Test App  │ │
-│  │ • Jenkins   │      │             │      │ • Docker    │ │
-│  │ • Runner    │      │             │      │             │ │
-│  └─────────────┘      └─────────────┘      └─────────────┘ │
-│                                                               │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          CI/CD 架构图（简化版）                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐             │
+│  │   GitLab    │─────▶│ GitLab CI   │─────▶│ 221 Server  │             │
+│  │  (代码仓库)  │      │  (测试+部署)  │      │ (测试环境)   │             │
+│  └─────────────┘      └─────────────┘      └─────────────┘             │
+│                                │                      │                 │
+│                                │                      ▼                 │
+│                                │              ┌─────────────┐           │
+│                                │              │ Docker Build │           │
+│                                │              │ (镜像构建)    │           │
+│                                │              └─────────────┘           │
+│                                │                      │                 │
+│                                │                      ▼                 │
+│                                │              ┌─────────────┐           │
+│                                │              │ Test App    │           │
+│                                │              │ (测试应用)    │           │
+│                                │              └─────────────┘           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Pipeline 阶段说明
 
 ```
-┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
-│ Prepare  │──▶│   Lint   │──▶│   Test   │──▶│  Build   │──▶│  Deploy  │
-│ 依赖安装  │   │ 代码检查  │   │ 单元测试  │   │ Docker   │   │ 自动部署  │
-└──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────────┘
-   ~1 分钟        ~2 分钟        ~3 分钟        ~5 分钟        ~2 分钟
+┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+│ Prepare  │──▶│   Lint   │──▶│   Test   │──▶│  Deploy  │
+│ 依赖安装  │   │ 代码检查  │   │ 单元测试  │   │ 自动部署  │
+└──────────┘   └──────────┘   └──────────┘   └──────────┘
+   ~1 分钟        ~2 分钟        ~3 分钟        ~5 分钟
+                                           (含镜像构建)
 ```
+
+**部署流程**：
+1. GitLab CI 运行测试和代码检查
+2. 通过 SSH 连接到测试服务器
+3. 更新代码到最新提交
+4. 在测试服务器上直接构建 Docker 镜像
+5. 启动新容器并运行数据库迁移
 
 ### 分支策略
 
 | 分支          | 用途     | CI/CD 触发  | 部署目标                        |
 | ------------- | -------- | ----------- | ------------------------------- |
 | `feature/*` | 功能开发 | 仅测试      | 无                              |
-| `develop`   | 开发集成 | 构建 + 部署 | 221 (测试环境)                  |
-| `main`      | 生产发布 | 仅构建      | 无（生产环境不在 CI/CD 范围内） |
+| `develop`   | 开发集成 | 测试 + 部署 | 221 (测试环境，服务器上构建镜像) |
+| `main`      | 生产发布 | 仅测试      | 无（生产环境不在 CI/CD 范围内） |
 
 ### 服务器要求
 
-| 服务器                | IP            | 用途                      | 需要的软件                    |
+| 服务器                | IP            | 用份                      | 需要的软件                    |
 | --------------------- | ------------- | ------------------------- | ----------------------------- |
 | **DevOps 环境** | 192.168.0.220 | GitLab + Jenkins + Runner | Docker, GitLab, GitLab Runner |
 | **测试环境**    | 192.168.0.221 | 自动部署目标              | Docker, Docker Compose        |
@@ -681,12 +697,20 @@ git push origin develop
    - ✅ prepare: 依赖安装
    - ✅ lint: 代码检查
    - ✅ test: 单元测试
-   - ✅ build: Docker 镜像构建
-   - ✅ deploy: 自动部署到 221
+   - ✅ deploy: 自动部署到 221（含镜像构建）
 3. **查看日志**
 
    - 点击任意 job 查看详细日志
    - 如果失败，查看错误信息
+4. **部署阶段日志说明**
+
+   - 部署阶段会在测试服务器上执行以下操作：
+     - 更新代码到最新提交
+     - 配置 Docker 镜像加速器（如果未配置）
+     - 构建 Docker 镜像
+     - 停止旧容器并启动新容器
+     - 运行数据库迁移
+     - 健康检查
 
 #### 步骤 5.3: 验证测试环境部署
 
@@ -832,26 +856,38 @@ ssh root@192.168.0.220 "journalctl -u gitlab-runner -f"
 # GitLab UI: Settings → CI/CD → Variables
 ```
 
-#### 问题 4: Docker 镜像拉取失败
+#### 问题 4: Docker 镜像构建失败
 
 **症状**:
 
+部署日志中显示 Docker 构建错误：
 ```
-Error: image not found
+ERROR [builder 2/5] RUN uv sync --frozen
 ```
 
 **解决方案**:
 
 ```bash
-# 检查 GitLab Registry 登录
-docker login registry.gitlab.example.com
-
-# 检查镜像是否存在
-docker images | grep wes-backend
-
-# 在服务器上手动拉取
+# 1. 登录测试服务器查看构建日志
 ssh root@192.168.0.221
-docker pull registry.gitlab.example.com/group/wes-backend:latest
+cd /opt/wes_backend
+
+# 2. 手动构建查看详细错误
+docker compose -f docker-compose.yml --env-file .env.test build
+
+# 3. 检查 Docker 镜像加速器配置
+cat /etc/docker/daemon.json
+# 应该显示：{"registry-mirrors": ["https://docker.happyjack.cn"]}
+
+# 4. 检查 Docker 存储空间
+df -h
+docker system df
+
+# 5. 清理 Docker 缓存
+docker system prune -a
+
+# 6. 查看构建日志
+docker compose build --progress=plain --no-cache
 ```
 
 #### 问题 5: 健康检查失败
@@ -1070,10 +1106,20 @@ ssh root@192.168.0.221 "cd /opt/wes_backend && docker compose restart api"
 ### 手动部署命令
 
 ```bash
-# 测试环境 (221)
+# 测试环境 (221) - 手动部署
 ssh root@192.168.0.221
 cd /opt/wes_backend
-docker compose --env-file .env.test --profile test pull
+
+# 方式 1: 拉取最新代码并构建
+git pull origin develop
+docker compose --env-file .env.test --profile test build
+docker compose --env-file .env.test --profile test up -d
+docker compose --env-file .env.test exec -T api alembic upgrade head
+
+# 方式 2: 检出特定提交并构建
+git fetch origin
+git checkout <commit-sha>
+docker compose --env-file .env.test --profile test build
 docker compose --env-file .env.test --profile test up -d
 docker compose --env-file .env.test exec -T api alembic upgrade head
 ```
@@ -1109,25 +1155,48 @@ docker compose --env-file .env.test exec -T api alembic upgrade head
 
 ### 回滚策略
 
-1. **Docker 镜像管理**：
+由于 Docker 镜像在测试服务器上直接构建，回滚主要通过 Git 版本控制实现：
+
+1. **代码回滚**：
 
    ```bash
-   # 保留最近 10 个镜像
-   docker images | grep wes-backend | tail -n +11 | awk '{print $3}' | xargs docker rmi
+   # 在测试服务器上回滚到上一个提交
+   ssh root@192.168.0.221
+   cd /opt/wes_backend
+
+   # 查看提交历史
+   git log --oneline -10
+
+   # 回滚到指定提交
+   git checkout <previous-commit-sha>
+
+   # 重新构建和部署
+   docker compose --env-file .env.test --profile test build
+   docker compose --env-file .env.test --profile test up -d
+   docker compose --env-file .env.test exec -T api alembic upgrade head
    ```
+
 2. **数据库备份**：
 
    ```bash
-   # 手动备份
+   # 手动备份（在 221 服务器）
+   ssh root@192.168.0.221
+   cd /opt/wes_backend
    docker compose exec postgres pg_dump -U wes_user wes_test > backup.sql
    ```
-3. **快速回滚**：
+
+3. **数据库回滚**：
 
    ```bash
-   # 回滚到上一个版本
-   docker compose down
-   docker compose up -d --force-recreate
+   # 回滚迁移
    docker compose exec api alembic downgrade -1
+   ```
+
+4. **Docker 镜像清理**：
+
+   ```bash
+   # 清理未使用的镜像
+   docker image prune -a
    ```
 
 ### 监控和维护
