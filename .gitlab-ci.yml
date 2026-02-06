@@ -68,37 +68,18 @@ stages:
   - deploy     # 部署：部署到测试环境
 
 # ==============================================
-# 准备阶段：安装依赖
+# 准备阶段：验证依赖
 # ==============================================
-prepare:dependencies:
-  stage: prepare
-  script:
-    - echo "📦 安装项目依赖..."
-    - uv sync --frozen --no-dev
-    - echo "✅ 生产依赖安装完成"
-  artifacts:
-    paths:
-      - .venv/
-      - uv.lock
-    expire_in: 1 hour
-  only:
-    - develop
-    - main
-    - merge_requests
-  tags:
-    - docker
+# 注意：由于 GitLab 会在 get_sources 阶段清理 .venv/，
+# 我们不再使用 artifacts 传递虚拟环境，而是在每个任务中重新安装。
+# uv 的缓存机制会让安装速度很快。
 
-prepare:dev-dependencies:
+validate:dependencies:
   stage: prepare
   script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen
-    - echo "✅ 开发依赖安装完成"
-  artifacts:
-    paths:
-      - .venv/
-      - uv.lock
-    expire_in: 1 hour
+    - echo "🔍 验证依赖配置..."
+    - uv lock --check
+    - echo "✅ 依赖配置验证通过"
   only:
     - develop
     - main
@@ -111,8 +92,9 @@ prepare:dev-dependencies:
 # ==============================================
 lint:format:
   stage: quality
-  dependencies:
-    - prepare:dev-dependencies
+  before_script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
   script:
     - echo "🔍 检查代码格式 (Ruff Format)..."
     - uv run ruff format --check .
@@ -126,8 +108,9 @@ lint:format:
 
 lint:check:
   stage: quality
-  dependencies:
-    - prepare:dev-dependencies
+  before_script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
   script:
     - echo "🔍 检查代码质量 (Ruff Lint)..."
     - uv run ruff check . --output-format=github
@@ -142,8 +125,9 @@ lint:check:
 
 lint:security:
   stage: quality
-  dependencies:
-    - prepare:dev-dependencies
+  before_script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
   script:
     - echo "🔍 安全检查 (Bandit)..."
     - uv run bandit -r src/ -f json -o bandit-report.json || true
@@ -169,8 +153,9 @@ lint:security:
 # ==============================================
 test:unit:
   stage: quality
-  dependencies:
-    - prepare:dev-dependencies
+  before_script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
   services:
     - name: postgres:17-alpine
       alias: postgres
@@ -211,8 +196,9 @@ test:unit:
 
 test:api-signature:
   stage: quality
-  dependencies:
-    - prepare:dev-dependencies
+  before_script:
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
   services:
     - name: postgres:17-alpine
       alias: postgres
