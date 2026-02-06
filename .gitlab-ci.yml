@@ -19,6 +19,8 @@ variables:
   CACHE_KEY_PREFIX: "wes-backend"
   # 时区配置
   DATETIME_TIMEZONE: "Asia/Shanghai"
+  # Git 策略：使用 fetch 避免删除 .venv/ 目录
+  GIT_STRATEGY: fetch
   # 部署配置
   DEPLOY_HOST: "192.168.0.221"
   DEPLOY_USER: "root"
@@ -36,9 +38,6 @@ variables:
 # ==============================================
 default:
   image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
-  # Git 策略：使用 fetch 避免删除 .venv/ 目录
-  variables:
-    GIT_STRATEGY: fetch
   # 缓存配置（基于 uv.lock 文件）
   cache:
     key:
