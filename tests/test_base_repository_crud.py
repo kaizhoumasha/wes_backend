@@ -57,9 +57,7 @@ class TestCrudOperations:
     async def test_get_by_id(self, db_session: AsyncSession):
         """测试根据 ID 获取记录"""
         # 先创建一条记录
-        instance = await self.repo.create(
-            db_session, {"code": "TEST001", "name": "Test Item"}
-        )
+        instance = await self.repo.create(db_session, {"code": "TEST001", "name": "Test Item"})
         await db_session.commit()
 
         # 获取记录
@@ -107,20 +105,16 @@ class TestCrudOperations:
     async def test_get_list_with_filter_raw(self, db_session: AsyncSession):
         """测试带原始过滤条件获取列表"""
         # 创建多条记录
-        await self.repo.create(
-            db_session, {"code": "TEST001", "name": "Item 1", "is_deleted": False}
-        )
-        await self.repo.create(
-            db_session, {"code": "TEST002", "name": "Item 2", "is_deleted": True}
-        )
-        await self.repo.create(
-            db_session, {"code": "TEST003", "name": "Item 3", "is_deleted": False}
-        )
+        await self.repo.create(db_session, {"code": "TEST001", "name": "Item 1", "is_deleted": False})
+        await self.repo.create(db_session, {"code": "TEST002", "name": "Item 2", "is_deleted": True})
+        await self.repo.create(db_session, {"code": "TEST003", "name": "Item 3", "is_deleted": False})
         await db_session.commit()
 
         # 只获取未删除的记录
         total, items = await self.repo.get_list(
-            db_session, limit=100, where_clauses_raw=[CrudTestModel.is_deleted == False]  # noqa: E712
+            db_session,
+            limit=100,
+            where_clauses_raw=[CrudTestModel.is_deleted == False],  # noqa: E712
         )
 
         assert total == 2
@@ -131,9 +125,7 @@ class TestCrudOperations:
         """测试分页获取记录"""
         # 创建多条记录
         for i in range(10):
-            await self.repo.create(
-                db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"}
-            )
+            await self.repo.create(db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"})
         await db_session.commit()
 
         # 分页获取
@@ -147,9 +139,7 @@ class TestCrudOperations:
         """测试获取列表（带总数）"""
         # 创建多条记录
         for i in range(15):
-            await self.repo.create(
-                db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"}
-            )
+            await self.repo.create(db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"})
         await db_session.commit()
 
         # 获取列表
@@ -174,11 +164,7 @@ class TestCrudOperations:
         await db_session.commit()
 
         # 使用过滤条件
-        filters = FilterGroup(
-            conditions=[
-                FilterCondition(field="is_deleted", op=FilterOperator.EQ, value=False)
-            ]
-        )
+        filters = FilterGroup(conditions=[FilterCondition(field="is_deleted", op=FilterOperator.EQ, value=False)])
 
         total, items = await self.repo.get_list(db_session, filters=filters)
 
@@ -208,14 +194,14 @@ class TestCrudOperations:
     async def test_update(self, db_session: AsyncSession):
         """测试更新记录"""
         # 先创建一条记录
-        instance = await self.repo.create(
-            db_session, {"code": "TEST001", "name": "Old Name", "value": 100}
-        )
+        instance = await self.repo.create(db_session, {"code": "TEST001", "name": "Old Name", "value": 100})
         await db_session.commit()
 
         # 更新记录
         updated = await self.repo.update(
-            db_session, instance.id, {"name": "New Name", "value": 200}  # type: ignore[arg-type]
+            db_session,
+            instance.id,
+            {"name": "New Name", "value": 200},  # type: ignore[arg-type]
         )
 
         assert updated.name == "New Name"
@@ -232,9 +218,7 @@ class TestCrudOperations:
     async def test_delete(self, db_session: AsyncSession):
         """测试删除记录"""
         # 先创建一条记录
-        instance = await self.repo.create(
-            db_session, {"code": "TEST001", "name": "Test Item"}
-        )
+        instance = await self.repo.create(db_session, {"code": "TEST001", "name": "Test Item"})
         await db_session.commit()
 
         # 删除记录
@@ -272,9 +256,7 @@ class TestCrudOperations:
         """测试统计记录数量"""
         # 创建多条记录
         for i in range(5):
-            await self.repo.create(
-                db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"}
-            )
+            await self.repo.create(db_session, {"code": f"TEST{i:03d}", "name": f"Item {i}"})
         await db_session.commit()
 
         # 统计总数
@@ -298,7 +280,8 @@ class TestCrudOperations:
 
         # 统计未删除记录的数量
         count = await self.repo.count(
-            db_session, where_clauses=[CrudTestModel.is_deleted == False]  # noqa: E712
+            db_session,
+            where_clauses=[CrudTestModel.is_deleted == False],  # noqa: E712
         )
         assert count == 5
 

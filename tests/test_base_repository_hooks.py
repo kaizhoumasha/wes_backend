@@ -142,9 +142,7 @@ class TestHookManager:
         def error_handler(e: Exception, ctx: HookContext) -> None:
             error_handled.append(str(e))
 
-        self.manager.add_hook(
-            HookType.BEFORE_CREATE, failing_hook, error_handler=error_handler
-        )
+        self.manager.add_hook(HookType.BEFORE_CREATE, failing_hook, error_handler=error_handler)
 
         context = HookContext(session=None, params={}, results={})  # type: ignore[arg-type]
         await self.manager.execute_hooks(HookType.BEFORE_CREATE, context)

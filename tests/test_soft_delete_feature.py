@@ -23,6 +23,7 @@ class TestSoftDeleteMixin:
 
     def test_soft_delete_mixin_attributes(self):
         """测试 SoftDeleteMixin 的属性"""
+
         # 创建一个简单的类来测试
         class Article(SoftDeleteMixin):
             def __init__(self, **kwargs):
@@ -60,6 +61,7 @@ class TestSoftDeleteMixin:
 
     def test_restore_method(self):
         """测试 restore() 方法"""
+
         class Article(SoftDeleteMixin):
             def __init__(self, **kwargs):
                 self.deleted_by = kwargs.get("deleted_by")
@@ -79,6 +81,7 @@ class TestSoftDeleteMixin:
 
     def test_soft_delete_without_deleted_by(self):
         """测试没有 deleted_by 字段的软删除"""
+
         class Article(SoftDeleteMixin):
             def __init__(self, **kwargs):
                 self.deleted_at = kwargs.get("deleted_at")

@@ -21,9 +21,7 @@ class APIAppContext:
     permissions: set[str]
 
 
-async def verify_api_auth(
-    request: Request, db: AsyncSessionDep, cache: CacheDep
-) -> APIAppContext | None:
+async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep) -> APIAppContext | None:
     app_id: str | None = request.headers.get("X-App-ID")
     timestamp: str | None = request.headers.get("X-Timestamp")
     signature: str | None = request.headers.get("X-Signature")
@@ -151,6 +149,7 @@ def require_api_permission(permission_name: str):
     用法:
         dependencies=[Depends(require_api_permission("api:try:invoke"))]
     """
+
     async def verify_permission(
         app_ctx: RequireAPIAuth,
     ) -> None:

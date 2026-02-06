@@ -53,7 +53,9 @@ class TestErrorTranslator:
 
     def test_check_duplicate_key_constraint_single_column(self):
         """测试唯一约束错误识别 - 单列"""
-        error_msg = 'duplicate key value violates unique constraint "uq_code"\nDETAIL:  Key (code)=(TEST001) already exists.'
+        error_msg = (
+            'duplicate key value violates unique constraint "uq_code"\nDETAIL:  Key (code)=(TEST001) already exists.'
+        )
 
         with pytest.raises(ConflictException) as exc_info:
             self.translator._check_duplicate_key_constraint(error_msg)
@@ -117,6 +119,7 @@ class TestBaseRepositoryErrorHandling:
 
     def test_handle_integrity_error_foreign_key(self):
         """测试处理外键约束错误"""
+
         # 模拟 IntegrityError
         class MockOrig:
             def __init__(self, msg):

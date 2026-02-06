@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _clean_summary(summary: str | None) -> str | None:
-    """去除 summary 中的权限码前缀 [xxx] """
+    """去除 summary 中的权限码前缀 [xxx]"""
     if not summary:
         return None
     # 移除 [xxx] 前缀格式

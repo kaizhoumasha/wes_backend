@@ -4,6 +4,7 @@ API 应用签名认证测试
 
 测试外部 API 应用的签名认证和权限验证
 """
+
 import hashlib
 import hmac
 import time
@@ -21,9 +22,7 @@ class APISignatureClient:
         self.app_id = app_id
         self.app_secret = app_secret
 
-    def _calculate_signature(
-        self, timestamp: str, method: str, path: str
-    ) -> str:
+    def _calculate_signature(self, timestamp: str, method: str, path: str) -> str:
         """
         计算请求签名
 
@@ -47,9 +46,7 @@ class APISignatureClient:
             hashlib.sha256,
         ).hexdigest()
 
-    async def request(
-        self, method: str, path: str, data: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def request(self, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         发送签名请求
 
@@ -105,9 +102,7 @@ async def test_api_try_invoke():
     """测试 API 调用端点（有权限）"""
     client = APISignatureClient(BASE_URL, TEST_APP_ID, TEST_APP_SECRET)
 
-    response = await client.request(
-        "POST", "/api/v1/api-auth/applications/try/invoke"
-    )
+    response = await client.request("POST", "/api/v1/api-auth/applications/try/invoke")
 
     assert response["code"] == "1000"
     assert response["data"]["app_id"] == TEST_APP_ID
@@ -166,15 +161,14 @@ async def test_api_invalid_signature():
     client = APISignatureClient(BASE_URL, TEST_APP_ID, "wrong_secret")
 
     try:
-        await client.request(
-            "POST", "/api/v1/api-auth/applications/try/invoke"
-        )
+        await client.request("POST", "/api/v1/api-auth/applications/try/invoke")
         assert False, "预期应该因签名无效而失败"
     except httpx.HTTPStatusError as e:
         assert e.response.status_code == 401
 
 
 # ==================== 手动运行 ====================
+
 
 async def main():
     """手动运行测试（不使用 pytest）"""
@@ -193,9 +187,7 @@ async def main():
     print("-" * 60)
 
     try:
-        response = await client.request(
-            "POST", "/api/v1/api-auth/applications/try/invoke"
-        )
+        response = await client.request("POST", "/api/v1/api-auth/applications/try/invoke")
 
         if response.get("code") == "1000":
             print("✅ 请求成功")

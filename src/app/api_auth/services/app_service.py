@@ -62,9 +62,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
             raise ValueError(f"应用 {id} 不存在")
 
         # 2. 删除旧的权限关联
-        await db.execute(
-            api_app_permissions.delete().where(api_app_permissions.c.app_id == id)
-        )
+        await db.execute(api_app_permissions.delete().where(api_app_permissions.c.app_id == id))
 
         # 3. 插入新的权限关联
         if permission_ids:
