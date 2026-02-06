@@ -94,7 +94,7 @@ lint:format:
   stage: quality
   before_script:
     - echo "📦 安装开发依赖..."
-    - uv sync --frozen
+    - uv sync --frozen --reinstall
   script:
     - echo "🔍 检查代码格式 (Ruff Format)..."
     - uv run ruff format --check .
@@ -110,7 +110,7 @@ lint:check:
   stage: quality
   before_script:
     - echo "📦 安装开发依赖..."
-    - uv sync --frozen
+    - uv sync --frozen --reinstall
   script:
     - echo "🔍 检查代码质量 (Ruff Lint)..."
     - uv run ruff check . --output-format=github
@@ -127,7 +127,7 @@ lint:security:
   stage: quality
   before_script:
     - echo "📦 安装开发依赖..."
-    - uv sync --frozen
+    - uv sync --frozen --reinstall
   script:
     - echo "🔍 安全检查 (Bandit)..."
     - uv run bandit -r src/ -f json -o bandit-report.json || true
@@ -155,7 +155,7 @@ test:unit:
   stage: quality
   before_script:
     - echo "📦 安装开发依赖..."
-    - uv sync --frozen
+    - uv sync --frozen --reinstall
   services:
     - name: postgres:17-alpine
       alias: postgres
@@ -198,7 +198,7 @@ test:api-signature:
   stage: quality
   before_script:
     - echo "📦 安装开发依赖..."
-    - uv sync --frozen
+    - uv sync --frozen --reinstall
   services:
     - name: postgres:17-alpine
       alias: postgres
