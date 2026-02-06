@@ -36,6 +36,9 @@ variables:
 # ==============================================
 default:
   image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+  # Git 策略：使用 fetch 避免删除 .venv/ 目录
+  variables:
+    GIT_STRATEGY: fetch
   # 缓存配置（基于 uv.lock 文件）
   cache:
     key:
@@ -68,18 +71,17 @@ stages:
   - deploy     # 部署：部署到测试环境
 
 # ==============================================
-# 准备阶段：验证依赖
+# 准备阶段：安装依赖
 # ==============================================
-# 注意：由于 GitLab 会在 get_sources 阶段清理 .venv/，
-# 我们不再使用 artifacts 传递虚拟环境，而是在每个任务中重新安装。
-# uv 的缓存机制会让安装速度很快。
+# 使用 GIT_STRATEGY: fetch 保留 .venv/ 目录
+# 利用 GitLab cache 机制加速依赖安装
 
-validate:dependencies:
+install:dependencies:
   stage: prepare
   script:
-    - echo "🔍 验证依赖配置..."
-    - uv lock --check
-    - echo "✅ 依赖配置验证通过"
+    - echo "📦 安装开发依赖..."
+    - uv sync --frozen
+    - echo "✅ 依赖安装完成"
   only:
     - develop
     - main
@@ -92,9 +94,7 @@ validate:dependencies:
 # ==============================================
 lint:format:
   stage: quality
-  before_script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen --reinstall
+  needs: ["install:dependencies"]
   script:
     - echo "🔍 检查代码格式 (Ruff Format)..."
     - uv run ruff format --check .
@@ -108,9 +108,7 @@ lint:format:
 
 lint:check:
   stage: quality
-  before_script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen --reinstall
+  needs: ["install:dependencies"]
   script:
     - echo "🔍 检查代码质量 (Ruff Lint)..."
     - uv run ruff check . --output-format=github
@@ -125,9 +123,7 @@ lint:check:
 
 lint:security:
   stage: quality
-  before_script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen --reinstall
+  needs: ["install:dependencies"]
   script:
     - echo "🔍 安全检查 (Bandit)..."
     - uv run bandit -r src/ -f json -o bandit-report.json || true
@@ -153,9 +149,7 @@ lint:security:
 # ==============================================
 test:unit:
   stage: quality
-  before_script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen --reinstall
+  needs: ["install:dependencies"]
   services:
     - name: postgres:17-alpine
       alias: postgres
@@ -196,9 +190,7 @@ test:unit:
 
 test:api-signature:
   stage: quality
-  before_script:
-    - echo "📦 安装开发依赖..."
-    - uv sync --frozen --reinstall
+  needs: ["install:dependencies"]
   services:
     - name: postgres:17-alpine
       alias: postgres
@@ -245,6 +237,12 @@ test:api-signature:
 deploy:testing:
   <<: *deploy_template
   stage: deploy
+  needs:
+    - job: "install:dependencies"
+      optional: true
+    - job: "lint:format"
+    - job: "test:unit"
+    - job: "test:api-signature"
   variables:
     GIT_STRATEGY: none  # 不需要在 Runner 上拉取代码
   script:

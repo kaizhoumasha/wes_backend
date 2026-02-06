@@ -1,12 +1,8 @@
-from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, Column, ForeignKey, Table
 
 from src.database.db import Base
 from src.database.schema_conf import SchemaType
-
-if TYPE_CHECKING:
-    from src.app.admin.models.perm import Permission
 
 api_app_permissions = Table(
     "api_app_permissions",

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 API 应用签名认证测试
 
@@ -135,7 +134,7 @@ async def test_api_without_permission():
     # 尝试创建应用（需要 api-auth:api_application:create 权限）
     # 但测试应用只有 api:try:invoke 权限
     try:
-        response = await client.request(
+        await client.request(
             "POST",
             "/api/v1/api-auth/applications",
             data={
@@ -146,7 +145,7 @@ async def test_api_without_permission():
             },
         )
         # 如果成功，说明权限控制有问题
-        assert False, "预期应该因权限不足而失败"
+        raise AssertionError("预期应该因权限不足而失败")
     except httpx.HTTPStatusError as e:
         # 403 Forbidden 或类似错误
         assert e.response.status_code in [401, 403]
@@ -162,7 +161,7 @@ async def test_api_invalid_signature():
 
     try:
         await client.request("POST", "/api/v1/api-auth/applications/try/invoke")
-        assert False, "预期应该因签名无效而失败"
+        raise AssertionError("预期应该因签名无效而失败")
     except httpx.HTTPStatusError as e:
         assert e.response.status_code == 401
 

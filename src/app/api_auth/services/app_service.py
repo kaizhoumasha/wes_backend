@@ -3,7 +3,6 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import Permission
 from src.app.api_auth.constants import CacheExpire, CacheKeys
 from src.app.api_auth.models import APIApplication
 from src.app.api_auth.models.api_application import AppStatus, ValidityPeriod

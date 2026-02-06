@@ -1,20 +1,16 @@
 from datetime import datetime, timedelta
 from enum import Enum
 from ipaddress import ip_address
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from pydantic import computed_field, field_validator, model_validator
 from sqlalchemy import JSON, Index
-from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
-
-if TYPE_CHECKING:
-    from src.app.admin.models.perm import Permission
 
 
 class AppStatus(str, Enum):
