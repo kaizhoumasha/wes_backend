@@ -613,7 +613,7 @@ sudo gitlab-runner register
 sudo gitlab-runner register \
   --non-interactive \
   --url "http://192.168.0.220:9080/" \
-  --registration-token "glrt-1OjjGz0OGJwo9F90LX4aoW86MQp0OjEKdTo1Cw.01.12130lkgn" \
+  --registration-token "glrt-qpBtdPULDUJ2XJcUyQsEuG86MQpwOjEKdDozCnU6NQ8.01.170kyig37" \
   --executor "docker" \
   --docker-image "python:3.13-slim" \
   --description "Docker Runner for WES Backend" \
