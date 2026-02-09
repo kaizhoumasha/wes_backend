@@ -106,3 +106,32 @@ class RevokeSessionResponse(BaseMixin):
 
     message: str = Field(description="响应消息")
     session_uuid: str = Field(description="被撤销的会话 UUID")
+
+
+class ApiPermissionInfo(BaseMixin):
+    """
+    API 权限信息 Schema
+
+    描述单个 API 权限的详细信息
+    """
+
+    id: int = Field(description="权限 ID")
+    name: str = Field(description="权限标识，如 admin:user:create")
+    description: str | None = Field(default=None, description="权限描述")
+    type: str = Field(description="权限类型：user_api（内部管理API）、app_api（外部应用API）")
+    category: str | None = Field(default=None, description="权限分类：admin、system、business 等")
+    resource: str | None = Field(default=None, description="资源类型：user、role、permission、warehouse 等")
+    action: str | None = Field(default=None, description="操作：create、read、update、delete、list 等")
+    method: str | None = Field(default=None, description="HTTP 方法：GET、POST、PUT、DELETE、PATCH 等")
+    path: str | None = Field(default=None, description="API 路径：/admin/users/{id}、/api/v1/warehouses 等")
+
+
+class UserPermissionsResponse(BaseMixin):
+    """
+    用户权限列表响应 Schema
+
+    包含用户有权限访问的所有 API 权限
+    """
+
+    total: int = Field(description="权限总数")
+    permissions: list[ApiPermissionInfo] = Field(description="用户有权限访问的 API 列表")

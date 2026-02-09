@@ -39,7 +39,7 @@ async def create_user(data: UserCreate):
 from typing import ClassVar, Literal
 
 from pydantic import computed_field, field_validator, model_validator
-from sqlalchemy import Index, String
+from sqlalchemy import Index
 from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
@@ -61,7 +61,7 @@ class PermissionBase(TreeMixin, BaseMixin):
 
     # 权限类型（仅支持 API 类型）
     type: str = Field(
-        sa_type=String(20),  # 指定 SQLAlchemy 列类型
+        max_length=20,
         default="user_api",
         index=True,
         description="权限类型：user_api（内部管理API）、app_api（外部应用API）",
@@ -71,10 +71,14 @@ class PermissionBase(TreeMixin, BaseMixin):
     category: str | None = Field(default=None, max_length=50, description="权限分类：admin、system、business 等")
 
     # API 权限核心字段
-    resource: str | None = Field(default=None, max_length=50, description="资源类型：user、role、permission、warehouse 等")
+    resource: str | None = Field(
+        default=None, max_length=50, description="资源类型：user、role、permission、warehouse 等"
+    )
     action: str | None = Field(default=None, max_length=50, description="操作：create、read、update、delete、list 等")
     method: str | None = Field(default=None, max_length=10, description="HTTP 方法：GET、POST、PUT、DELETE、PATCH 等")
-    path: str | None = Field(default=None, max_length=255, description="API 路径：/admin/users/{id}、/api/v1/warehouses 等")
+    path: str | None = Field(
+        default=None, max_length=255, description="API 路径：/admin/users/{id}、/api/v1/warehouses 等"
+    )
 
     # ==================== 验证器 ====================
 

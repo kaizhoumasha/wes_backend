@@ -7,11 +7,9 @@ API 权限管理 Service
 - API 权限查询
 """
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import Permission, Role, User
+from src.app.admin.models import Permission
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
@@ -46,33 +44,11 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
             权限标识集合，超级用户返回 {SUPERUSER_PERMISSION}
             用户不存在时返回空集合
 
-        优化说明:
-            - 使用 is_deleted 替代 is_active 简化状态管理
-            - is_deleted=False 表示角色/权限启用
-            - is_deleted=True 表示角色/权限已禁用/删除
+        说明:
+            - 委托给 Repository 层处理数据访问
+            - Service 层只负责业务逻辑协调
         """
-        # 查询用户（预加载 roles 和 permissions）
-        result = await db.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles).selectinload(Role.permissions))
-        )
-        user = result.scalar_one_or_none()
-
-        if not user:
-            return set()
-
-        # 收集权限（超级用户返回特殊标识）
-        if user.is_superuser:
-            return {SUPERUSER_PERMISSION}
-
-        permissions = set()
-        for role in user.roles:
-            # 只收集未删除的角色权限
-            if not role.is_deleted:
-                for perm in role.permissions:
-                    # 只收集未删除的权限
-                    if not perm.is_deleted:
-                        permissions.add(perm.name)
-        return permissions
+        return await self.repo.get_permission_names_by_user_id(db, user_id)
 
     async def get_api_permissions(
         self,
@@ -91,6 +67,45 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
             API 权限列表
         """
         return await self.repo.get_api_permissions(db, perm_type=perm_type, exclude_deleted=exclude_deleted)
+
+    async def get_user_api_permissions(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        perm_type: str = "user_api",
+    ) -> list[Permission]:
+        """获取用户的 API 权限列表（用于前端动态路由）
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+            perm_type: 权限类型过滤（默认 user_api，前端只需要内部管理 API）
+
+        Returns:
+            用户有权限访问的 API 权限列表（包含 method、path 等信息）
+
+        使用场景：
+            - 前端登录后获取用户可访问的 API 列表
+            - 前端根据 API 权限动态显示/隐藏功能按钮
+            - 前端根据 API 权限控制路由访问
+
+        说明：
+            - user_api: 内部管理 API（前端管理系统使用）
+            - app_api: 外部应用 API（第三方应用集成，前端不需要）
+        """
+        # 获取用户的所有权限标识
+        permission_names = await self.get_user_permissions(db, user_id)
+
+        # 超级用户返回所有 API 权限
+        if SUPERUSER_PERMISSION in permission_names:
+            return await self.get_api_permissions(db, perm_type=perm_type, exclude_deleted=True)
+
+        # 普通用户：只返回有权限的 API
+        # 1. 获取所有 API 权限
+        all_api_perms = await self.get_api_permissions(db, perm_type=perm_type, exclude_deleted=True)
+
+        # 2. 过滤出用户有权限的 API（直接返回，避免不必要的变量赋值）
+        return [perm for perm in all_api_perms if perm.name in permission_names]
 
 
 permission_service = PermissionService()

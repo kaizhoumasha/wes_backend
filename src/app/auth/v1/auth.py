@@ -8,25 +8,26 @@
 - POST /api/v1/auth/refresh - 刷新访问令牌
 - GET /api/v1/auth/sessions - 获取当前用户的所有活跃会话
 - DELETE /api/v1/auth/sessions/{session_uuid} - 撤销指定会话
-- GET /api/v1/auth/menu - 获取当前用户菜单
+- GET /api/v1/auth/permissions - 获取当前用户的 API 权限列表
 """
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from src.app.admin.services.perm_service import permission_service
 from src.app.auth.models import (
     ActiveSessionsResponse,
+    ApiPermissionInfo,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
     RefreshTokenResponse,
     RevokeSessionResponse,
+    UserPermissionsResponse,
 )
 from src.app.auth.services.auth_service import auth_service
 from src.core.conf import settings
-from src.core.response.response_util import response_builder
 from src.core.security import get_current_user, require_auth
 from src.database.dependencies import AsyncSessionDep
 
@@ -223,33 +224,58 @@ async def revoke_session(
     return RevokeSessionResponse(message="会话已撤销", session_uuid=session_uuid)
 
 
-# ==================== 菜单端点 ====================
+# ==================== 权限端点 ====================
 
 
 @router.get(
-    "/menu",
-    summary="获取当前用户菜单",
-    description="获取当前用户有权限访问的菜单树（用于前端动态路由）",
+    "/permissions",
+    response_model=UserPermissionsResponse,
+    summary="获取当前用户的 API 权限列表",
+    description="获取当前用户有权限访问的内部管理 API（用于前端动态路由和权限控制）",
 )
-async def get_user_menu(
+async def get_user_permissions(
     db: AsyncSessionDep,
     current_user: Annotated[int, Depends(get_current_user)],
-    include_hidden: Annotated[bool, Query(description="是否包含隐藏菜单")] = False,
-) -> dict:
+) -> UserPermissionsResponse:
     """
-    获取当前用户的菜单树（前端动态路由）
+    获取当前用户的 API 权限列表（前端动态路由）
 
-    返回用户有权限访问的菜单树，包含：
-    - Vue Router 配置（route_config）
-    - 面包屑导航（breadcrumb）
-    - 子菜单列表（children）
+    返回用户有权限访问的 user_api 类型权限列表，包含：
+    - 权限标识（name）：admin:user:create
+    - HTTP 方法（method）：GET、POST、PUT、DELETE 等
+    - API 路径（path）：/api/admin/users 等
+    - 权限类型（type）：固定为 user_api（内部管理 API）
 
     **权限规则**：
-    - 只返回用户有权限的菜单
-    - 如果用户有子菜单权限，自动包含父菜单
+    - 超级用户返回所有 user_api 权限
+    - 普通用户只返回其角色分配的权限
+    - 已删除的权限不会返回
 
-    **使用场景**：前端登录后加载动态路由
+    **使用场景**：
+    - 前端登录后获取用户可访问的 API 列表
+    - 前端根据 API 权限动态显示/隐藏功能按钮
+    - 前端根据 API 权限控制路由访问
+
+    **说明**：
+        - 此端点只返回 user_api 类型（内部管理 API）
+        - app_api 类型（外部应用 API）不返回，前端不需要
     """
-    menu_tree = await permission_service.get_user_menu_tree(db, current_user, include_hidden=include_hidden)
+    permissions = await permission_service.get_user_api_permissions(db, current_user)
 
-    return response_builder.success(data=menu_tree)
+    # 转换为响应模型
+    permission_infos = [
+        ApiPermissionInfo(
+            id=perm.id,
+            name=perm.name,
+            description=perm.description,
+            type=perm.type,
+            category=perm.category,
+            resource=perm.resource,
+            action=perm.action,
+            method=perm.method,
+            path=perm.path,
+        )
+        for perm in permissions
+    ]
+
+    return UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)

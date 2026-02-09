@@ -13,12 +13,14 @@
 
 from .auth import (
     ActiveSessionsResponse,
+    ApiPermissionInfo,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
     RefreshTokenResponse,
     RevokeSessionResponse,
     SessionInfo,
+    UserPermissionsResponse,
 )
 
 # 重建 LoginResponse 模型，解析 user 字段的类型注解
@@ -28,10 +30,12 @@ LoginResponse.model_rebuild()
 
 __all__ = [
     "ActiveSessionsResponse",
+    "ApiPermissionInfo",
     "LoginRequest",
     "LoginResponse",
     "LogoutResponse",
     "RefreshTokenResponse",
     "RevokeSessionResponse",
     "SessionInfo",
+    "UserPermissionsResponse",
 ]

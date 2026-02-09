@@ -1,8 +1,10 @@
 """API 权限 Repository"""
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from src.app.admin.models.perm import Permission
+from src.app.admin.models import Permission, Role, User
 from src.database.tree_repository import TreeRepository
 
 
@@ -53,39 +55,44 @@ class PermissionRepository(TreeRepository[Permission]):
         _, items = await self.get_list(db, limit=1000, where_clauses_raw=where_clauses)
         return items
 
-    async def get_by_type(
-        self,
-        db: AsyncSession,
-        perm_type: str,
-        exclude_deleted: bool = True,
-    ) -> list[Permission]:
-        """按类型获取权限
+    async def get_permission_names_by_user_id(self, db: AsyncSession, user_id: int) -> set[str]:
+        """获取用户的所有权限标识
 
         Args:
             db: 数据库会话
-            perm_type: 权限类型（user_api/app_api）
-            exclude_deleted: 是否排除已删除的权限
+            user_id: 用户 ID
 
         Returns:
-            权限列表
+            权限标识集合，超级用户返回 {"*"}，用户不存在时返回空集合
+
+        优化说明:
+            - 使用 is_deleted 替代 is_active 简化状态管理
+            - is_deleted=False 表示角色/权限启用
+            - is_deleted=True 表示角色/权限已禁用/删除
         """
-        where_clauses = [Permission.type == perm_type]
-        self._add_deleted_filter(where_clauses, exclude_deleted)
+        # 查询用户（预加载 roles 和 permissions）
+        result = await db.execute(
+            select(User).where(User.id == user_id).options(selectinload(User.roles).selectinload(Role.permissions))
+        )
+        user = result.scalar_one_or_none()
 
-        _, items = await self.get_list(db, limit=1000, where_clauses_raw=where_clauses)
-        return items
+        if not user:
+            return set()
 
-    async def get_by_name(self, db: AsyncSession, name: str) -> Permission | None:
-        """按名称获取权限
+        # 超级用户返回特殊标识
+        if user.is_superuser:
+            return {"*"}
 
-        Args:
-            db: 数据库会话
-            name: 权限名称
-
-        Returns:
-            权限对象或 None
-        """
-        return await self.get_by_field(db, "name", name)
+        # 收集权限标识
+        permissions = set()
+        for role in user.roles:
+            # 只收集未删除的角色权限
+            if not role.is_deleted:
+                for perm in role.permissions:
+                    # 只收集未删除的权限
+                    if not perm.is_deleted:
+                        permissions.add(perm.name)
+        return permissions
 
 
 permission_repository = PermissionRepository()
