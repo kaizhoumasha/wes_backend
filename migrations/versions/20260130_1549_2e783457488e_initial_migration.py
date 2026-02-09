@@ -111,36 +111,23 @@ def upgrade() -> None:
         sa.Column("sort_order", sa.Integer(), nullable=False, comment="排序号"),
         sa.Column("name", sa.String(length=100), nullable=False),
         sa.Column("description", sa.String(length=255), nullable=True),
-        sa.Column("type", sa.String(), nullable=False),
+        sa.Column("type", sa.String(length=20), nullable=False),
         sa.Column("category", sa.String(length=50), nullable=True),
         sa.Column("resource", sa.String(length=50), nullable=True),
         sa.Column("action", sa.String(length=50), nullable=True),
         sa.Column("method", sa.String(length=10), nullable=True),
         sa.Column("path", sa.String(length=255), nullable=True),
-        sa.Column("component", sa.String(length=255), nullable=True),
-        sa.Column("icon", sa.String(length=50), nullable=True),
-        sa.Column("redirect", sa.String(length=255), nullable=True),
-        sa.Column("title", sa.String(length=100), nullable=True),
-        sa.Column("is_hidden", sa.Boolean(), nullable=False),
-        sa.Column("is_cached", sa.Boolean(), nullable=False),
-        sa.Column("is_affix", sa.Boolean(), nullable=False),
-        sa.Column("is_external", sa.Boolean(), nullable=False),
-        sa.Column("external_url", sa.String(length=500), nullable=True),
-        sa.Column("meta", sa.JSON(), nullable=True),
-        sa.Column("api_permissions", sa.JSON(), nullable=True),
         sa.ForeignKeyConstraint(
             ["parent_id"],
             ["wes_sys.permissions.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
         schema="wes_sys",
+        comment="API 权限表（仅用于后端 API 访问控制）",
     )
-    op.create_index(
-        "ix_perm_api_deleted", "permissions", ["method", "path", "is_deleted"], unique=False, schema="wes_sys"
-    )
-    op.create_index(
-        "ix_perm_menu_deleted", "permissions", ["type", "is_hidden", "is_deleted"], unique=False, schema="wes_sys"
-    )
+    # API 权限匹配优化：method + path + is_deleted（用于权限验证）
+    op.create_index("ix_perm_api_deleted", "permissions", ["method", "path", "is_deleted"], unique=False, schema="wes_sys")
+    # 树形结构查询优化：parent_id + sort_order + is_deleted
     op.create_index(
         "ix_perm_parent_sort_deleted",
         "permissions",
@@ -148,6 +135,7 @@ def upgrade() -> None:
         unique=False,
         schema="wes_sys",
     )
+    # 类型查询优化：type + is_deleted
     op.create_index("ix_perm_type_deleted", "permissions", ["type", "is_deleted"], unique=False, schema="wes_sys")
     op.create_index(op.f("ix_wes_sys_permissions_id"), "permissions", ["id"], unique=True, schema="wes_sys")
     op.create_index(
@@ -283,15 +271,15 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_wes_sys_roles_name"), table_name="roles", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_roles_id"), table_name="roles", schema="wes_sys")
     op.drop_table("roles", schema="wes_sys")
+    # 删除 permissions 表索引
     op.drop_index("ux_perm_name_deleted", table_name="permissions", schema="wes_sys", postgresql_where="NOT is_deleted")
-    op.drop_index(op.f("ix_wes_sys_permissions_type"), table_name="permissions", schema="wes_sys")
+    op.drop_index("ix_perm_type_deleted", table_name="permissions", schema="wes_sys")
+    op.drop_index("ix_perm_parent_sort_deleted", table_name="permissions", schema="wes_sys")
+    op.drop_index("ix_perm_api_deleted", table_name="permissions", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_permissions_tree_path"), table_name="permissions", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_permissions_parent_id"), table_name="permissions", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_permissions_id"), table_name="permissions", schema="wes_sys")
-    op.drop_index("ix_perm_type_deleted", table_name="permissions", schema="wes_sys")
-    op.drop_index("ix_perm_parent_sort_deleted", table_name="permissions", schema="wes_sys")
-    op.drop_index("ix_perm_menu_deleted", table_name="permissions", schema="wes_sys")
-    op.drop_index("ix_perm_api_deleted", table_name="permissions", schema="wes_sys")
+    op.drop_index(op.f("ix_wes_sys_permissions_type"), table_name="permissions", schema="wes_sys")
     op.drop_table("permissions", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_audit_logs_username"), table_name="audit_logs", schema="wes_sys")
     op.drop_index(op.f("ix_wes_sys_audit_logs_trace_id"), table_name="audit_logs", schema="wes_sys")

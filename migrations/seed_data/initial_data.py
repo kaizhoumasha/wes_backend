@@ -46,61 +46,53 @@ else:
 
 async def seed_permissions(db: AsyncSession) -> None:
     """
-    初始化权限数据
+    初始化 API 权限数据
 
     注意：
     - TreeRepository 会自动计算 tree_path
     - tree_path 格式：/父ID/当前ID/
     - 需要使用 flush() 获取自增 ID
+    - 权限按模块分组（使用 user_api 类型）
     """
     from src.app.admin.repositories.perm_repository import PermissionRepository
 
     repo = PermissionRepository()
     _disable_audit_hooks(repo)  # 禁用审计 Hook
 
-    # ========== 1. 系统管理根菜单 ==========
-    system_menu = await repo.create(
+    # ========== 1. 系统管理根分组 ==========
+    system_group = await repo.create(
         db,
         {
-            "name": "admin:system",
-            "description": "系统管理",
-            "type": "menu",
+            "name": "admin:system:group",
+            "description": "系统管理权限分组",
+            "type": "user_api",
             "category": "admin",
-            "path": "/system",
-            "icon": "Setting",
-            "title": "系统管理",
+            "resource": "system",
+            "action": "group",
+            "method": "GET",
+            "path": "/admin",
             "sort_order": 1,
-            "is_hidden": False,
-            "is_cached": False,
-            "is_affix": False,
-            "is_external": False,
-            "meta": {"orderNo": 1},
         },
     )
     # ✅ Hook 自动计算：tree_path = "/{id}/", level = 1
 
     # ========== 2. 用户管理模块 ==========
-    user_menu = await repo.create(
+    user_group = await repo.create(
         db,
         {
-            "name": "admin:user:menu",
-            "description": "用户管理",
-            "type": "menu",
+            "name": "admin:user:group",
+            "description": "用户管理权限分组",
+            "type": "user_api",
             "category": "admin",
-            "parent_id": system_menu.id,  # 设置父节点
-            "path": "/system/user",
-            "component": "views/system/user/index.vue",
-            "icon": "User",
-            "title": "用户管理",
+            "parent_id": system_group.id,
+            "resource": "user",
+            "action": "group",
+            "method": "GET",
+            "path": "/admin/users",
             "sort_order": 1,
-            "is_hidden": False,
-            "is_cached": False,
-            "is_affix": False,
-            "is_external": False,
-            "meta": {"orderNo": 1},
         },
     )
-    # ✅ Hook 自动计算：tree_path = "/{system_id}/{user_menu_id}/", level = 2
+    # ✅ Hook 自动计算：tree_path = "/{system_id}/{user_group_id}/", level = 2
 
     # 用户 API 权限
     await repo.create(
@@ -110,7 +102,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "创建用户",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users",
             "method": "POST",
             "resource": "user",
@@ -126,7 +118,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "更新用户",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users/{id}",
             "method": "PUT",
             "resource": "user",
@@ -142,7 +134,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "删除用户",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users/{id}",
             "method": "DELETE",
             "resource": "user",
@@ -158,7 +150,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查看用户详情",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users/{id}",
             "method": "GET",
             "resource": "user",
@@ -174,7 +166,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查询用户列表",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users/query",
             "method": "POST",
             "resource": "user",
@@ -190,7 +182,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "导出用户数据",
             "type": "user_api",
             "category": "admin",
-            "parent_id": user_menu.id,
+            "parent_id": user_group.id,
             "path": "/api/v1/admin/users/export",
             "method": "GET",
             "resource": "user",
@@ -200,24 +192,19 @@ async def seed_permissions(db: AsyncSession) -> None:
     )
 
     # ========== 3. 角色管理模块 ==========
-    role_menu = await repo.create(
+    role_group = await repo.create(
         db,
         {
-            "name": "admin:role:menu",
-            "description": "角色管理",
-            "type": "menu",
+            "name": "admin:role:group",
+            "description": "角色管理权限分组",
+            "type": "user_api",
             "category": "admin",
-            "parent_id": system_menu.id,
-            "path": "/system/role",
-            "component": "views/system/role/index.vue",
-            "icon": "UserGroup",
-            "title": "角色管理",
+            "parent_id": system_group.id,
+            "resource": "role",
+            "action": "group",
+            "method": "GET",
+            "path": "/admin/roles",
             "sort_order": 2,
-            "is_hidden": False,
-            "is_cached": False,
-            "is_affix": False,
-            "is_external": False,
-            "meta": {"orderNo": 2},
         },
     )
 
@@ -228,7 +215,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "创建角色",
             "type": "user_api",
             "category": "admin",
-            "parent_id": role_menu.id,
+            "parent_id": role_group.id,
             "path": "/api/v1/admin/roles",
             "method": "POST",
             "resource": "role",
@@ -244,7 +231,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "更新角色",
             "type": "user_api",
             "category": "admin",
-            "parent_id": role_menu.id,
+            "parent_id": role_group.id,
             "path": "/api/v1/admin/roles/{id}",
             "method": "PUT",
             "resource": "role",
@@ -260,7 +247,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "删除角色",
             "type": "user_api",
             "category": "admin",
-            "parent_id": role_menu.id,
+            "parent_id": role_group.id,
             "path": "/api/v1/admin/roles/{id}",
             "method": "DELETE",
             "resource": "role",
@@ -276,7 +263,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查看角色详情",
             "type": "user_api",
             "category": "admin",
-            "parent_id": role_menu.id,
+            "parent_id": role_group.id,
             "path": "/api/v1/admin/roles/{id}",
             "method": "GET",
             "resource": "role",
@@ -292,7 +279,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查询角色列表",
             "type": "user_api",
             "category": "admin",
-            "parent_id": role_menu.id,
+            "parent_id": role_group.id,
             "path": "/api/v1/admin/roles/query",
             "method": "POST",
             "resource": "role",
@@ -302,24 +289,19 @@ async def seed_permissions(db: AsyncSession) -> None:
     )
 
     # ========== 4. 权限管理模块 ==========
-    perm_menu = await repo.create(
+    perm_group = await repo.create(
         db,
         {
-            "name": "admin:permission:menu",
-            "description": "权限管理",
-            "type": "menu",
+            "name": "admin:permission:group",
+            "description": "权限管理权限分组",
+            "type": "user_api",
             "category": "admin",
-            "parent_id": system_menu.id,
-            "path": "/system/permission",
-            "component": "views/system/permission/index.vue",
-            "icon": "Lock",
-            "title": "权限管理",
+            "parent_id": system_group.id,
+            "resource": "permission",
+            "action": "group",
+            "method": "GET",
+            "path": "/admin/permissions",
             "sort_order": 3,
-            "is_hidden": False,
-            "is_cached": False,
-            "is_affix": False,
-            "is_external": False,
-            "meta": {"orderNo": 3},
         },
     )
 
@@ -330,7 +312,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "创建权限",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions",
             "method": "POST",
             "resource": "permission",
@@ -346,7 +328,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "更新权限",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions/{id}",
             "method": "PUT",
             "resource": "permission",
@@ -362,7 +344,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "删除权限",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions/{id}",
             "method": "DELETE",
             "resource": "permission",
@@ -378,7 +360,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查看权限详情",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions/{id}",
             "method": "GET",
             "resource": "permission",
@@ -394,7 +376,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查询权限列表",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions/query",
             "method": "POST",
             "resource": "permission",
@@ -410,7 +392,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "获取权限树",
             "type": "user_api",
             "category": "admin",
-            "parent_id": perm_menu.id,
+            "parent_id": perm_group.id,
             "path": "/api/v1/admin/permissions/tree",
             "method": "GET",
             "resource": "permission",
@@ -420,24 +402,19 @@ async def seed_permissions(db: AsyncSession) -> None:
     )
 
     # ========== 5. 审计日志模块 ==========
-    audit_menu = await repo.create(
+    audit_group = await repo.create(
         db,
         {
-            "name": "admin:audit:menu",
-            "description": "审计日志",
-            "type": "menu",
+            "name": "admin:audit:group",
+            "description": "审计日志权限分组",
+            "type": "user_api",
             "category": "admin",
-            "parent_id": system_menu.id,
-            "path": "/system/audit",
-            "component": "views/system/audit/index.vue",
-            "icon": "Document",
-            "title": "审计日志",
+            "parent_id": system_group.id,
+            "resource": "audit",
+            "action": "group",
+            "method": "GET",
+            "path": "/admin/audit-logs",
             "sort_order": 4,
-            "is_hidden": False,
-            "is_cached": False,
-            "is_affix": False,
-            "is_external": False,
-            "meta": {"orderNo": 4},
         },
     )
 
@@ -448,7 +425,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "查询审计日志",
             "type": "user_api",
             "category": "admin",
-            "parent_id": audit_menu.id,
+            "parent_id": audit_group.id,
             "path": "/api/v1/admin/audit-logs/query",
             "method": "POST",
             "resource": "audit",
@@ -464,7 +441,7 @@ async def seed_permissions(db: AsyncSession) -> None:
             "description": "导出审计日志",
             "type": "user_api",
             "category": "admin",
-            "parent_id": audit_menu.id,
+            "parent_id": audit_group.id,
             "path": "/api/v1/admin/audit-logs/export",
             "method": "GET",
             "resource": "audit",
@@ -703,7 +680,7 @@ async def seed_all(db: AsyncSession) -> None:
     """初始化所有数据"""
     print("🌱 开始初始化系统数据...")
 
-    print("  1️⃣ 初始化权限数据...")
+    print("  1️⃣ 初始化 API 权限数据...")
     await seed_permissions(db)
     perm_count_result = await db.execute(select(Permission))
     print(f"     ✅ 权限数量: {perm_count_result.scalar()}")

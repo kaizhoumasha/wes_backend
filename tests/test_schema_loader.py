@@ -63,11 +63,11 @@ async def sample_data(db_session: AsyncSession):
     - 2 个角色（admin_role, user_role）
     - 6 个权限（树形结构）
         - admin (parent)
-            - admin:user (child)
-                - admin:user:create (grandchild)
-                - admin:user:read (grandchild)
-            - admin:role (child)
-                - admin:role:create (grandchild)
+            - admin:user (child - 分组)
+                - admin:user:create (grandchild - API 权限)
+                - admin:user:read (grandchild - API 权限)
+            - admin:role (child - 分组)
+                - admin:role:create (grandchild - API 权限)
     """
     from sqlalchemy import insert
 
@@ -76,64 +76,79 @@ async def sample_data(db_session: AsyncSession):
     # 创建权限（树形结构）
     perm_admin = Permission(
         name="admin:root",
-        description="管理员根权限",
-        type="menu",
+        description="管理员根权限（分组）",
+        type="user_api",
+        resource="admin",
+        action="root",
+        method="GET",
         path="/admin",
         sort_order=1,
     )
     db_session.add(perm_admin)
     await db_session.flush()
 
-    perm_user_menu = Permission(
-        name="admin:user:menu",
-        description="用户管理菜单",
-        type="menu",
+    perm_user_group = Permission(
+        name="admin:user:group",
+        description="用户管理权限分组",
+        type="user_api",
+        resource="user",
+        action="group",
+        method="GET",
         path="/admin/user",
         parent_id=perm_admin.id,
         sort_order=1,
     )
-    db_session.add(perm_user_menu)
+    db_session.add(perm_user_group)
     await db_session.flush()
 
     perm_user_create = Permission(
         name="admin:user:create",
         description="创建用户",
-        type="api",
+        type="user_api",
+        resource="user",
+        action="create",
         method="POST",
         path="/api/admin/users",
-        parent_id=perm_user_menu.id,
+        parent_id=perm_user_group.id,
         sort_order=1,
     )
     perm_user_read = Permission(
         name="admin:user:read",
         description="查看用户",
-        type="api",
+        type="user_api",
+        resource="user",
+        action="read",
         method="GET",
         path="/api/admin/users",
-        parent_id=perm_user_menu.id,
+        parent_id=perm_user_group.id,
         sort_order=2,
     )
     db_session.add_all([perm_user_create, perm_user_read])
     await db_session.flush()
 
-    perm_role_menu = Permission(
-        name="admin:role:menu",
-        description="角色管理菜单",
-        type="menu",
+    perm_role_group = Permission(
+        name="admin:role:group",
+        description="角色管理权限分组",
+        type="user_api",
+        resource="role",
+        action="group",
+        method="GET",
         path="/admin/role",
         parent_id=perm_admin.id,
         sort_order=2,
     )
-    db_session.add(perm_role_menu)
+    db_session.add(perm_role_group)
     await db_session.flush()
 
     perm_role_create = Permission(
         name="admin:role:create",
         description="创建角色",
-        type="api",
+        type="user_api",
+        resource="role",
+        action="create",
         method="POST",
         path="/api/admin/roles",
-        parent_id=perm_role_menu.id,
+        parent_id=perm_role_group.id,
         sort_order=1,
     )
     db_session.add(perm_role_create)
@@ -156,10 +171,10 @@ async def sample_data(db_session: AsyncSession):
         insert(role_permission).values(
             [
                 {"role_id": admin_role.id, "permission_id": perm_admin.id},
-                {"role_id": admin_role.id, "permission_id": perm_user_menu.id},
+                {"role_id": admin_role.id, "permission_id": perm_user_group.id},
                 {"role_id": admin_role.id, "permission_id": perm_user_create.id},
                 {"role_id": admin_role.id, "permission_id": perm_user_read.id},
-                {"role_id": admin_role.id, "permission_id": perm_role_menu.id},
+                {"role_id": admin_role.id, "permission_id": perm_role_group.id},
                 {"role_id": admin_role.id, "permission_id": perm_role_create.id},
                 {"role_id": user_role.id, "permission_id": perm_user_read.id},
             ]
@@ -202,10 +217,10 @@ async def sample_data(db_session: AsyncSession):
         "roles": [admin_role, user_role],
         "permissions": [
             perm_admin,
-            perm_user_menu,
+            perm_user_group,
             perm_user_create,
             perm_user_read,
-            perm_role_menu,
+            perm_role_group,
             perm_role_create,
         ],
     }
@@ -262,7 +277,7 @@ class TestApplySchemaLoads:
         assert len(root_perms) == 1
         root = root_perms[0]
         assert root.name == "admin:root"
-        assert len(root.children) == 2  # user_menu, role_menu
+        assert len(root.children) == 2  # user_group, role_group
 
     async def test_max_depth_limit(self, db_session: AsyncSession, sample_data):
         """测试最大深度限制"""
@@ -474,8 +489,8 @@ class TestEdgeCases:
         assert len(root.children) == 2
 
         # 验证子权限也有子权限
-        user_menu = next(c for c in root.children if "user" in c.name)
-        assert len(user_menu.children) == 2
+        user_group = next(c for c in root.children if "user" in c.name)
+        assert len(user_group.children) == 2
 
 
 class TestPerformance:
@@ -551,13 +566,14 @@ class TestIntegration:
         assert root.name == "admin:root"
         assert len(root.children) == 2
 
-        # 验证第二层
-        user_menu = next(c for c in root.children if "user" in c.name)
-        role_menu = next(c for c in root.children if "role" in c.name)
+        # 验证第二层（分组）
+        user_group = next(c for c in root.children if "user" in c.name)
+        role_group = next(c for c in root.children if "role" in c.name)
 
-        assert len(user_menu.children) == 2
-        assert len(role_menu.children) == 1
+        assert len(user_group.children) == 2
+        assert len(role_group.children) == 1
 
-        # 验证第三层
-        create_perm = next(c for c in user_menu.children if "create" in c.name)
+        # 验证第三层（API 权限）
+        create_perm = next(c for c in user_group.children if "create" in c.name)
         assert create_perm.name == "admin:user:create"
+        assert create_perm.method == "POST"

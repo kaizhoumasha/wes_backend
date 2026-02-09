@@ -53,7 +53,7 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
                     permissions_found.append(
                         {
                             "name": perm_name,
-                            "type": "external_api",  # 外部 API 应用权限
+                            "type": "app_api",  # 应用 API 权限
                             "category": parts[0] if len(parts) >= 2 else None,  # module = category
                             "description": description,
                             "resource": parts[1] if len(parts) >= 2 else "unknown",  # resource
