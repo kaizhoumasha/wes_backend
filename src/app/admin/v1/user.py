@@ -11,8 +11,6 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 4. 统一错误处理（依赖全局异常处理器）
 """
 
-from sqlalchemy import func, select
-
 from src.app.admin.models import User, UserCreate, UserResponse, UserUpdate
 from src.app.admin.services.user_service import user_service
 from src.core.base_api import BaseAPI
@@ -54,9 +52,8 @@ async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
     - cache_status: 缓存服务状态
     - cache_keys_count: 缓存键数量（如果 Redis 可用）
     """
-    # 获取总用户数
-    result = await db.execute(select(func.count(User.id)))
-    total_users = result.scalar()
+    # 获取总用户数（通过Service层）
+    total_users = await user_service.count(db)
 
     # 获取缓存状态
     cache_status = cache.get_status()

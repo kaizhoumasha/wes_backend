@@ -18,8 +18,8 @@ beat_schedule = {
         "schedule": 60.0,  # 每分钟
     },
     # ============================================
-    # TODO: 未来添加的任务
-    # ============================================
+    # 可扩展：添加新的定时任务
+    # 示例：
     # "daily-inventory-check": {
     #     "task": "src.celery_app.tasks.inventory.check_low_stock",
     #     "schedule": 3600.0,  # 每小时
@@ -37,7 +37,7 @@ beat_schedule = {
 task_routes = {
     # 核心任务 -> default 队列
     "src.celery_app.tasks.core.*": {"queue": "default"},
-    # TODO: 未来添加的路由
+    # 可扩展：添加新的任务路由
     # "src.celery_app.tasks.inventory.*": {"queue": "inventory"},
     # "src.celery_app.tasks.reporting.*": {"queue": "reporting"},
 }

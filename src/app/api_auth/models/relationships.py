@@ -1,4 +1,3 @@
-
 from sqlalchemy import BigInteger, Column, ForeignKey, Table
 
 from src.database.db import Base
