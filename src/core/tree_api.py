@@ -1,8 +1,9 @@
 """树形结构 API（继承 BaseAPI + 树形路由）"""
 
+from collections.abc import Callable
 from typing import Annotated, Any, Protocol, TypeVar
 
-from fastapi import Body, Depends, Path, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 
 from src.core.base_api import BaseAPI
 from src.core.base_service import BaseService
@@ -66,7 +67,9 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
+        custom_routes: list[Callable[[APIRouter, "TreeAPI"], None]] | None = None,
     ) -> None:
+        self._custom_route_funcs = custom_routes or []
         super().__init__(
             module_name,
             model,

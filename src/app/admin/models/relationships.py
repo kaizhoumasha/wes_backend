@@ -53,3 +53,25 @@ role_permission = Table(
     schema=SchemaType.SYS.value,
     comment="角色-权限关联表",
 )
+
+
+# Role-Menu 多对多关联表
+# 注意：外键列使用 BigInteger 以匹配主键类型
+role_menu = Table(
+    "role_menus",
+    DataTableMixin.metadata,
+    Column(
+        "role_id",
+        BigInteger,
+        ForeignKey("wes_sys.roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "menu_id",
+        BigInteger,
+        ForeignKey("wes_sys.menus.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    schema=SchemaType.SYS.value,
+    comment="角色-菜单关联表",
+)

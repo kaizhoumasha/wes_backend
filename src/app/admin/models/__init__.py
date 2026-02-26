@@ -7,6 +7,14 @@ Admin 模型模块
 from sqlalchemy.orm import relationship
 
 # 导入所有模型
+from .menu import (
+    Menu,
+    MenuBase,
+    MenuCreate,
+    MenuResponse,
+    MenuTreeResponse,
+    MenuUpdate,
+)
 from .perm import (
     Permission,
     PermissionBase,
@@ -16,7 +24,7 @@ from .perm import (
     PermissionTree,
     PermissionUpdate,
 )
-from .relationships import role_permission, user_role
+from .relationships import role_menu, role_permission, user_role
 from .role import (
     Role,
     RoleBase,
@@ -57,14 +65,32 @@ Permission.roles = relationship(
     back_populates="permissions",
 )
 
+# Menu-Role 多对多关系
+Menu.roles = relationship(
+    "Role",
+    secondary=role_menu,
+    back_populates="menus",
+)
+Role.menus = relationship(
+    Menu,
+    secondary=role_menu,
+    back_populates="roles",
+)
+
 # ==================== 导出所有公开内容 ====================
 
 __all__ = [
+    # Menu 模型
+    "Menu",
+    "MenuBase",
+    "MenuCreate",
+    "MenuUpdate",
+    "MenuResponse",
+    "MenuTreeResponse",
     # Permission 模型
     "Permission",
     "PermissionBase",
     "PermissionCreate",
-    "PermissionResponse",
     "PermissionResponse",
     "PermissionResponseSimple",
     "PermissionTree",
@@ -74,7 +100,6 @@ __all__ = [
     "RoleBase",
     "RoleCreate",
     "RoleResponse",
-    "RoleResponse",
     "RoleResponseSimple",
     "RoleUpdate",
     # User 模型
@@ -83,7 +108,8 @@ __all__ = [
     "UserCreate",
     "UserResponse",
     "UserUpdate",
-    "role_permission",
     # 关联表
+    "role_menu",
+    "role_permission",
     "user_role",
 ]
