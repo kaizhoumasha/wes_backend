@@ -28,6 +28,8 @@ from src.app.auth.models import (
 )
 from src.app.auth.services.auth_service import auth_service
 from src.core.conf import settings
+from src.core.response.response_schema import ResponseSchemaModel
+from src.core.response.response_util import response_builder
 from src.core.security import get_current_user, require_auth
 from src.database.dependencies import AsyncSessionDep
 
@@ -39,7 +41,6 @@ router = APIRouter(prefix="/auth", tags=["认证"])
 
 @router.post(
     "/login",
-    response_model=LoginResponse,
     summary="用户登录",
     status_code=status.HTTP_200_OK,
 )
@@ -47,7 +48,7 @@ async def login(
     credentials: LoginRequest,
     response: Response,
     db: AsyncSessionDep,
-) -> LoginResponse:
+) -> ResponseSchemaModel[LoginResponse]:
     """
     用户登录
 
@@ -62,17 +63,17 @@ async def login(
     - Refresh Token 存储在 HttpOnly Cookie 中
     - 支持 JTI（JWT ID）用于精确撤销
     """
-    return await auth_service.login(
+    result = await auth_service.login(
         db=db,
         username=credentials.username,
         password=credentials.password,
         response=response,
     )
+    return response_builder.success(data=result)
 
 
 @router.post(
     "/refresh",
-    response_model=RefreshTokenResponse,
     summary="刷新访问令牌",
     status_code=status.HTTP_200_OK,
 )
@@ -80,7 +81,7 @@ async def refresh_token(
     request: Request,
     response: Response,
     db: AsyncSessionDep,
-) -> RefreshTokenResponse:
+) -> ResponseSchemaModel[RefreshTokenResponse]:
     """
     刷新访问令牌
 
@@ -108,12 +109,11 @@ async def refresh_token(
         samesite="lax",
     )
 
-    return result
+    return response_builder.success(data=result)
 
 
 @router.post(
     "/logout",
-    response_model=LogoutResponse,
     summary="用户登出",
     status_code=status.HTTP_200_OK,
 )
@@ -121,7 +121,7 @@ async def logout(
     response: Response,
     request: Request,
     current_user: Annotated[int, Depends(require_auth)],
-) -> LogoutResponse:
+) -> ResponseSchemaModel[LogoutResponse]:
     """
     用户登出（撤销当前会话）
 
@@ -133,19 +133,19 @@ async def logout(
     - 从 Redis 中删除会话信息
     """
     await auth_service.logout(request=request, response=response, current_user_id=current_user)
-    return LogoutResponse(message="登出成功", revoked_count=1)
+    result = LogoutResponse(message="登出成功", revoked_count=1)
+    return response_builder.success(data=result)
 
 
 @router.post(
     "/logout-all",
-    response_model=LogoutResponse,
     summary="强制登出所有设备",
     status_code=status.HTTP_200_OK,
 )
 async def logout_all(
     response: Response,
     current_user: Annotated[int, Depends(require_auth)],
-) -> LogoutResponse:
+) -> ResponseSchemaModel[LogoutResponse]:
     """
     强制登出所有设备（撤销所有会话）
 
@@ -161,7 +161,8 @@ async def logout_all(
     - 返回撤销的令牌数量
     """
     revoked_count = await auth_service.logout_all(response=response, current_user_id=current_user)
-    return LogoutResponse(message=f"已撤销 {revoked_count} 个令牌", revoked_count=revoked_count)
+    result = LogoutResponse(message=f"已撤销 {revoked_count} 个令牌", revoked_count=revoked_count)
+    return response_builder.success(data=result)
 
 
 # ==================== 会话管理端点 ====================
@@ -169,13 +170,12 @@ async def logout_all(
 
 @router.get(
     "/sessions",
-    response_model=ActiveSessionsResponse,
     summary="获取当前用户的所有活跃会话",
     status_code=status.HTTP_200_OK,
 )
 async def get_active_sessions(
     current_user: Annotated[int, Depends(require_auth)],
-) -> ActiveSessionsResponse:
+) -> ResponseSchemaModel[ActiveSessionsResponse]:
     """
     获取当前用户的所有活跃会话
 
@@ -191,19 +191,19 @@ async def get_active_sessions(
     - 安全审计
     - 检测异常登录
     """
-    return await auth_service.get_active_sessions(current_user)
+    result = await auth_service.get_active_sessions(current_user)
+    return response_builder.success(data=result)
 
 
 @router.delete(
     "/sessions/{session_uuid}",
-    response_model=RevokeSessionResponse,
     summary="撤销指定会话",
     status_code=status.HTTP_200_OK,
 )
 async def revoke_session(
     session_uuid: str,
     current_user: Annotated[int, Depends(require_auth)],
-) -> RevokeSessionResponse:
+) -> ResponseSchemaModel[RevokeSessionResponse]:
     """
     撤销指定会话
 
@@ -221,7 +221,8 @@ async def revoke_session(
     - 删除会话信息
     """
     await auth_service.revoke_session(current_user, session_uuid)
-    return RevokeSessionResponse(message="会话已撤销", session_uuid=session_uuid)
+    result = RevokeSessionResponse(message="会话已撤销", session_uuid=session_uuid)
+    return response_builder.success(data=result)
 
 
 # ==================== 权限端点 ====================
@@ -229,14 +230,13 @@ async def revoke_session(
 
 @router.get(
     "/permissions",
-    response_model=UserPermissionsResponse,
     summary="获取当前用户的 API 权限列表",
     description="获取当前用户有权限访问的内部管理 API（用于前端动态路由和权限控制）",
 )
 async def get_user_permissions(
     db: AsyncSessionDep,
     current_user: Annotated[int, Depends(get_current_user)],
-) -> UserPermissionsResponse:
+) -> ResponseSchemaModel[UserPermissionsResponse]:
     """
     获取当前用户的 API 权限列表（前端动态路由）
 
@@ -278,4 +278,5 @@ async def get_user_permissions(
         for perm in permissions
     ]
 
-    return UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)
+    result = UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)
+    return response_builder.success(data=result)
