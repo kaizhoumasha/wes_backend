@@ -1,7 +1,17 @@
 # FXR-WES 项目文件索引
 
-**最后更新**: 2026年2月27日
-**同步状态**: ✅ 已同步（基于 Serena MCP 完整分析）
+**最后更新**: 2026年3月2日
+**同步状态**: ✅ 已同步（v2.2 - 摄像头传感器模拟 API）
+
+---
+
+## 版本更新日志
+
+| 日期 | 版本 | 变更内容 |
+|------|------|----------|
+| 2026-03-02 | v2.2 | 摄像头 Mock 服务新增传感器模拟 API（手动/自动触发、状态查询、事件历史） |
+| 2026-03-02 | v2.1 | 新增 Mock 设备服务（摄像头、机械臂）Docker 封装 |
+| 2026-02-27 | v2.0 | 项目结构完整索引 |
 
 ---
 
@@ -47,7 +57,7 @@
 | `Dockerfile` | 主应用容器构建定义 | 🔧 架构核心 |
 | `.env.dev` | 开发环境变量配置 | 🔧 架构核心 |
 | `.env.prod` | 生产环境变量配置 | 🔧 架构核心 |
-| `.env.test` | 测试环境变量配置 | 📚 参考资料 |
+| `.env.test` | 测试环境变量配置（含 WES_EVENT_CALLBACK_URL、SENSOR_* 配置） | 📚 参考资料 |
 | `alembic.ini` | Alembic 数据库迁移配置 | 🔧 架构核心 |
 | `uv.lock` | uv 依赖版本锁定文件 | 📚 参考资料 |
 
@@ -337,7 +347,41 @@
 | `api/` | API 测试（如签名测试） | 📚 参考资料 |
 | `benchmark/` | 性能基准测试 | 📚 参考资料 |
 | `load/` | 负载测试（Locust） | 📚 参考资料 |
-| `resilience/` | 弹性测试（Redis 重连、降级） | 📚 参考资料 |
+| `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
+| `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
+
+**E2E 测试文件**：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `e2e/__init__.py` | E2E 测试模块导出 | 🔧 架构核心 |
+| `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用摄像头传感器 API） | 🔄 常用功能 |
+
+#### 🎭 Mock 设备服务
+
+| 目录/文件 | 用途 | 分类 |
+|-----------|------|------|
+| `mock/` | E2E 测试 Mock 设备服务 | 🔧 架构核心 |
+| `mock/Dockerfile` | Mock 服务 Docker 镜像构建 | 🔧 架构核心 |
+| `mock/__init__.py` | Mock 服务模块导出 | 🔧 架构核心 |
+| `mock/camera_mock_server.py` | 摄像头 Mock 服务（含传感器模拟 API） | 🔧 架构核心 |
+| `mock/robot_arm_mock_server.py` | 机械臂 Mock 服务（接收指令、回调结果） | 🔧 架构核心 |
+| `mock/README.md` | Mock 服务使用文档（含传感器 API 说明） | 📖 必读文档 |
+
+**Mock 服务 API 端点**：
+
+**摄像头 Mock (端口 8003)**：
+- `GET /api/v1/device/status` - 设备状态查询
+- `POST /api/v1/sensor/trigger` - 手动触发传感器检测物料到达
+- `POST /api/v1/sensor/auto/start` - 启动自动触发
+- `POST /api/v1/sensor/auto/stop` - 停止自动触发
+- `GET /api/v1/sensor/status` - 获取传感器状态
+- `GET /api/v1/sensor/events` - 获取事件历史记录
+
+**机械臂 Mock (端口 8004)**：
+- `GET /api/v1/device/status` - 设备状态查询
+- `POST /api/v1/device/command` - 接收设备指令
+- `POST /api/v1/device/cancel` - 取消执行指令
 
 ---
 
@@ -371,6 +415,7 @@
 | `migrate.sh` | Alembic 迁移控制（upgrade/downgrade/current） | 🔧 架构核心 |
 | `generate_migration.sh` | 生成新的 Alembic 迁移脚本 | 🔧 架构核心 |
 | `init-env.sh` | 开发环境初始化 | 🔄 常用功能 |
+| `start_e2e_env.sh` | E2E 测试环境管理（启动/停止/日志） | 🔄 常用功能 |
 | `run_performance_test.sh` | 运行 Locust/AB 性能测试 | 📚 参考资料 |
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
 | `docker-deploy-simple.sh` | 简化 Docker 部署 | 📚 参考资料 |

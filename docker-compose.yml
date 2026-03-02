@@ -50,9 +50,9 @@ services:
       REDIS_PORT: ${REDIS_PORT}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
-      # Celery 配置
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/2
+      # Celery 配置（使用服务名而非变量，确保容器内正确解析）
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -105,7 +105,7 @@ services:
       target: ${BUILD_TARGET:-production}
     image: wes-backend:${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    command: celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery
+    command: celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device
     env_file:
       - .env
     environment:
@@ -474,6 +474,115 @@ services:
       - prod
       - celery
       - api
+
+  # ============================================
+  # Mock 服务 - 摄像头设备模拟
+  # ============================================
+  mock_camera:
+    build:
+      context: .
+      dockerfile: tests/mock/Dockerfile
+    image: wes-mock:camera
+    container_name: wes_mock_camera_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${MOCK_CAMERA_PORT:-8003}:8003"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      camera_mock_server:app
+      --host 0.0.0.0
+      --port 8003
+      --log-level info
+      --reload
+    volumes:
+      # 开发环境挂载 mock 服务源码（支持热更新）
+      - ./tests/mock:/app/tests/mock:rw
+    environment:
+      # 服务配置
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8003
+      # WES 事件回调地址（使用 host.docker.internal 访问主机 API）
+      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
+      # 传感器配置
+      SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL: ${SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL:-10}
+      SENSOR_BARCODE_PREFIX: ${SENSOR_BARCODE_PREFIX:-PKG}
+      # 日志配置
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/v1/device/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wesp9-network
+    deploy:
+      resources:
+        limits:
+          cpus: ${MOCK_CPU_LIMIT:-0.25}
+          memory: ${MOCK_MEMORY_LIMIT:-128M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    profiles:
+      - test
+      - e2e
+
+  # ============================================
+  # Mock 服务 - 机械臂设备模拟
+  # ============================================
+  mock_robot_arm:
+    build:
+      context: .
+      dockerfile: tests/mock/Dockerfile
+    image: wes-mock:robot_arm
+    container_name: wes_mock_robot_arm_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${MOCK_ROBOT_ARM_PORT:-8004}:8004"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      robot_arm_mock_server:app
+      --host 0.0.0.0
+      --port 8004
+      --log-level info
+      --reload
+    volumes:
+      # 开发环境挂载 mock 服务源码（支持热更新）
+      - ./tests/mock:/app/tests/mock:rw
+    environment:
+      # 服务配置
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8004
+      # WES 回调地址（使用 host.docker.internal 访问主机 API）
+      WES_CALLBACK_URL: ${WES_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
+      # 日志配置
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/api/v1/device/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wesp9-network
+    deploy:
+      resources:
+        limits:
+          cpus: ${MOCK_CPU_LIMIT:-0.25}
+          memory: ${MOCK_MEMORY_LIMIT:-128M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    profiles:
+      - test
+      - e2e
 
 # ============================================
 # 网络配置

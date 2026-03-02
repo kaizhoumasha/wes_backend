@@ -422,14 +422,11 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
     if hasattr(exc, "__cause__") and exc.__cause__:
         error_detail = f"{error_detail} | 原因: {exc.__cause__!s}"
 
-    # 记录错误日志
-    logger.error(
-        f"SQLAlchemyError: {type(exc).__name__} - {error_detail}",
-        extra={
-            "path": request.url.path,
-            "method": request.method,
-            "error": error_detail,
-        },
+    # 记录错误日志（使用 opt() 方法避免格式化问题）
+    logger.opt(lazy=True).error(
+        "SQLAlchemyError: {} - {}",
+        lambda: type(exc).__name__,
+        lambda: error_detail,
     )
 
     # 使用注册表查找处理器（O(1) 查找）

@@ -5,8 +5,10 @@
 # ============================================
 
 from celery import Celery
+from celery.signals import worker_init
 
 from src.core.conf import settings
+from src.core.logger import logger
 
 from . import config
 
@@ -20,8 +22,66 @@ celery_app = Celery(
     backend=settings.CELERY_BACKEND,
     include=[
         "src.celery_app.tasks.core",  # 核心任务
+        "src.celery_app.tasks.device",  # 设备事件处理任务
     ],
 )
+
+# ============================================
+# Worker 启动信号处理器
+# ============================================
+
+
+@worker_init.connect
+def on_worker_init(*args, **kwargs):
+    """
+    Worker 主进程启动时初始化数据库连接
+    """
+    import asyncio
+
+    from src.database.db import init_db
+
+    try:
+        # 获取当前事件循环（或创建新的）
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # 在事件循环中运行异步初始化
+        loop.run_until_complete(init_db())
+        logger.info("Celery Worker 主进程数据库连接已初始化")
+    except Exception as e:
+        logger.error(f"Celery Worker 主进程数据库初始化失败: {e}")
+        raise
+
+
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def on_worker_process_init(*args, **kwargs):
+    """
+    Worker 子进程启动时初始化数据库连接
+
+    每个fork出的子进程都需要独立初始化数据库连接
+    """
+    import asyncio
+
+    from src.database.db import init_db
+
+    try:
+        # 子进程需要创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # 在事件循环中运行异步初始化
+        loop.run_until_complete(init_db())
+        logger.info("Celery Worker 子进程数据库连接已初始化")
+    except Exception as e:
+        logger.error(f"Celery Worker 子进程数据库初始化失败: {e}")
+        raise
+
 
 # ============================================
 # Celery 配置
