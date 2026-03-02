@@ -28,7 +28,9 @@ from src.app.api_auth.models import APIAccessLog, APIApplication  # noqa: F401
 from src.app.api_auth.models.relationships import api_app_permissions  # noqa: F401
 from src.app.demo.models.demo_product import DemoProduct  # noqa: F401
 from src.app.demo.models.demo_product_list import DemoProductList  # noqa: F401
+from src.app.device.models import Device  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
+from src.app.workline.models import WorkLine  # noqa: F401
 
 # 导入项目配置
 from src.core.conf import settings
