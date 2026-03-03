@@ -72,6 +72,7 @@ class CommandBase(BaseModel):
     device_id: str = SQLField(
         max_length=50,
         index=True,
+        foreign_key="wes_biz.devices.device_code",
         description="目标设备 ID（关联 Device.device_code）",
     )
     task_type: TaskType = SQLField(description="任务类型")
@@ -287,9 +288,11 @@ class DeviceCommand(
 
     # 关系定义
     device: "Device" = Relationship(  # noqa: F821
+        back_populates=None,
         sa_relationship_kwargs={
             "lazy": "selectin",
-            "foreign_keys": "[DeviceCommand.device_id]",
+            "foreign_keys": "DeviceCommand.device_id",
+            "primaryjoin": "DeviceCommand.device_id == Device.device_code",
         }
     )
 

@@ -91,13 +91,25 @@ def process_device_event(self, event_data: dict):
             - event_type: 事件类型
             - timestamp: 事件时间戳
             - data: 事件负载数据
+            - request_id: 请求 ID（用于链路追踪）
 
     Returns:
         任务执行结果字典
     """
+    # 恢复 request_id 到上下文（用于链路追踪）
+    request_id = event_data.get("request_id")
+    if request_id:
+        try:
+            from starlette_context import context as ctx
+            ctx["request_id"] = request_id
+            logger.debug(f"[Celery] 恢复 request_id 上下文: {request_id}")
+        except Exception as e:
+            logger.warning(f"[Celery] 无法设置 request_id 上下文: {e}")
+
     try:
         from src.app.device.repositories import DeviceRepository
         from src.app.device.services import device_command_service
+        from src.app.workline.models.workline import WorkLine  # noqa: F401 (用于解析 Device.work_line 关系)
         from src.device_processors import DeviceProcessorRegistry, register_builtin_processors
 
         # 确保处理器已注册
@@ -112,7 +124,8 @@ def process_device_event(self, event_data: dict):
 
         logger.info(
             f"[Celery] 开始处理设备事件: device_id={device_id}, "
-            f"event_type={event_type}, timestamp_provided={timestamp is not None}"
+            f"event_type={event_type}, timestamp_provided={timestamp is not None}, "
+            f"request_id={request_id}"
         )
 
         # 2. SENSE: 验证必需字段（timestamp 可选）
@@ -156,12 +169,12 @@ def process_device_event(self, event_data: dict):
                 # 获取设备处理器
                 processor = DeviceProcessorRegistry.get_processor_or_raise(device.device_type)
 
-                # 构建完整的事件数据
+                # 构建完整的事件数据（保持嵌套结构，处理器期望 event_data.data）
                 full_event_data = {
                     "device_id": device_id,
                     "event_type": event_type,
                     "timestamp": timestamp,
-                    **data,
+                    "data": data,  # 保持嵌套结构
                 }
 
                 # SENSE: 验证事件

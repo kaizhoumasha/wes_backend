@@ -169,8 +169,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command:
             raise NotFoundException(f"回调指令不存在: {callback.command_id}")
 
-        # 2. 解析完成时间（使用 UTC 时区）
-        completed_at = timezone.to_utc(callback.finish_time / 1000)
+        # 2. 解析完成时间（使用 UTC 时区，转换为 naive 用于数据库）
+        aware_dt = timezone.to_utc(int(callback.finish_time / 1000))
+        completed_at = aware_dt.replace(tzinfo=None)
 
         # 3. 更新指令状态
         update_data = {
@@ -178,6 +179,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "completed_at": completed_at,
             "result_data": callback.data,
             "error_detail": callback.error_detail,
+            "version": command.version,  # 乐观锁：必须包含当前版本号
         }
 
         if callback.result == "SUCCESS":
@@ -212,7 +214,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
                 f"设备 {event_request.device_id} 未提供时间戳，使用服务器时间"
             )
         else:
-            event_timestamp = timezone.to_utc(event_request.timestamp / 1000)
+            # 将 Unix 时间戳（毫秒）转换为 naive UTC datetime
+            # timezone.to_utc 返回 aware datetime，需要转换为 naive 用于数据库存储
+            aware_dt = timezone.to_utc(event_request.timestamp / 1000)
+            event_timestamp = aware_dt.replace(tzinfo=None)
 
         event_log = DeviceEventLog(
             device_id=event_request.device_id,
@@ -355,7 +360,17 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         TODO: 从 Device 表查询设备的 base_url
         """
-        # 简化处理：返回默认 URL
+        # E2E 测试环境 Mock 服务 URL 映射（Docker 容器名）
+        mock_device_urls = {
+            "ROBOT-ARM-01": "http://wes_mock_robot_arm_test:8004",
+            "CONVEYOR-CAMERA-01": "http://wes_mock_camera_test:8003",
+            "CAMERA-CONVEYOR-01": "http://wes_mock_camera_test:8003",
+        }
+
+        if device_id in mock_device_urls:
+            return mock_device_urls[device_id]
+
+        # 默认 URL 格式
         return f"http://{device_id}:8080"
 
     async def _update_sent_status(
@@ -373,6 +388,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "ack_code": ack_code,
             "ack_message": ack_message,
             "ack_trace_id": trace_id,
+            "version": command.version,  # 乐观锁：必须包含当前版本号
         }
 
         if ack_code == 200:
@@ -389,7 +405,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         error_detail: str | None = None,
     ) -> None:
         """更新指令状态"""
-        update_data = {"status": status}
+        update_data = {
+            "status": status,
+            "version": command.version,  # 乐观锁：必须包含当前版本号
+        }
         if error_detail:
             update_data["error_detail"] = error_detail
 

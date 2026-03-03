@@ -109,7 +109,8 @@ class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
     device_id: str = SQLField(
         max_length=50,
         index=True,
-        description="设备 ID",
+        foreign_key="wes_biz.devices.device_code",
+        description="设备 ID（关联 Device.device_code）",
     )
 
     # 事件信息
@@ -154,9 +155,11 @@ class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
 
     # 关系定义
     device: "Device" = Relationship(  # type: ignore[assignment]
+        back_populates=None,
         sa_relationship_kwargs={
             "lazy": "selectin",
-            "foreign_keys": ["DeviceEventLog.device_id"],
+            "foreign_keys": "DeviceEventLog.device_id",
+            "primaryjoin": "DeviceEventLog.device_id == Device.device_code",
         }
     )
 

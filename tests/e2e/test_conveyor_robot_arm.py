@@ -41,6 +41,8 @@ if str(project_root) not in sys.path:
 # 加载环境变量（需要在设置 sys.path 后导入）
 from dotenv import load_dotenv  # noqa: E402
 
+load_dotenv(project_root / ".env")
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -94,7 +96,7 @@ async def db() -> AsyncGenerator[AsyncSession]:
 
         # 确保表存在
         async with engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: sync_conn.execute(text("SELECT 1 FROM wes_sys.devices LIMIT 1")))
+            await conn.run_sync(lambda sync_conn: sync_conn.execute(text("SELECT 1 FROM wes_biz.devices LIMIT 1")))
 
         yield session
 
@@ -109,34 +111,27 @@ async def db() -> AsyncGenerator[AsyncSession]:
 
 async def setup_test_data(db: AsyncSession):
     """设置测试数据（设备和用户）"""
+    # 导入所有需要的模型（确保关系解析）
     from src.app.device.models.device import Device
+    from src.app.workline.models.workline import WorkLine  # noqa: F401 (仅导入用于关系解析)
 
     # 1. 删除现有测试数据
-    await db.execute(delete(Device).where(Device.device_id.in_(["CAMERA-CONVEYOR-01", "ROBOT-ARM-01"])))
+    await db.execute(delete(Device).where(Device.device_code.in_(["CAMERA-CONVEYOR-01", "ROBOT-ARM-01"])))
 
-    # 2. 创建摄像头设备
-    camera = Device(
-        device_id="CAMERA-CONVEYOR-01",
-        device_name="流水线识别点摄像头",
-        device_type="CAMERA",
-        ip_address="127.0.0.1",
-        port=8003,
-        protocol="HTTP",
-        status="IDLE",
-        is_online=True,
+    # 2. 创建输送线设备（包含传感器，模拟摄像头功能）
+    # 注意：device_code 必须与 Mock Camera 服务的 device_id 一致
+    conveyor = Device(
+        device_code="CAMERA-CONVEYOR-01",
+        device_name="输送线识别点",
+        device_type="CONVEYOR",
     )
-    db.add(camera)
+    db.add(conveyor)
 
     # 3. 创建机械臂设备
     robot = Device(
-        device_id="ROBOT-ARM-01",
+        device_code="ROBOT-ARM-01",
         device_name="搬运机械臂",
         device_type="ROBOTIC_ARM",
-        ip_address="127.0.0.1",
-        port=8004,
-        protocol="HTTP",
-        status="IDLE",
-        is_online=True,
     )
     db.add(robot)
 
@@ -158,15 +153,15 @@ async def trigger_camera_sensor(barcode: str, location: str) -> dict:
 async def get_latest_event(db: AsyncSession):
     """获取最新的事件记录"""
     result = await db.execute(
-        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_sys.device_events"))
+        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_biz.device_event_logs"))
     )
     row = result.first()
     if row:
         return {
-            "id": row[2],  # id
-            "device_id": row[3],  # device_id
-            "event_type": row[4],  # event_type
-            "event_data": row[5],  # event_data
+            "id": row[0],  # id
+            "device_id": row[9],  # device_id
+            "event_type": row[10],  # event_type
+            "event_data": row[11],  # event_data
         }
     return None
 
@@ -174,15 +169,15 @@ async def get_latest_event(db: AsyncSession):
 async def get_latest_command(db: AsyncSession):
     """获取最新的指令记录"""
     result = await db.execute(
-        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_sys.device_commands"))
+        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_biz.device_commands"))
     )
     row = result.first()
     if row:
         return {
-            "command_id": row[7],  # command_id
-            "device_id": row[8],  # device_id
-            "task_type": row[9],  # task_type
-            "status": row[13],  # status
+            "command_id": row[9],  # command_id
+            "device_id": row[11],  # device_id
+            "task_type": row[12],  # task_type
+            "status": row[16],  # status
         }
     return None
 
@@ -190,27 +185,27 @@ async def get_latest_command(db: AsyncSession):
 async def get_command_from_db(db: AsyncSession, command_id: str):
     """从数据库获取指令"""
     result = await db.execute(
-        text("SELECT * FROM wes_sys.device_commands WHERE command_id = :cmd_id"), {"cmd_id": command_id}
+        text("SELECT * FROM wes_biz.device_commands WHERE command_id = :cmd_id"), {"cmd_id": command_id}
     )
     row = result.first()
     if row:
         return {
-            "command_id": row[7],  # command_id
-            "status": row[13],  # status
+            "command_id": row[9],  # command_id
+            "status": row[16],  # status
         }
     return None
 
 
-async def get_device_status_from_db(db: AsyncSession, device_id: str):
-    """从数据库获取设备状态"""
+async def get_device_status_from_db(db: AsyncSession, device_code: str):
+    """从数据库获取设备状态（设备模型没有 status 字段，仅检查是否存在）"""
     result = await db.execute(
-        text("SELECT device_id, status FROM wes_sys.devices WHERE device_id = :device_id"), {"device_id": device_id}
+        text("SELECT device_code, is_active FROM wes_biz.devices WHERE device_code = :device_code"), {"device_code": device_code}
     )
     row = result.first()
     if row:
         return {
-            "device_id": row[0],
-            "status": row[1],
+            "device_code": row[0],
+            "is_active": row[1],
         }
     return None
 
@@ -275,10 +270,10 @@ async def test_full_conveyor_workflow(db):
     for _i in range(10):
         await asyncio.sleep(1)
         cmd = await get_command_from_db(db, command["command_id"])
-        if cmd and cmd["status"] == "ACKED":
+        if cmd and cmd["status"] == "ACK_RECEIVED":
             command = cmd
             break
-    assert command["status"] == "ACKED"
+    assert command["status"] == "ACK_RECEIVED"
     print(f"✅ 指令已确认: status={command['status']}")
 
     # Step 6: 等待机械臂执行完成
@@ -296,8 +291,8 @@ async def test_full_conveyor_workflow(db):
     print("\n[Step 7] 验证最终状态...")
     robot = await get_device_status_from_db(db, "ROBOT-ARM-01")
     assert robot is not None
-    assert robot["status"] == "IDLE"
-    print(f"✅ 机械臂状态已恢复: status={robot['status']}")
+    assert robot["is_active"] is True
+    print(f"✅ 机械臂状态正常: is_active={robot['is_active']}")
 
     print("\n" + "=" * 60)
     print("完整流程测试通过!")
@@ -343,8 +338,11 @@ async def test_sensor_auto_trigger(db):
     print("\n[Step 3] 等待所有事件和指令创建...")
     commands = []
     for i in range(3):
-        # 等待每条指令创建（间隔5秒）
-        await asyncio.sleep(7)
+        # 等待每条指令创建（间隔5秒，初始触发立即发生）
+        # 第1次触发立即发生，之后每5秒触发一次
+        # 所以等待时间应该是: 2秒(第1次), 7秒(第2次), 12秒(第3次)
+        wait_time = 2 if i == 0 else 7
+        await asyncio.sleep(wait_time)
 
         # 获取最新指令
         command = await get_latest_command(db)
@@ -355,17 +353,31 @@ async def test_sensor_auto_trigger(db):
             commands.append(command)
             print(f"✅ 指令 {i + 1}/3 已创建: {command['command_id']}")
 
+    # 如果指令数量不足，额外等待
+    while len(commands) < 3:
+        await asyncio.sleep(5)
+        command = await get_latest_command(db)
+        if command and not any(
+            cmd["command_id"] == command["command_id"] for cmd in commands
+        ):
+            commands.append(command)
+            print(f"✅ 指令 {len(commands)}/3 已创建: {command['command_id']}")
+
     assert len(commands) == 3
     print(f"✅ 共创建了 {len(commands)} 条指令")
 
-    # Step 4: 停止自动触发
+    # Step 4: 停止自动触发（如果还在运行）
     print("\n[Step 4] 停止自动触发...")
     async with httpx.AsyncClient() as client:
         response = await client.post(f"{MOCK_CAMERA_URL}/api/v1/sensor/auto/stop")
-        response.raise_for_status()
-        stop_result = response.json()
-        assert stop_result["status"] == "stopped"
-        print(f"✅ 自动触发已停止: total_triggers={stop_result['trigger_count']}")
+        # 如果已经自动停止（400错误），这是正常情况
+        if response.status_code == 400:
+            print("✅ 自动触发已自动完成（达到最大触发次数）")
+        else:
+            response.raise_for_status()
+            stop_result = response.json()
+            assert stop_result["status"] == "stopped"
+            print(f"✅ 自动触发已停止: total_triggers={stop_result['trigger_count']}")
 
     # Step 5: 验证传感器状态
     print("\n[Step 5] 验证传感器状态...")
