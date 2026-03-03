@@ -13,7 +13,7 @@ __all__ = [
     "Device",
     "DeviceBase",
     "DeviceCreate",
-    "DeviceUpdate",
     "DeviceResponse",
     "DeviceType",
+    "DeviceUpdate",
 ]

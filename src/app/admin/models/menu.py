@@ -3,17 +3,18 @@
 
 提供基于角色的动态菜单路由系统
 """
+
 from typing import TYPE_CHECKING, Literal
 
-from sqlmodel import Field, Relationship
 from sqlalchemy import Index
+from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
-    from src.app.admin.models.role import RoleResponse
+    from src.app.admin.models.role import Role, RoleResponse
 
 
 # ==================== Menu 模型 ====================
@@ -58,13 +59,11 @@ class Menu(MenuBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=Tru
 class MenuCreate(ModelFactory(MenuBase).for_create()):
     """菜单创建 Schema"""
 
-    pass
 
 
 class MenuUpdate(ModelFactory(MenuBase).for_update()):
     """菜单更新 Schema"""
 
-    pass
 
 
 class MenuResponse(MenuBase):
@@ -85,7 +84,7 @@ __all__ = [
     "Menu",
     "MenuBase",
     "MenuCreate",
-    "MenuUpdate",
     "MenuResponse",
     "MenuTreeResponse",
+    "MenuUpdate",
 ]

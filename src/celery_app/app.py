@@ -5,7 +5,7 @@
 # ============================================
 
 from celery import Celery
-from celery.signals import worker_init
+from celery.signals import worker_init, worker_process_init
 
 from src.core.conf import settings
 from src.core.logger import logger
@@ -54,9 +54,6 @@ def on_worker_init(*args, **kwargs):
     except Exception as e:
         logger.error(f"Celery Worker 主进程数据库初始化失败: {e}")
         raise
-
-
-from celery.signals import worker_process_init
 
 
 @worker_process_init.connect

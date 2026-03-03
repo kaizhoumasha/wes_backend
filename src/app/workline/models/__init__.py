@@ -14,6 +14,6 @@ __all__ = [
     "WorkLine",
     "WorkLineBase",
     "WorkLineCreate",
-    "WorkLineUpdate",
     "WorkLineResponse",
+    "WorkLineUpdate",
 ]

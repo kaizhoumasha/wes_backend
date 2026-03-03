@@ -6,7 +6,6 @@
 """
 
 from pathlib import Path
-from typing import Any
 
 
 class TestGenerator:
@@ -27,11 +26,7 @@ class TestGenerator:
 
     def generate(self):
         """生成测试文件"""
-        test_file = (
-            self.project_root
-            / "tests"
-            / f"test_{self.context.module_name}.py"
-        )
+        test_file = self.project_root / "tests" / f"test_{self.context.module_name}.py"
 
         content = self._generate_test_content()
 
@@ -196,7 +191,7 @@ async def test_list_{module}s(db_session: AsyncSession, cache_service: CacheServ
 
             if ftype == "str" and not field.get("optional"):
                 return f'        "{name}": "更新后的{desc}",'
-            elif ftype == "int":
+            if ftype == "int":
                 return f'        "{name}": 200,'
 
         return '        "description": "更新后的描述"'
@@ -214,10 +209,10 @@ async def test_list_{module}s(db_session: AsyncSession, cache_service: CacheServ
             if name in ["created_at", "updated_at"]:
                 continue
             if ftype == "str":
-                assertions.append(f'    assert obj.{name}')
+                assertions.append(f"    assert obj.{name}")
             elif ftype == "int":
-                assertions.append(f'    assert obj.{name} >= 0')
+                assertions.append(f"    assert obj.{name} >= 0")
             elif ftype == "bool":
-                assertions.append(f'    assert isinstance(obj.{name}, bool)')
+                assertions.append(f"    assert isinstance(obj.{name}, bool)")
 
         return "\n".join(assertions) if assertions else "    # TODO: 添加断言"

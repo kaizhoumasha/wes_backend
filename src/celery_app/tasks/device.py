@@ -10,7 +10,6 @@ from celery import Task
 from loguru import logger
 
 from src.celery_app.app import celery_app
-from src.database.db import AsyncSessionLocal
 
 # ============================================
 # 设备任务基类 - 自动处理数据库会话

@@ -19,9 +19,7 @@ class MenuService(TreeServiceMixin):
         self._cache_prefix = cache_settings.USER.prefix  # 复用用户缓存配置
         self._cache_expire = cache_settings.USER.expire
 
-    async def get_user_menu_tree(
-        self, db: AsyncSession, user_id: int
-    ) -> list[MenuResponse]:
+    async def get_user_menu_tree(self, db: AsyncSession, user_id: int) -> list[MenuResponse]:
         """获取用户可访问的菜单树
 
         Args:
@@ -67,7 +65,7 @@ class MenuService(TreeServiceMixin):
 
         # 构建树
         tree: list[MenuResponse] = []
-        for menu_id, menu_response in menu_map.items():
+        for menu_response in menu_map.values():
             if menu_response.parent_id is None:
                 tree.append(menu_response)
             else:

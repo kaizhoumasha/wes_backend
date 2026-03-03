@@ -31,6 +31,7 @@ class TemplateEngine:
             undefined=StrictUndefined,  # 严格模式，未定义变量会报错
             trim_blocks=True,
             lstrip_blocks=True,
+            autoescape=True,  # 启用自动转义防止 XSS
         )
 
         # 注册自定义过滤器
@@ -90,7 +91,7 @@ class TemplateEngine:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content)
 
-    def get_template_names(self, pattern: str = "*.j2") -> list[str]:
+    def get_template_names(self) -> list[str]:
         """
         获取所有模板文件名
 
@@ -101,7 +102,7 @@ class TemplateEngine:
             模板文件名列表
         """
         templates = []
-        for root, dirs, files in os.walk(self.template_dir):
+        for root, _dirs, files in os.walk(self.template_dir):
             for file in files:
                 if file.endswith(".j2"):
                     full_path = Path(root) / file
@@ -148,9 +149,7 @@ class ModuleContext:
         self.description = description or f"{module_name} 模块"
 
         # 类名（首字母大写）
-        self.class_name = class_name or "".join(
-            word.capitalize() for word in module_name.split("_")
-        )
+        self.class_name = class_name or "".join(word.capitalize() for word in module_name.split("_"))
 
         # 表名（复数）
         self.table_name = f"{module_name}s"
@@ -217,5 +216,5 @@ class ModuleContext:
 
             data = yaml.safe_load(yaml_path.read_text())
             return cls.from_dict(data)
-        except ImportError:
-            raise ImportError("需要安装 PyYAML: pip install pyyaml")
+        except ImportError as err:
+            raise ImportError("需要安装 PyYAML: pip install pyyaml") from err

@@ -7,9 +7,7 @@ WES Backend 模块生成器 V2
 """
 
 import re
-import shutil
 from pathlib import Path
-from typing import Literal
 
 from template_engine import ModuleContext, TemplateEngine
 from test_generator import TestGenerator
@@ -64,11 +62,11 @@ class ModuleGeneratorV2:
 
         print(f"\n✅ 模块生成完成: {self.module_path}")
         print("\n📋 后续步骤:")
-        print(f"   1. ✨ 路由已在 src/register.py 中注册")
-        print(f"   2. ✨ 模型已在 migrations/env.py 中导入")
-        print(f"   3. 📝 运行代码检查: ruff format . && ruff check .")
+        print("   1. ✨ 路由已在 src/register.py 中注册")
+        print("   2. ✨ 模型已在 migrations/env.py 中导入")
+        print("   3. 📝 运行代码检查: ruff format . && ruff check .")
         print(f"   4. 🗄️  生成数据库迁移: ./scripts/generate_migration.sh 'Add {self.context.module_name} module'")
-        print(f"   5. ⬆️  运行迁移: ./scripts/migrate.sh upgrade")
+        print("   5. ⬆️  运行迁移: ./scripts/migrate.sh upgrade")
         if self.generate_tests:
             print(f"   6. 🧪 运行测试: pytest tests/test_{self.context.module_name}.py")
 
@@ -163,7 +161,7 @@ class ModuleGeneratorV2:
         env_path = self.project_root / "migrations" / "env.py"
 
         if not env_path.exists():
-            print(f"   ⚠️  migrations/env.py 不存在，跳过")
+            print("   ⚠️  migrations/env.py 不存在，跳过")
             return
 
         content = env_path.read_text()
@@ -171,7 +169,7 @@ class ModuleGeneratorV2:
         # 检查是否已经导入
         import_line = f"from {self.context.model_import} import {self.context.class_name}  # noqa: F401"
         if import_line in content:
-            print(f"   ℹ️  模型已在 migrations/env.py 中导入")
+            print("   ℹ️  模型已在 migrations/env.py 中导入")
             return
 
         # 查找模型导入区域
@@ -182,9 +180,9 @@ class ModuleGeneratorV2:
             # 在标记后添加导入
             new_content = content.replace(match.group(0), match.group(0) + import_line + "\n")
             env_path.write_text(new_content)
-            print(f"   ✓ 更新 migrations/env.py")
+            print("   ✓ 更新 migrations/env.py")
         else:
-            print(f"   ⚠️  无法在 migrations/env.py 中找到导入区域，请手动添加:")
+            print("   ⚠️  无法在 migrations/env.py 中找到导入区域，请手动添加:")
             print(f"      {import_line}")
 
     def _update_register_py(self):
@@ -192,7 +190,7 @@ class ModuleGeneratorV2:
         register_path = self.project_root / "src" / "register.py"
 
         if not register_path.exists():
-            print(f"   ⚠️  src/register.py 不存在，跳过")
+            print("   ⚠️  src/register.py 不存在，跳过")
             return
 
         content = register_path.read_text()
@@ -200,7 +198,7 @@ class ModuleGeneratorV2:
         # 检查是否已经注册
         import_line = f"from src.app.{self.context.app_name}.{self.context.module_name} import router_v1 as {self.context.module_name}_router"
         if import_line in content:
-            print(f"   ℹ️  路由已在 src/register.py 中注册")
+            print("   ℹ️  路由已在 src/register.py 中注册")
             return
 
         # 查找 register_routers 函数
@@ -222,7 +220,9 @@ class ModuleGeneratorV2:
                 # 添加导入和注册
                 indent = "    "
                 new_import = f"{indent}from src.app.{self.context.app_name}.{self.context.module_name} import router_v1 as {self.context.module_name}_router\n"
-                new_register = f"{indent}app.include_router({self.context.module_name}_router, prefix=settings.API_PATH)\n"
+                new_register = (
+                    f"{indent}app.include_router({self.context.module_name}_router, prefix=settings.API_PATH)\n"
+                )
 
                 # 更新内容
                 updated_lines = lines.copy()
@@ -234,14 +234,16 @@ class ModuleGeneratorV2:
                 # 函数为空，直接添加
                 new_content = content.replace(
                     func_content,
-                    func_content + "\n" + f"    from src.app.{self.context.app_name}.{self.context.module_name} import router_v1 as {self.context.module_name}_router\n"
+                    func_content
+                    + "\n"
+                    + f"    from src.app.{self.context.app_name}.{self.context.module_name} import router_v1 as {self.context.module_name}_router\n"
                     f"    app.include_router({self.context.module_name}_router, prefix=settings.API_PATH)\n",
                 )
 
             register_path.write_text(new_content)
-            print(f"   ✓ 更新 src/register.py")
+            print("   ✓ 更新 src/register.py")
         else:
-            print(f"   ⚠️  无法在 src/register.py 中找到 register_routers 函数，请手动添加路由注册")
+            print("   ⚠️  无法在 src/register.py 中找到 register_routers 函数，请手动添加路由注册")
 
     def _generate_tests(self):
         """生成单元测试文件"""
@@ -278,7 +280,7 @@ def main():
 
         context = ModuleContext(
             module_name=args.name,
-            class_name=getattr(args, 'class', None),  # class 是保留字，使用 getattr
+            class_name=getattr(args, "class", None),  # class 是保留字，使用 getattr
             app_name=args.app,
             is_tree=args.tree,
             mixins=mixins,

@@ -5,13 +5,13 @@ WES Backend 交互式模块生成器
 通过问答式交互创建模块，提供智能辅助和代码预览
 """
 
-import inquirer
-import yaml
 from pathlib import Path
 from typing import Any
 
-from template_engine import ModuleContext, TemplateEngine
+import inquirer
+import yaml
 from module_generator_v2 import ModuleGeneratorV2
+from template_engine import ModuleContext, TemplateEngine
 
 
 class InteractiveModuleGenerator:
@@ -157,10 +157,11 @@ class InteractiveModuleGenerator:
 
         answers = inquirer.prompt(choices)
 
-        selected = []
-        for i, mixin in enumerate(optional_mixins):
-            if mixin["value"] in answers["mixins"]:
-                selected.append(mixin["name"])
+        selected = [
+            mixin["name"]
+            for mixin in optional_mixins
+            if mixin["value"] in answers["mixins"]
+        ]
 
         return base_mixins + selected
 
@@ -221,20 +222,24 @@ class InteractiveModuleGenerator:
                 inquirer.Text("max_length", message="最大长度（可选）", filter=lambda x: x.isdigit())
             )
         elif answers["type"] in ["int", "float"]:
-            optional_questions.append(
-                inquirer.Text("default", message="默认值（可选）")
-            )
+            optional_questions.append(inquirer.Text("default", message="默认值（可选）"))
 
-        optional_questions.extend([
-            inquirer.Confirm("index", message="是否创建索引？", default=False),
-            inquirer.Confirm("unique", message="是否唯一？", default=False),
-        ])
+        optional_questions.extend(
+            [
+                inquirer.Confirm("index", message="是否创建索引？", default=False),
+                inquirer.Confirm("unique", message="是否唯一？", default=False),
+            ]
+        )
 
         optional_answers = inquirer.prompt(optional_questions)
 
-        for key, value in optional_answers.items():
-            if value is not None and value != "" and value is not False:
-                field[key] = value
+        field.update(
+            {
+                key: value
+                for key, value in optional_answers.items()
+                if value is not None and value != "" and value is not False
+            }
+        )
 
         # 枚举类型
         if "str" in answers["type"]:
@@ -320,11 +325,10 @@ class InteractiveModuleGenerator:
     def _confirm_generation(self) -> bool:
         """确认生成"""
         print("\n" + "=" * 60)
-        confirm = inquirer.confirm(
+        return inquirer.confirm(
             "确认生成模块？",
             default=True,
         )
-        return confirm
 
     def _save_config(self, context: ModuleContext):
         """保存配置文件"""
@@ -342,17 +346,17 @@ class InteractiveModuleGenerator:
         print("✅ 模块生成完成！")
         print("=" * 60)
         print("\n📋 后续步骤：")
-        print(f"   1. ✨ 路由已在 src/register.py 中注册")
-        print(f"   2. ✨ 模型已在 migrations/env.py 中导入")
-        print(f"   3. 📝 运行代码检查：")
-        print(f"      ruff format . && ruff check .")
-        print(f"   4. 🗄️  生成数据库迁移：")
+        print("   1. ✨ 路由已在 src/register.py 中注册")
+        print("   2. ✨ 模型已在 migrations/env.py 中导入")
+        print("   3. 📝 运行代码检查：")
+        print("      ruff format . && ruff check .")
+        print("   4. 🗄️  生成数据库迁移：")
         print(f"      ./scripts/generate_migration.sh 'Add {context.module_name} module'")
-        print(f"   5. ⬆️  运行迁移：")
-        print(f"      ./scripts/migrate.sh upgrade")
-        print(f"   6. 🧪 启动开发服务器测试：")
-        print(f"      uvicorn main:app --reload")
-        print(f"\n💡 配置文件已保存，可以重复使用：")
+        print("   5. ⬆️  运行迁移：")
+        print("      ./scripts/migrate.sh upgrade")
+        print("   6. 🧪 启动开发服务器测试：")
+        print("      uvicorn main:app --reload")
+        print("\n💡 配置文件已保存，可以重复使用：")
         print(f"   python scripts/module_generator_v2.py --config .claude/module_configs/{context.module_name}.yaml")
 
 

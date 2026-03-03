@@ -241,7 +241,7 @@ class SensorSimulator:
                     timeout=interval_seconds,
                 )
                 break  # 收到停止信号
-            except asyncio.TimeoutError:
+            except TimeoutError:  # noqa: S112
                 continue  # 超时，继续下一次触发
 
         # 自动停止
@@ -388,11 +388,10 @@ async def trigger_sensor(request: SensorTriggerRequest) -> EventRecord:
       -d '{"barcode": "PKG-TEST-001", "location": "STATION-01"}'
     ```
     """
-    event = await sensor_simulator.trigger_material_arrival(
+    return await sensor_simulator.trigger_material_arrival(
         barcode=request.barcode,
         location=request.location,
     )
-    return event
 
 
 @app.post("/api/v1/sensor/auto/start", summary="启动自动触发")

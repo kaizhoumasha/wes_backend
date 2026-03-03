@@ -84,9 +84,9 @@ __all__ = [
     "Menu",
     "MenuBase",
     "MenuCreate",
-    "MenuUpdate",
     "MenuResponse",
     "MenuTreeResponse",
+    "MenuUpdate",
     # Permission 模型
     "Permission",
     "PermissionBase",

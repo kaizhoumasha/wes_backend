@@ -7,7 +7,6 @@ SSE 实时事件推送 API
 
 import asyncio
 import json
-from typing import AsyncGenerator
 
 from fastapi import APIRouter, status
 from starlette.responses import StreamingResponse

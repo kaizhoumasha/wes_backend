@@ -11,8 +11,10 @@
     uvicorn robot_arm_mock_server:app --host 0.0.0.0 --port 8004
 """
 
-from tests.mock.camera_mock_server import CameraMockServer, app as camera_app
-from tests.mock.robot_arm_mock_server import RobotArmMockServer, app as robot_arm_app
+from tests.mock.camera_mock_server import CameraMockServer
+from tests.mock.camera_mock_server import app as camera_app
+from tests.mock.robot_arm_mock_server import RobotArmMockServer
+from tests.mock.robot_arm_mock_server import app as robot_arm_app
 
 __all__ = [
     "CameraMockServer",

@@ -24,7 +24,6 @@ class MenuRepository(TreeRepository[Menu]):
         Returns:
             用户可访问的菜单列表，超级用户返回所有菜单
         """
-        from src.app.admin.models import role_menu
 
         # 查询用户（预加载 roles.menus）
         result = await db.execute(
@@ -43,7 +42,7 @@ class MenuRepository(TreeRepository[Menu]):
         if user.is_superuser:
             result = await db.execute(
                 select(Menu)
-                .where(Menu.is_deleted == False)  # type: ignore[arg-type]
+                .where(not Menu.is_deleted)  # type: ignore[arg-type]
                 .order_by(Menu.sort_order)  # type: ignore[arg-type]
             )
             return result.scalars().all()

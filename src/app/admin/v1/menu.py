@@ -3,6 +3,7 @@
 
 使用 TreeAPI 提供完整的 CRUD + 树形操作能力
 """
+
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -12,7 +13,6 @@ from src.app.admin.services.menu_service import menu_service
 from src.core.rbac import require_auth
 from src.core.tree_api import TreeAPI
 from src.database.dependencies import AsyncSessionDep
-
 
 # ==================== 自定义路由注册函数 ====================
 
@@ -79,4 +79,3 @@ menu_api = TreeAPI(
 )
 
 router = menu_api.router
-

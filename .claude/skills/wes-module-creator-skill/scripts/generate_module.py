@@ -6,10 +6,7 @@ WES Backend 模块生成器
 """
 
 import argparse
-import os
-import sys
 from pathlib import Path
-from typing import Literal
 
 
 class ModuleGenerator:
@@ -53,10 +50,10 @@ class ModuleGenerator:
 
         print(f"\n✅ 模块生成完成: {self.module_path}")
         print("\n📋 后续步骤:")
-        print(f"   1. 在 src/register.py 中注册路由")
-        print(f"   2. 运行代码检查: ruff format . && ruff check .")
+        print("   1. 在 src/register.py 中注册路由")
+        print("   2. 运行代码检查: ruff format . && ruff check .")
         print(f"   3. 生成数据库迁移: ./scripts/generate_migration.sh 'Add {self.module_name} module'")
-        print(f"   4. 运行迁移: ./scripts/migrate.sh upgrade")
+        print("   4. 运行迁移: ./scripts/migrate.sh upgrade")
 
     def _create_directories(self):
         """创建目录结构"""
@@ -202,10 +199,10 @@ class {self.class_name}Repository({base_class}[{self.class_name}]):
 
         # 更新 __init__.py
         init_file = self.module_path / "repositories" / "__init__.py"
-        init_content = f'''from .{self.module_name}_repository import {self.class_name}Repository, {self.module_name}_repository
+        init_content = f"""from .{self.module_name}_repository import {self.class_name}Repository, {self.module_name}_repository
 
 __all__ = ["{self.class_name}Repository", "{self.module_name}_repository"]
-'''
+"""
         init_file.write_text(init_content)
 
         print(f"   ✓ 生成 Repository: {file_path}")
@@ -256,10 +253,10 @@ class {self.class_name}Service({base_class}[{self.class_name}, {self.class_name}
 
         # 更新 __init__.py
         init_file = self.module_path / "services" / "__init__.py"
-        init_content = f'''from .{self.module_name}_service import {self.class_name}Service, {self.module_name}_service
+        init_content = f"""from .{self.module_name}_service import {self.class_name}Service, {self.module_name}_service
 
 __all__ = ["{self.class_name}Service", "{self.module_name}_service"]
-'''
+"""
         init_file.write_text(init_content)
 
         print(f"   ✓ 生成 Service: {file_path}")

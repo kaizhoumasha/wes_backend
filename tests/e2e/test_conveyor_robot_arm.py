@@ -25,8 +25,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -38,10 +38,11 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# 加载环境变量
-from dotenv import load_dotenv
+# 加载环境变量（需要在设置 sys.path 后导入）
+from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(".env")
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # ============================================
 # 测试配置
@@ -347,11 +348,12 @@ async def test_sensor_auto_trigger(db):
 
         # 获取最新指令
         command = await get_latest_command(db)
-        if command:
-            # 避免重复添加
-            if not any(cmd["command_id"] == command["command_id"] for cmd in commands):
-                commands.append(command)
-                print(f"✅ 指令 {i + 1}/3 已创建: {command['command_id']}")
+        # 避免重复添加
+        if command and not any(
+            cmd["command_id"] == command["command_id"] for cmd in commands
+        ):
+            commands.append(command)
+            print(f"✅ 指令 {i + 1}/3 已创建: {command['command_id']}")
 
     assert len(commands) == 3
     print(f"✅ 共创建了 {len(commands)} 条指令")
@@ -373,7 +375,9 @@ async def test_sensor_auto_trigger(db):
         status = response.json()
         assert not status["is_auto_triggering"]
         assert status["trigger_count"] >= 3
-        print(f"✅ 传感器状态正确: is_auto_triggering={status['is_auto_triggering']}, trigger_count={status['trigger_count']}")
+        print(
+            f"✅ 传感器状态正确: is_auto_triggering={status['is_auto_triggering']}, trigger_count={status['trigger_count']}"
+        )
 
     print("\n" + "=" * 60)
     print("传感器自动触发测试通过!")

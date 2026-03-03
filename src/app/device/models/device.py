@@ -68,7 +68,7 @@ class Device(
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 关系定义
-    work_line: "WorkLine" = Relationship(  # type: ignore  # noqa: F821
+    work_line: "WorkLine" = Relationship(  # noqa: F821
         sa_relationship_kwargs={"lazy": "selectin"}
     )
 

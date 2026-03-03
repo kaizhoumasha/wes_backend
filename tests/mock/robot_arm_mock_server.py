@@ -362,7 +362,7 @@ class RobotSimulator:
                     timeout=interval_seconds,
                 )
                 break  # 收到停止信号
-            except TimeoutError:
+            except TimeoutError:  # noqa: S112
                 continue  # 超时，继续下一次执行
 
         # 自动停止
@@ -478,10 +478,7 @@ class RobotSimulator:
             # 记录开始时间
             started_at = datetime.now()
 
-            logger.info(
-                f"开始执行 WES 指令: command_id={payload.command_id}, "
-                f"task_type={task_type}, params={params}"
-            )
+            logger.info(f"开始执行 WES 指令: command_id={payload.command_id}, task_type={task_type}, params={params}")
 
             # 模拟执行时间（2秒）
             execution_time = 2.0
@@ -540,10 +537,7 @@ class RobotSimulator:
             self._execution_count += 1
             self._success_count += 1
 
-            logger.info(
-                f"WES 指令执行完成: command_id={payload.command_id}, "
-                f"result={result}, duration={duration_ms}ms"
-            )
+            logger.info(f"WES 指令执行完成: command_id={payload.command_id}, result={result}, duration={duration_ms}ms")
 
             return record
 
