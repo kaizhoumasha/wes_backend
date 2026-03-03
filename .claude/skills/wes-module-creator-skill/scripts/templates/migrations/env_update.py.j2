@@ -1,0 +1,5 @@
+{# 这是一个特殊的模板，用于在 migrations/env.py 中添加模型导入 #}
+{# Usage: generator.update_migrations_env(module_name, class_name) #}
+
+# 在 migrations/env.py 的模型导入区域添加以下行：
+from {{ model_import }} import {{ class_name }}  # noqa: F401

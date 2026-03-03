@@ -1,0 +1,53 @@
+"""
+{{ class_name }} Service
+"""
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.base_service import BaseService
+{% if is_tree %}
+from src.core.tree_service import TreeServiceMixin
+{% endif %}
+from {{ model_import }} import {{ class_name }}
+from {{ repo_import }} import {{ module_name }}_repository, {{ class_name }}Repository
+
+
+class {{ class_name }}Service({% if is_tree %}TreeServiceMixin, {% endif %}BaseService[{{ class_name }}, {{ class_name }}Repository]):
+    """
+    {{ class_name }} 业务逻辑层
+    """
+
+    def __init__(self):
+        super().__init__(
+            {{ module_name }}_repository,
+            enable_cache=True,
+            cache_prefix="app:{{ module_name }}:detail",
+        )
+    {% if is_tree %}
+
+    async def get_by_code(
+        self,
+        db: AsyncSession,
+        code: str,
+    ) -> {{ class_name }} | None:
+        """
+        根据编码查询
+
+        Args:
+            db: 数据库会话
+            code: 编码
+
+        Returns:
+            {{ class_name }} | None: 对象或 None
+        """
+        return await self.repo.get_by_code(db, code)
+    {% endif %}
+
+    # TODO: 添加自定义业务方法（如果需要）
+    # 示例：
+    # async def get_by_field(self, db: AsyncSession, cache: object | None, field_name: str, value: Any) -> {{ class_name }} | None:
+    #     return await self.repo.get_by_field(db, field_name, value)
+
+
+# 创建单例
+{{ module_name }}_service = {{ class_name }}Service()

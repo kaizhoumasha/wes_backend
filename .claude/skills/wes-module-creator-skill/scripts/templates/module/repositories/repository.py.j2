@@ -1,0 +1,64 @@
+"""
+{{ class_name }} Repository
+"""
+
+{% if is_tree %}
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+{% endif %}
+
+{% if is_tree %}
+from src.database.tree_repository import TreeRepository
+{% else %}
+from src.database.base_repository import BaseRepository
+{% endif %}
+from {{ model_import }} import {{ class_name }}
+
+
+class {{ class_name }}Repository({% if is_tree %}TreeRepository{% else %}BaseRepository{% endif %}[{{ class_name }}]):
+    """
+    {{ class_name }} 数据访问层
+
+    CRITICAL: 必须实现 __init__ 方法并调用 super().__init__({{ class_name }})
+    否则会报错：TypeError: BaseRepository.__init__() missing 1 required positional argument: 'model'
+    """
+
+    def __init__(self):
+        super().__init__({{ class_name }})  # ✅ 必须调用父类构造函数
+    {% if is_tree %}
+
+    async def get_by_code(
+        self,
+        db: AsyncSession,
+        code: str,
+    ) -> {{ class_name }} | None:
+        """
+        根据编码查询
+
+        Args:
+            db: 数据库会话
+            code: 编码
+
+        Returns:
+            {{ class_name }} | None: 对象或 None
+        """
+        result = await db.execute(
+            select({{ class_name }}).where(
+                {{ class_name }}.code == code,
+                {{ class_name }}.is_deleted.is_(False),
+            )
+        )
+        return result.scalar_one_or_none()
+    {% endif %}
+
+    # TODO: 添加自定义查询方法（如果需要）
+    # 示例：
+    # async def get_by_field(self, db: AsyncSession, field_name: str, value: Any) -> {{ class_name }} | None:
+    #     result = await db.execute(
+    #         select({{ class_name }}).where(getattr({{ class_name }}, field_name) == value)
+    #     )
+    #     return result.scalar_one_or_none()
+
+
+# 创建单例
+{{ module_name }}_repository = {{ class_name }}Repository()
