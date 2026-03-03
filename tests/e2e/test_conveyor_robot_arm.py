@@ -113,7 +113,7 @@ async def setup_test_data(db: AsyncSession):
     """设置测试数据（设备和用户）"""
     # 导入所有需要的模型（确保关系解析）
     from src.app.device.models.device import Device
-    from src.app.workline.models.workline import WorkLine  # noqa: F401 (仅导入用于关系解析)
+    from src.app.workline.models.workline import WorkLine
 
     # 1. 删除现有测试数据
     await db.execute(delete(Device).where(Device.device_code.in_(["CAMERA-CONVEYOR-01", "ROBOT-ARM-01"])))
