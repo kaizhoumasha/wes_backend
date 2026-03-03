@@ -2,6 +2,7 @@
 # 设备事件处理任务 - P9 WES Backend
 # ============================================
 # 用途: 处理设备事件的异步任务（料盘到达、扫码完成等）
+# 架构: 插件化设备处理器，支持 SDAF 控制循环
 # ============================================
 
 import asyncio
@@ -17,21 +18,14 @@ from src.celery_app.app import celery_app
 
 
 class DeviceTask(Task):
-    """设备任务基类
-
-    提供数据库会话管理，避免在每个任务中重复创建会话
-    """
+    """设备任务基类 - 提供数据库会话管理"""
 
     _db = None
 
     @property
     def db(self):
-        """懒加载数据库会话
-
-        使用属性而非方法，确保在任务失败时也能正确清理
-        """
+        """懒加载数据库会话"""
         if self._db is None:
-            # 动态导入 AsyncSessionLocal，避免使用导入时的全局引用
             from src.database.db import AsyncSessionLocal as AsyncSessionLocalDynamic
 
             session_local = AsyncSessionLocalDynamic
@@ -60,11 +54,7 @@ class DeviceTask(Task):
 
 
 def _run_async(coro):
-    """
-    在 Celery 同步任务中运行异步函数
-
-    参考 src/celery_app/tasks/core.py 的实现模式
-    """
+    """在 Celery 同步任务中运行异步函数"""
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -75,7 +65,206 @@ def _run_async(coro):
 
 
 # ============================================
-# 料盘到达事件处理任务
+# 统一设备事件处理任务（SDAF 流程在 Celery 中实现）
+# ============================================
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.device.process_device_event",
+    base=DeviceTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+)
+def process_device_event(self, event_data: dict):
+    """处理设备事件 - SDAF 流程实现
+
+    SDAF 控制循环（在 Celery Worker 中执行）:
+    1. SENSE (感知): 验证事件数据 → 记录 EventLog
+    2. DECIDE (决策): 根据 WES 业务规则决定动作
+    3. ACT (执行): 构建并发送指令到设备
+    4. FEEDBACK (反馈): 更新事件处理状态
+
+    Args:
+        event_data: 事件数据字典
+            - device_id: 设备 ID
+            - event_type: 事件类型
+            - timestamp: 事件时间戳
+            - data: 事件负载数据
+
+    Returns:
+        任务执行结果字典
+    """
+    try:
+        from src.app.device.repositories import DeviceRepository
+        from src.app.device.services import device_command_service
+        from src.device_processors import DeviceProcessorRegistry, register_builtin_processors
+
+        # 确保处理器已注册
+        if not DeviceProcessorRegistry.list_supported_types():
+            register_builtin_processors()
+
+        # 1. 解析事件数据
+        device_id = event_data.get("device_id")
+        event_type = event_data.get("event_type")
+        timestamp = event_data.get("timestamp")  # 可选字段
+        data = event_data.get("data", {})
+
+        logger.info(
+            f"[Celery] 开始处理设备事件: device_id={device_id}, "
+            f"event_type={event_type}, timestamp_provided={timestamp is not None}"
+        )
+
+        # 2. SENSE: 验证必需字段（timestamp 可选）
+        if not all([device_id, event_type]):
+            error_msg = "事件数据缺少必需字段 (device_id, event_type)"
+            logger.error(f"{error_msg}: {event_data}")
+            return {
+                "status": "error",
+                "message": error_msg,
+            }
+
+        # 类型断言：验证后确保 device_id 和 event_type 不为 None
+        assert device_id is not None
+        assert event_type is not None
+        assert isinstance(device_id, str)
+        assert isinstance(event_type, str)
+
+        # 3. 异步处理（在 Celery Worker 中）
+        async def _process():
+            async with self.db as db:
+                # SENSE: 记录事件日志
+                from src.app.device.models.event_log import EventRequest, EventType
+
+                event_request = EventRequest(
+                    device_id=device_id,
+                    event_type=EventType(event_type),
+                    timestamp=timestamp,
+                    data=data,
+                )
+                event_log = await device_command_service.create_event_log(
+                    db, event_request
+                )
+
+                # 获取设备信息
+                device_repo = DeviceRepository()
+                device = await device_repo.get_by_field(db, "device_code", device_id)
+
+                if not device:
+                    raise ValueError(f"设备不存在: {device_id}")
+
+                # 获取设备处理器
+                processor = DeviceProcessorRegistry.get_processor_or_raise(device.device_type)
+
+                # 构建完整的事件数据
+                full_event_data = {
+                    "device_id": device_id,
+                    "event_type": event_type,
+                    "timestamp": timestamp,
+                    **data,
+                }
+
+                # SENSE: 验证事件
+                is_valid, error_msg = await processor.validate_event(full_event_data)
+                if not is_valid:
+                    raise ValueError(f"事件数据验证失败: {error_msg}")
+
+                # DECIDE: 决策动作
+                action_params = await processor.decide_action(full_event_data)
+
+                # ACT: 构建并发送指令
+                commands_created = []
+                if action_params:
+                    from src.app.device.models.command import CommandRequest
+
+                    command_request = CommandRequest(**action_params)
+                    command = await device_command_service.create_command(
+                        db, command_request
+                    )
+                    commands_created.append(command.command_id)
+
+                    # 发送指令
+                    try:
+                        await device_command_service.send_command(
+                            db, command.command_id
+                        )
+                    except Exception as e:
+                        logger.error(f"发送指令失败: {e}")
+                        # 继续处理，不影响事件记录
+
+                # 更新事件处理状态
+                await device_command_service.update_event_log(
+                    db,
+                    event_log,
+                    processed=True,
+                    processing_result={
+                        "action_params": action_params,
+                        "commands_created": commands_created,
+                    },
+                )
+
+                await db.commit()
+
+                return {
+                    "status": "success",
+                    "event_id": event_log.id,
+                    "commands_created": commands_created,
+                    "action_params": action_params,
+                }
+
+        result = _run_async(_process())
+
+        logger.info(f"[Celery] 设备事件处理成功: {result}")
+        return result
+
+    except Exception as e:
+        logger.error(f"[Celery] 处理设备事件失败: {e}", exc_info=True)
+
+        # 记录错误到事件日志
+        try:
+            async def _log_error(exc: Exception):
+                from src.app.device.models.event_log import EventRequest, EventType
+                from src.app.device.services import device_command_service
+
+                async with self.db as db:
+                    # 错误处理中仍然需要验证必需字段
+                    device_id_err = event_data.get("device_id")
+                    event_type_str = event_data.get("event_type")
+                    timestamp_err = event_data.get("timestamp")
+                    data_err = event_data.get("data")
+
+                    if not all([device_id_err, event_type_str]):
+                        logger.error("错误日志：缺少必需字段，跳过记录")
+                        return
+
+                    event_request = EventRequest(
+                        device_id=device_id_err,  # type: ignore[arg-type]
+                        event_type=EventType(event_type_str),  # type: ignore[arg-type]
+                        timestamp=timestamp_err,
+                        data=data_err,
+                    )
+                    event_log = await device_command_service.create_event_log(
+                        db, event_request
+                    )
+                    await device_command_service.update_event_log(
+                        db,
+                        event_log,
+                        processed=True,
+                        error_message=str(exc),
+                    )
+                    await db.commit()
+
+            _run_async(_log_error(e))
+        except Exception as log_error:
+            logger.error(f"记录错误日志失败: {log_error}")
+
+        # 自动重试（指数退避）
+        countdown = 5 * (2**self.request.retries)
+        raise self.retry(exc=e, countdown=countdown) from None
+
+
+# ============================================
+# 兼容性任务（保留旧接口）
 # ============================================
 
 
@@ -84,116 +273,23 @@ def _run_async(coro):
     base=DeviceTask,
     bind=True,
     max_retries=3,
-    default_retry_delay=5,  # 首次重试延迟5秒
+    default_retry_delay=5,
 )
 def process_material_arrived(self, event_data: dict):
-    """处理料盘到达事件（Celery 异步任务）
+    """处理料盘到达事件（兼容性任务）"""
+    # 转换为新格式
+    new_event_data = {
+        "device_id": event_data.get("device_id"),
+        "event_type": "MATERIAL_ARRIVED",
+        "timestamp": int(asyncio.get_event_loop().time() * 1000),
+        "data": {
+            "barcode": event_data.get("barcode"),
+            "location": event_data.get("location"),
+        },
+    }
 
-    业务流程：
-    1. 解析事件数据（barcode, location）
-    2. 验证 barcode 非空
-    3. 确定目标位置（固定：SHELF-A-01）
-    4. 创建搬运指令
-    5. 下发指令到机械臂
-
-    Args:
-        event_data: 事件数据字典
-            - device_id: 设备ID
-            - event_type: 事件类型
-            - barcode: 条码（必填）
-            - location: 源位置
-
-    Returns:
-        任务执行结果字典
-
-    Raises:
-        ValueError: 当 barcode 为空时
-    """
-    try:
-        from src.app.device.models.device import CommandRequest
-        from src.app.device.services.device_service import device_command_service
-        from src.core.logger import logger
-
-        # 1. 解析事件数据
-        barcode = event_data.get("barcode")
-        source_loc = event_data.get("location")
-        device_id = event_data.get("device_id")
-
-        logger.info(f"开始处理料盘到达事件: device_id={device_id}, barcode={barcode}, location={source_loc}")
-
-        # 2. 验证 barcode 非空
-        if not barcode:
-            error_msg = "事件数据缺少 barcode，无法生成搬运指令"
-            logger.error(f"{error_msg}: {event_data}")
-            return {
-                "status": "error",
-                "message": error_msg,
-                "event_data": event_data,
-            }
-
-        # 3. 定义业务参数
-        # 硬编码目标位置（实际项目中应该通过业务规则引擎计算）
-        target_loc = "SHELF-A-01"
-        robot_device_id = "ROBOT-ARM-01"  # 硬编码机械臂设备ID
-
-        # 4. 创建搬运指令（异步操作）
-        async def _process():
-            async with self.db as db:
-                # 4.1 创建指令请求
-                command_request = CommandRequest(
-                    device_id=robot_device_id,
-                    task_type="PICK_AND_PLACE",
-                    priority=1,
-                    timeout_ms=30000,  # 30秒超时
-                    params={
-                        "source_loc": source_loc,
-                        "target_loc": target_loc,
-                        "barcode": barcode,
-                    },
-                )
-
-                # 4.2 创建指令记录
-                command = await device_command_service.create_command(db, command_request)
-                logger.info(f"搬运指令已创建: {command.command_id}")
-
-                # 4.3 下发指令到机械臂
-                ack = await device_command_service.send_command(db, command.command_id)
-                logger.info(f"指令已发送到机械臂: code={ack.code}, message={ack.message}")
-
-                # 4.4 提交数据库事务
-                await db.commit()
-
-                return {
-                    "command_id": command.command_id,
-                    "device_id": robot_device_id,
-                    "ack_code": ack.code,
-                    "ack_message": ack.message,
-                    "trace_id": ack.trace_id,
-                }
-
-        # 5. 执行异步处理
-        result = _run_async(_process())
-
-        logger.info(f"料盘到达事件处理成功: {result}")
-        return {
-            "status": "success",
-            **result,
-        }
-
-    except Exception as e:
-        logger.error(f"处理料盘到达事件失败: {e}", exc_info=True)
-
-        # 自动重试（指数退避）
-        # retry_count: 0 -> 5秒, 1 -> 10秒, 2 -> 20秒
-        countdown = 5 * (2**self.request.retries)
-
-        # Celery self.retry() 已经处理异常链，无需 from
-        raise self.retry(exc=e, countdown=countdown) from None
-
-
-# ============================================
-# 扩展任务：扫码完成事件（预留）
-# ============================================
+    # 调用新的统一处理任务
+    return process_device_event.apply_async(args=[new_event_data]).get()
 
 
 @celery_app.task(
@@ -201,37 +297,21 @@ def process_material_arrived(self, event_data: dict):
     base=DeviceTask,
     bind=True,
     max_retries=3,
+    default_retry_delay=5,
 )
 def process_scan_completed(self, event_data: dict):
-    """处理扫码完成事件（预留任务）
+    """处理扫码完成事件（兼容性任务）"""
+    new_event_data = {
+        "device_id": event_data.get("device_id"),
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": int(asyncio.get_event_loop().time() * 1000),
+        "data": {
+            "barcode": event_data.get("barcode"),
+            "location": event_data.get("location"),
+        },
+    }
 
-    业务流程：
-    1. 解析扫码结果
-    2. 验证条码格式
-    3. 更新业务单据状态
-    4. 触发下一步流程
-
-    Args:
-        event_data: 事件数据字典
-    """
-    try:
-        barcode = event_data.get("barcode")
-        location = event_data.get("location")
-
-        logger.info(f"处理扫码完成事件: barcode={barcode}, location={location}")
-
-        # TODO: 实现具体的业务逻辑
-
-        return {
-            "status": "success",
-            "message": "扫码完成事件已处理",
-            "barcode": barcode,
-        }
-
-    except Exception as e:
-        logger.error(f"处理扫码完成事件失败: {e}")
-        # Celery self.retry() 已经处理异常链，无需 from
-        raise self.retry(exc=e, countdown=5 * (2**self.request.retries)) from None
+    return process_device_event.apply_async(args=[new_event_data]).get()
 
 
 # ============================================
@@ -241,6 +321,7 @@ def process_scan_completed(self, event_data: dict):
 __all__ = [
     "DeviceTask",
     "_run_async",
+    "process_device_event",
     "process_material_arrived",
     "process_scan_completed",
 ]
