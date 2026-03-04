@@ -22,8 +22,8 @@ class DeviceRepository(BaseRepository[Device]):
         """根据设备编码查询"""
         result = await db.execute(
             select(Device).where(
-                Device.device_code == device_code,
-                Device.is_deleted.is_(False),
+                Device.device_code == device_code,  # type: ignore[arg-type]
+                Device.is_deleted.is_(False),  # type: ignore[arg-type]
             )
         )
         return result.scalar_one_or_none()
@@ -36,8 +36,8 @@ class DeviceRepository(BaseRepository[Device]):
         """根据作业线 ID 查询所有设备"""
         result = await db.execute(
             select(Device).where(
-                Device.work_line_id == work_line_id,
-                Device.is_deleted.is_(False),
+                Device.work_line_id == work_line_id,  # type: ignore[arg-type]
+                Device.is_deleted.is_(False),  # type: ignore[arg-type]
             )
         )
         return list(result.scalars().all())

@@ -20,9 +20,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -46,11 +49,62 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # WES 回调地址（使用环境变量，默认 8001）
-WES_CALLBACK_URL = os.getenv("WES_CALLBACK_URL", "http://localhost:8001/api/v1/callback/result")
+WES_CALLBACK_URL = os.getenv("WES_CALLBACK_URL", "http://host.docker.internal:8001/api/v1/callback/result")
+
+# API 认证配置（设备调用 WES 回调接口时使用）
+API_APP_ID = os.getenv("API_APP_ID", "app_Gqnvr3dpjGwlrjtO")
+API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao")
+
+# API_APP_ID = os.getenv("API_APP_ID", "app_sj1RniTg5ls5qCMG")
+# API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_MebzUjXBJ2iscKi9lM8X7s7gGN9OM1nCs6xg-uJ8Cgk")
 
 # 机械臂配置
 ROBOT_AUTO_EXECUTE_DEFAULT_INTERVAL = int(os.getenv("ROBOT_AUTO_EXECUTE_DEFAULT_INTERVAL", "5"))
 ROBOT_BARCODE_PREFIX = os.getenv("ROBOT_BARCODE_PREFIX", "PKG")
+
+
+# ============================================
+# API 认证工具
+# ============================================
+
+
+def calculate_signature(app_secret: str, app_id: str, timestamp: str, method: str, path: str) -> str:
+    """计算 API 签名
+
+    签名字符串格式: {app_id}{timestamp}{method}{path}
+
+    Args:
+        app_secret: 应用密钥
+        app_id: 应用 ID
+        timestamp: 时间戳（秒）
+        method: HTTP 方法（大写）
+        path: 请求路径
+
+    Returns:
+        签名字符串（小写十六进制）
+    """
+    sign_string = f"{app_id}{timestamp}{method}{path}"
+    return hmac.new(app_secret.encode("utf-8"), sign_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def build_api_auth_headers(method: str, path: str) -> dict:
+    """构建 API 认证所需的 HTTP Header
+
+    Args:
+        method: HTTP 方法（如 "POST"）
+        path: 请求路径（如 "/api/v1/callback/result"）
+
+    Returns:
+        包含认证信息的 Header 字典
+    """
+    timestamp = str(int(time.time()))
+    signature = calculate_signature(API_APP_SECRET, API_APP_ID, timestamp, method, path)
+
+    return {
+        "X-App-ID": API_APP_ID,
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
+    }
 
 
 # ============================================
@@ -194,9 +248,10 @@ class RobotSimulator:
         """
         try:
             # 构建回调数据
+            # 注意：WES 回调接口期望 device_code 字段，不是 device_id
             callback_data = {
                 "command_id": command_id,
-                "device_id": self.device_id,
+                "device_code": self.device_id,
                 "result": result,
                 "finish_time": int(datetime.now().timestamp() * 1000),
             }
@@ -214,21 +269,59 @@ class RobotSimulator:
                     "msg": "执行失败",
                 }
 
-            logger.info(f"回调结果到 WES: command_id={command_id}, result={result}")
+            # 构建 API 认证 Header
+            # 从 WES_CALLBACK_URL 中提取路径
+            from urllib.parse import urlparse
+
+            parsed_url = urlparse(WES_CALLBACK_URL)
+            auth_headers = build_api_auth_headers("POST", parsed_url.path)
+
+            logger.info(f"回调结果到 WES: command_id={command_id}, result={result}, app_id={API_APP_ID}")
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     WES_CALLBACK_URL,
                     json=callback_data,
+                    headers=auth_headers,
                 )
                 response.raise_for_status()
                 result_data = response.json()
                 logger.info(f"WES 回调成功: {result_data}")
                 return result_data
 
+        except httpx.HTTPStatusError as e:
+            # HTTP 错误（401, 403, 500 等）
+            status_code = e.response.status_code
+            try:
+                error_data = e.response.json()
+                error_msg = error_data.get("message", str(e))
+            except Exception:
+                error_msg = str(e)
+
+            logger.error(f"WES 回调失败 [HTTP {status_code}]: command_id={command_id}, error={error_msg}")
+            # 回调失败不影响执行记录，只记录错误
+            return {
+                "callback_success": False,
+                "error": f"HTTP {status_code}",
+                "wes_error": error_msg,
+            }
+
+        except httpx.RequestError as e:
+            # 网络错误
+            logger.error(f"WES 回调失败 [网络错误]: command_id={command_id}, error={e}")
+            return {
+                "callback_success": False,
+                "error": "wes_unreachable",
+                "wes_url": WES_CALLBACK_URL,
+            }
+
         except Exception as e:
             logger.error(f"WES 回调失败: {e}")
-            raise
+            return {
+                "callback_success": False,
+                "error": "internal_error",
+                "details": str(e),
+            }
 
     async def execute_command(
         self,
@@ -490,9 +583,10 @@ class RobotSimulator:
             # 回调到 WES
             try:
                 # 构建回调数据
+                # 注意：WES 回调接口期望 device_code 字段，不是 device_id
                 callback_data = {
                     "command_id": payload.command_id,
-                    "device_id": self.device_id,
+                    "device_code": self.device_id,
                     "result": result,
                     "finish_time": int(datetime.now().timestamp() * 1000),
                     "data": {
@@ -809,7 +903,7 @@ class RobotArmMockServer:
         self._server: Server | None = None
         self.config = Config(app=app, host=host, port=port, log_level="info")
 
-    async def start(self) -> NoReturn:
+    async def start(self) -> None:
         """启动服务器（阻塞运行）"""
         logger.info(f"机械臂 Mock 服务启动: http://{self.host}:{self.port}")
         logger.info(f"模拟设备: {DEVICE_INFO}")

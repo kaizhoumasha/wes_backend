@@ -13,7 +13,7 @@
 
 import time
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
 
 from src.app.callback.services import callback_log_service
@@ -22,6 +22,7 @@ from src.app.device.models.event_log import EventRequest
 from src.app.device.services import device_command_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
+from src.core.api_security import RequireAPIPermission
 from src.core.response import response_builder
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
@@ -37,6 +38,7 @@ router = APIRouter()
     response_model=None,
     status_code=status.HTTP_200_OK,
     summary="任务结果回传",
+    dependencies=[Depends(RequireAPIPermission("api:callback:result"))],
     description="设备完成指令后，调用此接口回传执行结果（白皮书 3.2.1）",
 )
 async def callback_result(
@@ -53,7 +55,7 @@ async def callback_result(
     ```json
     {
       "command_id": "CMD-20251215-1001",
-      "device_id": "ARM_01",
+      "device_code": "ARM_01",
       "result": "SUCCESS",
       "finish_time": 1702627250000,
       "data": {
@@ -78,10 +80,7 @@ async def callback_result(
     start_time = time.time()
     request_id = get_request_id()
 
-    logger.info(
-        f"收到指令结果回调: {callback.command_id} -> {callback.result} "
-        f"(request_id={request_id})"
-    )
+    logger.info(f"收到指令结果回调: {callback.command_id} -> {callback.result} (request_id={request_id})")
 
     try:
         # 处理回调结果
@@ -101,7 +100,7 @@ async def callback_result(
         await callback_log_service.log_callback(
             db,
             callback_type="result",
-            device_id=callback.device_id,
+            device_id=callback.device_code,
             request_body=callback.model_dump(),
             client_ip=request.client.host if request.client else None,
             user_agent=request.headers.get("User-Agent"),
@@ -118,7 +117,7 @@ async def callback_result(
             path=str(request.url.path),
             args={
                 "command_id": callback.command_id,
-                "device_id": callback.device_id,
+                "device_code": callback.device_code,
                 "result": callback.result.value,
             },
             cost_time=cost_time,
@@ -135,7 +134,7 @@ async def callback_result(
         await callback_log_service.log_callback(
             db,
             callback_type="result",
-            device_id=callback.device_id,
+            device_id=callback.device_code,
             request_body=callback.model_dump(),
             client_ip=request.client.host if request.client else None,
             user_agent=request.headers.get("User-Agent"),
@@ -153,7 +152,7 @@ async def callback_result(
             path=str(request.url.path),
             args={
                 "command_id": callback.command_id,
-                "device_id": callback.device_id,
+                "device_code": callback.device_code,
                 "result": callback.result.value,
             },
             status=OperaStatus.FAIL,
@@ -170,10 +169,8 @@ async def callback_result(
     response_model=None,
     status_code=status.HTTP_200_OK,
     summary="设备事件上报",
-    description=(
-        "设备发生状态变更或传感器触发业务信号时，"
-        "调用此接口上报事件（白皮书 3.2.2）"
-    ),
+    dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
+    description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )
 async def callback_event(
     event_request: EventRequest,
@@ -190,7 +187,7 @@ async def callback_event(
     请求体格式:
     ```json
     {
-      "device_id": "CONVEYOR_01",
+      "device_code": "CONVEYOR_01",
       "event_type": "MATERIAL_ARRIVED",
       "timestamp": 1702627300000,
       "data": {
@@ -220,8 +217,7 @@ async def callback_event(
     request_id = get_request_id()
 
     logger.info(
-        f"收到设备事件上报: {event_request.device_id} -> "
-        f"{event_request.event_type.value} (request_id={request_id})"
+        f"收到设备事件上报: {event_request.device_code} -> {event_request.event_type.value} (request_id={request_id})"
     )
 
     try:
@@ -237,7 +233,7 @@ async def callback_event(
 
         # 构建事件数据，传递 request_id 用于链路追踪
         event_data = {
-            "device_id": event_request.device_id,
+            "device_code": event_request.device_code,
             "event_type": event_request.event_type.value,
             "timestamp": timestamp,
             "data": event_request.data,
@@ -257,7 +253,7 @@ async def callback_event(
         await callback_log_service.log_callback(
             db,
             callback_type="event",
-            device_id=event_request.device_id,
+            device_id=event_request.device_code,
             request_body=event_request.model_dump(),
             client_ip=request.client.host if request.client else None,
             user_agent=request.headers.get("User-Agent"),
@@ -273,19 +269,17 @@ async def callback_event(
             title=f"设备事件上报: {event_request.event_type.value}",
             path=str(request.url.path),
             args={
-                "device_id": event_request.device_id,
+                "device_code": event_request.device_code,
                 "event_type": event_request.event_type.value,
             },
             cost_time=cost_time,
         )
 
         # 立即返回响应（不含业务指令，符合白皮书要求）
-        logger.info(
-            f"设备事件已提交处理: {event_request.device_id} (request_id={request_id})"
-        )
+        logger.info(f"设备事件已提交处理: {event_request.device_code} (request_id={request_id})")
         return response_builder.success(
             message="Event received",
-            data={"status": "submitted", "device_id": event_request.device_id},
+            data={"status": "submitted", "device_code": event_request.device_code},
         )
 
     except Exception as e:
@@ -297,7 +291,7 @@ async def callback_event(
         await callback_log_service.log_callback(
             db,
             callback_type="event",
-            device_id=event_request.device_id,
+            device_id=event_request.device_code,
             request_body=event_request.model_dump(),
             client_ip=request.client.host if request.client else None,
             user_agent=request.headers.get("User-Agent"),
@@ -314,7 +308,7 @@ async def callback_event(
             title=f"设备事件上报: {event_request.event_type.value}",
             path=str(request.url.path),
             args={
-                "device_id": event_request.device_id,
+                "device_code": event_request.device_code,
                 "event_type": event_request.event_type.value,
             },
             status=OperaStatus.FAIL,

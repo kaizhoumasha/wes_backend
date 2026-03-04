@@ -1,8 +1,14 @@
-# E2E 场景测试实施计划：流水线料盘搬运
+# E2E 场景测试实施计划：流水线料盘搬运（当前实现版）
 
 ## 概述
 
-模拟流水线场景：料盘到达识别点 → 摄像头发送事件 → WES指挥机械臂搬运 → 机械臂回调结果
+模拟流水线场景：料盘到达识别点 -> 摄像头发送事件 -> WES 指挥机械臂搬运 -> 机械臂回调结果。
+
+## 字段约定（必须统一）
+
+- 外部接口（HTTP 回调、Mock 设备、处理器决策输出）统一使用 `device_code`。
+- 内部数据库关联（`device_commands.device_id`、`device_event_logs.device_id`）统一使用 `device_id`（整数主键）。
+- Celery 在 ACT 阶段负责将 `device_code` 解析为内部 `device_id` 后再创建设备指令。
 
 ---
 
@@ -11,177 +17,68 @@
 ### 1.1 异步事件驱动流程
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│              Step 1: 设备事件上报（同步，<50ms）                  │
-│                  POST /api/v1/callback/event                    │
-│                  ⚡ 立即返回 ACK（不等待业务处理）                 │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             ↓
-┌─────────────────────────────────────────────────────────────────┐
-│          DeviceCallbackService.handle_event_callback             │
-│  1. 验证设备存在                                                 │
-│  2. 记录事件到 device_events 表                                  │
-│  3. 发布 SSE 通知                                                │
-│  4. ⭐ 触发 Celery 异步任务（立即返回）                           │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │                 │
-                    ↓                 ↓
-            [立即返回200 OK]   [Celery 异步处理]
-                                        │
-                    ┌───────────────────┴───────────────────┐
-                    │   Step 2: Celery 异步任务处理          │
-                    │   task: process_material_arrived       │
-                    └───────────────────┬───────────────────┘
-                                        │
-                                        ↓
-                    ┌───────────────────────────────────────────┐
-                    │      ConveyorWorkflowService              │
-                    │  1. 解析事件数据（barcode, location）     │
-                    │  2. 验证 barcode 非空                     │
-                    │  3. 确定目标位置（固定：SHELF-A-01）      │
-                    │  4. 创建搬运指令                          │
-                    │  5. 下发指令到机械臂                      │
-                    └───────────────────┬───────────────────────┘
-                                        │
-                                        ↓
-                    ┌───────────────────────────────────────────┐
-                    │      DeviceCommandService.send_command    │
-                    │  1. 构建指令 Payload                      │
-                    │  2. HTTP POST 到机械臂                    │
-                    │  3. 解析 ACK 响应                         │
-                    │  4. 更新指令和设备状态                    │
-                    └───────────────────────────────────────────┘
+Step 1 设备事件上报（同步，快速返回）
+POST /api/v1/callback/event
+  -> callback_event:
+     1) 记录回调日志和审计日志
+     2) 发送 Celery 任务 process_device_event
+     3) 立即返回 Event received
+
+Step 2 Celery 异步处理（process_device_event）
+  SENSE:
+    1) 校验 event_data（device_code/event_type/timestamp）
+    2) 写入 device_event_logs（内部存 device_id）
+  DECIDE:
+    3) 根据设备类型选择处理器
+    4) 处理器返回动作参数（外部语义，含 device_code）
+  ACT:
+    5) 将动作参数的 device_code 解析为内部 device_id
+    6) build_command + create_command
+    7) DeviceCommandService.send_command 下发到设备
+  FEEDBACK:
+    8) 更新 event_log 处理结果
+
+Step 3 设备结果回调
+POST /api/v1/callback/result
+  -> handle_callback_result:
+     1) 按 command_id 更新指令状态
+     2) SUCCESS => COMPLETED
 ```
 
 ---
 
-## 二、实现任务清单
+## 二、关键实现清单（当前代码）
 
-### 2.1 核心业务逻辑开发（必须实现）
+### 2.1 核心任务链路
 
-#### 文件1: `src/celery_app/tasks/device.py`（新建）
+- `src/app/callback/v1/callback.py`
+  - `/event`：异步提交 `src.celery_app.tasks.device.process_device_event`
+  - `/result`：处理设备执行结果回调
+- `src/celery_app/tasks/device.py`
+  - `process_device_event`：SDAF 主流程
+  - `_resolve_target_device_id`：`device_code -> device_id` 解析
+- `src/app/device/services/device_command_service.py`
+  - `create_event_log`：外部 `device_code` 转内部 `device_id`
+  - `send_command`：下发指令并更新 ACK 状态
 
-**职责**：处理设备事件的 Celery 任务
+### 2.2 Celery 配置
 
-**关键实现**：
+- `src/celery_app/app.py`
+  - include `src.celery_app.tasks.device`
+- `src/celery_app/config.py`
+  - 设备任务路由到 `device` 队列
 
-```python
-class DeviceTask(Task):
-    """设备任务基类 - 自动处理数据库会话"""
-    @property
-    def db(self):
-        if self._db is None:
-            from src.database.db import AsyncSessionLocal
-            self._db = AsyncSessionLocal()
-        return self._db
+### 2.3 E2E 与 Mock
 
-@celery_app.task(
-    name="src.celery_app.tasks.device.process_material_arrived",
-    base=DeviceTask,
-    bind=True,
-    max_retries=3,
-)
-def process_material_arrived(self, event_data: dict):
-    """处理料盘到达事件"""
-    # 1. 解析事件数据
-    # 2. 验证 barcode
-    # 3. 创建搬运指令
-    # 4. 下发指令
-```
-
-#### 文件2: `src/app/device/services/device_service.py`（修改）
-
-**修改位置**：第470行 TODO 处
-
-**修改内容**：
-
-```python
-# 在 handle_event_callback 方法中，TODO 后添加：
-if request.event_type == "MATERIAL_ARRIVED":
-    from src.celery_app.tasks.device import process_material_arrived
-
-    task_params = {
-        "device_id": request.device_id,
-        "event_type": request.event_type,
-        "barcode": request.data.get("barcode") if request.data else None,
-        "location": request.data.get("location") if request.data else None,
-    }
-
-    process_material_arrived.apply_async(
-        args=[task_params],
-        task_id=f"event-{event.id}",
-    )
-```
-
-#### 文件3: `src/celery_app/app.py`（修改）
-
-**修改内容**：添加设备任务模块到 include 列表
-
-```python
-include=[
-    "src.celery_app.tasks.core",
-    "src.celery_app.tasks.device",  # 新增
-]
-```
-
-#### 文件4: `src/celery_app/config.py`（修改）
-
-**修改内容**：添加设备任务路由配置
-
-```python
-task_routes = {
-    "src.celery_app.tasks.core.*": {"queue": "default"},
-    "src.celery_app.tasks.device.*": {"queue": "device"},  # 新增
-}
-```
-
-### 2.2 Mock 服务开发
-
-#### 文件5: `tests/mock/camera_mock_server.py`（新建）
-
-**职责**：模拟摄像头设备，接收状态查询
-
-#### 文件6: `tests/mock/robot_arm_mock_server.py`（新建）
-
-**职责**：模拟机械臂设备，接收指令、返回ACK、回调结果
-
-### 2.3 E2E 测试
-
-#### 文件7: `tests/e2e/test_conveyor_robot_arm.py`（新建）
-
-**职责**：端到端测试完整流程
+- `tests/mock/camera_mock_server.py`
+- `tests/mock/robot_arm_mock_server.py`
+- `tests/e2e/test_conveyor_robot_arm.py`
 
 ---
 
-## 三、关键文件路径汇总
+## 三、测试验证步骤
 
-### 需要创建的文件
-
-| 文件路径                                 | 说明                           |
-| ---------------------------------------- | ------------------------------ |
-| `src/celery_app/tasks/device.py`       | 设备事件处理Celery任务（核心） |
-| `tests/mock/camera_mock_server.py`     | 摄像头Mock服务                 |
-| `tests/mock/robot_arm_mock_server.py`  | 机械臂Mock服务                 |
-| `tests/e2e/test_conveyor_robot_arm.py` | E2E测试脚本                    |
-| `tests/mock/__init__.py`               | Mock模块初始化                 |
-
-### 需要修改的文件
-
-| 文件路径                                      | 修改内容                            |
-| --------------------------------------------- | ----------------------------------- |
-| `src/app/device/services/device_service.py` | 第470行TODO：添加Celery任务触发逻辑 |
-| `src/celery_app/app.py`                     | 添加设备任务模块到include列表       |
-| `src/celery_app/config.py`                  | 添加设备任务路由配置                |
-| `src/celery_app/tasks/__init__.py`          | 导出新任务                          |
-
----
-
-## 四、测试验证步骤
-
-### 4.1 环境准备
+### 3.1 环境准备
 
 ```bash
 # 1. 启动基础设施（PostgreSQL + Redis）
@@ -190,94 +87,113 @@ docker-compose up -d
 # 2. 运行数据库迁移
 ./scripts/migrate.sh upgrade
 
-# 3. 启动WES服务（终端1）
-uvicorn main:app --reload
+# 3. 启动 WES 服务（终端1）
+uv run uvicorn main:app --reload --port 8001
 
-# 4. 启动Celery Worker（终端2）
+# 4. 启动 Celery Worker（终端2，必须包含 device 队列）
 uv run celery -A src.celery_app.app worker --loglevel=info --pool=solo --queues=default,celery,device
 
-# 5. 启动Mock服务（终端3、4）
-python tests/mock/camera_mock_server.py
-python tests/mock/robot_arm_mock_server.py
+# 5. 启动 Mock 服务（终端3、4）
+uv run python tests/mock/camera_mock_server.py
+uv run python tests/mock/robot_arm_mock_server.py
 ```
 
-### 4.2 设备注册
+### 3.2 设备注册（外部统一用 device_code）
 
 ```bash
-# 注册摄像头
-curl -X POST http://localhost:8000/api/v1/devices \
+# 注册摄像头（输送线识别点）
+curl -X POST http://localhost:8001/api/v1/devices \
   -H "Content-Type: application/json" \
-  -d '{"device_id": "CAMERA-CONVEYOR-01", "device_name": "流水线识别点摄像头", "device_type": "CAMERA", "ip_address": "127.0.0.1", "port": 8001}'
+  -d '{
+    "device_code": "CAMERA-CONVEYOR-01",
+    "device_name": "流水线识别点摄像头",
+    "device_type": "CONVEYOR",
+    "host": "127.0.0.1",
+    "port": 8003
+  }'
 
 # 注册机械臂
-curl -X POST http://localhost:8000/api/v1/devices \
+curl -X POST http://localhost:8001/api/v1/devices \
   -H "Content-Type: application/json" \
-  -d '{"device_id": "ROBOT-ARM-01", "device_name": "搬运机械臂", "device_type": "ROBOTIC_ARM", "ip_address": "127.0.0.1", "port": 8002}'
+  -d '{
+    "device_code": "ROBOT-ARM-01",
+    "device_name": "搬运机械臂",
+    "device_type": "ROBOTIC_ARM",
+    "host": "127.0.0.1",
+    "port": 8004
+  }'
 ```
 
-### 4.3 模拟料盘到达事件
+### 3.3 模拟料盘到达事件（外部回调）
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/callback/event \
+curl -X POST http://localhost:8001/api/v1/callback/event \
   -H "Content-Type: application/json" \
-  -d '{"device_id": "CAMERA-CONVEYOR-01", "event_type": "MATERIAL_ARRIVED", "timestamp": 1709097600000, "data": {"location": "CONVEYOR-STATION-01", "barcode": "PKG20250228001"}}'
+  -d '{
+    "device_code": "CAMERA-CONVEYOR-01",
+    "event_type": "MATERIAL_ARRIVED",
+    "timestamp": 1709097600000,
+    "data": {
+      "location": "CONVEYOR-STATION-01",
+      "barcode": "PKG20250228001"
+    }
+  }'
 ```
 
-### 4.4 预期结果
+### 3.4 预期结果
 
-1. 摄像头回调立即返回 `{"code": 200, "message": "ACK"}`
-2. Celery Worker 日志显示任务执行
-3. 机械臂 Mock 服务收到指令
-4. `device_commands` 表有记录，status=ACKED
-5. 机械臂回调结果后，status=COMPLETED
+1. 回调接口立即返回（`message=Event received`，`status=submitted`）。
+2. Celery Worker 日志显示 `process_device_event` 被执行。
+3. 机械臂 Mock 服务收到 `/api/v1/device/command` 请求。
+4. `device_commands` 有记录，状态到达 `ACK_RECEIVED`。
+5. 机械臂回调结果后，状态更新为 `COMPLETED`。
 
 ---
 
-## 五、数据库状态验证
+## 四、数据库状态验证
 
-### 5.1 设备状态
+### 4.1 设备状态
 
 ```sql
-SELECT device_id, device_name, status, is_online, current_command_id
-FROM devices
-WHERE device_id IN ('CAMERA-CONVEYOR-01', 'ROBOT-ARM-01');
+SELECT id, device_code, device_name, device_status, is_active, current_command_id
+FROM wes_biz.devices
+WHERE device_code IN ('CAMERA-CONVEYOR-01', 'ROBOT-ARM-01');
 ```
 
-### 5.2 事件记录
+### 4.2 事件记录（内部 `device_id`，联表看 `device_code`）
 
 ```sql
-SELECT id, device_id, event_type, is_processed, created_at
-FROM device_events
-ORDER BY created_at DESC;
+SELECT del.id, del.device_id, d.device_code, del.event_type, del.processed, del.created_at
+FROM wes_biz.device_event_logs del
+JOIN wes_biz.devices d ON d.id = del.device_id
+ORDER BY del.id DESC;
 ```
 
-### 5.3 指令记录
+### 4.3 指令记录（内部 `device_id`，联表看 `device_code`）
 
 ```sql
-SELECT command_id, device_id, task_type, status, sent_at, acked_at, completed_at
-FROM device_commands
-ORDER BY created_at DESC;
+SELECT dc.command_id, dc.device_id, d.device_code, dc.task_type, dc.status, dc.sent_at, dc.ack_received_at, dc.completed_at
+FROM wes_biz.device_commands dc
+JOIN wes_biz.devices d ON d.id = dc.device_id
+ORDER BY dc.id DESC;
 ```
 
 ---
 
-## 六、验证检查点
+## 五、验证检查点
 
-- [ ] 设备注册成功（数据库中有两条记录）
-- [ ] 摄像头上报事件成功（device_events 表有记录）
-- [ ] Celery任务执行成功（Worker日志显示任务完成）
-- [ ] 搬运指令创建成功（device_commands 表有记录，status=ACKED）
-- [ ] 机械臂收到指令（Mock服务日志显示收到请求）
-- [ ] 机械臂返回ACK（Mock服务返回200）
-- [ ] 机械臂回调结果成功（status=COMPLETED）
-- [ ] 设备状态正确更新（ROBOT-ARM-01: IDLE→RUNNING→IDLE）
+- [ ] 设备注册成功（`devices` 表有两条记录，`device_code` 正确）
+- [ ] 摄像头上报事件成功（`device_event_logs` 表有记录）
+- [ ] Celery 任务执行成功（Worker 日志显示任务完成）
+- [ ] 搬运指令创建成功（`device_commands` 有记录，状态到 `ACK_RECEIVED`）
+- [ ] 机械臂收到指令（Mock 服务日志显示收到请求）
+- [ ] 机械臂回调结果成功（状态变为 `COMPLETED`）
 
 ---
 
-## 七、Celery 任务监控（可选）
+## 六、可选监控
 
 ```bash
-# 启动 Flower 监控
 celery -A src.celery_app.app flower
 # 访问 http://localhost:5555 查看任务状态
 ```

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # 添加项目根目录到 sys.path
@@ -153,15 +153,29 @@ async def trigger_camera_sensor(barcode: str, location: str) -> dict:
 async def get_latest_event(db: AsyncSession):
     """获取最新的事件记录"""
     result = await db.execute(
-        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_biz.device_event_logs"))
+        text(
+            """
+            SELECT
+                del.id,
+                del.device_id,
+                d.device_code,
+                del.event_type,
+                del.event_data
+            FROM wes_biz.device_event_logs del
+            JOIN wes_biz.devices d ON d.id = del.device_id
+            ORDER BY del.id DESC
+            LIMIT 1
+            """
+        )
     )
     row = result.first()
     if row:
         return {
-            "id": row[0],  # id
-            "device_id": row[9],  # device_id
-            "event_type": row[10],  # event_type
-            "event_data": row[11],  # event_data
+            "id": row[0],
+            "device_id": row[1],
+            "device_code": row[2],
+            "event_type": row[3],
+            "event_data": row[4],
         }
     return None
 
@@ -169,15 +183,29 @@ async def get_latest_event(db: AsyncSession):
 async def get_latest_command(db: AsyncSession):
     """获取最新的指令记录"""
     result = await db.execute(
-        select(text("*")).order_by(text("id DESC")).limit(1).select_from(text("wes_biz.device_commands"))
+        text(
+            """
+            SELECT
+                dc.command_id,
+                dc.device_id,
+                d.device_code,
+                dc.task_type,
+                dc.status
+            FROM wes_biz.device_commands dc
+            JOIN wes_biz.devices d ON d.id = dc.device_id
+            ORDER BY dc.id DESC
+            LIMIT 1
+            """
+        )
     )
     row = result.first()
     if row:
         return {
-            "command_id": row[9],  # command_id
-            "device_id": row[11],  # device_id
-            "task_type": row[12],  # task_type
-            "status": row[16],  # status
+            "command_id": row[0],
+            "device_id": row[1],
+            "device_code": row[2],
+            "task_type": row[3],
+            "status": row[4],
         }
     return None
 
@@ -250,7 +278,7 @@ async def test_full_conveyor_workflow(db):
     await asyncio.sleep(0.5)
     event = await get_latest_event(db)
     assert event is not None
-    assert event["device_id"] == "CAMERA-CONVEYOR-01"
+    assert event["device_code"] == "CAMERA-CONVEYOR-01"
     assert event["event_type"] == "MATERIAL_ARRIVED"
     print(f"✅ 事件已记录: event_id={event['id']}")
 

@@ -11,17 +11,20 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import JSON, Column, Text
-from sqlmodel import Field as SQLField
-from sqlmodel import Relationship
+from pydantic import BaseModel, field_validator
+from sqlalchemy import JSON, Column
+from sqlmodel import Field, Relationship
 
-from src.core.mixins import DataTableMixin, EnterpriseMixin, SoftDeleteMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from src.app.device.models.device import Device
+
 
 # ==================== 枚举定义 ====================
 
@@ -66,29 +69,28 @@ class CommandResult(str, Enum):
 # ==================== 基础字段 (用于 Schema 复用) ====================
 
 
-class CommandBase(BaseModel):
+class CommandBase(BaseMixin):
     """指令基础字段 - 用于 Schema 复用"""
 
-    device_id: str = SQLField(
-        max_length=50,
+    device_id: int = Field(
         index=True,
-        foreign_key="wes_biz.devices.device_code",
-        description="目标设备 ID（关联 Device.device_code）",
+        foreign_key="wes_biz.devices.id",
+        description="目标设备 ID（关联 Device.id）",
     )
-    task_type: TaskType = SQLField(description="任务类型")
-    priority: int = SQLField(
+    task_type: TaskType = Field(description="任务类型")
+    priority: int = Field(
         default=5,
         ge=1,
         le=10,
         description="优先级（1-10，10 最高）",
     )
-    timeout_ms: int = SQLField(
+    timeout_ms: int = Field(
         default=30000,
         ge=1000,
         le=300000,
         description="超时时间（毫秒）",
     )
-    params: dict[str, Any] = SQLField(
+    params: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
         description="业务参数（JSON 格式）",
@@ -108,15 +110,33 @@ class CommandBase(BaseModel):
 # ==================== Pydantic Schema ====================
 
 
-class CommandRequest(CommandBase):
+class CommandRequest(BaseModel):
     """指令请求 Schema - 用于创建指令"""
 
-    command_id: str | None = SQLField(
+    device_id: int = Field(description="目标设备 ID")
+    task_type: TaskType = Field(description="任务类型")
+    priority: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="优先级（1-10，10 最高）",
+    )
+    timeout_ms: int = Field(
+        default=30000,
+        ge=1000,
+        le=300000,
+        description="超时时间（毫秒）",
+    )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="业务参数（JSON 格式）",
+    )
+    command_id: str | None = Field(
         default=None,
         max_length=100,
         description="全局唯一指令 ID（业务主键），为空时自动生成",
     )
-    correlation_id: str | None = SQLField(
+    correlation_id: str | None = Field(
         default=None,
         max_length=100,
         description="关联 ID（串联整个流程）",
@@ -127,7 +147,7 @@ class CommandResponse(BaseModel):
     """指令响应 Schema - 返回给客户端"""
 
     command_id: str
-    device_id: str
+    device_id: int
     task_type: TaskType
     status: CommandStatus
     result: CommandResult | None
@@ -149,7 +169,7 @@ class CommandCallbackResult(BaseModel):
     """指令回调结果 Schema - 设备回调时使用"""
 
     command_id: str = Field(description="指令 ID（必须与原指令一致）")
-    device_id: str = Field(description="设备 ID")
+    device_code: str = Field(description="设备编码（device_code，设备标识）")
     result: CommandResult = Field(description="执行结果")
     finish_time: int = Field(description="完成时间（Unix 时间戳，毫秒）")
     data: dict[str, Any] | None = Field(default=None, description="业务回传数据")
@@ -209,7 +229,7 @@ class DeviceCommand(
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 业务主键（全局唯一）
-    command_id: str = SQLField(
+    command_id: str = Field(
         max_length=100,
         unique=True,
         index=True,
@@ -217,7 +237,7 @@ class DeviceCommand(
     )
 
     # 关联 ID（串联整个流程）
-    correlation_id: str | None = SQLField(
+    correlation_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
@@ -225,99 +245,92 @@ class DeviceCommand(
     )
 
     # 状态字段
-    status: CommandStatus = SQLField(
+    status: CommandStatus = Field(
         default=CommandStatus.PENDING,
         index=True,
         description="指令状态",
     )
 
     # 时间戳（发送、ACK、完成）
-    sent_at: datetime | None = SQLField(
+    sent_at: datetime | None = Field(
         default=None,
         description="指令发送时间",
     )
-    ack_received_at: datetime | None = SQLField(
+    ack_received_at: datetime | None = Field(
         default=None,
         description="ACK 接收时间",
     )
-    completed_at: datetime | None = SQLField(
+    completed_at: datetime | None = Field(
         default=None,
         description="指令完成时间",
     )
 
     # 执行结果
-    result: CommandResult | None = SQLField(
+    result: CommandResult | None = Field(
         default=None,
         description="执行结果（SUCCESS/FAILED）",
     )
-    result_data: dict[str, Any] | None = SQLField(
+    result_data: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="结果数据（JSON 格式）",
     )
 
     # 错误详情
-    error_detail: dict[str, Any] | None = SQLField(
+    error_detail: dict[str, Any] | None = Field(
         default=None,
-        sa_column=Column(Text),
-        description="错误详情（JSON 序列化）",
+        sa_column=Column(JSON),
+        description="错误详情（JSON 格式）",
     )
 
     # 重试次数
-    retry_count: int = SQLField(
+    retry_count: int = Field(
         default=0,
         ge=0,
         description="重试次数",
     )
 
     # ACK 响应（设备返回的确认）
-    ack_code: int | None = SQLField(
+    ack_code: int | None = Field(
         default=None,
         description="ACK 响应码",
     )
-    ack_message: str | None = SQLField(
+    ack_message: str | None = Field(
         default=None,
         max_length=500,
         description="ACK 响应消息",
     )
-    ack_trace_id: str | None = SQLField(
+    ack_trace_id: str | None = Field(
         default=None,
         max_length=100,
         description="ACK 设备内部日志 ID",
     )
 
     # 关系定义
-    device: "Device" = Relationship(  # noqa: F821
+    device: "Device" = Relationship(
         back_populates=None,
         sa_relationship_kwargs={
             "lazy": "selectin",
             "foreign_keys": "DeviceCommand.device_id",
-            "primaryjoin": "DeviceCommand.device_id == Device.device_code",
-        }
+            "primaryjoin": "DeviceCommand.device_id == Device.id",
+        },
     )
 
     def can_retry(self) -> bool:
         """检查是否可以重试"""
-        return (
-            self.status in [CommandStatus.FAILED, CommandStatus.TIMEOUT]
-            and self.retry_count < 3
-        )
+        return self.status in [CommandStatus.FAILED, CommandStatus.TIMEOUT] and self.retry_count < 3
 
     def is_timeout(self) -> bool:
         """检查是否超时"""
         if self.sent_at is None or self.timeout_ms is None:
             return False
-        elapsed_ms = int(
-            (timezone.now_for_db() - self.sent_at).total_seconds() * 1000
-        )
+        elapsed_ms = int((timezone.now_for_db() - self.sent_at).total_seconds() * 1000)
         return elapsed_ms > self.timeout_ms
 
     def get_duration_ms(self) -> int | None:
         """获取指令执行时长（毫秒）"""
         if self.sent_at and self.completed_at:
-            return int(
-                (self.completed_at - self.sent_at).total_seconds() * 1000
-            )
+            return int((self.completed_at - self.sent_at).total_seconds() * 1000)
         return None
 
 
@@ -333,7 +346,6 @@ class DeviceCommandCreate(ModelFactory(CommandBase).for_create()):
 
 class DeviceCommandUpdate(ModelFactory(CommandBase).for_update()):
     """设备指令更新 Schema"""
-
 
 
 # ==================== 导出 ====================

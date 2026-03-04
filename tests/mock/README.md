@@ -331,10 +331,59 @@ curl -X POST http://localhost:8004/api/v1/robot/execute \
 | `MOCK_ROBOT_ARM_PORT` | 8004 | 机械臂 Mock 服务端口 |
 | `WES_EVENT_CALLBACK_URL` | http://localhost:8001/api/v1/callback/event | WES 事件回调地址 |
 | `WES_CALLBACK_URL` | http://localhost:8001/api/v1/callback/result | WES 结果回调地址 |
+| `API_APP_ID` | app_Gqnvr3dpjGwlrjtO | 设备 API 应用 ID（用于回调认证） |
+| `API_APP_SECRET` | sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao | 设备 API 应用密钥（用于签名计算） |
 | `SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL` | 10 | 传感器默认触发间隔（秒） |
 | `ROBOT_AUTO_EXECUTE_DEFAULT_INTERVAL` | 5 | 机械臂默认执行间隔（秒） |
 | `SENSOR_BARCODE_PREFIX` | PKG | 条码生成前缀 |
 | `ROBOT_BARCODE_PREFIX` | PKG | 机械臂条码前缀 |
+
+### API 认证说明
+
+Mock 服务使用 `API_APP_ID` 和 `API_APP_SECRET` 对 WES 回调接口进行签名认证：
+
+**签名计算方式**：
+```python
+import hmac
+import hashlib
+import time
+
+# 签名字符串格式
+sign_string = f"{app_id}{timestamp}{method}{path}"
+
+# 使用 HMAC-SHA256 计算
+signature = hmac.new(
+    app_secret.encode("utf-8"),
+    sign_string.encode("utf-8"),
+    hashlib.sha256
+).hexdigest()
+
+# 请求 Header
+headers = {
+    "X-App-ID": app_id,
+    "X-Timestamp": str(int(time.time())),  # 秒级时间戳
+    "X-Signature": signature,
+}
+```
+
+**示例**：
+```python
+# 调用 POST /api/v1/callback/result
+app_id = "app_Gqnvr3dpjGwlrjtO"
+app_secret = "sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao"
+timestamp = "1702627200"
+method = "POST"
+path = "/api/v1/callback/result"
+
+sign_string = f"{app_id}{timestamp}{method}{path}"
+# = "app_Gqnvr3dpjGwlrjtO1702627200POST/api/v1/callback/result"
+
+signature = hmac.new(
+    app_secret.encode("utf-8"),
+    sign_string.encode("utf-8"),
+    hashlib.sha256
+).hexdigest()
+```
 
 ## 健康检查
 

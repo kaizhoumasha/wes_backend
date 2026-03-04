@@ -19,9 +19,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -47,9 +50,60 @@ logger = logging.getLogger(__name__)
 # WES 事件回调地址（使用环境变量，默认 localhost:8001）
 WES_EVENT_CALLBACK_URL = os.getenv("WES_EVENT_CALLBACK_URL", "http://localhost:8001/api/v1/callback/event")
 
+# API 认证配置（设备调用 WES 回调接口时使用）
+API_APP_ID = os.getenv("API_APP_ID", "app_Gqnvr3dpjGwlrjtO")
+API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao")
+
+# API_APP_ID = os.getenv("API_APP_ID", "app_sj1RniTg5ls5qCMG")
+# API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_MebzUjXBJ2iscKi9lM8X7s7gGN9OM1nCs6xg-uJ8Cgk")
+
 # 传感器配置
 SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL = int(os.getenv("SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL", "10"))
 SENSOR_BARCODE_PREFIX = os.getenv("SENSOR_BARCODE_PREFIX", "PKG")
+
+
+# ============================================
+# API 认证工具
+# ============================================
+
+
+def calculate_signature(app_secret: str, app_id: str, timestamp: str, method: str, path: str) -> str:
+    """计算 API 签名
+
+    签名字符串格式: {app_id}{timestamp}{method}{path}
+
+    Args:
+        app_secret: 应用密钥
+        app_id: 应用 ID
+        timestamp: 时间戳（秒）
+        method: HTTP 方法（大写）
+        path: 请求路径
+
+    Returns:
+        签名字符串（小写十六进制）
+    """
+    sign_string = f"{app_id}{timestamp}{method}{path}"
+    return hmac.new(app_secret.encode("utf-8"), sign_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def build_api_auth_headers(method: str, path: str) -> dict:
+    """构建 API 认证所需的 HTTP Header
+
+    Args:
+        method: HTTP 方法（如 "POST"）
+        path: 请求路径（如 "/api/v1/callback/event"）
+
+    Returns:
+        包含认证信息的 Header 字典
+    """
+    timestamp = str(int(time.time()))
+    signature = calculate_signature(API_APP_SECRET, API_APP_ID, timestamp, method, path)
+
+    return {
+        "X-App-ID": API_APP_ID,
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
+    }
 
 
 # ============================================
@@ -138,21 +192,82 @@ class SensorSimulator:
         POST /api/v1/callback/event（白皮书 3.2.2）
         """
         try:
-            logger.info(f"上报事件到 WES: device_id={event_data['device_id']}, event_type={event_data['event_type']}")
+            # 构建 API 认证 Header
+            # 从 WES_EVENT_CALLBACK_URL 中提取路径
+            from urllib.parse import urlparse
+
+            parsed_url = urlparse(WES_EVENT_CALLBACK_URL)
+            auth_headers = build_api_auth_headers("POST", parsed_url.path)
+
+            logger.info(
+                f"上报事件到 WES: device_code={event_data['device_code']}, "
+                f"event_type={event_data['event_type']}, app_id={API_APP_ID}"
+            )
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     WES_EVENT_CALLBACK_URL,
                     json=event_data,
+                    headers=auth_headers,
                 )
                 response.raise_for_status()
                 result = response.json()
                 logger.info(f"WES 事件上报成功: {result}")
                 return result
 
+        except httpx.HTTPStatusError as e:
+            # HTTP 错误（401, 403, 500 等）
+            status_code = e.response.status_code
+            try:
+                error_data = e.response.json()
+                # 获取详细错误信息
+                if "detail" in error_data:
+                    # FastAPI 422 验证错误格式
+                    error_msg = error_data.get("message", str(error_data.get("detail", str(e))))
+                    error_detail = error_data.get("detail")
+                else:
+                    error_msg = error_data.get("message", str(e))
+                    error_detail = None
+            except Exception:
+                error_msg = str(e)
+                error_detail = None
+
+            logger.error(f"WES 事件上报失败 [HTTP {status_code}]: {error_msg}")
+            if error_detail:
+                logger.error(f"WES 详细错误: {error_detail}")
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "wes_callback_failed",
+                    "message": f"WES 回调失败 (HTTP {status_code})",
+                    "wes_error": error_msg,
+                    "wes_detail": error_detail,
+                    "app_id": API_APP_ID,
+                    "callback_url": WES_EVENT_CALLBACK_URL,
+                },
+            ) from e
+        except httpx.RequestError as e:
+            # 网络错误
+            logger.error(f"WES 事件上报失败 [网络错误]: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "wes_unreachable",
+                    "message": "无法连接到 WES 服务器",
+                    "wes_url": WES_EVENT_CALLBACK_URL,
+                },
+            ) from e
         except Exception as e:
             logger.error(f"WES 事件上报失败: {e}")
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "internal_error",
+                    "message": "事件上报内部错误",
+                    "details": str(e),
+                },
+            ) from e
 
     async def trigger_material_arrival(
         self,
@@ -177,8 +292,9 @@ class SensorSimulator:
             event_id = f"EVT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._trigger_count:03d}"
 
             # 构建事件数据（白皮书 3.2.2）
+            # 注意：WES 回调接口期望 device_code 字段，不是 device_id
             event_data = {
-                "device_id": self.device_id,
+                "device_code": self.device_id,
                 "event_type": "MATERIAL_ARRIVED",
                 "timestamp": int(datetime.now().timestamp() * 1000),
                 "data": {
@@ -496,7 +612,7 @@ class CameraMockServer:
         self._server: Server | None = None
         self.config = Config(app=app, host=host, port=port, log_level="info")
 
-    async def start(self) -> NoReturn:
+    async def start(self) -> None:
         """启动服务器（阻塞运行）"""
         logger.info(f"摄像头 Mock 服务启动: http://{self.host}:{self.port}")
         logger.info(f"模拟设备: {DEVICE_INFO}")
@@ -509,7 +625,8 @@ class CameraMockServer:
         logger.info("  - GET  /api/v1/sensor/events")
 
         self._server = Server(self.config)
-        await self._server.serve()
+        await self._server.serve()  # type: ignore[misc]
+        # 永不返回（serve() 阻塞）
 
     def run(self):
         """同步运行服务器"""

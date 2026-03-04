@@ -34,7 +34,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
     def __init__(self):
         """初始化机械臂处理器"""
         super().__init__(device_type="ROBOTIC_ARM")
-        self.default_device_id = "ROBOT-ARM-01"  # 默认机械臂设备 ID
+        self.default_device_code = "ROBOT-ARM-01"  # 默认机械臂设备编码
 
     async def validate_event(
         self, event_data: dict
@@ -106,7 +106,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
             )
 
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": TaskType.PICK_AND_PLACE.value,
                 "params": {
                     "source_loc": source_loc,
@@ -124,7 +124,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
             # 这里应该从原始指令中获取目标位置
             # 简化处理：使用固定的目标位置
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": TaskType.PUT.value,
                 "params": {
                     "target_loc": "SHELF-A-01",
@@ -154,7 +154,9 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         Returns:
             CommandRequest 指令请求对象
         """
-        device_id = action_params.get("device_id", self.default_device_id)
+        device_id = action_params.get("device_id")
+        if not isinstance(device_id, int):
+            raise ValueError("内部指令构建失败：缺少已解析的 device_id")
         task_type = action_params.get("task_type", TaskType.PROCESS.value)
         params = action_params.get("params", {})
 

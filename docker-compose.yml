@@ -105,7 +105,14 @@ services:
       target: ${BUILD_TARGET:-production}
     image: wes-backend:${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    command: celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device
+    command: >
+      sh -c '
+      if [ "${ENV:-prod}" = "dev" ]; then
+        exec sh /app/src/celery_app/dev_worker_autoreload.sh;
+      else
+        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device;
+      fi
+      '
     env_file:
       - .env
     environment:

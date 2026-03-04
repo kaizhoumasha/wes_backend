@@ -12,16 +12,16 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy import JSON, Column, Text
-from sqlmodel import Field as SQLField
-from sqlmodel import Relationship
+from sqlmodel import Field, Relationship
 
-from src.core.mixins import DataTableMixin, SoftDeleteMixin
+from src.core.mixins import BaseMixin, DataTableMixin, SoftDeleteMixin
 from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
     from src.app.device.models.device import Device
+
 
 # ==================== 枚举定义 ====================
 
@@ -43,13 +43,39 @@ class EventType(str, Enum):
     PROCESS_COMPLETED = "PROCESS_COMPLETED"  # 加工完成
 
 
+# ==================== 基础字段 (用于 Schema 复用) ====================
+
+
+class DeviceEventLogBase(BaseMixin):
+    """设备事件日志基础字段 - 用于 Schema 复用"""
+
+    device_id: int = Field(
+        index=True,
+        foreign_key="wes_biz.devices.id",
+        description="设备 ID（关联 Device.id）",
+    )
+    event_type: EventType = Field(
+        index=True,
+        description="事件类型",
+    )
+    event_timestamp: datetime = Field(
+        index=True,
+        description="设备上报的事件时间",
+    )
+    event_data: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="事件负载数据（JSON 格式）",
+    )
+
+
 # ==================== Pydantic Schema ====================
 
 
 class EventRequest(BaseModel):
     """事件上报请求 Schema - 设备回调时使用"""
 
-    device_id: str = Field(description="设备 ID")
+    device_code: str = Field(description="设备编码（device_code，设备标识）")
     event_type: EventType = Field(description="事件类型")
     timestamp: int | None = Field(
         default=None,
@@ -73,7 +99,7 @@ class EventResponse(BaseModel):
     """事件响应 Schema - 返回给客户端"""
 
     id: int
-    device_id: str
+    device_id: int
     event_type: EventType
     event_data: dict[str, Any] | None
     processed: bool
@@ -85,7 +111,12 @@ class EventResponse(BaseModel):
 # ==================== 数据库表模型 ====================
 
 
-class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
+class DeviceEventLog(
+    DeviceEventLogBase,
+    DataTableMixin,
+    SoftDeleteMixin,
+    table=True,
+):
     """
     设备事件日志数据库表模型
 
@@ -105,48 +136,25 @@ class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
     __tablename__: str = "device_event_logs"
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
-    # 设备信息
-    device_id: str = SQLField(
-        max_length=50,
-        index=True,
-        foreign_key="wes_biz.devices.device_code",
-        description="设备 ID（关联 Device.device_code）",
-    )
-
-    # 事件信息
-    event_type: EventType = SQLField(
-        index=True,
-        description="事件类型",
-    )
-    event_timestamp: datetime = SQLField(
-        index=True,
-        description="设备上报的事件时间",
-    )
-    event_data: dict[str, Any] | None = SQLField(
-        default=None,
-        sa_column=Column(JSON),
-        description="事件负载数据（JSON 格式）",
-    )
-
-    # 处理状态
-    processed: bool = SQLField(
+    # 处理状态（不在 Base 中，因为这是事件日志特有的）
+    processed: bool = Field(
         default=False,
         index=True,
         description="是否已处理",
     )
-    processing_result: dict[str, Any] | None = SQLField(
+    processing_result: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="处理结果（JSON 格式）",
     )
-    error_message: str | None = SQLField(
+    error_message: str | None = Field(
         default=None,
         sa_column=Column(Text),
         description="错误消息",
     )
 
     # 关联 ID（串联相关事件和指令）
-    correlation_id: str | None = SQLField(
+    correlation_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
@@ -159,8 +167,8 @@ class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
         sa_relationship_kwargs={
             "lazy": "selectin",
             "foreign_keys": "DeviceEventLog.device_id",
-            "primaryjoin": "DeviceEventLog.device_id == Device.device_code",
-        }
+            "primaryjoin": "DeviceEventLog.device_id == Device.id",
+        },
     )
 
 
@@ -169,6 +177,7 @@ class DeviceEventLog(DataTableMixin, SoftDeleteMixin, table=True):
 
 __all__ = [
     "DeviceEventLog",
+    "DeviceEventLogBase",
     "EventRequest",
     "EventResponse",
     "EventType",

@@ -34,7 +34,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
     def __init__(self):
         """初始化输送线处理器"""
         super().__init__(device_type="CONVEYOR")
-        self.default_device_id = "CONVEYOR-01"  # 默认输送线设备 ID
+        self.default_device_code = "CONVEYOR-01"  # 默认输送线设备编码
 
     async def validate_event(
         self, event_data: dict
@@ -99,7 +99,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
 
             # 决策：通知机械臂抓取
             return {
-                "device_id": "ROBOT-ARM-01",  # 假设机械臂在输送线旁边
+                "device_code": "ROBOT-ARM-01",  # 假设机械臂在输送线旁边
                 "task_type": TaskType.PICK.value,
                 "params": {
                     "source_loc": location,
@@ -114,7 +114,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
 
             # 返回停止动作
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": "STOP",
                 "params": {
                     "error_code": error_code,
@@ -127,7 +127,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
             logger.info("输送线上线 -> 恢复运行")
 
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": "START",
                 "params": {
                     "reason": "设备上线，恢复运行",
@@ -151,7 +151,9 @@ class ConveyorProcessor(BaseDeviceProcessor):
         Returns:
             CommandRequest 指令请求对象
         """
-        device_id = action_params.get("device_id", self.default_device_id)
+        device_id = action_params.get("device_id")
+        if not isinstance(device_id, int):
+            raise ValueError("内部指令构建失败：缺少已解析的 device_id")
         task_type_str = action_params.get("task_type", "PROCESS")
         params = action_params.get("params", {})
 

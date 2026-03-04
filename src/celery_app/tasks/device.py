@@ -64,6 +64,19 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
+async def _resolve_target_device_id(device_repo, db, action_params: dict) -> tuple[int, str]:
+    """将外部动作参数（device_code）解析为内部 device_id。"""
+    target_device_code = action_params.get("device_code")
+
+    if isinstance(target_device_code, str) and target_device_code:
+        target_device = await device_repo.get_by_device_code(db, target_device_code)
+        if not target_device:
+            raise ValueError(f"目标设备不存在: device_code={target_device_code}")
+        return target_device.id, target_device.device_code
+
+    raise ValueError("动作参数缺少目标设备编码（需要 device_code）")
+
+
 # ============================================
 # 统一设备事件处理任务（SDAF 流程在 Celery 中实现）
 # ============================================
@@ -87,7 +100,7 @@ def process_device_event(self, event_data: dict):
 
     Args:
         event_data: 事件数据字典
-            - device_id: 设备 ID
+            - device_code: 设备编码
             - event_type: 事件类型
             - timestamp: 事件时间戳
             - data: 事件负载数据
@@ -117,30 +130,30 @@ def process_device_event(self, event_data: dict):
             register_builtin_processors()
 
         # 1. 解析事件数据
-        device_id = event_data.get("device_id")
+        device_code = event_data.get("device_code")
         event_type = event_data.get("event_type")
         timestamp = event_data.get("timestamp")  # 可选字段
         data = event_data.get("data", {})
 
         logger.info(
-            f"[Celery] 开始处理设备事件: device_id={device_id}, "
+            f"[Celery] 开始处理设备事件: device_code={device_code}, "
             f"event_type={event_type}, timestamp_provided={timestamp is not None}, "
             f"request_id={request_id}"
         )
 
         # 2. SENSE: 验证必需字段（timestamp 可选）
-        if not all([device_id, event_type]):
-            error_msg = "事件数据缺少必需字段 (device_id, event_type)"
+        if not all([device_code, event_type]):
+            error_msg = "事件数据缺少必需字段 (device_code, event_type)"
             logger.error(f"{error_msg}: {event_data}")
             return {
                 "status": "error",
                 "message": error_msg,
             }
 
-        # 类型断言：验证后确保 device_id 和 event_type 不为 None
-        assert device_id is not None
+        # 类型断言：验证后确保 device_code 和 event_type 不为 None
+        assert device_code is not None
         assert event_type is not None
-        assert isinstance(device_id, str)
+        assert isinstance(device_code, str)
         assert isinstance(event_type, str)
 
         # 3. 异步处理（在 Celery Worker 中）
@@ -150,7 +163,7 @@ def process_device_event(self, event_data: dict):
                 from src.app.device.models.event_log import EventRequest, EventType
 
                 event_request = EventRequest(
-                    device_id=device_id,
+                    device_code=device_code,
                     event_type=EventType(event_type),
                     timestamp=timestamp,
                     data=data,
@@ -161,17 +174,17 @@ def process_device_event(self, event_data: dict):
 
                 # 获取设备信息
                 device_repo = DeviceRepository()
-                device = await device_repo.get_by_field(db, "device_code", device_id)
+                device = await device_repo.get_by_device_code(db, device_code)
 
                 if not device:
-                    raise ValueError(f"设备不存在: {device_id}")
+                    raise ValueError(f"设备不存在: {device_code}")
 
                 # 获取设备处理器
                 processor = DeviceProcessorRegistry.get_processor_or_raise(device.device_type)
 
                 # 构建完整的事件数据（保持嵌套结构，处理器期望 event_data.data）
                 full_event_data = {
-                    "device_id": device_id,
+                    "device_code": device_code,
                     "event_type": event_type,
                     "timestamp": timestamp,
                     "data": data,  # 保持嵌套结构
@@ -188,12 +201,24 @@ def process_device_event(self, event_data: dict):
                 # ACT: 构建并发送指令
                 commands_created = []
                 if action_params:
-                    from src.app.device.models.command import CommandRequest
+                    if not isinstance(action_params, dict):
+                        raise ValueError("事件决策结果格式错误：action_params 必须是字典")
 
-                    command_request = CommandRequest(**action_params)
+                    target_device_id, target_device_code = await _resolve_target_device_id(
+                        device_repo,
+                        db,
+                        action_params,
+                    )
+                    internal_action_params = dict(action_params)
+                    internal_action_params["device_id"] = target_device_id
+                    internal_action_params["device_code"] = target_device_code
+
+                    command_request = await processor.build_command(internal_action_params)
                     command = await device_command_service.create_command(
                         db, command_request
                     )
+                    if command is None:
+                        raise RuntimeError("创建设备指令失败")
                     commands_created.append(command.command_id)
 
                     # 发送指令
@@ -241,18 +266,18 @@ def process_device_event(self, event_data: dict):
 
                 async with self.db as db:
                     # 错误处理中仍然需要验证必需字段
-                    device_id_err = event_data.get("device_id")
+                    device_code_err = event_data.get("device_code")
                     event_type_str = event_data.get("event_type")
                     timestamp_err = event_data.get("timestamp")
                     data_err = event_data.get("data")
 
-                    if not all([device_id_err, event_type_str]):
+                    if not all([device_code_err, event_type_str]):
                         logger.error("错误日志：缺少必需字段，跳过记录")
                         return
 
                     event_request = EventRequest(
-                        device_id=device_id_err,  # type: ignore[arg-type]
-                        event_type=EventType(event_type_str),  # type: ignore[arg-type]
+                        device_code=device_code_err,
+                        event_type=EventType(event_type_str),
                         timestamp=timestamp_err,
                         data=data_err,
                     )
@@ -290,11 +315,13 @@ def process_device_event(self, event_data: dict):
 )
 def process_material_arrived(self, event_data: dict):
     """处理料盘到达事件（兼容性任务）"""
+    from src.utils.timezone import timezone
+
     # 转换为新格式
     new_event_data = {
-        "device_id": event_data.get("device_id"),
+        "device_code": event_data.get("device_code"),
         "event_type": "MATERIAL_ARRIVED",
-        "timestamp": int(asyncio.get_event_loop().time() * 1000),
+        "timestamp": int(timezone.now_utc().timestamp() * 1000),
         "data": {
             "barcode": event_data.get("barcode"),
             "location": event_data.get("location"),
@@ -314,10 +341,12 @@ def process_material_arrived(self, event_data: dict):
 )
 def process_scan_completed(self, event_data: dict):
     """处理扫码完成事件（兼容性任务）"""
+    from src.utils.timezone import timezone
+
     new_event_data = {
-        "device_id": event_data.get("device_id"),
+        "device_code": event_data.get("device_code"),
         "event_type": "SCAN_COMPLETED",
-        "timestamp": int(asyncio.get_event_loop().time() * 1000),
+        "timestamp": int(timezone.now_utc().timestamp() * 1000),
         "data": {
             "barcode": event_data.get("barcode"),
             "location": event_data.get("location"),

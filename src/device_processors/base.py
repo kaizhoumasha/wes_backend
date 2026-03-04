@@ -224,7 +224,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         """
         默认事件验证实现
 
-        检查必需字段: device_id, event_type, timestamp
+        检查必需字段: device_code, event_type, timestamp
 
         Args:
             event_data: 事件数据字典
@@ -232,7 +232,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         Returns:
             (是否有效, 错误消息) 元组
         """
-        required_fields = ["device_id", "event_type", "timestamp"]
+        required_fields = ["device_code", "event_type", "timestamp"]
         for field in required_fields:
             if field not in event_data:
                 return False, f"缺少必需字段: {field}"
@@ -268,8 +268,9 @@ class BaseDeviceProcessor(DeviceProcessor):
             CommandRequest 指令请求对象
         """
         # 子类应该重写此方法
+        # 注意：build_command 仅接收内部已解析完成的数据（必须包含 device_id）
         return CommandRequest(
-            device_id=action_params.get("device_id", ""),
+            device_id=action_params.get("device_id", 0),
             task_type=action_params.get("task_type", "PROCESS"),
             params=action_params.get("params", {}),
             correlation_id=correlation_id,

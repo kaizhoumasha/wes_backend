@@ -34,7 +34,7 @@ class LabelerProcessor(BaseDeviceProcessor):
     def __init__(self):
         """初始化贴标机处理器"""
         super().__init__(device_type="LABELER")
-        self.default_device_id = "LABELER-01"  # 默认贴标机设备 ID
+        self.default_device_code = "LABELER-01"  # 默认贴标机设备编码
 
     async def validate_event(
         self, event_data: dict
@@ -108,7 +108,7 @@ class LabelerProcessor(BaseDeviceProcessor):
 
             # 决策：执行贴标任务
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": TaskType.PROCESS.value,
                 "params": {
                     "location": location,
@@ -125,7 +125,7 @@ class LabelerProcessor(BaseDeviceProcessor):
             logger.info(f"贴标机决策: 贴标完成 {command_id} -> 通知下游")
 
             return {
-                "device_id": "CONVEYOR-01",  # 假设下游是输送线
+                "device_code": "CONVEYOR-01",  # 假设下游是输送线
                 "task_type": "START",
                 "params": {
                     "reason": "贴标完成，继续输送",
@@ -138,7 +138,7 @@ class LabelerProcessor(BaseDeviceProcessor):
             logger.error(f"贴标机故障: {error_code} -> 暂停贴标")
 
             return {
-                "device_id": self.default_device_id,
+                "device_code": self.default_device_code,
                 "task_type": "STOP",
                 "params": {
                     "error_code": error_code,
@@ -163,7 +163,9 @@ class LabelerProcessor(BaseDeviceProcessor):
         Returns:
             CommandRequest 指令请求对象
         """
-        device_id = action_params.get("device_id", self.default_device_id)
+        device_id = action_params.get("device_id")
+        if not isinstance(device_id, int):
+            raise ValueError("内部指令构建失败：缺少已解析的 device_id")
         task_type_str = action_params.get("task_type", "PROCESS")
         params = action_params.get("params", {})
 
