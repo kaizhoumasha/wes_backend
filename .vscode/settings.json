@@ -1,5 +1,6 @@
 {
     "cSpell.words": [
+        "acks",
         "aiosqlite",
         "alembic",
         "asyncpg",
@@ -22,6 +23,7 @@
         "redis",
         "redoc",
         "sadd",
+        "SDAF",
         "selectin",
         "selectinload",
         "setex",

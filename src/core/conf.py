@@ -1,9 +1,10 @@
 # 在类定义外先加载环境变量
+import json
 from functools import lru_cache
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import computed_field, model_validator
+from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
@@ -67,12 +68,42 @@ class Settings(BaseSettings):
 
     # ==================== CORS 配置 ====================
 
-    CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
+    # CORS_ALLOWED_ORIGINS: 允许的跨域来源列表
+    # - 开发/测试环境: 可使用通配符 "*"
+    # - 生产环境: 必须明确配置域名列表，不允许使用通配符
+    # 环境变量格式:
+    #   - 通配符: "*"
+    #   - JSON 数组: '["http://example.com", "https://app.example.com"]'
+    #   - 逗号分隔: "http://example.com,https://app.example.com"
+    #   - 单个地址: "http://example.com"
+    CORS_ALLOWED_ORIGINS: str | list[str] = [  # 支持字符串或列表
         "http://127.0.0.1:8001",
+        "http://localhost:8001",
         "http://localhost:5173",
+        # 生产环境请添加实际的前端域名
     ]
     CORS_EXPOSE_HEADERS: list[str] = ["X-Request-ID"]
     MIDDLEWARE_CORS: bool = True
+
+    @field_validator("CORS_ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: str | list[str] | None) -> list[str]:
+        """解析 CORS_ALLOWED_ORIGINS 环境变量"""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            # 尝试解析 JSON 数组
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                # 使用逗号分隔
+                return [origin.strip() for origin in v.split(",")]
+        return []
 
     # ==================== 数据库配置 ====================
 
@@ -225,10 +256,13 @@ class Settings(BaseSettings):
                 '   生成方法: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
 
-        # 验证 CORS 配置
-        if self.MIDDLEWARE_CORS and "*" in self.CORS_ALLOWED_ORIGINS:
+        # 验证 CORS 配置（仅生产环境）
+        # 开发/测试环境允许使用通配符 '*'，生产环境必须明确指定域名
+        if not self.APP_DEBUG and self.MIDDLEWARE_CORS and "*" in self.CORS_ALLOWED_ORIGINS:
             raise ValueError(
-                "❌ 配置错误: 启用 CORS 凭证时不允许使用通配符 '*'。\n   请在 .env 中明确指定 CORS_ALLOWED_ORIGINS"
+                "❌ 配置错误: 生产环境不允许使用 CORS 通配符 '*'。\n"
+                "   请在 .env.prod 中明确指定 CORS_ALLOWED_ORIGINS\n"
+                '   示例: CORS_ALLOWED_ORIGINS=["https://your-domain.com"]'
             )
 
         # ==================== 功能验证 ====================
