@@ -18,6 +18,7 @@
 from typing import Any
 
 from sqlalchemy.orm import declared_attr
+from sqlmodel._compat import SQLModelConfig
 
 from src.core.mixins.primary_key import PrimaryKeyMixin
 from src.core.mixins.schema import SchemaMixin
@@ -43,11 +44,12 @@ class DataTableMixin(SchemaMixin, PrimaryKeyMixin, TimestampMixin):
 
     __abstract__ = True
 
-    class Config:
-        from_attributes = True
-        use_enum_values = True
-        validate_assignment = True
-        arbitrary_types_allowed = True
+    model_config = SQLModelConfig(
+        from_attributes=True,
+        use_enum_values=True,
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+    )
 
     @declared_attr.directive
     def __tablename__(self) -> str:

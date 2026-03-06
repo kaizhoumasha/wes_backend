@@ -2,19 +2,21 @@
 SSE 实时事件推送 API
 
 提供 Server-Sent Events (SSE) 实时事件推送功能：
-- GET /api/v1/sys/events/stream - SSE 事件流
+- GET /api/v1/events/stream - SSE 事件流
 """
 
 import asyncio
 import json
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, Request, status
 from starlette.responses import StreamingResponse
 
+from src.core.exceptions import AuthException
 from src.core.logger import logger
+from src.core.security import _verify_token
 from src.database.redis_client import get_redis
 
-router = APIRouter(prefix="/events", tags=["系统事件"])
+router = APIRouter(tags=["系统事件"])
 
 
 class SSEEventType:
@@ -26,12 +28,15 @@ class SSEEventType:
 
 
 @router.get(
-    "/stream",
+    "/events/stream",
     summary="SSE 实时事件流",
     description="订阅 SSE 事件流，接收系统通知和业务状态更新",
     status_code=status.HTTP_200_OK,
 )
-async def event_stream():
+async def event_stream(
+    request: Request,
+    token: str | None = Query(default=None, description="访问令牌（EventSource 无法设置 Authorization 头时使用）"),
+):
     """
     SSE 实时事件推送端点
 
@@ -60,6 +65,18 @@ async def event_stream():
     - 支持多客户端并发连接
     """
 
+    # SSE 默认要求登录态（前端通过 query token 透传）
+    bearer_token = token
+    if not bearer_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            bearer_token = auth_header[7:]
+
+    if not bearer_token:
+        raise AuthException("缺少访问令牌")
+
+    await _verify_token(bearer_token, request)
+
     redis_client = get_redis()
     if not redis_client:
         # Redis 不可用时返回空事件流（降级模式）
@@ -80,7 +97,8 @@ async def event_stream():
                     _, data = event
                     event_dict = json.loads(data)
                     event_type = event_dict.get("type", "message")
-                    payload = json.dumps(event_dict.get("payload", {}), ensure_ascii=False)
+                    payload_obj = event_dict.get("payload", {})
+                    payload = json.dumps(payload_obj, ensure_ascii=False)
                     timestamp = str(event_dict.get("timestamp", 0))
                     # SSE 格式: event: xxx\ndata: xxx\nid: xxx\n\n
                     yield f"event: {event_type}\n"

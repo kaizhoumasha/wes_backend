@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FilterOperator(str, Enum):
@@ -41,10 +41,8 @@ class FilterGroup(BaseModel):
     couple: Literal["and", "or", "not"] = "and"
     conditions: list[FilterCondition | FilterGroup] = Field(default_factory=list)
 
-    class Config:
-        """配置"""
-
-        json_schema_extra: ClassVar[dict[str, dict[str, Any]]] = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "conditions": [
                     {
@@ -56,6 +54,7 @@ class FilterGroup(BaseModel):
                 "couple": "and",
             }
         }
+    )
 
 
 class SortField(BaseModel):
@@ -64,15 +63,14 @@ class SortField(BaseModel):
     field: str
     order: Literal["asc", "desc"] = "desc"
 
-    class Config:
-        """配置"""
-
-        json_schema_extra: ClassVar[dict[str, dict[str, str]]] = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "field": "id",
                 "order": "desc",
             }
         }
+    )
 
 
 class QueryOptions(BaseModel):

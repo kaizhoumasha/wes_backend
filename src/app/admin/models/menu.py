@@ -7,7 +7,7 @@
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import Index
-from sqlmodel import Field, Relationship
+from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
 from src.database.model_factory import ModelFactory
@@ -47,10 +47,7 @@ class Menu(MenuBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=Tru
         ),
     )
 
-    # 关联关系（在 __init__.py 中定义）
-    roles: list["Role"] = Relationship(  # type: ignore[name-defined]
-        back_populates="menus",
-    )
+    # 关联关系在 src/app/admin/models/__init__.py 中统一绑定
 
 
 # ==================== Schemas ====================

@@ -17,7 +17,6 @@ from src.core.response import (
     ClientErrorCode,
     ResponseModel,
     ResponseSchemaModel,
-    PaginationResponseModel,
 )
 
 # 快速构建响应
@@ -41,22 +40,6 @@ async def get_user(user_id: int) -> ResponseSchemaModel[UserResponse]:
         data=user_schema
     )
 
-# 分页响应
-@router.get("/users", response_model=PaginationResponseModel[UserResponse])
-async def get_users(page: int = 1, size: int = 10):
-    users, total = await user_service.get_list(page, size)
-    pagination = model_serializer.paginate_models(
-        models=users,
-        total=total,
-        page=page,
-        size=size
-    )
-    return response_builder.paginate(
-        items=pagination.items,
-        total=total,
-        page=page,
-        size=size
-    )
 ```
 """
 
@@ -88,8 +71,6 @@ from .response_code import (
 from .response_schema import (
     BatchOperationResponseModel,
     BatchOperationResult,
-    PaginationData,
-    PaginationResponseModel,
     ResponseModel,
     ResponseSchemaModel,
 )
@@ -146,8 +127,6 @@ __all__ = [
     "ClientErrorCode",
     "ExternalServiceErrorCode",
     "MiscErrorCode",
-    "PaginationData",
-    "PaginationResponseModel",
     "ResourceErrorCode",
     # 响应工具
     "ResponseBuilder",

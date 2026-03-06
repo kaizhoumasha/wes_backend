@@ -22,7 +22,6 @@ from src.utils.timezone import timezone
 # ==================== 类型变量 ====================
 
 SchemaT = TypeVar("SchemaT")
-T = TypeVar("T")
 
 
 # ==================== 基础响应模型 ====================
@@ -98,87 +97,8 @@ class ResponseSchemaModel[SchemaT](ResponseModel):
         ```
     """
 
-    data: SchemaT = Field(description="响应数据")
-
-
-# ==================== 分页数据模型 ====================
-
-
-class PaginationData[T](BaseModel):
-    """
-    分页数据模型
-
-    用于包装分页查询的结果数据。
-
-    Type Parameters:
-        T: 列表项的数据类型
-
-    Attributes:
-        items: 数据列表
-        total: 总记录数
-        page: 当前页码（从1开始）
-        size: 每页大小
-        pages: 总页数
-
-    Example:
-        ```python
-        pagination = PaginationData[UserResponse](
-            items=[user1, user2],
-            total=100,
-            page=1,
-            size=10,
-            pages=10
-        )
-        ```
-    """
-
-    items: list[T] = Field(default=[], description="数据列表")
-    total: int = Field(default=0, ge=0, description="总记录数")
-    page: int = Field(default=1, ge=1, description="当前页码")
-    size: int = Field(default=10, ge=1, le=100, description="每页大小")
-    pages: int = Field(default=0, ge=0, description="总页数")
-
-    @classmethod
-    def create(cls, items: list[T], total: int, page: int = 1, size: int = 10) -> "PaginationData[T]":
-        """
-        创建分页数据
-
-        Args:
-            items: 数据列表
-            total: 总记录数
-            page: 当前页码
-            size: 每页大小
-
-        Returns:
-            分页数据实例
-        """
-        pages = (total + size - 1) // size if size > 0 else 0
-        return cls(items=items, total=total, page=page, size=size, pages=pages)
-
-
-# ==================== 分页响应模型 ====================
-
-
-class PaginationResponseModel[T](ResponseSchemaModel[PaginationData[T]]):
-    """
-    分页响应模型
-
-    专门用于分页查询的响应模型，提供完整的分页信息。
-
-    Type Parameters:
-        T: 列表项的数据类型
-
-    Example:
-        ```python
-        @router.get('/users', response_model=PaginationResponseModel[UserResponse])
-        def get_users(page: int = 1, size: int = 10) -> PaginationResponseModel[UserResponse]:
-            users, total = fetch_users(page, size)
-            return PaginationResponseModel[UserResponse](
-                code=SuccessCode.SUCCESS,
-                data=PaginationData.create(users, total, page, size)
-            )
-        ```
-    """
+    # 显式声明默认值，保持与父类字段一致，避免静态检查器误报覆盖告警
+    data: SchemaT | None = Field(default=None, description="响应数据")
 
 
 # ==================== 批量操作响应模型 ====================
@@ -264,8 +184,6 @@ class BatchOperationResponseModel(ResponseSchemaModel[BatchOperationResult]):
 __all__ = [
     "BatchOperationResponseModel",
     "BatchOperationResult",
-    "PaginationData",
-    "PaginationResponseModel",
     "ResponseModel",
     "ResponseSchemaModel",
 ]

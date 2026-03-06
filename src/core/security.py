@@ -33,7 +33,7 @@ from pwdlib import PasswordHash
 from pwdlib.hashers import argon2
 
 from src.core.conf import settings
-from src.core.exceptions import AuthException
+from src.core.exceptions import AuthException, InvalidTokenException, TokenExpiredException, TokenMissingException
 from src.core.logger import logger
 from src.database.redis_client import get_redis, is_redis_available
 from src.utils.timezone import timezone
@@ -267,13 +267,13 @@ def jwt_decode(token: str) -> TokenPayload:
         )
         return TokenPayload.from_dict(payload)
     except ExpiredSignatureError:
-        raise AuthException("Token 已过期") from None
+        raise TokenExpiredException("Token 已过期") from None
     except JWTError as e:
         logger.error(f"Token 解析失败: {e}")
-        raise AuthException("Token 无效") from e
-    except (KeyError, ValueError) as e:
+        raise InvalidTokenException("Token 无效") from e
+    except (KeyError, ValueError, TypeError) as e:
         logger.error(f"Token 格式错误: {e}")
-        raise AuthException("Token 格式无效") from e
+        raise InvalidTokenException("Token 格式无效") from e
 
 
 def _safe_user_id_from_token(token_payload: TokenPayload) -> int:
@@ -293,7 +293,7 @@ def _safe_user_id_from_token(token_payload: TokenPayload) -> int:
         return int(token_payload.sub)
     except (ValueError, TypeError) as e:
         logger.error(f"Invalid user ID in token: {token_payload.sub}")
-        raise AuthException("Token 包含无效的用户 ID") from e
+        raise InvalidTokenException("Token 包含无效的用户 ID") from e
 
 
 # ==================== Redis 辅助函数 ====================
@@ -622,21 +622,24 @@ async def create_new_token(
 
     # 验证 token 类型
     if token_payload.token_type != TokenType.REFRESH:
-        raise AuthException("Token 类型错误，期望 refresh token")
+        raise InvalidTokenException("Token 类型错误，期望 refresh token")
 
     # 验证用户 ID 和 session_uuid
-    if int(token_payload.sub) != user_id or token_payload.session_uuid != session_uuid:
-        raise AuthException("Token 与用户信息不匹配")
+    token_user_id = _safe_user_id_from_token(token_payload)
+    if token_user_id != user_id or token_payload.session_uuid != session_uuid:
+        raise InvalidTokenException("Token 与用户信息不匹配")
 
     # 检查黑名单
     blacklist_key = _make_blacklist_key(token_payload.jti)
     if await redis_client.exists(blacklist_key):
-        raise AuthException("Refresh Token 已被撤销")
+        raise InvalidTokenException("Refresh Token 已被撤销")
 
     # 验证并原子性删除 Redis 中的 token（使用 GETDEL）
     stored_refresh_token = await redis_client.getdel(_make_refresh_token_key(user_id, token_payload.jti))
+    if isinstance(stored_refresh_token, bytes):
+        stored_refresh_token = stored_refresh_token.decode()
     if not stored_refresh_token or stored_refresh_token != refresh_token:
-        raise AuthException("Refresh Token 已过期或不存在")
+        raise InvalidTokenException("Refresh Token 已过期或不存在")
 
     # 删除旧令牌和相关数据
     old_session_uuid: str = token_payload.session_uuid
@@ -818,25 +821,26 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
         AuthException: Token 无效、已过期或已失效
     """
     token_payload = jwt_decode(token)
+    user_id = _safe_user_id_from_token(token_payload)
 
     # 验证 token 类型（只接受 access token）
     if token_payload.token_type != TokenType.ACCESS:
-        raise AuthException(f"无效的 token 类型: {token_payload.token_type.value}")
+        raise InvalidTokenException(f"无效的 token 类型: {token_payload.token_type.value}")
 
     # 验证 Redis 中的 token
     async def _verify_redis(redis_client):
         # 检查黑名单
         blacklist_key = _make_blacklist_key(token_payload.jti)
         if await redis_client.exists(blacklist_key):
-            raise AuthException("Token 已被撤销")
+            raise InvalidTokenException("Token 已被撤销")
 
         # 验证 token 是否存在
-        stored_token = await redis_client.get(_make_access_token_key(int(token_payload.sub), token_payload.jti))
+        stored_token = await redis_client.get(_make_access_token_key(user_id, token_payload.jti))
         if not stored_token or stored_token != token:
-            raise AuthException("Token 已失效")
+            raise InvalidTokenException("Token 已失效")
 
         # 获取用户额外信息
-        session_key = _make_user_session_key(int(token_payload.sub), token_payload.session_uuid)
+        session_key = _make_user_session_key(user_id, token_payload.session_uuid)
         session_data_str = await redis_client.get(session_key)
         if session_data_str:
             try:
@@ -852,7 +856,7 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
     await _safe_redis_operation("验证 token", _verify_redis)
 
     # 将用户信息附加到 request.state（性能优化：避免重复查询数据库）
-    request.state.user_id = int(token_payload.sub)
+    request.state.user_id = user_id
     request.state.session_uuid = token_payload.session_uuid
     request.state.jti = token_payload.jti
     request.state.is_superuser = token_payload.is_superuser
@@ -883,7 +887,9 @@ async def get_current_user(
     return int(token_payload.sub) if token_payload else None
 
 
-async def require_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())) -> int:
+async def require_auth(
+    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)
+) -> int:
     """
     要求认证（依赖注入）
 
@@ -895,9 +901,12 @@ async def require_auth(request: Request, credentials: HTTPAuthorizationCredentia
         用户 ID
 
     Raises:
+        TokenMissingException: 未提供认证令牌
         AuthException: Token 无效或已过期
-        HTTPException: 未提供认证令牌（由 HTTPBearer 自动抛出）
     """
+    if credentials is None:
+        raise TokenMissingException("缺少访问令牌")
+
     token_payload = await _verify_token(credentials.credentials, request)
     return int(token_payload.sub)
 

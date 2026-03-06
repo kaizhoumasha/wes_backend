@@ -109,13 +109,44 @@ class ModelFactory:
             # 构建字段属性
             field_kwargs = {}
 
-            # 复制 description
+            # 复制元数据
             if field_info.description:
                 field_kwargs["description"] = field_info.description
 
-            # 复制 title
             if field_info.title:
                 field_kwargs["title"] = field_info.title
+
+            # 复制验证约束（从 FieldInfo 的 metadata 或直接属性）
+            # 这些约束对于 OpenAPI 生成和前端验证同步至关重要
+            constraint_attrs = [
+                # 字符串约束
+                "min_length",
+                "max_length",
+                "pattern",
+                # 数值约束
+                "ge",
+                "gt",
+                "le",
+                "lt",
+                # 其他约束
+                "frozen",
+                "json_schema_extra",
+            ]
+
+            for attr in constraint_attrs:
+                if hasattr(field_info, attr):
+                    value = getattr(field_info, attr)
+                    if value is not None:
+                        field_kwargs[attr] = value
+
+            # 从 metadata 中提取约束（处理 Field() 嵌套）
+            if field_info.metadata:
+                for metadata in field_info.metadata:
+                    for attr in constraint_attrs:
+                        if hasattr(metadata, attr):
+                            value = getattr(metadata, attr)
+                            if value is not None and attr not in field_kwargs:
+                                field_kwargs[attr] = value
 
             # 决定如何处理默认值
             is_required = field_info.is_required()

@@ -96,7 +96,7 @@ def register_custom_route(router: APIRouter, api: "BaseAPI") -> None:
 
     @router.post(
         "/{id}/reset-validity",
-        dependencies=[Depends(RequirePermission("api_auth:application:reset_validity"))],
+        dependencies=[Depends(RequirePermission("api-auth:api_application:reset_validity"))],
         summary="重置应用有效期",
     )
     async def reset_validity_period(

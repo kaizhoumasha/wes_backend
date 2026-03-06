@@ -5,7 +5,7 @@
 
 错误响应格式:
 {
-    "code": "ERROR_CODE",           # 错误代码
+    "code": "1000",                  # 错误代码（数字码格式）
     "message": "错误消息",            # 用户友好的错误描述
     "detail": {},                    # 详细信息（可选）
     "timestamp": "2026-01-16T10:30:00Z"  # ISO 8601 时间戳
@@ -46,7 +46,7 @@ def error_response(
     构建标准化的错误响应
 
     Args:
-        code: 错误代码
+        code: 错误代码（数字码格式，如 "2010"）
         message: 错误消息
         detail: 详细信息
         status_code: HTTP 状态码
@@ -267,7 +267,7 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
     )
 
     return error_response(
-        code="VALIDATION_ERROR",
+        code="2004",
         message="请求参数验证失败",
         detail={"errors": errors},
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -296,7 +296,7 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
     )
 
     return error_response(
-        code="VALIDATION_ERROR",
+        code="2004",
         message="数据验证失败",
         detail={"errors": errors},
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -324,7 +324,7 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
         match = re.search(r"Key \((\w+)\)=.*already exists", error_msg)
         field = match.group(1) if match else None
         return (
-            "CONFLICT",
+            "3010",
             "数据已存在，不能重复添加" + (f"（字段：{field}）" if field else ""),
             {"field": field, "constraint": "unique"} if field else {"constraint": "unique"},
         )
@@ -332,7 +332,7 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
     # 外键约束冲突
     if "foreign key constraint" in error_msg.lower():
         return (
-            "CONFLICT",
+            "3012",
             "删除失败：存在关联数据",
             {"constraint": "foreign_key"},
         )
@@ -344,19 +344,19 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
         field = match.group(1) if match else None
         if field:
             return (
-                "VALIDATION_ERROR",
+                "2002",
                 f"字段 '{field}' 不能为空",
                 {"field": field, "constraint": "not_null"},
             )
         return (
-            "VALIDATION_ERROR",
+            "2002",
             "必填字段不能为空",
             {"constraint": "not_null"},
         )
 
     # 默认：其他完整性错误
     return (
-        "VALIDATION_ERROR",
+        "4020",
         "数据完整性错误",
         {"error": error_msg},
     )
@@ -369,7 +369,7 @@ def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str
     # 根据 code 选择状态码
     from fastapi import status
 
-    status_code = status.HTTP_409_CONFLICT if code == "CONFLICT" else status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = status.HTTP_409_CONFLICT if code in ["3010", "3012"] else status.HTTP_422_UNPROCESSABLE_ENTITY
 
     return error_response(
         code=code,
@@ -382,16 +382,16 @@ def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str
 def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> ORJSONResponse:
     """处理数据库 API 错误"""
     return error_response(
-        code="DATABASE_ERROR",
-        message=f"数据库错误: {type(exc.orig).__name__}: {exc.orig!s}",
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        code="5011",
+        message="数据库连接失败",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
 def _handle_database_error(_request: Request, _exc: DatabaseError, detail: str) -> ORJSONResponse:
     """处理通用数据库错误"""
     return error_response(
-        code="DATABASE_ERROR",
+        code="5010",
         message=f"数据库错误: {detail}",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
@@ -437,7 +437,7 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
 
     # 默认通用处理
     return error_response(
-        code="DATABASE_ERROR",
+        code="5010",
         message=f"数据库操作失败: {error_detail}",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
@@ -472,7 +472,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> ORJSONR
     message = str(exc) if settings.APP_DEBUG else "服务器内部错误"
 
     return error_response(
-        code="INTERNAL_ERROR",
+        code="5000",
         message=message,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )

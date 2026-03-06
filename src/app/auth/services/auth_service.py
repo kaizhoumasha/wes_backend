@@ -24,7 +24,12 @@ from src.app.auth.models import (
     SessionInfo,
 )
 from src.core.conf import settings
-from src.core.exceptions import AuthException, NotFoundException
+from src.core.exceptions import (
+    AuthException,
+    InvalidCredentialsException,
+    InvalidTokenException,
+    TokenMissingException,
+)
 from src.core.logger import logger
 from src.core.security import (
     USER_SESSION_PREFIX,
@@ -45,6 +50,32 @@ class AuthService:
     """认证服务类"""
 
     @staticmethod
+    def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+        """
+        设置刷新令牌 Cookie（统一策略）
+
+        注意：只使用 max_age，不设置 expires，避免时区兼容问题。
+        """
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
+            httponly=True,
+            secure=settings.COOKIE_SECURE_EFFECTIVE,
+            samesite=settings.COOKIE_SAMESITE,
+        )
+
+    @staticmethod
+    def _clear_refresh_cookie(response: Response) -> None:
+        """删除刷新令牌 Cookie（与设置参数保持一致）"""
+        response.delete_cookie(
+            key="refresh_token",
+            secure=settings.COOKIE_SECURE_EFFECTIVE,
+            httponly=True,
+            samesite=settings.COOKIE_SAMESITE,
+        )
+
+    @staticmethod
     async def verify_user(db: AsyncSession, username: str, password: str) -> User:
         """
         验证用户凭证
@@ -58,8 +89,8 @@ class AuthService:
             User 对象
 
         Raises:
-            NotFoundException: 用户不存在
-            AuthException: 密码错误或用户被禁用
+            InvalidCredentialsException: 用户名或密码错误
+            AuthException: 用户被禁用
         """
         # 查询用户（预加载角色）
         result = await db.execute(
@@ -68,7 +99,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user:
-            raise NotFoundException("用户名或密码错误")
+            raise InvalidCredentialsException("用户名或密码错误")
 
         # 检查用户状态（is_deleted=True 表示已删除/禁用）
         if user.is_deleted:
@@ -77,7 +108,7 @@ class AuthService:
         # 验证密码
         if not verify_password(password, user.hashed_password):
             logger.warning(f"用户 {username} 密码错误")
-            raise AuthException("用户名或密码错误")
+            raise InvalidCredentialsException("用户名或密码错误")
 
         logger.info(f"用户 {username} 登录成功")
         return user
@@ -102,8 +133,8 @@ class AuthService:
             LoginResponse 对象
 
         Raises:
-            NotFoundException: 用户不存在
-            AuthException: 密码错误或用户被禁用
+            InvalidCredentialsException: 用户名或密码错误
+            AuthException: 用户被禁用
         """
         # 验证用户
         user = await AuthService.verify_user(db, username, password)
@@ -134,15 +165,7 @@ class AuthService:
         )
 
         # 设置刷新令牌到 HttpOnly Cookie
-        # 注意：只使用 max_age，不设置 expires，避免时区问题
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_data.refresh_token,
-            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
-            httponly=True,
-            secure=not settings.APP_DEBUG,  # 生产环境使用 HTTPS
-            samesite="lax",
-        )
+        AuthService._set_refresh_cookie(response, refresh_data.refresh_token)
 
         # 构建响应
         return LoginResponse(
@@ -174,22 +197,20 @@ class AuthService:
             RefreshTokenResponse 对象
 
         Raises:
+            TokenMissingException: 缺少 Refresh Token
             AuthException: 刷新令牌无效或已过期
         """
         # 从 Cookie 获取刷新令牌
         refresh_token = request.cookies.get("refresh_token")
         if not refresh_token:
-            raise AuthException("Refresh Token 不存在，请重新登录")
+            raise TokenMissingException("Refresh Token 不存在，请重新登录")
 
-        # 解码刷新令牌
-        try:
-            token_payload = jwt_decode(refresh_token)
-        except AuthException:
-            raise AuthException("Refresh Token 无效，请重新登录") from None
+        # 解码刷新令牌（保留具体异常语义：无效/过期）
+        token_payload = jwt_decode(refresh_token)
 
         # 验证 token 类型
         if token_payload.token_type != TokenType.REFRESH:
-            raise AuthException("Token 类型错误")
+            raise InvalidTokenException("Token 类型错误")
 
         # 获取用户 ID（安全类型转换）
         from src.core.security import _safe_user_id_from_token
@@ -203,7 +224,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user:
-            raise AuthException("用户不存在")
+            raise InvalidTokenException("Refresh Token 对应用户不存在")
 
         # 检查用户状态（is_deleted=True 表示已删除/禁用）
         if user.is_deleted:
@@ -226,14 +247,7 @@ class AuthService:
         )
 
         # 更新 Cookie 中的刷新令牌
-        response.set_cookie(
-            key="refresh_token",
-            value=new_token_data.new_refresh_token,
-            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
-            httponly=True,
-            secure=not settings.APP_DEBUG,
-            samesite="lax",
-        )
+        AuthService._set_refresh_cookie(response, new_token_data.new_refresh_token)
 
         return RefreshTokenResponse(
             access_token=new_token_data.new_access_token,
@@ -257,13 +271,13 @@ class AuthService:
         """
         if not is_redis_available():
             logger.warning("Redis 不可用，登出时无法清理令牌")
-            response.delete_cookie("refresh_token")
+            AuthService._clear_refresh_cookie(response)
             return
 
         redis_client = get_redis()
         if redis_client is None:
             logger.warning("Redis 连接失败，登出时无法清理令牌")
-            response.delete_cookie("refresh_token")
+            AuthService._clear_refresh_cookie(response)
             return
 
         # 尝试获取并撤销访问令牌和刷新令牌
@@ -294,7 +308,7 @@ class AuthService:
             logger.warning(f"登出时撤销访问令牌失败: {e}")
 
         # 删除刷新令牌 Cookie
-        response.delete_cookie("refresh_token")
+        AuthService._clear_refresh_cookie(response)
 
     @staticmethod
     async def logout_all(response: Response, current_user_id: int) -> int:
@@ -312,7 +326,7 @@ class AuthService:
         revoked_count = await revoke_all_user_tokens(current_user_id)
 
         # 删除刷新令牌 Cookie
-        response.delete_cookie("refresh_token")
+        AuthService._clear_refresh_cookie(response)
 
         logger.info(f"用户 {current_user_id} 强制登出所有设备，撤销 {revoked_count} 个令牌")
         return revoked_count

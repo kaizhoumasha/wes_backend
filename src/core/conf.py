@@ -69,8 +69,9 @@ class Settings(BaseSettings):
     # ==================== CORS 配置 ====================
 
     # CORS_ALLOWED_ORIGINS: 允许的跨域来源列表
-    # - 开发/测试环境: 可使用通配符 "*"
-    # - 生产环境: 必须明确配置域名列表，不允许使用通配符
+    # - 当 CORS_ALLOW_CREDENTIALS=True（Cookie/凭证）时，不允许使用通配符 "*"
+    # - 当 CORS_ALLOW_CREDENTIALS=False 时，可按需使用通配符 "*"
+    # - 生产环境建议始终明确配置域名列表
     # 环境变量格式:
     #   - 通配符: "*"
     #   - JSON 数组: '["http://example.com", "https://app.example.com"]'
@@ -82,6 +83,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         # 生产环境请添加实际的前端域名
     ]
+    CORS_ALLOW_CREDENTIALS: bool = True
     CORS_EXPOSE_HEADERS: list[str] = ["X-Request-ID"]
     MIDDLEWARE_CORS: bool = True
 
@@ -195,6 +197,22 @@ class Settings(BaseSettings):
     # True: Cookie 仅通过 HTTPS 传输（推荐用于生产环境）
     # False: Cookie 可通过 HTTP 或 HTTPS 传输（仅用于本地开发）
     COOKIE_SECURE: bool | None = None  # None 表示自动根据 APP_DEBUG 判断
+    # Cookie SameSite 策略:
+    # - lax/strict: 同站点优先（默认）
+    # - none: 允许跨站点发送（必须与 Secure=true 一起使用）
+    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+
+    @computed_field
+    @property
+    def COOKIE_SECURE_EFFECTIVE(self) -> bool:
+        """
+        计算 Cookie secure 的最终生效值
+
+        规则：
+        1. 显式配置 COOKIE_SECURE 时，直接使用
+        2. 未配置时，自动根据 APP_DEBUG 判断（非调试环境启用 Secure）
+        """
+        return self.COOKIE_SECURE if self.COOKIE_SECURE is not None else not self.APP_DEBUG
 
     # ==================== Ip location ====================
     IP_LOCATION_PARSE: Literal["online", "offline", "false"] = "offline"
@@ -256,13 +274,21 @@ class Settings(BaseSettings):
                 '   生成方法: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
 
-        # 验证 CORS 配置（仅生产环境）
-        # 开发/测试环境允许使用通配符 '*'，生产环境必须明确指定域名
-        if not self.APP_DEBUG and self.MIDDLEWARE_CORS and "*" in self.CORS_ALLOWED_ORIGINS:
+        # 验证 CORS 配置
+        # 规范要求：allow_credentials=True 时，allow_origins 不能使用通配符 '*'
+        if self.MIDDLEWARE_CORS and self.CORS_ALLOW_CREDENTIALS and "*" in self.CORS_ALLOWED_ORIGINS:
             raise ValueError(
-                "❌ 配置错误: 生产环境不允许使用 CORS 通配符 '*'。\n"
-                "   请在 .env.prod 中明确指定 CORS_ALLOWED_ORIGINS\n"
-                '   示例: CORS_ALLOWED_ORIGINS=["https://your-domain.com"]'
+                "❌ 配置错误: 当 CORS_ALLOW_CREDENTIALS=True 时，不允许使用 CORS 通配符 '*'。\n"
+                "   请明确指定 CORS_ALLOWED_ORIGINS 域名列表\n"
+                '   示例: CORS_ALLOWED_ORIGINS=["https://app.example.com"]'
+            )
+
+        # 验证 Cookie 策略
+        # 浏览器规范要求：SameSite=None 时，必须同时启用 Secure
+        if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE_EFFECTIVE:
+            raise ValueError(
+                "❌ 配置错误: 当 COOKIE_SAMESITE=none 时，必须启用 COOKIE_SECURE。\n"
+                "   请设置 COOKIE_SECURE=true（并使用 HTTPS）"
             )
 
         # ==================== 功能验证 ====================

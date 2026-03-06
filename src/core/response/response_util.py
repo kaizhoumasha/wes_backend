@@ -6,8 +6,7 @@
 核心功能：
 1. 响应构建器 - 快速构建标准响应
 2. 模型序列化器 - 将ORM/Pydantic模型转换为字典
-3. 分页工具 - 构建分页响应
-4. 批量操作工具 - 构建批量操作响应
+3. 批量操作工具 - 构建批量操作响应
 """
 
 from typing import Any
@@ -19,7 +18,6 @@ from src.utils.timezone import timezone
 from .response_code import DEFAULT_SUCCESS, ResponseCode
 from .response_schema import (
     BatchOperationResult,
-    PaginationData,
 )
 
 # ==================== 响应构建器 ====================
@@ -40,14 +38,6 @@ class ResponseBuilder:
         return response_builder.fail(
             code=ClientErrorCode.UNAUTHORIZED,
             data={"reason": "token expired"}
-        )
-
-        # 分页响应
-        return response_builder.paginate(
-            items=users,
-            total=total,
-            page=page,
-            size=size
         )
         ```
     """
@@ -118,42 +108,6 @@ class ResponseBuilder:
         """
         msg = message if message is not None else code.message
         return self._build_response_dict(code=code.code, message=msg, data=data)
-
-    def paginate(
-        self,
-        items: list[Any],
-        total: int,
-        page: int = 1,
-        size: int = 10,
-        code: ResponseCode = DEFAULT_SUCCESS,
-    ) -> dict:
-        """
-        构建分页响应
-
-        Args:
-            items: 数据列表
-            total: 总记录数
-            page: 当前页码
-            size: 每页大小
-            code: 响应码（默认为成功码）
-
-        Returns:
-            分页响应字典
-
-        Example:
-            ```python
-            users, total = fetch_users(page=1, size=10)
-            return response_builder.paginate(
-                items=users,
-                total=total,
-                page=1,
-                size=10
-            )
-            ```
-        """
-        pagination_data = PaginationData.create(items=items, total=total, page=page, size=size)
-
-        return self._build_response_dict(code=code.code, message=code.message, data=pagination_data.model_dump())
 
     def batch_operation(
         self,

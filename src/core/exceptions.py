@@ -10,6 +10,15 @@
                 ├── AuthException (认证相关异常)
                 ├── PermissionException (权限相关异常)
                 └── ValidationException (数据验证异常)
+
+错误码体系（与 response_code.py 对齐）:
+    - 1xxx: 成功响应
+    - 2xxx: 客户端错误（参数、权限等）
+    - 3xxx: 资源相关错误（不存在、冲突等）
+    - 4xxx: 业务逻辑错误
+    - 5xxx: 服务器内部错误
+    - 8xxx: 第三方服务错误
+    - 9xxx: 其他错误
 """
 
 from typing import Any
@@ -25,8 +34,8 @@ class AppException(Exception):
     # 默认 HTTP 状态码
     status_code: int = 500
 
-    # 错误代码（用于前端识别错误类型）
-    code: str = "INTERNAL_ERROR"
+    # 错误代码（与 response_code.py 对齐的数字码）
+    code: str = "5000"
 
     # 错误消息（面向用户）
     message: str = "服务器内部错误"
@@ -46,7 +55,7 @@ class AppException(Exception):
 
         Args:
             message: 错误消息
-            code: 错误代码
+            code: 错误代码（数字码格式，如 "2000"）
             status_code: HTTP 状态码
             detail: 详细信息
         """
@@ -68,15 +77,15 @@ class BusinessException(AppException):
     用于处理业务逻辑中的错误情况。
 
     示例:
-        raise BusinessException("用户名已存在", code="USERNAME_EXISTS")
+        raise BusinessException("用户名已存在", code="3010")
     """
 
     status_code = 400
-    code = "BUSINESS_ERROR"
+    code = "4000"
     message = "业务逻辑错误"
 
 
-# ==================== 认证相关异常 ====================
+# ==================== 认证相关异常 (2xxx) ====================
 
 
 class AuthException(AppException):
@@ -87,39 +96,46 @@ class AuthException(AppException):
     """
 
     status_code = 401
-    code = "AUTH_FAILED"
+    code = "2010"
     message = "认证失败"
 
 
 class UnauthorizedException(AuthException):
     """未认证异常（未登录）"""
 
-    code = "UNAUTHORIZED"
+    code = "2010"
     message = "请先登录"
 
 
 class InvalidTokenException(AuthException):
     """无效 Token 异常"""
 
-    code = "INVALID_TOKEN"
+    code = "2012"
     message = "Token 无效或已过期"
 
 
 class InvalidCredentialsException(AuthException):
     """无效凭证异常（用户名或密码错误）"""
 
-    code = "INVALID_CREDENTIALS"
+    code = "2011"
     message = "用户名或密码错误"
 
 
 class TokenExpiredException(AuthException):
     """Token 过期异常"""
 
-    code = "TOKEN_EXPIRED"
+    code = "2013"
     message = "Token 已过期，请重新登录"
 
 
-# ==================== 权限相关异常 ====================
+class TokenMissingException(AuthException):
+    """缺少 Token 异常"""
+
+    code = "2014"
+    message = "缺少访问令牌"
+
+
+# ==================== 权限相关异常 (2xxx) ====================
 
 
 class PermissionException(AppException):
@@ -130,25 +146,32 @@ class PermissionException(AppException):
     """
 
     status_code = 403
-    code = "PERMISSION_DENIED"
+    code = "2020"
     message = "权限不足"
 
 
 class ForbiddenException(PermissionException):
     """禁止访问异常（无权限）"""
 
-    code = "FORBIDDEN"
+    code = "2020"
     message = "您没有权限访问该资源"
 
 
 class AdminRequiredException(PermissionException):
     """需要管理员权限异常"""
 
-    code = "ADMIN_REQUIRED"
+    code = "2021"
     message = "此操作需要管理员权限"
 
 
-# ==================== 资源相关异常 ====================
+class PermissionDeniedException(PermissionException):
+    """权限不足异常"""
+
+    code = "2022"
+    message = "权限不足"
+
+
+# ==================== 资源相关异常 (3xxx) ====================
 
 
 class ResourceException(AppException):
@@ -159,14 +182,14 @@ class ResourceException(AppException):
     """
 
     status_code = 404
-    code = "RESOURCE_ERROR"
+    code = "3000"
     message = "资源错误"
 
 
 class NotFoundException(ResourceException):
     """资源未找到异常"""
 
-    code = "NOT_FOUND"
+    code = "3000"
     message = "请求的资源不存在"
 
     def __init__(
@@ -197,14 +220,14 @@ class ConflictException(AppException):
     """资源冲突异常（如重复创建）"""
 
     status_code = 409
-    code = "CONFLICT"
+    code = "3012"
     message = "资源冲突"
 
 
 class DuplicateException(ConflictException):
     """重复资源异常"""
 
-    code = "DUPLICATE"
+    code = "3010"
     message = "资源已存在"
 
     def __init__(
@@ -252,7 +275,7 @@ class OptimisticLockException(ConflictException):
         )
     """
 
-    code = "OPTIMISTIC_LOCK"
+    code = "3012"
     message = "记录已被其他用户修改，请刷新后重试"
 
     def __init__(
@@ -290,7 +313,23 @@ class OptimisticLockException(ConflictException):
             super().__init__(message=message, **kwargs)
 
 
-# ==================== 数据验证异常 ====================
+class ResourceGoneException(ResourceException):
+    """资源已被删除异常"""
+
+    status_code = 410
+    code = "3021"
+    message = "资源已被删除"
+
+
+class ResourceLockedException(ResourceException):
+    """资源已被锁定异常"""
+
+    status_code = 423
+    code = "3020"
+    message = "资源已被锁定"
+
+
+# ==================== 数据验证异常 (2xxx) ====================
 
 
 class ValidationException(AppException):
@@ -301,14 +340,14 @@ class ValidationException(AppException):
     """
 
     status_code = 422
-    code = "VALIDATION_ERROR"
+    code = "2004"
     message = "数据验证失败"
 
 
 class InvalidParameterException(ValidationException):
     """无效参数异常"""
 
-    code = "INVALID_PARAMETER"
+    code = "2001"
     message = "参数无效"
 
     def __init__(
@@ -333,14 +372,36 @@ class InvalidParameterException(ValidationException):
             super().__init__(message=message, **kwargs)
 
 
-# ==================== 服务相关异常 ====================
+class MissingParameterException(ValidationException):
+    """缺少必需参数异常"""
+
+    code = "2002"
+    message = "缺少必需参数"
+
+
+class InvalidFormatException(ValidationException):
+    """数据格式错误异常"""
+
+    code = "2003"
+    message = "数据格式错误"
+
+
+class BadRequestException(AppException):
+    """请求参数错误异常"""
+
+    status_code = 400
+    code = "2000"
+    message = "请求参数错误"
+
+
+# ==================== 服务相关异常 (5xxx, 9xxx) ====================
 
 
 class ServiceUnavailableException(AppException):
     """服务不可用异常"""
 
     status_code = 503
-    code = "SERVICE_UNAVAILABLE"
+    code = "5030"
     message = "服务暂时不可用，请稍后重试"
 
 
@@ -348,7 +409,7 @@ class RateLimitException(AppException):
     """请求频率限制异常"""
 
     status_code = 429
-    code = "RATE_LIMIT_EXCEEDED"
+    code = "9000"
     message = "请求过于频繁，请稍后再试"
 
 
@@ -356,7 +417,7 @@ class DatabaseException(AppException):
     """数据库异常"""
 
     status_code = 500
-    code = "DATABASE_ERROR"
+    code = "5010"
     message = "数据库操作失败"
 
 
@@ -364,26 +425,79 @@ class CacheException(AppException):
     """缓存异常"""
 
     status_code = 500
-    code = "CACHE_ERROR"
+    code = "5020"
     message = "缓存操作失败"
 
 
-# ==================== 外部服务异常 ====================
+class ConfigurationException(AppException):
+    """配置错误异常"""
+
+    status_code = 500
+    code = "5002"
+    message = "配置错误"
+
+
+class RuntimeException(AppException):
+    """运行时错误异常"""
+
+    status_code = 500
+    code = "5001"
+    message = "运行时错误"
+
+
+class ConnectionException(DatabaseException):
+    """数据库连接失败异常"""
+
+    code = "5011"
+    message = "数据库连接失败"
+
+
+class CacheConnectionException(CacheException):
+    """缓存连接失败异常"""
+
+    code = "5021"
+    message = "缓存连接失败"
+
+
+class MaintenanceModeException(ServiceUnavailableException):
+    """系统维护中异常"""
+
+    code = "5031"
+    message = "系统维护中"
+
+
+# ==================== 外部服务异常 (8xxx) ====================
 
 
 class ExternalServiceException(AppException):
     """外部服务异常基类"""
 
     status_code = 502
-    code = "EXTERNAL_SERVICE_ERROR"
+    code = "8000"
     message = "外部服务调用失败"
 
 
 class ThirdPartyAPIException(ExternalServiceException):
     """第三方 API 异常"""
 
-    code = "THIRD_PARTY_API_ERROR"
+    code = "8000"
     message = "第三方服务调用失败"
+
+
+class ExternalAPITimeoutException(ExternalServiceException):
+    """外部服务超时异常"""
+
+    status_code = 504
+    code = "8001"
+    message = "外部服务超时"
+
+
+class ExternalAPIUnavailableException(ExternalServiceException):
+    """外部服务不可用异常"""
+
+    status_code = 503
+    code = "8002"
+    message = "外部服务不可用"
 
 
 # ==================== 便捷函数 ====================
@@ -428,3 +542,44 @@ def raise_forbidden(message: str | None = None) -> None:
         ForbiddenException: 禁止访问异常
     """
     raise ForbiddenException(message=message)
+
+
+def raise_unauthorized(message: str | None = None) -> None:
+    """
+    抛出未授权异常的便捷函数
+
+    Args:
+        message: 错误消息
+
+    Raises:
+        UnauthorizedException: 未授权异常
+    """
+    raise UnauthorizedException(message=message)
+
+
+def raise_validation_error(message: str | None = None, field: str | None = None) -> None:
+    """
+    抛出验证错误异常的便捷函数
+
+    Args:
+        message: 错误消息
+        field: 错误字段
+
+    Raises:
+        ValidationException: 验证错误异常
+    """
+    raise ValidationException(message=message, detail={"field": field} if field else None)
+
+
+def raise_invalid_parameter(message: str | None = None, field: str | None = None) -> None:
+    """
+    抛出无效参数异常的便捷函数
+
+    Args:
+        message: 错误消息
+        field: 错误字段
+
+    Raises:
+        InvalidParameterException: 无效参数异常
+    """
+    raise InvalidParameterException(message=message, field=field)

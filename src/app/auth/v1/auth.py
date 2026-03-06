@@ -11,7 +11,7 @@
 - GET /api/v1/auth/permissions - 获取当前用户的 API 权限列表
 """
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
@@ -27,7 +27,6 @@ from src.app.auth.models import (
     UserPermissionsResponse,
 )
 from src.app.auth.services.auth_service import auth_service
-from src.core.conf import settings
 from src.core.response.response_schema import ResponseSchemaModel
 from src.core.response.response_util import response_builder
 from src.core.security import get_current_user, require_auth
@@ -69,7 +68,7 @@ async def login(
         password=credentials.password,
         response=response,
     )
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[LoginResponse]", response_builder.success(data=result))
 
 
 @router.post(
@@ -94,22 +93,9 @@ async def refresh_token(
     - 生成新的 JTI（JWT ID）
     - 自动撤销旧令牌
     """
+    # Cookie 策略由 AuthService 统一处理，避免路由层重复设置造成策略漂移
     result = await auth_service.refresh_token(db=db, request=request, response=response)
-
-    # 确定 Cookie secure 标志：优先使用 COOKIE_SECURE 配置，否则根据 APP_DEBUG 自动判断
-    cookie_secure = settings.COOKIE_SECURE if settings.COOKIE_SECURE is not None else not settings.APP_DEBUG
-
-    # 更新 Cookie 中的刷新令牌
-    response.set_cookie(
-        key="refresh_token",
-        value=result.refresh_token,
-        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_SECONDS,
-        httponly=True,
-        secure=cookie_secure,
-        samesite="lax",
-    )
-
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[RefreshTokenResponse]", response_builder.success(data=result))
 
 
 @router.post(
@@ -134,7 +120,7 @@ async def logout(
     """
     await auth_service.logout(request=request, response=response, current_user_id=current_user)
     result = LogoutResponse(message="登出成功", revoked_count=1)
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[LogoutResponse]", response_builder.success(data=result))
 
 
 @router.post(
@@ -162,7 +148,7 @@ async def logout_all(
     """
     revoked_count = await auth_service.logout_all(response=response, current_user_id=current_user)
     result = LogoutResponse(message=f"已撤销 {revoked_count} 个令牌", revoked_count=revoked_count)
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[LogoutResponse]", response_builder.success(data=result))
 
 
 # ==================== 会话管理端点 ====================
@@ -192,7 +178,7 @@ async def get_active_sessions(
     - 检测异常登录
     """
     result = await auth_service.get_active_sessions(current_user)
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[ActiveSessionsResponse]", response_builder.success(data=result))
 
 
 @router.delete(
@@ -222,7 +208,7 @@ async def revoke_session(
     """
     await auth_service.revoke_session(current_user, session_uuid)
     result = RevokeSessionResponse(message="会话已撤销", session_uuid=session_uuid)
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[RevokeSessionResponse]", response_builder.success(data=result))
 
 
 # ==================== 权限端点 ====================
@@ -279,4 +265,4 @@ async def get_user_permissions(
     ]
 
     result = UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)
-    return response_builder.success(data=result)
+    return cast("ResponseSchemaModel[UserPermissionsResponse]", response_builder.success(data=result))

@@ -8,9 +8,10 @@
 """
 
 from datetime import datetime
-from typing import ClassVar
 
+from pydantic import computed_field
 from sqlmodel import Field
+from sqlmodel._compat import SQLModelConfig
 
 from src.app.admin.models import UserResponse
 from src.core.mixins import BaseMixin
@@ -24,13 +25,14 @@ class LoginRequest(BaseMixin):
     username: str = Field(min_length=3, max_length=50, description="用户名")
     password: str = Field(min_length=6, max_length=100, description="密码")
 
-    class Config:
-        json_schema_extra: ClassVar[dict[str, dict[str, str]]] = {
+    model_config = SQLModelConfig(
+        json_schema_extra={
             "example": {
                 "username": "admin",
                 "password": "admin123",
             }
         }
+    )
 
 
 # ==================== 响应 Schema ====================
@@ -52,6 +54,20 @@ class LoginResponse(BaseMixin):
     session_uuid: str = Field(description="会话 UUID")
     user: UserResponse = Field(description="用户信息")
 
+    @computed_field
+    @property
+    def expires_in(self) -> int:
+        """访问令牌过期时间（秒）- OAuth 2.0 标准字段"""
+        delta = self.access_token_expire_time - datetime.now(self.access_token_expire_time.tzinfo)
+        return max(0, int(delta.total_seconds()))
+
+    @computed_field
+    @property
+    def refresh_expires_in(self) -> int:
+        """刷新令牌过期时间（秒）"""
+        delta = self.refresh_token_expire_time - datetime.now(self.refresh_token_expire_time.tzinfo)
+        return max(0, int(delta.total_seconds()))
+
 
 class RefreshTokenResponse(BaseMixin):
     """
@@ -67,6 +83,20 @@ class RefreshTokenResponse(BaseMixin):
     access_token_expire_time: datetime = Field(description="访问令牌过期时间")
     refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间")
     session_uuid: str = Field(description="会话 UUID")
+
+    @computed_field
+    @property
+    def expires_in(self) -> int:
+        """访问令牌过期时间（秒）- OAuth 2.0 标准字段"""
+        delta = self.access_token_expire_time - datetime.now(self.access_token_expire_time.tzinfo)
+        return max(0, int(delta.total_seconds()))
+
+    @computed_field
+    @property
+    def refresh_expires_in(self) -> int:
+        """刷新令牌过期时间（秒）"""
+        delta = self.refresh_token_expire_time - datetime.now(self.refresh_token_expire_time.tzinfo)
+        return max(0, int(delta.total_seconds()))
 
 
 class SessionInfo(BaseMixin):
