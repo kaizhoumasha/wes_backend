@@ -29,7 +29,7 @@ from src.app.auth.models import (
 from src.app.auth.services.auth_service import auth_service
 from src.core.response.response_schema import ResponseSchemaModel
 from src.core.response.response_util import response_builder
-from src.core.security import get_current_user, require_auth
+from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -106,7 +106,6 @@ async def refresh_token(
 async def logout(
     response: Response,
     request: Request,
-    current_user: Annotated[int, Depends(require_auth)],
 ) -> ResponseSchemaModel[LogoutResponse]:
     """
     用户登出（撤销当前会话）
@@ -114,12 +113,12 @@ async def logout(
     撤销当前会话的令牌并删除刷新令牌 Cookie。
 
     **安全特性**：
-    - 撤销当前 Access Token（添加到黑名单）
-    - 删除 Refresh Token Cookie
-    - 从 Redis 中删除会话信息
+    - 优先撤销当前 Access Token（添加到黑名单）
+    - 当 Access Token 不可用时，回退使用 Refresh Token Cookie 撤销当前会话
+    - 始终删除 Refresh Token Cookie（幂等）
     """
-    await auth_service.logout(request=request, response=response, current_user_id=current_user)
-    result = LogoutResponse(message="登出成功", revoked_count=1)
+    revoked_count = await auth_service.logout(request=request, response=response)
+    result = LogoutResponse(message="登出成功", revoked_count=revoked_count)
     return cast("ResponseSchemaModel[LogoutResponse]", response_builder.success(data=result))
 
 
@@ -221,7 +220,7 @@ async def revoke_session(
 )
 async def get_user_permissions(
     db: AsyncSessionDep,
-    current_user: Annotated[int, Depends(get_current_user)],
+    current_user: Annotated[int, Depends(require_auth)],
 ) -> ResponseSchemaModel[UserPermissionsResponse]:
     """
     获取当前用户的 API 权限列表（前端动态路由）

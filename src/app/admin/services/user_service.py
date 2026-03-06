@@ -22,7 +22,10 @@ from src.app.admin.models import User
 from src.app.admin.repositories.user_repository import UserRepository, user_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
+from src.core.rbac import invalidate_user_permissions
 from src.database.base_repository import HookContext, HookType
+from src.database.db import AsyncSession
+from src.database.redis_cache import get_cache
 from src.utils.password_hasher import PasswordHasher, password_hasher
 
 
@@ -65,6 +68,9 @@ class UserService(BaseService[User, UserRepository]):
         self.password_hasher = password_hasher
 
         self.add_hook(HookType.BEFORE_CREATE, self._before_create_password_hash)
+        self.add_hook(HookType.AFTER_CREATE, self._after_user_changed_invalidate_permission_cache)
+        self.add_hook(HookType.AFTER_UPDATE, self._after_user_changed_invalidate_permission_cache)
+        self.add_hook(HookType.AFTER_DELETE, self._after_user_changed_invalidate_permission_cache)
 
     async def _before_create_password_hash(self, context: HookContext) -> None:
         """
@@ -80,6 +86,28 @@ class UserService(BaseService[User, UserRepository]):
         if password:
             data["hashed_password"] = await self.password_hasher.hash_async(password)
             data.pop("password", None)
+
+    async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> User | None:
+        user = await super().restore(db, id, cache)
+        if user is not None:
+            await self._invalidate_permissions_for_user(id)
+        return user
+
+    async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+        success = await super().permanent_delete(db, id, cache)
+        if success:
+            await self._invalidate_permissions_for_user(id)
+        return success
+
+    async def _after_user_changed_invalidate_permission_cache(self, context: HookContext) -> None:
+        user = context.params.get("instance")
+        if user is None or getattr(user, "id", None) is None:
+            return
+        await self._invalidate_permissions_for_user(int(user.id))
+
+    async def _invalidate_permissions_for_user(self, user_id: int) -> None:
+        cache = get_cache()
+        await invalidate_user_permissions(cache, user_id)
 
 
 user_service = UserService()

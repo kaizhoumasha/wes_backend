@@ -32,6 +32,8 @@ from src.core.exceptions import (
 )
 from src.core.logger import logger
 from src.core.security import (
+    MULTI_LOGIN_SET_PREFIX,
+    REFRESH_TOKEN_PREFIX,
     USER_SESSION_PREFIX,
     TokenType,
     create_access_token,
@@ -260,55 +262,104 @@ class AuthService:
         )
 
     @staticmethod
-    async def logout(request: Request, response: Response, current_user_id: int) -> None:
+    async def logout(request: Request, response: Response) -> int:
         """
         用户登出（撤销当前会话）
 
         Args:
             request: FastAPI 请求对象
             response: FastAPI 响应对象
-            current_user_id: 当前用户 ID
+
+        Returns:
+            撤销的令牌数量（0 或 1）
         """
+        revoked_count = 0
+
         if not is_redis_available():
             logger.warning("Redis 不可用，登出时无法清理令牌")
             AuthService._clear_refresh_cookie(response)
-            return
+            return revoked_count
 
         redis_client = get_redis()
         if redis_client is None:
             logger.warning("Redis 连接失败，登出时无法清理令牌")
             AuthService._clear_refresh_cookie(response)
-            return
+            return revoked_count
 
-        # 尝试获取并撤销访问令牌和刷新令牌
+        # 1) 优先使用 Access Token 撤销
         try:
             auth_header = request.headers.get("Authorization")
             if auth_header and auth_header.startswith("Bearer "):
                 token = auth_header.split(" ")[1]
                 token_payload = jwt_decode(token)
+                if token_payload.token_type == TokenType.ACCESS:
+                    from src.core.security import _delete_refresh_token_and_mapping, _safe_user_id_from_token
 
-                # 1. 删除关联的 Refresh Token（使用辅助函数）
-                from src.core.security import _delete_refresh_token_and_mapping
+                    current_user_id = _safe_user_id_from_token(token_payload)
 
-                await _delete_refresh_token_and_mapping(
-                    redis_client,
-                    current_user_id,
-                    token_payload.jti,
-                )
+                    # 删除关联的 Refresh Token
+                    await _delete_refresh_token_and_mapping(redis_client, current_user_id, token_payload.jti)
 
-                # 2. 撤销 Access Token（包括黑名单、会话删除等）
-                await revoke_token(
-                    user_id=current_user_id,
-                    session_uuid=token_payload.session_uuid,
-                    jti=token_payload.jti,
-                )
-
-                logger.info(f"用户 {current_user_id} 登出成功，撤销 session: {token_payload.session_uuid}")
+                    # 撤销 Access Token（包括黑名单、会话删除等）
+                    await revoke_token(
+                        user_id=current_user_id,
+                        session_uuid=token_payload.session_uuid,
+                        jti=token_payload.jti,
+                    )
+                    revoked_count = 1
+                    logger.info(f"用户 {current_user_id} 登出成功，撤销 session: {token_payload.session_uuid}")
+                else:
+                    logger.warning("登出时收到非 access token 的 Authorization 头，已忽略")
         except Exception as e:
             logger.warning(f"登出时撤销访问令牌失败: {e}")
 
-        # 删除刷新令牌 Cookie
+        # 2) 无可用 Access Token 时，回退使用 Refresh Token Cookie 撤销
+        if revoked_count == 0:
+            refresh_token = request.cookies.get("refresh_token")
+            if refresh_token:
+                try:
+                    refresh_payload = jwt_decode(refresh_token)
+                    if refresh_payload.token_type != TokenType.REFRESH:
+                        raise InvalidTokenException("Refresh Token 类型错误")
+
+                    from src.core.security import _delete_refresh_token_and_mapping, _safe_user_id_from_token
+
+                    user_id = _safe_user_id_from_token(refresh_payload)
+                    access_jti: str | None = None
+
+                    # 读取会话中的 access_jti（若存在）
+                    session_key = f"{USER_SESSION_PREFIX}:{user_id}:{refresh_payload.session_uuid}"
+                    session_data_str = await redis_client.get(session_key)
+                    if session_data_str:
+                        try:
+                            session_data = json.loads(session_data_str)
+                            access_jti = session_data.get("access_jti") or session_data.get("jti")
+                        except json.JSONDecodeError:
+                            logger.warning(f"登出时解析会话数据失败: {session_key}")
+
+                    # 如果有 access_jti，则先尝试按映射清理
+                    if access_jti:
+                        await _delete_refresh_token_and_mapping(redis_client, user_id, access_jti)
+
+                    # 显式删除当前 refresh token（兜底，保持幂等）
+                    refresh_key = f"{REFRESH_TOKEN_PREFIX}:{user_id}:{refresh_payload.jti}"
+                    refresh_set_key = f"{MULTI_LOGIN_SET_PREFIX}:{user_id}:refresh"
+                    await redis_client.delete(refresh_key)
+                    await redis_client.srem(refresh_set_key, refresh_payload.jti)
+
+                    await revoke_token(
+                        user_id=user_id,
+                        session_uuid=refresh_payload.session_uuid,
+                        jti=access_jti,
+                    )
+                    revoked_count = 1
+                    logger.info(f"用户 {user_id} 通过 Refresh Token 登出成功，撤销 session: {refresh_payload.session_uuid}")
+                except Exception as e:
+                    logger.warning(f"登出时通过 Refresh Token 撤销失败: {e}")
+
+        # 始终删除刷新令牌 Cookie（幂等）
         AuthService._clear_refresh_cookie(response)
+        return revoked_count
 
     @staticmethod
     async def logout_all(response: Response, current_user_id: int) -> int:

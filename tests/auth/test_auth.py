@@ -208,6 +208,47 @@ class TestAuthAPI:
         assert body["code"] == "1000"
         assert "登出成功" in body["data"]["message"]
 
+    @pytest.mark.asyncio()
+    async def test_logout_with_refresh_cookie_without_authorization(self, client: AsyncClient, test_user: User):
+        """测试：仅携带 refresh cookie 也可登出（无需 Authorization）"""
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "testuser", "password": "testpass123"},
+        )
+        assert login_response.status_code == status.HTTP_200_OK
+        assert client.cookies.get("refresh_token")
+
+        response = await client.post("/api/v1/auth/logout")
+        assert response.status_code == status.HTTP_200_OK
+
+        body = response.json()
+        assert body["code"] == "1000"
+        assert "登出成功" in body["data"]["message"]
+        assert body["data"]["revoked_count"] in (0, 1)
+        assert "refresh_token=" in response.headers.get("set-cookie", "")
+
+    @pytest.mark.asyncio()
+    async def test_logout_is_idempotent_without_any_token(self, client: AsyncClient):
+        """测试：无任何 token 时登出幂等成功"""
+        client.cookies.clear()
+
+        response = await client.post("/api/v1/auth/logout")
+        assert response.status_code == status.HTTP_200_OK
+
+        body = response.json()
+        assert body["code"] == "1000"
+        assert "登出成功" in body["data"]["message"]
+        assert body["data"]["revoked_count"] == 0
+
+    @pytest.mark.asyncio()
+    async def test_get_permissions_requires_auth(self, client: AsyncClient):
+        """测试：获取权限列表需要登录"""
+        response = await client.get("/api/v1/auth/permissions")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        body = response.json()
+        assert body["code"] == "2014"
+
 
 # ==================== RBAC 权限测试 ====================
 
