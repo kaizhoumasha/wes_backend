@@ -4,13 +4,15 @@
 使用 TreeAPI 提供完整的 CRUD + 树形操作能力
 """
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends
 
 from src.app.admin.models import Menu, MenuCreate, MenuResponse, MenuTreeResponse, MenuUpdate
 from src.app.admin.services.menu_service import menu_service
 from src.core.rbac import require_auth
+from src.core.response.response_schema import ResponseSchemaModel
+from src.core.response.response_util import response_builder
 from src.core.tree_api import TreeAPI
 from src.database.dependencies import AsyncSessionDep
 
@@ -27,14 +29,14 @@ def register_my_menu_route(router: APIRouter, api) -> None:
 
     @router.get(
         "/my",
-        response_model=list[MenuTreeResponse],
+        response_model=ResponseSchemaModel[list[MenuTreeResponse]],
         summary="获取当前用户的菜单树",
         description="返回当前用户可访问的菜单树（基于角色权限过滤）",
     )
     async def get_my_menus(
         db: AsyncSessionDep,
         current_user_id: Annotated[int, Depends(require_auth)],
-    ) -> list[MenuTreeResponse]:
+    ) -> ResponseSchemaModel[list[MenuTreeResponse]]:
         """
         获取当前用户的菜单树
 
@@ -56,7 +58,8 @@ def register_my_menu_route(router: APIRouter, api) -> None:
         - 前端登录后获取菜单树
         - 前端根据菜单树动态生成导航栏
         """
-        return await api.service.get_user_menu_tree(db, current_user_id)
+        menus = await menu_service.get_user_menu_tree(db, current_user_id)
+        return cast("ResponseSchemaModel[list[MenuTreeResponse]]", response_builder.success(data=menus))
 
 
 # ==================== 创建 TreeAPI 实例 ====================
@@ -64,7 +67,7 @@ def register_my_menu_route(router: APIRouter, api) -> None:
 menu_api = TreeAPI(
     module_name="admin",
     model=Menu,
-    service=menu_service,
+    service=menu_service,  # type: ignore[arg-type]
     create_schema=MenuCreate,
     update_schema=MenuUpdate,
     response_schema=MenuResponse,

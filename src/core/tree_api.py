@@ -17,7 +17,11 @@ UpdateModelType = TypeVar("UpdateModelType")
 
 
 class TreeService(Protocol):
-    """树形服务协议（Protocol 类型注解）"""
+    """树形服务协议（Protocol 类型注解）
+
+    定义树形服务必须提供的方法，用于类型检查。
+    实际使用时，Service 应继承 BaseService 并混入 TreeServiceMixin。
+    """
 
     async def get_tree(
         self,
@@ -55,7 +59,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         self,
         module_name: str,
         model: type[ModelType],
-        service: BaseService,
+        service: BaseService,  # 接受 BaseService 类型（兼容 TreeServiceMixin）
         create_schema: type[CreateModelType] | None = None,
         update_schema: type[UpdateModelType] | None = None,
         response_schema: type[ModelType] | Any = Any,
@@ -67,9 +71,9 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
-        custom_routes: list[Callable[[APIRouter, "TreeAPI"], None]] | None = None,
+        # 使用与 BaseAPI 兼容的类型（函数类型参数是不变的）
+        custom_routes: list[Callable[[APIRouter, "BaseAPI"], None]] | None = None,
     ) -> None:
-        self._custom_route_funcs = custom_routes or []
         super().__init__(
             module_name,
             model,
@@ -85,7 +89,9 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             gen_bulk_delete,
             enable_permission,
             max_depth,
+            custom_routes=custom_routes,
         )
+        # 使用 Protocol 类型注解确保树形方法可用
         self.service: TreeService = service  # type: ignore[assignment]
 
     def _register_routes(self) -> None:

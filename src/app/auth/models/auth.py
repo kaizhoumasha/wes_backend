@@ -13,7 +13,7 @@ from pydantic import computed_field
 from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
-from src.app.admin.models import UserResponse
+from src.app.admin.models import MenuTreeResponse, UserResponse
 from src.core.mixins import BaseMixin
 
 # ==================== 请求 Schema ====================
@@ -165,3 +165,18 @@ class UserPermissionsResponse(BaseMixin):
 
     total: int = Field(description="权限总数")
     permissions: list[ApiPermissionInfo] = Field(description="用户有权限访问的 API 列表")
+
+
+class AuthMyResponse(BaseMixin):
+    """
+    当前登录用户上下文响应 Schema
+
+    一次性返回前端初始化所需核心数据：
+    - 当前用户信息
+    - API 权限列表
+    - 菜单树
+    """
+
+    user: UserResponse = Field(description="当前用户信息")
+    permissions: list[ApiPermissionInfo] = Field(description="当前用户 API 权限列表")
+    menus: list[MenuTreeResponse] = Field(description="当前用户可访问菜单树")

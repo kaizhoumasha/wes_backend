@@ -28,6 +28,115 @@ When a learning is promoted to a skill, add these fields:
 
 ---
 
+## [LRN-20260307-001] best_practice
+
+**Logged**: 2026-03-07T01:10:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+先验证“当前事实状态”再给修复建议，是减少无效改动和误判的关键流程。
+
+### Details
+本次问题定位过程中，用户已先行修复 `where(not Menu.is_deleted)` 导致的空菜单问题。  
+通用教训是：在进入补丁动作前，先确认“代码当前态 + 数据当前态 + 路由当前态”，否则容易重复修复、误判根因或提出过时建议。
+
+### Suggested Action
+对线上/联调问题统一执行三步前置核验：
+1. 读当前代码（不是凭历史上下文）；
+2. 查当前数据（关键关联表和过滤条件）；
+3. 验当前接口行为（响应结构与业务数据分开看）。
+
+### Metadata
+- Source: user_feedback
+- Related Files: src/app/admin/repositories/menu_repository.py, src/app/admin/v1/menu.py
+- Tags: root-cause, verification, stale-context, review-gate
+- Pattern-Key: process.verify_current_state_before_fix
+- Recurrence-Count: 1
+- First-Seen: 2026-03-07
+- Last-Seen: 2026-03-07
+
+### Resolution
+- **Resolved**: 2026-03-07T01:10:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 后续所有评审先输出“当前状态核验结果”再给修复建议。
+
+---
+
+## [LRN-20260307-002] best_practice
+
+**Logged**: 2026-03-07T01:10:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+初始化场景要区分“未加载”和“加载后为空”，用显式状态位比用数组长度判断更稳健。
+
+### Details
+登录后菜单请求重复的根因是：多个入口都用 `menuTree.length === 0` 作为触发条件，无法表达“已经加载过但结果为空”。  
+引入 `hasLoaded / isMenuLoaded` 后，能够稳定区分状态，避免重复请求与时序竞争。
+
+### Suggested Action
+在前端初始化链路统一采用状态机思路：
+1. `idle`（未加载）
+2. `loaded_empty`（加载完成但空）
+3. `loaded_nonempty`（加载完成有数据）
+4. `failed`（失败）
+并将触发条件从“数据内容”迁移到“状态语义”。
+
+### Metadata
+- Source: conversation
+- Related Files: /Users/kaizhou/SynologyDrive/works/wes_frontend/src/composables/useMenu.ts, /Users/kaizhou/SynologyDrive/works/wes_frontend/src/layouts/DefaultLayout.vue
+- Tags: state-management, initialization, duplicate-request, kiss
+- Pattern-Key: frontend.init_state_semantics_over_data_shape
+- Recurrence-Count: 1
+- First-Seen: 2026-03-07
+- Last-Seen: 2026-03-07
+
+### Resolution
+- **Resolved**: 2026-03-07T01:10:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 后续初始化逻辑统一优先使用状态位判断。
+
+---
+
+## [LRN-20260306-004] correction
+
+**Logged**: 2026-03-06T14:44:12Z
+**Priority**: medium
+**Status**: resolved
+**Area**: config
+
+### Summary
+在当前编辑器环境中，`python.defaultInterpreterPath` 使用相对路径 `.venv/bin/python` 可能无法被解析。
+
+### Details
+用户反馈将解释器路径从 `${workspaceFolder}/.venv/bin/python` 调整为 `.venv/bin/python` 后，仍出现 “Could not resolve interpreter path '.venv/bin/python'”。  
+结论：该环境对默认解释器路径更稳妥的写法是仓库内 `.venv` 的绝对路径。
+
+### Suggested Action
+将 `.vscode/settings.json` 的 `python.defaultInterpreterPath` 固定为：
+`/Users/kaizhou/SynologyDrive/works/wes_backend/.venv/bin/python`。
+
+### Metadata
+- Source: user_feedback
+- Related Files: .vscode/settings.json, .vscode/launch.json
+- Tags: vscode, python, interpreter, path-resolution
+- See Also: none
+- Pattern-Key: config.vscode_python_interpreter_absolute_path_when_relative_fails
+- Recurrence-Count: 1
+- First-Seen: 2026-03-06
+- Last-Seen: 2026-03-06
+
+### Resolution
+- **Resolved**: 2026-03-06T14:44:12Z
+- **Commit/PR**: n/a
+- **Notes**: 默认解释器改为绝对路径，调试配置继续使用 `${command:python.interpreterPath}` 跟随已选解释器。
+
+---
+
 ## [LRN-20260306-001] best_practice
 
 **Logged**: 2026-03-06T11:01:23Z

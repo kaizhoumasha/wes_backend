@@ -1,13 +1,27 @@
 from datetime import datetime
+from typing import TypeVar
 
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.tree_repository import TreeRepository
 
+# Model 类型 (如 Warehouse, Container 等)
+M = TypeVar("M")
 
-class TreeServiceMixin:
-    repo: TreeRepository
+
+class TreeServiceMixin[M]:
+    """树形服务混入类
+
+    提供 TreeRepository 的树形操作能力。
+    使用混入模式让 Service 同时获得 BaseService 和 TreeService 的能力。
+
+    类型参数:
+        M: Model 类型 (如 Menu, Warehouse 等)
+    """
+
+    def __init__(self, repo: TreeRepository[M]):
+        self.repo = repo
 
     async def get_tree(
         self,

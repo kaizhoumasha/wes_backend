@@ -5,21 +5,22 @@ from datetime import datetime
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import Menu, MenuResponse
+from src.app.admin.models import Menu, MenuTreeResponse
 from src.app.admin.repositories.menu_repository import MenuRepository, menu_repository
 from src.common.cache_config import cache_settings
 from src.core.tree_service import TreeServiceMixin
 
 
-class MenuService(TreeServiceMixin):
+class MenuService(TreeServiceMixin[Menu]):
     """菜单 Service（混入树形服务能力）"""
 
     def __init__(self, repo: MenuRepository = menu_repository):
+        super().__init__(repo)
         self.repo = repo
         self._cache_prefix = cache_settings.USER.prefix  # 复用用户缓存配置
         self._cache_expire = cache_settings.USER.expire
 
-    async def get_user_menu_tree(self, db: AsyncSession, user_id: int) -> list[MenuResponse]:
+    async def get_user_menu_tree(self, db: AsyncSession, user_id: int) -> list[MenuTreeResponse]:
         """获取用户可访问的菜单树
 
         Args:
@@ -27,7 +28,7 @@ class MenuService(TreeServiceMixin):
             user_id: 用户 ID
 
         Returns:
-            菜单树列表（MenuResponse，含 children）
+            菜单树列表（MenuTreeResponse，含 children）
         """
         # 1. 获取用户可访问的菜单列表
         menus = await self.repo.get_menus_by_user(db, user_id)
@@ -35,7 +36,7 @@ class MenuService(TreeServiceMixin):
         # 2. 构建树形结构
         return self._build_tree(menus)
 
-    def _build_tree(self, menus: list[Menu]) -> list[MenuResponse]:
+    def _build_tree(self, menus: list[Menu]) -> list[MenuTreeResponse]:
         """构建菜单树
 
         Args:
@@ -45,10 +46,10 @@ class MenuService(TreeServiceMixin):
             菜单树列表
         """
         # 转换为 Response Schema
-        menu_map: dict[int, MenuResponse] = {}
+        menu_map: dict[int, MenuTreeResponse] = {}
         for menu in menus:
-            menu_response = MenuResponse(
-                id=menu.id,
+            menu_response = MenuTreeResponse(
+                id=menu.id,  # type: ignore[arg-type]
                 name=menu.name,
                 title=menu.title,
                 path=menu.path,
@@ -59,12 +60,11 @@ class MenuService(TreeServiceMixin):
                 level=menu.level,
                 sort_order=menu.sort_order,
                 is_hidden=menu.is_hidden,
-                roles=[],  # 树形响应不加载角色
             )
-            menu_map[menu.id] = menu_response
+            menu_map[menu.id] = menu_response  # type: ignore[arg-type]
 
         # 构建树
-        tree: list[MenuResponse] = []
+        tree: list[MenuTreeResponse] = []
         for menu_response in menu_map.values():
             if menu_response.parent_id is None:
                 tree.append(menu_response)
@@ -72,6 +72,9 @@ class MenuService(TreeServiceMixin):
                 parent = menu_map.get(menu_response.parent_id)
                 if parent:
                     parent.children.append(menu_response)
+                else:
+                    # 兜底：父节点缺失时，避免菜单节点被静默丢弃
+                    tree.append(menu_response)
 
         # 按 sort_order 排序
         for menu_response in menu_map.values():
@@ -97,6 +100,6 @@ class MenuService(TreeServiceMixin):
         return result
 
 
-menu_service = MenuService()
+menu_service = MenuService(menu_repository)
 
 __all__ = ["MenuService", "menu_service"]

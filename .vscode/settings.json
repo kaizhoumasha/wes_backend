@@ -37,7 +37,7 @@
         "uvicorn",
         "workline"
     ],
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.defaultInterpreterPath": "/Users/kaizhou/SynologyDrive/works/wes_backend/.venv/bin/python",
     "[python]": {
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "charliermarsh.ruff",

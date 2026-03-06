@@ -517,6 +517,28 @@ class AuthService:
             raise AuthException("撤销会话失败") from e
 
     @staticmethod
+    async def get_user_profile(db: AsyncSession, user_id: int) -> UserResponse:
+        """
+        获取当前用户信息
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+
+        Returns:
+            UserResponse 对象
+        """
+        result = await db.execute(
+            select(User).where(User.id == user_id).options(selectinload(User.roles))  # type: ignore[arg-type]
+        )
+        user = result.scalar_one_or_none()
+
+        if not user or user.is_deleted:
+            raise AuthException("用户不存在或已被禁用")
+
+        return AuthService._user_to_response(user)
+
+    @staticmethod
     def _user_to_response(user: User) -> UserResponse:
         """
         将 User 对象转换为 UserResponse

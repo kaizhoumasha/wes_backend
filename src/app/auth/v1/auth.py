@@ -8,6 +8,7 @@
 - POST /api/v1/auth/refresh - 刷新访问令牌
 - GET /api/v1/auth/sessions - 获取当前用户的所有活跃会话
 - DELETE /api/v1/auth/sessions/{session_uuid} - 撤销指定会话
+- GET /api/v1/auth/my - 获取当前用户初始化上下文（用户信息 + 权限 + 菜单）
 - GET /api/v1/auth/permissions - 获取当前用户的 API 权限列表
 """
 
@@ -15,10 +16,12 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
+from src.app.admin.services.menu_service import menu_service
 from src.app.admin.services.perm_service import permission_service
 from src.app.auth.models import (
     ActiveSessionsResponse,
     ApiPermissionInfo,
+    AuthMyResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
@@ -33,6 +36,27 @@ from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+# ==================== 辅助函数 ====================
+
+
+def _to_permission_infos(permissions: list) -> list[ApiPermissionInfo]:
+    """权限模型转 ApiPermissionInfo 列表"""
+    return [
+        ApiPermissionInfo(
+            id=perm.id,
+            name=perm.name,
+            description=perm.description,
+            type=perm.type,
+            category=perm.category,
+            resource=perm.resource,
+            action=perm.action,
+            method=perm.method,
+            path=perm.path,
+        )
+        for perm in permissions
+    ]
 
 
 # ==================== 认证端点 ====================
@@ -214,6 +238,35 @@ async def revoke_session(
 
 
 @router.get(
+    "/my",
+    summary="获取当前用户初始化上下文",
+    description="一次性返回用户信息、API 权限列表和菜单树，用于前端登录后初始化",
+)
+async def get_my_context(
+    db: AsyncSessionDep,
+    current_user: Annotated[int, Depends(require_auth)],
+) -> ResponseSchemaModel[AuthMyResponse]:
+    """
+    获取当前用户初始化上下文
+
+    返回内容：
+    - user: 当前用户信息
+    - permissions: 当前用户可访问的 user_api 权限列表
+    - menus: 当前用户可访问菜单树
+    """
+    user = await auth_service.get_user_profile(db, current_user)
+    permissions = await permission_service.get_user_api_permissions(db, current_user)
+    menus = await menu_service.get_user_menu_tree(db, current_user)
+
+    result = AuthMyResponse(
+        user=user,
+        permissions=_to_permission_infos(permissions),
+        menus=menus,
+    )
+    return cast("ResponseSchemaModel[AuthMyResponse]", response_builder.success(data=result))
+
+
+@router.get(
     "/permissions",
     summary="获取当前用户的 API 权限列表",
     description="获取当前用户有权限访问的内部管理 API（用于前端动态路由和权限控制）",
@@ -247,21 +300,6 @@ async def get_user_permissions(
     """
     permissions = await permission_service.get_user_api_permissions(db, current_user)
 
-    # 转换为响应模型
-    permission_infos = [
-        ApiPermissionInfo(
-            id=perm.id,
-            name=perm.name,
-            description=perm.description,
-            type=perm.type,
-            category=perm.category,
-            resource=perm.resource,
-            action=perm.action,
-            method=perm.method,
-            path=perm.path,
-        )
-        for perm in permissions
-    ]
-
+    permission_infos = _to_permission_infos(permissions)
     result = UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)
     return cast("ResponseSchemaModel[UserPermissionsResponse]", response_builder.success(data=result))

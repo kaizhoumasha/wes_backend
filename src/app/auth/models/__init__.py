@@ -14,6 +14,7 @@
 from .auth import (
     ActiveSessionsResponse,
     ApiPermissionInfo,
+    AuthMyResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
@@ -25,12 +26,14 @@ from .auth import (
 
 # 重建 LoginResponse 模型，解析 user 字段的类型注解
 LoginResponse.model_rebuild()
+AuthMyResponse.model_rebuild()
 
 # ==================== 导出所有公开内容 ====================
 
 __all__ = [
     "ActiveSessionsResponse",
     "ApiPermissionInfo",
+    "AuthMyResponse",
     "LoginRequest",
     "LoginResponse",
     "LogoutResponse",

@@ -42,8 +42,8 @@ class MenuRepository(TreeRepository[Menu]):
         if user.is_superuser:
             result = await db.execute(
                 select(Menu)
-                .where(not Menu.is_deleted)  # type: ignore[arg-type]
-                .order_by(Menu.sort_order)  # type: ignore[arg-type]
+                .where(Menu.is_deleted.is_(False))
+                .order_by(Menu.sort_order)
             )
             return result.scalars().all()
 

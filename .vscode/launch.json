@@ -16,7 +16,7 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1"
       },
@@ -37,7 +37,7 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
@@ -58,7 +58,7 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1",
         "APP_DEBUG": "false"
@@ -71,7 +71,7 @@
       "program": "${file}",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
@@ -88,7 +88,7 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
@@ -105,7 +105,7 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/bin/python",
+      "python": "${command:python.interpreterPath}",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
