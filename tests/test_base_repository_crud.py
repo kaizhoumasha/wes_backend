@@ -172,6 +172,57 @@ class TestCrudOperations:
         assert all(not item.is_deleted for item in items)
 
     @pytest.mark.asyncio
+    async def test_get_list_with_ilike_prefix_pattern(self, db_session: AsyncSession):
+        """测试 ILIKE 前缀模式按完整 pattern 生效"""
+        await self.repo.create(db_session, {"code": "TEST001", "name": "admin"})
+        await self.repo.create(db_session, {"code": "TEST002", "name": "admin-user"})
+        await self.repo.create(db_session, {"code": "TEST003", "name": "super-admin"})
+        await db_session.commit()
+
+        filters = FilterGroup(
+            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="admin%")]
+        )
+
+        total, items = await self.repo.get_list(db_session, filters=filters)
+
+        assert total == 2
+        assert {item.name for item in items} == {"admin", "admin-user"}
+
+    @pytest.mark.asyncio
+    async def test_get_list_with_ilike_suffix_pattern(self, db_session: AsyncSession):
+        """测试 ILIKE 后缀模式按完整 pattern 生效"""
+        await self.repo.create(db_session, {"code": "TEST001", "name": "admin"})
+        await self.repo.create(db_session, {"code": "TEST002", "name": "super-admin"})
+        await self.repo.create(db_session, {"code": "TEST003", "name": "admin-user"})
+        await db_session.commit()
+
+        filters = FilterGroup(
+            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="%admin")]
+        )
+
+        total, items = await self.repo.get_list(db_session, filters=filters)
+
+        assert total == 2
+        assert {item.name for item in items} == {"admin", "super-admin"}
+
+    @pytest.mark.asyncio
+    async def test_get_list_with_ilike_escaped_literal_percent(self, db_session: AsyncSession):
+        """测试 ILIKE 使用反斜杠转义字面量 %"""
+        await self.repo.create(db_session, {"code": "TEST001", "name": "100% match"})
+        await self.repo.create(db_session, {"code": "TEST002", "name": "100 percent"})
+        await self.repo.create(db_session, {"code": "TEST003", "name": "foo100%bar"})
+        await db_session.commit()
+
+        filters = FilterGroup(
+            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value=r"%100\%%")]
+        )
+
+        total, items = await self.repo.get_list(db_session, filters=filters)
+
+        assert total == 2
+        assert {item.name for item in items} == {"100% match", "foo100%bar"}
+
+    @pytest.mark.asyncio
     async def test_get_list_with_sort(self, db_session: AsyncSession):
         """测试带排序获取列表"""
         # 创建多条记录

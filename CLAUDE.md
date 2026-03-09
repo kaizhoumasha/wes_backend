@@ -255,6 +255,21 @@ class Order(DataTableMixin, EnterpriseMixin, AuditableMixin, table=True):
     order_no: str
 ```
 
+**⚠️ Mixin 继承规范（CRITICAL）**：
+
+- `EnterpriseMixin` **已包含** `AuditMixin` 和 `OptimisticLockMixin`，不要重复继承
+- 错误示例：`class User(UserBase, AuditMixin, EnterpriseMixin, SoftDeleteMixin, table=True)` ❌
+- 正确示例：`class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True)` ✅
+
+**Mixin 继承层次**：
+```
+EnterpriseMixin = AuditableMixin + OptimisticLockMixin
+AuditableMixin = AuditMixin + StandardMixin
+AuditMixin → TimestampMixin → BaseMixin
+```
+
+重复继承会导致 **MRO (Method Resolution Order) 错误**：`TypeError: Cannot create a consistent method resolution order`
+
 ### 状态验证系统
 
 项目提供完整的**状态验证 Mixin**，专为 WMS/WES 业务场景设计，自动验证单据、货架、容器等状态。
@@ -907,6 +922,10 @@ serena list_dir . --recursive --skip-ignored
 - **单一职责**：Repository 只负责数据访问，Service 只负责业务逻辑，API 只负责路由
 - **开闭原则**：通过 Hook 和 Mixin 扩展功能，而不是修改基类
 - **依赖倒置**：依赖抽象（BaseService），而不是具体实现
+
+### 领域模型架构原则 (Domain Models Architecture)
+
+- **按业务域聚合 Schema 与 Model**：不要将所有模型混入单一的大文件（如 `core/models.py`），这会导致高耦合和循环依赖。相反，应将 Pydantic Schema 和 SQLAlchemy 数据模型按照业务域放在各模块的 `models.py` 内统一管理（例如 `src/app/device/models/command.py`），实现高内聚低耦合。
 
 ### YAGNI 原则（You Aren't Gonna Need It）
 

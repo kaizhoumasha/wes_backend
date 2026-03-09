@@ -246,3 +246,234 @@ When a learning is promoted to a skill, add these fields:
 - **Notes**: 后续评审统一采用阻塞/非阻塞分层表达。
 
 ---
+
+## [LRN-20260309-001] best_practice
+
+**Logged**: 2026-03-09T14:30:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+Vue 3 组件中重复执行的 `find` 操作应缓存到 computed 属性，避免热路径性能损耗。
+
+### Details
+在 ConditionEditorRow.vue 中，`fieldDataType` 和 `enumOptions` 两个 computed 属性都执行了 `props.fields.find(f => f.key === props.condition.field)`，每次渲染都会重复查找同一字段。
+
+解决方案是引入 `currentField` computed 缓存字段定义，其他 computed 复用该结果：
+```typescript
+// ✅ 正确：缓存字段定义
+const currentField = computed(() =>
+  props.fields.find(f => f.key === props.condition.field)
+)
+
+const fieldDataType = computed(() =>
+  currentField.value?.dataType || 'text'
+)
+
+const enumOptions = computed(() =>
+  currentField.value?.options || []
+)
+```
+
+性能影响：每次渲染从 2+ 次 `find`（O(n)）优化到 1 次。
+
+### Suggested Action
+代码审查时检查是否有：
+1. 多个 computed 属性执行相同的 find/filter 操作
+2. 事件处理器中重复执行 computed 中已有的查找
+
+对于大型数组（50+ 元素），考虑使用 Map 将查找从 O(n) 优化到 O(1)。
+
+### Metadata
+- Source: simplify-and-harden
+- Related Files: /Users/kaizhou/SynologyDrive/works/wes_frontend/src/components/search/ConditionEditorRow.vue
+- Tags: performance, computed, caching, vue3
+- Pattern-Key: frontend.cache_repeated_lookups_in_computed
+- Recurrence-Count: 1
+- First-Seen: 2026-03-09
+- Last-Seen: 2026-03-09
+
+### Resolution
+- **Resolved**: 2026-03-09T14:30:00+08:00
+- **Commit/PR**: staged (local)
+- **Notes**: 已重构 ConditionEditorRow.vue 使用 currentField 缓存
+
+---
+
+## [LRN-20260309-002] best_practice
+
+**Logged**: 2026-03-09T14:30:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+硬编码的字符串映射（如操作符标签、占位符）应提取到类型文件作为常量，便于复用和国际化。
+
+### Details
+ConditionEditorRow.vue 组件内部定义了 `getOperatorLabel()` 函数，包含 13 个操作符的中文标签映射。但相同映射逻辑已存在于 search-compiler.ts 的 `buildConditionLabel()` 中。
+
+解决方案是将操作符标签提取到 `types/search.ts`：
+```typescript
+// ✅ 正确：在 types/search.ts 中定义
+export const OPERATOR_LABELS: Record<SearchOperator, string> = {
+  contains: '包含',
+  equals: '等于',
+  // ... 13 个操作符
+} as const
+
+export function getOperatorLabel(op: SearchOperator): string {
+  return OPERATOR_LABELS[op]
+}
+```
+
+好处：
+1. 单一数据源（SSOT）
+2. 可复用到其他组件
+3. 便于未来国际化（i18n）
+4. 减少 20+ 行组件代码
+
+同样处理了 `INPUT_PLACEHOLDERS`、`BOOLEAN_LABELS` 等常量。
+
+### Suggested Action
+代码审查时检查：
+1. 组件中是否有 Record<string, string> 类型的映射常量
+2. 硬编码的字符串标签（如 '是'/'否'）是否应提取
+3. 相同映射是否在多个文件中重复定义
+
+### Metadata
+- Source: simplify-and-harden
+- Related Files: /Users/kaizhou/SynologyDrive/works/wes_frontend/src/types/search.ts, /Users/kaizhou/SynologyDrive/works/wes_frontend/src/components/search/ConditionEditorRow.vue
+- Tags: types, constants, reuse, i18n
+- Pattern-Key: frontend.extract_string_literals_to_type_constants
+- Recurrence-Count: 1
+- First-Seen: 2026-03-09
+- Last-Seen: 2026-03-09
+
+### Resolution
+- **Resolved**: 2026-03-09T14:30:00+08:00
+- **Commit/PR**: staged (local)
+- **Notes**: 已提取 OPERATOR_LABELS、INPUT_PLACEHOLDERS、BOOLEAN_LABELS 到 types/search.ts
+
+---
+
+## [LRN-20260309-003] best_practice
+
+**Logged**: 2026-03-09T14:30:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+使用类型守卫函数（Type Guard）替代硬编码字符串比较，提高类型安全和可读性。
+
+### Details
+ConditionEditorRow.vue 中多处使用 `condition.operator === 'between'` 进行判断。代码审查建议使用类型守卫替代：
+```typescript
+// ✅ 正确：定义类型守卫
+export function isBetweenOperator(op: SearchOperator): op is 'between' {
+  return op === 'between'
+}
+
+// 使用时获得类型推断
+if (isBetweenOperator(condition.operator)) {
+  // TypeScript 自动推断 operator 类型为 'between'
+}
+```
+
+好处：
+1. 语义更清晰（`isBetweenOperator()` 比 `=== 'between'`）
+2. 集中定义特殊操作符逻辑
+3. 类型守卫提供类型收窄（type narrowing）
+4. 便于重构（如将来重命名操作符）
+
+### Suggested Action
+代码审查时检查：
+1. 特殊值判断是否应封装为类型守卫或谓词函数
+2. 魔法字符串是否应提取为命名常量
+3. 重复的条件判断是否可抽取为可测试的纯函数
+
+### Metadata
+- Source: simplify-and-harden
+- Related Files: /Users/kaizhou/SynologyDrive/works/wes_frontend/src/types/search.ts, /Users/kaizhou/SynologyDrive/works/wes_frontend/src/components/search/ConditionEditorRow.vue
+- Tags: typescript, type-guard, semantic
+- Pattern-Key: frontend.use_type_guards_over_string_comparison
+- Recurrence-Count: 1
+- First-Seen: 2026-03-09
+- Last-Seen: 2026-03-09
+
+### Resolution
+- **Resolved**: 2026-03-09T14:30:00+08:00
+- **Commit/PR**: staged (local)
+- **Notes**: 已添加 isBetweenOperator 类型守卫，组件已更新使用
+
+---
+
+## [LRN-20260309-004] knowledge_gap
+
+**Logged**: 2026-03-09T10:31:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: backend
+
+### Summary
+项目 Mixin 系统存在组合继承层次，使用 `EnterpriseMixin` 时不应再显式继承 `AuditMixin` 或 `OptimisticLockMixin`，否则会导致 MRO 错误。
+
+### Details
+**问题现象**：
+运行 Alembic 生成迁移时抛出 `TypeError: Cannot create a consistent method resolution order (MRO)`。
+
+**根本原因**：
+项目的 Mixin 组合存在以下继承链：
+```
+EnterpriseMixin = AuditableMixin + OptimisticLockMixin
+AuditableMixin = AuditMixin + StandardMixin
+AuditMixin → TimestampMixin → BaseMixin
+```
+
+当数据库表模型定义时：
+```python
+# ❌ 错误：重复继承导致 MRO 冲突
+class User(UserBase, AuditMixin, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+```
+
+这导致 `TimestampMixin` 和 `BaseMixin` 在 MRO 中多次出现，形成菱形继承，Python 的 C3 线性化算法无法确定一致的方法解析顺序。
+
+**修复方案**：
+移除重复的 Mixin，使用 `EnterpriseMixin` 的完整功能：
+```python
+# ✅ 正确：EnterpriseMixin 已包含 AuditMixin 和 OptimisticLockMixin
+class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+```
+
+**受影响的模型**（7 个）：
+- `User` - src/app/admin/models/user.py
+- `Role` - src/app/admin/models/role.py
+- `Permission` - src/app/admin/models/perm.py
+- `Menu` - src/app/admin/models/menu.py
+- `Device` - src/app/device/models/device.py
+- `DeviceCommand` - src/app/device/models/command.py
+- `WorkLine` - src/app/workline/models/workline.py
+
+### Suggested Action
+1. ~~更新 CLAUDE.md 添加 Mixin 使用规范~~ ✅ 已完成
+2. 代码审查时检查是否有重复的 Mixin 继承
+3. 考虑添加静态检查或 linter 规则检测此类问题
+
+### Metadata
+- Source: error
+- Related Files: src/core/mixins/composite.py, src/app/admin/models/user.py, src/app/admin/models/role.py, src/app/admin/models/perm.py, src/app/admin/models/menu.py, src/app/device/models/device.py, src/app/device/models/command.py, src/app/workline/models/workline.py
+- Tags: mixin, mro, inheritance, python, alembic
+- Pattern-Key: backend.enterprise_mixin_already_contains_audit_and_lock
+- Recurrence-Count: 1
+- First-Seen: 2026-03-09
+- Last-Seen: 2026-03-09
+
+### Resolution
+- **Resolved**: 2026-03-09T10:31:00+08:00
+- **Promoted**: CLAUDE.md
+- **Commit/PR**: staged (local)
+- **Notes**: 已修复所有 7 个模型的 Mixin 继承，迁移脚本成功生成；已更新 CLAUDE.md 添加 Mixin 使用规范
+
+---

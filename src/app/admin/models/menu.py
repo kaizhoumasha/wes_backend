@@ -14,7 +14,7 @@ from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
-    from src.app.admin.models.role import Role, RoleResponse
+    from src.app.admin.models.role import RoleResponse
 
 
 # ==================== Menu 模型 ====================
@@ -31,7 +31,7 @@ class MenuBase(TreeMixin, BaseMixin):
     is_hidden: bool = Field(default=False, description="是否隐藏")
 
 
-class Menu(MenuBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=True):  # type: ignore[misc]
+class Menu(MenuBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """菜单数据库表"""
 
     __tablename__: Literal["menus"] = "menus"
@@ -57,10 +57,8 @@ class MenuCreate(ModelFactory(MenuBase).for_create()):
     """菜单创建 Schema"""
 
 
-
 class MenuUpdate(ModelFactory(MenuBase).for_update()):
     """菜单更新 Schema"""
-
 
 
 class MenuResponse(MenuBase):

@@ -1,5 +1,11 @@
 """
 查询构建器
+
+支持复杂查询条件的构建，包括字段过滤、关联过滤和排序。
+
+ILIKE 操作符约定：
+    调用方需传入完整 pattern（例如 %foo%、foo%、%foo）
+    使用反斜杠转义特殊字符（%、_、\\），支持字面量搜索
 """
 
 from typing import Any, ClassVar
@@ -9,6 +15,9 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from src.core.logger import logger
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
+
+# LIKE/ILIKE 转义字符：使用反斜杠支持字面量 %、_、\\ 搜索
+_SQL_ESCAPE_CHAR: str = "\\"
 
 
 class QueryBuilder:
@@ -24,7 +33,7 @@ class QueryBuilder:
         FilterOperator.LE: lambda f, v: f <= v,
         FilterOperator.IN: lambda f, v: f.in_(v),
         FilterOperator.NIN: lambda f, v: ~f.in_(v),
-        FilterOperator.ILIKE: lambda f, v: f.ilike(f"%{v}%"),
+        FilterOperator.ILIKE: lambda f, v: f.ilike(v, escape=_SQL_ESCAPE_CHAR),
         FilterOperator.BETWEEN: lambda f, v: f.between(v[0], v[1]),
         FilterOperator.IS_NULL: lambda f, _: f.is_(None),
         FilterOperator.NOT_NULL: lambda f, _: f.is_not(None),
@@ -34,7 +43,7 @@ class QueryBuilder:
     _REL_OPERATOR_MAP: ClassVar[dict] = {
         FilterOperator.EQ: lambda ra, rf, v: ra.any(rf == v),
         FilterOperator.IN: lambda ra, rf, v: ra.any(rf.in_(v)),
-        FilterOperator.ILIKE: lambda ra, rf, v: ra.any(rf.ilike(f"%{v}%")),
+        FilterOperator.ILIKE: lambda ra, rf, v: ra.any(rf.ilike(v, escape=_SQL_ESCAPE_CHAR)),
     }
 
     def __init__(self, model: type):

@@ -192,9 +192,9 @@ class CommandAck(BaseModel):
 
 class DeviceCommand(
     CommandBase,
-    DataTableMixin,
     EnterpriseMixin,
     SoftDeleteMixin,
+    DataTableMixin,
     table=True,
 ):
     """

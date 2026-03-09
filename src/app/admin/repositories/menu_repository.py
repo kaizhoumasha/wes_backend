@@ -28,9 +28,9 @@ class MenuRepository(TreeRepository[Menu]):
         # 查询用户（预加载 roles.menus）
         result = await db.execute(
             select(User)
-            .where(User.id == user_id)
+            .where(User.id == user_id)  # type: ignore[arg-type]
             .options(
-                selectinload(User.roles).selectinload(Role.menus),  # 预加载菜单
+                selectinload(User.roles).selectinload(Role.menus),  # type: ignore[arg-type]  # 预加载菜单
             )
         )
         user = result.scalar_one_or_none()
@@ -42,20 +42,20 @@ class MenuRepository(TreeRepository[Menu]):
         if user.is_superuser:
             result = await db.execute(
                 select(Menu)
-                .where(Menu.is_deleted.is_(False))
-                .order_by(Menu.sort_order)
+                .where(Menu.is_deleted.is_(False))  # type: ignore[arg-type]
+                .order_by(Menu.sort_order)  # type: ignore[arg-type]
             )
-            return result.scalars().all()
+            return result.scalars().all()  # type: ignore[return-value]
 
-        # 普通用户：收集角色关联的菜单
-        menus = set()
-        for role in user.roles:
+        # 普通用户：收集角色关联的菜单（按 menu.id 去重，避免 ORM 实例不可哈希）
+        menu_map: dict[int, Menu] = {}
+        for role in user.roles:  # type: ignore[arg-type]
             if not role.is_deleted:
                 for menu in role.menus:
-                    if not menu.is_deleted:  # type: ignore[arg-type]
-                        menus.add(menu)
+                    if not menu.is_deleted and menu.id is not None:  # type: ignore[arg-type]
+                        menu_map[menu.id] = menu
 
-        return list(menus)
+        return list(menu_map.values())
 
 
 menu_repository = MenuRepository()
