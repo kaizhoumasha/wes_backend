@@ -186,7 +186,7 @@ async def get_latest_command(db: AsyncSession):
         text(
             """
             SELECT
-                dc.command_id,
+                dc.command_code,
                 dc.device_id,
                 d.device_code,
                 dc.task_type,
@@ -201,7 +201,7 @@ async def get_latest_command(db: AsyncSession):
     row = result.first()
     if row:
         return {
-            "command_id": row[0],
+            "command_code": row[0],
             "device_id": row[1],
             "device_code": row[2],
             "task_type": row[3],
@@ -210,15 +210,16 @@ async def get_latest_command(db: AsyncSession):
     return None
 
 
-async def get_command_from_db(db: AsyncSession, command_id: str):
+async def get_command_from_db(db: AsyncSession, command_code: str):
     """从数据库获取指令"""
     result = await db.execute(
-        text("SELECT * FROM wes_biz.device_commands WHERE command_id = :cmd_id"), {"cmd_id": command_id}
+        text("SELECT * FROM wes_biz.device_commands WHERE command_code = :cmd_code"),
+        {"cmd_code": command_code},
     )
     row = result.first()
     if row:
         return {
-            "command_id": row[9],  # command_id
+            "command_code": row[9],  # command_code
             "status": row[16],  # status
         }
     return None
@@ -291,13 +292,13 @@ async def test_full_conveyor_workflow(db):
         if command is not None:
             break
     assert command is not None
-    print(f"✅ 指令已创建: {command['command_id']}")
+    print(f"✅ 指令已创建: {command['command_code']}")
 
     # Step 5: 等待指令发送到机械臂
     print("\n[Step 5] 等待指令发送到机械臂...")
     for _i in range(10):
         await asyncio.sleep(1)
-        cmd = await get_command_from_db(db, command["command_id"])
+        cmd = await get_command_from_db(db, command["command_code"])
         if cmd and cmd["status"] == "ACK_RECEIVED":
             command = cmd
             break
@@ -308,7 +309,7 @@ async def test_full_conveyor_workflow(db):
     print("\n[Step 6] 等待机械臂执行完成...")
     for _i in range(20):
         await asyncio.sleep(1)
-        cmd = await get_command_from_db(db, command["command_id"])
+        cmd = await get_command_from_db(db, command["command_code"])
         if cmd and cmd["status"] == "COMPLETED":
             command = cmd
             break
@@ -376,20 +377,20 @@ async def test_sensor_auto_trigger(db):
         command = await get_latest_command(db)
         # 避免重复添加
         if command and not any(
-            cmd["command_id"] == command["command_id"] for cmd in commands
+            cmd["command_code"] == command["command_code"] for cmd in commands
         ):
             commands.append(command)
-            print(f"✅ 指令 {i + 1}/3 已创建: {command['command_id']}")
+            print(f"✅ 指令 {i + 1}/3 已创建: {command['command_code']}")
 
     # 如果指令数量不足，额外等待
     while len(commands) < 3:
         await asyncio.sleep(5)
         command = await get_latest_command(db)
         if command and not any(
-            cmd["command_id"] == command["command_id"] for cmd in commands
+            cmd["command_code"] == command["command_code"] for cmd in commands
         ):
             commands.append(command)
-            print(f"✅ 指令 {len(commands)}/3 已创建: {command['command_id']}")
+            print(f"✅ 指令 {len(commands)}/3 已创建: {command['command_code']}")
 
     assert len(commands) == 3
     print(f"✅ 共创建了 {len(commands)} 条指令")

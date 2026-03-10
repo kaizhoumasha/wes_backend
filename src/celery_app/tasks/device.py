@@ -219,12 +219,12 @@ def process_device_event(self, event_data: dict):
                     )
                     if command is None:
                         raise RuntimeError("创建设备指令失败")
-                    commands_created.append(command.command_id)
+                    commands_created.append(command.command_code)
 
                     # 发送指令
                     try:
                         await device_command_service.send_command(
-                            db, command.command_id
+                            db, command.command_code
                         )
                     except Exception as e:
                         logger.error(f"发送指令失败: {e}")

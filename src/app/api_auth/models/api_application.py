@@ -124,8 +124,8 @@ class APIApplicationCreate(ModelFactory(APIApplicationBase).for_create()):
     pass
 
 
-class APIApplicationUpdate(ModelFactory(APIApplicationBase).for_update()):
-    version: int = Field(default=0, description="数据版本")
+class APIApplicationUpdate(ModelFactory(APIApplicationBase).for_optimistic_update()):
+    pass
 
 
 class ResetValidityPeriodSchema(BaseMixin):
@@ -137,6 +137,7 @@ class ResetValidityPeriodSchema(BaseMixin):
 
 class APIApplicationResponse(APIApplicationBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin):
     app_id: str
+    version: int
     status: AppStatus = Field(default=AppStatus.ACTIVE)
     expires_at: datetime | None = None
 

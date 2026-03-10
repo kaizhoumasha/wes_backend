@@ -11,11 +11,13 @@
 """
 
 import pytest
+from pydantic import ValidationError
 from sqlmodel import Field, SQLModel
 
 from src.core.exceptions import OptimisticLockException
-from src.core.mixins import DataTableMixin, OptimisticLockMixin
+from src.core.mixins import BaseMixin, DataTableMixin, OptimisticLockMixin
 from src.database.base_repository import BaseRepository
+from src.database.model_factory import ModelFactory
 
 
 class Product(DataTableMixin, OptimisticLockMixin, table=True):
@@ -43,6 +45,30 @@ class ProductUpdate(SQLModel):
     price: float | None = None
     stock: int | None = None
     version: int | None = None
+
+
+class ProductUpdateBase(BaseMixin):
+    """用于测试 ModelFactory 乐观锁更新 Schema 的基础模型"""
+
+    name: str = Field(max_length=100)
+    price: float = Field(ge=0)
+    stock: int = Field(ge=0)
+
+
+OptimisticProductUpdate = ModelFactory(ProductUpdateBase).for_optimistic_update()
+
+
+def test_for_optimistic_update_requires_version() -> None:
+    """for_optimistic_update 应生成 version 必填的更新模型"""
+    assert "version" in OptimisticProductUpdate.model_fields
+    assert OptimisticProductUpdate.model_fields["version"].is_required()
+
+    update = OptimisticProductUpdate(name="iPhone 15", version=3)
+    assert update.version == 3
+    assert update.price is None
+
+    with pytest.raises(ValidationError):
+        OptimisticProductUpdate(name="iPhone 15")
 
 
 @pytest.mark.asyncio

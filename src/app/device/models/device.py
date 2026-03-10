@@ -176,7 +176,7 @@ class DeviceCreate(ModelFactory(DeviceBase).for_create()):
     """设备创建 Schema - 接收客户端输入"""
 
 
-class DeviceUpdate(ModelFactory(DeviceBase).for_update()):
+class DeviceUpdate(ModelFactory(DeviceBase).for_optimistic_update()):
     """设备更新 Schema - 所有字段可选"""
 
 
@@ -184,6 +184,7 @@ class DeviceResponse(DeviceBase):
     """设备响应 Schema - 返回给客户端"""
 
     id: int
+    version: int
 
 
 # ==================== 导出 ====================

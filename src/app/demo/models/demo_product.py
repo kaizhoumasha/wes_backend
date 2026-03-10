@@ -7,7 +7,7 @@ from src.app.demo.models.demo_product_list import (
     DemoProductListResponse,
     DemoProductListUpdate,
 )
-from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, OptimisticLockMixin, SoftDeleteMixin
+from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -77,7 +77,7 @@ class DemoProductCreate(ModelFactory(DemoProductBase).for_create()):
     product_lists: list[DemoProductListCreate] = Field(default_factory=list)
 
 
-class DemoProductUpdate(OptimisticLockMixin, ModelFactory(DemoProductBase).for_update()):
+class DemoProductUpdate(ModelFactory(DemoProductBase).for_optimistic_update()):
     """
     DemoProduct 更新模型
 
@@ -85,7 +85,6 @@ class DemoProductUpdate(OptimisticLockMixin, ModelFactory(DemoProductBase).for_u
     """
 
     product_lists: list[DemoProductListUpdate] = Field(default_factory=list)
-    version: int = Field(default=0)
 
 
 class DemoProductResponse(DemoProductBase, EnterpriseMixin, SoftDeleteMixin):
@@ -96,4 +95,5 @@ class DemoProductResponse(DemoProductBase, EnterpriseMixin, SoftDeleteMixin):
     """
 
     id: int
+    version: int
     product_lists: list[DemoProductListResponse]

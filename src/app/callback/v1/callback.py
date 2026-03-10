@@ -54,7 +54,7 @@ async def callback_result(
     请求体格式:
     ```json
     {
-      "command_id": "CMD-20251215-1001",
+      "command_code": "CMD-20251215-1001",
       "device_code": "ARM_01",
       "result": "SUCCESS",
       "finish_time": 1702627250000,
@@ -80,7 +80,7 @@ async def callback_result(
     start_time = time.time()
     request_id = get_request_id()
 
-    logger.info(f"收到指令结果回调: {callback.command_id} -> {callback.result} (request_id={request_id})")
+    logger.info(f"收到指令结果回调: {callback.command_code} -> {callback.result} (request_id={request_id})")
 
     try:
         # 处理回调结果
@@ -91,7 +91,7 @@ async def callback_result(
         response_time_ms = int(cost_time * 1000)
 
         logger.info(
-            f"指令结果处理完成: {callback.command_id} -> "
+            f"指令结果处理完成: {callback.command_code} -> "
             f"status={command.status.value}, "
             f"duration={command.get_duration_ms()}ms"
         )
@@ -113,10 +113,10 @@ async def callback_result(
         await audit_log_service.create_audit_log(
             db,
             method="POST",
-            title=f"指令结果回调: {callback.command_id}",
+            title=f"指令结果回调: {callback.command_code}",
             path=str(request.url.path),
             args={
-                "command_id": callback.command_id,
+                "command_code": callback.command_code,
                 "device_code": callback.device_code,
                 "result": callback.result.value,
             },
@@ -148,10 +148,10 @@ async def callback_result(
         await audit_log_service.create_audit_log(
             db,
             method="POST",
-            title=f"指令结果回调: {callback.command_id}",
+            title=f"指令结果回调: {callback.command_code}",
             path=str(request.url.path),
             args={
-                "command_id": callback.command_id,
+                "command_code": callback.command_code,
                 "device_code": callback.device_code,
                 "result": callback.result.value,
             },

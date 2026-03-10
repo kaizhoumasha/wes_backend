@@ -65,7 +65,7 @@ class WorkLineCreate(ModelFactory(WorkLineBase).for_create()):
     """作业线创建 Schema - 接收客户端输入"""
 
 
-class WorkLineUpdate(ModelFactory(WorkLineBase).for_update()):
+class WorkLineUpdate(ModelFactory(WorkLineBase).for_optimistic_update()):
     """作业线更新 Schema - 所有字段可选"""
 
 
@@ -73,3 +73,4 @@ class WorkLineResponse(WorkLineBase):
     """作业线响应 Schema - 返回给客户端"""
 
     id: int
+    version: int

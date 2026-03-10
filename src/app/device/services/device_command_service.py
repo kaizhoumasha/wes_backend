@@ -57,10 +57,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         command_request: CommandRequest,
     ) -> DeviceCommand | None:
         """创建设备指令"""
-        # 生成 command_id（如果未提供）
-        command_id = command_request.command_id
-        if not command_id:
-            command_id = self._generate_command_id(
+        # 生成 command_code（如果未提供）
+        command_code = command_request.command_code
+        if not command_code:
+            command_code = self._generate_command_code(
                 command_request.device_id,
                 command_request.task_type.value,
             )
@@ -72,7 +72,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         # 创建指令记录
         command_data = {
-            "command_id": command_id,
+            "command_code": command_code,
             "device_id": command_request.device_id,
             "task_type": command_request.task_type,
             "priority": command_request.priority,
@@ -84,14 +84,14 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         command = await self.repo.create(db, command_data)
         if command:
-            logger.info(f"创建指令: {command_id} -> {command_request.task_type.value}")
+            logger.info(f"创建指令: {command_code} -> {command_request.task_type.value}")
 
         return command
 
     async def send_command(
         self,
         db: AsyncSession,
-        command_id: str,
+        command_code: str,
         device_url: str | None = None,
     ) -> CommandAck:
         """
@@ -99,16 +99,16 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         Args:
             db: 数据库会话
-            command_id: 指令 ID
+            command_code: 指令编码
             device_url: 设备 URL（可选）
 
         Returns:
             设备返回的 ACK 确认
         """
         # 1. 获取指令
-        command = await self.repo.get_by_command_id(db, command_id)
+        command = await self.repo.get_by_command_code(db, command_code)
         if not command:
-            raise NotFoundException(f"指令不存在: {command_id}")
+            raise NotFoundException(f"指令不存在: {command_code}")
 
         # 2. 获取设备 URL
         if not device_url:
@@ -116,7 +116,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         # 3. 构建请求体（白皮书 3.1.1 格式）
         request_body = {
-            "command_id": command.command_id,
+            "command_code": command.command_code,
             "task_type": command.task_type.value,
             "priority": command.priority,
             "timeout": command.timeout_ms,
@@ -126,7 +126,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         # 4. 发送 HTTP 请求
         url = f"{device_url}/api/v1/device/command"
-        logger.info(f"发送指令到设备: {url} -> {command_id}")
+        logger.info(f"发送指令到设备: {url} -> {command_code}")
 
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
@@ -139,15 +139,15 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
                 # 5. 更新指令状态
                 await self._update_sent_status(db, command, ack.code, ack.message, ack.trace_id)
 
-                logger.info(f"指令已发送: {command_id} -> ACK {ack.code} ({ack.message})")
+                logger.info(f"指令已发送: {command_code} -> ACK {ack.code} ({ack.message})")
                 return ack
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"发送指令失败: {command_id} -> HTTP {e.response.status_code}")
+            logger.error(f"发送指令失败: {command_code} -> HTTP {e.response.status_code}")
             await self._update_command_status(db, command, CommandStatus.FAILED, error_detail=str(e))
             raise
         except httpx.RequestError as e:
-            logger.error(f"发送指令失败: {command_id} -> 网络错误 {e}")
+            logger.error(f"发送指令失败: {command_code} -> 网络错误 {e}")
             await self._update_command_status(db, command, CommandStatus.TIMEOUT, error_detail=str(e))
             raise
 
@@ -158,9 +158,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     ) -> DeviceCommand | None:
         """处理设备回调结果（更新指令状态）"""
         # 1. 获取指令
-        command = await self.repo.get_by_command_id(db, callback.command_id)
+        command = await self.repo.get_by_command_code(db, callback.command_code)
         if not command or not command.id:
-            raise NotFoundException(f"回调指令不存在: {callback.command_id}")
+            raise NotFoundException(f"回调指令不存在: {callback.command_code}")
 
         # 2. 解析完成时间（使用 UTC 时区，转换为 naive 用于数据库）
         aware_dt = timezone.to_utc(int(callback.finish_time / 1000))
@@ -184,7 +184,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         if command:
             logger.info(
-                f"处理回调结果: {callback.command_id} -> {callback.result} (耗时: {command.get_duration_ms()}ms)"
+                f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {command.get_duration_ms()}ms)"
             )
 
         return command
@@ -277,12 +277,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     async def cancel_command(
         self,
         db: AsyncSession,
-        command_id: str,
+        command_code: str,
     ) -> DeviceCommand | None:
         """取消正在执行的指令"""
-        command = await self.repo.get_by_command_id(db, command_id)
+        command = await self.repo.get_by_command_code(db, command_code)
         if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command_id}")
+            raise NotFoundException(f"指令不存在: {command_code}")
 
         # 检查是否可以取消
         if command.status not in [
@@ -303,18 +303,18 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         )
 
         if command:
-            logger.info(f"指令已取消: {command_id}")
+            logger.info(f"指令已取消: {command_code}")
         return command
 
     async def retry_command(
         self,
         db: AsyncSession,
-        command_id: str,
+        command_code: str,
     ) -> DeviceCommand | None:
         """重试失败的指令"""
-        command = await self.repo.get_by_command_id(db, command_id)
+        command = await self.repo.get_by_command_code(db, command_code)
         if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command_id}")
+            raise NotFoundException(f"指令不存在: {command_code}")
 
         # 检查是否可以重试
         if not command.can_retry():
@@ -336,21 +336,21 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         command = await self.repo.update(db, command.id, update_data)
 
         if command:
-            logger.info(f"指令已重置: {command_id} (重试次数: {command.retry_count})")
+            logger.info(f"指令已重置: {command_code} (重试次数: {command.retry_count})")
         return command
 
-    async def get_command_by_id(
+    async def get_command_by_code(
         self,
         db: AsyncSession,
-        command_id: str,
+        command_code: str,
     ) -> DeviceCommand | None:
-        """根据 command_id 查询指令"""
-        return await self.repo.get_by_command_id(db, command_id)
+        """根据 command_code 查询指令"""
+        return await self.repo.get_by_command_code(db, command_code)
 
     # ==================== 辅助方法 ====================
 
-    def _generate_command_id(self, _device_id: int, task_type: str) -> str:
-        """生成指令 ID"""
+    def _generate_command_code(self, _device_id: int, task_type: str) -> str:
+        """生成指令编码"""
         date_str = timezone.now_for_db().strftime("%Y%m%d")
         unique_id = uuid.uuid4().hex[:8].upper()
         return f"CMD-{date_str}-{task_type}-{unique_id}"
@@ -398,7 +398,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     ) -> None:
         """更新指令发送状态"""
         if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command.command_id}")
+            raise NotFoundException(f"指令不存在: {command.command_code}")
 
         update_data = {
             "status": CommandStatus.SENT,
@@ -424,7 +424,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     ) -> None:
         """更新指令状态"""
         if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command.command_id}")
+            raise NotFoundException(f"指令不存在: {command.command_code}")
 
         update_data = {
             "status": status,

@@ -57,7 +57,7 @@ class MenuCreate(ModelFactory(MenuBase).for_create()):
     """菜单创建 Schema"""
 
 
-class MenuUpdate(ModelFactory(MenuBase).for_update()):
+class MenuUpdate(ModelFactory(MenuBase).for_optimistic_update()):
     """菜单更新 Schema"""
 
 
@@ -65,6 +65,7 @@ class MenuResponse(MenuBase):
     """菜单响应 Schema"""
 
     id: int
+    version: int
     roles: list["RoleResponse"] = Field(default_factory=list)  # 关联角色
 
 

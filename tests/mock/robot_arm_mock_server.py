@@ -123,7 +123,7 @@ class DeviceCommandAck(BaseModel):
 class DeviceCommandPayload(BaseModel):
     """WES 下发的指令 Payload（白皮书格式）"""
 
-    command_id: str
+    command_code: str
     task_type: str
     priority: int
     timeout: int
@@ -134,7 +134,7 @@ class DeviceCommandPayload(BaseModel):
 class CancelRequest(BaseModel):
     """取消指令请求"""
 
-    command_id: str
+    command_code: str
 
 
 # ============================================
@@ -167,7 +167,7 @@ class ExecutionRecord(BaseModel):
     """执行记录"""
 
     execution_id: str
-    command_id: str
+    command_code: str
     task_type: str
     source_loc: str
     target_loc: str
@@ -223,8 +223,8 @@ class RobotSimulator:
         self._auto_stop_event = asyncio.Event()
         self._lock = asyncio.Lock()
 
-    def _generate_command_id(self) -> str:
-        """生成指令 ID"""
+    def _generate_command_code(self) -> str:
+        """生成指令编码"""
         self._counter += 1
         return f"CMD-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._counter:03d}"
 
@@ -235,7 +235,7 @@ class RobotSimulator:
 
     async def _callback_to_wes(
         self,
-        command_id: str,
+        command_code: str,
         result: str,
         source_loc: str | None = None,
         target_loc: str | None = None,
@@ -250,7 +250,7 @@ class RobotSimulator:
             # 构建回调数据
             # 注意：WES 回调接口期望 device_code 字段，不是 device_id
             callback_data = {
-                "command_id": command_id,
+                "command_code": command_code,
                 "device_code": self.device_id,
                 "result": result,
                 "finish_time": int(datetime.now().timestamp() * 1000),
@@ -276,7 +276,7 @@ class RobotSimulator:
             parsed_url = urlparse(WES_CALLBACK_URL)
             auth_headers = build_api_auth_headers("POST", parsed_url.path)
 
-            logger.info(f"回调结果到 WES: command_id={command_id}, result={result}, app_id={API_APP_ID}")
+            logger.info(f"回调结果到 WES: command_code={command_code}, result={result}, app_id={API_APP_ID}")
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -298,7 +298,7 @@ class RobotSimulator:
             except Exception:
                 error_msg = str(e)
 
-            logger.error(f"WES 回调失败 [HTTP {status_code}]: command_id={command_id}, error={error_msg}")
+            logger.error(f"WES 回调失败 [HTTP {status_code}]: command_code={command_code}, error={error_msg}")
             # 回调失败不影响执行记录，只记录错误
             return {
                 "callback_success": False,
@@ -308,7 +308,7 @@ class RobotSimulator:
 
         except httpx.RequestError as e:
             # 网络错误
-            logger.error(f"WES 回调失败 [网络错误]: command_id={command_id}, error={e}")
+            logger.error(f"WES 回调失败 [网络错误]: command_code={command_code}, error={e}")
             return {
                 "callback_success": False,
                 "error": "wes_unreachable",
@@ -346,8 +346,8 @@ class RobotSimulator:
             执行记录
         """
         async with self._lock:
-            # 生成 command_id
-            command_id = self._generate_command_id()
+            # 生成 command_code
+            command_code = self._generate_command_code()
 
             # 生成条码（如果未提供）
             if barcode is None and not simulate_failure:
@@ -357,7 +357,7 @@ class RobotSimulator:
             started_at = datetime.now()
 
             logger.info(
-                f"开始执行指令: command_id={command_id}, task_type={task_type}, "
+                f"开始执行指令: command_code={command_code}, task_type={task_type}, "
                 f"source={source_loc}, target={target_loc}, barcode={barcode}"
             )
 
@@ -371,7 +371,7 @@ class RobotSimulator:
             # 回调到 WES
             try:
                 await self._callback_to_wes(
-                    command_id=command_id,
+                    command_code=command_code,
                     result=result,
                     source_loc=source_loc,
                     target_loc=target_loc,
@@ -390,7 +390,7 @@ class RobotSimulator:
             execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
                 execution_id=execution_id,
-                command_id=command_id,
+                command_code=command_code,
                 task_type=task_type,
                 source_loc=source_loc,
                 target_loc=target_loc,
@@ -409,7 +409,7 @@ class RobotSimulator:
             else:
                 self._failure_count += 1
 
-            logger.info(f"指令执行完成: command_id={command_id}, result={result}, duration={duration_ms}ms")
+            logger.info(f"指令执行完成: command_code={command_code}, result={result}, duration={duration_ms}ms")
 
             return record
 
@@ -571,7 +571,9 @@ class RobotSimulator:
             # 记录开始时间
             started_at = datetime.now()
 
-            logger.info(f"开始执行 WES 指令: command_id={payload.command_id}, task_type={task_type}, params={params}")
+            logger.info(
+                f"开始执行 WES 指令: command_code={payload.command_code}, task_type={task_type}, params={params}"
+            )
 
             # 模拟执行时间（2秒）
             execution_time = 2.0
@@ -585,7 +587,7 @@ class RobotSimulator:
                 # 构建回调数据
                 # 注意：WES 回调接口期望 device_code 字段，不是 device_id
                 callback_data = {
-                    "command_id": payload.command_id,
+                    "command_code": payload.command_code,
                     "device_code": self.device_id,
                     "result": result,
                     "finish_time": int(datetime.now().timestamp() * 1000),
@@ -598,7 +600,7 @@ class RobotSimulator:
                     callback_data["data"]["barcode"] = barcode
 
                 await self._callback_to_wes(
-                    command_id=payload.command_id,
+                    command_code=payload.command_code,
                     result=result,
                     source_loc=source_loc,
                     target_loc=target_loc,
@@ -615,7 +617,7 @@ class RobotSimulator:
             execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
                 execution_id=execution_id,
-                command_id=payload.command_id,
+                command_code=payload.command_code,
                 task_type=task_type,
                 source_loc=source_loc,
                 target_loc=target_loc,
@@ -631,7 +633,9 @@ class RobotSimulator:
             self._execution_count += 1
             self._success_count += 1
 
-            logger.info(f"WES 指令执行完成: command_id={payload.command_id}, result={result}, duration={duration_ms}ms")
+            logger.info(
+                f"WES 指令执行完成: command_code={payload.command_code}, result={result}, duration={duration_ms}ms"
+            )
 
             return record
 
@@ -668,11 +672,11 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     """
     global current_command
 
-    logger.info(f"收到指令: {payload.command_id}, task_type={payload.task_type}")
+    logger.info(f"收到指令: {payload.command_code}, task_type={payload.task_type}")
 
     # 验证设备状态
     if DEVICE_INFO["status"] == "RUNNING":
-        logger.warning(f"设备忙，拒绝指令: {payload.command_id}")
+        logger.warning(f"设备忙，拒绝指令: {payload.command_code}")
         raise HTTPException(status_code=503, detail="Device Busy")
 
     # 更新设备状态
@@ -680,11 +684,11 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     current_command = payload.model_dump()
 
     # 生成追踪 ID
-    trace_id = f"ROBOT-LOG-{payload.command_id.split('-')[-1]}"
+    trace_id = f"ROBOT-LOG-{payload.command_code.split('-')[-1]}"
 
     # 立即返回 ACK
     ack = DeviceCommandAck(code=200, message="Accepted", trace_id=trace_id)
-    logger.info(f"指令已接受: {payload.command_id}, trace_id={trace_id}")
+    logger.info(f"指令已接受: {payload.command_code}, trace_id={trace_id}")
 
     # 异步执行指令（使用 RobotSimulator，以便记录执行历史）
     asyncio.create_task(_execute_wes_command_with_cleanup(payload))  # noqa: RUF006
@@ -710,21 +714,21 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
     """
     global current_command
 
-    logger.info(f"收到取消指令请求: {request.command_id}")
+    logger.info(f"收到取消指令请求: {request.command_code}")
 
     if current_command is None:
         logger.warning("没有正在执行的指令")
         raise HTTPException(status_code=404, detail="No Active Command")
 
-    if current_command["command_id"] != request.command_id:
-        logger.warning(f"指令 ID 不匹配: {request.command_id}")
+    if current_command["command_code"] != request.command_code:
+        logger.warning(f"指令编码不匹配: {request.command_code}")
         raise HTTPException(status_code=404, detail="Command Not Found")
 
     # 模拟取消成功
     DEVICE_INFO["status"] = "IDLE"
     current_command = None
 
-    logger.info(f"指令已取消: {request.command_id}")
+    logger.info(f"指令已取消: {request.command_code}")
 
     return DeviceCommandAck(code=200, message="Cancelled")
 
@@ -740,7 +744,7 @@ async def get_status():
         "device_type": DEVICE_INFO["device_type"],
         "status": DEVICE_INFO["status"],
         "is_online": DEVICE_INFO["is_online"],
-        "current_command_id": current_command["command_id"] if current_command else None,
+        "current_command_code": current_command["command_code"] if current_command else None,
         "timestamp": int(datetime.now().timestamp() * 1000),
     }
 

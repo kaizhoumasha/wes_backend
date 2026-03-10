@@ -52,7 +52,7 @@ class RoleCreate(ModelFactory(RoleBase).for_create()):
     """角色创建 Schema"""
 
 
-class RoleUpdate(ModelFactory(RoleBase).for_update()):
+class RoleUpdate(ModelFactory(RoleBase).for_optimistic_update()):
     """角色更新 Schema"""
 
 
@@ -66,4 +66,5 @@ class RoleResponse(RoleBase):
     """角色响应 Schema"""
 
     id: int
+    version: int
     permissions: list[PermissionResponse] = Field(default_factory=list)

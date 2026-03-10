@@ -44,7 +44,7 @@ class LabelerProcessor(BaseDeviceProcessor):
 
         验证规则:
         - MATERIAL_ARRIVED: 必须包含 location 和 barcode
-        - PROCESS_COMPLETED: 必须包含 command_id
+        - PROCESS_COMPLETED: 必须包含 command_code
         - DEVICE_ERROR: 必须包含 error_code
 
         Args:
@@ -71,8 +71,8 @@ class LabelerProcessor(BaseDeviceProcessor):
 
         elif event_type == EventType.PROCESS_COMPLETED.value:
             # 贴标完成事件：必须有指令 ID
-            if "command_id" not in data:
-                return False, "PROCESS_COMPLETED 事件缺少 command_id 字段"
+            if "command_code" not in data:
+                return False, "PROCESS_COMPLETED 事件缺少 command_code 字段"
 
         elif event_type == EventType.DEVICE_ERROR.value:
             # 设备故障事件：必须有错误码
@@ -120,9 +120,9 @@ class LabelerProcessor(BaseDeviceProcessor):
 
         if event_type == EventType.PROCESS_COMPLETED.value:
             # 贴标完成：通知下游设备（如输送线继续输送）
-            command_id = data.get("command_id")
+            command_code = data.get("command_code")
 
-            logger.info(f"贴标机决策: 贴标完成 {command_id} -> 通知下游")
+            logger.info(f"贴标机决策: 贴标完成 {command_code} -> 通知下游")
 
             return {
                 "device_code": "CONVEYOR-01",  # 假设下游是输送线

@@ -179,7 +179,7 @@ class DeviceProcessor(ABC):
 
         Args:
             error: 异常对象
-            context: 错误上下文（包含 event_data、command_id 等）
+            context: 错误上下文（包含 event_data、command_code 等）
 
         Example:
             >>> async def handle_error(self, error: Exception, context: dict) -> None:

@@ -19,21 +19,21 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """初始化 Repository"""
         super().__init__(DeviceCommand)
 
-    async def get_by_command_id(
-        self, db: AsyncSession, command_id: str
+    async def get_by_command_code(
+        self, db: AsyncSession, command_code: str
     ) -> DeviceCommand | None:
         """
-        根据 command_id 查询指令
+        根据 command_code 查询指令
 
         Args:
             db: 数据库会话
-            command_id: 指令 ID
+            command_code: 指令编码
 
         Returns:
             DeviceCommand 实例，如果不存在返回 None
         """
         statement = select(DeviceCommand).where(
-            DeviceCommand.command_id == command_id
+            DeviceCommand.command_code == command_code
         )
         result = await db.execute(statement)
         return result.scalar_one_or_none()

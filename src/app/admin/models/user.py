@@ -43,7 +43,7 @@ class UserCreate(ModelFactory(UserBase).for_create()):
     password: str = Field(min_length=6, max_length=100)
 
 
-class UserUpdate(ModelFactory(UserBase).for_update()):
+class UserUpdate(ModelFactory(UserBase).for_optimistic_update()):
     """用户更新 Schema - 所有字段可选"""
 
 
@@ -51,6 +51,7 @@ class UserResponse(UserBase):
     """用户响应 Schema - 返回给客户端"""
 
     id: int
+    version: int
     is_superuser: bool
     is_multi_login: bool
     roles: list[RoleResponse] = Field(default_factory=list)

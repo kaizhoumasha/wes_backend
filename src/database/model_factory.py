@@ -267,3 +267,33 @@ class ModelFactory:
         else:
             exclude = ("id", "created_at", "updated_at")
         return self.create(name_suffix="Update", exclude=exclude, make_optional=True)
+
+    def for_optimistic_update(
+        self,
+        exclude: tuple[str, ...] | None = None,
+    ) -> type[BaseMixin]:
+        """创建用于乐观锁更新的模型（所有字段可选，但 version 必填）"""
+        if exclude:
+            exclude = tuple(set(exclude) - {"id", "created_at", "updated_at", "version"})
+        else:
+            exclude = ("id", "created_at", "updated_at")
+
+        cache_key = ("OptimisticUpdate", exclude)
+
+        if cache_key not in self._cache:
+            update_model = self.create(
+                name_suffix="OptimisticUpdateBase",
+                exclude=exclude,
+                make_optional=True,
+            )
+            namespace = {
+                "__annotations__": {"version": int},
+                "version": Field(..., description="乐观锁版本号，更新时必传"),
+            }
+            self._cache[cache_key] = type(
+                f"{self.base_model.__name__}OptimisticUpdate",
+                (update_model, BaseMixin),
+                namespace,
+            )
+
+        return self._cache[cache_key]

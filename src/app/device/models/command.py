@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import field_validator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship
 
@@ -110,31 +110,13 @@ class CommandBase(BaseMixin):
 # ==================== Pydantic Schema ====================
 
 
-class CommandRequest(BaseModel):
+class CommandRequest(CommandBase):
     """指令请求 Schema - 用于创建指令"""
 
-    device_id: int = Field(description="目标设备 ID")
-    task_type: TaskType = Field(description="任务类型")
-    priority: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="优先级（1-10，10 最高）",
-    )
-    timeout_ms: int = Field(
-        default=30000,
-        ge=1000,
-        le=300000,
-        description="超时时间（毫秒）",
-    )
-    params: dict[str, Any] = Field(
-        default_factory=dict,
-        description="业务参数（JSON 格式）",
-    )
-    command_id: str | None = Field(
+    command_code: str | None = Field(
         default=None,
         max_length=100,
-        description="全局唯一指令 ID（业务主键），为空时自动生成",
+        description="全局唯一指令编码，为空时自动生成",
     )
     correlation_id: str | None = Field(
         default=None,
@@ -143,17 +125,12 @@ class CommandRequest(BaseModel):
     )
 
 
-class CommandResponse(BaseModel):
+class CommandResponse(CommandBase):
     """指令响应 Schema - 返回给客户端"""
 
-    command_id: str
-    device_id: int
-    task_type: TaskType
+    command_code: str
     status: CommandStatus
     result: CommandResult | None
-    priority: int
-    timeout_ms: int
-    params: dict[str, Any]
     sent_at: datetime | None
     ack_received_at: datetime | None
     completed_at: datetime | None
@@ -165,10 +142,10 @@ class CommandResponse(BaseModel):
     updated_at: datetime
 
 
-class CommandCallbackResult(BaseModel):
+class CommandCallbackResult(BaseMixin):
     """指令回调结果 Schema - 设备回调时使用"""
 
-    command_id: str = Field(description="指令 ID（必须与原指令一致）")
+    command_code: str = Field(description="指令编码（必须与原指令一致）")
     device_code: str = Field(description="设备编码（device_code，设备标识）")
     result: CommandResult = Field(description="执行结果")
     finish_time: int = Field(description="完成时间（Unix 时间戳，毫秒）")
@@ -179,7 +156,7 @@ class CommandCallbackResult(BaseModel):
     )
 
 
-class CommandAck(BaseModel):
+class CommandAck(BaseMixin):
     """指令确认响应 - 设备返回的 ACK"""
 
     code: int = Field(description="响应码（200: 成功，400: 参数错误，503: 设备忙）")
@@ -200,24 +177,20 @@ class DeviceCommand(
     """
     设备指令数据库表模型
 
-    管理与设备交互的指令完整生命周期。
+    继承 CommandBase 提供基础指令字段:
+    - device_id
+    - task_type
+    - priority
+    - timeout_ms
+    - params
 
-    字段说明:
-    - command_id: 全局唯一指令 ID（业务主键）
-    - device_id: 目标设备 ID
-    - task_type: 任务类型（PICK, PUT, SCAN, ROTATE, PROCESS）
-    - priority: 优先级（1-10）
-    - timeout_ms: 超时时间（毫秒）
-    - params: 业务参数（JSON）
-    - status: 指令状态
-    - sent_at: 发送时间
-    - ack_received_at: ACK 接收时间
-    - completed_at: 完成时间
-    - result: 执行结果（SUCCESS/FAILED）
-    - result_data: 结果数据（JSON）
-    - error_detail: 错误详情（JSON）
-    - retry_count: 重试次数
-    - correlation_id: 关联 ID（串联整个流程）
+    当前模型补充指令生命周期相关字段:
+    - command_code
+    - correlation_id
+    - status
+    - sent_at / ack_received_at / completed_at
+    - result / result_data / error_detail
+    - retry_count
 
     状态机:
         PENDING -> SENT -> ACK_RECEIVED -> COMPLETED
@@ -228,12 +201,12 @@ class DeviceCommand(
     __tablename__: str = "device_commands"
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
-    # 业务主键（全局唯一）
-    command_id: str = Field(
+    # 业务唯一编码（对外可见）
+    command_code: str = Field(
         max_length=100,
         unique=True,
         index=True,
-        description="全局唯一指令 ID（业务主键）",
+        description="全局唯一指令编码",
     )
 
     # 关联 ID（串联整个流程）
@@ -340,11 +313,11 @@ class DeviceCommand(
 class DeviceCommandCreate(ModelFactory(CommandBase).for_create()):
     """设备指令创建 Schema"""
 
-    command_id: str | None = None
+    command_code: str | None = None
     correlation_id: str | None = None
 
 
-class DeviceCommandUpdate(ModelFactory(CommandBase).for_update()):
+class DeviceCommandUpdate(ModelFactory(CommandBase).for_optimistic_update()):
     """设备指令更新 Schema"""
 
 

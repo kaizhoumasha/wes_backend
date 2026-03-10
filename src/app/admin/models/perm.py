@@ -162,7 +162,7 @@ class PermissionCreate(ModelFactory(PermissionBase).for_create()):
     """API 权限创建 Schema"""
 
 
-class PermissionUpdate(ModelFactory(PermissionBase).for_update()):
+class PermissionUpdate(ModelFactory(PermissionBase).for_optimistic_update()):
     """API 权限更新 Schema"""
 
 
@@ -170,6 +170,7 @@ class PermissionResponse(PermissionBase):
     """API 权限响应 Schema（完整版）"""
 
     id: int
+    version: int
 
     @computed_field
     @property

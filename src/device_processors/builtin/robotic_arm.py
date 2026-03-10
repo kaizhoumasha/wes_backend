@@ -44,8 +44,8 @@ class RoboticArmProcessor(BaseDeviceProcessor):
 
         验证规则:
         - MATERIAL_ARRIVED: 必须包含 location 和可选的 barcode
-        - PICK_COMPLETED: 必须包含 command_id
-        - PUT_COMPLETED: 必须包含 command_id
+        - PICK_COMPLETED: 必须包含 command_code
+        - PUT_COMPLETED: 必须包含 command_code
 
         Args:
             event_data: 事件数据字典
@@ -69,9 +69,9 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         elif event_type in [
             EventType.PICK_COMPLETED.value,
             EventType.PUT_COMPLETED.value,
-        ] and "command_id" not in data:
-            # 任务完成事件：必须有 command_id
-            return False, f"{event_type} 事件缺少 command_id 字段"
+        ] and "command_code" not in data:
+            # 任务完成事件：必须有 command_code
+            return False, f"{event_type} 事件缺少 command_code 字段"
 
         return True, None
 
@@ -117,9 +117,9 @@ class RoboticArmProcessor(BaseDeviceProcessor):
 
         if event_type == EventType.PICK_COMPLETED.value:
             # 抓取完成：执行放置
-            command_id = data.get("command_id")
+            command_code = data.get("command_code")
 
-            logger.info(f"机械臂决策: 抓取完成 {command_id} -> 执行放置")
+            logger.info(f"机械臂决策: 抓取完成 {command_code} -> 执行放置")
 
             # 这里应该从原始指令中获取目标位置
             # 简化处理：使用固定的目标位置
@@ -128,7 +128,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
                 "task_type": TaskType.PUT.value,
                 "params": {
                     "target_loc": "SHELF-A-01",
-                    "previous_command_id": command_id,
+                    "previous_command_code": command_code,
                 },
             }
 

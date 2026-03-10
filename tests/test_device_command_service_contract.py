@@ -24,13 +24,13 @@ class FakeCommand:
         self,
         *,
         id: int = 1,
-        command_id: str = "CMD-TEST-001",
+        command_code: str = "CMD-TEST-001",
         status: CommandStatus = CommandStatus.PENDING,
         retry_count: int = 0,
         version: int = 0,
     ) -> None:
         self.id = id
-        self.command_id = command_id
+        self.command_code = command_code
         self.status = status
         self.retry_count = retry_count
         self.version = version
@@ -47,8 +47,8 @@ class FakeRepo:
         self.command = command
         self.update_calls: list[tuple[int, dict[str, Any]]] = []
 
-    async def get_by_command_id(self, _db: object, command_id: str) -> FakeCommand | None:
-        if self.command.command_id == command_id:
+    async def get_by_command_code(self, _db: object, command_code: str) -> FakeCommand | None:
+        if self.command.command_code == command_code:
             return self.command
         return None
 
@@ -68,7 +68,7 @@ async def test_cancel_command_includes_version_for_optimistic_lock() -> None:
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
 
-    await service.cancel_command(SimpleNamespace(), command.command_id)
+    await service.cancel_command(SimpleNamespace(), command.command_code)
 
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
@@ -83,7 +83,7 @@ async def test_retry_command_includes_version_for_optimistic_lock() -> None:
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
 
-    await service.retry_command(SimpleNamespace(), command.command_id)
+    await service.retry_command(SimpleNamespace(), command.command_code)
 
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
@@ -100,7 +100,7 @@ async def test_error_detail_dict_is_kept_as_json_object() -> None:
     service.repo = repo  # type: ignore[assignment]
 
     callback = CommandCallbackResult(
-        command_id=command.command_id,
+        command_code=command.command_code,
         device_code="ROBOT-ARM-01",
         result=CommandResult.FAILED,
         finish_time=1700000000000,
