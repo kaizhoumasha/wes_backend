@@ -15,6 +15,7 @@ from src.app.admin.repositories.perm_repository import PermissionRepository, per
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.rbac import invalidate_users_permissions
+from src.core.tree_service import TreeServiceMixin
 from src.database.base_repository import HookContext, HookType
 from src.database.redis_cache import get_cache
 
@@ -23,21 +24,30 @@ from src.database.redis_cache import get_cache
 SUPERUSER_PERMISSION = "*"  # 超级用户权限标识
 
 
-class PermissionService(BaseService[Permission, PermissionRepository]):
-    """API 权限 Service"""
+class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, PermissionRepository]):
+    """API 权限 Service（支持树形结构）"""
 
     def __init__(self, repo: PermissionRepository = permission_repository):
-        super().__init__(
+        # 初始化 TreeServiceMixin（设置 self.repo）
+        TreeServiceMixin.__init__(self, repo)
+        # 初始化 BaseService（缓存配置）
+        BaseService.__init__(
+            self,
             repo,
             enable_cache=True,
             cache_prefix=cache_settings.PERMISSION.prefix,
             cache_expire=cache_settings.PERMISSION.expire,
+            list_cache_prefix=cache_settings.PERMISSION_LIST.prefix,
+            list_cache_expire=cache_settings.PERMISSION_LIST.expire,
         )
         self.repo: PermissionRepository = repo
         self.add_hook(HookType.BEFORE_UPDATE, self._before_permission_update_capture_user_ids, priority=100)
         self.add_hook(HookType.AFTER_CREATE, self._after_permission_change_invalidate_user_permissions, priority=100)
         self.add_hook(HookType.AFTER_UPDATE, self._after_permission_change_invalidate_user_permissions, priority=100)
         self.add_hook(HookType.AFTER_DELETE, self._after_permission_change_invalidate_user_permissions, priority=100)
+        self.add_hook(HookType.BEFORE_UPDATE, self._before_permission_update_capture_app_ids, priority=100)
+        self.add_hook(HookType.AFTER_UPDATE, self._after_permission_change_invalidate_app_permissions, priority=100)
+        self.add_hook(HookType.AFTER_DELETE, self._after_permission_change_invalidate_app_permissions, priority=100)
 
     # ==================== 用户权限收集 ====================
 
@@ -121,13 +131,17 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
             return None
         affected_user_ids = await self._query_user_ids_by_permission_id(db, id)
         await self._invalidate_permissions_for_users(affected_user_ids)
+        affected_app_ids = await self._query_app_ids_by_permission_id(db, id)
+        await self._invalidate_app_permissions_for_apps(affected_app_ids)
         return permission
 
     async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
         affected_user_ids = await self._query_user_ids_by_permission_id(db, id)
+        affected_app_ids = await self._query_app_ids_by_permission_id(db, id)
         success = await super().permanent_delete(db, id, cache)
         if success:
             await self._invalidate_permissions_for_users(affected_user_ids)
+            await self._invalidate_app_permissions_for_apps(affected_app_ids)
         return success
 
     async def _before_permission_update_capture_user_ids(self, context: HookContext) -> None:
@@ -135,6 +149,14 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
         if permission is None or getattr(permission, "id", None) is None:
             return
         context.results["affected_user_ids_before"] = await self._query_user_ids_by_permission_id(
+            context.session, int(permission.id)
+        )
+
+    async def _before_permission_update_capture_app_ids(self, context: HookContext) -> None:
+        permission = context.params.get("instance")
+        if permission is None or getattr(permission, "id", None) is None:
+            return
+        context.results["affected_app_ids_before"] = await self._query_app_ids_by_permission_id(
             context.session, int(permission.id)
         )
 
@@ -149,6 +171,17 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
 
         await self._invalidate_permissions_for_users(affected_user_ids)
 
+    async def _after_permission_change_invalidate_app_permissions(self, context: HookContext) -> None:
+        permission = context.params.get("instance")
+        if permission is None or getattr(permission, "id", None) is None:
+            return
+
+        affected_app_ids = set(context.results.get("affected_app_ids_before", set()))
+        current_app_ids = await self._query_app_ids_by_permission_id(context.session, int(permission.id))
+        affected_app_ids.update(current_app_ids)
+
+        await self._invalidate_app_permissions_for_apps(affected_app_ids)
+
     async def _query_user_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
         query = (
             select(user_role.c.user_id)
@@ -159,11 +192,28 @@ class PermissionService(BaseService[Permission, PermissionRepository]):
         result = await db.execute(query)
         return {int(user_id) for user_id in result.scalars().all() if user_id is not None}
 
+    async def _query_app_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
+        from src.app.api_auth.models.relationships import api_app_permissions
+
+        result = await db.execute(
+            select(api_app_permissions.c.app_id).where(api_app_permissions.c.permission_id == permission_id).distinct()
+        )
+        return {int(app_id) for app_id in result.scalars().all() if app_id is not None}
+
     async def _invalidate_permissions_for_users(self, user_ids: set[int]) -> None:
         if not user_ids:
             return
         cache = get_cache()
         await invalidate_users_permissions(cache, user_ids)
+
+    async def _invalidate_app_permissions_for_apps(self, app_ids: set[int]) -> None:
+        if not app_ids:
+            return
+        from src.app.api_auth.services.permission_service import invalidate_app_permissions
+
+        cache = get_cache()
+        for app_id in app_ids:
+            await invalidate_app_permissions(cache, app_id)
 
 
 permission_service = PermissionService()

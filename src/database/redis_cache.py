@@ -148,7 +148,9 @@ class RedisCache:
         :param variance: 随机波动范围（秒）
         :return: 实际过期时间
         """
-        return base_expire + random.randint(-variance, variance)
+        min_expire = max(1, base_expire - variance)
+        max_expire = max(min_expire, base_expire + variance)
+        return random.randint(min_expire, max_expire)
 
     async def _check_health(self) -> bool:
         """
@@ -169,6 +171,7 @@ class RedisCache:
                 self.redis = get_redis()
                 self._is_healthy = True
                 logger.info("✅ Redis 重连成功，缓存服务已恢复")
+                return True
             return False
 
         # 限制检查频率（最多每 5 秒检查一次）
@@ -198,6 +201,7 @@ class RedisCache:
                 self.redis = get_redis()
                 self._is_healthy = True
                 logger.info("✅ Redis 重连成功，缓存服务已恢复")
+                return True
 
             return False
 

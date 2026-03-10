@@ -64,6 +64,8 @@ class UserService(BaseService[User, UserRepository]):
             enable_cache=True,
             cache_prefix=cache_settings.USER.prefix,
             cache_expire=cache_settings.USER.expire,
+            list_cache_prefix=cache_settings.USER_LIST.prefix,
+            list_cache_expire=cache_settings.USER_LIST.expire,
         )
         self.password_hasher = password_hasher
 

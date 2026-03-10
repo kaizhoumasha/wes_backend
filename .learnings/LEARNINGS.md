@@ -477,3 +477,89 @@ class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=Tru
 - **Notes**: 已修复所有 7 个模型的 Mixin 继承，迁移脚本成功生成；已更新 CLAUDE.md 添加 Mixin 使用规范
 
 ---
+
+## [LRN-20260310-005] correction
+
+**Logged**: 2026-03-10T18:57:32+0800
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+服务层包装方法如果依赖下层通用更新逻辑做缓存失效，必须继续透传 `cache`，否则会留下静默的陈旧缓存。
+
+### Details
+在 `APIAppService.reset_validity_period()` 中，代码通过 `self.update(...)` 复用通用更新流程，但重构后遗漏了 `cache` 参数。表面上数据库更新成功，实际上三类缓存路径都被绕过了：
+- `BaseService.update()` 不会执行详情缓存和列表缓存失效
+- `APIAppService.update()` 不会执行 `get_by_app_id()` 的别名缓存失效
+- API 鉴权侧可能继续读到过期的 `status` / `expires_at`
+
+这个问题的危险点在于它不会直接报错，而是以 TTL 窗口内的业务陈旧数据形式暴露，容易在代码审查前漏掉。对这类“包装方法 -> 通用方法”的重构，不能只关注数据库写入路径，还要核对副作用参数是否完整透传。
+
+本次修复是在 `reset_validity_period()` 调用 `self.update(...)` 时补回 `cache`，并增加回归测试，预热详情缓存、列表缓存和 `app_id` 别名缓存后验证三者都会被清除。
+
+### Suggested Action
+1. 以后重构服务层包装方法时，逐项核对 `cache`、事务对象、审计上下文等副作用参数是否透传
+2. 对缓存敏感的业务方法补“先预热缓存再更新”的回归测试，而不是只断言数据库字段变化
+3. 若方法语义上必须依赖缓存失效，优先统一走已有 `update/delete/restore` 通道，避免在包装层复制失效逻辑
+
+### Metadata
+- Source: user_feedback
+- Related Files: src/app/api_auth/services/app_service.py, tests/test_api_app_service_cache.py
+- Tags: cache, invalidation, service-layer, regression-test, api-auth
+- Pattern-Key: backend.propagate_cache_to_wrapped_service_updates
+- Recurrence-Count: 1
+- First-Seen: 2026-03-10
+- Last-Seen: 2026-03-10
+
+### Resolution
+- **Resolved**: 2026-03-10T18:57:32+0800
+- **Commit/PR**: local workspace
+- **Notes**: 已为 `reset_validity_period()` 补传 `cache`，并新增覆盖详情/列表/别名缓存失效的回归测试
+
+---
+
+## [LRN-20260310-006] correction
+
+**Logged**: 2026-03-10T19:35:51+0800
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+为支持缓存命中时的 `dict -> schema` 转换而修改 `to_response()` 时，不能把任意 ORM/SQLModel `BaseModel` 都提前短路，否则会丢失关联字段。
+
+### Details
+`model_to_schema()` 在这个项目里不只是普通序列化工具，它还负责基于 SQLAlchemy inspect 判断关系是否已加载，并把已加载关联安全地映射到响应 schema。
+
+我之前在 `BaseService.to_response()` 中加入了：
+- `dict` 直接 `response_schema.model_validate(...)`
+- 任意 `BaseModel` 也直接 `response_schema.model_validate(model.model_dump(...))`
+
+第二条是错误的。项目的 ORM/SQLModel 模型本身也是 `BaseModel`，这样会把数据库查询得到的对象绕过 `model_to_schema()`，导致关联字段即使已经加载也不会被按响应 schema 正确转换，表现为“数据库查出来的对象也没有关联列”。
+
+正确做法是：
+- 只为缓存命中场景保留 `dict -> schema` 的快捷路径
+- 如果对象已经是目标 schema，直接返回
+- 其它 ORM/SQLModel 对象仍走 `model_to_schema()`
+
+### Suggested Action
+1. 以后给 `to_response()` 这类核心转换函数加快捷分支时，先区分“缓存字典”和“ORM 模型”两种输入来源
+2. 变更公共转换函数时，至少补两类测试：数据库对象路径、缓存命中路径
+3. 避免基于 `isinstance(obj, BaseModel)` 做过宽泛的分支判断，因为项目 ORM 模型同样满足这个条件
+
+### Metadata
+- Source: user_feedback
+- Related Files: src/core/base_service.py, tests/test_base_service_cache.py
+- Tags: response-schema, relation, sqlmodel, cache, regression-test
+- Pattern-Key: backend.keep_model_to_schema_for_orm_relation_serialization
+- Recurrence-Count: 1
+- First-Seen: 2026-03-10
+- Last-Seen: 2026-03-10
+
+### Resolution
+- **Resolved**: 2026-03-10T19:35:51+0800
+- **Commit/PR**: local workspace
+- **Notes**: 已移除 `to_response()` 中对任意 `BaseModel` 的短路，只保留 `dict` 与目标 schema 的快捷路径，并增加回归测试覆盖 ORM 对象路径
+
+---

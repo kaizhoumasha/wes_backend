@@ -3,12 +3,14 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.api_auth.constants import CacheExpire, CacheKeys
+from src.app.api_auth.constants import CacheKeys
 from src.app.api_auth.models import APIApplication
 from src.app.api_auth.models.api_application import AppStatus, ValidityPeriod
 from src.app.api_auth.repositories import APIAppRepository, api_app_repository
+from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.encryption import encryption_service
+from src.database.cache_helpers import get_cached_value, set_cached_value
 from src.database.hooks import HookContext, HookType
 from src.database.redis_cache import RedisCache
 from src.utils.timezone import timezone
@@ -19,8 +21,10 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         super().__init__(
             repository=api_app_repository,
             enable_cache=True,
-            cache_prefix="api_app:detail",
-            cache_expire=CacheExpire.APP_DETAIL,
+            cache_prefix=cache_settings.API_APP.prefix,
+            cache_expire=cache_settings.API_APP.expire,
+            list_cache_prefix=cache_settings.API_APP_LIST.prefix,
+            list_cache_expire=cache_settings.API_APP_LIST.expire,
         )
         # 注册创建前 Hook：自动计算过期时间
         self.add_hook(
@@ -42,6 +46,69 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         else:
             # 基于当前时间计算过期时间
             data["expires_at"] = timezone.now_for_db() + delta
+
+    async def _load_app_for_cache_invalidation(
+        self,
+        db: AsyncSession,
+        application_id: int,
+        *,
+        include_deleted: bool = True,
+    ) -> APIApplication | None:
+        """加载应用以获取 app_id，用于别名缓存失效。"""
+        return await self.repo.get_by_id(db, application_id, include_deleted=include_deleted)
+
+    async def _invalidate_app_alias_cache(self, cache: RedisCache | None, app_id: str | None) -> None:
+        """失效按 app_id 查询的别名缓存。"""
+        if cache is None or not app_id:
+            return
+        await cache.delete(CacheKeys.app_by_app_id(app_id))
+
+    async def _query_by_app_id(self, db: AsyncSession, app_id: str) -> APIApplication | None:
+        result = await db.execute(
+            select(APIApplication).where(APIApplication.app_id == app_id).where(APIApplication.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        return result.scalar_one_or_none()
+
+    async def update(
+        self,
+        db: AsyncSession,
+        id: int,
+        data: dict[str, object],
+        cache: object | None = None,
+    ) -> APIApplication | None:
+        app = await self._load_app_for_cache_invalidation(db, id)
+        result = await super().update(db, id, data, cache)
+        if isinstance(cache, RedisCache):
+            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        return result
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        app = await self._load_app_for_cache_invalidation(db, id)
+        success = await super().delete(db, id, cache)
+        if success and isinstance(cache, RedisCache):
+            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        return success
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> APIApplication | None:
+        app = await self._load_app_for_cache_invalidation(db, id)
+        result = await super().soft_delete(db, id, cache)
+        if result is not None and isinstance(cache, RedisCache):
+            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        return result
+
+    async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> APIApplication | None:
+        app = await self._load_app_for_cache_invalidation(db, id)
+        result = await super().restore(db, id, cache)
+        if result is not None and isinstance(cache, RedisCache):
+            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        return result
+
+    async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+        app = await self._load_app_for_cache_invalidation(db, id)
+        success = await super().permanent_delete(db, id, cache)
+        if success and isinstance(cache, RedisCache):
+            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        return success
 
     async def reset_secret(self, db: AsyncSession, cache: RedisCache, id: int) -> str:
         """重置应用密钥"""
@@ -101,8 +168,6 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         if not app:
             raise ValueError(f"应用 {application_id} 不存在")
 
-        await self.invalidate_cache(cache, application_id, invalidate_list=True)
-
         # 计算新的过期时间（基于创建时间，而不是当前时间）
         delta = validity_period.to_timedelta()
 
@@ -123,6 +188,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
                 "status": new_status,
                 "version": version,
             },
+            cache,
         )
 
     async def get_remaining_days(self, app: APIApplication) -> int | None:
@@ -151,17 +217,22 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
     async def get_by_app_id(self, db: AsyncSession, cache: RedisCache, app_id: str) -> APIApplication | None:
         cache_key = CacheKeys.app_by_app_id(app_id)
 
-        cached = await cache.get(cache_key)
-        if cached:
-            return APIApplication.model_validate_json(cached)
-
-        result = await db.execute(
-            select(APIApplication).where(APIApplication.app_id == app_id).where(APIApplication.is_deleted.is_(False))  # type: ignore[attr-defined]
+        hit, cached = await get_cached_value(
+            cache,
+            cache_key,
+            parser=lambda value: APIApplication.model_validate(value)
+            if isinstance(value, dict)
+            else APIApplication.model_validate_json(value),
         )
-        app = result.scalar_one_or_none()
+        if hit:
+            return cached
+
+        app = await self._query_by_app_id(db, app_id)
 
         if app:
-            await cache.set(cache_key, app.model_dump_json(), expire=CacheExpire.APP_DETAIL)
+            await set_cached_value(cache, cache_key, app, expire=self.cache_expire)
+        else:
+            await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
 
         return app
 
@@ -173,7 +244,6 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         await self.update(db, app.id, {"status": "revoked"}, cache)
 
         if cache:
-            await cache.delete(CacheKeys.app_by_app_id(app_id))
             await cache.delete(CacheKeys.app_permissions(app.id))
 
         return True

@@ -191,7 +191,8 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
-            response_data = self.service.to_response(resource, self.response_schema)
+            response_resource = await self.service.get_by_id(db, cache, id, max_depth=1) or resource
+            response_data = self.service.to_response(response_resource, self.response_schema)
             return response_builder.success(data=response_data)
 
     def _register_delete(self) -> None:

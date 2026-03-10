@@ -12,20 +12,15 @@ from functools import wraps
 from inspect import signature
 from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast, get_args, get_origin
 
-from pydantic import BaseModel
-
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
+from src.database.cache_helpers import CACHE_NULL_MARKER, is_null_cache_value, serialize_for_cache
 
 if TYPE_CHECKING:
     from src.database.redis_cache import RedisCache
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-# 空值缓存标记：用于区分"键不存在"和"值为空"
-_NULL_CACHE_MARKER = "__NULL_CACHE_MARKER__"
-
 
 def _get_return_type(func: Callable) -> type | None:
     """
@@ -135,7 +130,7 @@ def cached(
                 logger.info(f"缓存命中: {cache_key}")
 
                 # 空值缓存处理：检查是否是空值标记
-                if cached_data == _NULL_CACHE_MARKER:
+                if is_null_cache_value(cached_data):
                     raise NotFoundException("资源不存在")
 
                 # Pydantic 模型反序列化
@@ -154,7 +149,7 @@ def cached(
                         cached_data = await cache.get(cache_key)
                         if cached_data is not None:
                             # 空值缓存处理
-                            if cached_data == _NULL_CACHE_MARKER:
+                            if is_null_cache_value(cached_data):
                                 raise NotFoundException("资源不存在")
 
                             # Pydantic 模型反序列化
@@ -169,11 +164,10 @@ def cached(
 
                         # 空值缓存处理：使用标记存储空值
                         if null_expire is not None and result is None:
-                            await cache.set(cache_key, _NULL_CACHE_MARKER, expire=null_expire)
+                            await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
                             raise NotFoundException("资源不存在")
 
-                        # 序列化结果（如果是 Pydantic 模型）
-                        serialized = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
+                        serialized = serialize_for_cache(result)
 
                         await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                         return result
@@ -192,11 +186,10 @@ def cached(
 
                 # 空值缓存处理：使用标记存储空值
                 if null_expire is not None and result is None:
-                    await cache.set(cache_key, _NULL_CACHE_MARKER, expire=null_expire)
+                    await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
                     raise NotFoundException("资源不存在")
 
-                # 序列化结果
-                serialized = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
+                serialized = serialize_for_cache(result)
 
                 await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                 return result

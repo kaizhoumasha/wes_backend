@@ -23,6 +23,8 @@ class RoleService(BaseService[Role, BaseRepository]):
             enable_cache=True,
             cache_prefix=cache_settings.ROLE.prefix,
             cache_expire=cache_settings.ROLE.expire,
+            list_cache_prefix=cache_settings.ROLE_LIST.prefix,
+            list_cache_expire=cache_settings.ROLE_LIST.expire,
         )
 
         # 角色变更会影响关联用户权限，统一在 Hook 中失效用户权限缓存

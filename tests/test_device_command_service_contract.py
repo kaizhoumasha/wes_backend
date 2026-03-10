@@ -46,11 +46,18 @@ class FakeRepo:
     def __init__(self, command: FakeCommand) -> None:
         self.command = command
         self.update_calls: list[tuple[int, dict[str, Any]]] = []
+        self.create_calls: list[dict[str, Any]] = []
 
     async def get_by_command_code(self, _db: object, command_code: str) -> FakeCommand | None:
         if self.command.command_code == command_code:
             return self.command
         return None
+
+    async def create(self, _db: object, data: dict[str, Any]) -> FakeCommand:
+        self.create_calls.append(dict(data))
+        for key, value in data.items():
+            setattr(self.command, key, value)
+        return self.command
 
     async def update(self, _db: object, id: int, data: dict[str, Any]) -> FakeCommand:
         self.update_calls.append((id, dict(data)))
@@ -61,12 +68,24 @@ class FakeRepo:
         return self.command
 
 
+class NullUpdateRepo(FakeRepo):
+    async def update(self, _db: object, id: int, data: dict[str, Any]) -> FakeCommand | None:
+        self.update_calls.append((id, dict(data)))
+        return None
+
+
 @pytest.mark.asyncio
 async def test_cancel_command_includes_version_for_optimistic_lock() -> None:
     command = FakeCommand(status=CommandStatus.PENDING, version=7)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
 
     await service.cancel_command(SimpleNamespace(), command.command_code)
 
@@ -74,6 +93,7 @@ async def test_cancel_command_includes_version_for_optimistic_lock() -> None:
     update_data = repo.update_calls[0][1]
     assert update_data["status"] == CommandStatus.CANCELLED
     assert update_data["version"] == 7
+    assert invalidations == [(command.id, True)]
 
 
 @pytest.mark.asyncio
@@ -82,6 +102,12 @@ async def test_retry_command_includes_version_for_optimistic_lock() -> None:
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
 
     await service.retry_command(SimpleNamespace(), command.command_code)
 
@@ -90,6 +116,7 @@ async def test_retry_command_includes_version_for_optimistic_lock() -> None:
     assert update_data["status"] == CommandStatus.PENDING
     assert update_data["retry_count"] == 2
     assert update_data["version"] == 9
+    assert invalidations == [(command.id, True)]
 
 
 @pytest.mark.asyncio
@@ -98,6 +125,12 @@ async def test_error_detail_dict_is_kept_as_json_object() -> None:
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
 
     callback = CommandCallbackResult(
         command_code=command.command_code,
@@ -113,6 +146,7 @@ async def test_error_detail_dict_is_kept_as_json_object() -> None:
     update_data = repo.update_calls[0][1]
     assert isinstance(update_data["error_detail"], dict)
     assert update_data["error_detail"]["code"] == "E-TIMEOUT"
+    assert invalidations == [(command.id, True)]
 
 
 @pytest.mark.asyncio
@@ -121,6 +155,12 @@ async def test_error_detail_string_is_normalized_to_json_object() -> None:
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
 
     await service._update_command_status(
         SimpleNamespace(),
@@ -132,3 +172,77 @@ async def test_error_detail_string_is_normalized_to_json_object() -> None:
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
     assert update_data["error_detail"] == {"message": "network timeout"}
+    assert invalidations == [(command.id, True)]
+
+
+@pytest.mark.asyncio
+async def test_create_command_invalidates_list_cache() -> None:
+    command = FakeCommand()
+    repo = FakeRepo(command)
+    service = DeviceCommandService()
+    service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
+
+    request = SimpleNamespace(
+        command_code="CMD-CREATE-001",
+        device_id=1,
+        task_type=SimpleNamespace(value="MOVE"),
+        priority=1,
+        timeout_ms=1000,
+        params={"x": 1},
+        correlation_id="corr-1",
+    )
+
+    await service.create_command(SimpleNamespace(), request)
+
+    assert repo.create_calls
+    assert invalidations == [(None, True)]
+
+
+@pytest.mark.asyncio
+async def test_cancel_command_skips_cache_invalidation_when_update_returns_none() -> None:
+    command = FakeCommand(status=CommandStatus.PENDING, version=7)
+    repo = NullUpdateRepo(command)
+    service = DeviceCommandService()
+    service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
+
+    result = await service.cancel_command(SimpleNamespace(), command.command_code)
+
+    assert result is None
+    assert repo.update_calls
+    assert invalidations == []
+
+
+@pytest.mark.asyncio
+async def test_update_command_status_skips_cache_invalidation_when_update_returns_none() -> None:
+    command = FakeCommand(status=CommandStatus.SENT, version=5)
+    repo = NullUpdateRepo(command)
+    service = DeviceCommandService()
+    service.repo = repo  # type: ignore[assignment]
+    invalidations: list[tuple[int | None, bool]] = []
+
+    async def fake_invalidate(command_id: int | None = None, invalidate_list: bool = False) -> None:
+        invalidations.append((command_id, invalidate_list))
+
+    service._invalidate_command_cache = fake_invalidate  # type: ignore[method-assign]
+
+    await service._update_command_status(
+        SimpleNamespace(),
+        command,
+        CommandStatus.FAILED,
+        error_detail="network timeout",
+    )
+
+    assert repo.update_calls
+    assert invalidations == []

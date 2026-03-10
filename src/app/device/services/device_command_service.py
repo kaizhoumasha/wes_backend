@@ -28,6 +28,7 @@ from src.app.device.repositories.command_repository import (
 )
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
+from src.database.redis_cache import get_cache
 from src.utils.timezone import timezone
 
 
@@ -48,6 +49,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         # HTTP 客户端配置
         self.http_timeout = 10.0  # 10 秒超时
         self.max_retries = 3
+
+    async def _invalidate_command_cache(self, command_id: int | None = None, invalidate_list: bool = False) -> None:
+        """清理指令详情/列表缓存。"""
+        await self.invalidate_cache(get_cache(), command_id, invalidate_list=invalidate_list)
 
     # ==================== CRUD 操作 ====================
 
@@ -84,6 +89,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         command = await self.repo.create(db, command_data)
         if command:
+            await self._invalidate_command_cache(invalidate_list=True)
             logger.info(f"创建指令: {command_code} -> {command_request.task_type.value}")
 
         return command
@@ -180,14 +186,14 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         else:
             update_data["status"] = CommandStatus.FAILED
 
-        command = await self.repo.update(db, command.id, update_data)
-
-        if command:
+        updated_command = await self.repo.update(db, command.id, update_data)
+        if updated_command:
+            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(
-                f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {command.get_duration_ms()}ms)"
+                f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
             )
 
-        return command
+        return updated_command
 
     async def create_event_log(
         self,
@@ -293,7 +299,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             raise ValueError(f"指令状态不允许取消: {command.status.value}")
 
         # 更新状态
-        command = await self.repo.update(
+        updated_command = await self.repo.update(
             db,
             command.id,
             {
@@ -302,9 +308,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             },
         )
 
-        if command:
+        if updated_command:
+            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(f"指令已取消: {command_code}")
-        return command
+        return updated_command
 
     async def retry_command(
         self,
@@ -333,11 +340,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "version": command.version,
         }
 
-        command = await self.repo.update(db, command.id, update_data)
+        updated_command = await self.repo.update(db, command.id, update_data)
 
-        if command:
-            logger.info(f"指令已重置: {command_code} (重试次数: {command.retry_count})")
-        return command
+        if updated_command:
+            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
+            logger.info(f"指令已重置: {command_code} (重试次数: {updated_command.retry_count})")
+        return updated_command
 
     async def get_command_by_code(
         self,
@@ -413,7 +421,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             update_data["status"] = CommandStatus.ACK_RECEIVED
             update_data["ack_received_at"] = timezone.now_for_db()
 
-        await self.repo.update(db, command.id, update_data)
+        updated_command = await self.repo.update(db, command.id, update_data)
+        if updated_command:
+            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
 
     async def _update_command_status(
         self,
@@ -434,7 +444,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if normalized_error is not None:
             update_data["error_detail"] = normalized_error
 
-        await self.repo.update(db, command.id, update_data)
+        updated_command = await self.repo.update(db, command.id, update_data)
+        if updated_command:
+            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
 
     def _normalize_error_detail(self, error_detail: dict[str, Any] | str | None) -> dict[str, Any] | None:
         """将错误详情统一为 JSON 对象。"""

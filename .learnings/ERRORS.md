@@ -70,3 +70,37 @@ pytest 输出包含大量 debug/sql 日志，关键信息（失败点/断言）�
 - Related Files: pyproject.toml
 
 ---
+
+## [ERR-20260310-001] rbac_cached_permission_list_null_marker_check
+
+**Logged**: 2026-03-10T17:54:24+0800
+**Priority**: high
+**Status**: resolved
+**Area**: backend
+
+### Summary
+缓存空值标记判断直接对任意缓存载荷做集合成员测试，遇到列表权限载荷时触发 `TypeError`。
+
+### Error
+```text
+TypeError: unhashable type: 'list'
+```
+
+### Context
+- Command/operation: RBAC `verify_permission()` -> `get_user_permissions()` -> `get_cached_value()`
+- Input: Redis 中的权限缓存值为列表，如 `["*"]`
+- Trigger: `is_null_cache_value()` 对 `list` 执行 `value in LEGACY_CACHE_NULL_MARKERS`
+
+### Suggested Fix
+仅对字符串值执行空标记判断，其它结构化缓存值交由调用方的 parser 处理，并增加权限列表缓存回归测试。
+
+### Metadata
+- Reproducible: yes
+- Related Files: src/database/cache_helpers.py, tests/test_cache_helpers.py, tests/test_rbac_cache_invalidation.py
+
+### Resolution
+- **Resolved**: 2026-03-10T17:54:24+0800
+- **Commit/PR**: n/a
+- **Notes**: RBAC 缓存中的 `["*"]`、`["menu:view"]` 等列表值不再被空值判断提前打断。
+
+---

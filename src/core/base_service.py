@@ -47,6 +47,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.logger import logger
 from src.core.schema_loader import model_to_schema
 from src.database.base_repository import BaseRepository, HookContext, HookType
+from src.database.cache_helpers import (
+    CACHE_NULL_MARKER,
+    get_cached_value,
+    set_cached_value,
+)
 
 if TYPE_CHECKING:
     from src.core.query_models import FilterGroup, SortField
@@ -58,6 +63,8 @@ M = TypeVar("M")
 
 # Repository 类型 (如 WarehouseRepository, ContainerRepository 等)
 R = TypeVar("R", bound=BaseRepository)
+
+_NULL_CACHE_MARKER = CACHE_NULL_MARKER
 
 
 # ==================== 通用 Service 基类 ====================
@@ -103,6 +110,9 @@ class BaseService[M, R]:
         enable_cache: bool = False,
         cache_prefix: str | None = None,
         cache_expire: int = 3600,
+        list_cache_prefix: str | None = None,
+        list_cache_expire: int | None = None,
+        null_cache_expire: int | None = 300,
         response_schema: type | None = None,
     ):
         """
@@ -111,8 +121,11 @@ class BaseService[M, R]:
         Args:
             repository: Repository 实例
             enable_cache: 是否启用缓存
-            cache_prefix: 缓存键前缀
-            cache_expire: 缓存过期时间(秒)
+            cache_prefix: 详情缓存键前缀
+            cache_expire: 详情缓存过期时间(秒)
+            list_cache_prefix: 列表缓存键前缀
+            list_cache_expire: 列表缓存过期时间(秒)，默认继承详情缓存 TTL
+            null_cache_expire: 空值缓存过期时间(秒)，None 表示不缓存空值
             response_schema: 响应 Schema (用于自动加载关系)
         """
         self.repo: R = repository
@@ -120,7 +133,38 @@ class BaseService[M, R]:
         self.enable_cache = enable_cache
         self.cache_prefix = cache_prefix or f"{self._model_name.lower()}:detail"
         self.cache_expire = cache_expire
+        self.list_cache_prefix = list_cache_prefix or (
+            self.cache_prefix.replace(":detail", ":list")
+            if ":detail" in self.cache_prefix
+            else f"{self.cache_prefix}:list"
+        )
+        self.list_cache_expire = list_cache_expire if list_cache_expire is not None else cache_expire
+        self.null_cache_expire = null_cache_expire
         self.response_schema = response_schema
+
+    def _get_response_model(self) -> type[BaseModel] | None:
+        """返回可用于序列化/反序列化的响应 Schema。"""
+        if isinstance(self.response_schema, type) and issubclass(self.response_schema, BaseModel):
+            return self.response_schema
+        return None
+
+    def _serialize_list_item_for_cache(self, item: Any) -> Any:
+        """列表缓存优先使用 response_schema 序列化，保留已加载的关联字段。"""
+        response_model = self._get_response_model()
+        if response_model is not None:
+            payload = self.to_response(item, response_model)
+            return payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+        return item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+
+    def _deserialize_list_item_from_cache(self, item: Any) -> Any:
+        """从列表缓存恢复条目。存在 response_schema 时优先恢复为该 schema。"""
+        response_model = self._get_response_model()
+        if response_model is not None:
+            return self.to_response(item, response_model)
+        model_validate = getattr(self.repo.model, "model_validate", None)  # type: ignore[attr-defined]
+        if callable(model_validate):
+            return model_validate(item)
+        return item
 
     def add_hook(
         self,
@@ -165,9 +209,8 @@ class BaseService[M, R]:
                 logger.debug(f"缓存失效: {self.cache_prefix}:{id}:*")
 
             if invalidate_list:
-                list_prefix = self.cache_prefix.replace(":detail", ":list")
-                await cache.delete_pattern(f"{list_prefix}:*")
-                logger.debug(f"列表缓存失效: {list_prefix}")
+                await cache.delete_pattern(f"{self.list_cache_prefix}:*")
+                logger.debug(f"列表缓存失效: {self.list_cache_prefix}")
         except ImportError:
             pass
 
@@ -204,9 +247,8 @@ class BaseService[M, R]:
                 )  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
             cache_key = f"{self.cache_prefix}:{id}:depth{max_depth}:del{include_deleted}"
-            cached_data = await cache.get(cache_key)
-
-            if cached_data is not None:
+            hit, cached_data = await get_cached_value(cache, cache_key)
+            if hit:
                 logger.debug(f"缓存命中: {cache_key}")
                 if isinstance(cached_data, dict) and hasattr(self.repo.model, "model_validate"):  # type: ignore[attr-defined]
                     return self.repo.model.model_validate(cached_data)  # type: ignore[attr-defined]
@@ -217,10 +259,9 @@ class BaseService[M, R]:
             )  # type: ignore[attr-defined]
 
             if result:
-                if isinstance(result, BaseModel):
-                    await cache.set(cache_key, result.model_dump(mode="json"), expire=self.cache_expire)
-                else:
-                    await cache.set(cache_key, result, expire=self.cache_expire)
+                await set_cached_value(cache, cache_key, result, expire=self.cache_expire)
+            else:
+                await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
 
             return result  # type: ignore[return-value]
         except ImportError:
@@ -276,9 +317,8 @@ class BaseService[M, R]:
             sort_hash = hashlib.sha256(
                 json.dumps([s.model_dump() for s in sort] if sort else [], sort_keys=True).encode()
             ).hexdigest()[:8]
-            list_prefix = self.cache_prefix.replace(":detail", ":list")
             cache_key = (
-                f"{list_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}:del{include_deleted}"
+                f"{self.list_cache_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}:del{include_deleted}"
             )
             cached_data = await cache.get(cache_key)
 
@@ -287,9 +327,8 @@ class BaseService[M, R]:
                 if isinstance(cached_data, dict):
                     total = cached_data.get("total", 0)
                     items_data = cached_data.get("items", [])
-                    if items_data and hasattr(self.repo.model, "model_validate"):  # type: ignore[attr-defined]
-                        items = [self.repo.model.model_validate(item) for item in items_data]  # type: ignore[attr-defined]
-                        return total, items
+                    items = [self._deserialize_list_item_from_cache(item) for item in items_data] if items_data else []
+                    return total, items
                 return 0, []  # 缓存数据格式不符，返回空列表
 
             total, items = await self.repo.get_list(  # type: ignore[attr-defined]
@@ -303,9 +342,8 @@ class BaseService[M, R]:
                 include_deleted=include_deleted,
             )
 
-            if items:
-                items_data = [item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in items]
-                await cache.set(cache_key, {"total": total, "items": items_data}, expire=self.cache_expire)
+            items_data = [self._serialize_list_item_for_cache(item) for item in items]
+            await cache.set(cache_key, {"total": total, "items": items_data}, expire=self.list_cache_expire)
 
             return total, items
         except ImportError:
@@ -398,7 +436,7 @@ class BaseService[M, R]:
         """
         result = await self.repo.update(db, id, data)  # type: ignore[attr-defined]
         if cache:
-            await self.invalidate_cache(cache, id)
+            await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
@@ -433,6 +471,14 @@ class BaseService[M, R]:
         Returns:
             响应对象
         """
+        if model is None:
+            return None
+        if not isinstance(response_schema, type) or not issubclass(response_schema, BaseModel):
+            return model
+        if isinstance(model, response_schema):
+            return model
+        if isinstance(model, dict):
+            return response_schema.model_validate(model)
         return model_to_schema(model, response_schema)
 
     def to_list_response(self, models: list[M], response_schema: type) -> list[Any]:

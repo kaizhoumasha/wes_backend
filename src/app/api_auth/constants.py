@@ -59,5 +59,6 @@ class CacheExpire:
 
     APP_DETAIL = 300  # 应用详情: 5 分钟
     APP_PERMISSIONS = 300  # 应用权限: 5 分钟
+    APP_PERMISSIONS_EMPTY = 120  # 空权限集: 2 分钟
     RATE_LIMIT_MINUTE = 60  # 分钟级速率限制: 1 分钟
     RATE_LIMIT_HOUR = 3600  # 小时级速率限制: 1 小时

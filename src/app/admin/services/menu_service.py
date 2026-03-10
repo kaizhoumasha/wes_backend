@@ -7,18 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import Menu, MenuTreeResponse
 from src.app.admin.repositories.menu_repository import MenuRepository, menu_repository
-from src.common.cache_config import cache_settings
+from src.core.base_service import BaseService
 from src.core.tree_service import TreeServiceMixin
 
 
-class MenuService(TreeServiceMixin[Menu]):
-    """菜单 Service（混入树形服务能力）"""
+class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
+    """菜单 Service（支持树形结构和 CRUD）"""
 
     def __init__(self, repo: MenuRepository = menu_repository):
-        super().__init__(repo)
+        # 初始化 TreeServiceMixin（设置 self.repo）
+        TreeServiceMixin.__init__(self, repo)
+        # 初始化 BaseService（启用缓存）
+        BaseService.__init__(self, repo, enable_cache=True)
         self.repo = repo
-        self._cache_prefix = cache_settings.USER.prefix  # 复用用户缓存配置
-        self._cache_expire = cache_settings.USER.expire
 
     async def get_user_menu_tree(self, db: AsyncSession, user_id: int) -> list[MenuTreeResponse]:
         """获取用户可访问的菜单树
