@@ -1120,6 +1120,46 @@ class BaseRepository[T]:
         logger.warning(f"永久删除 {self._model_name}: id={id}")
         return True
 
+    # ==================== 关联数据加载方法 ====================
+
+    async def _load_relations_for_items(
+        self,
+        db: AsyncSession,
+        items: list[T],
+        schema: type,
+        max_depth: int = 1,
+    ) -> list[T]:
+        """批量加载关联数据
+
+        使用 schema_loader.get_all_with_schema 根据 Schema 自动加载关联关系，
+        避免 N+1 查询问题。
+
+        Args:
+            db: 数据库会话
+            items: 模型实例列表
+            schema: 响应 Schema（用于确定需要加载的关联关系）
+            max_depth: 关联数据加载深度
+
+        Returns:
+            加载了关联数据的模型实例列表
+        """
+        if not items:
+            return items
+
+        from src.core.schema_loader import get_all_with_schema
+
+        # 获取所有 ID
+        ids = [getattr(item, self._pk_column.name) for item in items]
+
+        # 使用 get_all_with_schema 批量加载关联数据
+        return await get_all_with_schema(
+            db,
+            self.model,
+            schema,
+            self._pk_column.in_(ids),
+            max_depth=max_depth,
+        )
+
     # ==================== 主从表关系处理方法 ====================
 
     async def _update_relations(

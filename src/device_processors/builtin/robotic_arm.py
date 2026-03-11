@@ -36,9 +36,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         super().__init__(device_type="ROBOTIC_ARM")
         self.default_device_code = "ROBOT-ARM-01"  # 默认机械臂设备编码
 
-    async def validate_event(
-        self, event_data: dict
-    ) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
         """
         验证机械臂事件数据
 
@@ -66,10 +64,14 @@ class RoboticArmProcessor(BaseDeviceProcessor):
             # 料盘到达事件：必须有位置信息
             if "location" not in data:
                 return False, "MATERIAL_ARRIVED 事件缺少 location 字段"
-        elif event_type in [
-            EventType.PICK_COMPLETED.value,
-            EventType.PUT_COMPLETED.value,
-        ] and "command_code" not in data:
+        elif (
+            event_type
+            in [
+                EventType.PICK_COMPLETED.value,
+                EventType.PUT_COMPLETED.value,
+            ]
+            and "command_code" not in data
+        ):
             # 任务完成事件：必须有 command_code
             return False, f"{event_type} 事件缺少 command_code 字段"
 
@@ -101,9 +103,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
             # 决策：固定目标位置（实际项目中应该通过业务规则引擎计算）
             target_loc = "SHELF-A-01"
 
-            logger.info(
-                f"机械臂决策: 料盘到达 {source_loc} -> 抓取并放置到 {target_loc}"
-            )
+            logger.info(f"机械臂决策: 料盘到达 {source_loc} -> 抓取并放置到 {target_loc}")
 
             return {
                 "device_code": self.default_device_code,
@@ -141,9 +141,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         logger.warning(f"机械臂未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(
-        self, action_params: dict, correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
         """
         构建机械臂指令请求
 

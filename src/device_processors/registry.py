@@ -42,9 +42,7 @@ class DeviceProcessorRegistry:
     _processors: ClassVar[dict[str, DeviceProcessor]] = {}
 
     @classmethod
-    def register(
-        cls, device_type: str, processor: DeviceProcessor, overwrite: bool = False
-    ) -> None:
+    def register(cls, device_type: str, processor: DeviceProcessor, overwrite: bool = False) -> None:
         """
         注册设备处理器
 
@@ -70,9 +68,7 @@ class DeviceProcessorRegistry:
             )
 
         cls._processors[device_type] = processor
-        logger.info(
-            f"注册设备处理器: {device_type} -> {processor.__class__.__name__}"
-        )
+        logger.info(f"注册设备处理器: {device_type} -> {processor.__class__.__name__}")
 
     @classmethod
     def get_processor(cls, device_type: str) -> DeviceProcessor | None:
@@ -118,10 +114,7 @@ class DeviceProcessorRegistry:
         """
         processor = cls.get_processor(device_type)
         if processor is None:
-            raise ValueError(
-                f"设备类型 '{device_type}' 的处理器未注册。"
-                f"支持的类型: {cls.list_supported_types()}"
-            )
+            raise ValueError(f"设备类型 '{device_type}' 的处理器未注册。支持的类型: {cls.list_supported_types()}")
         return processor
 
     @classmethod
@@ -168,10 +161,7 @@ class DeviceProcessorRegistry:
             >>> for device_type, processor_name in processors.items():
             ...     print(f"{device_type}: {processor_name}")
         """
-        return {
-            device_type: processor.__class__.__name__
-            for device_type, processor in cls._processors.items()
-        }
+        return {device_type: processor.__class__.__name__ for device_type, processor in cls._processors.items()}
 
     @classmethod
     def unregister(cls, device_type: str) -> bool:
@@ -240,23 +230,15 @@ def register_builtin_processors() -> None:
     from src.device_processors.builtin.robotic_arm import RoboticArmProcessor
 
     # 注册机械臂处理器
-    DeviceProcessorRegistry.register(
-        DeviceType.ROBOTIC_ARM.value, RoboticArmProcessor()
-    )
+    DeviceProcessorRegistry.register(DeviceType.ROBOTIC_ARM.value, RoboticArmProcessor())
 
     # 注册输送线处理器
-    DeviceProcessorRegistry.register(
-        DeviceType.CONVEYOR.value, ConveyorProcessor()
-    )
+    DeviceProcessorRegistry.register(DeviceType.CONVEYOR.value, ConveyorProcessor())
 
     # 注册贴标机处理器
-    DeviceProcessorRegistry.register(
-        DeviceType.LABELER.value, LabelerProcessor()
-    )
+    DeviceProcessorRegistry.register(DeviceType.LABELER.value, LabelerProcessor())
 
-    logger.info(
-        f"内置设备处理器注册完成: {DeviceProcessorRegistry.list_supported_types()}"
-    )
+    logger.info(f"内置设备处理器注册完成: {DeviceProcessorRegistry.list_supported_types()}")
 
 
 # ==================== 导出 ====================

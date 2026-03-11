@@ -122,7 +122,7 @@ class ModelFactory:
                 # 字符串约束
                 "min_length",
                 "max_length",
-                "pattern",
+                "regex",
                 # 数值约束
                 "ge",
                 "gt",
@@ -130,7 +130,7 @@ class ModelFactory:
                 "lt",
                 # 其他约束
                 "frozen",
-                "json_schema_extra",
+                "schema_extra",
             ]
 
             for attr in constraint_attrs:

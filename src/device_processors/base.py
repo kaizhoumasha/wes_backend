@@ -68,9 +68,7 @@ class DeviceProcessor(ABC):
     # ==================== SDAF 控制循环方法 ====================
 
     @abstractmethod
-    async def validate_event(
-        self, event_data: dict
-    ) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
         """
         验证事件数据 (Sense - 感知)
 
@@ -116,9 +114,7 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def build_command(
-        self, action_params: dict, correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
         """
         构建指令请求 (Act - 执行)
 
@@ -218,9 +214,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         """
         super().__init__(device_type)
 
-    async def validate_event(
-        self, event_data: dict
-    ) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
         """
         默认事件验证实现
 
@@ -254,9 +248,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         logger.warning(f"{self.get_processor_name()} 未实现 decide_action 方法")
         return None
 
-    async def build_command(
-        self, action_params: dict, correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
         """
         默认指令构建实现
 

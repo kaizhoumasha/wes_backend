@@ -33,6 +33,21 @@ SCRIPT_NAME="P9 WES"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 ENV_EXAMPLE="${SCRIPT_DIR}/.env.example"
+ENV_NAME="prod"
+API_PORT="8001"
+DB_PORT="5432"
+REDIS_PORT_VALUE="6379"
+INTERACTIVE_MODE=false
+RUN_PORT_CHECK=true
+RUN_DOCKER_DOWN=false
+RUN_MIGRATIONS=true
+RUN_SEED_DATA=true
+SELECTED_PROFILES=()
+SELECTED_SERVICES=("db" "redis" "api")
+AVAILABLE_ENV_FILES=()
+AVAILABLE_PROFILES=()
+AVAILABLE_SERVICES=()
+COMPOSE_PROFILE_ARGS=()
 
 # 需要检查的端口
 REQUIRED_PORTS=(
@@ -85,6 +100,359 @@ print_warning() {
 
 print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
+}
+
+configure_runtime_settings() {
+    ENV_NAME="${ENV:-prod}"
+    API_PORT="${APP_PORT:-8001}"
+    DB_PORT="${POSTGRES_PORT:-5432}"
+    REDIS_PORT_VALUE="${REDIS_PORT:-6379}"
+
+    REQUIRED_PORTS=(
+        "${DB_PORT}"
+        "${REDIS_PORT_VALUE}"
+        "${API_PORT}"
+    )
+
+    REQUIRED_DIRS=(
+        "logs"
+        "docker_data/postgres_${ENV_NAME}"
+        "docker_data/redis_${ENV_NAME}"
+    )
+}
+
+refresh_required_ports() {
+    REQUIRED_PORTS=()
+
+    if selection_includes "db" "${SELECTED_SERVICES[@]}"; then
+        REQUIRED_PORTS+=("${DB_PORT}")
+    fi
+
+    if selection_includes "redis" "${SELECTED_SERVICES[@]}"; then
+        REQUIRED_PORTS+=("${REDIS_PORT_VALUE}")
+    fi
+
+    if selection_includes "api" "${SELECTED_SERVICES[@]}"; then
+        REQUIRED_PORTS+=("${API_PORT}")
+    fi
+}
+
+selection_includes() {
+    local target="$1"
+    shift
+
+    local item=""
+    for item in "$@"; do
+        if [[ "${item}" == "${target}" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+compose_service_running() {
+    local service_name="$1"
+    compose_cmd ps --status running -q "${service_name}" 2>/dev/null | grep -q .
+}
+
+compose_exec() {
+    local service_name="$1"
+    shift
+    compose_cmd exec -T "${service_name}" "$@"
+}
+
+compose_cmd() {
+    docker compose --env-file "${ENV_FILE}" "${COMPOSE_PROFILE_ARGS[@]}" "$@"
+}
+
+compose_down_cmd() {
+    docker compose --env-file "${ENV_FILE}" down --remove-orphans
+}
+
+discover_env_files() {
+    AVAILABLE_ENV_FILES=()
+
+    while IFS= read -r env_path; do
+        [[ -n "${env_path}" ]] && AVAILABLE_ENV_FILES+=("${env_path}")
+    done < <(find "${SCRIPT_DIR}" -maxdepth 1 -type f -name '.env*' ! -name '.env.example' | sort)
+}
+
+select_env_file() {
+    discover_env_files
+
+    if [[ "${INTERACTIVE_MODE}" != "true" ]]; then
+        return 0
+    fi
+
+    print_section "环境文件选择"
+
+    if [[ ${#AVAILABLE_ENV_FILES[@]} -eq 0 ]]; then
+        print_warning "当前目录未发现可用 env 文件，将使用默认 .env"
+        return 0
+    fi
+
+    local index=1
+    local default_choice="1"
+    local env_path=""
+    for env_path in "${AVAILABLE_ENV_FILES[@]}"; do
+        local display_path="${env_path#"${SCRIPT_DIR}/"}"
+        echo "  [${index}] ${display_path}"
+        if [[ "${env_path}" == "${SCRIPT_DIR}/.env" ]]; then
+            default_choice="${index}"
+        fi
+        ((index++))
+    done
+
+    while true; do
+        local input=""
+        read -p "选择环境文件 [${default_choice}]: " input
+        input="${input:-${default_choice}}"
+
+        if [[ "${input}" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= ${#AVAILABLE_ENV_FILES[@]} )); then
+            ENV_FILE="${AVAILABLE_ENV_FILES[$((input - 1))]}"
+            print_success "已选择环境文件: ${ENV_FILE#"${SCRIPT_DIR}/"}"
+            return 0
+        fi
+
+        print_warning "输入无效，请输入编号"
+    done
+}
+
+discover_compose_options() {
+    AVAILABLE_PROFILES=()
+    AVAILABLE_SERVICES=()
+
+    while IFS= read -r profile_name; do
+        [[ -n "${profile_name}" ]] && AVAILABLE_PROFILES+=("${profile_name}")
+    done < <(compose_cmd config --profiles 2>/dev/null | sort -u)
+
+    while IFS= read -r service_name; do
+        [[ -n "${service_name}" ]] && AVAILABLE_SERVICES+=("${service_name}")
+    done < <(compose_cmd config --services 2>/dev/null)
+}
+
+parse_multi_select() {
+    local input="$1"
+    shift
+    local options=("$@")
+    local tokens=()
+    local parsed=()
+    local token=""
+    local resolved=""
+
+    if [[ -z "${input}" ]]; then
+        PARSED_MULTI_SELECT=()
+        return 0
+    fi
+
+    if [[ "${input}" == "all" || "${input}" == "ALL" ]]; then
+        PARSED_MULTI_SELECT=("${options[@]}")
+        return 0
+    fi
+
+    local normalized="${input//,/ }"
+    IFS=' ' read -r -a tokens <<< "${normalized}"
+
+    for token in "${tokens[@]}"; do
+        [[ -z "${token}" ]] && continue
+        resolved=""
+
+        if [[ "${token}" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= ${#options[@]} )); then
+            resolved="${options[$((token - 1))]}"
+        else
+            local option=""
+            for option in "${options[@]}"; do
+                if [[ "${option}" == "${token}" ]]; then
+                    resolved="${option}"
+                    break
+                fi
+            done
+        fi
+
+        if [[ -z "${resolved}" ]]; then
+            return 1
+        fi
+
+        if ! selection_includes "${resolved}" "${parsed[@]}"; then
+            parsed+=("${resolved}")
+        fi
+    done
+
+    PARSED_MULTI_SELECT=("${parsed[@]}")
+    return 0
+}
+
+prompt_yes_no() {
+    local prompt_text="$1"
+    local default_value="$2"
+
+    if [[ "${INTERACTIVE_MODE}" != "true" ]]; then
+        [[ "${default_value}" == "y" ]]
+        return $?
+    fi
+
+    local prompt_suffix="y/N"
+    if [[ "${default_value}" == "y" ]]; then
+        prompt_suffix="Y/n"
+    fi
+
+    while true; do
+        local input=""
+        read -p "${prompt_text} (${prompt_suffix}): " input
+        input="${input:-${default_value}}"
+
+        if [[ "${input}" =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+
+        if [[ "${input}" =~ ^[Nn]$ ]]; then
+            return 1
+        fi
+
+        print_warning "请输入 y 或 n"
+    done
+}
+
+configure_interactive_options() {
+    discover_compose_options
+
+    if [[ "${INTERACTIVE_MODE}" != "true" ]]; then
+        COMPOSE_PROFILE_ARGS=()
+        refresh_required_ports
+        return 0
+    fi
+
+    print_section "启动选项配置"
+
+    if [[ ${#AVAILABLE_PROFILES[@]} -gt 0 ]]; then
+        echo "可用 profiles:"
+        local index=1
+        local profile_name=""
+        for profile_name in "${AVAILABLE_PROFILES[@]}"; do
+            echo "  [${index}] ${profile_name}"
+            ((index++))
+        done
+        echo "  [Enter] 跳过 profile 选择"
+
+        while true; do
+            local profile_input=""
+            read -p "选择 profiles（可多选，逗号分隔，或留空跳过）: " profile_input
+            if [[ -z "${profile_input}" ]]; then
+                SELECTED_PROFILES=()
+                break
+            fi
+
+            if parse_multi_select "${profile_input}" "${AVAILABLE_PROFILES[@]}"; then
+                SELECTED_PROFILES=("${PARSED_MULTI_SELECT[@]}")
+                break
+            fi
+
+            print_warning "profile 输入无效，请重新输入"
+        done
+    fi
+
+    if [[ ${#SELECTED_PROFILES[@]} -gt 0 ]]; then
+        COMPOSE_PROFILE_ARGS=()
+        local selected_profile=""
+        for selected_profile in "${SELECTED_PROFILES[@]}"; do
+            COMPOSE_PROFILE_ARGS+=("--profile" "${selected_profile}")
+        done
+        print_success "已选择 profiles: ${SELECTED_PROFILES[*]}"
+    else
+        COMPOSE_PROFILE_ARGS=()
+        print_info "未显式选择 profile，将按服务名启动"
+    fi
+
+    echo ""
+    echo "可用 services:"
+    local service_index=1
+    local service_name=""
+    for service_name in "${AVAILABLE_SERVICES[@]}"; do
+        echo "  [${service_index}] ${service_name}"
+        ((service_index++))
+    done
+    echo "  默认: db, redis, api"
+
+    while true; do
+        local service_input=""
+        read -p "选择要启动的 services（可多选，逗号分隔，all 表示全部） [db,redis,api]: " service_input
+        service_input="${service_input:-db,redis,api}"
+
+        if parse_multi_select "${service_input}" "${AVAILABLE_SERVICES[@]}"; then
+            SELECTED_SERVICES=("${PARSED_MULTI_SELECT[@]}")
+            break
+        fi
+
+        print_warning "service 输入无效，请重新输入"
+    done
+
+    print_success "已选择 services: ${SELECTED_SERVICES[*]}"
+
+    if prompt_yes_no "启动前先执行 docker compose down 吗？" "n"; then
+        RUN_DOCKER_DOWN=true
+    else
+        RUN_DOCKER_DOWN=false
+    fi
+
+    if prompt_yes_no "启动前检查相关端口占用吗？" "y"; then
+        RUN_PORT_CHECK=true
+    else
+        RUN_PORT_CHECK=false
+    fi
+
+    if selection_includes "api" "${SELECTED_SERVICES[@]}"; then
+        if prompt_yes_no "启动后执行数据库迁移吗？" "y"; then
+            RUN_MIGRATIONS=true
+        else
+            RUN_MIGRATIONS=false
+        fi
+
+        if [[ "${RUN_MIGRATIONS}" == "true" ]]; then
+            if prompt_yes_no "迁移完成后执行基础数据初始化吗？" "y"; then
+                RUN_SEED_DATA=true
+            else
+                RUN_SEED_DATA=false
+            fi
+        else
+            RUN_SEED_DATA=false
+        fi
+    else
+        RUN_MIGRATIONS=false
+        RUN_SEED_DATA=false
+        print_info "未选择 api 服务，已跳过迁移和种子初始化"
+    fi
+
+    refresh_required_ports
+}
+
+ensure_required_services() {
+    if [[ "${RUN_MIGRATIONS}" == "true" || "${RUN_SEED_DATA}" == "true" ]]; then
+        if ! selection_includes "api" "${SELECTED_SERVICES[@]}"; then
+            SELECTED_SERVICES+=("api")
+        fi
+        if ! selection_includes "db" "${SELECTED_SERVICES[@]}"; then
+            SELECTED_SERVICES+=("db")
+        fi
+        if ! selection_includes "redis" "${SELECTED_SERVICES[@]}"; then
+            SELECTED_SERVICES+=("redis")
+        fi
+    fi
+
+    refresh_required_ports
+}
+
+stop_services_first() {
+    print_section "停止现有服务"
+
+    print_info "执行 docker compose down --remove-orphans ..."
+    if compose_down_cmd; then
+        print_success "现有服务已停止"
+        return 0
+    fi
+
+    print_error "停止现有服务失败"
+    return 1
 }
 
 # ==============================================================================
@@ -175,6 +543,7 @@ check_env_file() {
 
     # 安全加载环境变量
     load_env_file "${ENV_FILE}"
+    configure_runtime_settings
 
     # 检查必需的环境变量
     local missing_vars=0
@@ -208,6 +577,7 @@ check_env_file() {
     fi
 
     print_success "环境配置检查通过"
+    print_info "当前环境: ${ENV_NAME}"
 
     return 0
 }
@@ -286,15 +656,12 @@ check_ports() {
 check_database_connection() {
     print_section "数据库连接检查"
 
-    # 检查数据库容器是否运行
-    local db_container="wes_postgres"
-    if ! docker ps | grep -q "${db_container}"; then
-        print_warning "数据库容器未运行"
-        print_info "将随 Docker Compose 启动"
-        return 0
+    if ! compose_service_running "db"; then
+        print_error "数据库服务未运行"
+        return 1
     fi
 
-    print_success "数据库容器运行中"
+    print_success "数据库服务运行中"
 
     # 等待数据库就绪
     print_info "等待数据库就绪..."
@@ -302,7 +669,7 @@ check_database_connection() {
     local attempt=0
 
     while [[ ${attempt} -lt ${max_attempts} ]]; do
-        if docker exec "${db_container}" pg_isready -U "${POSTGRES_USER:-wes_user}" &>/dev/null; then
+        if compose_exec "db" pg_isready -U "${POSTGRES_USER:-wes_user}" -d "${POSTGRES_DB:-wes_db}" &>/dev/null; then
             print_success "数据库连接就绪"
             return 0
         fi
@@ -321,15 +688,12 @@ check_database_connection() {
 check_redis_connection() {
     print_section "Redis 连接检查"
 
-    # 检查 Redis 容器是否运行
-    local redis_container="wes_redis"
-    if ! docker ps | grep -q "${redis_container}"; then
-        print_warning "Redis 容器未运行"
-        print_info "将随 Docker Compose 启动"
-        return 0
+    if ! compose_service_running "redis"; then
+        print_error "Redis 服务未运行"
+        return 1
     fi
 
-    print_success "Redis 容器运行中"
+    print_success "Redis 服务运行中"
 
     # 等待 Redis 就绪
     print_info "等待 Redis 就绪..."
@@ -337,7 +701,7 @@ check_redis_connection() {
     local attempt=0
 
     while [[ ${attempt} -lt ${max_attempts} ]]; do
-        if docker exec "${redis_container}" redis-cli -a "${REDIS_PASSWORD}" ping &>/dev/null; then
+        if compose_exec "redis" redis-cli -a "${REDIS_PASSWORD}" ping &>/dev/null; then
             print_success "Redis 连接就绪"
             return 0
         fi
@@ -356,15 +720,13 @@ check_redis_connection() {
 init_database_data() {
     print_section "数据库初始化"
 
-    # 检查 Python 环境
-    if ! command -v python3 &> /dev/null && ! command -v uv &> /dev/null; then
-        print_warning "未找到 Python 环境，跳过数据初始化"
-        print_info "请手动运行: python scripts/init_db_data.py"
-        return 0
+    if ! compose_service_running "api"; then
+        print_error "API 服务未运行，无法执行初始化"
+        return 1
     fi
 
     # 检查初始化脚本
-    local init_script="${SCRIPT_DIR}/scripts/init_db_data.py"
+    local init_script="${SCRIPT_DIR}/migrations/seed_data/initial_data.py"
     if [[ ! -f "${init_script}" ]]; then
         print_warning "初始化脚本不存在: ${init_script}"
         return 0
@@ -374,12 +736,12 @@ init_database_data() {
 
     # 重新加载环境变量确保可用
     load_env_file "${ENV_FILE}"
-    local check_query="SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'users');"
+    local check_query="SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'wes_sys' AND table_name = 'users');"
 
-    if docker exec wes_postgres psql -U "${POSTGRES_USER:-wes_user}" -d "${POSTGRES_DB:-wes_db}" -tAc "${check_query}" 2>/dev/null | grep -q "t"; then
+    if compose_exec "db" psql -U "${POSTGRES_USER:-wes_user}" -d "${POSTGRES_DB:-wes_db}" -tAc "${check_query}" 2>/dev/null | grep -q "t"; then
         print_info "检查用户数据..."
 
-        local user_count=$(docker exec wes_postgres psql -U "${POSTGRES_USER:-wes_user}" -d "${POSTGRES_DB:-wes_db}" -tAc "SELECT COUNT(*) FROM users;" 2>/dev/null || echo "0")
+        local user_count=$(compose_exec "db" psql -U "${POSTGRES_USER:-wes_user}" -d "${POSTGRES_DB:-wes_db}" -tAc "SELECT COUNT(*) FROM wes_sys.users;" 2>/dev/null || echo "0")
 
         if [[ "${user_count}" -gt "0" ]]; then
             print_success "数据库已包含 ${user_count} 个用户，跳过初始化"
@@ -390,15 +752,7 @@ init_database_data() {
     print_info "开始初始化数据库基础数据..."
 
     # 运行初始化脚本
-    if command -v uv &> /dev/null; then
-        print_info "使用 uv 运行初始化脚本"
-        uv run python "${init_script}"
-    else
-        print_info "使用 python3 运行初始化脚本"
-        python3 "${init_script}"
-    fi
-
-    if [[ $? -eq 0 ]]; then
+    if compose_exec "api" python -m migrations.seed_data.initial_data; then
         print_success "数据库初始化完成"
         return 0
     else
@@ -407,11 +761,29 @@ init_database_data() {
     fi
 }
 
+run_database_migrations() {
+    print_section "数据库迁移"
+
+    if ! compose_service_running "api"; then
+        print_error "API 服务未运行，无法执行迁移"
+        return 1
+    fi
+
+    print_info "执行 Alembic 迁移..."
+    if compose_exec "api" alembic upgrade head; then
+        print_success "数据库迁移完成"
+        return 0
+    fi
+
+    print_error "数据库迁移失败"
+    return 1
+}
+
 start_services() {
     print_section "启动服务"
 
-    print_info "使用 Docker Compose 启动服务..."
-    if docker compose up -d; then
+    print_info "使用 Docker Compose 启动服务: ${SELECTED_SERVICES[*]}"
+    if compose_cmd up -d "${SELECTED_SERVICES[@]}"; then
         print_success "服务启动成功"
         return 0
     else
@@ -426,18 +798,35 @@ show_summary() {
     echo ""
     print_success "所有检查通过，系统已准备就绪！"
     echo ""
+    print_info "已启动服务: ${SELECTED_SERVICES[*]}"
+    if [[ ${#SELECTED_PROFILES[@]} -gt 0 ]]; then
+        print_info "已选择 profiles: ${SELECTED_PROFILES[*]}"
+    fi
+    echo ""
     print_info "服务信息:"
-    echo -e "  • API 地址: ${GREEN}http://localhost:8001${NC}"
-    echo -e "  • API 文档: ${GREEN}http://localhost:8001/docs${NC}"
-    echo -e "  • 数据库: ${GREEN}localhost:5432${NC}"
-    echo -e "  • Redis: ${GREEN}localhost:6379${NC}"
+    if selection_includes "api" "${SELECTED_SERVICES[@]}"; then
+        echo -e "  • API 地址: ${GREEN}http://localhost:${API_PORT}${NC}"
+        echo -e "  • API 文档: ${GREEN}http://localhost:${API_PORT}/docs${NC}"
+    fi
+    if selection_includes "db" "${SELECTED_SERVICES[@]}"; then
+        echo -e "  • 数据库: ${GREEN}localhost:${DB_PORT}${NC}"
+    fi
+    if selection_includes "redis" "${SELECTED_SERVICES[@]}"; then
+        echo -e "  • Redis: ${GREEN}localhost:${REDIS_PORT_VALUE}${NC}"
+    fi
     echo ""
-    print_info "默认登录账号:"
-    echo -e "  ${CYAN}admin${NC}     / ${YELLOW}admin123456${NC}"
-    echo -e "  ${CYAN}manager${NC}   / ${YELLOW}manager123456${NC}"
-    echo -e "  ${CYAN}user${NC}      / ${YELLOW}user123456${NC}"
-    echo ""
-    print_warning "⚠️  生产环境请立即修改默认密码！"
+    if [[ "${RUN_SEED_DATA}" == "true" ]]; then
+        print_info "默认登录账号:"
+        echo -e "  ${CYAN}admin${NC}     / ${YELLOW}admin123${NC}"
+        echo -e "  ${CYAN}manager${NC}   / ${YELLOW}admin123${NC}"
+        echo -e "  ${CYAN}operator${NC}  / ${YELLOW}admin123${NC}"
+        echo -e "  ${CYAN}finance${NC}   / ${YELLOW}admin123${NC}"
+        echo -e "  ${CYAN}user1${NC}     / ${YELLOW}admin123${NC}"
+        echo -e "  ${CYAN}user2${NC}     / ${YELLOW}admin123${NC}"
+        echo ""
+        print_warning "⚠️  生产环境请立即修改默认密码！"
+        echo ""
+    fi
     echo ""
     print_info "常用命令:"
     echo -e "  • 查看日志: ${CYAN}docker compose logs -f${NC}"
@@ -455,6 +844,10 @@ main() {
     print_header "启动初始化"
     echo ""
 
+    if [[ -t 0 && -t 1 ]]; then
+        INTERACTIVE_MODE=true
+    fi
+
     # 1. Docker 环境检查
     if ! check_docker; then
         print_error "Docker 环境检查失败，退出"
@@ -462,54 +855,89 @@ main() {
     fi
     echo ""
 
-    # 2. 环境配置文件检查
+    # 2. 选择环境文件
+    select_env_file
+    echo ""
+
+    # 3. 环境配置文件检查
     if ! check_env_file; then
         print_error "环境配置检查失败，退出"
         exit 1
     fi
     echo ""
 
-    # 3. 目录结构检查
+    # 4. 配置交互选项
+    configure_interactive_options
+    ensure_required_services
+    echo ""
+
+    # 5. 目录结构检查
     if ! check_directories; then
         print_error "目录检查失败，退出"
         exit 1
     fi
     echo ""
 
-    # 4. 端口占用检查
-    if ! check_ports; then
-        print_error "端口检查失败，退出"
-        exit 1
+    # 6. 按需停止现有服务
+    if [[ "${RUN_DOCKER_DOWN}" == "true" ]]; then
+        if ! stop_services_first; then
+            print_error "停止现有服务失败，退出"
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
 
-    # 5. 启动 Docker 服务
+    # 7. 端口占用检查
+    if [[ "${RUN_PORT_CHECK}" == "true" && ${#REQUIRED_PORTS[@]} -gt 0 ]]; then
+        if ! check_ports; then
+            print_error "端口检查失败，退出"
+            exit 1
+        fi
+        echo ""
+    fi
+
+    # 8. 启动 Docker 服务
     if ! start_services; then
         print_error "服务启动失败，退出"
         exit 1
     fi
     echo ""
 
-    # 6. 数据库连接检查
-    if ! check_database_connection; then
-        print_error "数据库连接失败，退出"
-        exit 1
+    # 9. 数据库连接检查
+    if selection_includes "db" "${SELECTED_SERVICES[@]}" || [[ "${RUN_MIGRATIONS}" == "true" || "${RUN_SEED_DATA}" == "true" ]]; then
+        if ! check_database_connection; then
+            print_error "数据库连接失败，退出"
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
 
-    # 7. Redis 连接检查
-    if ! check_redis_connection; then
-        print_error "Redis 连接失败，退出"
-        exit 1
+    # 10. Redis 连接检查
+    if selection_includes "redis" "${SELECTED_SERVICES[@]}" || selection_includes "api" "${SELECTED_SERVICES[@]}"; then
+        if ! check_redis_connection; then
+            print_error "Redis 连接失败，退出"
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
 
-    # 8. 数据库初始化
-    if ! init_database_data; then
-        print_warning "数据库初始化失败，但服务已启动"
-        print_info "可以稍后手动运行初始化脚本"
+    # 11. 数据库迁移
+    if [[ "${RUN_MIGRATIONS}" == "true" ]]; then
+        if ! run_database_migrations; then
+            print_error "数据库迁移失败，退出"
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
+
+    # 12. 数据库初始化
+    if [[ "${RUN_SEED_DATA}" == "true" ]]; then
+        if ! init_database_data; then
+            print_warning "数据库初始化失败，但服务已启动"
+            print_info "可以稍后手动运行: docker compose exec api python -m migrations.seed_data.initial_data"
+        fi
+        echo ""
+    fi
 
     # 显示摘要信息
     show_summary

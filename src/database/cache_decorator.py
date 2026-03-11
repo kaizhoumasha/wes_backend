@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 P = ParamSpec("P")
 R = TypeVar("R")
 
+
 def _get_return_type(func: Callable) -> type | None:
     """
     获取函数的返回类型（处理 Optional 类型）

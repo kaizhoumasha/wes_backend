@@ -887,9 +887,7 @@ async def get_current_user(
     return int(token_payload.sub) if token_payload else None
 
 
-async def require_auth(
-    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)
-) -> int:
+async def require_auth(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> int:
     """
     要求认证（依赖注入）
 

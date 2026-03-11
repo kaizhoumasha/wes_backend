@@ -114,6 +114,7 @@ def process_device_event(self, event_data: dict):
     if request_id:
         try:
             from starlette_context import context as ctx
+
             ctx["request_id"] = request_id
             logger.debug(f"[Celery] 恢复 request_id 上下文: {request_id}")
         except Exception as e:
@@ -168,9 +169,7 @@ def process_device_event(self, event_data: dict):
                     timestamp=timestamp,
                     data=data,
                 )
-                event_log = await device_command_service.create_event_log(
-                    db, event_request
-                )
+                event_log = await device_command_service.create_event_log(db, event_request)
 
                 # 获取设备信息
                 device_repo = DeviceRepository()
@@ -214,18 +213,14 @@ def process_device_event(self, event_data: dict):
                     internal_action_params["device_code"] = target_device_code
 
                     command_request = await processor.build_command(internal_action_params)
-                    command = await device_command_service.create_command(
-                        db, command_request
-                    )
+                    command = await device_command_service.create_command(db, command_request)
                     if command is None:
                         raise RuntimeError("创建设备指令失败")
                     commands_created.append(command.command_code)
 
                     # 发送指令
                     try:
-                        await device_command_service.send_command(
-                            db, command.command_code
-                        )
+                        await device_command_service.send_command(db, command.command_code)
                     except Exception as e:
                         logger.error(f"发送指令失败: {e}")
                         # 继续处理，不影响事件记录
@@ -260,6 +255,7 @@ def process_device_event(self, event_data: dict):
 
         # 记录错误到事件日志
         try:
+
             async def _log_error(exc: Exception):
                 from src.app.device.models.event_log import EventRequest, EventType
                 from src.app.device.services import device_command_service
@@ -281,9 +277,7 @@ def process_device_event(self, event_data: dict):
                         timestamp=timestamp_err,
                         data=data_err,
                     )
-                    event_log = await device_command_service.create_event_log(
-                        db, event_request
-                    )
+                    event_log = await device_command_service.create_event_log(db, event_request)
                     await device_command_service.update_event_log(
                         db,
                         event_log,

@@ -91,6 +91,9 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             max_depth,
             custom_routes=custom_routes,
         )
+        # 设置 service.response_schema 用于关联数据加载
+        if hasattr(service, "response_schema"):
+            service.response_schema = response_schema
         # 使用 Protocol 类型注解确保树形方法可用
         self.service: TreeService = service  # type: ignore[assignment]
 

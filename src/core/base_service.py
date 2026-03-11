@@ -317,9 +317,7 @@ class BaseService[M, R]:
             sort_hash = hashlib.sha256(
                 json.dumps([s.model_dump() for s in sort] if sort else [], sort_keys=True).encode()
             ).hexdigest()[:8]
-            cache_key = (
-                f"{self.list_cache_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}:del{include_deleted}"
-            )
+            cache_key = f"{self.list_cache_prefix}:l{limit}:o{offset}:f{filter_hash}:s{sort_hash}:d{max_depth}:del{include_deleted}"
             cached_data = await cache.get(cache_key)
 
             if cached_data is not None:

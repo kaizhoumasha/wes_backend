@@ -36,9 +36,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
         super().__init__(device_type="CONVEYOR")
         self.default_device_code = "CONVEYOR-01"  # 默认输送线设备编码
 
-    async def validate_event(
-        self, event_data: dict
-    ) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
         """
         验证输送线事件数据
 
@@ -138,9 +136,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
         logger.warning(f"输送线未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(
-        self, action_params: dict, correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
         """
         构建输送线指令请求
 

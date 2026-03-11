@@ -213,8 +213,21 @@ class TreeRepository[T](BaseRepository[T]):
         db: AsyncSession,
         parent_id: int,
         max_depth: int | None = None,
+        schema: type | None = None,
+        relation_max_depth: int = 1,
     ) -> list[T]:
-        """获取所有后代节点"""
+        """获取所有后代节点（支持关联数据加载）
+
+        Args:
+            db: 数据库会话
+            parent_id: 父节点 ID
+            max_depth: 树形深度限制
+            schema: 响应 Schema（用于自动加载关联数据）
+            relation_max_depth: 关联数据加载深度
+
+        Returns:
+            后代节点列表
+        """
         parent = await self.get_by_id(db, parent_id)
         if not parent:
             return []
@@ -236,7 +249,13 @@ class TreeRepository[T](BaseRepository[T]):
             self.model.sort_order,  # type: ignore[attr-defined]
         )  # type: ignore[attr-defined]
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        items = result.scalars().all()  # .scalars().all() 已返回 list，无需再次包装
+
+        # 如果提供了 schema，自动加载关联数据
+        if schema and items:
+            items = await self._load_relations_for_items(db, items, schema, relation_max_depth)
+
+        return items
 
     async def get_ancestors(self, db: AsyncSession, node_id: int) -> list[T]:
         """获取祖先路径"""

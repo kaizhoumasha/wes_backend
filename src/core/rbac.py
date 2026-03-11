@@ -24,7 +24,7 @@ RBAC 权限控制模块
 - 自动失效: 权限变更时需手动调用 `invalidate_user_permissions()`
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 from fastapi import Depends, Request
@@ -73,7 +73,9 @@ async def _get_perms_from_cache(cache: CacheDep, user_id: int) -> set[str] | Non
     return permissions or set()
 
 
-async def _set_perms_to_cache(cache: CacheDep, user_id: int, permissions: set[str], expire: int = PERM_CACHE_TTL) -> None:
+async def _set_perms_to_cache(
+    cache: CacheDep, user_id: int, permissions: set[str], expire: int = PERM_CACHE_TTL
+) -> None:
     """将用户权限写入缓存
 
     Args:

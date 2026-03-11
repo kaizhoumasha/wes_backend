@@ -4,7 +4,6 @@
 提供设备指令的数据访问操作。
 """
 
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,9 +18,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """初始化 Repository"""
         super().__init__(DeviceCommand)
 
-    async def get_by_command_code(
-        self, db: AsyncSession, command_code: str
-    ) -> DeviceCommand | None:
+    async def get_by_command_code(self, db: AsyncSession, command_code: str) -> DeviceCommand | None:
         """
         根据 command_code 查询指令
 
@@ -32,9 +29,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             DeviceCommand 实例，如果不存在返回 None
         """
-        statement = select(DeviceCommand).where(
-            DeviceCommand.command_code == command_code
-        )
+        statement = select(DeviceCommand).where(DeviceCommand.command_code == command_code)
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
@@ -55,23 +50,17 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             待处理指令列表
         """
-        statement = select(DeviceCommand).where(
-            DeviceCommand.status == CommandStatus.PENDING
-        )
+        statement = select(DeviceCommand).where(DeviceCommand.status == CommandStatus.PENDING)
 
         if device_id:
             statement = statement.where(DeviceCommand.device_id == device_id)
 
-        statement = statement.order_by(DeviceCommand.priority.desc()).limit(
-            limit
-        )
+        statement = statement.order_by(DeviceCommand.priority.desc()).limit(limit)
 
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def get_timeout_commands(
-        self, db: AsyncSession, limit: int = 100
-    ) -> list[DeviceCommand]:
+    async def get_timeout_commands(self, db: AsyncSession, limit: int = 100) -> list[DeviceCommand]:
         """
         获取超时的指令
 
@@ -84,9 +73,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """
         # 查询已发送但未完成的指令
         statement = select(DeviceCommand).where(
-            DeviceCommand.status.in_(
-                [CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
-            )
+            DeviceCommand.status.in_([CommandStatus.SENT, CommandStatus.ACK_RECEIVED])
         )
 
         result = await db.execute(statement)
@@ -97,9 +84,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
         return timeout_commands[:limit]
 
-    async def get_commands_by_correlation_id(
-        self, db: AsyncSession, correlation_id: str
-    ) -> list[DeviceCommand]:
+    async def get_commands_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[DeviceCommand]:
         """
         根据关联 ID 查询所有相关指令
 
@@ -110,16 +95,16 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             相关指令列表
         """
-        statement = select(DeviceCommand).where(
-            DeviceCommand.correlation_id == correlation_id
-        ).order_by(DeviceCommand.created_at)
+        statement = (
+            select(DeviceCommand)
+            .where(DeviceCommand.correlation_id == correlation_id)
+            .order_by(DeviceCommand.created_at)
+        )
 
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def count_by_status(
-        self, db: AsyncSession, status: CommandStatus, device_id: str | None = None
-    ) -> int:
+    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: str | None = None) -> int:
         """
         统计指定状态的指令数量
 
@@ -133,9 +118,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """
         from sqlalchemy import func
 
-        statement = select(func.count(DeviceCommand.id)).where(
-            DeviceCommand.status == status
-        )
+        statement = select(func.count(DeviceCommand.id)).where(DeviceCommand.status == status)
 
         if device_id:
             statement = statement.where(DeviceCommand.device_id == device_id)

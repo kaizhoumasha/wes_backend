@@ -1,5 +1,3 @@
-from collections.abc import Iterable, Mapping
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

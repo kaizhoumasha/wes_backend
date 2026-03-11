@@ -353,7 +353,9 @@ class AuthService:
                         jti=access_jti,
                     )
                     revoked_count = 1
-                    logger.info(f"用户 {user_id} 通过 Refresh Token 登出成功，撤销 session: {refresh_payload.session_uuid}")
+                    logger.info(
+                        f"用户 {user_id} 通过 Refresh Token 登出成功，撤销 session: {refresh_payload.session_uuid}"
+                    )
                 except Exception as e:
                     logger.warning(f"登出时通过 Refresh Token 撤销失败: {e}")
 
@@ -551,11 +553,14 @@ class AuthService:
         """
         return UserResponse(
             id=user.id,  # type: ignore[arg-type]
+            version=user.version,  # type: ignore[attr-defined]
             username=user.username,
             email=user.email,
             full_name=user.full_name,
             is_superuser=user.is_superuser,
             is_multi_login=user.is_multi_login,
+            created_at=user.created_at,  # type: ignore[attr-defined]
+            updated_at=user.updated_at,  # type: ignore[attr-defined]
             roles=[],  # roles 会通过预加载自动填充
         )
 

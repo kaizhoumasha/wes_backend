@@ -36,9 +36,7 @@ class LabelerProcessor(BaseDeviceProcessor):
         super().__init__(device_type="LABELER")
         self.default_device_code = "LABELER-01"  # 默认贴标机设备编码
 
-    async def validate_event(
-        self, event_data: dict
-    ) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
         """
         验证贴标机事件数据
 
@@ -150,9 +148,7 @@ class LabelerProcessor(BaseDeviceProcessor):
         logger.warning(f"贴标机未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(
-        self, action_params: dict, correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
         """
         构建贴标机指令请求
 

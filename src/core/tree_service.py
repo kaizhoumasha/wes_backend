@@ -4,6 +4,7 @@ from typing import TypeVar
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.logger import logger
 from src.database.tree_repository import TreeRepository
 
 # Model 类型 (如 Warehouse, Container 等)
@@ -28,16 +29,63 @@ class TreeServiceMixin[M]:
         db: AsyncSession,
         root_id: int | None = None,
         max_depth: int = -1,
+        relation_max_depth: int = 1,
     ) -> list:
-        if root_id:
-            items = await self.repo.get_descendants(db, root_id, max_depth if max_depth > 0 else None)
-        else:
-            _, items = await self.repo.get_list(db, limit=10000)
+        """获取树形结构数据（支持关联数据加载）
 
-        dict_items = [self._to_dict(item) for item in items]
+        Args:
+            db: 数据库会话
+            root_id: 根节点 ID（None 表示获取所有节点）
+            max_depth: 树形深度限制（-1 表示无限制）
+            relation_max_depth: 关联数据加载深度
+
+        Returns:
+            树形结构数据（字典列表）
+        """
+        # 尝试使用 self.response_schema（由 BaseService 提供）
+        schema = getattr(self, "response_schema", None)
+
+        if root_id:
+            items = await self.repo.get_descendants(
+                db,
+                root_id,
+                max_depth if max_depth > 0 else None,
+                schema=schema,
+                relation_max_depth=relation_max_depth,
+            )
+        else:
+            _, items = await self.repo.get_list(
+                db,
+                limit=10000,
+                schema=schema,
+                max_depth=relation_max_depth,
+            )
+
+        dict_items = [self._to_dict(item, schema) for item in items]
         return self._build_tree_optimized(dict_items)
 
-    def _to_dict(self, item) -> dict:
+    def _to_dict(self, item, schema: type | None = None) -> dict:
+        """将模型转换为字典（支持关联数据）
+
+        Args:
+            item: 模型实例
+            schema: 响应 Schema（如果提供，使用其序列化）
+
+        Returns:
+            字典形式的数据
+        """
+        # 使用现有的 model_to_schema 工具（处理关联数据）
+        if schema:
+            from src.core.schema_loader import model_to_schema
+
+            try:
+                schema_obj = model_to_schema(item, schema)
+                return schema_obj.model_dump(mode="json")
+            except (AttributeError, TypeError, ValueError) as e:
+                # 只捕获预期的异常，避免隐藏真实错误
+                logger.debug(f"Schema serialization failed for {item.__class__.__name__}: {e}")
+
+        # 回退到默认的列序列化
         mapper = inspect(item.__class__)
         result = {}
         for c in mapper.columns:
