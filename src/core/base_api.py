@@ -172,13 +172,9 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            # exclude_unset=True: 只包含用户显式设置的字段，忽略使用默认值的字段
-            # 这样当用户不传递 product_lists 时，不会被包含在 data 中
-            data = (
-                {k: v for k, v in obj_in.model_dump(exclude_unset=True).items() if v is not None}
-                if hasattr(obj_in, "model_dump")
-                else obj_in
-            )
+            # exclude_unset=True: 只包含用户显式设置的字段，忽略使用默认值的字段。
+            # 对于可选字段，显式传入 null 代表清空原值，不能再额外过滤掉 None。
+            data = obj_in.model_dump(exclude_unset=True) if hasattr(obj_in, "model_dump") else obj_in
             try:
                 resource = await self.service.update(db, id, data, cache)
             except ValueError as e:

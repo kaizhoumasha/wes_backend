@@ -104,7 +104,7 @@ async def test_update_response_reload_includes_relations() -> None:
         cache=cache,
     )
 
-    assert service.update_calls == [(db, 1, {"name": "changed"}, cache)]
+    assert service.update_calls == [(db, 1, {"name": "changed", "description": None}, cache)]
     assert service.get_by_id_calls == [(db, cache, 1, 1, False)]
     assert response["data"].name == "reloaded"
     assert response["data"].children[0].id == 10
