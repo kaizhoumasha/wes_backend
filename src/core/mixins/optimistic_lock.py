@@ -77,7 +77,7 @@ class OptimisticLockMixin(BaseMixin):
     )
 
     @declared_attr.directive
-    def __mapper_args__(cls) -> dict[str, object]:
+    def __mapper_args__(cls) -> dict[str, object]:  # noqa: N805
         """启用 SQLAlchemy 原生版本控制，确保并发更新具备数据库级保护。"""
         return {
             "version_id_col": cls.__table__.c.version,

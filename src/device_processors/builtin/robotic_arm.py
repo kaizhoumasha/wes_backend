@@ -154,7 +154,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         """
         device_id = action_params.get("device_id")
         if not isinstance(device_id, int):
-            raise ValueError("内部指令构建失败：缺少已解析的 device_id")
+            raise TypeError("内部指令构建失败：缺少已解析的 device_id")
         task_type = action_params.get("task_type", TaskType.PROCESS.value)
         params = action_params.get("params", {})
 

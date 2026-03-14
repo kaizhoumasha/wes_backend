@@ -1,55 +1,19 @@
 """树形结构 API（继承 BaseAPI + 树形路由）"""
 
 from collections.abc import Callable
-from typing import Annotated, Any, Protocol, TypeVar
+from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, Path, Query
 
 from src.core.base_api import BaseAPI
-from src.core.base_service import BaseService
 from src.core.rbac import RequirePermission
 from src.core.response.response_util import response_builder
+from src.core.service_protocols import TreeServiceProtocol
 from src.database.dependencies import AsyncSessionDep
 
 ModelType = TypeVar("ModelType")
 CreateModelType = TypeVar("CreateModelType")
 UpdateModelType = TypeVar("UpdateModelType")
-
-
-class TreeService(Protocol):
-    """树形服务协议（Protocol 类型注解）
-
-    定义树形服务必须提供的方法，用于类型检查。
-    实际使用时，Service 应继承 BaseService 并混入 TreeServiceMixin。
-    """
-
-    async def get_tree(
-        self,
-        db: Any,
-        root_id: int | None,
-        max_depth: int,
-    ) -> list: ...
-
-    async def get_siblings(
-        self,
-        db: Any,
-        node_id: int,
-        include_self: bool,
-    ) -> list: ...
-
-    async def get_ancestors(
-        self,
-        db: Any,
-        node_id: int,
-        include_self: bool,
-    ) -> list: ...
-
-    async def move_node(
-        self,
-        db: Any,
-        node_id: int,
-        new_parent_id: int | None,
-    ) -> dict: ...
 
 
 class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
@@ -59,7 +23,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         self,
         module_name: str,
         model: type[ModelType],
-        service: BaseService,  # 接受 BaseService 类型（兼容 TreeServiceMixin）
+        service: TreeServiceProtocol,
         create_schema: type[CreateModelType] | None = None,
         update_schema: type[UpdateModelType] | None = None,
         response_schema: type[ModelType] | Any = Any,
@@ -94,8 +58,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         # 设置 service.response_schema 用于关联数据加载
         if hasattr(service, "response_schema"):
             service.response_schema = response_schema
-        # 使用 Protocol 类型注解确保树形方法可用
-        self.service: TreeService = service  # type: ignore[assignment]
+        self.service: TreeServiceProtocol = service
 
     def _register_routes(self) -> None:
         """注册所有路由（树形路由优先）"""

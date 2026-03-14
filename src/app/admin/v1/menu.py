@@ -28,7 +28,7 @@ def register_my_menu_route(router: APIRouter, api) -> None:
     """
 
     @router.get(
-        "/my",
+        "/my_menu",
         response_model=ResponseSchemaModel[list[MenuTreeResponse]],
         summary="获取当前用户的菜单树",
         description="返回当前用户可访问的菜单树（基于角色权限过滤）",

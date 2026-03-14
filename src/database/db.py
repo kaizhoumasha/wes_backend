@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm.exc import StaleDataError
 
 # 导入 SQLModel 以确保模型被注册
 from src.core.conf import settings
@@ -100,7 +100,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             await session.rollback()
             from src.core.exceptions import OptimisticLockException
 
-            raise OptimisticLockException() from e
+            raise OptimisticLockException from e
         except Exception:
             await session.rollback()
             raise

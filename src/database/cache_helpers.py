@@ -54,7 +54,7 @@ def serialize_for_cache(value: Any) -> Any:
     return value
 
 
-async def get_cached_value(
+async def get_cached_value[T](
     cache: Any,
     key: str,
     *,

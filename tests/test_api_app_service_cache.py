@@ -6,11 +6,11 @@ from typing import Any
 
 import pytest
 
-from src.common.cache_config import cache_settings
 from src.app.api_auth.constants import CacheKeys
 from src.app.api_auth.models.api_application import APIApplication, AppStatus, AppType, ValidityPeriod
 from src.app.api_auth.services.app_service import APIAppService
-from src.app.workline.models.workline import WorkLine  # noqa: F401
+from src.app.workline.models.workline import WorkLine
+from src.common.cache_config import cache_settings
 from src.database.redis_cache import RedisCache
 
 

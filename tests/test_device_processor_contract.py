@@ -7,7 +7,7 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.device_processors.builtin.conveyor import ConveyorProcessor
+from src.device_processors.builtin.conveyor import ConveyorProcessor  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -49,7 +49,7 @@ async def test_conveyor_decide_action_returns_device_code() -> None:
 async def test_build_command_requires_internal_device_id() -> None:
     processor = ConveyorProcessor()
 
-    with pytest.raises(ValueError, match="device_id"):
+    with pytest.raises(TypeError, match="device_id"):
         await processor.build_command(
             {
                 "device_code": "ROBOT-ARM-01",

@@ -9,12 +9,12 @@ from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, Path, Query
 
-from src.core.base_service import BaseService
 from src.core.logger import logger
 from src.core.query_models import QueryOptions
 from src.core.rbac import RequirePermission
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.core.response.response_util import response_builder
+from src.core.service_protocols import CrudServiceProtocol
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 ModelType = TypeVar("ModelType")
@@ -29,7 +29,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self,
         module_name: str,
         model: type[ModelType],
-        service: BaseService,
+        service: CrudServiceProtocol,
         create_schema: type[CreateModelType] | None = None,
         update_schema: type[UpdateModelType] | None = None,
         response_schema: type[ModelType] | Any = Any,

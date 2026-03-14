@@ -15,8 +15,8 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import Field, SQLModel
 
 from src.core.exceptions import OptimisticLockException

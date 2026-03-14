@@ -55,7 +55,7 @@ class ModelFactory:
             self._cache: dict = {}
             self._initialized = True
 
-    def create_model(
+    def create_model(  # noqa: PLR0912
         self,
         base_model: type[BaseMixin] | None = None,
         model_name: str | None = None,
