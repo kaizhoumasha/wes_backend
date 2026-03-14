@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 
 from src.core.logger import logger
 from src.core.query_models import FilterGroup, SortField
@@ -125,7 +126,11 @@ class BaseRepository[T]:
         Returns:
             如果模型混入了 SoftDeleteMixin 则返回 True，否则返回 False
         """
-        return hasattr(self.model, "is_deleted")
+        return (
+            hasattr(self.model, "is_deleted")
+            and callable(getattr(self.model, "soft_delete", None))
+            and callable(getattr(self.model, "restore", None))
+        )
 
     def _has_audit_model_mixin(self) -> bool:
         """
@@ -453,7 +458,10 @@ class BaseRepository[T]:
         if schema:
             from src.core.schema_loader import get_with_schema
 
-            return await get_with_schema(db, self.model, schema, self._pk_attr == id, max_depth=max_depth)
+            where_clauses = [self._pk_attr == id]
+            if self._has_soft_delete_mixin() and not include_deleted:
+                where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+            return await get_with_schema(db, self.model, schema, *where_clauses, max_depth=max_depth)
 
         statement = select(self.model).where(self._pk_attr == id)
 
@@ -649,6 +657,15 @@ class BaseRepository[T]:
         except IntegrityError as e:
             await db.rollback()
             self._handle_integrity_error(e)
+        except StaleDataError as e:
+            await db.rollback()
+            from src.core.exceptions import OptimisticLockException
+
+            raise OptimisticLockException(
+                resource_type=self._model_name,
+                resource_id=id,
+                provided_version=data.get("version"),
+            ) from e
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> T | None:
         """
@@ -870,7 +887,7 @@ class BaseRepository[T]:
 
     def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
         old_values = {}
-        model_fields = getattr(instance, "model_fields", None)
+        model_fields = getattr(type(instance), "model_fields", None)
         if model_fields:
             for field_name in model_fields:
                 if hasattr(instance, field_name):
@@ -1149,14 +1166,16 @@ class BaseRepository[T]:
         from src.core.schema_loader import get_all_with_schema
 
         # 获取所有 ID
-        ids = [getattr(item, self._pk_column.name) for item in items]
+        ids = [getattr(item, self._pk_column) for item in items if getattr(item, self._pk_column, None) is not None]
+        if not ids:
+            return items
 
         # 使用 get_all_with_schema 批量加载关联数据
         return await get_all_with_schema(
             db,
             self.model,
             schema,
-            self._pk_column.in_(ids),
+            self._pk_attr.in_(ids),
             max_depth=max_depth,
         )
 

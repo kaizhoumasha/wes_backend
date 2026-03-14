@@ -59,7 +59,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.max_depth = max_depth
         self.perm_prefix = f"{module_name}:{model.__name__.lower()}"
         self.resource_name = model.__name__
-        self.supports_soft_delete = hasattr(model, "is_deleted")
+        self.supports_soft_delete = all(hasattr(model, attr) for attr in ("is_deleted", "soft_delete", "restore"))
         # 自定义路由列表（接收 router 和 api 实例作为参数）
         self._custom_route_funcs = custom_routes or []
 
@@ -275,8 +275,15 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
             max_depth: int = Query(self.max_depth, ge=0, le=3, description="关系加载深度"),
+            include_deleted: bool = Query(False, description="是否包含已删除记录（仅软删除模型生效）"),
         ) -> dict[str, Any]:
-            resource = await self.service.get_by_id(db, cache, id, max_depth=max_depth)
+            resource = await self.service.get_by_id(
+                db,
+                cache,
+                id,
+                max_depth=max_depth,
+                include_deleted=include_deleted if self.supports_soft_delete else False,
+            )
             if not resource:
                 return response_builder.fail(
                     code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"

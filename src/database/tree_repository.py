@@ -138,14 +138,13 @@ class TreeRepository[T](BaseRepository[T]):
 
             # 获取当前节点的旧 tree_path
             old_tree_path = instance.tree_path
+            old_level = instance.level
 
             # 计算新的 tree_path
             if new_parent_id is None:
                 # 移动到根节点
-                await db.flush()
-                instance.tree_path = f"/{instance.id}/"
-                instance.level = 1
-                new_tree_path = instance.tree_path
+                new_parent_level = 0
+                new_tree_path = f"/{instance.id}/"
             else:
                 # 移动到新的父节点下
                 parent = await db.execute(
@@ -153,16 +152,17 @@ class TreeRepository[T](BaseRepository[T]):
                 )
                 parent = parent.scalar_one_or_none()
 
-                await db.flush()
-
                 if parent:
-                    instance.tree_path = f"{parent.tree_path}{instance.id}/"
-                    instance.level = parent.level + 1
+                    new_parent_level = parent.level
+                    new_tree_path = f"{parent.tree_path}{instance.id}/"
                 else:
-                    instance.tree_path = f"/{instance.id}/"
-                    instance.level = 1
+                    new_parent_level = 0
+                    new_tree_path = f"/{instance.id}/"
 
-                new_tree_path = instance.tree_path
+            await db.flush()
+            instance.tree_path = new_tree_path
+            instance.level = new_parent_level + 1
+            level_delta = instance.level - old_level
 
             # 更新所有后代的 tree_path
             # 新路径 = 旧路径.replace(old_tree_path, new_tree_path)
@@ -170,7 +170,8 @@ class TreeRepository[T](BaseRepository[T]):
             #      descendant.tree_path = "/1/5/12/" → "/2/10/12/"
             descendants = await db.execute(
                 select(self.model).where(
-                    self.model.tree_path.like(f"{old_tree_path}%")  # type: ignore[attr-defined]
+                    self.model.tree_path.like(f"{old_tree_path}%"),  # type: ignore[attr-defined]
+                    self.model.id != instance.id,  # type: ignore[attr-defined]
                 )
             )
             descendants = descendants.scalars().all()
@@ -178,10 +179,7 @@ class TreeRepository[T](BaseRepository[T]):
             for descendant in descendants:
                 # 替换路径前缀
                 descendant.tree_path = descendant.tree_path.replace(old_tree_path, new_tree_path)
-                # 更新层级（level = 旧level - 旧parent.level + 新parent.level）
-                old_parent_level = (old_parent_id and (await self.get_by_id(db, old_parent_id)).level) or 0
-                new_parent_level = (new_parent_id and parent.level) or 0
-                descendant.level = descendant.level - old_parent_level + new_parent_level
+                descendant.level += level_delta
 
         return hook
 

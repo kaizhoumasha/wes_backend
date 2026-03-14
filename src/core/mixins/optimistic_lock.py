@@ -35,6 +35,7 @@
         print(f"更新失败: {e}")  # "记录已被其他用户修改，请刷新后重试"
 """
 
+from sqlalchemy.orm import declared_attr
 from sqlmodel import Field
 
 from src.core.mixins.base import BaseMixin
@@ -74,6 +75,14 @@ class OptimisticLockMixin(BaseMixin):
             "server_default": "0",
         },
     )
+
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, object]:
+        """启用 SQLAlchemy 原生版本控制，确保并发更新具备数据库级保护。"""
+        return {
+            "version_id_col": cls.__table__.c.version,
+            "version_id_generator": False,
+        }
 
     def increment_version(self) -> None:
         """

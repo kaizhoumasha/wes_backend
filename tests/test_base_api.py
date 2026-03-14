@@ -13,6 +13,16 @@ class DummyModel:
     pass
 
 
+class DummySoftDeleteModel:
+    is_deleted = True
+
+    def soft_delete(self, deleted_by: int | None = None) -> None:
+        return None
+
+    def restore(self) -> None:
+        return None
+
+
 class ChildResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,14 +46,21 @@ class DummyUpdate(BaseModel):
 class FakeService:
     def __init__(self) -> None:
         self.update_calls: list[tuple[object, int, dict[str, Any], object]] = []
-        self.get_by_id_calls: list[tuple[object, object, int, int]] = []
+        self.get_by_id_calls: list[tuple[object, object, int, int, bool]] = []
 
     async def update(self, db: object, id: int, data: dict[str, Any], cache: object) -> SimpleNamespace:
         self.update_calls.append((db, id, dict(data), cache))
         return SimpleNamespace(id=id, name=data["name"], children=[])
 
-    async def get_by_id(self, db: object, cache: object, id: int, max_depth: int = 2) -> SimpleNamespace:
-        self.get_by_id_calls.append((db, cache, id, max_depth))
+    async def get_by_id(
+        self,
+        db: object,
+        cache: object,
+        id: int,
+        max_depth: int = 2,
+        include_deleted: bool = False,
+    ) -> SimpleNamespace:
+        self.get_by_id_calls.append((db, cache, id, max_depth, include_deleted))
         return SimpleNamespace(
             id=id,
             name="reloaded",
@@ -88,6 +105,44 @@ async def test_update_response_reload_includes_relations() -> None:
     )
 
     assert service.update_calls == [(db, 1, {"name": "changed"}, cache)]
-    assert service.get_by_id_calls == [(db, cache, 1, 1)]
+    assert service.get_by_id_calls == [(db, cache, 1, 1, False)]
     assert response["data"].name == "reloaded"
     assert response["data"].children[0].id == 10
+
+
+def _get_get_endpoint(api: BaseAPI[Any, Any, Any]):
+    for route in api.router.routes:
+        if "GET" in route.methods and route.path == "/dummy/{id}":
+            return route.endpoint
+    raise AssertionError("get endpoint not found")
+
+
+@pytest.mark.asyncio
+async def test_get_endpoint_forwards_include_deleted_for_soft_delete_models() -> None:
+    service = FakeService()
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_get_endpoint(api)
+    db = object()
+    cache = object()
+
+    response = await endpoint(
+        id=5,
+        db=db,
+        cache=cache,
+        max_depth=3,
+        include_deleted=True,
+    )
+
+    assert service.get_by_id_calls == [(db, cache, 5, 3, True)]
+    assert response["data"].id == 5

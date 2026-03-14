@@ -10,21 +10,27 @@
 4. 缺少 version 字段时抛出异常
 """
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel
 
 from src.core.exceptions import OptimisticLockException
-from src.core.mixins import BaseMixin, DataTableMixin, OptimisticLockMixin
-from src.database.base_repository import BaseRepository
+from src.core.mixins import BaseMixin, OptimisticLockMixin
+from src.database.base_repository import BaseRepository, HookContext, HookType
 from src.database.model_factory import ModelFactory
 
 
-class Product(DataTableMixin, OptimisticLockMixin, table=True):
+class Product(OptimisticLockMixin, table=True):
     """测试产品模型（带乐观锁）"""
 
     __tablename__ = "test_products"
 
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(max_length=100)
     price: float = Field(ge=0)
     stock: int = Field(ge=0)
@@ -165,10 +171,10 @@ async def test_optimistic_lock_conflict_detection(db_session):
 
     # 验证异常信息
     exception = exc_info.value
-    assert exception.code == "OPTIMISTIC_LOCK"
+    assert exception.code == "3012"
     assert "Product" in exception.detail.get("resource_type", "")
-    assert exception.detail.get("current_version") == 1
-    assert exception.detail.get("provided_version") == 0
+    assert exception.detail.get("current_version") == "1"
+    assert exception.detail.get("provided_version") == "0"
     assert "已被其他用户修改" in exception.message
 
 
@@ -195,7 +201,7 @@ async def test_optimistic_lock_missing_version(db_session):
 
     # 验证异常信息
     exception = exc_info.value
-    assert exception.code == "OPTIMISTIC_LOCK"
+    assert exception.code == "3012"
     assert "缺少 version 字段" in exception.message
 
 
@@ -248,6 +254,56 @@ async def test_optimistic_lock_correct_retry(db_session):
 
 
 @pytest.mark.asyncio
+async def test_optimistic_lock_blocks_true_concurrent_updates(db_engine) -> None:
+    product_repo = BaseRepository[Product](Product)
+    async_session = sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with async_session() as seed_session:
+        product = await product_repo.create(
+            seed_session,
+            {"name": "iPhone 15", "price": 5999.0, "stock": 100},
+        )
+        await seed_session.commit()
+
+    barrier = asyncio.Event()
+    waiting = 0
+    waiting_lock = asyncio.Lock()
+
+    async def synchronize_before_update(_context: HookContext) -> None:
+        nonlocal waiting
+        async with waiting_lock:
+            waiting += 1
+            if waiting == 2:
+                barrier.set()
+        await asyncio.wait_for(barrier.wait(), timeout=1)
+
+    product_repo.add_hook(HookType.BEFORE_UPDATE, synchronize_before_update, priority=1000)
+
+    async def worker(new_price: float) -> Product:
+        async with async_session() as session:
+            updated = await product_repo.update(
+                session,
+                product.id,
+                {"price": new_price, "version": 0},
+            )
+            await session.commit()
+            return updated
+
+    first, second = await asyncio.gather(
+        worker(6999.0),
+        worker(7999.0),
+        return_exceptions=True,
+    )
+
+    failures = [result for result in (first, second) if isinstance(result, Exception)]
+    successes = [result for result in (first, second) if isinstance(result, Product)]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], (OptimisticLockException, StaleDataError))
+
+
+@pytest.mark.asyncio
 async def test_optimistic_lock_partial_update(db_session):
     """测试部分更新（只更新部分字段）时版本号仍然递增"""
     product_repo = BaseRepository[Product](Product)
@@ -280,13 +336,12 @@ async def test_model_without_optimistic_lock(db_session):
     from sqlalchemy import Table
     from sqlmodel import Field
 
-    from src.core.mixins import DataTableMixin
-
-    class SimpleProduct(DataTableMixin, table=True):
+    class SimpleProduct(SQLModel, table=True):
         """没有乐观锁的产品模型"""
 
         __tablename__ = "test_simple_products"
 
+        id: int | None = Field(default=None, primary_key=True)
         name: str = Field(max_length=100)
         price: float = Field(ge=0)
 

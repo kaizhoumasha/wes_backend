@@ -15,9 +15,11 @@
 """
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel
 
+from src.core.mixins import SoftDeleteMixin
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
 from src.database.base_repository import BaseRepository
 
@@ -32,6 +34,25 @@ class CrudTestModel(SQLModel, table=True):
     name: str
     value: int = 0
     is_deleted: bool = False
+
+
+class CrudTestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    code: str
+    name: str
+    value: int
+    is_deleted: bool
+
+
+class SoftDeleteCrudModel(SoftDeleteMixin, SQLModel, table=True):
+    __tablename__ = "soft_delete_crud_test_model"
+
+    id: int | None = Field(default=None, primary_key=True)
+    code: str = Field(index=True)
+    name: str
+    value: int = 0
 
 
 class TestCrudOperations:
@@ -72,6 +93,27 @@ class TestCrudOperations:
         """测试获取不存在的记录"""
         found = await self.repo.get_by_id(db_session, 99999)
         assert found is None
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_with_schema_respects_include_deleted(self, db_session: AsyncSession):
+        """测试 schema 查询分支正确处理软删除过滤"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        instance = await repo.create(db_session, {"code": "TEST001", "name": "Test Item"})
+        instance.soft_delete()
+        await db_session.commit()
+
+        found = await repo.get_by_id(db_session, instance.id, schema=CrudTestResponse)  # type: ignore[arg-type]
+        deleted = await repo.get_by_id(
+            db_session,
+            instance.id,
+            schema=CrudTestResponse,
+            include_deleted=True,
+        )  # type: ignore[arg-type]
+
+        assert found is None
+        assert deleted is not None
+        assert deleted.id == instance.id
+        assert deleted.is_deleted is True
 
     @pytest.mark.asyncio
     async def test_get_by_field(self, db_session: AsyncSession):
