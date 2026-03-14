@@ -748,3 +748,121 @@ updated_user = await self.update(
 - Pattern-Key: optimistic_lock.auto_version
 
 ---
+
+## [LRN-20260314-006] correction
+
+**Logged**: 2026-03-14T10:00:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: backend
+
+### Summary
+状态机设计应使用成熟的 `transitions` 库，而非自研实现
+
+### Details
+在设计作业线插件的状态机时，我最初设计了一套自研的 `StateMachineDefinition` 协议和 `Transition` 数据类。用户指出这是"重复造轮子"，应该使用 Python 社区成熟的 `transitions` 库。
+
+**transitions 库的优势**：
+- 10+ 年历史，广泛使用
+- 完整的回调机制（before/after/conditions/prepare）
+- 内置 Graphviz 可视化支持
+- 支持嵌套状态（HierarchicalMachine）
+- 支持 queued 模式（并发安全）
+- 社区维护，维护成本低
+
+**依赖安装**：
+```bash
+uv add transitions
+```
+
+**使用示例**：
+```python
+from transitions import Machine
+
+class PackingZoneStateMachine(Machine):
+    @classmethod
+    def get_states(cls) -> list[str]:
+        return ['NEW', 'RUNNING', 'WAITING_DEVICE_RESULT', 'COMPLETED', 'FAILED']
+
+    @classmethod
+    def get_transitions(cls) -> list:
+        return [
+            ['start', 'NEW', 'RUNNING'],
+            ['wait_device', 'RUNNING', 'WAITING_DEVICE_RESULT'],
+            ['device_success', 'WAITING_DEVICE_RESULT', 'COMPLETED'],
+            ['fail', '*', 'FAILED'],  # 通配符支持
+        ]
+```
+
+### Suggested Action
+设计状态机时，优先考虑使用 `transitions` 库，避免重复造轮子
+
+### Metadata
+- Source: user_feedback
+- Related Files: docs/workline_plugin_architecture_design.md
+- Tags: state-machine, python, transitions, dry
+- Pattern-Key: backend.use_transitions_library_for_state_machine
+
+### Resolution
+- **Resolved**: 2026-03-14T10:00:00+08:00
+- **Promoted**: CLAUDE.md
+- **Notes**: 已更新设计文档，使用 transitions 库替代自研状态机
+
+---
+
+## [LRN-20260314-007] correction
+
+**Logged**: 2026-03-14T10:00:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: backend
+
+### Summary
+设备拓扑设计应遵循 KISS 原则，使用简单的 `upstream_device_id` 字段，而非复杂的 JSON 配置
+
+### Details
+在设计设备拓扑时，我设计了一套复杂的 `DeviceTopologyConfig` JSON 配置，包含 `TopologyNode`、`TopologyEdge`、拓扑版本管理、拓扑快照等。用户指出这是"过度设计"。
+
+**过度设计的信号**：
+- 为简单场景设计复杂的数据结构
+- 引入版本管理、快照等机制但实际需求不明确
+- 配置项过多，维护成本高
+
+**简化方案**：
+```python
+class Device(table=True):
+    device_role: str           # SCANNER, ROBOT_ARM, XRAY
+    role_index: int = 1        # 同角色序号
+    upstream_device_id: int    # 上游设备ID（线性拓扑）
+    workline_id: int           # 所属作业线
+```
+
+**数据示例**：
+```
+| id  | device_code    | device_role | role_index | upstream_device_id |
+|-----|----------------|-------------|------------|-------------------|
+| 101 | SCANNER_7_1    | SCANNER     | 1          | NULL              |
+| 201 | ROBOT_ARM_7_1  | ROBOT_ARM   | 1          | 101               |
+| 202 | ROBOT_ARM_7_2  | ROBOT_ARM   | 2          | 201               |
+```
+
+**教训**：
+- WES 场景大部分是线性流程
+- 简单的字段设计比复杂的 JSON 配置更易维护
+- 符合 KISS 原则
+
+### Suggested Action
+设计数据模型时，优先考虑简单方案，避免过度抽象
+
+### Metadata
+- Source: user_feedback
+- Related Files: docs/workline_plugin_architecture_design.md
+- Tags: database-design, kiss, topology, over-engineering
+- Pattern-Key: backend.simple_field_over_complex_json_config
+
+### Resolution
+- **Resolved**: 2026-03-14T10:00:00+08:00
+- **Promoted**: CLAUDE.md
+- **Notes**: 已简化设计，删除复杂的拓扑配置，改用 upstream_device_id 字段
+
+---
