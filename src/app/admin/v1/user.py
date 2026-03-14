@@ -11,10 +11,16 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 4. 统一错误处理（依赖全局异常处理器）
 """
 
-from src.app.admin.models import User, UserCreate, UserResponse, UserUpdate
+from typing import cast
+
+from fastapi import Depends
+
+from src.app.admin.models import ResetPasswordRequest, User, UserCreate, UserResponse, UserSimpleResponse, UserUpdate
 from src.app.admin.services.user_service import user_service
 from src.core.base_api import BaseAPI
 from src.core.logger import logger
+from src.core.rbac import RequirePermission
+from src.core.response import ResponseSchemaModel, response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 # ==================== 零代码 CRUD API ====================
@@ -74,3 +80,46 @@ async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
         "cache_status": cache_status,
         "cache_keys_count": cache_keys_count,
     }
+
+
+@router.put(
+    "/{id}/reset-password",
+    summary="重置用户密码",
+    dependencies=[Depends(RequirePermission("admin:user:reset-password"))],
+)
+async def reset_password(
+    id: int,
+    data: ResetPasswordRequest,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+) -> ResponseSchemaModel[UserResponse]:
+    """
+    管理员重置用户密码
+
+    重置密码后，用户需要重新登录。
+
+    **权限要求**：`admin:user:reset-password`
+
+    **安全措施**：
+    - 重置后自动撤销所有活跃会话
+    - 清除权限缓存
+
+    Args:
+        id: 用户 ID
+        data: 重置密码请求数据
+        db: 数据库会话
+        cache: 缓存服务
+
+    Returns:
+        更新后的用户信息
+    """
+    user = await user_service.reset_password(
+        db=db,
+        user_id=id,
+        new_password=data.new_password,
+        cache=cache,
+    )
+    return cast(
+        "ResponseSchemaModel[UserSimpleResponse]",
+        response_builder.success(data=UserSimpleResponse.model_validate(user)),
+    )

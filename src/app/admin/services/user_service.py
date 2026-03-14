@@ -111,5 +111,70 @@ class UserService(BaseService[User, UserRepository]):
         cache = get_cache()
         await invalidate_user_permissions(cache, user_id)
 
+    async def reset_password(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        new_password: str,
+        cache: object | None = None,
+    ) -> User:
+        """
+        管理员重置用户密码
+
+        重置密码后：
+        1. 失效用户详情缓存
+        2. 刷新用户关系（roles）
+        3. 撤销用户所有 Token（强制重新登录）
+        4. 清除权限缓存
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+            new_password: 新密码（明文）
+            cache: 缓存服务（用于失效缓存）
+
+        Returns:
+            更新后的用户对象
+
+        Raises:
+            NotFoundException: 用户不存在
+        """
+        from src.core.exceptions import NotFoundException
+        from src.core.security import revoke_all_user_tokens
+
+        # 1. 获取用户（检查是否存在）
+        user = await self.repo.get_by_id(db, user_id)
+        if user is None:
+            raise NotFoundException(f"用户 {user_id} 不存在")
+
+        # 2. 哈希新密码
+        hashed_password = await self.password_hasher.hash_async(new_password)
+
+        # 3. 更新密码（通过 BaseService.update 失效缓存）
+        # 包含 version 字段以满足乐观锁验证
+        updated_user = await self.update(
+            db,
+            user_id,
+            {
+                "hashed_password": hashed_password,
+                "version": user.version,  # 乐观锁验证
+            },
+            cache=cache,
+        )
+
+        if updated_user is None:
+            raise NotFoundException(f"用户 {user_id} 更新失败")
+
+        # 4. 刷新用户对象并加载 roles 关系（解决异步关系加载问题）
+        await db.refresh(updated_user)
+
+        # 5. 撤销所有 Token（强制重新登录）
+        await revoke_all_user_tokens(user_id)
+
+        # 6. 清除权限缓存
+        await self._invalidate_permissions_for_user(user_id)
+
+        return updated_user
+
 
 user_service = UserService()

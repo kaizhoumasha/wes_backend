@@ -563,3 +563,188 @@ class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=Tru
 - **Notes**: 已移除 `to_response()` 中对任意 `BaseModel` 的短路，只保留 `dict` 与目标 schema 的快捷路径，并增加回归测试覆盖 ORM 对象路径
 
 ---
+
+## [LRN-20260314-001] best_practice
+
+**Logged**: 2026-03-14T00:00:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: backend
+
+### Summary
+使用简化响应模型避免不必要的关联查询和 SQLAlchemy 异步关系加载问题
+
+### Details
+当 API 操作不需要返回关联数据时（如重置密码），应使用 `UserSimpleResponse` 而不是 `UserResponse`：
+
+- `UserResponse` - 包含 `roles` 关系，需要额外查询
+- `UserSimpleResponse` - 无关联关系，避免 `MissingGreenlet` 错误
+
+错误示例：
+```python
+# 返回包含 roles 的响应，但用户对象未加载 roles 关系
+return response_builder.success(data=UserResponse.model_validate(user))
+# 结果：MissingGreenlet: greenlet_spawn has not been called
+```
+
+正确示例：
+```python
+# 使用简化模型，不需要关联数据
+return response_builder.success(data=UserSimpleResponse.model_validate(user))
+```
+
+### Suggested Action
+在 CLAUDE.md 中添加响应模型选择规则
+
+### Metadata
+- Source: user_feedback
+- Related Files: src/app/admin/models/user.py, src/app/admin/v1/user.py
+- Tags: sqlalchemy, async, response-model, performance
+- Pattern-Key: response_model.simplified
+
+---
+
+## [LRN-20260314-002] correction
+
+**Logged**: 2026-03-14T00:00:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+项目响应工具方法命名：`response_builder.success()` 而非 `response_success`
+
+### Details
+项目 `src/core/response/` 模块使用 `response_builder` 单例对象构建响应：
+
+```python
+# 正确
+from src.core.response import response_builder
+return cast("ResponseSchemaModel[T]", response_builder.success(data=...))
+
+# 错误（不存在）
+from src.core.response import response_success
+```
+
+### Suggested Action
+无，项目已有正确的模式
+
+### Metadata
+- Source: error
+- Related Files: src/core/response/__init__.py, src/core/response/response_util.py
+- Tags: response, api, naming
+
+---
+
+## [LRN-20260314-003] correction
+
+**Logged**: 2026-03-14T00:00:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+项目异常类命名：`NotFoundException` 而非 `ResourceNotFoundException`
+
+### Details
+项目 `src/core/exceptions.py` 中资源未找到的异常类是 `NotFoundException`：
+
+```python
+# 正确
+from src.core.exceptions import NotFoundException
+raise NotFoundException(f"用户 {user_id} 不存在")
+
+# 错误（不存在）
+from src.core.exceptions import ResourceNotFoundException
+```
+
+### Suggested Action
+无，记住即可
+
+### Metadata
+- Source: error
+- Related Files: src/core/exceptions.py
+- Tags: exception, naming
+
+---
+
+## [LRN-20260314-004] best_practice
+
+**Logged**: 2026-03-14T00:00:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: backend
+
+### Summary
+Service 层更新操作必须通过 `self.update()` 而非 `self.repo.update()` 以确保缓存失效
+
+### Details
+`BaseService.update()` 会自动处理缓存失效，直接调用 `self.repo.update()` 会跳过这个逻辑：
+
+```python
+# 正确 - 通过 BaseService.update() 失效缓存
+updated_user = await self.update(db, user_id, data, cache=cache)
+
+# 错误 - 跳过缓存失效
+updated_user = await self.repo.update(db, user_id, data)
+```
+
+`BaseService.update()` 内部实现：
+```python
+async def update(self, db, id, data, cache=None):
+    result = await self.repo.update(db, id, data)
+    if cache:
+        await self.invalidate_cache(cache, id, invalidate_list=True)
+    return result
+```
+
+### Suggested Action
+在 CLAUDE.md 中添加 Service 层缓存失效规则
+
+### Metadata
+- Source: user_feedback
+- Related Files: src/core/base_service.py
+- Tags: cache, service-layer, architecture
+- Pattern-Key: service.cache_invalidation
+
+---
+
+## [LRN-20260314-005] best_practice
+
+**Logged**: 2026-03-14T00:00:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+乐观锁模型更新时需要传递 version 字段，管理员操作可由后端自动获取
+
+### Details
+继承 `OptimisticLockMixin` 的模型更新时需要 `version` 字段验证。对于管理员操作（前端不提供 version），后端可以先获取用户信息再更新：
+
+```python
+# 1. 先获取用户（包含 version）
+user = await self.repo.get_by_id(db, user_id)
+
+# 2. 更新时携带 version
+updated_user = await self.update(
+    db,
+    user_id,
+    {
+        "hashed_password": hashed_password,
+        "version": user.version,  # 乐观锁验证
+    },
+    cache=cache,
+)
+```
+
+### Suggested Action
+无特定建议，记住此模式即可
+
+### Metadata
+- Source: error
+- Related Files: src/database/base_repository.py
+- Tags: optimistic-lock, update, pattern
+- Pattern-Key: optimistic_lock.auto_version
+
+---

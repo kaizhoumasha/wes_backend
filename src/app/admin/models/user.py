@@ -88,8 +88,8 @@ class UserUpdate(ModelFactory(UserBase).for_optimistic_update()):
     """用户更新 Schema - 所有字段可选"""
 
 
-class UserResponse(UserBase):
-    """用户响应 Schema - 返回给客户端"""
+class UserSimpleResponse(UserBase):
+    """用户响应 Schema 无关联关系 - 返回给客户端"""
 
     id: int
     version: int = 0  # OptimisticLockMixin 提供，必需字段
@@ -97,4 +97,18 @@ class UserResponse(UserBase):
     is_multi_login: bool
     created_at: datetime
     updated_at: datetime | None
+
+
+class UserResponse(UserSimpleResponse):
+    """用户响应 Schema - 返回给客户端"""
+
     roles: list[RoleResponse] = Field(default_factory=list)
+
+
+# ==================== 密码相关 Schema ====================
+
+
+class ResetPasswordRequest(BaseMixin):
+    """管理员重置密码请求"""
+
+    new_password: str = Field(min_length=6, max_length=100, description="新密码")

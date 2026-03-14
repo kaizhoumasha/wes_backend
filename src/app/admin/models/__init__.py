@@ -34,10 +34,12 @@ from .role import (
     RoleUpdate,
 )
 from .user import (
+    ResetPasswordRequest,
     User,
     UserBase,
     UserCreate,
     UserResponse,
+    UserSimpleResponse,
     UserUpdate,
 )
 
@@ -95,6 +97,8 @@ __all__ = [
     "PermissionResponseSimple",
     "PermissionTree",
     "PermissionUpdate",
+    # User 模型
+    "ResetPasswordRequest",
     # Role 模型
     "Role",
     "RoleBase",
@@ -102,11 +106,11 @@ __all__ = [
     "RoleResponse",
     "RoleResponseSimple",
     "RoleUpdate",
-    # User 模型
     "User",
     "UserBase",
     "UserCreate",
     "UserResponse",
+    "UserSimpleResponse",
     "UserUpdate",
     # 关联表
     "role_menu",
