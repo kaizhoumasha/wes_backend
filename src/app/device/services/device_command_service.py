@@ -26,6 +26,10 @@ from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
 )
+from src.app.device.repositories.device_event_log_repository import (
+    DeviceEventLogRepository,
+    device_event_log_repository,
+)
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
 from src.database.redis_cache import get_cache
@@ -39,8 +43,15 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     业务逻辑（SDAF 流程）在 Celery 任务层实现。
     """
 
-    def __init__(self) -> None:
-        """初始化服务"""
+    def __init__(
+        self,
+        event_log_repo: DeviceEventLogRepository = device_event_log_repository,
+    ) -> None:
+        """初始化服务
+
+        Args:
+            event_log_repo: 设备事件日志 Repository（依赖注入）
+        """
         super().__init__(
             device_command_repository,
             enable_cache=True,
@@ -49,6 +60,8 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         # HTTP 客户端配置
         self.http_timeout = 10.0  # 10 秒超时
         self.max_retries = 3
+        # 事件日志 Repository
+        self.event_log_repo = event_log_repo
 
     async def _invalidate_command_cache(self, command_id: int | None = None, invalidate_list: bool = False) -> None:
         """清理指令详情/列表缓存。"""
@@ -250,33 +263,16 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         processing_result: dict[str, Any] | None = None,
         error_message: str | None = None,
     ) -> DeviceEventLog:
-        """
-        更新事件日志处理状态
-        """
-        from sqlalchemy import update
+        """更新事件日志处理状态（委托给 Repository）
 
-        event_log.processed = processed
-        if processing_result is not None:
-            event_log.processing_result = processing_result
-        if error_message is not None:
-            event_log.error_message = error_message
-
-        # 使用 SQLAlchemy update 直接更新
-        stmt = (
-            update(DeviceEventLog)
-            .where(DeviceEventLog.id == event_log.id)  # type: ignore[arg-type]
-            .values(
-                processed=processed,
-                processing_result=processing_result,
-                error_message=error_message,
-            )
+        设计原则:
+            - SRP: Service 层不应直接访问数据库，应委托给 Repository
+            - KISS: 简洁的委托模式，保持代码清晰
+            - 依赖注入: 通过构造函数注入 DeviceEventLogRepository
+        """
+        return await self.event_log_repo.update_event_log(
+            db, event_log, processed, processing_result, error_message
         )
-        await db.execute(stmt)
-
-        # 刷新实例以获取更新后的值
-        await db.refresh(event_log)
-
-        return event_log
 
     # ==================== 指令状态管理 ====================
 

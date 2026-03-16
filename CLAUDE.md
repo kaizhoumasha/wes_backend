@@ -182,4 +182,5 @@ serena list_dir . --recursive --skip-ignored
 
 - 每个功能/修复都必须有一个单独的提交
 - 提交消息必须清晰、简洁，遵循 [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) 规范
+- 不要生成 Co-Authored-By 字段
 - 每个提交都必须包含相关的测试用例

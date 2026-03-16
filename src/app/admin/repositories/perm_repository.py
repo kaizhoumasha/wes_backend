@@ -113,6 +113,68 @@ class PermissionRepository(TreeRepository[Permission]):
         result = await db.execute(query)
         return {int(user_id) for user_id in result.scalars().all() if user_id is not None}
 
+    async def get_permission_names_by_app_id(self, db: AsyncSession, app_id: int) -> set[str]:
+        """获取应用拥有的权限名称集合
+
+        Args:
+            db: 数据库会话
+            app_id: 应用 ID
+
+        Returns:
+            权限名称集合
+
+        设计原则:
+            - SRP: 数据访问逻辑应在 Repository 层，不应在 Service 层
+            - DRY: 复用 _add_deleted_filter 方法进行软删除过滤
+            - 延迟导入: 避免循环导入问题
+            - 行为保持: 与原有实现保持相同的查询结构，确保测试兼容性
+        """
+        # 延迟导入避免循环导入
+        from src.app.api_auth.models.relationships import api_app_permissions
+
+        where_clauses: list = [
+            api_app_permissions.c.app_id == app_id,
+        ]
+
+        # 添加软删除过滤
+        self._add_deleted_filter(where_clauses, exclude_deleted=True)
+
+        # 构建查询（保持与原有实现相同的结构）
+        query = (
+            select(Permission)
+            .join(api_app_permissions, api_app_permissions.c.permission_id == Permission.id)
+            .where(*where_clauses)
+        )
+
+        result = await db.execute(query)
+        return {row.name for row in result.scalars()}
+
+    async def get_app_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
+        """根据权限 ID 查询使用该权限的应用 ID 集合
+
+        Args:
+            db: 数据库会话
+            permission_id: 权限 ID
+
+        Returns:
+            应用 ID 集合
+
+        设计原则:
+            - SRP: 数据访问逻辑应在 Repository 层，不应在 Service 层
+            - 延迟导入: 避免循环导入问题
+            - DRY: 与 get_user_ids_by_permission_id 保持一致的查询模式
+        """
+        # 延迟导入避免循环导入
+        from src.app.api_auth.models.relationships import api_app_permissions
+
+        query = (
+            select(api_app_permissions.c.app_id)
+            .where(api_app_permissions.c.permission_id == permission_id)
+            .distinct()
+        )
+        result = await db.execute(query)
+        return {int(app_id) for app_id in result.scalars().all() if app_id is not None}
+
 
 permission_repository = PermissionRepository()
 

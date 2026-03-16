@@ -7,7 +7,6 @@ API 权限管理 Service
 - API 权限查询
 """
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import Permission
@@ -186,12 +185,14 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
         return await self.repo.get_user_ids_by_permission_id(db, permission_id)
 
     async def _query_app_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
-        from src.app.api_auth.models.relationships import api_app_permissions
+        """根据权限 ID 查询使用该权限的应用 ID 集合（委托给 Repository）
 
-        result = await db.execute(
-            select(api_app_permissions.c.app_id).where(api_app_permissions.c.permission_id == permission_id).distinct()
-        )
-        return {int(app_id) for app_id in result.scalars().all() if app_id is not None}
+        设计原则:
+            - SRP: Service 层不应直接访问数据库，应委托给 Repository
+            - KISS: 简洁的委托模式，保持代码清晰
+            - 一致性: 与 _query_user_ids_by_permission_id 保持相同的委托模式
+        """
+        return await self.repo.get_app_ids_by_permission_id(db, permission_id)
 
     async def _invalidate_permissions_for_users(self, user_ids: set[int]) -> None:
         if not user_ids:
