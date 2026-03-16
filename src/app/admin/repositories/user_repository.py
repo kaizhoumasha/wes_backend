@@ -57,6 +57,36 @@ class UserRepository(BaseRepository[User]):
         """
         return await self.get_by_field(db, "username", username)
 
+    async def get_by_username_with_roles(self, db: AsyncSession, username: str) -> User | None:
+        """
+        根据用户名获取用户（预加载 roles）
+
+        用于认证场景，需要同时获取用户及其角色信息。
+
+        Args:
+            db: 数据库会话
+            username: 用户名
+
+        Returns:
+            用户对象（含 roles）或 None
+        """
+        return await self.get_by_field(db, "username", username, relationships=["roles"])
+
+    async def get_by_id_with_roles(self, db: AsyncSession, user_id: int) -> User | None:
+        """
+        根据 ID 获取用户（预加载 roles）
+
+        用于认证场景，需要同时获取用户及其角色信息。
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+
+        Returns:
+            用户对象（含 roles）或 None
+        """
+        return await self.get_by_field(db, "id", user_id, relationships=["roles"])
+
     async def get_by_email(self, db: AsyncSession, email: str) -> User | None:
         """
         根据邮箱获取用户

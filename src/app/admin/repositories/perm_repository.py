@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.admin.models import Permission, Role, User
+from src.app.admin.models import Permission, Role, User, role_permission, user_role
 from src.database.tree_repository import TreeRepository
 
 
@@ -93,6 +93,25 @@ class PermissionRepository(TreeRepository[Permission]):
                     if not perm.is_deleted:
                         permissions.add(perm.name)
         return permissions
+
+    async def get_user_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
+        """获取权限关联的所有用户 ID
+
+        Args:
+            db: 数据库会话
+            permission_id: 权限 ID
+
+        Returns:
+            用户 ID 集合
+        """
+        query = (
+            select(user_role.c.user_id)
+            .join(role_permission, role_permission.c.role_id == user_role.c.role_id)
+            .where(role_permission.c.permission_id == permission_id)
+            .distinct()
+        )
+        result = await db.execute(query)
+        return {int(user_id) for user_id in result.scalars().all() if user_id is not None}
 
 
 permission_repository = PermissionRepository()

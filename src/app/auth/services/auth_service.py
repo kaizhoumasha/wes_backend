@@ -12,11 +12,10 @@
 import json
 
 from fastapi import Request, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from src.app.admin.models import User, UserResponse
+from src.app.admin.repositories.user_repository import user_repository
 from src.app.auth.models import (
     ActiveSessionsResponse,
     LoginResponse,
@@ -94,11 +93,8 @@ class AuthService:
             InvalidCredentialsException: 用户名或密码错误
             AuthException: 用户被禁用
         """
-        # 查询用户（预加载角色）
-        result = await db.execute(
-            select(User).where(User.username == username).options(selectinload(User.roles))  # type: ignore[arg-type]
-        )
-        user = result.scalar_one_or_none()
+        # 通过 Repository 单例查询用户（预加载角色）
+        user = await user_repository.get_by_username_with_roles(db, username)
 
         if not user:
             raise InvalidCredentialsException("用户名或密码错误")
@@ -219,11 +215,8 @@ class AuthService:
 
         user_id = _safe_user_id_from_token(token_payload)
 
-        # 查询用户（预加载角色）
-        result = await db.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles))  # type: ignore[arg-type]
-        )
-        user = result.scalar_one_or_none()
+        # 通过 Repository 单例查询用户（预加载角色）
+        user = await user_repository.get_by_id_with_roles(db, user_id)
 
         if not user:
             raise InvalidTokenException("Refresh Token 对应用户不存在")
@@ -530,10 +523,8 @@ class AuthService:
         Returns:
             UserResponse 对象
         """
-        result = await db.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles))  # type: ignore[arg-type]
-        )
-        user = result.scalar_one_or_none()
+        # 通过 Repository 单例查询用户（预加载角色）
+        user = await user_repository.get_by_id_with_roles(db, user_id)
 
         if not user or user.is_deleted:
             raise AuthException("用户不存在或已被禁用")

@@ -482,7 +482,14 @@ class BaseRepository[T]:
         result = await db.execute(statement)
         return result.scalars().first()
 
-    async def get_by_field(self, db: AsyncSession, field_name: str, value: Any) -> T | None:
+    async def get_by_field(
+        self,
+        db: AsyncSession,
+        field_name: str,
+        value: Any,
+        relationships: list[str] | None = None,
+        include_deleted: bool = False,
+    ) -> T | None:
         """
         根据字段获取单条记录
 
@@ -490,11 +497,35 @@ class BaseRepository[T]:
             db: 数据库会话
             field_name: 字段名
             value: 字段值
+            relationships: 可选的关系名称列表，用于预加载关联数据
+            include_deleted: 是否包含已删除记录 (仅对 SoftDeleteMixin 模型有效)
 
         Returns:
             模型实例或 None
+
+        Example:
+            # 简单查询
+            user = await repo.get_by_field(db, "username", "admin")
+
+            # 带关联预加载
+            user = await repo.get_by_field(db, "username", "admin", relationships=["roles"])
+
+            # 包含已删除的记录
+            user = await repo.get_by_field(db, "email", "old@example.com", include_deleted=True)
         """
-        result = await db.execute(select(self.model).where(getattr(self.model, field_name) == value))
+        query = select(self.model).where(getattr(self.model, field_name) == value)
+
+        # 自动过滤软删除记录
+        if self._has_soft_delete_mixin() and not include_deleted:
+            query = query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+
+        if relationships:
+            from sqlalchemy.orm import selectinload
+
+            for rel in relationships:
+                query = query.options(selectinload(getattr(self.model, rel)))
+
+        result = await db.execute(query)
         return result.scalars().first()
 
     async def get_list(

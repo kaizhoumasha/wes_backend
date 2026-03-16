@@ -2,22 +2,21 @@
 角色 Service
 """
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import Role, user_role
-from src.app.admin.repositories.role_repository import role_repository
+from src.app.admin.models import Role
+from src.app.admin.repositories.role_repository import RoleRepository, role_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.rbac import invalidate_users_permissions
-from src.database.base_repository import BaseRepository, HookContext, HookType
+from src.database.base_repository import HookContext, HookType
 from src.database.redis_cache import get_cache
 
 
-class RoleService(BaseService[Role, BaseRepository]):
+class RoleService(BaseService[Role, RoleRepository]):
     """角色 Service"""
 
-    def __init__(self, repo: BaseRepository = role_repository):
+    def __init__(self, repo: RoleRepository = role_repository):
         super().__init__(
             repo,
             enable_cache=True,
@@ -68,8 +67,7 @@ class RoleService(BaseService[Role, BaseRepository]):
         await self._invalidate_permissions_for_users(affected_user_ids)
 
     async def _query_user_ids_by_role_id(self, db: AsyncSession, role_id: int) -> set[int]:
-        result = await db.execute(select(user_role.c.user_id).where(user_role.c.role_id == role_id))
-        return {int(user_id) for user_id in result.scalars().all() if user_id is not None}
+        return await self.repo.get_user_ids_by_role_id(db, role_id)
 
     async def _invalidate_permissions_for_users(self, user_ids: set[int]) -> None:
         if not user_ids:

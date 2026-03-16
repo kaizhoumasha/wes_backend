@@ -1,6 +1,5 @@
 import secrets
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.api_auth.constants import CacheKeys
@@ -64,10 +63,8 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         await cache.delete(CacheKeys.app_by_app_id(app_id))
 
     async def _query_by_app_id(self, db: AsyncSession, app_id: str) -> APIApplication | None:
-        result = await db.execute(
-            select(APIApplication).where(APIApplication.app_id == app_id).where(APIApplication.is_deleted.is_(False))  # type: ignore[attr-defined]
-        )
-        return result.scalar_one_or_none()
+        """根据 app_id 查询应用（委托给 Repository）"""
+        return await self.repo.get_by_app_id(db, app_id)
 
     async def update(
         self,
@@ -120,26 +117,15 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
     async def assign_permissions(self, db: AsyncSession, cache: RedisCache, id: int, permission_ids: list[int]) -> None:
         """分配权限"""
-        from src.app.api_auth.models.relationships import api_app_permissions
-
         # 1. 验证应用存在
         app = await self.repo.get_by_id(db, id)
         if not app:
             raise ValueError(f"应用 {id} 不存在")
 
-        # 2. 删除旧的权限关联
-        await db.execute(api_app_permissions.delete().where(api_app_permissions.c.app_id == id))
+        # 2. 委托给 Repository 处理关联表操作
+        await self.repo.assign_permissions(db, id, permission_ids)
 
-        # 3. 插入新的权限关联
-        if permission_ids:
-            await db.execute(
-                api_app_permissions.insert(),
-                [{"app_id": id, "permission_id": pid} for pid in permission_ids],
-            )
-
-        await db.commit()
-
-        # 4. 清除缓存
+        # 3. 清除缓存
         await self.invalidate_cache(cache, id)
         await cache.delete(CacheKeys.app_permissions(id))
 

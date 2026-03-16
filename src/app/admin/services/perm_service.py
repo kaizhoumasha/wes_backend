@@ -10,7 +10,7 @@ API 权限管理 Service
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import Permission, role_permission, user_role
+from src.app.admin.models import Permission
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
@@ -183,14 +183,7 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
         await self._invalidate_app_permissions_for_apps(affected_app_ids)
 
     async def _query_user_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
-        query = (
-            select(user_role.c.user_id)
-            .join(role_permission, role_permission.c.role_id == user_role.c.role_id)
-            .where(role_permission.c.permission_id == permission_id)
-            .distinct()
-        )
-        result = await db.execute(query)
-        return {int(user_id) for user_id in result.scalars().all() if user_id is not None}
+        return await self.repo.get_user_ids_by_permission_id(db, permission_id)
 
     async def _query_app_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
         from src.app.api_auth.models.relationships import api_app_permissions
