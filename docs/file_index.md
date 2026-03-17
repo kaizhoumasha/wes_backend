@@ -1,7 +1,7 @@
 # FXR-WES 项目文件索引
 
-**最后更新**: 2026年3月2日
-**同步状态**: ✅ 已同步（v2.2 - 摄像头传感器模拟 API）
+**最后更新**: 2026年3月17日
+**同步状态**: ✅ 已同步（v2.3 - Workline Phase 1 完成）
 
 ---
 
@@ -9,6 +9,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-03-17 | v2.3 | Workline Phase 1 完成：Inbox/Outbox 模型、Repository、Service、Callback 集成、幂等性控制 |
 | 2026-03-02 | v2.2 | 摄像头 Mock 服务新增传感器模拟 API（手动/自动触发、状态查询、事件历史） |
 | 2026-03-02 | v2.1 | 新增 Mock 设备服务（摄像头、机械臂）Docker 封装 |
 | 2026-02-27 | v2.0 | 项目结构完整索引 |
@@ -315,6 +316,29 @@
 | `services/` | `demo_product_service.py` | 示例服务 | 🎯 示例代码 |
 | `v1/` | `demo_product.py` | 示例路由 | 🎯 示例代码 |
 
+#### 🔧 作业线模块 (src/app/workline/)
+
+作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）
+
+| 目录 | 文件 | 用途 | 分类 |
+|------|------|------|------|
+| `models/` | `inbox.py` | WorklineInbox/Outbox 收发件箱模型 | 🔧 架构核心 |
+| | `session.py` | WorklineSession 会话模型 | 🔧 架构核心 |
+| | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
+| `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
+| | `__init__.py` | Repository 导出（inbox_repository） | 🔧 架构核心 |
+| `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
+| | `__init__.py` | Service 导出（inbox_service） | 🔧 架构核心 |
+
+**核心设计模式**：
+- **Inbox 模式**：统一编排入口（设备事件、指令结果、超时、人工操作）
+- **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选）
+- **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
+
+**相关文档**：
+- 架构设计：`docs/workline_plugin_architecture_design.md` v3.2
+- Phase 1 实现总结：`claudedocs/phase1_callback_inbox_implementation.md`
+
 ---
 
 ### 2.4 测试目录 (tests/)
@@ -349,6 +373,14 @@
 | `load/` | 负载测试（Locust） | 📚 参考资料 |
 | `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
+| `workline_runtime/` | 作业线运行时测试（纯逻辑测试） | 🔧 架构核心 |
+
+**Workline Runtime 测试文件**：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `workline_runtime/test_enums.py` | 枚举类单元测试（InboxKind, Status 等） | 🔧 架构核心 |
+| `workline_runtime/test_inbox_service.py` | Inbox Service 幂等键计算测试 | 🔧 架构核心 |
 
 **E2E 测试文件**：
 

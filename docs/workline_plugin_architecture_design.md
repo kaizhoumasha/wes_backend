@@ -1,7 +1,8 @@
 # P9 WES 作业线插件化编排与全链路追踪设计方案
 
-> **文档版本**: 3.1
-> **更新日期**: 2026-03-13
+> **文档版本**: 3.2
+> **更新日期**: 2026-03-17
+> **实施状态**: Phase 1 已完成 (100%) ✅
 > **评审状态**: ✅ 已通过架构评审  
 > **适用范围**: P9 WES 作业线接入、设备编排、异步执行、链路追踪、排障归因  
 > **目标**: 将当前“按设备类型分发”的实现，演进为“按作业线插件编排”的可实施架构
@@ -744,7 +745,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
     )
 ```
 
-### 8.3 WorklineSession
+### 8.3 WorklineSession ✅ 已实现 (2026-03-17)
 
 一条 `WorklineSession` 表示一次完整业务链路。
 
@@ -795,7 +796,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `last_inbox_id` 用于辅助重放和排障
 * `last_decision_id` 用于快速定位最后一次决策，便于排障和回溯
 
-### 8.4 WorklineTimeline
+### 8.4 WorklineTimeline ✅ 已实现 (2026-03-17)
 
 `WorklineTimeline` 是排障主视图。
 
@@ -841,7 +842,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `seq_no` 必须在同一 `session_id` 内单调递增
 * Timeline 由编排层统一生成，插件不直接构造行对象
 
-### 8.5 DecisionLog
+### 8.5 DecisionLog ❌ 未实现
 
 记录关键业务判断过程。
 
@@ -866,7 +867,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * 为什么请求 AGV
 * 为什么进入 NG
 
-### 8.6 ExternalCallLog
+### 8.6 ExternalCallLog ❌ 未实现
 
 记录外部系统调用证据。
 
@@ -888,7 +889,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `started_at`
 * `finished_at`
 
-### 8.7 WorklineInbox
+### 8.7 WorklineInbox ✅ 已实现 (2026-03-17)
 
 这是统一编排入口的持久化载体。
 
@@ -918,7 +919,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `PROCESSED`
 * `FAILED`
 
-### 8.8 WorklineOutbox
+### 8.8 WorklineOutbox ✅ 已实现 (2026-03-17)
 
 这是所有副作用的统一派发出口。
 
@@ -1921,7 +1922,29 @@ scripts/
 
 ## 16. 分阶段落地方案
 
-### Phase 0: 建立运行契约
+> **实施状态同步** (2026-03-17)
+>
+> | 阶段 | 状态 | 完成度 | 验证报告 |
+> |------|------|--------|----------|
+> | Phase 0: 建立运行契约 | ✅ 已完成 | 100% | - |
+> | Phase 1: 打通统一入口和主链路 | ✅ 已完成 | 100% | [详见实现总结](../../claudedocs/phase1_callback_inbox_implementation.md) |
+> | Phase 2: 引入统一编排器 | ❌ 未开始 | 0% | - |
+> | Phase 3: 引入插件和 Outbox | ⚠️ 模型就绪 | 20% | - |
+> | Phase 4: 补齐决策证据 | ❌ 未开始 | 0% | - |
+>
+> **关键成果**：
+> - ✅ 4 个核心表模型已创建：`WorklineSession`, `WorklineTimeline`, `WorklineInbox`, `WorklineOutbox`
+> - ✅ 所有枚举类型使用 VARCHAR + CHECK 约束
+> - ✅ 外键设计避免循环依赖（辅助追溯字段不设外键）
+> - ✅ `DeviceEventLog` 和 `DeviceCommand` 已扩展 `session_id`, `workline_id`, `correlation_id`
+> - ✅ **Callback API 集成完成**：`callback/event` 和 `callback/result` 写入 WorklineInbox
+> - ✅ **幂等性控制实现**：白皮书 6.3.1 节规范（厂商 ID 优先 + hash 备选）
+> - ✅ **Inbox Service 完成**：创建设备事件和指令结果 Inbox 消息
+> - ✅ **单元测试完成**：31 个测试全部通过（枚举测试 + 幂等键计算测试）
+>
+> **下一步**：启动 Phase 2 编排器服务开发（WorklineOrchestrator）
+
+### Phase 0: 建立运行契约 ✅ 已完成 (2026-03-17)
 
 目标：
 
@@ -1932,29 +1955,40 @@ scripts/
 
 产出：
 
-* 文档冻结
-* 数据模型评审通过
+* ✅ 文档冻结 (v3.1)
+* ✅ 数据模型评审通过 (迁移已生成并验证)
 
-### Phase 1: 打通统一入口和主链路
+### Phase 1: 打通统一入口和主链路 ✅ 已完成 (100%)
 
-目标：
+**已完成** (2026-03-17)：
 
-* 新增 `WorklineSession`
-* 新增 `WorklineTimeline`
-* 新增 `WorklineInbox`
-* `callback/event` 写 Inbox
-* `callback/result` 写 Inbox
-* 给 `DeviceEventLog`、`DeviceCommand` 增加：
-  * `session_id`
-  * `workline_id`
-  * `correlation_id`
+* ✅ 新增 `WorklineSession` (8.3 节所有字段已实现)
+* ✅ 新增 `WorklineTimeline` (8.4 节所有字段已实现)
+* ✅ 新增 `WorklineInbox` (8.7 节所有字段已实现)
+* ✅ 给 `DeviceEventLog`、`DeviceCommand` 增加：
+  * ✅ `session_id`
+  * ✅ `workline_id`
+  * ✅ `correlation_id`
+* ✅ **Callback API 集成**：
+  * ✅ `callback/event` 写 WorklineInbox
+  * ✅ `callback/result` 写 WorklineInbox
+  * ✅ 幂等性控制（白皮书 6.3.1 节）
+* ✅ **Inbox Service 实现**：
+  * ✅ `create_device_event_inbox()` - 创建设备事件 Inbox
+  * ✅ `create_command_result_inbox()` - 创建指令结果 Inbox
+  * ✅ `mark_as_processing()` - 标记为处理中
+  * ✅ `mark_as_processed()` - 标记为已处理
+  * ✅ `mark_as_failed()` - 标记为失败
+* ✅ **单元测试完成**：31 个测试全部通过
 
 上线收益：
 
-* 先具备完整链路追踪能力
-* 结果回调不再脱离主链路
+* ✅ 具备完整链路追踪能力（数据模型层 + API 层）
+* ✅ 设备事件和指令结果统一纳入 Inbox 编排入口
+* ✅ 幂等性保证，防止重复处理
+* ✅ 为 Phase 2 编排器服务奠定基础
 
-### Phase 2: 引入统一编排器
+### Phase 2: 引入统一编排器 ❌ 未开始
 
 目标：
 
@@ -1967,21 +2001,24 @@ scripts/
 
 * 统一推进路径形成闭环
 
-### Phase 3: 引入插件和 Outbox
+### Phase 3: 引入插件和 Outbox ⚠️ 模型就绪 (20%)
 
-目标：
+**已完成** (2026-03-17)：
 
-* 新增 `WorklineOutbox`
-* 新增 `dispatcher_service`
-* 实现第一个插件 `packing_zone`
-* 将装箱区业务从设备处理器迁移到插件
+* ✅ 新增 `WorklineOutbox` (8.8 节所有字段已实现)
+
+**待实现**：
+
+* ❌ 新增 `dispatcher_service`
+* ❌ 实现第一个插件 `packing_zone`
+* ❌ 将装箱区业务从设备处理器迁移到插件
 
 上线收益：
 
-* 验证插件化架构
-* 消除“事务内直接发命令”的一致性风险
+* ⚠️ 插件化架构尚未验证
+* ❌ “事务内直接发命令”的一致性风险尚未消除
 
-### Phase 4: 补齐决策证据与外部调用证据
+### Phase 4: 补齐决策证据与外部调用证据 ❌ 未开始
 
 目标：
 
