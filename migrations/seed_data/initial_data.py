@@ -709,12 +709,14 @@ async def seed_all(db: AsyncSession) -> None:
     print("  - finance / admin123 (财务人员)")
     print("  - user1 / admin123 (普通用户)")
     print("  - user2 / admin123 (普通用户)")
+    print("\n💡 E2E 测试数据请运行: uv run python migrations/seed_data/e2e_test_data.py")
     print("\n⚠️  生产环境请立即修改默认密码！")
 
 
 # ============================================
 # 入口点：可以直接运行此脚本
 # ============================================
+
 
 async def main() -> None:
     """主函数：初始化所有数据"""

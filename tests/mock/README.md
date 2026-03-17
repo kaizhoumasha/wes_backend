@@ -401,6 +401,29 @@ curl http://localhost:8004/api/v1/device/status
 curl http://localhost:8004/api/v1/robot/status
 ```
 
+## 环境准备
+
+在运行 E2E 测试前，需要先初始化测试数据：
+
+```bash
+# 方式 1：直接运行 E2E 测试数据脚本
+PYTHONPATH=. uv run python migrations/seed_data/e2e_test_data.py
+
+# 方式 2：在 Docker 容器内运行
+docker compose exec api uv run python migrations/seed_data/e2e_test_data.py
+```
+
+这将创建以下 E2E 测试数据：
+- **作业线**: `WL-CONVEYOR-01` - 测试流水线作业线
+- **设备**:
+  - `CAMERA-CONVEYOR-01` - 流水线识别点摄像头 (127.0.0.1:8003)
+  - `ROBOT-ARM-01` - 搬运机械臂 (127.0.0.1:8004)
+- **API 应用**: `app_Gqnvr3dpjGwlrjtO` - Mock 服务器认证凭据
+
+> 💡 此脚本可重复运行，已存在的数据会被跳过（幂等设计）。
+>
+> ⚠️ 系统初始化数据（用户/角色/权限）请使用 `migrations/seed_data/initial_data.py`
+
 ## 测试用例
 
 ### 摄像头传感器测试
