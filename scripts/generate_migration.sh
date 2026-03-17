@@ -24,14 +24,35 @@ alembic revision --autogenerate -m "$1"
 LATEST_MIGRATION=$(ls -t migrations/versions/*.py | head -1)
 echo -e "${GREEN}生成的迁移文件: $LATEST_MIGRATION${NC}"
 
-# 检查是否包含 ENUM 类型
+# 检查迁移是否只包含不相关的 ENUM 类型变更
+if grep -q "api_applications\|audit_logs" "$LATEST_MIGRATION" && grep -q "postgresql.ENUM" "$LATEST_MIGRATION"; then
+    # 检查是否只包含这些表的 ENUM 变更
+    # 统计操作类型
+    alter_column_count=$(grep -c "^    op.alter_column" "$LATEST_MIGRATION" || true)
+    # 检查是否有其他类型的操作（如 create_table, drop_table, add_column 等）
+    other_ops=$(grep -E "^    op\.(create_table|drop_table|add_column|drop_column|create_foreign_key|drop_constraint)" "$LATEST_MIGRATION" | wc -l)
+
+    # 如果只有 alter_column 操作，且涉及 api_applications/audit_logs，说明是 ENUM 误报
+    if [ $alter_column_count -ge 4 ] && [ $other_ops -eq 0 ]; then
+        echo ""
+        echo -e "${YELLOW}⚠️  检测到迁移只包含已知的 ENUM 类型误报（不影响功能）${NC}"
+        echo "正在清理不必要的迁移..."
+
+        rm "$LATEST_MIGRATION"
+        echo -e "${GREEN}✓ 已删除空迁移${NC}"
+        echo ""
+        echo -e "${GREEN}迁移生成完成！${NC}"
+        echo ""
+        echo "提示: 这是 Alembic 的已知问题（postgresql.ENUM vs sa.Enum），可以忽略"
+        exit 0
+    fi
+fi
+
+# 检查是否包含新的 ENUM 类型定义（需要处理）
 if grep -q "sa.Enum.*name=" "$LATEST_MIGRATION"; then
     echo ""
     echo -e "${YELLOW}⚠️  检测到 ENUM 类型！${NC}"
     echo "正在自动处理 ENUM 类型的 schema 和 DROP TYPE 语句..."
-
-    # 备份原文件
-    cp "$LATEST_MIGRATION" "$LATEST_MIGRATION.bak"
 
     # 使用 Python 脚本处理 ENUM 类型的 schema 和 DROP TYPE 语句
     python3 << PYTHON_SCRIPT

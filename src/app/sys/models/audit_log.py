@@ -1,8 +1,9 @@
 from datetime import datetime
-from enum import IntEnum
+from enum import Enum
 from typing import Literal
 
 import sqlalchemy as sa
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
@@ -11,11 +12,11 @@ from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
 
 
-class OperaStatus(IntEnum):
+class OperaStatus(str, Enum):
     """操作日志状态"""
 
-    FAIL = 0
-    SUCCESS = 1
+    FAIL = "FAIL"
+    SUCCESS = "SUCCESS"
 
 
 class AuditLogBase(BaseMixin):
@@ -37,7 +38,19 @@ class AuditLogBase(BaseMixin):
     browser: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
     args: dict | None = Field(default=None, sa_type=sa.JSON)
-    status: OperaStatus = Field(default=OperaStatus.SUCCESS)
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    status: OperaStatus = Field(
+        default=OperaStatus.SUCCESS,
+        sa_type=SQLAEnum(
+            OperaStatus,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="操作状态",
+    )
+
     code: str = Field(max_length=20)
     msg: str | None = Field(default=None, sa_type=sa.Text)
     cost_time: float = Field(ge=0)  # 添加非负数验证

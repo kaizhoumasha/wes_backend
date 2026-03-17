@@ -14,7 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import field_validator
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -77,7 +77,18 @@ class CommandBase(BaseMixin):
         foreign_key="wes_biz.devices.id",
         description="目标设备 ID（关联 Device.id）",
     )
-    task_type: TaskType = Field(description="任务类型")
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    task_type: TaskType = Field(
+        sa_type=SQLAEnum(
+            TaskType,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="任务类型",
+    )
+
     priority: int = Field(
         default=5,
         ge=1,
@@ -217,10 +228,32 @@ class DeviceCommand(
         description="关联 ID（串联整个流程）",
     )
 
-    # 状态字段
+    # 会话 ID（跟踪单个任务会话）
+    session_id: str | None = Field(
+        default=None,
+        max_length=100,
+        index=True,
+        description="会话 ID（跟踪单个任务会话）",
+    )
+
+    # 作业线 ID（关联到 WorkLine）
+    workline_id: int | None = Field(
+        default=None,
+        index=True,
+        foreign_key="wes_biz.work_lines.id",
+        description="作业线 ID（关联 WorkLine.id）",
+    )
+
+    # 🔥 状态字段：使用 VARCHAR + CHECK 约束
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,
         index=True,
+        sa_type=SQLAEnum(
+            CommandStatus,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
         description="指令状态",
     )
 
@@ -238,9 +271,15 @@ class DeviceCommand(
         description="指令完成时间",
     )
 
-    # 执行结果
+    # 🔥 执行结果：使用 VARCHAR + CHECK 约束
     result: CommandResult | None = Field(
         default=None,
+        sa_type=SQLAEnum(
+            CommandResult,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
         description="执行结果（SUCCESS/FAILED）",
     )
     result_data: dict[str, Any] | None = Field(

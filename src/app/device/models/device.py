@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, Enum as SQLAEnum
 from sqlmodel import Field, Index, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -76,7 +76,18 @@ class DeviceBase(BaseMixin):
         description="设备编码（业务主键）",
     )
     device_name: str = Field(min_length=1, max_length=100, description="设备名称")
-    device_type: str = Field(max_length=50, description="设备类型")
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    device_type: DeviceType = Field(
+        sa_type=SQLAEnum(
+            DeviceType,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="设备类型",
+    )
+
     work_line_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.work_lines.id",
@@ -86,19 +97,67 @@ class DeviceBase(BaseMixin):
     is_active: bool = Field(default=True, description="是否启用")
     sort_order: int = Field(default=0, description="排序顺序")
 
+    # ===== 角色和拓扑（架构 8.2 节）=====
+    device_role: str = Field(
+        max_length=50,
+        description="设备业务角色（SCANNER, ROBOT_ARM, XRAY, CONVEYOR）",
+    )
+    role_index: int = Field(
+        default=1,
+        ge=1,
+        description="同角色序号（1, 2, 3...）",
+    )
+    upstream_device_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.devices.id",
+        ondelete="SET NULL",
+        description="上游设备ID（线性拓扑）",
+    )
+
+    # ===== 厂商和能力（架构 8.2 节）=====
+    vendor_type: str | None = Field(
+        default=None,
+        max_length=50,
+        description="厂商类型（ECS, KEYENCE, FANUC...）",
+    )
+    capabilities: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="能力列表（业务能力，如 [SCAN, PICK, PUT]）",
+    )
+
     # ===== 通信配置（白皮书 2.1-2.3 节）=====
     host: str | None = Field(default=None, max_length=100, description="设备 IP 地址")
     port: int | None = Field(default=None, ge=1, le=65535, description="服务端口")
-    protocol: str = Field(default=DeviceProtocol.HTTP.value, max_length=10, description="通信协议")
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    protocol: DeviceProtocol = Field(
+        default=DeviceProtocol.HTTP,
+        sa_type=SQLAEnum(
+            DeviceProtocol,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="通信协议",
+    )
+
     auth_token: str | None = Field(default=None, max_length=500, description="认证 Token（Bearer Token）")
     timeout: int = Field(default=10000, ge=1000, le=300000, description="请求超时时间（毫秒，默认 10s）")
 
     # ===== 设备状态（白皮书 3.1.2 节）=====
-    device_status: str = Field(
-        default=DeviceStatus.IDLE.value,
-        max_length=20,
+    # 🔥 使用 VARCHAR + CHECK 约束
+    device_status: DeviceStatus = Field(
+        default=DeviceStatus.IDLE,
+        sa_type=SQLAEnum(
+            DeviceStatus,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
         description="设备实时状态（IDLE/RUNNING/ERROR/OFFLINE）",
     )
+
     current_command_id: int | None = Field(default=None, description="当前执行的指令 ID（关联 DeviceCommand.id）")
     last_heartbeat_at: datetime | None = Field(default=None, description="最后心跳时间")
     error_code: str | None = Field(default=None, max_length=50, description="错误代码（status=ERROR 时）")
@@ -137,10 +196,18 @@ class Device(
 
     字段说明:
     - 基本信息: device_code, device_name, device_type, work_line_id
-    - 通信配置: host, port, protocol, auth_token, timeout
-    - 设备状态: device_status, current_command_id, last_heartbeat_at, error_code
-    - 能力配置: supported_commands, max_concurrent_tasks
-    - 幂等性配置: idempotency_ttl
+    - 角色和拓扑: device_role, role_index, upstream_device_id（架构 8.2 节）
+    - 厂商和能力: vendor_type, capabilities（架构 8.2 节）
+    - 通信配置: host, port, protocol, auth_token, timeout（白皮书 2.1-2.3 节）
+    - 设备状态: device_status, current_command_id, last_heartbeat_at, error_code（白皮书 5.2 节）
+    - 能力配置: supported_commands, max_concurrent_tasks（白皮书 5.1 节）
+    - 幂等性配置: idempotency_ttl（白皮书 4.1 节）
+
+    架构设计参考:
+    - device_role: 业务角色（SCANNER, ROBOT_ARM, XRAY），用于插件按角色选设备
+    - role_index: 同角色多设备序号（如 ROBOT_ARM_1, ROBOT_ARM_2）
+    - upstream_device_id: 线性拓扑（符合 KISS 原则）
+    - capabilities: 业务能力列表，区别于 device_type（设备类型）
 
     注意:
     - WES 回调端点固定在路由中: /api/v1/callback/result, /api/v1/callback/event
@@ -148,6 +215,8 @@ class Device(
 
     关系:
     - work_line: 所属作业线（多对一）
+    - upstream_device: 上游设备（多对一）
+    - downstream_devices: 下游设备（一对多，隐式关系）
     - commands: 设备指令（一对多，在 command.py 中定义）
     - events: 设备事件（一对多，在 event_log.py 中定义）
     """
@@ -167,6 +236,13 @@ class Device(
 
     # 关系定义
     work_line: "WorkLine" = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
+    upstream_device: "Device" = Relationship(
+        sa_relationship_kwargs={
+            "remote_side": "Device.id",
+            "foreign_keys": "[Device.upstream_device_id]",
+            "primaryjoin": "Device.upstream_device_id == Device.id",
+        }
+    )
 
 
 # ==================== 自动生成的 Schema ====================

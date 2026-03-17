@@ -7,6 +7,7 @@
 from enum import Enum
 from typing import Literal
 
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -32,7 +33,18 @@ class WorkLineBase(BaseMixin):
         description="作业线编码（业务主键）",
     )
     line_name: str = Field(min_length=1, max_length=100, description="作业线名称")
-    line_type: str = Field(max_length=50, description="作业线类型")
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    line_type: LineType = Field(
+        sa_type=SQLAEnum(
+            LineType,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="作业线类型",
+    )
+
     zone_name: str | None = Field(
         default=None,
         max_length=100,

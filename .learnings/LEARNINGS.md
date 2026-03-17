@@ -866,3 +866,132 @@ class Device(table=True):
 - **Notes**: 已简化设计，删除复杂的拓扑配置，改用 upstream_device_id 字段
 
 ---
+
+## [LRN-20260317-003] correction
+
+**Logged**: 2026-03-17T09:35:00Z
+**Priority**: high
+**Status**: promoted
+**Category**: correction
+**Area**: backend
+
+### Summary
+ModelFactory 的 `for_optimistic_update()` 和 `for_update()` 方法必须根据模型的 Mixin 组合正确选择
+
+### Details
+
+**错误**：
+```python
+class WorklineSession(
+    WorklineSessionBase,
+    DataTableMixin,      # ❌ 不包含 OptimisticLockMixin
+    SoftDeleteMixin,
+    table=True,
+)
+
+class WorklineSessionUpdate(ModelFactory(...).for_optimistic_update()):
+    # ❌ 错误：没有 version 字段
+```
+
+**正确**：
+```python
+class WorklineSessionUpdate(ModelFactory(...).for_update()):
+    # ✅ 正确：没有乐观锁时使用 for_update()
+```
+
+**Mixin 组合规则**：
+
+| Mixin 组合 | 包含 OptimisticLockMixin | Schema 方法 |
+|------------|------------------------|------------|
+| `EnterpriseMixin` = `AuditMixin` + `OptimisticLockMixin` | ✅ 是 | `for_optimistic_update()` |
+| `DataTableMixin` + `SoftDeleteMixin` | ❌ 否 | `for_update()` |
+
+**原因**：
+- `for_optimistic_update()` 期望模型有 `version` 字段
+- Update Schema 会包含 `version: int` 作为必填字段
+- 如果模型没有 `version` 字段，会导致验证失败或行为不正确
+
+### Suggested Action
+在代码审查时检查：
+1. 模型是否继承 `OptimisticLockMixin`（直接或通过 `EnterpriseMixin`）
+2. Update Schema 方法是否与 Mixin 组合匹配
+
+### Metadata
+- Source: user_feedback
+- Related Files: 
+  - src/app/workline/models/session.py
+  - src/database/model_factory.py
+  - src/core/mixins/composite.py
+- Tags: model-factory, optimistic-lock, schema, consistency
+
+### Resolution
+- **Resolved**: 2026-03-17T09:35:00Z
+- **Promoted**: CLAUDE.md
+- **Commit**: 待提交
+- **Notes**: 已修改 WorklineSessionUpdate 使用 `for_update()`，规则已添加到 CLAUDE.md "Update Schema 方法选择规则"
+
+---
+
+## [LRN-20260317-004] correction
+
+**Logged**: 2026-03-17T09:30:00Z
+**Priority**: high
+**Status**: promoted
+**Category**: correction
+**Area**: backend
+
+### Summary
+数据库表的循环依赖应该在模型层解决，而不是修改迁移文件
+
+### Details
+
+**场景**：
+- `WorklineInbox.session_id` → `WorklineSession.id`
+- `WorklineSession.last_inbox_id` → `WorklineInbox.id`
+- Alembic 无法自动解析表创建顺序
+
+**错误做法**：手工修改迁移文件，分两步创建表和外键
+
+**正确做法**：修改模型定义，移除导致循环的外键约束
+```python
+# ❌ 错误：保留外键约束
+last_inbox_id: int | None = Field(
+    default=None,
+    foreign_key="wes_biz.workline_inbox.id",  # 循环依赖
+)
+
+# ✅ 正确：移除外键约束，保留字段用于追溯
+last_inbox_id: int | None = Field(
+    default=None,
+    description="最后处理的 Inbox ID（便于重放）",
+)
+```
+
+**原则**：
+1. 循环依赖通常表明某些外键是辅助性的，不是核心业务逻辑
+2. 辅助追溯字段可以不设外键约束
+3. 修改模型后重新生成迁移，确保迁移文件可重现
+
+### Suggested Action
+设计外键关系时考虑：
+- 是否是核心业务约束（需要外键）
+- 是否只是辅助追溯字段（可以不设外键）
+- 是否会造成循环依赖
+
+### Metadata
+- Source: user_feedback
+- Related Files:
+  - src/app/workline/models/session.py
+  - src/app/workline/models/timeline.py
+  - migrations/versions/20260317_0930_8f8180e751c3_create_workline_session_timeline_inbox_.py
+- Tags: circular-dependency, foreign-key, alembic, migration
+- See Also: LRN-20260317-003
+
+### Resolution
+- **Resolved**: 2026-03-17T09:30:00Z
+- **Promoted**: CLAUDE.md
+- **Commit**: 待提交
+- **Notes**: 移除了 `WorklineSession.last_inbox_id` 和 `WorklineTimeline.related_inbox_id` 的外键约束，规则已添加到 CLAUDE.md "外键设计规则"
+
+---
+

@@ -65,6 +65,35 @@ class User(UserBase, AuditMixin, EnterpriseMixin, SoftDeleteMixin, table=True)
 class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True)
 ```
 
+### Update Schema 方法选择规则
+
+**必须根据模型的 Mixin 组合选择正确的 Update Schema 方法**：
+
+| 模型 Mixin 组合 | Update Schema 方法 |
+|----------------|-------------------|
+| 继承 `EnterpriseMixin`（包含 OptimisticLockMixin） | `for_optimistic_update()` |
+| 只继承 `DataTableMixin` + `SoftDeleteMixin（无 OptimisticLockMixin） | `for_update()` |
+
+```python
+# ✅ 正确：有 OptimisticLockMixin
+class User(UserBase, EnterpriseMixin, DataTableMixin, table=True):
+    pass
+
+class UserUpdate(ModelFactory(UserBase).for_optimistic_update()):
+    pass
+
+# ✅ 正确：无 OptimisticLockMixin
+class WorklineSession(WorklineSessionBase, DataTableMixin, SoftDeleteMixin, table=True):
+    pass
+
+class WorklineSessionUpdate(ModelFactory(WorklineSessionBase).for_update()):
+    pass
+```
+
+**原因**：
+- `for_optimistic_update()` 要求模型有 `version` 字段
+- 使用错误方法会导致验证失败或行为不正确
+
 ### 时区使用
 
 | 场景 | 方法 | 返回类型 |
@@ -85,6 +114,54 @@ from .xxx_service import XxxService, xxx_service
 __all__ = ["XxxService", "xxx_service"]
 ```
 
+### ENUM 类型使用规范
+
+**🔥 强制使用 VARCHAR + CHECK 约束，禁用 PostgreSQL 原生 ENUM**
+
+```python
+from enum import Enum
+from sqlalchemy import Enum as SQLAEnum
+from sqlmodel import Field
+
+class AppStatus(str, Enum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+class APIApplication(..., table=True):
+    # ✅ 正确：使用 VARCHAR + CHECK 约束
+    status: AppStatus = Field(
+        default=AppStatus.ACTIVE,
+        sa_type=SQLAEnum(
+            AppStatus,
+            native_enum=False,      # 🔥 关键：禁用原生 ENUM
+            create_constraint=True, # 自动创建 CHECK 约束
+            length=50,
+        ),
+        description="状态",
+    )
+```
+
+**为什么不用 PostgreSQL ENUM？**
+
+| 问题 | PostgreSQL ENUM | VARCHAR + CHECK |
+|------|----------------|-----------------|
+| 删除值 | ❌ 无法删除 | ✅ 随时修改约束 |
+| 添加值 | ⚠️ 不支持事务 | ✅ 完全支持事务 |
+| 迁移复杂度 | 🔴 高（需要手动 op.execute） | 🟢 低（Alembic 自动处理） |
+| 跨数据库 | ❌ PostgreSQL 专用 | ✅ 所有数据库 |
+| 性能 | ✅ 4字节 | 🟢 差异可忽略 |
+
+**已重构的模型**：
+- ✅ `APIApplication` (status, app_type, validity_period)
+- ✅ `Device` (device_type, protocol, device_status)
+- ✅ `DeviceCommand` (task_type, status, result)
+- ✅ `DeviceEventLog` (event_type)
+- ✅ `WorkLine` (line_type)
+
+**注意**：`AuditLog.status` 使用 `IntEnum`，不需要修改。
+
+---
+
 ---
 
 ## 设计原则
@@ -100,41 +177,25 @@ __all__ = ["XxxService", "xxx_service"]
 
 ## 模型定义模式
 
+### 外键设计规则
+
+**必须避免循环依赖，辅助追溯字段不应设置外键约束**：
+
+| 外键类型 | 是否设置外键 | 示例 |
+|---------|-------------|------|
+| 核心业务约束 | ✅ 必须 | `workline_id: int = Field(foreign_key="wes_biz.work_lines.id")` |
+| 辅助追溯字段 | ❌ 禁止 | `last_inbox_id: int = Field(description="最后处理ID")` |
+
+**循环依赖检查**：
+- 如果 `TableA.id` → `TableB.field` 且 `TableB.field` → `TableA.id`，构成循环依赖
+- 移除其中一个外键约束（通常是非核心追溯字段）
+- 保留字段用于业务逻辑，但不设数据库级别的约束
+
 ```python
-# 1. 基础字段（用于 Schema 复用）
-class UserBase(BaseMixin):
-    username: str
-    email: str
-
-# 2. 数据库表模型（Base + Mixins + 表特有字段）
-class User(UserBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=True):
-    __tablename__ = "users"
-    hashed_password: str
-
-# 3. Schema（ModelFactory 自动生成）
-class UserCreate(ModelFactory(UserBase).for_create()):
-    password: str
-
-class UserUpdate(ModelFactory(UserBase).for_update()):
-    pass
-
-# 4. Repository/Service/API（零代码）
-class UserRepository(BaseRepository[User]):
-    pass
-
-class UserService(BaseService[User, UserRepository]):
-    def __init__(self):
-        super().__init__(UserRepository(), enable_cache=True)
-
-user_api = BaseAPI(
-    module_name="admin",
-    model=User,
-    service=UserService(),
-    create_schema=UserCreate,
-    update_schema=UserUpdate,
-    response_schema=UserResponse,
-    prefix="/users",
-)
+# ✅ 正确：避免循环依赖
+class WorklineSession(..., table=True):
+    session_id: int = Field(foreign_key="wes_biz.work_lines.id")  # 核心业务
+    last_inbox_id: int | None = Field(description="最后处理ID")  # 无外键
 ```
 
 ---

@@ -12,6 +12,7 @@ ENV/
 /docker_data/*
 /reports/*
 /claudedocs/*
+/backups/*
 
 # Docker backup files (old docker-compose files)
 docker-compose.backup/

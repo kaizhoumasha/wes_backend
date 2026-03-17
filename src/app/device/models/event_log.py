@@ -13,7 +13,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, field_validator
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, Enum as SQLAEnum, Text
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, SoftDeleteMixin
@@ -54,10 +54,19 @@ class DeviceEventLogBase(BaseMixin):
         foreign_key="wes_biz.devices.id",
         description="设备 ID（关联 Device.id）",
     )
+
+    # 🔥 使用 VARCHAR + CHECK 约束
     event_type: EventType = Field(
         index=True,
+        sa_type=SQLAEnum(
+            EventType,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
         description="事件类型",
     )
+
     event_timestamp: datetime = Field(
         index=True,
         description="设备上报的事件时间",
@@ -159,6 +168,22 @@ class DeviceEventLog(
         max_length=100,
         index=True,
         description="关联 ID（串联相关事件和指令）",
+    )
+
+    # 会话 ID（跟踪单个任务会话）
+    session_id: str | None = Field(
+        default=None,
+        max_length=100,
+        index=True,
+        description="会话 ID（跟踪单个任务会话）",
+    )
+
+    # 作业线 ID（关联到 WorkLine）
+    workline_id: int | None = Field(
+        default=None,
+        index=True,
+        foreign_key="wes_biz.work_lines.id",
+        description="作业线 ID（关联 WorkLine.id）",
     )
 
     # 关系定义

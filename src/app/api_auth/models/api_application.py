@@ -4,7 +4,7 @@ from ipaddress import ip_address
 from typing import Literal
 
 from pydantic import computed_field, field_validator, model_validator
-from sqlalchemy import JSON, Index
+from sqlalchemy import JSON, Enum as SQLAEnum, Index
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -107,9 +107,44 @@ class APIApplication(
 
     app_id: str = Field(max_length=50, description="应用ID")
     app_secret_encrypted: str = Field(max_length=500, description="加密后的密钥")
-    status: AppStatus = Field(default=AppStatus.ACTIVE, description="状态")
-    ip_whitelist: list[str] | None = Field(default=None, sa_type=JSON, description="IP白名单")
 
+    # 🔥 使用 VARCHAR + CHECK 约束，避免 PostgreSQL ENUM 限制
+    status: AppStatus = Field(
+        default=AppStatus.ACTIVE,
+        sa_type=SQLAEnum(
+            AppStatus,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="状态",
+    )
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    app_type: AppType = Field(
+        default=AppType.ECS,
+        sa_type=SQLAEnum(
+            AppType,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="应用类型",
+    )
+
+    # 🔥 使用 VARCHAR + CHECK 约束
+    validity_period: ValidityPeriod = Field(
+        default=ValidityPeriod.ONE_YEAR,
+        sa_type=SQLAEnum(
+            ValidityPeriod,
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+        ),
+        description="有效期时长",
+    )
+
+    ip_whitelist: list[str] | None = Field(default=None, sa_type=JSON, description="IP白名单")
     expires_at: datetime | None = Field(default=None, description="过期时间")
 
     __table_args__ = (

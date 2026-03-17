@@ -510,7 +510,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "admin",
-            "email": "admin@wes.local",
+            "email": "admin@localhost.localdomain",
             "full_name": "系统管理员",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": True,
@@ -522,7 +522,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "manager",
-            "email": "manager@wes.local",
+            "email": "manager@localhost.localdomain",
             "full_name": "管理员",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": False,
@@ -534,7 +534,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "operator",
-            "email": "operator@wes.local",
+            "email": "operator@localhost.localdomain",
             "full_name": "运营人员",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": False,
@@ -546,7 +546,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "finance",
-            "email": "finance@wes.local",
+            "email": "finance@localhost.localdomain",
             "full_name": "财务人员",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": False,
@@ -558,7 +558,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "user1",
-            "email": "user1@wes.local",
+            "email": "user1@localhost.localdomain",
             "full_name": "普通用户1",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": False,
@@ -570,7 +570,7 @@ async def seed_users(db: AsyncSession) -> None:
         db,
         {
             "username": "user2",
-            "email": "user2@wes.local",
+            "email": "user2@localhost.localdomain",
             "full_name": "普通用户2",
             "hashed_password": get_password_hash("admin123"),
             "is_superuser": False,
