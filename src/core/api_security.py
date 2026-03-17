@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends, Request
 
-from src.app.api_auth.constants import CacheExpire, CacheKeys
-from src.app.api_auth.models import APIApplication
-from src.app.api_auth.services import SignatureService, api_app_service, get_app_permissions
 from src.core.encryption import encryption_service
 from src.core.exceptions import AuthException, PermissionException, RateLimitException
-from src.database.dependencies import AsyncSessionDep, CacheDep
+from src.database.dependencies import AsyncSessionDep, CacheDep  # 运行时需要，供 FastAPI 依赖注入使用 # noqa: TC001
 from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from src.app.api_auth.models.api_application import APIApplication
 
 
 @dataclass
@@ -22,6 +24,10 @@ class APIAppContext:
 
 
 async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep) -> APIAppContext | None:
+    # 延迟导入以避免循环依赖
+    # api_auth 包的 __init__.py 会导入 api_application.py，后者需要从本模块导入
+    from src.app.api_auth.services import SignatureService, api_app_service, get_app_permissions
+
     app_id: str | None = request.headers.get("X-App-ID")
     timestamp: str | None = request.headers.get("X-Timestamp")
     signature: str | None = request.headers.get("X-Signature")
@@ -83,6 +89,9 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
 
 
 async def _check_rate_limit(cache: CacheDep, app: APIApplication) -> None:
+    # 延迟导入以避免循环依赖
+    from src.app.api_auth.constants import CacheExpire, CacheKeys
+
     current_time = int(time.time())
 
     # 分钟级速率限制
