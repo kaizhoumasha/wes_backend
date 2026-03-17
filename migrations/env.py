@@ -26,6 +26,7 @@ from src.app.admin.models import Permission, Role, User  # noqa: F401
 from src.app.admin.models.relationships import role_permission, user_role  # noqa: F401
 from src.app.api_auth.models import APIAccessLog, APIApplication  # noqa: F401
 from src.app.api_auth.models.relationships import api_app_permissions  # noqa: F401
+from src.app.callback.models.callback_log import CallbackLog  # noqa: F401
 from src.app.demo.models.demo_product import DemoProduct  # noqa: F401
 from src.app.demo.models.demo_product_list import DemoProductList  # noqa: F401
 from src.app.device.models import (  # noqa: F401
@@ -34,7 +35,14 @@ from src.app.device.models import (  # noqa: F401
     DeviceEventLog,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
-from src.app.workline.models import WorkLine  # noqa: F401
+# 导入所有 workline 模型
+from src.app.workline.models import (  # noqa: F401
+    WorkLine,
+    WorklineInbox,
+    WorklineOutbox,
+    WorklineSession,
+    WorklineTimeline,
+)
 
 # 导入项目配置
 from src.core.conf import settings
