@@ -343,4 +343,55 @@ dev = [
     "bandit>=1.9.3",
     "pytest-cov>=7.0.0",
     "pytest-html>=4.2.0",
+    "basedpyright>=1.28.0",
 ]
+
+[tool.basedpyright]
+# 基于 pyright 的类型检查器配置
+# 目标 Python 版本
+pythonVersion = "3.13"
+
+# 类型检查模式
+# "off": 关闭类型检查
+# "basic": 基本类型检查
+# "standard": 标准类型检查 (推荐用于生产项目)
+# "strict": 严格类型检查
+typeCheckingMode = "standard"
+
+# 分析报告配置
+reportMissingImports = "error"
+reportMissingTypeStubs = "warning"
+reportUndefinedVariable = "error"
+reportUnknownMemberType = "warning"
+reportUnknownVariableType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownParameterType = "warning"
+reportInvalidTypeArguments = "error"
+reportPrivateImportUsage = "warning"
+reportUnusedCallResult = "warning"
+reportUnusedVariable = "warning"
+reportUnusedImport = "warning"
+reportUnusedClass = "warning"
+reportUnusedFunction = "warning"
+
+# Pydantic 特殊支持
+reportCallInDefaultInitializer = "warning"
+reportUnnecessaryComparison = "warning"
+
+# 排除目录
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "*.egg-info",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    "migrations",
+    "node_modules",
+    "dist",
+    "build",
+]
+
+# 包含的额外路径
+extraPaths = ["src"]
