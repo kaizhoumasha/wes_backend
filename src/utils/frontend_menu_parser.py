@@ -1,0 +1,711 @@
+"""
+前端路由菜单解析工具
+
+将前端 `src/router/index.ts` 中的受保护路由解析为后端菜单同步数据。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_FRONTEND_ROOT = BACKEND_ROOT.parent / "wes_frontend"
+ROUTE_FILE_RELATIVE_PATH = Path("src/router/index.ts")
+
+_MENU_NAME_SUFFIXES = {"list", "page", "view", "detail", "form", "screen", "route", "index"}
+
+
+@dataclass(slots=True)
+class FrontendMenuDefinition:
+    """前端路由解析后的菜单定义"""
+
+    name: str
+    title: str
+    path: str
+    component: str | None
+    sort_order: int
+    parent_name: str | None = None
+    icon: str | None = None
+    is_hidden: bool = False
+
+    def to_model_data(self, parent_id: int | None = None) -> dict[str, object]:
+        """转换为 Menu 模型需要的数据结构"""
+
+        return {
+            "name": self.name,
+            "title": self.title,
+            "path": self.path,
+            "component": self.component,
+            "icon": self.icon,
+            "parent_id": parent_id,
+            "sort_order": self.sort_order,
+            "is_hidden": self.is_hidden,
+        }
+
+
+@dataclass(slots=True)
+class _RouteNode:
+    path: str | None
+    name: str | None
+    title: str | None
+    requires_auth: bool | None
+    component: str | None
+    permission: str | None
+    menu_name: str | None
+    menu_title: str | None
+    menu_icon: str | None
+    menu_parent_name: str | None
+    menu_sort_order: int | None
+    menu_hidden: bool | None
+    children: list[_RouteNode]
+
+
+def resolve_frontend_root(frontend_path: str | Path | None = None) -> Path:
+    """解析前端项目根目录"""
+
+    raw_path = frontend_path or os.getenv("WES_FRONTEND_PATH") or DEFAULT_FRONTEND_ROOT
+    return Path(raw_path).expanduser()
+
+
+def load_frontend_router_menus(frontend_path: str | Path | None = None) -> list[FrontendMenuDefinition]:
+    """从前端 router 文件加载菜单定义"""
+
+    frontend_root = resolve_frontend_root(frontend_path)
+    router_file = frontend_root / ROUTE_FILE_RELATIVE_PATH
+
+    if not router_file.exists():
+        raise FileNotFoundError(f"前端路由文件不存在: {router_file}")
+
+    source = router_file.read_text(encoding="utf-8")
+    return parse_frontend_router_menus(source)
+
+
+def parse_frontend_router_menus(source: str) -> list[FrontendMenuDefinition]:
+    """解析 router 源码中的菜单定义"""
+
+    routes_array = _extract_routes_array(source)
+    routes = [_parse_route_object(route_source) for route_source in _extract_route_objects_from_array(routes_array)]
+
+    definitions: list[FrontendMenuDefinition] = []
+    sort_counter = 0
+
+    def walk(
+        route_nodes: list[_RouteNode], parent_path: str, inherited_auth: bool, parent_menu_name: str | None
+    ) -> None:
+        nonlocal sort_counter
+
+        for route in route_nodes:
+            full_path = _join_paths(parent_path, route.path)
+            effective_auth = route.requires_auth if route.requires_auth is not None else inherited_auth
+            title = route.menu_title or route.title
+            include_as_menu = effective_auth and bool(title)
+
+            current_menu_name = parent_menu_name
+            if include_as_menu:
+                sort_counter += 1
+                menu_name = route.menu_name or _derive_menu_name(
+                    route_name=route.name,
+                    route_path=full_path,
+                    permission=route.permission,
+                )
+                definition = FrontendMenuDefinition(
+                    name=menu_name,
+                    title=title or "",
+                    path=full_path,
+                    component=route.component,
+                    sort_order=route.menu_sort_order if route.menu_sort_order is not None else sort_counter,
+                    parent_name=route.menu_parent_name or parent_menu_name,
+                    icon=route.menu_icon,
+                    is_hidden=route.menu_hidden if route.menu_hidden is not None else False,
+                )
+                definitions.append(definition)
+                current_menu_name = definition.name
+
+            if route.children:
+                walk(route.children, full_path, effective_auth, current_menu_name)
+
+    walk(routes, parent_path="", inherited_auth=False, parent_menu_name=None)
+    _validate_menu_definitions(definitions)
+    return definitions
+
+
+def _extract_routes_array(source: str) -> str:
+    match = re.search(r"\bconst\s+routes\b", source)
+    if not match:
+        raise ValueError("未找到 `const routes` 定义")
+
+    equals_index = source.find("=", match.end())
+    if equals_index == -1:
+        raise ValueError("未找到 routes 数组赋值语句")
+
+    array_start = source.find("[", equals_index)
+    if array_start == -1:
+        raise ValueError("未找到 routes 数组字面量")
+
+    array_literal, _ = _extract_balanced(source, array_start, "[", "]")
+    return array_literal
+
+
+def _extract_route_objects_from_array(array_literal: str) -> list[str]:
+    inner = _strip_outer(array_literal, "[", "]")
+    route_objects: list[str] = []
+
+    for item in _split_top_level(inner):
+        stripped = _strip_leading_comments(item)
+        if not stripped:
+            continue
+
+        if stripped.startswith("{"):
+            route_objects.append(_extract_first_object(stripped))
+            continue
+
+        route_objects.extend(_extract_objects_from_expression(stripped))
+
+    return route_objects
+
+
+def _extract_objects_from_expression(expression: str) -> list[str]:
+    objects: list[str] = []
+    index = 0
+
+    while index < len(expression):
+        char = expression[index]
+        if char == "[":
+            array_literal, next_index = _extract_balanced(expression, index, "[", "]")
+            objects.extend(_extract_route_objects_from_array(array_literal))
+            index = next_index
+            continue
+        index += 1
+
+    return objects
+
+
+def _extract_first_object(source: str) -> str:
+    start = source.find("{")
+    if start == -1:
+        raise ValueError("对象字面量格式错误")
+    object_literal, _ = _extract_balanced(source, start, "{", "}")
+    return object_literal
+
+
+def _parse_route_object(route_source: str) -> _RouteNode:
+    props = _parse_object_literal(route_source)
+    meta_props = _parse_object_literal(props.get("meta")) if props.get("meta") else {}
+    menu_props = _parse_object_literal(meta_props.get("menu")) if meta_props.get("menu") else {}
+
+    children: list[_RouteNode] = []
+    if children_source := props.get("children"):
+        children = [_parse_route_object(item) for item in _extract_route_objects_from_array(children_source)]
+
+    return _RouteNode(
+        path=_parse_string_literal(props.get("path")),
+        name=_parse_string_literal(props.get("name")),
+        title=_parse_string_literal(meta_props.get("title")),
+        requires_auth=_parse_bool_literal(meta_props.get("requiresAuth")),
+        component=_parse_component_path(props.get("component")),
+        permission=_parse_permission(meta_props),
+        menu_name=_parse_string_literal(menu_props.get("name")) or _parse_string_literal(meta_props.get("menuName")),
+        menu_title=_parse_string_literal(menu_props.get("title")),
+        menu_icon=_parse_string_literal(menu_props.get("icon")) or _parse_string_literal(meta_props.get("icon")),
+        menu_parent_name=(
+            _parse_string_literal(menu_props.get("parentName"))
+            or _parse_string_literal(menu_props.get("parent_name"))
+            or _parse_string_literal(meta_props.get("parentName"))
+        ),
+        menu_sort_order=(
+            _parse_int_literal(menu_props.get("sortOrder"))
+            or _parse_int_literal(menu_props.get("sort_order"))
+            or _parse_int_literal(meta_props.get("sortOrder"))
+        ),
+        menu_hidden=_parse_bool_literal(menu_props.get("hidden"))
+        if menu_props.get("hidden") is not None
+        else _parse_bool_literal(meta_props.get("hidden")),
+        children=children,
+    )
+
+
+def _parse_permission(meta_props: dict[str, str]) -> str | None:
+    permission = meta_props.get("permission")
+    if permission:
+        return permission.strip()
+
+    permissions = meta_props.get("permissions")
+    if not permissions:
+        return None
+
+    return next((item.strip() for item in _split_top_level(_strip_outer(permissions, "[", "]")) if item.strip()), None)
+
+
+def _parse_object_literal(source: str | None) -> dict[str, str]:
+    if not source:
+        return {}
+
+    stripped = source.strip()
+    if not stripped.startswith("{"):
+        return {}
+
+    body = _strip_outer(stripped, "{", "}")
+    props: dict[str, str] = {}
+
+    for item in _split_top_level(body):
+        key, value = _split_key_value(item)
+        if not key:
+            continue
+        props[_normalize_property_key(key)] = value.strip()
+
+    return props
+
+
+def _split_key_value(item: str) -> tuple[str | None, str]:
+    stripped = _strip_leading_comments(item)
+    if not stripped or stripped.startswith("..."):
+        return None, ""
+
+    index = _find_top_level_character(stripped, ":")
+    if index == -1:
+        return None, ""
+
+    return stripped[:index], stripped[index + 1 :]
+
+
+def _normalize_property_key(key: str) -> str:
+    stripped = key.strip()
+    if stripped.startswith(("'", '"', "`")) and stripped.endswith(("'", '"', "`")):
+        return stripped[1:-1]
+    return stripped
+
+
+def _parse_string_literal(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    stripped = value.strip()
+    if len(stripped) < 2:
+        return None
+
+    quote = stripped[0]
+    if quote not in {"'", '"', "`"} or stripped[-1] != quote:
+        return None
+
+    return (
+        stripped[1:-1]
+        .replace(r"\/", "/")
+        .replace(r"\'", "'")
+        .replace(r"\"", '"')
+        .replace(r"\`", "`")
+        .replace(r"\\", "\\")
+    )
+
+
+def _parse_bool_literal(value: str | None) -> bool | None:
+    if value is None:
+        return None
+
+    stripped = value.strip()
+    if stripped == "true":
+        return True
+    if stripped == "false":
+        return False
+    return None
+
+
+def _parse_int_literal(value: str | None) -> int | None:
+    if value is None:
+        return None
+
+    stripped = value.strip()
+    if re.fullmatch(r"-?\d+", stripped):
+        return int(stripped)
+    return None
+
+
+def _parse_component_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    match = re.search(r"import\((['\"])(?P<path>.+?)\1\)", value)
+    if not match:
+        return None
+
+    component_path = match.group("path")
+    if component_path.startswith("@/"):
+        return component_path[2:]
+    return component_path
+
+
+def _derive_menu_name(route_name: str | None, route_path: str, permission: str | None) -> str:
+    if permission:
+        if literal_permission := _parse_string_literal(permission):
+            parts = literal_permission.split(":")
+            if len(parts) >= 3:
+                return f"{parts[0]}:{parts[1]}:menu"
+
+        if permission_name := _derive_menu_name_from_permission_expression(permission):
+            return permission_name
+
+    category, resource = _derive_category_and_resource(route_name, route_path)
+    return f"{category}:{resource}:menu"
+
+
+def _derive_menu_name_from_permission_expression(permission: str) -> str | None:
+    normalized = permission.replace(" ", "")
+    match = re.fullmatch(r"(?P<root>[A-Z0-9_]+)\.(?P<resource>[A-Za-z0-9_.]+)\.(?P<action>[A-Za-z0-9_]+)", normalized)
+    if not match:
+        return None
+
+    root = match.group("root")
+    if root.endswith("_PERMISSIONS"):
+        category = root.removesuffix("_PERMISSIONS").lower().replace("_", "-")
+    elif root == "PERMISSIONS":
+        chain = match.group("resource").split(".")
+        if len(chain) < 2:
+            return None
+        category = _normalize_category(chain[0])
+        resource = _normalize_resource(chain[-1])
+        return f"{category}:{resource}:menu"
+    else:
+        return None
+
+    resource_chain = match.group("resource").split(".")
+    if not resource_chain:
+        return None
+
+    resource = _normalize_resource(resource_chain[-1])
+    return f"{category}:{resource}:menu"
+
+
+def _derive_category_and_resource(route_name: str | None, route_path: str) -> tuple[str, str]:
+    path_segments = [segment for segment in route_path.split("/") if segment]
+
+    category = _normalize_category(path_segments[0]) if len(path_segments) >= 2 else "system"
+
+    resource = _derive_resource_from_route_name(route_name)
+    if not resource:
+        fallback_segment = path_segments[-1] if path_segments else "index"
+        resource = _normalize_resource(fallback_segment)
+
+    return category, resource
+
+
+def _derive_resource_from_route_name(route_name: str | None) -> str | None:
+    if not route_name:
+        return None
+
+    words = [_normalize_resource(word) for word in _split_identifier_words(route_name)]
+    filtered = [word for word in words if word and word not in _MENU_NAME_SUFFIXES]
+    if not filtered:
+        return None
+
+    return _singularize(filtered[-1])
+
+
+def _normalize_category(value: str) -> str:
+    return re.sub(r"-{2,}", "-", value.replace("_", "-").lower()).strip("-")
+
+
+def _normalize_resource(value: str) -> str:
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    snake = re.sub(r"[^a-zA-Z0-9]+", "_", snake)
+    snake = re.sub(r"_+", "_", snake).strip("_").lower()
+    return _singularize(snake)
+
+
+def _singularize(value: str) -> str:
+    if value.endswith("ies") and len(value) > 3:
+        return f"{value[:-3]}y"
+    if value.endswith("ses") and len(value) > 3:
+        return value[:-2]
+    if value.endswith("s") and len(value) > 3 and not value.endswith(("ss", "us")):
+        return value[:-1]
+    return value
+
+
+def _split_identifier_words(value: str) -> list[str]:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+    return [part for part in re.split(r"[^a-zA-Z0-9]+|\s+", normalized) if part]
+
+
+def _join_paths(parent_path: str, route_path: str | None) -> str:
+    if not route_path:
+        return parent_path or "/"
+
+    if route_path.startswith("/"):
+        return route_path
+
+    if not parent_path or parent_path == "/":
+        return f"/{route_path.lstrip('/')}"
+
+    return f"{parent_path.rstrip('/')}/{route_path.lstrip('/')}"
+
+
+def _validate_menu_definitions(definitions: list[FrontendMenuDefinition]) -> None:
+    name_to_path: dict[str, str] = {}
+
+    for definition in definitions:
+        if not definition.name.strip():
+            raise ValueError(f"菜单 `{definition.title}` 缺少 name")
+        if not definition.title.strip():
+            raise ValueError(f"菜单 `{definition.name}` 缺少 title")
+        if not definition.path.strip():
+            raise ValueError(f"菜单 `{definition.name}` 缺少 path")
+
+        existing_path = name_to_path.get(definition.name)
+        if existing_path and existing_path != definition.path:
+            raise ValueError(
+                f"检测到重复菜单 name: `{definition.name}` 同时指向 `{existing_path}` 与 `{definition.path}`"
+            )
+        name_to_path[definition.name] = definition.path
+
+
+def _split_top_level(source: str) -> list[str]:
+    items: list[str] = []
+    start = 0
+    round_depth = 0
+    square_depth = 0
+    curly_depth = 0
+    quote: str | None = None
+    line_comment = False
+    block_comment = False
+    escape = False
+    index = 0
+
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+            index += 1
+            continue
+
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+
+        if char == "(":
+            round_depth += 1
+        elif char == ")":
+            round_depth -= 1
+        elif char == "[":
+            square_depth += 1
+        elif char == "]":
+            square_depth -= 1
+        elif char == "{":
+            curly_depth += 1
+        elif char == "}":
+            curly_depth -= 1
+        elif char == "," and round_depth == 0 and square_depth == 0 and curly_depth == 0:
+            items.append(source[start:index])
+            start = index + 1
+
+        index += 1
+
+    tail = source[start:]
+    if tail.strip():
+        items.append(tail)
+
+    return items
+
+
+def _find_top_level_character(source: str, target: str) -> int:
+    round_depth = 0
+    square_depth = 0
+    curly_depth = 0
+    quote: str | None = None
+    line_comment = False
+    block_comment = False
+    escape = False
+    index = 0
+
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+            index += 1
+            continue
+
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+
+        if char == "(":
+            round_depth += 1
+        elif char == ")":
+            round_depth -= 1
+        elif char == "[":
+            square_depth += 1
+        elif char == "]":
+            square_depth -= 1
+        elif char == "{":
+            curly_depth += 1
+        elif char == "}":
+            curly_depth -= 1
+        elif char == target and round_depth == 0 and square_depth == 0 and curly_depth == 0:
+            return index
+
+        index += 1
+
+    return -1
+
+
+def _extract_balanced(source: str, start: int, open_char: str, close_char: str) -> tuple[str, int]:
+    depth = 0
+    quote: str | None = None
+    line_comment = False
+    block_comment = False
+    escape = False
+    index = start
+
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+            index += 1
+            continue
+
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1], index + 1
+
+        index += 1
+
+    raise ValueError(f"未找到匹配的 `{close_char}`")
+
+
+def _strip_outer(source: str, open_char: str, close_char: str) -> str:
+    stripped = source.strip()
+    if stripped.startswith(open_char) and stripped.endswith(close_char):
+        return stripped[1:-1]
+    return stripped
+
+
+def _strip_leading_comments(source: str) -> str:
+    stripped = source.lstrip()
+
+    while stripped.startswith(("//", "/*")):
+        if stripped.startswith("//"):
+            newline_index = stripped.find("\n")
+            if newline_index == -1:
+                return ""
+            stripped = stripped[newline_index + 1 :].lstrip()
+            continue
+
+        end_index = stripped.find("*/")
+        if end_index == -1:
+            return ""
+        stripped = stripped[end_index + 2 :].lstrip()
+
+    return stripped
+
+
+__all__ = [
+    "DEFAULT_FRONTEND_ROOT",
+    "FrontendMenuDefinition",
+    "load_frontend_router_menus",
+    "parse_frontend_router_menus",
+    "resolve_frontend_root",
+]

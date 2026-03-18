@@ -217,3 +217,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .DS_Store
+
+# Proactive Agent (AI session state, not for version control)
+SESSION-STATE.md
+HEARTBEAT.md
+MEMORY.md
+SOUL.md
+USER.md
+memory/

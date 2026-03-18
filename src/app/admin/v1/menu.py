@@ -28,10 +28,17 @@ def register_my_menu_route(router: APIRouter, api) -> None:
     """
 
     @router.get(
-        "/my_menu",
+        "/my",
         response_model=ResponseSchemaModel[list[MenuTreeResponse]],
         summary="获取当前用户的菜单树",
         description="返回当前用户可访问的菜单树（基于角色权限过滤）",
+    )
+    @router.get(
+        "/my_menu",
+        response_model=ResponseSchemaModel[list[MenuTreeResponse]],
+        summary="获取当前用户的菜单树（兼容旧路径）",
+        description="兼容旧版前端，返回当前用户可访问的菜单树（基于角色权限过滤）",
+        deprecated=True,
     )
     async def get_my_menus(
         db: AsyncSessionDep,
