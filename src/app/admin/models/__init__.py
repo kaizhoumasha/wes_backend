@@ -79,6 +79,13 @@ Role.menus = relationship(
     back_populates="roles",
 )
 
+# ==================== 重建 Pydantic 响应模型 ====================
+
+MenuResponse.model_rebuild()
+MenuTreeResponse.model_rebuild()
+RoleResponse.model_rebuild()
+UserResponse.model_rebuild()
+
 # ==================== 导出所有公开内容 ====================
 
 __all__ = [

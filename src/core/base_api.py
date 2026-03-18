@@ -13,6 +13,7 @@ from src.core.logger import logger
 from src.core.query_models import QueryOptions
 from src.core.rbac import RequirePermission
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
+from src.core.response.response_schema import BatchOperationResponseModel, ListResponseSchemaModel, ResponseSchemaModel
 from src.core.response.response_util import response_builder
 from src.core.service_protocols import CrudServiceProtocol
 from src.database.dependencies import AsyncSessionDep, CacheDep
@@ -143,6 +144,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "",
             summary=summary,
+            response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:create"))] if self.enable_permission else [],
         )
         async def create(
@@ -164,6 +166,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.put(
             "/{id}",
             summary=summary,
+            response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:update"))] if self.enable_permission else [],
         )
         async def update(
@@ -198,6 +201,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/{id}",
             summary=summary,
+            response_model=ResponseSchemaModel[dict[str, str]],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
         )
         async def delete(
@@ -231,6 +235,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/bulk",
             summary=summary,
+            response_model=BatchOperationResponseModel,
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:bulk_delete"))]
             if self.enable_permission
             else [],  # dependencies=[PermissionDep(f"{self.perm_prefix}:bulk_delete")] if self.enable_permission else [],
@@ -264,6 +269,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.get(
             "/{id}",
             summary=summary,
+            response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:detail"))] if self.enable_permission else [],
         )
         async def get(
@@ -294,6 +300,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/query",
             summary=summary,
+            response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:list"))] if self.enable_permission else [],
         )
         async def query_items(
@@ -334,6 +341,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/{id}/restore",
             summary=restore_summary,
+            response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
         )
         async def restore(
@@ -352,6 +360,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.get(
             "/trash",
             summary=trash_summary,
+            response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:trash"))] if self.enable_permission else [],
         )
         async def get_deleted(
@@ -374,6 +383,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/trash/restore",
             summary=batch_restore_summary,
+            response_model=BatchOperationResponseModel,
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
         )
         async def batch_restore(
@@ -406,6 +416,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/trash/permanent",
             summary=batch_permanent_delete_summary,
+            response_model=BatchOperationResponseModel,
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
         )
         async def batch_permanent_delete(

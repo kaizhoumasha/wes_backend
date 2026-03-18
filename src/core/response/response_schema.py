@@ -101,6 +101,30 @@ class ResponseSchemaModel[SchemaT](ResponseModel):
     data: SchemaT | None = Field(default=None, description="响应数据")
 
 
+# ==================== 列表响应模型 ====================
+
+
+class ListResponseData[SchemaT](BaseModel):
+    """
+    列表响应数据模型
+
+    用于统一描述带总数和分页参数的列表响应数据。
+    """
+
+    total: int = Field(default=0, ge=0, description="总数量")
+    items: list[SchemaT] = Field(default_factory=list, description="列表数据")
+    limit: int = Field(default=0, ge=0, description="分页大小")
+    offset: int = Field(default=0, ge=0, description="偏移量")
+
+
+class ListResponseSchemaModel[SchemaT](ResponseSchemaModel[ListResponseData[SchemaT]]):
+    """
+    列表响应模型
+
+    为 CRUD 列表接口提供统一的泛型 response_model。
+    """
+
+
 # ==================== 批量操作响应模型 ====================
 
 
@@ -184,6 +208,8 @@ class BatchOperationResponseModel(ResponseSchemaModel[BatchOperationResult]):
 __all__ = [
     "BatchOperationResponseModel",
     "BatchOperationResult",
+    "ListResponseData",
+    "ListResponseSchemaModel",
     "ResponseModel",
     "ResponseSchemaModel",
 ]
