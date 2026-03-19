@@ -13,6 +13,8 @@
     ↓
 菜单同步服务（src/app/admin/services/menu_sync_service.py）
     ↓
+默认角色菜单回填（role_menus）
+    ↓
 menus 表
 ```
 
@@ -38,6 +40,14 @@ bash scripts/sync_menus.sh --preview
 bash scripts/sync_menus.sh --dry-run
 bash scripts/sync_menus.sh
 ```
+
+同步菜单后，脚本会按系统内置角色规则自动补齐默认菜单：
+
+- `系统管理员`：所有非隐藏菜单
+- `管理员`：`admin:` 菜单 + 仪表盘
+- `运营人员`：`biz:` 菜单 + 仪表盘
+- `财务人员`：审计日志菜单 + 仪表盘
+- `普通用户`：仅仪表盘
 
 如果前端目录不在默认位置，可显式指定：
 

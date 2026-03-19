@@ -580,53 +580,11 @@ async def seed_users(db: AsyncSession) -> None:
 
 
 async def seed_role_permissions(db: AsyncSession) -> None:
-    """初始化角色权限关联 - 直接插入关系表"""
-    # 获取所有角色和权限
-    roles_result = await db.execute(select(Role))
-    roles = roles_result.scalars().all()
+    """初始化角色权限关联 - 按内置角色规则补齐缺失关系"""
+    from src.utils.permission_scanner import sync_builtin_role_permissions
 
-    perms_result = await db.execute(select(Permission))
-    permissions = perms_result.scalars().all()
-
-    # 准备批量插入数据
-    from src.app.admin.models.relationships import role_permission
-
-    role_permission_links = []
-
-    # 系统管理员：所有权限
-    admin_role = next(r for r in roles if r.name == "系统管理员")
-    for perm in permissions:
-        role_permission_links.append({"role_id": admin_role.id, "permission_id": perm.id})
-
-    # 管理员：系统管理权限
-    manager_role = next(r for r in roles if r.name == "管理员")
-    for perm in permissions:
-        if perm.name.startswith("admin:"):
-            role_permission_links.append({"role_id": manager_role.id, "permission_id": perm.id})
-
-    # 运营人员：只读权限
-    operator_role = next(r for r in roles if r.name == "运营人员")
-    for perm in permissions:
-        if any(perm.name.endswith(suffix) for suffix in [":list", ":detail", ":tree"]):
-            role_permission_links.append({"role_id": operator_role.id, "permission_id": perm.id})
-
-    # 财务人员：审计日志权限
-    finance_role = next(r for r in roles if r.name == "财务人员")
-    for perm in permissions:
-        if perm.name.startswith("admin:audit:"):
-            role_permission_links.append({"role_id": finance_role.id, "permission_id": perm.id})
-
-    # 普通用户：基础只读权限
-    user_role = next(r for r in roles if r.name == "普通用户")
-    for perm in permissions:
-        if any(perm.name.endswith(suffix) for suffix in [":list", ":detail"]):
-            role_permission_links.append({"role_id": user_role.id, "permission_id": perm.id})
-
-    # 批量插入
-    if role_permission_links:
-        await db.execute(role_permission.insert(), role_permission_links)
-
-    await db.commit()
+    result = await sync_builtin_role_permissions(db)
+    print(f"     ✅ 处理角色 {result['roles_processed']} 个，新增关联 {result['added']} 条")
 
 
 async def seed_user_roles(db: AsyncSession) -> None:
@@ -678,10 +636,18 @@ async def seed_user_roles(db: AsyncSession) -> None:
 
 async def seed_all(db: AsyncSession) -> None:
     """初始化所有数据"""
+    from src.register import app
+    from src.utils.permission_scanner import sync_permissions_to_db
+
     print("🌱 开始初始化系统数据...")
 
     print("  1️⃣ 初始化 API 权限数据...")
     await seed_permissions(db)
+    sync_result = await sync_permissions_to_db(app, db)
+    print(
+        "     🔄 代码权限同步: "
+        f"新增 {sync_result['created']} 条，更新 {sync_result['updated']} 条，跳过 {sync_result['skipped']} 条"
+    )
     perm_count_result = await db.execute(select(Permission))
     print(f"     ✅ 权限数量: {perm_count_result.scalar()}")
 

@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
+from src.app.admin.models import Menu, Role, role_menu
 from src.app.admin.repositories.menu_repository import MenuRepository, menu_repository
 from src.utils.frontend_menu_parser import FrontendMenuDefinition, load_frontend_router_menus
 
@@ -18,10 +21,15 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.admin.models.menu import Menu
-
 
 _MENU_UPDATE_FIELDS = ("title", "path", "component", "icon", "parent_id", "sort_order", "is_hidden")
+_ROLE_MENU_RULES = {
+    "系统管理员": lambda menu: not menu.is_hidden,
+    "管理员": lambda menu: not menu.is_hidden and (menu.name.startswith("admin:") or menu.name == "system:dashboard:menu"),
+    "运营人员": lambda menu: not menu.is_hidden and (menu.name.startswith("biz:") or menu.name == "system:dashboard:menu"),
+    "财务人员": lambda menu: not menu.is_hidden and menu.name in {"admin:audit:menu", "system:dashboard:menu"},
+    "普通用户": lambda menu: not menu.is_hidden and menu.name == "system:dashboard:menu",
+}
 
 
 @dataclass(slots=True)
@@ -45,6 +53,15 @@ class MenuSyncResult:
         if self.errors:
             parts.append(f"❌ 错误: {len(self.errors)}")
         return "\n".join(parts)
+
+
+@dataclass(slots=True)
+class RoleMenuSyncResult:
+    """默认角色菜单回填结果"""
+
+    added: int = 0
+    skipped: int = 0
+    roles_processed: int = 0
 
 
 class MenuSyncService:
@@ -116,7 +133,7 @@ class MenuSyncService:
                 continue
 
             if not dry_run and existing_id is not None:
-                await self.repo.update(db, existing_id, update_data)
+                _ = await self.repo.update(db, existing_id, update_data)
                 await db.refresh(existing)
 
             result.updated += 1
@@ -143,6 +160,52 @@ class MenuSyncService:
             )
         return rows
 
+    async def sync_builtin_role_menus(
+        self,
+        db: AsyncSession,
+        dry_run: bool = False,
+        auto_commit: bool = True,
+    ) -> RoleMenuSyncResult:
+        """按内置角色规则补齐默认菜单关联"""
+
+        roles = list((await db.execute(select(Role))).scalars().all())
+        menus = list((await db.execute(select(Menu))).scalars().all())
+        existing_links: set[tuple[int, int]] = {
+            (int(role_id), int(menu_id))
+            for role_id, menu_id in (await db.execute(select(role_menu.c.role_id, role_menu.c.menu_id))).all()
+        }
+        role_by_name = {role.name: role for role in roles}
+
+        result = RoleMenuSyncResult()
+        new_links: list[dict[str, int]] = []
+
+        for role_name, matcher in _ROLE_MENU_RULES.items():
+            role = role_by_name.get(role_name)
+            if role is None or role.id is None:
+                continue
+
+            result.roles_processed += 1
+
+            for menu in menus:
+                if menu.id is None or not matcher(menu):
+                    continue
+
+                link_key = (role.id, menu.id)
+                if link_key in existing_links:
+                    result.skipped += 1
+                    continue
+
+                existing_links.add(link_key)
+                new_links.append({"role_id": role.id, "menu_id": menu.id})
+                result.added += 1
+
+        if new_links and not dry_run:
+            _ = await db.execute(role_menu.insert(), new_links)
+            if auto_commit:
+                await db.commit()
+
+        return result
+
     @staticmethod
     def _build_update_data(existing: Menu, payload: dict[str, Any]) -> dict[str, Any]:
         update_data: dict[str, Any] = {}
@@ -156,4 +219,4 @@ class MenuSyncService:
 
 menu_sync_service = MenuSyncService(menu_repository)
 
-__all__ = ["MenuSyncResult", "MenuSyncService", "menu_sync_service"]
+__all__ = ["MenuSyncResult", "MenuSyncService", "RoleMenuSyncResult", "menu_sync_service"]

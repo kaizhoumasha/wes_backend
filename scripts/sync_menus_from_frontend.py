@@ -8,11 +8,18 @@
     uv run python scripts/sync_menus_from_frontend.py --preview
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import sys
+from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from src.app.admin.services.menu_sync_service import menu_sync_service
 from src.database.db import get_db_context, init_db
@@ -61,6 +68,7 @@ async def main_async(args: argparse.Namespace) -> None:
         await init_db()
         async with get_db_context() as session:
             result = await menu_sync_service.sync_menus(session, menu_definitions, dry_run=args.dry_run)
+            role_result = await menu_sync_service.sync_builtin_role_menus(session, dry_run=args.dry_run)
             if not args.dry_run:
                 await session.commit()
 
@@ -70,6 +78,10 @@ async def main_async(args: argparse.Namespace) -> None:
         print("\n📊 同步结果:")
         print("=" * 80)
         print(result.summary())
+        print(
+            f"\n👥 默认角色菜单: 处理角色 {role_result.roles_processed} 个 | "
+            f"新增关联 {role_result.added} 条 | 跳过 {role_result.skipped} 条"
+        )
 
         if result.errors:
             print("\n❌ 错误详情:")

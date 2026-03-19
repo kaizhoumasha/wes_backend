@@ -208,6 +208,14 @@ async def seed_menus(db: AsyncSession, use_frontend_data: bool = False) -> None:
         for menu_data in menus:
             await repo.create(db, menu_data)
 
+    role_menu_result = await menu_sync_service.sync_builtin_role_menus(db, dry_run=False, auto_commit=False)
+    print(
+        "     👥 默认角色菜单: "
+        f"处理角色 {role_menu_result.roles_processed} 个 | "
+        f"新增关联 {role_menu_result.added} 条 | "
+        f"跳过 {role_menu_result.skipped} 条"
+    )
+
     # 提交事务
     await db.commit()
 

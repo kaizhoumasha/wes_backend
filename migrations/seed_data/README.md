@@ -53,6 +53,21 @@ alembic upgrade head
 docker exec -i wes_postgres_prod psql -U wesuser -d wesdb < migrations/seed_data/initial_data.sql
 ```
 
+### 增量同步权限（推荐）
+
+新增后端接口权限后，不要只修改 `RequirePermission(...)`；还需要把权限同步到数据库，并补齐内置角色权限：
+
+```bash
+# 预览代码中扫描到的权限
+uv run python scripts/sync_permissions.py --preview
+
+# 对比代码和数据库，不写入
+uv run python scripts/sync_permissions.py --dry-run
+
+# 实际同步 permissions 表，并回填内置角色权限
+uv run python scripts/sync_permissions.py
+```
+
 ## 🔄 修改初始数据
 
 如果需要修改初始数据：
