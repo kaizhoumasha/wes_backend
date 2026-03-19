@@ -1,4 +1,5 @@
 import secrets
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +63,39 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
             return
         await cache.delete(CacheKeys.app_by_app_id(app_id))
 
+    async def _invalidate_app_cache_entries(
+        self,
+        cache: object | None,
+        *,
+        application_id: int | None = None,
+        app_id: str | None = None,
+        invalidate_list: bool = False,
+        invalidate_permissions: bool = False,
+    ) -> None:
+        """统一失效应用相关缓存。"""
+        if not isinstance(cache, RedisCache):
+            return
+
+        if application_id is not None:
+            await self.invalidate_cache(cache, application_id, invalidate_list=invalidate_list)
+            if invalidate_permissions:
+                await cache.delete(CacheKeys.app_permissions(application_id))
+
+        await self._invalidate_app_alias_cache(cache, app_id)
+
+    async def _invalidate_app_permission_cache(self, cache: object | None, application_id: int | None) -> None:
+        """失效应用权限缓存。"""
+        if application_id is None or cache is None or not hasattr(cache, "delete"):
+            return
+        await cache.delete(CacheKeys.app_permissions(application_id))
+
+    @staticmethod
+    def _parse_cached_app(value: Any) -> APIApplication:
+        """解析 app_id 别名缓存中的应用对象。"""
+        if isinstance(value, dict):
+            return APIApplication.model_validate(value)
+        return APIApplication.model_validate_json(value)
+
     async def _query_by_app_id(self, db: AsyncSession, app_id: str) -> APIApplication | None:
         """根据 app_id 查询应用（委托给 Repository）"""
         return await self.repo.get_by_app_id(db, app_id)
@@ -75,36 +109,35 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
     ) -> APIApplication | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         result = await super().update(db, id, data, cache)
-        if isinstance(cache, RedisCache):
-            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         success = await super().delete(db, id, cache)
-        if success and isinstance(cache, RedisCache):
-            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        if success:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
         return success
 
     async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> APIApplication | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         result = await super().soft_delete(db, id, cache)
-        if result is not None and isinstance(cache, RedisCache):
-            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        if result is not None:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
         return result
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> APIApplication | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         result = await super().restore(db, id, cache)
-        if result is not None and isinstance(cache, RedisCache):
-            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        if result is not None:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
         return result
 
     async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
         app = await self._load_app_for_cache_invalidation(db, id)
         success = await super().permanent_delete(db, id, cache)
-        if success and isinstance(cache, RedisCache):
-            await self._invalidate_app_alias_cache(cache, getattr(app, "app_id", None))
+        if success:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
         return success
 
     async def reset_secret(self, db: AsyncSession, cache: RedisCache, id: int) -> str:
@@ -127,7 +160,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
         # 3. 清除缓存
         await self.invalidate_cache(cache, id)
-        await cache.delete(CacheKeys.app_permissions(id))
+        await self._invalidate_app_permission_cache(cache, id)
 
     async def reset_validity_period(
         self,
@@ -206,9 +239,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         hit, cached = await get_cached_value(
             cache,
             cache_key,
-            parser=lambda value: APIApplication.model_validate(value)
-            if isinstance(value, dict)
-            else APIApplication.model_validate_json(value),
+            parser=self._parse_cached_app,
         )
         if hit:
             return cached
@@ -224,13 +255,11 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
     async def revoke_app(self, db: AsyncSession, app_id: str, cache: RedisCache) -> bool:
         app = await self.get_by_app_id(db, cache, app_id)
-        if not app or not app.id:
+        if app is None or app.id is None:
             return False
 
         await self.update(db, app.id, {"status": "revoked"}, cache)
-
-        if cache:
-            await cache.delete(CacheKeys.app_permissions(app.id))
+        await self._invalidate_app_permission_cache(cache, app.id)
 
         return True
 

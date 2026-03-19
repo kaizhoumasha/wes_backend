@@ -4,8 +4,9 @@ APIAppService 分层架构违规修复表征测试
 目的：在重构前锁定 _query_by_app_id 和 assign_permissions 方法的行为
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.api_auth.models import APIApplication

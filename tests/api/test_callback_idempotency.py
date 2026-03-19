@@ -14,8 +14,10 @@ Callback API 幂等性专项测试
 - 白皮书 6.3.1 节: 幂等性设计
 - claudedocs/idempotency_fix_20260317.md: 幂等性控制逻辑修复
 
-注意: 由于循环导入问题（callback.v1.__init__.py → callback.py → api_security.py ↔ api_auth/__init__.py），
-测试使用延迟导入模式：在 patch 块内部导入 callback 模块。
+注意:
+- 由于循环导入问题（callback.v1.__init__.py → callback.py → api_security.py ↔
+  api_auth/__init__.py）
+- 测试使用延迟导入模式：在 patch 块内部导入 callback 模块
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandCallbackResult, CommandResult
 from src.app.device.models.event_log import EventRequest, EventType
-
 
 # ==================== 测试 Fixtures ====================
 
@@ -68,8 +69,10 @@ class TestCallbackResultIdempotency:
 
     场景：相同 command_code 的指令结果重复发送
     期望：
-    1. 第一次调用：写入 Inbox → 执行业务处理 → 记录 callback_log（无 error_message）→ 记录 audit_log
-    2. 第二次调用：写入 Inbox 失败（幂等键重复）→ **跳过**业务处理 → 记录 callback_log（标记重复）→ **不记录** audit_log
+    1. 第一次调用：写入 Inbox → 执行业务处理 → 记录 callback_log
+       （无 error_message）→ 记录 audit_log
+    2. 第二次调用：写入 Inbox 失败（幂等键重复）→ **跳过**业务处理 →
+       记录 callback_log（标记重复）→ **不记录** audit_log
     """
 
     @pytest.mark.asyncio
@@ -182,8 +185,10 @@ class TestCallbackEventIdempotency:
 
     场景：相同事件（device_code + event_type + timestamp + data）重复发送
     期望：
-    1. 第一次调用：写入 Inbox → 提交 Celery 任务 → 记录 callback_log（无 error_message）→ 记录 audit_log
-    2. 第二次调用：写入 Inbox 失败（幂等键重复）→ **不提交** Celery 任务 → 记录 callback_log（标记重复）→ **不记录** audit_log
+    1. 第一次调用：写入 Inbox → 提交 Celery 任务 → 记录 callback_log
+       （无 error_message）→ 记录 audit_log
+    2. 第二次调用：写入 Inbox 失败（幂等键重复）→ **不提交** Celery 任务 →
+       记录 callback_log（标记重复）→ **不记录** audit_log
     """
 
     @pytest.mark.asyncio

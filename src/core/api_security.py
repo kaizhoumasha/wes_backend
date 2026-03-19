@@ -75,7 +75,10 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
 
     await _check_rate_limit(cache, app)
 
-    permissions = await get_app_permissions(db, cache, app.id)  # type: ignore[arg-type]
+    if app.id is None:
+        raise AuthException(f"应用数据异常: {app_id}")
+
+    permissions = await get_app_permissions(db, cache, app.id)
 
     request.state.api_app_id = app.app_id
     request.state.api_app_name = app.app_name

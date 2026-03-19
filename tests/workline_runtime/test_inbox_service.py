@@ -9,8 +9,13 @@
 """
 
 import hashlib
+from types import SimpleNamespace
 
+import pytest
+
+from src.app.workline.models.inbox import InboxStatus
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
+from src.app.workline.services.inbox_service import WorklineInboxService
 
 # ==================== 测试幂等键计算逻辑 ====================
 
@@ -152,6 +157,70 @@ def test_payload_hash_algorithm():
     # sorted(data.items()) → [('key', 'value')]
     # str(...) → "[('key', 'value')]"
     payload_str = str(sorted({"key": "value"}.items()))
-    expected_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]
+    expected_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]  # noqa: S324
 
     assert key.endswith(expected_hash)
+
+
+class _FakeInboxRepo:
+    def __init__(self, inbox: object | None) -> None:
+        self.inbox = inbox
+        self.update_calls: list[tuple[object, int, dict[str, object]]] = []
+
+    async def get_by_id(self, db: object, inbox_id: int) -> object | None:
+        return self.inbox
+
+    async def update(self, db: object, inbox_id: int, data: dict[str, object]) -> object:
+        self.update_calls.append((db, inbox_id, data))
+        return SimpleNamespace(id=inbox_id, **data)
+
+
+@pytest.mark.asyncio
+async def test_mark_as_processing_updates_by_id_with_payload() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=1))
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_processing(db, 1, "worker-1")
+
+    assert fake_repo.update_calls == [
+        (
+            db,
+            1,
+            {
+                "status": InboxStatus.PROCESSING,
+                "processor_token": "worker-1",
+            },
+        )
+    ]
+    assert result.status == InboxStatus.PROCESSING
+    assert result.processor_token == "worker-1"
+
+
+@pytest.mark.asyncio
+async def test_mark_as_failed_updates_by_id_with_error_and_processed_at() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=2))
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_failed(db, 2, "boom")
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 2
+    assert data["status"] == InboxStatus.FAILED
+    assert data["error_message"] == "boom"
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_mark_as_processed_raises_when_message_missing() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=None)
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="消息不存在: 99"):
+        await service.mark_as_processed(object(), 99)

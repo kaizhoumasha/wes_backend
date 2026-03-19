@@ -12,6 +12,7 @@
 """
 
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
@@ -20,6 +21,8 @@ from src.app.callback.services import callback_log_service
 from src.app.device.models.command import CommandCallbackResult
 from src.app.device.models.event_log import EventRequest
 from src.app.device.services import device_command_service
+from src.app.sys.models.audit_log import OperaStatus
+from src.app.sys.services import audit_log_service
 from src.app.workline.services import inbox_service
 from src.core.api_security import RequireAPIPermission
 from src.core.response import response_builder
@@ -27,6 +30,62 @@ from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
 
 router = APIRouter()
+
+_DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
+
+
+def _is_duplicate_inbox_error(error: ValueError) -> bool:
+    return _DUPLICATE_ERROR_MARKER in str(error)
+
+
+def _build_callback_log_payload(
+    request: Request,
+    *,
+    callback_type: str,
+    device_id: str,
+    request_body: dict[str, Any],
+    request_id: str | None,
+    response_status: int,
+    response_time_ms: int,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "callback_type": callback_type,
+        "device_id": device_id,
+        "request_body": request_body,
+        "client_ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("User-Agent"),
+        "request_id": request_id,
+        "response_status": response_status,
+        "response_time_ms": response_time_ms,
+        "error_message": error_message,
+    }
+
+
+async def _record_callback_audit_log(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    title: str,
+    args: dict[str, Any],
+    cost_time: float,
+    success: bool,
+    message: str | None = None,
+) -> None:
+    try:
+        await audit_log_service.create_audit_log(
+            db,
+            method=request.method,
+            title=title,
+            path=str(request.url.path),
+            args=args,
+            status=OperaStatus.SUCCESS if success else OperaStatus.FAIL,
+            code="200" if success else "500",
+            msg=message,
+            cost_time=cost_time,
+        )
+    except Exception as audit_error:
+        logger.error(f"记录回调审计日志失败: {audit_error}")
 
 
 # ==================== 回调接口 ====================
@@ -78,6 +137,7 @@ async def callback_result(
     """
     start_time = time.time()
     request_id = get_request_id()
+    callback_data = callback.model_dump()
     is_duplicate = False  # 幂等重复标记
 
     logger.info(f"收到指令结果回调: {callback.command_code} -> {callback.result} (request_id={request_id})")
@@ -97,7 +157,7 @@ async def callback_result(
             logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
         except ValueError as e:
             # 幂等重复，标记并跳过业务处理
-            if "已存在（幂等键重复）" in str(e):
+            if _is_duplicate_inbox_error(e):
                 is_duplicate = True
                 logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
             else:
@@ -121,17 +181,26 @@ async def callback_result(
         # 无论是否重复，都记录回调日志
         await callback_log_service.log_callback(
             db,
-            callback_type="result",
-            device_id=callback.device_code,
-            request_body=callback.model_dump(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            request_id=request_id,
-            response_status=200,
-            response_time_ms=response_time_ms,
-            # 标记幂等重复，便于运维监控
-            error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
+            **_build_callback_log_payload(
+                request,
+                callback_type="result",
+                device_id=callback.device_code,
+                request_body=callback_data,
+                request_id=request_id,
+                response_status=200,
+                response_time_ms=response_time_ms,
+                error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
+            ),
         )
+        if not is_duplicate:
+            await _record_callback_audit_log(
+                db,
+                request,
+                title="设备回调结果",
+                args=callback_data,
+                cost_time=cost_time,
+                success=True,
+            )
 
         return response_builder.success(data={"ack": True})
 
@@ -143,15 +212,25 @@ async def callback_result(
         # 记录失败回调日志
         await callback_log_service.log_callback(
             db,
-            callback_type="result",
-            device_id=callback.device_code,
-            request_body=callback.model_dump(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            request_id=request_id,
-            response_status=500,
-            response_time_ms=response_time_ms,
-            error_message=str(e),
+            **_build_callback_log_payload(
+                request,
+                callback_type="result",
+                device_id=callback.device_code,
+                request_body=callback_data,
+                request_id=request_id,
+                response_status=500,
+                response_time_ms=response_time_ms,
+                error_message=str(e),
+            ),
+        )
+        await _record_callback_audit_log(
+            db,
+            request,
+            title="设备回调结果",
+            args=callback_data,
+            cost_time=cost_time,
+            success=False,
+            message=str(e),
         )
 
         raise
@@ -208,6 +287,7 @@ async def callback_event(
     """
     start_time = time.time()
     request_id = get_request_id()
+    event_data = event_request.model_dump()
     is_duplicate = False  # 幂等重复标记
 
     logger.info(
@@ -238,7 +318,7 @@ async def callback_event(
             logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type.value}")
         except ValueError as e:
             # 幂等重复，标记并跳过业务处理
-            if "已存在（幂等键重复）" in str(e):
+            if _is_duplicate_inbox_error(e):
                 is_duplicate = True
                 logger.info(
                     f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type.value}"
@@ -269,17 +349,26 @@ async def callback_event(
         # 无论是否重复，都记录回调日志
         await callback_log_service.log_callback(
             db,
-            callback_type="event",
-            device_id=event_request.device_code,
-            request_body=event_request.model_dump(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            request_id=request_id,
-            response_status=200,
-            response_time_ms=response_time_ms,
-            # 标记幂等重复，便于运维监控
-            error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
+            **_build_callback_log_payload(
+                request,
+                callback_type="event",
+                device_id=event_request.device_code,
+                request_body=event_data,
+                request_id=request_id,
+                response_status=200,
+                response_time_ms=response_time_ms,
+                error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
+            ),
         )
+        if not is_duplicate:
+            await _record_callback_audit_log(
+                db,
+                request,
+                title="设备事件上报",
+                args=event_data,
+                cost_time=cost_time,
+                success=True,
+            )
 
         # 立即返回响应（不含业务指令，符合白皮书要求）
         logger.info(f"设备事件已提交处理: {event_request.device_code} (request_id={request_id})")
@@ -299,15 +388,25 @@ async def callback_event(
         # 记录失败回调日志
         await callback_log_service.log_callback(
             db,
-            callback_type="event",
-            device_id=event_request.device_code,
-            request_body=event_request.model_dump(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("User-Agent"),
-            request_id=request_id,
-            response_status=500,
-            response_time_ms=response_time_ms,
-            error_message=str(e),
+            **_build_callback_log_payload(
+                request,
+                callback_type="event",
+                device_id=event_request.device_code,
+                request_body=event_data,
+                request_id=request_id,
+                response_status=500,
+                response_time_ms=response_time_ms,
+                error_message=str(e),
+            ),
+        )
+        await _record_callback_audit_log(
+            db,
+            request,
+            title="设备事件上报",
+            args=event_data,
+            cost_time=cost_time,
+            success=False,
+            message=str(e),
         )
 
         raise

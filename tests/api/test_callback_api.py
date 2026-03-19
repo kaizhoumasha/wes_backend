@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.models.command import CommandCallbackResult, CommandResult
 from src.app.device.models.event_log import EventRequest, EventType
 
-
 # ==================== 测试 Fixtures ====================
 
 
@@ -179,9 +178,7 @@ class TestCallbackResultAPI:
         with (
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
-                new=AsyncMock(
-                    side_effect=ValueError("指令结果已存在（幂等键重复）: test-key, 原消息 ID: 123")
-                ),
+                new=AsyncMock(side_effect=ValueError("指令结果已存在（幂等键重复）: test-key, 原消息 ID: 123")),
             ) as mock_create_inbox,
             patch(
                 "src.app.callback.v1.callback.device_command_service.handle_callback_result",
@@ -289,10 +286,7 @@ class TestCallbackEventAPI:
             mock_create_inbox.assert_called_once()
 
             mock_celery_app.send_task.assert_called_once()
-            assert (
-                mock_celery_app.send_task.call_args[0][0]
-                == "src.celery_app.tasks.device.process_device_event"
-            )
+            assert mock_celery_app.send_task.call_args[0][0] == "src.celery_app.tasks.device.process_device_event"
 
             mock_log_callback.assert_called_once()
             log_call_kwargs = mock_log_callback.call_args[1]
@@ -324,9 +318,7 @@ class TestCallbackEventAPI:
         with (
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
-                new=AsyncMock(
-                    side_effect=ValueError("设备事件已存在（幂等键重复）: test-key, 原消息 ID: 456")
-                ),
+                new=AsyncMock(side_effect=ValueError("设备事件已存在（幂等键重复）: test-key, 原消息 ID: 456")),
             ) as mock_create_inbox,
             patch(
                 "src.celery_app.app.celery_app",
@@ -410,7 +402,7 @@ class TestCallbackErrorHandling:
             patch(
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
-            ),
+            ) as mock_audit,
             patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-error"),
         ):
             from src.app.callback.v1.callback import callback_result
@@ -430,3 +422,4 @@ class TestCallbackErrorHandling:
             log_call_kwargs = mock_log_callback.call_args[1]
             assert log_call_kwargs["response_status"] == 500
             assert log_call_kwargs["error_message"] == "Database connection failed"
+            mock_audit.assert_called_once()

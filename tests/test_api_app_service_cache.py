@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.api_auth.constants import CacheKeys
 from src.app.api_auth.models.api_application import APIApplication, AppStatus, AppType, ValidityPeriod
 from src.app.api_auth.services.app_service import APIAppService
-from src.app.workline.models.workline import WorkLine
 from src.common.cache_config import cache_settings
 from src.database.redis_cache import RedisCache
 
@@ -54,7 +54,9 @@ class FakeAPIAppRepository:
     def add_hook(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    async def get_by_id(self, db: object, id: int, include_deleted: bool = False, **kwargs: Any) -> APIApplication | None:
+    async def get_by_id(
+        self, db: object, id: int, include_deleted: bool = False, **kwargs: Any
+    ) -> APIApplication | None:
         app = self.items.get(id)
         if app is None:
             return None
@@ -106,12 +108,21 @@ class FakeAPIAppRepository:
 
 def _build_service(repo: FakeAPIAppRepository) -> APIAppService:
     service = APIAppService()
-    service.repo = repo
+    service.repo = cast(Any, repo)
     service._model_name = repo._model_name
     return service
 
 
-async def _seed_app(service: APIAppService, repo: FakeAPIAppRepository) -> APIApplication:
+def _db_session() -> AsyncSession:
+    return cast(AsyncSession, object())
+
+
+def _require_id(app: APIApplication) -> int:
+    assert app.id is not None
+    return app.id
+
+
+async def _seed_app(repo: FakeAPIAppRepository) -> APIApplication:
     return await repo.create(
         object(),
         {
@@ -135,13 +146,14 @@ async def test_get_by_app_id_caches_null_result() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
     cache = FakeRedisCache()
+    db = _db_session()
 
     async def query(db: object, app_id: str) -> APIApplication | None:
         return None
 
     service._query_by_app_id = query  # type: ignore[method-assign]
 
-    assert await service.get_by_app_id(object(), cache, "missing-app-id") is None
+    assert await service.get_by_app_id(db, cache, "missing-app-id") is None
     assert cache.set_calls[-1][:3] == (
         CacheKeys.app_by_app_id("missing-app-id"),
         "__BASE_SERVICE_NULL__",
@@ -154,7 +166,9 @@ async def test_update_invalidates_app_alias_cache() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
     cache = FakeRedisCache()
-    app = await _seed_app(service, repo)
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
     alias_key = CacheKeys.app_by_app_id(app.app_id)
 
     async def query(db: object, app_id: str) -> APIApplication | None:
@@ -165,14 +179,14 @@ async def test_update_invalidates_app_alias_cache() -> None:
 
     service._query_by_app_id = query  # type: ignore[method-assign]
 
-    cached = await service.get_by_app_id(object(), cache, app.app_id)
+    cached = await service.get_by_app_id(db, cache, app.app_id)
     assert cached is not None
     assert alias_key in cache.storage
     assert cache.set_calls[-1][2] == cache_settings.API_APP.expire
 
     updated = await service.update(
-        object(),
-        app.id,  # type: ignore[arg-type]
+        db,
+        app_id,
         {"description": "updated", "version": app.version},
         cache,
     )
@@ -188,7 +202,9 @@ async def test_reset_secret_invalidates_app_alias_cache() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
     cache = FakeRedisCache()
-    app = await _seed_app(service, repo)
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
     alias_key = CacheKeys.app_by_app_id(app.app_id)
     original_secret = app.app_secret_encrypted
 
@@ -200,15 +216,15 @@ async def test_reset_secret_invalidates_app_alias_cache() -> None:
 
     service._query_by_app_id = query  # type: ignore[method-assign]
 
-    await service.get_by_app_id(object(), cache, app.app_id)
+    _ = await service.get_by_app_id(db, cache, app.app_id)
     assert alias_key in cache.storage
 
-    new_secret = await service.reset_secret(object(), cache, app.id)  # type: ignore[arg-type]
+    new_secret = await service.reset_secret(db, cache, app_id)
 
     assert new_secret.startswith("sec_")
     assert alias_key not in cache.storage
 
-    refreshed = await service.get_by_app_id(object(), cache, app.app_id)
+    refreshed = await service.get_by_app_id(db, cache, app.app_id)
     assert refreshed is not None
     assert refreshed.app_secret_encrypted != original_secret
 
@@ -218,12 +234,14 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
     cache = FakeRedisCache()
-    app = await _seed_app(service, repo)
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
     alias_key = CacheKeys.app_by_app_id(app.app_id)
-    detail_key = f"{service.cache_prefix}:{app.id}:depth2:delFalse"
+    detail_key = f"{service.cache_prefix}:{app_id}:depth2:delFalse"
     list_key = f"{service.list_cache_prefix}:l10:o0:fmanual:smanual:d1:delFalse"
 
-    repo.items[app.id].status = AppStatus.EXPIRED  # type: ignore[index]
+    repo.items[app_id].status = AppStatus.EXPIRED
 
     async def query(db: object, app_id: str) -> APIApplication | None:
         return next(
@@ -233,8 +251,8 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
 
     service._query_by_app_id = query  # type: ignore[method-assign]
 
-    await service.get_by_id(object(), cache, app.id)  # type: ignore[arg-type]
-    await service.get_by_app_id(object(), cache, app.app_id)
+    _ = await service.get_by_id(db, cache, app_id)
+    _ = await service.get_by_app_id(db, cache, app.app_id)
     cache.storage[list_key] = {"total": 1, "items": [app.model_dump(mode="json")]}
 
     assert detail_key in cache.storage
@@ -242,9 +260,9 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
     assert list_key in cache.storage
 
     updated = await service.reset_validity_period(
-        object(),
+        db,
         cache,
-        app.id,  # type: ignore[arg-type]
+        app_id,
         ValidityPeriod.ONE_YEAR,
         app.version,
     )
@@ -255,7 +273,7 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
     assert alias_key not in cache.storage
     assert list_key not in cache.storage
     assert alias_key in cache.deleted_keys
-    assert f"{service.cache_prefix}:{app.id}:*" in cache.deleted_patterns
+    assert f"{service.cache_prefix}:{app_id}:*" in cache.deleted_patterns
     assert f"{service.list_cache_prefix}:*" in cache.deleted_patterns
 
 
@@ -264,7 +282,9 @@ async def test_delete_and_restore_invalidate_app_alias_cache() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
     cache = FakeRedisCache()
-    app = await _seed_app(service, repo)
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
     alias_key = CacheKeys.app_by_app_id(app.app_id)
 
     async def query(db: object, app_id: str) -> APIApplication | None:
@@ -275,20 +295,52 @@ async def test_delete_and_restore_invalidate_app_alias_cache() -> None:
 
     service._query_by_app_id = query  # type: ignore[method-assign]
 
-    await service.get_by_app_id(object(), cache, app.app_id)
+    _ = await service.get_by_app_id(db, cache, app.app_id)
     assert alias_key in cache.storage
 
-    deleted = await service.delete(object(), app.id, cache)  # type: ignore[arg-type]
+    deleted = await service.delete(db, app_id, cache)
     assert deleted is True
     assert alias_key not in cache.storage
 
-    assert await service.get_by_app_id(object(), cache, app.app_id) is None
+    assert await service.get_by_app_id(db, cache, app.app_id) is None
     assert cache.storage[alias_key] == "__BASE_SERVICE_NULL__"
 
-    restored = await service.restore(object(), app.id, cache)  # type: ignore[arg-type]
+    restored = await service.restore(db, app_id, cache)
     assert restored is not None
     assert alias_key not in cache.storage
 
-    visible = await service.get_by_app_id(object(), cache, app.app_id)
+    visible = await service.get_by_app_id(db, cache, app.app_id)
     assert visible is not None
     assert visible.app_id == app.app_id
+
+
+@pytest.mark.asyncio
+async def test_revoke_app_invalidates_permission_cache() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
+    alias_key = CacheKeys.app_by_app_id(app.app_id)
+    permission_key = CacheKeys.app_permissions(app_id)
+
+    async def query(db: object, app_id: str) -> APIApplication | None:
+        return next(
+            (deepcopy(item) for item in repo.items.values() if item.app_id == app_id and not item.is_deleted),
+            None,
+        )
+
+    service._query_by_app_id = query  # type: ignore[method-assign]
+
+    _ = await service.get_by_app_id(db, cache, app.app_id)
+    cache.storage[permission_key] = ["api:callback:event"]
+
+    revoked = await service.revoke_app(db, app.app_id, cache)
+
+    assert revoked is True
+    assert repo.items[app_id].status == AppStatus.REVOKED
+    assert alias_key not in cache.storage
+    assert permission_key not in cache.storage
+    assert alias_key in cache.deleted_keys
+    assert permission_key in cache.deleted_keys

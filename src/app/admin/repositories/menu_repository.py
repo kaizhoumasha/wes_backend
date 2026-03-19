@@ -14,6 +14,13 @@ class MenuRepository(TreeRepository[Menu]):
     def __init__(self):
         super().__init__(Menu)
 
+    async def list_for_sync(self, db: AsyncSession) -> list[Menu]:
+        """获取菜单同步所需的完整菜单列表。"""
+        result = await db.execute(
+            select(Menu).order_by(Menu.sort_order, Menu.id)  # type: ignore[arg-type]
+        )
+        return list(result.scalars().all())
+
     async def get_menus_by_user(self, db: AsyncSession, user_id: int) -> list[Menu]:
         """获取用户可访问的菜单列表（通过角色）
 

@@ -137,6 +137,38 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         perm_code = self._get_permission_code(action)
         return f"[{perm_code}] {description}" if perm_code else description
 
+    @staticmethod
+    def _dump_response_data(data: Any) -> Any:
+        """将 Pydantic/ORM 响应对象转换为基础数据结构。"""
+        return data.model_dump() if hasattr(data, "model_dump") else data
+
+    def _dump_response_items(self, items: list[Any]) -> list[Any]:
+        """批量转换列表响应对象。"""
+        return [self._dump_response_data(item) for item in items]
+
+    async def _run_batch_operation(
+        self,
+        ids: list[int],
+        action: Callable[[int], Any],
+        log_message: str,
+    ) -> dict[str, Any]:
+        success_count = 0
+        failed_count = 0
+        errors = []
+
+        for id in ids:
+            try:
+                await action(id)
+                success_count += 1
+            except Exception as e:
+                failed_count += 1
+                errors.append({"id": id, "message": str(e)})
+
+        logger.info(f"{log_message}: success={success_count}, failed={failed_count}")
+        return response_builder.batch_operation(
+            success=success_count, failed=failed_count, errors=errors if errors else None
+        )
+
     def _register_create(self) -> None:
         """注册创建接口"""
         summary = self._build_summary("create", f"创建{self.resource_name}")
@@ -245,21 +277,13 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            success_count = 0
-            failed_count = 0
-            errors = []
+            async def delete_one(resource_id: int) -> Any:
+                return await self.service.delete(db, resource_id, cache)
 
-            for id in ids:
-                try:
-                    await self.service.delete(db, id, cache)
-                    success_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    errors.append({"id": id, "message": str(e)})
-
-            logger.info(f"批量删除{self.resource_name}: success={success_count}, failed={failed_count}")
-            return response_builder.batch_operation(
-                success=success_count, failed=failed_count, errors=errors if errors else None
+            return await self._run_batch_operation(
+                ids,
+                delete_one,
+                f"批量删除{self.resource_name}",
             )
 
     def _register_get(self) -> None:
@@ -322,7 +346,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 include_deleted,
             )
             items = self.service.to_list_response(resources, self.response_schema)
-            items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
+            items_data = self._dump_response_items(items)
 
             logger.info(f"获取{self.resource_name}列表: limit={options.limit}, offset={options.offset}, total={total}")
             return response_builder.success(
@@ -370,7 +394,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         ) -> dict[str, Any]:
             total, resources = await self.service.get_deleted(db, limit, offset)
             items = self.service.to_list_response(resources, self.response_schema)
-            items_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
+            items_data = self._dump_response_items(items)
 
             logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
             return response_builder.success(
@@ -391,21 +415,13 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            success_count = 0
-            failed_count = 0
-            errors = []
+            async def restore_one(resource_id: int) -> Any:
+                return await self.service.restore(db, resource_id, cache)
 
-            for id in ids:
-                try:
-                    await self.service.restore(db, id, cache)
-                    success_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    errors.append({"id": id, "message": str(e)})
-
-            logger.info(f"批量恢复{self.resource_name}: success={success_count}, failed={failed_count}")
-            return response_builder.batch_operation(
-                success=success_count, failed=failed_count, errors=errors if errors else None
+            return await self._run_batch_operation(
+                ids,
+                restore_one,
+                f"批量恢复{self.resource_name}",
             )
 
         # 4. 批量永久删除接口
@@ -424,21 +440,13 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            success_count = 0
-            failed_count = 0
-            errors = []
+            async def permanent_delete_one(resource_id: int) -> Any:
+                return await self.service.permanent_delete(db, resource_id, cache)
 
-            for id in ids:
-                try:
-                    await self.service.permanent_delete(db, id, cache)
-                    success_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    errors.append({"id": id, "message": str(e)})
-
-            logger.info(f"批量永久删除{self.resource_name}: success={success_count}, failed={failed_count}")
-            return response_builder.batch_operation(
-                success=success_count, failed=failed_count, errors=errors if errors else None
+            return await self._run_batch_operation(
+                ids,
+                permanent_delete_one,
+                f"批量永久删除{self.resource_name}",
             )
 
 

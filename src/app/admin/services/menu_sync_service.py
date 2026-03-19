@@ -9,9 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
-
-from src.app.admin.models.menu import Menu
 from src.app.admin.repositories.menu_repository import MenuRepository, menu_repository
 from src.utils.frontend_menu_parser import FrontendMenuDefinition, load_frontend_router_menus
 
@@ -20,6 +17,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.admin.models.menu import Menu
+
+
+_MENU_UPDATE_FIELDS = ("title", "path", "component", "icon", "parent_id", "sort_order", "is_hidden")
 
 
 @dataclass(slots=True)
@@ -73,8 +75,7 @@ class MenuSyncService:
         if not menu_definitions:
             return result
 
-        existing_result = await db.execute(select(Menu).order_by(Menu.sort_order, Menu.id))  # type: ignore[arg-type]
-        existing_menus = list(existing_result.scalars().all())
+        existing_menus = await self.repo.list_for_sync(db)
         existing_by_name = {menu.name: menu for menu in existing_menus}
         resolved_ids = {menu.name: menu.id for menu in existing_menus if menu.id is not None}
         next_temp_id = -1
@@ -145,7 +146,7 @@ class MenuSyncService:
     @staticmethod
     def _build_update_data(existing: Menu, payload: dict[str, Any]) -> dict[str, Any]:
         update_data: dict[str, Any] = {}
-        for attr_name in ("title", "path", "component", "icon", "parent_id", "sort_order", "is_hidden"):
+        for attr_name in _MENU_UPDATE_FIELDS:
             if getattr(existing, attr_name, None) != payload.get(attr_name):
                 update_data[attr_name] = payload.get(attr_name)
         if update_data and hasattr(existing, "version"):
