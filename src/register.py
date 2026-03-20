@@ -144,7 +144,7 @@ def register_app() -> FastAPI:
 
     # 自定义 Swagger UI 路由
     @app.get(settings.DOCS_URL, include_in_schema=False)
-    async def custom_swagger_ui_html() -> HTMLResponse:
+    async def custom_swagger_ui_html() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
         openapi_url = app.openapi_url
         if openapi_url is None:
             openapi_url = settings.OPENAPI_URL
@@ -168,7 +168,7 @@ def register_app() -> FastAPI:
 
     # 添加 OAuth2 重定向路由
     @app.get(f"{settings.DOCS_URL}/oauth2-redirect", include_in_schema=False)
-    async def swagger_ui_redirect() -> HTMLResponse:
+    async def swagger_ui_redirect() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
         from fastapi.openapi.docs import get_swagger_ui_oauth2_redirect_html
 
         return get_swagger_ui_oauth2_redirect_html()

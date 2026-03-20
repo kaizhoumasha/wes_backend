@@ -4,6 +4,8 @@
 提供设备指令的数据访问操作。
 """
 
+from typing import Any, cast
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,7 +31,8 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             DeviceCommand 实例，如果不存在返回 None
         """
-        statement = select(DeviceCommand).where(DeviceCommand.command_code == command_code)
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(DeviceCommand).where(columns.command_code == command_code)
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
@@ -50,12 +53,13 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             待处理指令列表
         """
-        statement = select(DeviceCommand).where(DeviceCommand.status == CommandStatus.PENDING)
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(DeviceCommand).where(columns.status == CommandStatus.PENDING)
 
         if device_id:
-            statement = statement.where(DeviceCommand.device_id == device_id)
+            statement = statement.where(columns.device_id == device_id)
 
-        statement = statement.order_by(DeviceCommand.priority.desc()).limit(limit)
+        statement = statement.order_by(columns.priority.desc()).limit(limit)
 
         result = await db.execute(statement)
         return list(result.scalars().all())
@@ -72,9 +76,8 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
             超时指令列表
         """
         # 查询已发送但未完成的指令
-        statement = select(DeviceCommand).where(
-            DeviceCommand.status.in_([CommandStatus.SENT, CommandStatus.ACK_RECEIVED])
-        )
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(DeviceCommand).where(columns.status.in_([CommandStatus.SENT, CommandStatus.ACK_RECEIVED]))
 
         result = await db.execute(statement)
         commands = list(result.scalars().all())
@@ -95,10 +98,11 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         Returns:
             相关指令列表
         """
+        columns = cast("Any", DeviceCommand).__table__.c
         statement = (
             select(DeviceCommand)
-            .where(DeviceCommand.correlation_id == correlation_id)
-            .order_by(DeviceCommand.created_at)
+            .where(columns.correlation_id == correlation_id)
+            .order_by(columns.created_at)
         )
 
         result = await db.execute(statement)
@@ -118,10 +122,11 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """
         from sqlalchemy import func
 
-        statement = select(func.count(DeviceCommand.id)).where(DeviceCommand.status == status)
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(func.count(columns.id)).where(columns.status == status)
 
         if device_id:
-            statement = statement.where(DeviceCommand.device_id == device_id)
+            statement = statement.where(columns.device_id == device_id)
 
         result = await db.execute(statement)
         return result.scalar_one() or 0

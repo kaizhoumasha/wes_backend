@@ -95,5 +95,5 @@ class DemoProductResponse(DemoProductBase, EnterpriseMixin, SoftDeleteMixin):
     """
 
     id: int
-    version: int
+    version: int = Field(default=0)
     product_lists: list[DemoProductListResponse]

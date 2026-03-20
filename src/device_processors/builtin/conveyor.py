@@ -10,6 +10,7 @@
 """
 
 import uuid
+from typing import Any
 
 from loguru import logger
 
@@ -36,7 +37,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
         super().__init__(device_type="CONVEYOR")
         self.default_device_code = "CONVEYOR-01"  # 默认输送线设备编码
 
-    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """
         验证输送线事件数据
 
@@ -70,7 +71,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
 
         return True, None
 
-    async def decide_action(self, event_data: dict) -> dict | None:
+    async def decide_action(self, event_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         决策执行动作
 
@@ -136,7 +137,9 @@ class ConveyorProcessor(BaseDeviceProcessor):
         logger.warning(f"输送线未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
+    async def build_command(
+        self, action_params: dict[str, Any], correlation_id: str | None = None
+    ) -> CommandRequest:
         """
         构建输送线指令请求
 
@@ -174,7 +177,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
             correlation_id=correlation_id,
         )
 
-    async def handle_result(self, result_data: dict) -> dict | None:
+    async def handle_result(self, result_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         处理输送线执行结果
 
@@ -199,7 +202,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
         logger.error(f"输送线执行失败: {error_detail}")
         return None
 
-    async def handle_error(self, error: Exception, context: dict) -> None:
+    async def handle_error(self, error: Exception, context: dict[str, Any]) -> None:
         """
         处理输送线错误
 

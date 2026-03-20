@@ -6,11 +6,23 @@
 # ============================================
 
 import asyncio
+from collections.abc import Awaitable, Coroutine
+from typing import Any, TypeVar, TypedDict, cast
 
-from celery import Task
+from celery import Task  # pyright: ignore[reportMissingTypeStubs]
 from loguru import logger
 
 from src.celery_app.app import celery_app
+
+T = TypeVar("T")
+
+
+class ProcessDeviceEventResult(TypedDict, total=False):
+    status: str
+    message: str
+    event_id: int | None
+    commands_created: list[str]
+    action_params: dict[str, Any] | None
 
 # ============================================
 # 设备任务基类 - 自动处理数据库会话
@@ -20,10 +32,10 @@ from src.celery_app.app import celery_app
 class DeviceTask(Task):
     """设备任务基类 - 提供数据库会话管理"""
 
-    _db = None
+    _db: Any | None = None
 
     @property
-    def db(self):
+    def db(self) -> Any:
         """懒加载数据库会话"""
         if self._db is None:
             from src.database.db import AsyncSessionLocal as AsyncSessionLocalDynamic
@@ -34,26 +46,28 @@ class DeviceTask(Task):
             self._db = session_local()
         return self._db
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """清理资源"""
         if self._db:
             asyncio.get_event_loop().run_until_complete(self._db.close())
             self._db = None
 
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
+    def on_failure(
+        self, exc: Exception, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any], einfo: Any
+    ) -> None:
         """任务失败时清理资源"""
         self.cleanup()
         logger.error(f"任务 {task_id} 失败: {exc}")
-        super().on_failure(exc, task_id, args, kwargs, einfo)
+        cast("Any", super()).on_failure(exc, task_id, args, kwargs, einfo)
 
-    def on_success(self, retval, task_id, args, kwargs):
+    def on_success(self, retval: Any, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
         """任务成功时清理资源"""
         self.cleanup()
         logger.info(f"任务 {task_id} 成功完成")
-        super().on_success(retval, task_id, args, kwargs)
+        cast("Any", super()).on_success(retval, task_id, args, kwargs)
 
 
-def _run_async(coro):
+def _run_async(coro: Awaitable[T]) -> T:
     """在 Celery 同步任务中运行异步函数"""
     try:
         loop = asyncio.get_event_loop()
@@ -64,7 +78,7 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
-async def _resolve_target_device_id(device_repo, db, action_params: dict) -> tuple[int, str]:
+async def _resolve_target_device_id(device_repo: Any, db: Any, action_params: dict[str, Any]) -> tuple[int, str]:
     """将外部动作参数（device_code）解析为内部 device_id。"""
     target_device_code = action_params.get("device_code")
 
@@ -89,7 +103,7 @@ async def _resolve_target_device_id(device_repo, db, action_params: dict) -> tup
     max_retries=3,
     default_retry_delay=5,
 )
-def process_device_event(self, event_data: dict):
+def process_device_event(self: DeviceTask, event_data: dict[str, Any]) -> ProcessDeviceEventResult:
     """处理设备事件 - SDAF 流程实现
 
     SDAF 控制循环（在 Celery Worker 中执行）:
@@ -123,7 +137,6 @@ def process_device_event(self, event_data: dict):
     try:
         from src.app.device.repositories import DeviceRepository
         from src.app.device.services import device_command_service
-        from src.app.workline.models.workline import WorkLine  # noqa: F401 (用于解析 Device.work_line 关系)
         from src.device_processors import DeviceProcessorRegistry, register_builtin_processors
 
         # 确保处理器已注册
@@ -134,7 +147,8 @@ def process_device_event(self, event_data: dict):
         device_code = event_data.get("device_code")
         event_type = event_data.get("event_type")
         timestamp = event_data.get("timestamp")  # 可选字段
-        data = event_data.get("data", {})
+        payload_data = event_data.get("data", {})
+        data: dict[str, Any] = cast("dict[str, Any]", payload_data) if isinstance(payload_data, dict) else {}
 
         logger.info(
             f"[Celery] 开始处理设备事件: device_code={device_code}, "
@@ -158,7 +172,7 @@ def process_device_event(self, event_data: dict):
         assert isinstance(event_type, str)
 
         # 3. 异步处理（在 Celery Worker 中）
-        async def _process():
+        async def _process() -> ProcessDeviceEventResult:
             async with self.db as db:
                 # SENSE: 记录事件日志
                 from src.app.device.models.event_log import EventRequest, EventType
@@ -182,7 +196,7 @@ def process_device_event(self, event_data: dict):
                 processor = DeviceProcessorRegistry.get_processor_or_raise(device.device_type)
 
                 # 构建完整的事件数据（保持嵌套结构，处理器期望 event_data.data）
-                full_event_data = {
+                full_event_data: dict[str, Any] = {
                     "device_code": device_code,
                     "event_type": event_type,
                     "timestamp": timestamp,
@@ -198,7 +212,7 @@ def process_device_event(self, event_data: dict):
                 action_params = await processor.decide_action(full_event_data)
 
                 # ACT: 构建并发送指令
-                commands_created = []
+                commands_created: list[str] = []
                 if action_params:
                     if not isinstance(action_params, dict):
                         raise ValueError("事件决策结果格式错误：action_params 必须是字典")
@@ -220,13 +234,13 @@ def process_device_event(self, event_data: dict):
 
                     # 发送指令
                     try:
-                        await device_command_service.send_command(db, command.command_code)
+                        _ = await device_command_service.send_command(db, command.command_code)
                     except Exception as e:
                         logger.error(f"发送指令失败: {e}")
                         # 继续处理，不影响事件记录
 
                 # 更新事件处理状态
-                await device_command_service.update_event_log(
+                _ = await device_command_service.update_event_log(
                     db,
                     event_log,
                     processed=True,
@@ -256,7 +270,7 @@ def process_device_event(self, event_data: dict):
         # 记录错误到事件日志
         try:
 
-            async def _log_error(exc: Exception):
+            async def _log_error(exc: Exception) -> None:
                 from src.app.device.models.event_log import EventRequest, EventType
                 from src.app.device.services import device_command_service
 
@@ -272,13 +286,13 @@ def process_device_event(self, event_data: dict):
                         return
 
                     event_request = EventRequest(
-                        device_code=device_code_err,
+                        device_code=cast("str", device_code_err),
                         event_type=EventType(event_type_str),
                         timestamp=timestamp_err,
                         data=data_err,
                     )
                     event_log = await device_command_service.create_event_log(db, event_request)
-                    await device_command_service.update_event_log(
+                    _ = await device_command_service.update_event_log(
                         db,
                         event_log,
                         processed=True,
@@ -307,12 +321,12 @@ def process_device_event(self, event_data: dict):
     max_retries=3,
     default_retry_delay=5,
 )
-def process_material_arrived(self, event_data: dict):
+def process_material_arrived(self: DeviceTask, event_data: dict[str, Any]) -> Any:
     """处理料盘到达事件（兼容性任务）"""
     from src.utils.timezone import timezone
 
     # 转换为新格式
-    new_event_data = {
+    new_event_data: dict[str, Any] = {
         "device_code": event_data.get("device_code"),
         "event_type": "MATERIAL_ARRIVED",
         "timestamp": int(timezone.now_utc().timestamp() * 1000),
@@ -323,7 +337,7 @@ def process_material_arrived(self, event_data: dict):
     }
 
     # 调用新的统一处理任务
-    return process_device_event.apply_async(args=[new_event_data]).get()
+    return cast("Any", process_device_event).apply_async(args=[new_event_data]).get()
 
 
 @celery_app.task(
@@ -333,11 +347,11 @@ def process_material_arrived(self, event_data: dict):
     max_retries=3,
     default_retry_delay=5,
 )
-def process_scan_completed(self, event_data: dict):
+def process_scan_completed(self: DeviceTask, event_data: dict[str, Any]) -> Any:
     """处理扫码完成事件（兼容性任务）"""
     from src.utils.timezone import timezone
 
-    new_event_data = {
+    new_event_data: dict[str, Any] = {
         "device_code": event_data.get("device_code"),
         "event_type": "SCAN_COMPLETED",
         "timestamp": int(timezone.now_utc().timestamp() * 1000),
@@ -347,7 +361,7 @@ def process_scan_completed(self, event_data: dict):
         },
     }
 
-    return process_device_event.apply_async(args=[new_event_data]).get()
+    return cast("Any", process_device_event).apply_async(args=[new_event_data]).get()
 
 
 # ============================================

@@ -4,13 +4,12 @@ Pytest 配置和共享 fixtures
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
-from src.database.schema_conf import get_all_schemas
+from src.database.sqlite_schema import configure_sqlite_schemas
 
 # 使用内存数据库进行测试
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -36,14 +35,7 @@ async def db_engine():
     )
 
     # SQLite 不支持 PostgreSQL schema 语法，测试时通过 ATTACH 模拟 schema。
-    @event.listens_for(engine.sync_engine, "connect")
-    def _attach_test_schemas(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            for schema in get_all_schemas():
-                cursor.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
-        finally:
-            cursor.close()
+    configure_sqlite_schemas(engine.sync_engine)
 
     # 创建所有表
     async with engine.begin() as conn:

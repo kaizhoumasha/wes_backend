@@ -10,7 +10,7 @@
 """
 
 import re
-from typing import NoReturn
+from typing import Any, NoReturn, cast
 
 from sqlalchemy.exc import IntegrityError
 
@@ -171,7 +171,7 @@ class ErrorTranslator:
         """
         # 尝试从模型的 metadata 中查找表的 comment
         if hasattr(self.model, "__table__"):
-            table = self.model.__table__  # type: ignore[attr-defined]
+            table = cast("Any", self.model.__table__)  # type: ignore[attr-defined]
             if table.name == table_en_name and table.comment:
                 return table.comment
 
@@ -189,7 +189,7 @@ class ErrorTranslator:
             中文字段名（如果找不到则返回英文字段名）
         """
         # 尝试从模型的字段定义中获取 description 或 comment
-        model_fields = getattr(self.model, "model_fields", None)
+        model_fields = cast("dict[str, Any] | None", getattr(self.model, "model_fields", None))
         if model_fields:
             field = model_fields.get(column_en_name)
             if field and hasattr(field, "description") and field.description:
@@ -197,7 +197,7 @@ class ErrorTranslator:
 
         # 尝试从 SQLAlchemy 的 column comment 中获取
         if hasattr(self.model, "__table__"):
-            table = self.model.__table__  # type: ignore[attr-defined]
+            table = cast("Any", self.model.__table__)  # type: ignore[attr-defined]
             if column_en_name in table.columns:
                 column = table.columns[column_en_name]
                 if column.comment:

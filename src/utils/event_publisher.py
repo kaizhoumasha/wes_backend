@@ -6,7 +6,7 @@ SSE 事件发布工具
 
 import json
 import time
-from typing import Any
+from typing import Any, cast
 
 from src.core.logger import logger
 from src.database.redis_client import get_redis
@@ -40,16 +40,16 @@ async def publish_event(event_type: str, payload: dict[str, Any]) -> bool:
         logger.warning("Redis 不可用，无法发布 SSE 事件")
         return False
 
-    event_data = {
+    event_data: dict[str, Any] = {
         "type": event_type,
         "payload": payload,
         "timestamp": int(time.time() * 1000),  # 毫秒时间戳
     }
 
     try:
-        await redis_client.lpush("events:stream", json.dumps(event_data, ensure_ascii=False))
+        await cast("Any", redis_client).lpush("events:stream", json.dumps(event_data, ensure_ascii=False))
         # 保持队列长度，防止内存溢出（最多保留 1000 条）
-        await redis_client.ltrim("events:stream", 0, 1000)
+        await cast("Any", redis_client).ltrim("events:stream", 0, 1000)
         logger.debug(f"SSE 事件已发布: {event_type}")
         return True
     except Exception as e:
@@ -110,7 +110,7 @@ async def publish_business_status(
             extra={"warehouse_id": 1, "quantity": 100}
         )
     """
-    payload = {
+    payload: dict[str, Any] = {
         "business_type": business_type,
         "business_id": business_id,
         "status": status,

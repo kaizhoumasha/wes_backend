@@ -5,8 +5,10 @@
 # ============================================
 
 import asyncio
+from collections.abc import Awaitable
+from typing import Any, TypedDict, TypeVar, cast
 
-from celery import current_task
+from celery import current_task  # pyright: ignore[reportMissingTypeStubs]
 from loguru import logger
 from sqlalchemy import text
 
@@ -15,8 +17,24 @@ from src.database.db import AsyncSessionLocal
 from src.database.redis_client import get_redis, is_redis_available
 from src.utils.timezone import timezone
 
+T = TypeVar("T")
 
-def _run_async(coro):
+
+class CheckResult(TypedDict, total=False):
+    status: str
+    error: str
+    db_size: int
+
+
+class HealthCheckResult(TypedDict, total=False):
+    status: str
+    timestamp: str
+    worker: str
+    checks: dict[str, CheckResult]
+    error: str
+
+
+def _run_async(coro: Awaitable[T]) -> T:
     """
     在 Celery 同步任务中运行异步函数
 
@@ -40,7 +58,7 @@ def _run_async(coro):
 
 
 @celery_app.task(name="src.celery_app.tasks.core.health_check")
-def health_check():
+def health_check() -> HealthCheckResult:
     """
     系统健康检查任务
 
@@ -53,10 +71,11 @@ def health_check():
         logger.info("执行系统健康检查")
 
         hostname = "unknown"
-        if current_task and current_task.request:
-            hostname = current_task.request.hostname  # type: ignore[attr-defined]
+        task = cast("Any", current_task)
+        if task and task.request:
+            hostname = cast("str", task.request.hostname)
 
-        result = {
+        result: HealthCheckResult = {
             "status": "healthy",
             "timestamp": timezone.now_utc().isoformat(),
             "worker": hostname,
@@ -64,12 +83,12 @@ def health_check():
         }
 
         # 数据库健康检查
-        async def check_db():
+        async def check_db() -> CheckResult:
             if AsyncSessionLocal is None:
                 return {"status": "uninitialized", "error": "数据库未初始化"}
 
             async with AsyncSessionLocal() as db:
-                await db.execute(text("SELECT 1"))
+                _ = await db.execute(text("SELECT 1"))
                 return {"status": "connected"}
 
         try:
@@ -86,10 +105,10 @@ def health_check():
         # Redis 健康检查
         try:
             if is_redis_available():
-                redis_client = get_redis()
+                redis_client = cast("Any", get_redis())
                 if redis_client:
                     _run_async(redis_client.ping())
-                    db_size = _run_async(redis_client.dbsize())
+                    db_size = cast("int", _run_async(redis_client.dbsize()))
                     result["checks"]["redis"] = {
                         "status": "connected",
                         "db_size": db_size,
@@ -122,7 +141,7 @@ def health_check():
 
 
 @celery_app.task(name="src.celery_app.tasks.core.clear_cache")
-def clear_cache(pattern: str = "app:*"):
+def clear_cache(pattern: str = "app:*") -> dict[str, str | int]:
     """
     清除 Redis 缓存
 
@@ -139,13 +158,13 @@ def clear_cache(pattern: str = "app:*"):
             logger.warning("Redis 不可用，无法清除缓存")
             return {"status": "skipped", "reason": "Redis unavailable"}
 
-        async def _clear():
-            redis_client = get_redis()
+        async def _clear() -> int:
+            redis_client = cast("Any", get_redis())
             if redis_client is None:
                 return 0
 
             # 扫描匹配的键
-            keys = [key async for key in redis_client.scan_iter(match=pattern)]
+            keys: list[str] = [cast("str", key) async for key in redis_client.scan_iter(match=pattern)]
 
             # 批量删除
             if keys:
@@ -173,7 +192,7 @@ def clear_cache(pattern: str = "app:*"):
 
 
 @celery_app.task(name="src.celery_app.tasks.core.send_notification")
-def send_notification(user_id: int, message: str, notification_type: str = "info"):
+def send_notification(user_id: int, message: str, notification_type: str = "info") -> dict[str, str | int]:
     """
     发送用户通知
 
@@ -192,7 +211,7 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
         logger.info(f"发送通知: user_id={user_id}, type={notification_type}, message={message}")
 
         # 当前实现：记录到审计日志
-        async def _save_notification():
+        async def _save_notification() -> None:
             from src.app.sys.models.audit_log import OperaStatus
             from src.app.sys.services.audit_service import audit_log_service
 
@@ -206,7 +225,8 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
                     OperaStatus.SUCCESS if notification_type in ("info", "warning", "success") else OperaStatus.FAIL
                 )
 
-                await audit_log_service.create_audit_log(
+                audit_service = cast("Any", audit_log_service)
+                _ = await audit_service.create_audit_log(
                     db=db,
                     method="NOTIFICATION",
                     title=f"系统通知 [{notification_type.upper()}]",
@@ -240,7 +260,7 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
 
 
 @celery_app.task(name="src.celery_app.tasks.core.cleanup_old_logs")
-def cleanup_old_logs(days: int = 7):
+def cleanup_old_logs(days: int = 7) -> dict[str, str | int]:
     """
     清理旧的日志文件
 

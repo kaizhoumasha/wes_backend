@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
 
-load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆盖已存在的环境变量
+_ = load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆盖已存在的环境变量
 
 
 class Settings(BaseSettings):
@@ -247,7 +247,7 @@ class Settings(BaseSettings):
         try:
             from cryptography.fernet import Fernet
 
-            Fernet(self.API_SECRET_ENCRYPTION_KEY.encode())
+            _ = Fernet(self.API_SECRET_ENCRYPTION_KEY.encode())
         except Exception as e:
             raise ValueError(f"❌ 安全错误: API_SECRET_ENCRYPTION_KEY 格式无效: {e}") from e
 

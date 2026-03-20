@@ -196,7 +196,7 @@ class AuditHookRegistrar:
 
             # 创建新的数据库会话（后台任务中原会话已关闭）
             async with get_db_context() as session:
-                await audit_log_service.create_operation_log(
+                _ = await audit_log_service.create_operation_log(
                     session,
                     operation=operation,
                     model_name=model_name,
@@ -234,7 +234,7 @@ class AuditHookRegistrar:
         try:
             from src.app.sys.services.audit_service import audit_log_service
 
-            await audit_log_service.create_operation_log(
+            _ = await audit_log_service.create_operation_log(
                 session,
                 operation=operation,
                 model_name=self._model_name,

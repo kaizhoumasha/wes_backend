@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from fastapi import Depends, Request
 
@@ -169,8 +169,8 @@ def require_api_permission(permission_name: str):
             raise PermissionException(f"需要权限: {permission_name}")
 
     # 关键点：挂载元数据，方便扫描器读取
-    verify_permission.permission_required = permission_name
-    verify_permission.is_api_auth = True
+    cast("Any", verify_permission).permission_required = permission_name
+    cast("Any", verify_permission).is_api_auth = True
     return verify_permission
 
 

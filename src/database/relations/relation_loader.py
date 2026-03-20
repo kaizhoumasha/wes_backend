@@ -4,15 +4,13 @@
 负责处理关联对象的加载策略选择和预加载逻辑。
 """
 
-from typing import Any, TypeVar
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from src.database.relation_metadata import RelationMetadata, RelationType
-
-T = TypeVar("T")
 
 
 class RelationLoader:
@@ -22,7 +20,7 @@ class RelationLoader:
     负责选择最优的关联对象加载策略（joinedload vs selectinload）
     """
 
-    def __init__(self, model: type[T], pk_column: str = "id"):
+    def __init__(self, model: type[Any], pk_column: str = "id"):
         self.model = model
         self._pk_column = pk_column
 
@@ -61,7 +59,7 @@ class RelationLoader:
 
         return statement
 
-    async def preload_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+    async def preload_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
         if not relation_info:
             return
 
@@ -84,7 +82,7 @@ class RelationLoader:
                     if hasattr(loaded_instance, relation_name):
                         setattr(instance, relation_name, getattr(loaded_instance, relation_name))
 
-    async def refresh_with_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+    async def refresh_with_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
         if relation_info:
             relation_names = list(relation_info.keys())
             await db.refresh(instance, attribute_names=relation_names)

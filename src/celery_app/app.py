@@ -4,8 +4,10 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
-from celery import Celery
-from celery.signals import worker_init, worker_process_init
+from typing import Any, cast
+
+from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
+from celery.signals import worker_init, worker_process_init  # pyright: ignore[reportMissingTypeStubs]
 
 from src.core.conf import settings
 from src.core.logger import logger
@@ -32,7 +34,7 @@ celery_app = Celery(
 
 
 @worker_init.connect
-def on_worker_init(*args, **kwargs):
+def on_worker_init(*args: Any, **kwargs: Any) -> None:
     """
     Worker 主进程启动时初始化数据库连接
     """
@@ -57,7 +59,7 @@ def on_worker_init(*args, **kwargs):
 
 
 @worker_process_init.connect
-def on_worker_process_init(*args, **kwargs):
+def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
     """
     Worker 子进程启动时初始化数据库连接
 
@@ -84,7 +86,7 @@ def on_worker_process_init(*args, **kwargs):
 # Celery 配置
 # ============================================
 
-celery_app.conf.update(
+cast("Any", celery_app.conf).update(
     # ================================
     # 任务配置
     # ================================
@@ -125,7 +127,7 @@ celery_app.conf.update(
     # ================================
     # Beat 调度器配置 (定时任务)
     # ================================
-    beat_schedule=config.beat_schedule,
+    beat_schedule=cast("dict[str, dict[str, Any]]", config.beat_schedule),
     beat_log_format="[%(asctime)s: %(levelname)s] %(message)s",
     beat_max_loop_interval=5.0,  # Beat 循环间隔 (秒)
     # ================================
@@ -142,7 +144,7 @@ celery_app.conf.update(
 
 
 @celery_app.task(name="celery_app.app.debug_task")
-def debug_task():
+def debug_task() -> dict[str, str]:
     """调试任务 - 用于测试 Celery 是否正常工作"""
     print("Celery 任务执行成功!")
     return {"status": "success", "message": "Celery is working!"}

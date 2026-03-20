@@ -1,5 +1,7 @@
 """WorkLine Repository 层"""
 
+from typing import Any, cast
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +22,11 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         line_code: str,
     ) -> WorkLine | None:
         """根据作业线编码查询"""
+        columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(WorkLine).where(
-                WorkLine.line_code == line_code,
-                WorkLine.is_deleted.is_(False),
+                columns.line_code == line_code,
+                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()

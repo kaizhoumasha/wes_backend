@@ -4,15 +4,14 @@
 负责处理关联对象的创建、更新和删除操作。
 """
 
-from typing import Any, TypeVar
+from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logger import logger
 from src.database.relation_metadata import RelationMetadata, RelationType
-
-T = TypeVar("T")
 
 
 class RelationCRUD:
@@ -22,10 +21,24 @@ class RelationCRUD:
     负责关联对象的增删改操作，包括 Diff 算法和外键自动设置
     """
 
-    def __init__(self, model: type[T]):
+    def __init__(self, model: type[Any]):
         self.model = model
 
-    async def handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
+    @staticmethod
+    def _item_id(item_data: dict[str, Any] | object) -> int | None:
+        raw_id = cast(dict[str, Any], item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+        return raw_id if isinstance(raw_id, int) else None
+
+    @staticmethod
+    def _model_data(item_data: dict[str, Any] | object) -> dict[str, Any]:
+        if isinstance(item_data, dict):
+            return cast(dict[str, Any], item_data)
+        if hasattr(item_data, "model_dump"):
+            return cast(dict[str, Any], cast(Any, item_data).model_dump(exclude_unset=True))
+        model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
+        return cast(dict[str, Any], model_data)
+
+    async def handle_relations(self, db: AsyncSession, instance: Any, data: dict[str, Any]) -> None:
         if not RelationMetadata.has_relations(self.model):
             return
 
@@ -47,7 +60,7 @@ class RelationCRUD:
     async def handle_one_to_many_relation(
         self,
         db: AsyncSession,
-        instance: T,
+        instance: Any,
         relation_name: str,
         relation_data: list[dict[str, Any]],
     ) -> None:
@@ -60,7 +73,7 @@ class RelationCRUD:
     async def update_relations(
         self,
         db: AsyncSession,
-        instance: T,
+        instance: Any,
         data: dict[str, Any],
     ) -> None:
         if not RelationMetadata.has_relations(self.model):
@@ -85,15 +98,15 @@ class RelationCRUD:
             if relation_attr is None:
                 continue
 
-            current_relations = getattr(instance, relation_name, [])
+            current_relations = cast(list[Any], getattr(instance, relation_name, []))
             current_ids = {rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None}
 
-            new_ids = set()
-            to_create = []
-            to_update = []
+            new_ids: set[int] = set()
+            to_create: list[dict[str, Any] | object] = []
+            to_update: list[dict[str, Any] | object] = []
 
             for item_data in new_relation_data:
-                item_id = item_data.get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+                item_id = self._item_id(item_data)
 
                 if item_id is None:
                     to_create.append(item_data)
@@ -124,7 +137,7 @@ class RelationCRUD:
         relation_model = relation_attr.property.mapper.class_
 
         stmt = delete(relation_model).where(relation_model.id.in_(ids_to_delete))
-        await db.execute(stmt)
+        _ = await db.execute(stmt)
         await db.flush()
 
         logger.info(f"删除关联对象: 数量={len(ids_to_delete)}")
@@ -133,7 +146,7 @@ class RelationCRUD:
         self,
         db: AsyncSession,
         relation_attr: Any,
-        objects_to_update: list[dict[str, Any]],
+        objects_to_update: Sequence[dict[str, Any] | object],
     ) -> None:
         if not objects_to_update:
             return
@@ -141,14 +154,16 @@ class RelationCRUD:
         relation_model = relation_attr.property.mapper.class_
 
         for obj_data in objects_to_update:
-            obj_id = obj_data.get("id") if isinstance(obj_data, dict) else obj_data.id
+            obj_id = self._item_id(obj_data)
+            if obj_id is None:
+                continue
 
             stmt = select(relation_model).where(relation_model.id == obj_id)
             result = await db.execute(stmt)
             db_obj = result.scalar_one_or_none()
 
             if db_obj:
-                update_data = obj_data if isinstance(obj_data, dict) else obj_data.model_dump(exclude_unset=True)
+                update_data = self._model_data(obj_data)
                 for field, value in update_data.items():
                     if field == "id" or field.endswith("_id"):
                         continue
@@ -163,8 +178,8 @@ class RelationCRUD:
         self,
         db: AsyncSession,
         relation_attr: Any,
-        parent_obj: T,
-        objects_to_create: list[dict[str, Any]],
+        parent_obj: Any,
+        objects_to_create: Sequence[dict[str, Any] | object],
     ) -> None:
         if not objects_to_create:
             return
@@ -188,9 +203,9 @@ class RelationCRUD:
 
     def _set_foreign_key_value(
         self,
-        item_data: dict[str, Any] | Any,
+        item_data: dict[str, Any] | object,
         foreign_key_field: str,
-        parent_obj: T,
+        parent_obj: Any,
         parent_tablename: str | None,
     ) -> None:
         parent_value = getattr(parent_obj, "id", None)
@@ -204,10 +219,6 @@ class RelationCRUD:
             setattr(item_data, foreign_key_field, parent_value)
             logger.debug(f"自动设置外键: {foreign_key_field}={parent_value} (从 {parent_tablename})")
 
-    def _create_model_instance(self, model: type, item_data: dict[str, Any] | Any) -> Any:
-        if isinstance(item_data, dict):
-            return model(**item_data)
-        if hasattr(item_data, "model_dump"):
-            return model(**item_data.model_dump())
-        model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
+    def _create_model_instance(self, model: type, item_data: dict[str, Any] | object) -> Any:
+        model_data = self._model_data(item_data)
         return model(**model_data)

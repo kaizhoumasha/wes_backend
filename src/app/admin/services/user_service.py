@@ -169,7 +169,7 @@ class UserService(BaseService[User, UserRepository]):
         await db.refresh(updated_user)
 
         # 5. 撤销所有 Token（强制重新登录）
-        await revoke_all_user_tokens(user_id)
+        _ = await revoke_all_user_tokens(user_id)
 
         # 6. 清除权限缓存
         await self._invalidate_permissions_for_user(user_id)

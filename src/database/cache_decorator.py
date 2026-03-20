@@ -10,7 +10,7 @@
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from inspect import signature
-from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast, get_args, get_origin
 
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
@@ -23,7 +23,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def _get_return_type(func: Callable) -> type | None:
+def _get_return_type(func: Callable[..., object]) -> type[Any] | None:
     """
     获取函数的返回类型（处理 Optional 类型）
 
@@ -45,11 +45,14 @@ def _get_return_type(func: Callable) -> type | None:
         args = get_args(return_annotation)
         if args:
             # 过滤掉 None 类型，返回实际的类型
-            non_none_types = [arg for arg in args if arg is not type(None)]
+            non_none_types = [arg for arg in args if isinstance(arg, type) and arg is not type(None)]
             if non_none_types:
                 return non_none_types[0]
 
-    return return_annotation
+    if isinstance(return_annotation, type):
+        return return_annotation
+
+    return None
 
 
 def cached(
@@ -108,7 +111,7 @@ def cached(
             param_names = list(sig.parameters.keys())
 
             # 收集用于缓存键的参数
-            cache_key_parts = []
+            cache_key_parts: list[str] = []
             for i, arg in enumerate(args):
                 if i < len(param_names):
                     param_name = param_names[i]
@@ -137,7 +140,7 @@ def cached(
                 # Pydantic 模型反序列化
                 return_type = _get_return_type(func)
                 if return_type and hasattr(return_type, "model_validate"):
-                    return return_type.model_validate(cached_data)
+                    return cast("Any", return_type).model_validate(cached_data)
 
                 return cached_data
 
@@ -156,7 +159,7 @@ def cached(
                             # Pydantic 模型反序列化
                             return_type = _get_return_type(func)
                             if return_type and hasattr(return_type, "model_validate"):
-                                return return_type.model_validate(cached_data)
+                                return cast("Any", return_type).model_validate(cached_data)
 
                             return cached_data
 
@@ -165,15 +168,15 @@ def cached(
 
                         # 空值缓存处理：使用标记存储空值
                         if null_expire is not None and result is None:
-                            await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
+                            _ = await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
                             raise NotFoundException("资源不存在")
 
                         serialized = serialize_for_cache(result)
 
-                        await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
+                        _ = await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                         return result
                     finally:
-                        await cache.release_lock(cache_key)
+                        _ = await cache.release_lock(cache_key)
                 else:
                     logger.warning(f"获取锁失败，降级到数据库查询: {cache_key}")
                     # 获取锁失败，直接查询
@@ -187,12 +190,12 @@ def cached(
 
                 # 空值缓存处理：使用标记存储空值
                 if null_expire is not None and result is None:
-                    await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
+                    _ = await cache.set(cache_key, CACHE_NULL_MARKER, expire=null_expire)
                     raise NotFoundException("资源不存在")
 
                 serialized = serialize_for_cache(result)
 
-                await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
+                _ = await cache.set(cache_key, serialized, expire=expire, is_hot=is_hot)
                 return result
 
         return wrapper

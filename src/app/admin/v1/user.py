@@ -11,7 +11,7 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 4. 统一错误处理（依赖全局异常处理器）
 """
 
-from typing import cast
+from typing import Any, cast
 
 from fastapi import Depends
 
@@ -49,7 +49,7 @@ router = user_api.router
 
 
 @router.get("/stats/cache", summary="获取缓存统计")
-async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
+async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep) -> dict[str, Any]:
     """
     获取缓存统计信息
 
@@ -62,7 +62,7 @@ async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
     total_users = await user_service.count(db)
 
     # 获取缓存状态
-    cache_status = cache.get_status()
+    cache_status = cast("dict[str, Any]", cast("Any", cache).get_status())
 
     # 尝试获取 Redis 键数量
     cache_keys_count = None
@@ -71,7 +71,7 @@ async def get_cache_stats(db: AsyncSessionDep, cache: CacheDep):
 
         if is_redis_available():
             redis_client = get_redis()
-            cache_keys_count = await redis_client.dbsize() if redis_client else None
+            cache_keys_count = await cast("Any", redis_client).dbsize() if redis_client else None
     except Exception as e:
         logger.error(f"获取缓存键数量失败: {e}")
 
@@ -92,7 +92,7 @@ async def reset_password(
     data: ResetPasswordRequest,
     db: AsyncSessionDep,
     cache: CacheDep,
-) -> ResponseSchemaModel[UserResponse]:
+) -> ResponseSchemaModel[UserSimpleResponse]:
     """
     管理员重置用户密码
 

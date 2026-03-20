@@ -6,11 +6,20 @@ API 应用签名认证测试
 
 import hashlib
 import hmac
+import os
 import time
 from typing import Any
 
 import httpx
 import pytest
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        os.getenv("RUN_LIVE_API_SIGNATURE_TESTS") != "1",
+        reason="requires a live WES service with seeded API app credentials",
+    ),
+]
 
 
 class APISignatureClient:
@@ -58,7 +67,6 @@ class APISignatureClient:
             响应 JSON 数据
         """
         url = f"{self.base_url}{path}"
-        body = ""
 
         headers = {
             "Content-Type": "application/json",
@@ -83,7 +91,7 @@ class APISignatureClient:
             if data is None:
                 response = await client.request(method, url, headers=headers)
             else:
-                response = await client.request(method, url, headers=headers, content=body)
+                response = await client.request(method, url, headers=headers, json=data)
 
         response.raise_for_status()
         return response.json()
@@ -101,7 +109,18 @@ async def test_api_try_invoke():
     """测试 API 调用端点（有权限）"""
     client = APISignatureClient(BASE_URL, TEST_APP_ID, TEST_APP_SECRET)
 
-    response = await client.request("POST", "/api/v1/api-auth/applications/try/invoke")
+    response = await client.request(
+        "POST",
+        "/api/v1/api-auth/applications/try/invoke",
+        data={
+            "data": {
+                "command_name": "ping",
+                "command_description": "test invoke",
+                "command_parameters": ["barcode"],
+                "command_response": "ok",
+            }
+        },
+    )
 
     assert response["code"] == "1000"
     assert response["data"]["app_id"] == TEST_APP_ID

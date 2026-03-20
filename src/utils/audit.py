@@ -4,12 +4,38 @@
 提供审计日志记录的辅助函数，用于从请求上下文中提取信息
 """
 
-from typing import Any
+from typing import Any, TypedDict, cast
 
+from fastapi import Request
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
 
 from src.core.logger import logger
+
+
+class RequestInfo(TypedDict):
+    request_id: str | None
+    ip: str | None
+    country: str | None
+    region: str | None
+    city: str | None
+    user_agent: str | None
+    os: str | None
+    browser: str | None
+    device: str | None
+
+
+def _get_context_value(key: str) -> Any | None:
+    try:
+        context_store = cast("Any", context)
+        return cast("Any | None", context_store.get(key))
+    except (ContextDoesNotExistError, RuntimeError):
+        return None
+
+
+def _get_request() -> Request | None:
+    request = _get_context_value("request")
+    return request if isinstance(request, Request) else None
 
 
 def get_request_id() -> str | None:
@@ -19,10 +45,7 @@ def get_request_id() -> str | None:
     Returns:
         请求 ID，如果不存在则返回 None
     """
-    try:
-        return context.get("request_id")
-    except (ContextDoesNotExistError, RuntimeError):
-        return None
+    return cast("str | None", _get_context_value("request_id"))
 
 
 def get_current_user_id() -> int | None:
@@ -35,19 +58,12 @@ def get_current_user_id() -> int | None:
     Returns:
         用户 ID，如果不存在则返回 None
     """
-    try:
-        # 优先从 starlette_context 中获取 request 对象
-        request = context.get("request")
-        if request and hasattr(request, "state") and hasattr(request.state, "user_id"):
-            return request.state.user_id
-    except (ContextDoesNotExistError, RuntimeError, AttributeError):
-        pass
+    request = _get_request()
+    if request is not None:
+        return cast("int | None", getattr(request.state, "user_id", None))
 
     # 备用：从 context 直接获取
-    try:
-        return context.get("user_id")
-    except (ContextDoesNotExistError, RuntimeError):
-        return None
+    return cast("int | None", _get_context_value("user_id"))
 
 
 def get_current_username() -> str | None:
@@ -57,19 +73,12 @@ def get_current_username() -> str | None:
     Returns:
         用户名，如果不存在则返回 None
     """
-    try:
-        # 优先从 starlette_context 中获取 request 对象
-        request = context.get("request")
-        if request and hasattr(request, "state") and hasattr(request.state, "username"):
-            return request.state.username
-    except (ContextDoesNotExistError, RuntimeError, AttributeError):
-        pass
+    request = _get_request()
+    if request is not None:
+        return cast("str | None", getattr(request.state, "username", None))
 
     # 备用：从 context 直接获取
-    try:
-        return context.get("username")
-    except (ContextDoesNotExistError, RuntimeError):
-        return None
+    return cast("str | None", _get_context_value("username"))
 
 
 def get_request_method() -> str | None:
@@ -79,16 +88,11 @@ def get_request_method() -> str | None:
     Returns:
         HTTP 方法（GET/POST/PUT/DELETE等），如果不存在则返回 None
     """
-    try:
-        request = context.get("request")
-        if request and hasattr(request, "method"):
-            return request.method
-    except (ContextDoesNotExistError, RuntimeError, AttributeError):
-        pass
-    return None
+    request = _get_request()
+    return request.method if request is not None else None
 
 
-def get_request_info() -> dict[str, Any]:
+def get_request_info() -> RequestInfo:
     """
     从上下文中获取请求信息
 
@@ -104,7 +108,7 @@ def get_request_info() -> dict[str, Any]:
         - browser: 浏览器
         - device: 设备类型
     """
-    info = {
+    info: RequestInfo = {
         "request_id": get_request_id(),
         "ip": None,
         "country": None,
@@ -117,23 +121,22 @@ def get_request_info() -> dict[str, Any]:
     }
 
     try:
-        # 尝试从上下文中获取 request 对象
-        request = context.get("request")
-        if request and hasattr(request, "state"):
+        request = _get_request()
+        if request is not None:
             state = request.state
             info.update(
                 {
-                    "ip": getattr(state, "ip", None),
-                    "country": getattr(state, "country", None),
-                    "region": getattr(state, "region", None),
-                    "city": getattr(state, "city", None),
-                    "user_agent": getattr(state, "user_agent", None),
-                    "os": getattr(state, "os", None),
-                    "browser": getattr(state, "browser", None),
-                    "device": getattr(state, "device", None),
+                    "ip": cast("str | None", getattr(state, "ip", None)),
+                    "country": cast("str | None", getattr(state, "country", None)),
+                    "region": cast("str | None", getattr(state, "region", None)),
+                    "city": cast("str | None", getattr(state, "city", None)),
+                    "user_agent": cast("str | None", getattr(state, "user_agent", None)),
+                    "os": cast("str | None", getattr(state, "os", None)),
+                    "browser": cast("str | None", getattr(state, "browser", None)),
+                    "device": cast("str | None", getattr(state, "device", None)),
                 }
             )
-    except (ContextDoesNotExistError, RuntimeError, AttributeError) as e:
+    except AttributeError as e:
         logger.debug(f"无法获取请求信息: {e}")
 
     return info

@@ -43,7 +43,7 @@ class ResponseBuilder:
     """
 
     @staticmethod
-    def _build_response_dict(code: str, message: str, data: Any = None, timestamp: str | None = None) -> dict:
+    def _build_response_dict(code: str, message: str, data: Any = None, timestamp: str | None = None) -> dict[str, Any]:
         """
         构建响应字典
 
@@ -66,7 +66,9 @@ class ResponseBuilder:
 
         return response_dict
 
-    def success(self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None) -> dict:
+    def success(
+        self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
+    ) -> dict[str, Any]:
         """
         构建成功响应
 
@@ -86,7 +88,7 @@ class ResponseBuilder:
         msg = message if message is not None else code.message
         return self._build_response_dict(code=code.code, message=msg, data=data)
 
-    def fail(self, code: ResponseCode, message: str | None = None, data: Any = None) -> dict:
+    def fail(self, code: ResponseCode, message: str | None = None, data: Any = None) -> dict[str, Any]:
         """
         构建失败响应
 
@@ -114,9 +116,9 @@ class ResponseBuilder:
         success: int,
         failed: int,
         results: list[Any] | None = None,
-        errors: list[dict] | None = None,
+        errors: list[dict[str, Any]] | None = None,
         code: ResponseCode = DEFAULT_SUCCESS,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         构建批量操作响应
 

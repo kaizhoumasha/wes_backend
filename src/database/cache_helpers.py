@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Mapping
 from inspect import signature
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -38,12 +38,18 @@ def parse_set_from_cached(value: Any) -> set[Any]:
         TypeError: 不支持的缓存载荷类型
     """
     if isinstance(value, str):
-        return set(json.loads(value))
+        parsed_value = json.loads(value)
+        if not isinstance(parsed_value, list):
+            raise TypeError("unsupported cached set payload")
+        parsed_list = cast("list[Any]", parsed_value)
+        return {item for item in parsed_list}
     if isinstance(value, list):
         # 优化：直接转换列表（常见场景）
-        return set(value)
+        list_value = cast("list[Any]", value)
+        return {item for item in list_value}
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray, Mapping)):
-        return {str(item) for item in value}
+        iterable_value = cast("Iterable[Any]", value)
+        return {str(item) for item in iterable_value}
     raise TypeError("unsupported cached set payload")
 
 

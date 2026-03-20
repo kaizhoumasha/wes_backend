@@ -4,12 +4,14 @@
 提供设备回调日志的查询接口，用于监控和问题排查。
 """
 
+from typing import Any
+
 from fastapi import APIRouter, status
 
 from src.app.callback.models import CallbackLogResponse
 from src.app.callback.services import callback_log_service
 from src.core.query_models import FilterGroup, SortField
-from src.core.response import response_builder
+from src.core.response import DEFAULT_NOT_FOUND, response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 router = APIRouter()
@@ -28,7 +30,7 @@ router = APIRouter()
 async def get_by_request_id(
     request_id: str,
     db: AsyncSessionDep,
-) -> dict:
+) -> dict[str, Any]:
     """
     根据 request_id 查询单条回调日志
 
@@ -37,7 +39,7 @@ async def get_by_request_id(
     log = await callback_log_service.repo.get_by_request_id(db, request_id)
     if not log:
         return response_builder.fail(
-            code=404,
+            code=DEFAULT_NOT_FOUND,
             message=f"回调日志不存在: request_id={request_id}",
         )
     return response_builder.success(data=log)
@@ -52,7 +54,7 @@ async def get_by_request_id(
 async def get_by_correlation_id(
     correlation_id: str,
     db: AsyncSessionDep,
-) -> dict:
+) -> dict[str, Any]:
     """
     根据 correlation_id 查询所有相关的回调日志
 
@@ -78,7 +80,7 @@ async def get_by_device_id(
     device_id: str,
     db: AsyncSessionDep,
     limit: int = 100,
-) -> dict:
+) -> dict[str, Any]:
     """
     根据设备 ID 查询最近的回调日志
 
@@ -107,7 +109,7 @@ async def query_callback_logs(
     sort: list[SortField] | None = None,
     limit: int = 20,
     offset: int = 0,
-) -> dict:
+) -> dict[str, Any]:
     """
     回调日志列表查询
 

@@ -6,9 +6,10 @@
 
 import asyncio
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp
 
 from src.core.exceptions import ServiceUnavailableException
 from src.core.logger import logger
@@ -17,7 +18,7 @@ from src.core.logger import logger
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """并发请求限流中间件"""
 
-    def __init__(self, app, max_concurrent: int = 200):
+    def __init__(self, app: ASGIApp, max_concurrent: int = 200):
         """
         初始化限流中间件
 
@@ -30,7 +31,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._current_requests = 0
         self._lock = asyncio.Lock()
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """
         处理请求，限制并发数
 

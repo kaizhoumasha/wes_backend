@@ -1,5 +1,5 @@
 import secrets
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,7 +61,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         """失效按 app_id 查询的别名缓存。"""
         if cache is None or not app_id:
             return
-        await cache.delete(CacheKeys.app_by_app_id(app_id))
+        _ = await cache.delete(CacheKeys.app_by_app_id(app_id))
 
     async def _invalidate_app_cache_entries(
         self,
@@ -77,9 +77,9 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
             return
 
         if application_id is not None:
-            await self.invalidate_cache(cache, application_id, invalidate_list=invalidate_list)
+            _ = await self.invalidate_cache(cache, application_id, invalidate_list=invalidate_list)
             if invalidate_permissions:
-                await cache.delete(CacheKeys.app_permissions(application_id))
+                _ = await cache.delete(CacheKeys.app_permissions(application_id))
 
         await self._invalidate_app_alias_cache(cache, app_id)
 
@@ -87,7 +87,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         """失效应用权限缓存。"""
         if application_id is None or cache is None or not hasattr(cache, "delete"):
             return
-        await cache.delete(CacheKeys.app_permissions(application_id))
+        await cast("Any", cache).delete(CacheKeys.app_permissions(application_id))
 
     @staticmethod
     def _parse_cached_app(value: Any) -> APIApplication:
@@ -145,7 +145,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         app_secret = f"sec_{secrets.token_urlsafe(32)}"
         encrypted_secret = encryption_service.encrypt(app_secret)
 
-        await self.update(db, id, {"app_secret_encrypted": encrypted_secret}, cache)
+        _ = await self.update(db, id, {"app_secret_encrypted": encrypted_secret}, cache)
         return app_secret
 
     async def assign_permissions(self, db: AsyncSession, cache: RedisCache, id: int, permission_ids: list[int]) -> None:
@@ -159,8 +159,8 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         await self.repo.assign_permissions(db, id, permission_ids)
 
         # 3. 清除缓存
-        await self.invalidate_cache(cache, id)
-        await self._invalidate_app_permission_cache(cache, id)
+        _ = await self.invalidate_cache(cache, id)
+        _ = await self._invalidate_app_permission_cache(cache, id)
 
     async def reset_validity_period(
         self,
@@ -219,7 +219,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         return max(0, delta.days)
 
     async def create_app(
-        self, db: AsyncSession, data: dict, cache: RedisCache | None = None
+        self, db: AsyncSession, data: dict[str, Any], cache: RedisCache | None = None
     ) -> tuple[APIApplication | None, str]:
         app_id = f"app_{secrets.token_urlsafe(12)}"
         app_secret = f"sec_{secrets.token_urlsafe(32)}"
@@ -247,9 +247,9 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         app = await self._query_by_app_id(db, app_id)
 
         if app:
-            await set_cached_value(cache, cache_key, app, expire=self.cache_expire)
+            _ = await set_cached_value(cache, cache_key, app, expire=self.cache_expire)
         else:
-            await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
+            _ = await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
 
         return app
 
@@ -258,8 +258,8 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         if app is None or app.id is None:
             return False
 
-        await self.update(db, app.id, {"status": "revoked"}, cache)
-        await self._invalidate_app_permission_cache(cache, app.id)
+        _ = await self.update(db, app.id, {"status": "revoked"}, cache)
+        _ = await self._invalidate_app_permission_cache(cache, app.id)
 
         return True
 

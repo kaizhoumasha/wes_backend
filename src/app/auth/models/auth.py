@@ -8,6 +8,7 @@
 """
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import computed_field
 from sqlmodel import Field
@@ -109,7 +110,7 @@ class SessionInfo(BaseMixin):
     session_uuid: str = Field(description="会话 UUID")
     jti: str = Field(description="JWT ID")
     created_at: datetime = Field(description="会话创建时间")
-    device_info: dict | None = Field(default=None, description="设备信息（可选）")
+    device_info: dict[str, Any] | None = Field(default=None, description="设备信息（可选）")
     last_active: datetime | None = Field(default=None, description="最后活跃时间")
 
 

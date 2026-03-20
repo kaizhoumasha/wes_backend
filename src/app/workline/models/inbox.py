@@ -10,7 +10,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
@@ -77,11 +77,14 @@ class WorklineInboxBase(BaseMixin):
     # 消息标识
     kind: InboxKind = Field(
         index=True,
-        sa_type=SQLAEnum(
-            InboxKind,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                InboxKind,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="消息类型",
     )
@@ -96,11 +99,14 @@ class WorklineInboxBase(BaseMixin):
     # 来源信息
     source_system: SourceSystem = Field(
         index=True,
-        sa_type=SQLAEnum(
-            SourceSystem,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                SourceSystem,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="来源系统",
     )
@@ -158,11 +164,14 @@ class WorklineInboxBase(BaseMixin):
     status: InboxStatus = Field(
         default=InboxStatus.NEW,
         index=True,
-        sa_type=SQLAEnum(
-            InboxStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                InboxStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="处理状态",
     )
@@ -218,7 +227,7 @@ class WorklineInbox(
              FAILED
     """
 
-    __tablename__: str = "workline_inbox"
+    __tablename__: ClassVar[str] = "workline_inbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 关系定义

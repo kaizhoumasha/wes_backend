@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import EmailStr, field_validator
 from sqlalchemy import Index, text
@@ -54,7 +54,7 @@ class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=Tru
     继承 StandardMixin 获得时间戳字段和 repr 方法
     """
 
-    __tablename__: Literal["users"] = "users"
+    __tablename__: ClassVar[Literal["users"]] = "users"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value  # 系统管理表
     __table_args__ = (
         Index(

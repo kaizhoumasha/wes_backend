@@ -13,6 +13,7 @@ SDAF 控制循环:
 """
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from loguru import logger
 
@@ -68,7 +69,7 @@ class DeviceProcessor(ABC):
     # ==================== SDAF 控制循环方法 ====================
 
     @abstractmethod
-    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """
         验证事件数据 (Sense - 感知)
 
@@ -89,7 +90,7 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def decide_action(self, event_data: dict) -> dict | None:
+    async def decide_action(self, event_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         决策执行动作 (Decide - 决策)
 
@@ -114,7 +115,9 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
+    async def build_command(
+        self, action_params: dict[str, Any], correlation_id: str | None = None
+    ) -> CommandRequest:
         """
         构建指令请求 (Act - 执行)
 
@@ -142,7 +145,7 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def handle_result(self, result_data: dict) -> dict | None:
+    async def handle_result(self, result_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         处理执行结果 (Feedback - 反馈)
 
@@ -167,7 +170,7 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def handle_error(self, error: Exception, context: dict) -> None:
+    async def handle_error(self, error: Exception, context: dict[str, Any]) -> None:
         """
         处理错误情况
 
@@ -214,7 +217,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         """
         super().__init__(device_type)
 
-    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """
         默认事件验证实现
 
@@ -233,22 +236,25 @@ class BaseDeviceProcessor(DeviceProcessor):
 
         return True, None
 
-    async def decide_action(self, _event_data: dict) -> dict | None:
+    async def decide_action(self, event_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         默认决策实现
 
         子类应该重写此方法来实现具体的业务逻辑。
 
         Args:
-            _event_data: 事件数据字典（未使用，子类重写）
+            event_data: 事件数据字典（未使用，子类重写）
 
         Returns:
             动作参数字典，如果不需要动作返回 None
         """
+        _ = event_data
         logger.warning(f"{self.get_processor_name()} 未实现 decide_action 方法")
         return None
 
-    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
+    async def build_command(
+        self, action_params: dict[str, Any], correlation_id: str | None = None
+    ) -> CommandRequest:
         """
         默认指令构建实现
 
@@ -268,7 +274,7 @@ class BaseDeviceProcessor(DeviceProcessor):
             correlation_id=correlation_id,
         )
 
-    async def handle_result(self, result_data: dict) -> dict | None:
+    async def handle_result(self, result_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         默认结果处理实现
 
@@ -282,7 +288,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         _ = result_data  # 子类重写时使用
         return None
 
-    async def handle_error(self, error: Exception, context: dict) -> None:
+    async def handle_error(self, error: Exception, context: dict[str, Any]) -> None:
         """
         默认错误处理实现
 

@@ -9,15 +9,43 @@
 5. get_with_schema 和 get_all_with_schema 函数测试
 """
 
+from typing import Any, cast
+
 import pytest_asyncio
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import ColumnElement, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from src.app.admin.models.perm import Permission, PermissionTree
 from src.app.admin.models.role import Role
 from src.app.admin.models.user import User, UserResponse
 from src.core.mixins import DataTableMixin
 from src.core.schema_loader import apply_schema_loads, get_all_with_schema, get_with_schema
+from src.database.sqlite_schema import configure_sqlite_schemas
+
+
+def _where_clause(condition: Any) -> ColumnElement[bool]:
+    return cast(ColumnElement[bool], condition)
+
+
+def _is_null(column: Any) -> ColumnElement[bool]:
+    return cast(ColumnElement[bool], cast(Any, column).is_(None))
+
+
+def _desc(column: Any) -> Any:
+    return cast(Any, column).desc()
+
+
+def _roles(user: Any) -> list[Any]:
+    return cast(list[Any], getattr(user, "roles", []))
+
+
+def _permissions(role: Any) -> list[Any]:
+    return cast(list[Any], getattr(role, "permissions", []))
+
+
+def _children(node: Any) -> list[Any]:
+    return cast(list[Any], getattr(node, "children", []))
 
 # ==================== Fixtures ====================
 
@@ -28,7 +56,10 @@ async def db_engine():
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         echo=False,
+        poolclass=StaticPool,
     )
+
+    configure_sqlite_schemas(engine.sync_engine)
 
     # 创建所有表
     async with engine.begin() as conn:
@@ -42,9 +73,7 @@ async def db_engine():
 @pytest_asyncio.fixture
 async def db_session(db_engine):
     """创建数据库会话"""
-    from sqlalchemy.orm import sessionmaker
-
-    async_session = sessionmaker(
+    async_session = async_sessionmaker(
         db_engine,
         class_=AsyncSession,
         expire_on_commit=False,
@@ -235,7 +264,7 @@ class TestApplySchemaLoads:
     async def test_load_user_with_roles(self, db_session: AsyncSession, sample_data):
         """测试加载用户及其角色（多对多关系）"""
         # 构建查询
-        query = select(User).where(User.username == "admin")
+        query = select(User).where(_where_clause(User.username == "admin"))
         query = apply_schema_loads(query, User, UserResponse, max_depth=2)
 
         # 执行查询
@@ -245,13 +274,13 @@ class TestApplySchemaLoads:
         # 验证
         assert user is not None
         assert user.username == "admin"
-        assert len(user.roles) == 1
+        assert len(_roles(user)) == 1
         assert user.roles[0].name == "admin"
 
     async def test_load_user_with_nested_relations(self, db_session: AsyncSession, sample_data):
         """测试加载用户及其角色和权限（嵌套关系）"""
         # 构建查询
-        query = select(User).where(User.username == "admin")
+        query = select(User).where(_where_clause(User.username == "admin"))
         query = apply_schema_loads(query, User, UserResponse, max_depth=3)
 
         # 执行查询
@@ -260,13 +289,13 @@ class TestApplySchemaLoads:
 
         # 验证
         assert user is not None
-        assert len(user.roles) == 1
-        assert len(user.roles[0].permissions) == 6
+        assert len(_roles(user)) == 1
+        assert len(_permissions(_roles(user)[0])) == 6
 
     async def test_load_permission_tree(self, db_session: AsyncSession, sample_data):
         """测试加载权限树形结构（自引用关系）"""
         # 构建查询
-        query = select(Permission).where(Permission.parent_id.is_(None))
+        query = select(Permission).where(_is_null(Permission.parent_id))
         query = apply_schema_loads(query, Permission, PermissionTree, max_depth=3)
 
         # 执行查询
@@ -277,12 +306,12 @@ class TestApplySchemaLoads:
         assert len(root_perms) == 1
         root = root_perms[0]
         assert root.name == "admin:root"
-        assert len(root.children) == 2  # user_group, role_group
+        assert len(_children(root)) == 2  # user_group, role_group
 
     async def test_max_depth_limit(self, db_session: AsyncSession, sample_data):
         """测试最大深度限制"""
         # max_depth=1 应该只加载直接关系
-        query = select(User).where(User.username == "admin")
+        query = select(User).where(_where_clause(User.username == "admin"))
         query = apply_schema_loads(query, User, UserResponse, max_depth=1)
 
         result = await db_session.execute(query)
@@ -290,7 +319,7 @@ class TestApplySchemaLoads:
 
         # 验证：应该加载 roles，但不加载 roles.permissions
         assert user is not None
-        assert len(user.roles) == 1
+        assert len(_roles(user)) == 1
         # 注意：由于 max_depth=1，permissions 不会被加载
 
 
@@ -303,13 +332,13 @@ class TestGetWithSchema:
             db_session,
             User,
             UserResponse,
-            User.username == "admin",
+            _where_clause(User.username == "admin"),
             max_depth=2,
         )
 
         assert user is not None
         assert user.username == "admin"
-        assert len(user.roles) == 1
+        assert len(_roles(user)) == 1
 
     async def test_get_nonexistent_user(self, db_session: AsyncSession, sample_data):
         """测试获取不存在的用户"""
@@ -317,7 +346,7 @@ class TestGetWithSchema:
             db_session,
             User,
             UserResponse,
-            User.username == "nonexistent",
+            _where_clause(User.username == "nonexistent"),
         )
 
         assert user is None
@@ -328,13 +357,13 @@ class TestGetWithSchema:
             db_session,
             User,
             UserResponse,
-            User.username == "admin",
+            _where_clause(User.username == "admin"),
             max_depth=3,
         )
 
         assert user is not None
-        assert len(user.roles) == 1
-        assert len(user.roles[0].permissions) == 6
+        assert len(_roles(user)) == 1
+        assert len(_permissions(_roles(user)[0])) == 6
 
 
 class TestGetAllWithSchema:
@@ -350,7 +379,7 @@ class TestGetAllWithSchema:
         )
 
         assert len(users) == 2
-        assert all(len(user.roles) > 0 for user in users)
+        assert all(len(_roles(user)) > 0 for user in users)
 
     async def test_get_all_with_filter(self, db_session: AsyncSession, sample_data):
         """测试带过滤条件的查询"""
@@ -358,7 +387,7 @@ class TestGetAllWithSchema:
             db_session,
             User,
             UserResponse,
-            User.is_superuser == True,  # noqa: E712
+            _where_clause(User.is_superuser == True),  # noqa: E712
             max_depth=2,
         )
 
@@ -384,7 +413,7 @@ class TestGetAllWithSchema:
             db_session,
             User,
             UserResponse,
-            order_by=[User.username.desc()],
+            order_by=[_desc(User.username)],
             max_depth=2,
         )
 
@@ -399,7 +428,7 @@ class TestIntelligentLoadingStrategy:
     async def test_many_to_many_uses_selectinload(self, db_session: AsyncSession, sample_data):
         """测试多对多关系使用 selectinload"""
         # 构建查询
-        query = select(User).where(User.username == "admin")
+        query = select(User).where(_where_clause(User.username == "admin"))
         query = apply_schema_loads(query, User, UserResponse, max_depth=2)
 
         # 检查查询选项
@@ -409,7 +438,7 @@ class TestIntelligentLoadingStrategy:
 
         # 验证数据正确加载
         assert user is not None
-        assert len(user.roles) == 1
+        assert len(_roles(user)) == 1
         # 如果使用了正确的策略，应该不会有 N+1 查询问题
 
     async def test_relation_validation(self, db_session: AsyncSession, sample_data):
@@ -422,7 +451,7 @@ class TestIntelligentLoadingStrategy:
             username: str
             nonexistent_relation: list[dict] = []
 
-        query = select(User).where(User.username == "admin")
+        query = select(User).where(_where_clause(User.username == "admin"))
         # 应该不会抛出异常，只是忽略不存在的关系
         query = apply_schema_loads(query, User, InvalidSchema, max_depth=2)
 
@@ -441,7 +470,7 @@ class TestEdgeCases:
             db_session,
             User,
             UserResponse,
-            User.username == "nonexistent",
+            _where_clause(User.username == "nonexistent"),
         )
 
         assert len(users) == 0
@@ -467,7 +496,7 @@ class TestEdgeCases:
             db_session,
             User,
             SimpleSchema,
-            User.username == "simple",
+            _where_clause(User.username == "simple"),
         )
 
         assert result is not None
@@ -480,17 +509,17 @@ class TestEdgeCases:
             db_session,
             Permission,
             PermissionTree,
-            Permission.parent_id.is_(None),
+            _is_null(Permission.parent_id),
             max_depth=3,
         )
 
         assert len(perms) == 1
         root = perms[0]
-        assert len(root.children) == 2
+        assert len(_children(root)) == 2
 
         # 验证子权限也有子权限
-        user_group = next(c for c in root.children if "user" in c.name)
-        assert len(user_group.children) == 2
+        user_group = next(c for c in _children(root) if "user" in c.name)
+        assert len(_children(user_group)) == 2
 
 
 class TestPerformance:
@@ -511,8 +540,8 @@ class TestPerformance:
         # 验证所有用户的关系都已加载
         assert len(users) == 2
         for user in users:
-            assert len(user.roles) > 0
-            for role in user.roles:
+            assert len(_roles(user)) > 0
+            for role in _roles(user):
                 # 权限应该已经加载，不需要额外查询
                 assert hasattr(role, "permissions")
 
@@ -530,21 +559,21 @@ class TestIntegration:
             db_session,
             User,
             UserResponse,
-            User.username == "admin",
+            _where_clause(User.username == "admin"),
             max_depth=3,
         )
 
         # 验证完整层级
         assert user is not None
         assert user.username == "admin"
-        assert len(user.roles) == 1
+        assert len(_roles(user)) == 1
 
-        role = user.roles[0]
+        role = _roles(user)[0]
         assert role.name == "admin"
-        assert len(role.permissions) == 6
+        assert len(_permissions(role)) == 6
 
         # 验证权限详情
-        perm_names = [p.name for p in role.permissions]
+        perm_names = [p.name for p in _permissions(role)]
         assert "admin:root" in perm_names
         assert "admin:user:create" in perm_names
 
@@ -555,7 +584,7 @@ class TestIntegration:
             db_session,
             Permission,
             PermissionTree,
-            Permission.parent_id.is_(None),
+            _is_null(Permission.parent_id),
             max_depth=4,
         )
 
@@ -564,16 +593,16 @@ class TestIntegration:
 
         # 验证树形结构
         assert root.name == "admin:root"
-        assert len(root.children) == 2
+        assert len(_children(root)) == 2
 
         # 验证第二层（分组）
-        user_group = next(c for c in root.children if "user" in c.name)
-        role_group = next(c for c in root.children if "role" in c.name)
+        user_group = next(c for c in _children(root) if "user" in c.name)
+        role_group = next(c for c in _children(root) if "role" in c.name)
 
-        assert len(user_group.children) == 2
-        assert len(role_group.children) == 1
+        assert len(_children(user_group)) == 2
+        assert len(_children(role_group)) == 1
 
         # 验证第三层（API 权限）
-        create_perm = next(c for c in user_group.children if "create" in c.name)
+        create_perm = next(c for c in _children(user_group) if "create" in c.name)
         assert create_perm.name == "admin:user:create"
         assert create_perm.method == "POST"

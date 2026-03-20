@@ -15,7 +15,7 @@ import json
 import random
 import time
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from redis.asyncio import Redis
 
@@ -417,7 +417,7 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return False
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         """
         获取缓存服务状态
 
@@ -486,7 +486,7 @@ class RedisCache:
         try:
             result = await self.redis.eval(lua_script, 1, redis_key, expire)  # type: ignore[arg-type]
             self.circuit_breaker.record_success()
-            return int(result) if result is not None else None
+            return int(cast("int | str", result)) if result is not None else None
         except Exception as e:
             logger.error(f"递增缓存失败: {key}, error: {e}")
             self.circuit_breaker.record_failure()

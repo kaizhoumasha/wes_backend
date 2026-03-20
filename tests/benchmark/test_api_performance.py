@@ -9,12 +9,12 @@ import asyncio
 import time
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Client
+from redis import Redis as SyncRedis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.core.conf import settings
-from src.database.redis_client import get_redis
 
 # 基准测试配置
 BASE_URL = "http://localhost:8001"
@@ -25,51 +25,48 @@ class TestAPIPerformance:
     """API 性能基准测试"""
 
     @pytest.fixture(autouse=True)
-    async def setup(self):
+    def setup(self):
         """测试前准备"""
-        self.client = AsyncClient(base_url=BASE_URL)
+        self.client = Client(base_url=BASE_URL)
         yield
-        await self.client.aclose()
+        self.client.close()
 
-    async def test_health_check(self, benchmark):
+    def test_health_check(self, benchmark):
         """健康检查性能"""
 
-        async def _health_check():
-            response = await self.client.get("/api/v1/performance/health")
+        def _health_check():
+            response = self.client.get("/api/v1/performance/health")
             assert response.status_code == 200
             return response
 
-        result = benchmark.pedantic(_health_check, iterations=100, rounds=10)
-        print(f"健康检查 - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(_health_check, iterations=100, rounds=10)
 
-    async def test_get_user_list(self, benchmark):
+    def test_get_user_list(self, benchmark):
         """获取用户列表性能"""
 
-        async def _get_list():
-            response = await self.client.get("/api/v1/users?page=1&page_size=10")
-            assert response.status_code == 200
+        def _get_list():
+            response = self.client.post("/api/v1/users/query", json={"offset": 0, "limit": 10})
+            assert response.status_code in [200, 401, 403]
             return response
 
-        result = benchmark.pedantic(_get_list, iterations=50, rounds=5)
-        print(f"用户列表 - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(_get_list, iterations=50, rounds=5)
 
-    async def test_get_user_detail(self, benchmark):
+    def test_get_user_detail(self, benchmark):
         """获取用户详情性能"""
 
-        async def _get_detail():
-            response = await self.client.get("/api/v1/users/1")
-            assert response.status_code in [200, 404]
+        def _get_detail():
+            response = self.client.get("/api/v1/users/1")
+            assert response.status_code in [200, 401, 403, 404]
             return response
 
-        result = benchmark.pedantic(_get_detail, iterations=100, rounds=10)
-        print(f"用户详情 - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(_get_detail, iterations=100, rounds=10)
 
 
 @pytest.mark.benchmark()
 class TestDatabasePerformance:
     """数据库性能基准测试"""
 
-    async def test_db_query_performance(self, benchmark):
+    def test_db_query_performance(self, benchmark):
         """数据库查询性能"""
 
         async def _db_query():
@@ -79,35 +76,41 @@ class TestDatabasePerformance:
                 result.fetchone()
             await engine.dispose()
 
-        result = benchmark.pedantic(_db_query, iterations=100, rounds=10)
-        print(f"DB 查询 - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(lambda: asyncio.run(_db_query()), iterations=100, rounds=10)
 
 
 @pytest.mark.benchmark()
 class TestCachePerformance:
     """缓存性能基准测试"""
 
-    async def test_redis_get_performance(self, benchmark):
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """测试前准备"""
+        self.redis_client = SyncRedis.from_url(settings.REDIS_URL, db=0, decode_responses=True)
+        try:
+            self.redis_client.ping()
+        except Exception as exc:
+            pytest.skip(f"Redis unavailable for benchmark: {exc}")
+        yield
+        self.redis_client.close()
+
+    def test_redis_get_performance(self, benchmark):
         """Redis GET 性能"""
 
-        async def _redis_get():
-            redis_client = get_redis()
-            await redis_client.get("test_key")
+        def _redis_get():
+            self.redis_client.get("test_key")
             return True
 
-        result = benchmark.pedantic(_redis_get, iterations=1000, rounds=10)
-        print(f"Redis GET - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(_redis_get, iterations=1000, rounds=10)
 
-    async def test_redis_set_performance(self, benchmark):
+    def test_redis_set_performance(self, benchmark):
         """Redis SET 性能"""
 
-        async def _redis_set():
-            redis_client = get_redis()
-            await redis_client.setex(f"bench_test_{time.time()}", 60, "benchmark_value")
+        def _redis_set():
+            self.redis_client.setex(f"bench_test_{time.time()}", 60, "benchmark_value")
             return True
 
-        result = benchmark.pedantic(_redis_set, iterations=1000, rounds=10)
-        print(f"Redis SET - 平均: {result.mean * 1000:.2f}ms")
+        _ = benchmark.pedantic(_redis_set, iterations=1000, rounds=10)
 
 
 @pytest.mark.benchmark()

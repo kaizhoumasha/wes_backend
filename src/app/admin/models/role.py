@@ -4,7 +4,7 @@
 包含 Role 数据库表模型和相关的 Pydantic Schemas
 """
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from sqlmodel import Field, Index
 
@@ -26,7 +26,7 @@ class RoleBase(BaseMixin):
 class Role(RoleBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """角色表"""
 
-    __tablename__: Literal["roles"] = "roles"
+    __tablename__: ClassVar[Literal["roles"]] = "roles"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value  # 系统管理表
 
     __table_args__ = (

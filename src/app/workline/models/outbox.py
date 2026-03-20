@@ -10,7 +10,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
@@ -77,11 +77,14 @@ class WorklineOutboxBase(BaseMixin):
     # 派发信息
     dispatch_type: DispatchType = Field(
         index=True,
-        sa_type=SQLAEnum(
-            DispatchType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                DispatchType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="派发类型",
     )
@@ -95,11 +98,14 @@ class WorklineOutboxBase(BaseMixin):
     # 目标信息
     target_type: TargetType = Field(
         index=True,
-        sa_type=SQLAEnum(
-            TargetType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TargetType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="目标类型",
     )
@@ -120,11 +126,14 @@ class WorklineOutboxBase(BaseMixin):
     status: OutboxStatus = Field(
         default=OutboxStatus.NEW,
         index=True,
-        sa_type=SQLAEnum(
-            OutboxStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                OutboxStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="派发状态",
     )
@@ -196,7 +205,7 @@ class WorklineOutbox(
     - INTERNAL_SIGNAL: 发送内部信号
     """
 
-    __tablename__: str = "workline_outbox"
+    __tablename__: ClassVar[str] = "workline_outbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 关系定义

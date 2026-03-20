@@ -55,7 +55,7 @@ class DeviceEventLogRepository(BaseRepository[DeviceEventLog]):
                 error_message=error_message,
             )
         )
-        await db.execute(stmt)
+        _ = await db.execute(stmt)
 
         # 刷新实例以获取更新后的值
         await db.refresh(event_log)

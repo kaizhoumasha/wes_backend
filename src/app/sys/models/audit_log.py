@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, ClassVar, Literal, cast
 
 import sqlalchemy as sa
 from sqlalchemy import Enum as SQLAEnum
@@ -37,17 +37,17 @@ class AuditLogBase(BaseMixin):
     os: str | None = Field(default=None, max_length=64)
     browser: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
-    args: dict | None = Field(default=None, sa_type=sa.JSON)
+    args: dict[str, Any] | None = Field(default=None, sa_type=sa.JSON)
 
     # 🔥 使用 VARCHAR + CHECK 约束
     status: OperaStatus = Field(
         default=OperaStatus.SUCCESS,
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             OperaStatus,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="操作状态",
     )
 
@@ -66,7 +66,7 @@ class AuditLog(AuditLogBase, DataTableMixin, table=True):  # type: ignore[misc]
     AuditLog 数据库表模型
     """
 
-    __tablename__: Literal["audit_logs"] = "audit_logs"
+    __tablename__: ClassVar[Literal["audit_logs"]] = "audit_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
 
     __schema__ = SchemaType.SYS.value
 

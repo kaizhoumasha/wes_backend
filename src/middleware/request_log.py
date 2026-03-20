@@ -4,13 +4,15 @@ FastAPI 中间件模块
 
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from typing import Any, cast
 
 from fastapi.responses import ORJSONResponse
+import starlette_context
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette_context import request_cycle_context
 
 from src.core.conf import settings
 from src.core.logger import logger
@@ -35,7 +37,7 @@ def should_skip_log(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in SKIP_LOG_PATHS)
 
 
-async def attend_state_info(request: StarletteRequest):
+async def attend_state_info(request: StarletteRequest) -> None:
     """附加请求信息"""
     ip_info = await parse_ip_info(request)
     ua_info = parse_user_agent_info(request)
@@ -51,6 +53,12 @@ async def attend_state_info(request: StarletteRequest):
     request.state.device = ua_info.device
 
 
+@contextmanager
+def request_cycle_context(initial_data: dict[str, Any]) -> Iterator[None]:
+    with cast("Any", starlette_context.request_cycle_context)(initial_data):
+        yield
+
+
 class RequestLogMiddleware(BaseHTTPMiddleware):
     """
     请求日志中间件
@@ -59,7 +67,11 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
     实现自动链路追踪
     """
 
-    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> StarletteResponse:
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: Callable[[StarletteRequest], Awaitable[StarletteResponse]],
+    ) -> StarletteResponse:
         method = request.method
         path = request.url.path
 
@@ -77,7 +89,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
             try:
                 await attend_state_info(request)
-                response = await call_next(request)
+                response = cast("StarletteResponse", await call_next(request))
 
                 # 计算处理时间
                 process_time = (time.time() - start_time) * 1000

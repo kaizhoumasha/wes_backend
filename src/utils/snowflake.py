@@ -44,7 +44,6 @@ JavaScript 兼容性:
 
 import threading
 import time
-from typing import Optional
 
 
 class SnowflakeConfig:
@@ -128,19 +127,6 @@ class SnowflakeIDGenerator:
     - 每毫秒64个ID对大多数场景足够
     """
 
-    _instance: Optional["SnowflakeIDGenerator"] = None
-    _lock = threading.Lock()
-
-    def __new__(cls, _datacenter_id: int = 0, _worker_id: int = 0):
-        """单例模式"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    instance = super().__new__(cls)
-                    instance._initialized = False
-                    cls._instance = instance
-        return cls._instance
-
     def __init__(self, datacenter_id: int = 0, worker_id: int = 0):
         """
         初始化雪花 ID 生成器
@@ -148,25 +134,17 @@ class SnowflakeIDGenerator:
         :param datacenter_id: 数据中心 ID (0-7)
         :param worker_id: 工作机器 ID (0-7)
         """
-        with self._lock:
-            if hasattr(self, "_initialized") and self._initialized:
-                return
+        self.datacenter_id = datacenter_id
+        self.worker_id = worker_id
+        self.sequence = 0
+        self.last_timestamp = -1
+        self._instance_lock = threading.Lock()
 
-            self.datacenter_id = datacenter_id
-            self.worker_id = worker_id
-            self.sequence = 0
-            self.last_timestamp = -1
-            self._instance_lock = threading.Lock()
-
-            # 验证参数
-            if not (0 <= self.datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
-                raise ValueError(
-                    f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，当前值: {self.datacenter_id}"
-                )
-            if not (0 <= self.worker_id <= SnowflakeConfig.MAX_WORKER_ID):
-                raise ValueError(f"worker_id 必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间，当前值: {self.worker_id}")
-
-            self._initialized = True
+        # 验证参数
+        if not (0 <= self.datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
+            raise ValueError(f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，当前值: {self.datacenter_id}")
+        if not (0 <= self.worker_id <= SnowflakeConfig.MAX_WORKER_ID):
+            raise ValueError(f"worker_id 必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间，当前值: {self.worker_id}")
 
     def _current_millis(self) -> int:
         """获取当前时间戳（毫秒）"""
@@ -230,7 +208,7 @@ class SnowflakeIDGenerator:
             return snowflake_id
 
     @staticmethod
-    def parse_id(snowflake_id: int) -> dict:
+    def parse_id(snowflake_id: int) -> dict[str, int | str]:
         """
         解析53位雪花 ID
 
@@ -252,8 +230,8 @@ class SnowflakeIDGenerator:
         }
 
 
-# 全局默认实例（从配置文件读取，默认使用 datacenter_id=0, worker_id=0）
-_default_generator: SnowflakeIDGenerator | None = None
+# 全局缓存实例（按 datacenter_id, worker_id 复用）
+_generator_cache: dict[tuple[int, int], SnowflakeIDGenerator] = {}
 
 
 def get_snowflake_generator(datacenter_id: int | None = None, worker_id: int | None = None) -> SnowflakeIDGenerator:
@@ -264,8 +242,6 @@ def get_snowflake_generator(datacenter_id: int | None = None, worker_id: int | N
     :param worker_id: 工作机器 ID (0-7)，如果为 None 则从配置文件读取
     :return: 雪花 ID 生成器实例
     """
-    global _default_generator
-
     # 如果未提供参数，从配置文件读取
     if datacenter_id is None or worker_id is None:
         try:
@@ -282,9 +258,12 @@ def get_snowflake_generator(datacenter_id: int | None = None, worker_id: int | N
             if worker_id is None:
                 worker_id = 0
 
-    if _default_generator is None:
-        _default_generator = SnowflakeIDGenerator(datacenter_id, worker_id)
-    return _default_generator
+    cache_key = (datacenter_id, worker_id)
+    generator = _generator_cache.get(cache_key)
+    if generator is None:
+        generator = SnowflakeIDGenerator(datacenter_id, worker_id)
+        _generator_cache[cache_key] = generator
+    return generator
 
 
 def generate_snowflake_id(datacenter_id: int | None = None, worker_id: int | None = None) -> int:

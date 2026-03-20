@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from src.core.conf import settings
 from src.register import register_app
 
-load_dotenv()
+_ = load_dotenv()
 
 app = register_app()
 

@@ -24,6 +24,10 @@ class ResponseCode(str, Enum):
     所有响应码都继承自此类，确保类型安全和一致性。
     """
 
+    code: str
+    message: str
+    http_status: int
+
     def __new__(cls, code: str, message: str, http_status: int = 200):
         """
         创建响应码枚举实例

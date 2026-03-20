@@ -11,9 +11,10 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, Column, Enum as SQLAEnum
+from sqlalchemy import JSON, Column
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Index, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -79,12 +80,12 @@ class DeviceBase(BaseMixin):
 
     # 🔥 使用 VARCHAR + CHECK 约束
     device_type: DeviceType = Field(
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             DeviceType,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="设备类型",
     )
 
@@ -133,12 +134,12 @@ class DeviceBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     protocol: DeviceProtocol = Field(
         default=DeviceProtocol.HTTP,
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             DeviceProtocol,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="通信协议",
     )
 
@@ -149,12 +150,12 @@ class DeviceBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     device_status: DeviceStatus = Field(
         default=DeviceStatus.IDLE,
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             DeviceStatus,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="设备实时状态（IDLE/RUNNING/ERROR/OFFLINE）",
     )
 
@@ -221,7 +222,7 @@ class Device(
     - events: 设备事件（一对多，在 event_log.py 中定义）
     """
 
-    __tablename__: Literal["devices"] = "devices"
+    __tablename__: ClassVar[Literal["devices"]] = "devices"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 部分唯一索引：软删除后可重用 device_code

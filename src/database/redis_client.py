@@ -7,6 +7,7 @@ Redis 连接管理器（支持优雅降级 + 自动重连）
 
 import asyncio
 import time
+from typing import Any, cast
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.exceptions import AuthenticationError, ConnectionError, TimeoutError
@@ -26,6 +27,7 @@ class RedisManager:
         self.is_available: bool = False  # Redis 是否可用
         self._last_reconnect_attempt: float = 0  # 上次重连尝试时间
         self._reconnect_interval: int = 30  # 重连间隔（秒）
+        self._loop_id: int | None = None  # 创建当前 Redis 客户端的事件循环
 
     async def init_redis(self) -> None:
         """
@@ -35,18 +37,23 @@ class RedisManager:
         应用将以降级模式运行（直接查询数据库）。
         """
         try:
-            self.connection_pool = ConnectionPool.from_url(
-                settings.REDIS_URL,
-                db=0,
-                decode_responses=True,
-                max_connections=50,
-                retry_on_timeout=True,
-                health_check_interval=30,
+            connection_pool_cls = cast(Any, ConnectionPool)
+            self.connection_pool = cast(
+                ConnectionPool,
+                connection_pool_cls.from_url(
+                    settings.REDIS_URL,
+                    db=0,
+                    decode_responses=True,
+                    max_connections=50,
+                    retry_on_timeout=True,
+                    health_check_interval=30,
+                ),
             )
             self.redis_client = Redis(connection_pool=self.connection_pool)
+            self._loop_id = id(asyncio.get_running_loop())
 
             # 测试连接
-            await self.redis_client.ping()
+            await cast("Any", self.redis_client).ping()
             self.is_available = True
             logger.info("✓ Redis 连接成功")
 
@@ -54,6 +61,7 @@ class RedisManager:
             self.is_available = False
             self.redis_client = None
             self.connection_pool = None
+            self._loop_id = None
             logger.warning(
                 f"⚠️  Redis 连接失败: {e}\n   应用将以降级模式运行（无缓存）\n   系统将自动检测 Redis 恢复并重连"
             )
@@ -62,6 +70,7 @@ class RedisManager:
             self.is_available = False
             self.redis_client = None
             self.connection_pool = None
+            self._loop_id = None
             logger.warning(
                 f"⚠️  Redis 初始化发生未知错误: {e}\n"
                 f"   应用将以降级模式运行（无缓存）\n"
@@ -106,7 +115,11 @@ class RedisManager:
         if self.is_available and self.redis_client:
             try:
                 # 快速检查连接
-                await asyncio.wait_for(self.redis_client.ping(), timeout=1.0)
+                ping_result = cast(Any, self.redis_client).ping()
+                if asyncio.iscoroutine(ping_result):
+                    await asyncio.wait_for(ping_result, timeout=1.0)
+                elif not ping_result:
+                    raise ConnectionError("Redis ping failed")
                 return True
             except TimeoutError:
                 logger.warning("Redis 连接超时，尝试重连...")
@@ -146,6 +159,18 @@ class RedisManager:
 
         :return: Redis 客户端，如果不可用返回 None
         """
+        if self.redis_client is None:
+            return None
+
+        try:
+            current_loop_id = id(asyncio.get_running_loop())
+        except RuntimeError:
+            return self.redis_client
+
+        if self._loop_id is not None and current_loop_id != self._loop_id:
+            logger.warning("检测到跨事件循环复用 Redis 客户端，自动降级为无缓存模式")
+            return None
+
         return self.redis_client
 
     def is_redis_available(self) -> bool:

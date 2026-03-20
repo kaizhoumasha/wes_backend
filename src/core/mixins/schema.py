@@ -24,7 +24,7 @@ Schema Mixin
         name: str
 """
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from sqlmodel import SQLModel
 
@@ -96,12 +96,13 @@ class SchemaMixin(SQLModel):
 
         # 如果是元组形式（包含索引、约束等）
         if isinstance(existing_table_args, tuple):
+            table_args = cast("tuple[Any, ...]", existing_table_args)
             # 检查最后一个元素是否是字典
-            if len(existing_table_args) > 0 and isinstance(existing_table_args[-1], dict):
+            if len(table_args) > 0 and isinstance(table_args[-1], dict):
                 # 最后一个元素是字典，添加 schema（如果不存在）
-                table_args_dict = existing_table_args[-1]
+                table_args_dict = cast("dict[str, str]", table_args[-1])
                 if "schema" not in table_args_dict:
                     table_args_dict["schema"] = schema
             else:
                 # 没有字典元素，创建一个并添加到元组末尾
-                cls.__table_args__ = (*existing_table_args, {"schema": schema})
+                cls.__table_args__ = (*table_args, {"schema": schema})

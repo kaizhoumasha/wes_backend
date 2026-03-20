@@ -159,7 +159,7 @@ class BatchOperationResult(BaseModel):
     failed: int = Field(default=0, ge=0, description="失败数量")
     total: int = Field(default=0, ge=0, description="总数量")
     results: list[Any] | None = Field(default=None, description="详细结果列表")
-    errors: list[dict] | None = Field(default=None, description="错误信息列表")
+    errors: list[dict[str, Any]] | None = Field(default=None, description="错误信息列表")
 
     @classmethod
     def create(
@@ -167,7 +167,7 @@ class BatchOperationResult(BaseModel):
         success: int,
         failed: int,
         results: list[Any] | None = None,
-        errors: list[dict] | None = None,
+        errors: list[dict[str, Any]] | None = None,
     ) -> "BatchOperationResult":
         """
         创建批量操作结果

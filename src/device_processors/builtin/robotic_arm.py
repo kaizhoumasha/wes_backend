@@ -10,6 +10,7 @@
 """
 
 import uuid
+from typing import Any
 
 from loguru import logger
 
@@ -36,7 +37,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         super().__init__(device_type="ROBOTIC_ARM")
         self.default_device_code = "ROBOT-ARM-01"  # 默认机械臂设备编码
 
-    async def validate_event(self, event_data: dict) -> tuple[bool, str | None]:
+    async def validate_event(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """
         验证机械臂事件数据
 
@@ -77,7 +78,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
 
         return True, None
 
-    async def decide_action(self, event_data: dict) -> dict | None:
+    async def decide_action(self, event_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         决策执行动作
 
@@ -141,7 +142,9 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         logger.warning(f"机械臂未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(self, action_params: dict, correlation_id: str | None = None) -> CommandRequest:
+    async def build_command(
+        self, action_params: dict[str, Any], correlation_id: str | None = None
+    ) -> CommandRequest:
         """
         构建机械臂指令请求
 
@@ -171,7 +174,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
             correlation_id=correlation_id,
         )
 
-    async def handle_result(self, result_data: dict) -> dict | None:
+    async def handle_result(self, result_data: dict[str, Any]) -> dict[str, Any] | None:
         """
         处理机械臂执行结果
 
@@ -204,7 +207,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         logger.error(f"机械臂执行失败: {error_detail}")
         return None
 
-    async def handle_error(self, error: Exception, context: dict) -> None:
+    async def handle_error(self, error: Exception, context: dict[str, Any]) -> None:
         """
         处理机械臂错误
 

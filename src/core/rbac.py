@@ -25,7 +25,7 @@ RBAC 权限控制模块
 """
 
 from collections.abc import Iterable
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +84,7 @@ async def _set_perms_to_cache(
         permissions: 权限集合
     """
     key = _get_perm_cache_key(user_id)
-    await set_cached_value(cache, key, list(permissions), expire=expire)
+    _ = await set_cached_value(cache, key, list(permissions), expire=expire)
 
 
 async def invalidate_user_permissions(cache: CacheDep, user_id: int) -> None:
@@ -101,7 +101,7 @@ async def invalidate_user_permissions(cache: CacheDep, user_id: int) -> None:
         user_id: 用户 ID
     """
     key = _get_perm_cache_key(user_id)
-    await cache.delete(key)
+    _ = await cache.delete(key)
 
 
 async def invalidate_users_permissions(cache: CacheDep, user_ids: Iterable[int]) -> None:
@@ -212,8 +212,8 @@ def RequirePermission(permission_name: str, use_cache: bool = True):
             raise PermissionException(f"需要权限: {permission_name}")
 
     # 挂载元数据，方便扫描器读取
-    verify_permission.permission_required = permission_name
-    verify_permission.is_rbac = True
+    cast("Any", verify_permission).permission_required = permission_name
+    cast("Any", verify_permission).is_rbac = True
 
     return verify_permission
 
@@ -237,7 +237,7 @@ async def require_superuser(
         raise PermissionException("需要超级用户权限")
 
 
-require_superuser.is_superuser = True
+cast("Any", require_superuser).is_superuser = True
 
 
 # ==================== 类型提示 ====================

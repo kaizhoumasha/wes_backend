@@ -12,7 +12,8 @@
 - GET /api/v1/auth/permissions - 获取当前用户的 API 权限列表
 """
 
-from typing import Annotated, cast
+from collections.abc import Sequence
+from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
@@ -36,16 +37,29 @@ from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+response_builder_any = cast(Any, response_builder)
+
+
+class PermissionLike(Protocol):
+    id: int | None
+    name: str
+    description: str | None
+    type: str
+    category: str | None
+    resource: str | None
+    action: str | None
+    method: str | None
+    path: str | None
 
 
 # ==================== 辅助函数 ====================
 
 
-def _to_permission_infos(permissions: list) -> list[ApiPermissionInfo]:
+def _to_permission_infos(permissions: Sequence[PermissionLike]) -> list[ApiPermissionInfo]:
     """权限模型转 ApiPermissionInfo 列表"""
     return [
         ApiPermissionInfo(
-            id=perm.id,
+            id=perm.id or 0,
             name=perm.name,
             description=perm.description,
             type=perm.type,
@@ -92,7 +106,7 @@ async def login(
         password=credentials.password,
         response=response,
     )
-    return cast("ResponseSchemaModel[LoginResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[LoginResponse]", response_builder_any.success(data=result))
 
 
 @router.post(
@@ -119,7 +133,7 @@ async def refresh_token(
     """
     # Cookie 策略由 AuthService 统一处理，避免路由层重复设置造成策略漂移
     result = await auth_service.refresh_token(db=db, request=request, response=response)
-    return cast("ResponseSchemaModel[RefreshTokenResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[RefreshTokenResponse]", response_builder_any.success(data=result))
 
 
 @router.post(
@@ -143,7 +157,7 @@ async def logout(
     """
     revoked_count = await auth_service.logout(request=request, response=response)
     result = LogoutResponse(message="登出成功", revoked_count=revoked_count)
-    return cast("ResponseSchemaModel[LogoutResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[LogoutResponse]", response_builder_any.success(data=result))
 
 
 @router.post(
@@ -171,7 +185,7 @@ async def logout_all(
     """
     revoked_count = await auth_service.logout_all(response=response, current_user_id=current_user)
     result = LogoutResponse(message=f"已撤销 {revoked_count} 个令牌", revoked_count=revoked_count)
-    return cast("ResponseSchemaModel[LogoutResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[LogoutResponse]", response_builder_any.success(data=result))
 
 
 # ==================== 会话管理端点 ====================
@@ -201,7 +215,7 @@ async def get_active_sessions(
     - 检测异常登录
     """
     result = await auth_service.get_active_sessions(current_user)
-    return cast("ResponseSchemaModel[ActiveSessionsResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[ActiveSessionsResponse]", response_builder_any.success(data=result))
 
 
 @router.delete(
@@ -229,9 +243,9 @@ async def revoke_session(
     - 撤销关联的 Refresh Token
     - 删除会话信息
     """
-    await auth_service.revoke_session(current_user, session_uuid)
+    _ = await auth_service.revoke_session(current_user, session_uuid)
     result = RevokeSessionResponse(message="会话已撤销", session_uuid=session_uuid)
-    return cast("ResponseSchemaModel[RevokeSessionResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[RevokeSessionResponse]", response_builder_any.success(data=result))
 
 
 # ==================== 权限端点 ====================
@@ -263,7 +277,7 @@ async def get_my_context(
         permissions=_to_permission_infos(permissions),
         menus=menus,
     )
-    return cast("ResponseSchemaModel[AuthMyResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[AuthMyResponse]", response_builder_any.success(data=result))
 
 
 @router.get(
@@ -302,4 +316,4 @@ async def get_user_permissions(
 
     permission_infos = _to_permission_infos(permissions)
     result = UserPermissionsResponse(total=len(permission_infos), permissions=permission_infos)
-    return cast("ResponseSchemaModel[UserPermissionsResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[UserPermissionsResponse]", response_builder_any.success(data=result))

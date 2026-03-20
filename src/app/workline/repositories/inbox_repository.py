@@ -1,6 +1,7 @@
 """WorklineInbox Repository 层"""
 
 import hashlib
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,9 +27,10 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         idempotency_key: str,
     ) -> WorklineInbox | None:
         """根据幂等键查询（用于幂等检查）"""
+        columns = cast("Any", WorklineInbox).__table__.c
         result = await db.execute(
             select(WorklineInbox).where(
-                WorklineInbox.idempotency_key == idempotency_key,
+                columns.idempotency_key == idempotency_key,
             )
         )
         return result.scalar_one_or_none()
@@ -39,10 +41,11 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         limit: int = 10,
     ) -> list[WorklineInbox]:
         """获取待处理的新消息"""
+        columns = cast("Any", WorklineInbox).__table__.c
         result = await db.execute(
             select(WorklineInbox)
-            .where(WorklineInbox.status == InboxStatus.NEW)
-            .order_by(WorklineInbox.received_at)
+            .where(columns.status == InboxStatus.NEW)
+            .order_by(columns.received_at)
             .limit(limit)
             .with_for_update()  # 加锁，避免并发消费
         )
@@ -55,10 +58,11 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         limit: int = 100,
     ) -> list[WorklineInbox]:
         """根据消息类型查询"""
+        columns = cast("Any", WorklineInbox).__table__.c
         result = await db.execute(
             select(WorklineInbox)
-            .where(WorklineInbox.kind == kind)
-            .order_by(WorklineInbox.received_at.desc())
+            .where(columns.kind == kind)
+            .order_by(columns.received_at.desc())
             .limit(limit)
         )
         return list(result.scalars().all())
@@ -68,7 +72,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         device_code: str,
         event_type: str,
         timestamp: int,
-        data: dict,
+        data: dict[str, Any],
     ) -> str:
         """
         计算设备事件的幂等键
@@ -78,12 +82,13 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         - 若无，则 device_code + event_type + timestamp + payload_hash
         """
         # 尝试从 data 中获取厂商事件 ID
-        vendor_event_id = data.get("event_id") or data.get("vendor_event_id")
+        vendor_event_id = cast("str | None", data.get("event_id") or data.get("vendor_event_id"))
         if vendor_event_id:
             return f"device_event:{vendor_event_id}"
 
         # 计算 payload_hash
-        payload_str = str(sorted(data.items()))  # 确保字典顺序一致
+        payload_items: list[tuple[str, Any]] = sorted(data.items())
+        payload_str = str(payload_items)  # 确保字典顺序一致
         payload_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]  # noqa: S324
 
         # 组合键
@@ -94,7 +99,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         command_code: str,
         result: str,
         finish_time: int,
-        data: dict,
+        data: dict[str, Any],
     ) -> str:
         """
         计算指令结果的幂等键
@@ -103,7 +108,8 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         - command_code + result + finish_time + payload_hash
         """
         # 计算 payload_hash
-        payload_str = str(sorted(data.items()))  # 确保字典顺序一致
+        payload_items: list[tuple[str, Any]] = sorted(data.items())
+        payload_str = str(payload_items)  # 确保字典顺序一致
         payload_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]  # noqa: S324
 
         # 组合键

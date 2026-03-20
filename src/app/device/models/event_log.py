@@ -10,10 +10,11 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from pydantic import BaseModel, field_validator
-from sqlalchemy import JSON, Column, Enum as SQLAEnum, Text
+from sqlalchemy import JSON, Column, Text
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, SoftDeleteMixin
@@ -58,11 +59,14 @@ class DeviceEventLogBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     event_type: EventType = Field(
         index=True,
-        sa_type=SQLAEnum(
-            EventType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                EventType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="事件类型",
     )
@@ -142,7 +146,7 @@ class DeviceEventLog(
     - correlation_id: 关联 ID（串联相关事件和指令）
     """
 
-    __tablename__: str = "device_event_logs"
+    __tablename__: ClassVar[str] = "device_event_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 处理状态（不在 Base 中，因为这是事件日志特有的）

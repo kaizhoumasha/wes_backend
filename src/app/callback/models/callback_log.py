@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column, Text
@@ -38,7 +38,7 @@ class CallbackLog(DataTableMixin, SoftDeleteMixin, table=True):
     - correlation_id: 关联 ID（串联整个流程）
     """
 
-    __tablename__: str = "callback_logs"
+    __tablename__: ClassVar[str] = "callback_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 回调信息

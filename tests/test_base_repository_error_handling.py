@@ -160,7 +160,7 @@ class TestBaseRepositoryErrorHandling:
         with pytest.raises(ConflictException) as exc_info:
             self.repo._handle_integrity_error(error)
 
-        assert "已存在" in str(exc_info.value)
+        assert "已被使用" in str(exc_info.value)
 
     def test_handle_integrity_error_not_null(self):
         """测试处理非空约束错误"""

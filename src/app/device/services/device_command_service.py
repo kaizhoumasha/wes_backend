@@ -8,7 +8,7 @@
 """
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from loguru import logger
@@ -89,13 +89,13 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             correlation_id = str(uuid.uuid4())
 
         # 创建指令记录
-        command_data = {
+        command_data: dict[str, Any] = {
             "command_code": command_code,
             "device_id": command_request.device_id,
             "task_type": command_request.task_type,
             "priority": command_request.priority,
             "timeout_ms": command_request.timeout_ms,
-            "params": command_request.params,
+            "params": cast("dict[str, Any] | None", command_request.params),
             "correlation_id": correlation_id,
             "status": CommandStatus.PENDING,
         }
@@ -134,12 +134,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             device_url = await self._get_device_url(db, command.device_id)
 
         # 3. 构建请求体（白皮书 3.1.1 格式）
-        request_body = {
+        request_body: dict[str, Any] = {
             "command_code": command.command_code,
             "task_type": command.task_type.value,
             "priority": command.priority,
             "timeout": command.timeout_ms,
-            "params": command.params,
+            "params": cast("dict[str, Any] | None", command.params),
             "timestamp": int(timezone.now_utc().timestamp() * 1000),
         }
 
@@ -150,7 +150,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.post(url, json=request_body)
-                response.raise_for_status()
+                _ = response.raise_for_status()
 
                 ack_data = response.json()
                 ack = CommandAck(**ack_data)
@@ -186,10 +186,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         completed_at = aware_dt.replace(tzinfo=None)
 
         # 3. 更新指令状态
-        update_data = {
+        update_data: dict[str, Any] = {
             "result": callback.result,
             "completed_at": completed_at,
-            "result_data": callback.data,
+            "result_data": cast("dict[str, Any] | None", callback.data),
             "error_detail": self._normalize_error_detail(callback.error_detail),
             "version": command.version,  # 乐观锁：必须包含当前版本号
         }
@@ -324,7 +324,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             raise ValueError(f"指令不允许重试: status={command.status.value}, retry_count={command.retry_count}")
 
         # 重置状态
-        update_data = {
+        update_data: dict[str, Any] = {
             "status": CommandStatus.PENDING,
             "sent_at": None,
             "ack_received_at": None,
@@ -404,7 +404,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command or not command.id:
             raise NotFoundException(f"指令不存在: {command.command_code}")
 
-        update_data = {
+        update_data: dict[str, Any] = {
             "status": CommandStatus.SENT,
             "sent_at": timezone.now_for_db(),
             "ack_code": ack_code,
@@ -432,7 +432,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command or not command.id:
             raise NotFoundException(f"指令不存在: {command.command_code}")
 
-        update_data = {
+        update_data: dict[str, Any] = {
             "status": status,
             "version": command.version,  # 乐观锁：必须包含当前版本号
         }

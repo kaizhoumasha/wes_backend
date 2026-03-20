@@ -10,7 +10,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
@@ -77,11 +77,14 @@ class WorklineSessionBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     run_mode: RunMode = Field(
         default=RunMode.AUTO,
-        sa_type=SQLAEnum(
-            RunMode,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                RunMode,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="运行模式",
     )
@@ -104,11 +107,14 @@ class WorklineSessionBase(BaseMixin):
     status: SessionStatus = Field(
         default=SessionStatus.NEW,
         index=True,
-        sa_type=SQLAEnum(
-            SessionStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                SessionStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="会话状态",
     )
@@ -239,7 +245,7 @@ class WorklineSession(
              FAILED   CANCELLED
     """
 
-    __tablename__: str = "workline_sessions"
+    __tablename__: ClassVar[str] = "workline_sessions"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 关系定义

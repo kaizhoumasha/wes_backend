@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,12 +24,35 @@ if TYPE_CHECKING:
 
 
 _MENU_UPDATE_FIELDS = ("title", "path", "component", "icon", "parent_id", "sort_order", "is_hidden")
-_ROLE_MENU_RULES = {
-    "系统管理员": lambda menu: not menu.is_hidden,
-    "管理员": lambda menu: not menu.is_hidden and (menu.name.startswith("admin:") or menu.name == "system:dashboard:menu"),
-    "运营人员": lambda menu: not menu.is_hidden and (menu.name.startswith("biz:") or menu.name == "system:dashboard:menu"),
-    "财务人员": lambda menu: not menu.is_hidden and menu.name in {"admin:audit:menu", "system:dashboard:menu"},
-    "普通用户": lambda menu: not menu.is_hidden and menu.name == "system:dashboard:menu",
+RoleMenuMatcher = Callable[[Menu], bool]
+
+
+def _all_visible(menu: Menu) -> bool:
+    return not menu.is_hidden
+
+
+def _admin_visible(menu: Menu) -> bool:
+    return not menu.is_hidden and (menu.name.startswith("admin:") or menu.name == "system:dashboard:menu")
+
+
+def _biz_visible(menu: Menu) -> bool:
+    return not menu.is_hidden and (menu.name.startswith("biz:") or menu.name == "system:dashboard:menu")
+
+
+def _finance_visible(menu: Menu) -> bool:
+    return not menu.is_hidden and menu.name in {"admin:audit:menu", "system:dashboard:menu"}
+
+
+def _user_visible(menu: Menu) -> bool:
+    return not menu.is_hidden and menu.name == "system:dashboard:menu"
+
+
+_ROLE_MENU_RULES: dict[str, RoleMenuMatcher] = {
+    "系统管理员": _all_visible,
+    "管理员": _admin_visible,
+    "运营人员": _biz_visible,
+    "财务人员": _finance_visible,
+    "普通用户": _user_visible,
 }
 
 

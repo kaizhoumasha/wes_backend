@@ -35,6 +35,8 @@
         print(f"更新失败: {e}")  # "记录已被其他用户修改，请刷新后重试"
 """
 
+from typing import Any, cast
+
 from sqlalchemy.orm import declared_attr
 from sqlmodel import Field
 
@@ -79,8 +81,9 @@ class OptimisticLockMixin(BaseMixin):
     @declared_attr.directive
     def __mapper_args__(cls) -> dict[str, object]:  # noqa: N805
         """启用 SQLAlchemy 原生版本控制，确保并发更新具备数据库级保护。"""
+        table = cast("Any", cls).__table__
         return {
-            "version_id_col": cls.__table__.c.version,
+            "version_id_col": table.c.version,
             "version_id_generator": False,
         }
 

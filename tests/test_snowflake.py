@@ -178,23 +178,11 @@ class TestSnowflakeValidation:
 
     def test_invalid_boundary_values(self):
         """测试无效边界值"""
-        # 由于单例模式，需要直接测试验证逻辑
-        # 测试超出范围的值会在初始化时被捕获
-        try:
-            # 重置单例以测试新的参数
-            SnowflakeIDGenerator._instance = None
-            with pytest.raises(ValueError, match="datacenter_id 必须在"):
-                SnowflakeIDGenerator(datacenter_id=8, worker_id=0)
-        finally:
-            # 恢复单例
-            SnowflakeIDGenerator._instance = None
+        with pytest.raises(ValueError, match="datacenter_id 必须在"):
+            SnowflakeIDGenerator(datacenter_id=8, worker_id=0)
 
-        try:
-            SnowflakeIDGenerator._instance = None
-            with pytest.raises(ValueError, match="worker_id 必须在"):
-                SnowflakeIDGenerator(datacenter_id=0, worker_id=-1)
-        finally:
-            SnowflakeIDGenerator._instance = None
+        with pytest.raises(ValueError, match="worker_id 必须在"):
+            SnowflakeIDGenerator(datacenter_id=0, worker_id=-1)
 
     def test_javascript_safe_integer(self):
         """测试 JavaScript 安全整数范围"""
@@ -210,15 +198,15 @@ class TestSnowflakeMixinIntegration:
         """测试 Mixin 可以正常导入"""
         assert True
 
-    def test_snowflake_primary_key_mixin(self):
-        """测试雪花主键 Mixin"""
-        from src.core.mixins import SnowflakePKMixin
+    def test_primary_key_mixin_import(self):
+        """测试主键 Mixin 可以正常导入"""
+        from src.core.mixins import PrimaryKeyMixin
 
-        # 检查类属性（Field 定义的字段）
-        assert hasattr(SnowflakePKMixin, "_generate_snowflake_id")
+        assert PrimaryKeyMixin.__name__ == "PrimaryKeyMixin"
 
-        # 测试生成方法
-        snowflake_id = SnowflakePKMixin._generate_snowflake_id()
+    def test_generate_snowflake_id_function(self):
+        """测试雪花 ID 便捷函数"""
+        snowflake_id = generate_snowflake_id()
         assert isinstance(snowflake_id, int)
         assert snowflake_id > 0
         assert snowflake_id <= SnowflakeConfig.MAX_SAFE_INTEGER

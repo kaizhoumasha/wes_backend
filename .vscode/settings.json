@@ -42,7 +42,7 @@
     ],
 
     // ═══════════════════════════════════════════════════
-    // Python 配置 (uv 管理 + basedpyright)
+    // Python 配置 (uv 管理 + Ruff + basedpyright)
     // ═══════════════════════════════════════════════════
     // 使用 uv 作为 Python 包管理器
     "python.packageManager": "uv",
@@ -54,6 +54,9 @@
     "python.analysis.extraPaths": [
         "${workspaceFolder}/src"
     ],
+
+    // 即使用户本机启用了 Pylance，也不要让它在本仓库里做类型检查，避免与 basedpyright 重复报错
+    "python.analysis.typeCheckingMode": "off",
 
     // 禁用 Python 扩展的内置语言服务器（使用基于 pyright 的扩展替代）
     "python.languageServer": "None",
@@ -80,6 +83,17 @@
     // 启用 Ruff lint 和 format
     "ruff.lint.enable": true,
     "ruff.format.enable": true,
+
+    // ═══════════════════════════════════════════════════
+    // basedpyright 配置 (类型检查)
+    // ═══════════════════════════════════════════════════
+    // 日常编辑只看当前打开文件，避免 300+ notes 淹没有效问题
+    "basedpyright.analysis.diagnosticMode": "openFilesOnly",
+    // 与 pyproject.toml 中的 standard 保持一致，避免编辑器与 CLI 结果漂移
+    "basedpyright.analysis.typeCheckingMode": "standard",
+    "basedpyright.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
 
     // Ruff 排除目录（与 pyproject.toml 保持一致）
     "ruff.exclude": [

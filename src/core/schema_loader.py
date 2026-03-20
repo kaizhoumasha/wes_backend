@@ -4,7 +4,7 @@
 根据 Pydantic ResponseSchema 自动推断并加载 SQLAlchemy 关系。
 """
 
-from typing import Any, TypeVar, get_args, get_origin
+from typing import Any, TypeVar, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 from sqlalchemy import Select, select
@@ -18,7 +18,7 @@ T = TypeVar("T")
 def get_relationship_fields(
     schema: type[BaseModel],
 ) -> dict[str, type[BaseModel] | None]:
-    relationships = {}
+    relationships: dict[str, type[BaseModel] | None] = {}
 
     for field_name, field_info in schema.model_fields.items():
         annotation = field_info.annotation
@@ -38,8 +38,6 @@ def get_relationship_fields(
                         if field_annotation is not None and hasattr(field_annotation, "__args__"):
                             arg = field_annotation.__args__[0]
                         if hasattr(schema, "__annotations__"):
-                            from typing import get_type_hints
-
                             hints = get_type_hints(schema)
                             if field_name in hints:
                                 hint_origin = get_origin(hints[field_name])
@@ -60,11 +58,11 @@ def get_relationship_fields(
 
 
 def apply_schema_loads(
-    query: Select,
+    query: Select[Any],
     model: type[Any],
     schema: type[BaseModel],
     max_depth: int = 2,
-) -> Select:
+) -> Select[Any]:
     """
     根据 schema 应用智能关系加载策略
 
@@ -99,7 +97,7 @@ def apply_schema_loads(
         if not RelationMetadata.has_relations(current_model):
             return []
 
-        loaders = []
+        loaders: list[Any] = []
         schema_relationships = get_relationship_fields(current_schema)
         model_relationships = RelationMetadata.get_relation_info(current_model)
 
@@ -108,12 +106,12 @@ def apply_schema_loads(
             if field_name not in model_relationships:
                 continue
 
-            rel_attr = getattr(current_model, field_name)
+            rel_attr = cast(Any, getattr(current_model, field_name))
             load_func = _get_optimal_loader(field_name, current_model)
 
             if current_depth < max_depth and nested_schema:
                 # 递归处理嵌套关系
-                nested_model = rel_attr.property.mapper.class_
+                nested_model = cast(type[Any], rel_attr.property.mapper.class_)
                 loader = load_func(rel_attr)
 
                 # 为嵌套关系也应用智能加载
@@ -143,7 +141,7 @@ async def get_with_schema[T](
     db: AsyncSession,
     model: type[T],
     schema: type[BaseModel],
-    *where_clauses,
+    *where_clauses: Any,
     max_depth: int = 2,
 ) -> T | None:
     """
@@ -166,17 +164,17 @@ async def get_with_schema[T](
     Example:
         user = await get_with_schema(db, User, UserResponse, User.id == 1)
     """
-    query = select(model).where(*where_clauses)
+    query = cast(Select[Any], select(model).where(*where_clauses))
     query = apply_schema_loads(query, model, schema, max_depth)
     result = await db.execute(query)
-    return result.scalars().first()
+    return cast(T | None, result.scalars().first())
 
 
 async def get_all_with_schema[T](
     db: AsyncSession,
     model: type[T],
     schema: type[BaseModel],
-    *where_clauses,
+    *where_clauses: Any,
     max_depth: int = 2,
     limit: int | None = None,
     offset: int | None = None,
@@ -206,7 +204,7 @@ async def get_all_with_schema[T](
         users = await get_all_with_schema(db, User, UserResponse, limit=10)
         users = await get_all_with_schema(db, User, UserResponse, order_by=[User.id.desc()])
     """
-    query = select(model)
+    query = cast(Select[Any], select(model))
     if where_clauses:
         query = query.where(*where_clauses)
     query = apply_schema_loads(query, model, schema, max_depth)
@@ -217,7 +215,7 @@ async def get_all_with_schema[T](
     if limit:
         query = query.limit(limit)
     result = await db.execute(query)
-    return list(result.scalars().all())
+    return cast(list[T], list(result.scalars().all()))
 
 
 def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
@@ -234,8 +232,9 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
     Example:
         user_read = model_to_schema(user, UserResponse)
     """
-    data = {}
+    data: dict[str, Any] = {}
     insp = sa_inspect(obj)
+    relationships = get_relationship_fields(schema)
 
     for field_name, field_info in schema.model_fields.items():
         if field_name in insp.unloaded:
@@ -251,14 +250,13 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
             if value is None:
                 data[field_name] = None
             elif isinstance(value, list):
-                relationships = get_relationship_fields(schema)
                 nested_schema = relationships.get(field_name)
                 if nested_schema:
-                    data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in value]
+                    items = cast(list[Any], value)
+                    data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in items]
                 else:
                     data[field_name] = value
             else:
-                relationships = get_relationship_fields(schema)
                 nested_schema = relationships.get(field_name)
                 if nested_schema:
                     data[field_name] = model_to_schema(value, nested_schema).__dict__

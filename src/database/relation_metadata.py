@@ -30,10 +30,11 @@
 
 from enum import Enum
 from functools import lru_cache
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import sqlalchemy as sa
 from sqlalchemy import inspect
+from sqlalchemy.orm import Mapper, RelationshipProperty
 
 
 class RelationType(str, Enum):
@@ -127,7 +128,7 @@ class RelationMetadata:
 
     @staticmethod
     @lru_cache(maxsize=512)
-    def get_relation_info(model: type) -> dict[str, Any]:
+    def get_relation_info(model: type[Any]) -> dict[str, RelationInfo]:
         """
         获取模型的关联关系信息（带缓存）
 
@@ -153,28 +154,39 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = inspect(model)
+            mapper = cast(Mapper[Any], inspect(model))
         except Exception:
             return {}
 
-        relation_info: dict[str, Any] = {}
+        relation_info: dict[str, RelationInfo] = {}
 
-        for rel_name, rel in mapper.relationships.items():
-            relation_info[rel_name] = {
+        relationships = cast(
+            Any,
+            mapper.relationships.items(),
+        )
+        for rel_name, rel in relationships:
+            rel_name = cast(str, rel_name)
+            rel = cast(RelationshipProperty[Any], rel)
+            relation_model = cast(type[Any], rel.mapper.class_)
+            relation_table = getattr(relation_model, "__tablename__", None)
+            if not isinstance(relation_table, str):
+                relation_table = cast(str, getattr(cast(Any, rel.mapper.local_table), "name", ""))
+            info: RelationInfo = {
                 "relation_type": rel.direction.name,
-                "relation_model": rel.mapper.class_,
-                "relation_table": rel.mapper.class_.__tablename__,
+                "relation_model": relation_model,
+                "relation_table": relation_table,
                 "relation_column": rel.key,
-                "uselist": rel.uselist,
+                "uselist": bool(rel.uselist),
                 "remote_column": rel.remote_side,
                 "secondary": rel.secondary,
             }
+            relation_info[rel_name] = info
 
         return relation_info
 
     @staticmethod
     @lru_cache(maxsize=512)
-    def get_foreign_info(model: type) -> dict[str, Any]:
+    def get_foreign_info(model: type[Any]) -> dict[str, ForeignKeyInfo]:
         """
         获取模型的外键信息（带缓存）
 
@@ -195,15 +207,15 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = inspect(model)
+            mapper = cast(Mapper[Any], inspect(model))
         except Exception:
             return {}
 
-        foreign_info: dict[str, Any] = {}
+        foreign_info: dict[str, ForeignKeyInfo] = {}
 
-        for column in mapper.columns:
+        for column in cast(Any, mapper.columns):
             if column.foreign_keys:
-                for fk in column.foreign_keys:
+                for fk in cast(Any, column.foreign_keys):
                     foreign_info[column.name] = {
                         "target_table": fk.column.table.name,
                         "target_column": fk.column.name,
@@ -214,7 +226,7 @@ class RelationMetadata:
 
     @staticmethod
     @lru_cache(maxsize=512)
-    def get_field_info(model: type) -> dict[str, Any]:
+    def get_field_info(model: type[Any]) -> dict[str, FieldInfo]:
         """
         获取模型的字段信息（带缓存）
 
@@ -233,18 +245,18 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = inspect(model)
+            mapper = cast(Mapper[Any], inspect(model))
         except Exception:
             return {}
 
-        field_info: dict[str, Any] = {}
+        field_info: dict[str, FieldInfo] = {}
 
-        for column in mapper.persist_selectable.columns:
+        for column in cast(Any, mapper.persist_selectable.columns):
             field_info[column.name] = {
                 "type": str(column.type),
                 "nullable": column.nullable,
                 "primary_key": column.primary_key,
-                "default": str(column.default.arg) if column.default else None,
+                "default": str(cast(Any, column.default).arg) if column.default else None,
                 "comment": column.comment,
                 "unique": column.unique,
                 "index": column.index,
@@ -255,7 +267,7 @@ class RelationMetadata:
 
     @staticmethod
     @lru_cache(maxsize=512)
-    def get_unique_info(model: type) -> list[dict[str, Any]]:
+    def get_unique_info(model: type[Any]) -> list[UniqueConstraintInfo]:
         """
         获取模型的唯一约束信息（带缓存）
 
@@ -274,12 +286,12 @@ class RelationMetadata:
             ]
         """
         try:
-            mapper = inspect(model)
+            mapper = cast(Mapper[Any], inspect(model))
             if not mapper:
                 return []
 
-            local_table = getattr(mapper, "local_table", None)
-            if not local_table:
+            local_table = cast(sa.Table | None, getattr(mapper, "local_table", None))
+            if local_table is None:
                 return []
 
             return [

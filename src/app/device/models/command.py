@@ -11,10 +11,11 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from pydantic import field_validator
-from sqlalchemy import JSON, Column, Enum as SQLAEnum
+from sqlalchemy import JSON, Column
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -80,12 +81,12 @@ class CommandBase(BaseMixin):
 
     # 🔥 使用 VARCHAR + CHECK 约束
     task_type: TaskType = Field(
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             TaskType,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="任务类型",
     )
 
@@ -114,7 +115,7 @@ class CommandBase(BaseMixin):
         if v is None:
             return {}
         if isinstance(v, dict):
-            return v
+            return cast("dict[str, Any]", v)
         raise ValueError("params 必须是字典类型")
 
 
@@ -209,7 +210,7 @@ class DeviceCommand(
         CANCELLED  TIMEOUT    FAILED
     """
 
-    __tablename__: str = "device_commands"
+    __tablename__: ClassVar[str] = "device_commands"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 业务唯一编码（对外可见）
@@ -248,12 +249,12 @@ class DeviceCommand(
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,
         index=True,
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             CommandStatus,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="指令状态",
     )
 
@@ -274,12 +275,12 @@ class DeviceCommand(
     # 🔥 执行结果：使用 VARCHAR + CHECK 约束
     result: CommandResult | None = Field(
         default=None,
-        sa_type=SQLAEnum(
+        sa_type=cast("Any", SQLAEnum(
             CommandResult,
             native_enum=False,
             create_constraint=True,
             length=50,
-        ),
+        )),
         description="执行结果（SUCCESS/FAILED）",
     )
     result_data: dict[str, Any] | None = Field(
@@ -334,7 +335,7 @@ class DeviceCommand(
 
     def is_timeout(self) -> bool:
         """检查是否超时"""
-        if self.sent_at is None or self.timeout_ms is None:
+        if self.sent_at is None:
             return False
         elapsed_ms = int((timezone.now_for_db() - self.sent_at).total_seconds() * 1000)
         return elapsed_ms > self.timeout_ms

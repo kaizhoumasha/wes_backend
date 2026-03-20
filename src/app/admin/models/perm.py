@@ -36,7 +36,7 @@ async def create_user(data: UserCreate):
 ```
 """
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 from pydantic import computed_field, field_validator, model_validator
 from sqlalchemy import Index
@@ -103,7 +103,8 @@ class PermissionBase(TreeMixin, BaseMixin):
 
     def _get_validation_context(self) -> tuple[set[str], bool]:
         """获取验证上下文（DRY 优化：避免重复获取 fields_set 和 is_create）"""
-        fields_set = getattr(self, "__pydantic_fields_set__", set())
+        default_fields_set: set[str] = set()
+        fields_set = cast("set[str]", getattr(self, "__pydantic_fields_set__", default_fields_set))
         is_create = self.__class__.__name__.endswith("Create")
         return fields_set, is_create
 
@@ -134,7 +135,7 @@ class Permission(PermissionBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixi
     仅用于后端 API 访问控制，不包含前端菜单/按钮相关功能
     """
 
-    __tablename__: Literal["permissions"] = "permissions"
+    __tablename__: ClassVar[Literal["permissions"]] = "permissions"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value  # 系统管理表
 
     # 复合索引优化

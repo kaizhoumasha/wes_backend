@@ -4,7 +4,7 @@
 提供基于角色的动态菜单路由系统
 """
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from sqlalchemy import Index
 from sqlmodel import Field
@@ -34,7 +34,7 @@ class MenuBase(TreeMixin, BaseMixin):
 class Menu(MenuBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):  # type: ignore[misc]
     """菜单数据库表"""
 
-    __tablename__: Literal["menus"] = "menus"
+    __tablename__: ClassVar[Literal["menus"]] = "menus"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value
 
     __table_args__ = (

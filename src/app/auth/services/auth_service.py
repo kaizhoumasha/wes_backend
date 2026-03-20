@@ -10,6 +10,7 @@
 """
 
 import json
+from typing import Any, cast
 
 from fastapi import Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -337,8 +338,8 @@ class AuthService:
                     # 显式删除当前 refresh token（兜底，保持幂等）
                     refresh_key = f"{REFRESH_TOKEN_PREFIX}:{user_id}:{refresh_payload.jti}"
                     refresh_set_key = f"{MULTI_LOGIN_SET_PREFIX}:{user_id}:refresh"
-                    await redis_client.delete(refresh_key)
-                    await redis_client.srem(refresh_set_key, refresh_payload.jti)
+                    await cast("Any", redis_client).delete(refresh_key)
+                    await cast("Any", redis_client).srem(refresh_set_key, refresh_payload.jti)
 
                     await revoke_token(
                         user_id=user_id,
@@ -393,26 +394,30 @@ class AuthService:
         if not is_redis_available():
             return ActiveSessionsResponse(total=0, sessions=[])
 
-        redis_client = get_redis()
+        redis_client = cast("Any", get_redis())
         if redis_client is None:
             return ActiveSessionsResponse(total=0, sessions=[])
 
         try:
             # 扫描用户的所有会话
             session_pattern = f"{USER_SESSION_PREFIX}:{current_user_id}:*"
-            session_keys = []
+            session_keys: list[str] = []
 
             # 使用 scan_iter 获取所有匹配的键
-            session_keys = [key async for key in redis_client.scan_iter(match=session_pattern)]
+            session_keys = [cast("str", key) async for key in redis_client.scan_iter(match=session_pattern)]
 
             # 批量获取会话数据
             if session_keys:
-                session_data_list = await redis_client.mget(session_keys)
+                session_data_list = cast("list[str | None]", await redis_client.mget(session_keys))
 
                 for key, data_str in zip(session_keys, session_data_list, strict=False):
                     if data_str:
                         try:
-                            session_data = json.loads(data_str)
+                            session_data_raw = json.loads(data_str)
+                            if not isinstance(session_data_raw, dict):
+                                logger.warning(f"解析会话数据失败 [{key}]: 数据格式错误")
+                                continue
+                            session_data = cast("dict[str, Any]", session_data_raw)
 
                             # 提取 session_uuid（从 key 中解析）
                             # key 格式: auth:user_session:{user_id}:{session_uuid}
@@ -423,9 +428,10 @@ class AuthService:
                             created_at = timezone.to_utc(iat)
 
                             # 获取额外信息
-                            extra = session_data.get("extra", {})
-                            username = extra.get("username", "Unknown")
-                            email = extra.get("email", "")
+                            extra_raw = session_data.get("extra", {})
+                            extra = cast("dict[str, Any]", extra_raw) if isinstance(extra_raw, dict) else {}
+                            username = str(extra.get("username", "Unknown"))
+                            email = str(extra.get("email", ""))
 
                             # 构建设备信息
                             device_info = {
@@ -436,7 +442,7 @@ class AuthService:
                             sessions.append(
                                 SessionInfo(
                                     session_uuid=session_uuid,
-                                    jti=session_data.get("jti", ""),
+                                    jti=str(session_data.get("jti", "")),
                                     created_at=created_at,
                                     device_info=device_info,
                                     last_active=created_at,  # TODO: 可以添加最后活跃时间追踪

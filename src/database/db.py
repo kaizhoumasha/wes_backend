@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.pool import StaticPool
 
 # 导入 SQLModel 以确保模型被注册
 from src.core.conf import settings
 from src.core.logger import logger
 from src.database.schema_conf import get_schema_search_path
+from src.database.sqlite_schema import configure_sqlite_schemas
 
 # 推荐的命名约定，防止 Alembic 自动生成迁移时出现未命名约束问题
 naming_convention = {
@@ -43,17 +45,34 @@ async def init_db() -> None:
     """
     global engine, AsyncSessionLocal
 
+    database_url = str(settings.DATABASE_URL)
+    is_sqlite = database_url.startswith("sqlite")
+
+    engine_kwargs: dict[str, object] = {
+        "echo": False,
+        "pool_pre_ping": True,
+        "pool_recycle": 3600,
+    }
+
+    if is_sqlite:
+        engine_kwargs["poolclass"] = StaticPool
+    else:
+        engine_kwargs.update(
+            {
+                "pool_size": 50,
+                "max_overflow": 50,
+                "pool_timeout": 30,
+                "connect_args": {"server_settings": {"search_path": get_schema_search_path()}},
+            }
+        )
+
     engine = create_async_engine(
         settings.DATABASE_URL,
-        echo=False,  # 通过 loguru 统一管理日志，不使用 sqlalchemy 自带的 echo
-        pool_pre_ping=True,  # 每次从连接池获取连接前预先 ping 一下，防止连接失效
-        pool_size=50,  # 增加连接池大小（从 20 -> 50）
-        max_overflow=50,  # 增加溢出连接数（从 10 -> 50）
-        pool_recycle=3600,
-        pool_timeout=30,  # 添加连接超时时间
-        # 设置 schema 搜索路径
-        connect_args={"server_settings": {"search_path": get_schema_search_path()}},
+        **engine_kwargs,
     )
+
+    if is_sqlite:
+        configure_sqlite_schemas(engine.sync_engine)
 
     AsyncSessionLocal = async_sessionmaker(
         engine,

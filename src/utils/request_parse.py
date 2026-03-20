@@ -7,17 +7,34 @@
 # @Software: Cursor
 # @Description: 请求解析工具
 
+from collections.abc import Callable
+from typing import Any, Protocol, TypedDict, cast
+
 import httpx
 from asgiref.sync import sync_to_async
 from fastapi import Request
 from pydantic import dataclasses
-from user_agents import parse
-from XdbSearchIP.xdbSearcher import XdbSearcher
+from user_agents import parse  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+from XdbSearchIP.xdbSearcher import XdbSearcher  # pyright: ignore[reportMissingTypeStubs]
 
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.path_conf import IP2REGION_XDB
 from src.database.redis_client import get_redis
+
+
+class LocationInfo(TypedDict):
+    country: str | None
+    regionName: str | None
+    city: str | None
+
+
+class ParsedUserAgent(Protocol):
+    def get_os(self) -> str | None: ...
+
+    def get_browser(self) -> str | None: ...
+
+    def get_device(self) -> str | None: ...
 
 
 @dataclasses.dataclass
@@ -54,7 +71,7 @@ def get_request_ip(request: Request) -> str:
     return ip
 
 
-async def get_location_online(ip: str, user_agent: str) -> dict | None:
+async def get_location_online(ip: str, user_agent: str) -> LocationInfo | None:
     """
     在线获取 ip 地址属地，无法保证可用性，准确率较高
 
@@ -68,7 +85,7 @@ async def get_location_online(ip: str, user_agent: str) -> dict | None:
         try:
             response = await client.get(ip_api_url, headers=headers)
             if response.status_code == 200:
-                return response.json()
+                return cast(LocationInfo, response.json())
         except Exception as e:
             logger.error(f"在线获取 ip 地址属地失败，错误信息：{getattr(e, 'data', e)!s}")
             return None
@@ -76,7 +93,7 @@ async def get_location_online(ip: str, user_agent: str) -> dict | None:
 
 
 @sync_to_async
-def get_location_offline(ip: str) -> dict | None:
+def get_location_offline(ip: str) -> LocationInfo | None:
     """
     离线获取 ip 地址属地，无法保证准确率，100%可用
 
@@ -84,15 +101,16 @@ def get_location_offline(ip: str) -> dict | None:
     :return:
     """
     try:
-        cb = XdbSearcher.loadContentFromFile(dbfile=IP2REGION_XDB)
-        searcher = XdbSearcher(contentBuff=cb)
-        data = searcher.search(ip)
+        searcher_cls = cast(Any, XdbSearcher)
+        cb = cast(bytes | None, searcher_cls.loadContentFromFile(dbfile=IP2REGION_XDB))
+        searcher = cast(Any, searcher_cls(contentBuff=cb))
+        data = cast(str, searcher.search(ip))
         searcher.close()
-        data = data.split("|")
+        parts = data.split("|")
         return {
-            "country": data[0] if data[0] != "0" else None,
-            "regionName": data[2] if data[2] != "0" else None,
-            "city": data[3] if data[3] != "0" else None,
+            "country": parts[0] if parts[0] != "0" else None,
+            "regionName": parts[2] if parts[2] != "0" else None,
+            "city": parts[3] if parts[3] != "0" else None,
         }
     except Exception as e:
         logger.error(f"离线获取 ip 地址属地失败，错误信息：{getattr(e, 'data', e)!s}")
@@ -137,7 +155,8 @@ def parse_user_agent_info(request: Request) -> UserAgentInfo:
     """
     user_agent = request.headers.get("User-Agent")
     if user_agent:
-        _user_agent = parse(user_agent)
+        parse_user_agent = cast(Callable[[str], ParsedUserAgent], parse)
+        _user_agent = parse_user_agent(user_agent)
         os = _user_agent.get_os()
         browser = _user_agent.get_browser()
         device = _user_agent.get_device()

@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +21,8 @@ class APIAppRepository(BaseRepository[APIApplication]):
         Returns:
             应用对象或 None
         """
-        result = await db.execute(
-            select(APIApplication)
-            .where(APIApplication.app_id == app_id)
-            .where(APIApplication.is_deleted.is_(False))  # type: ignore[attr-defined]
-        )
+        columns = cast("Any", APIApplication).__table__.c
+        result = await db.execute(select(APIApplication).where(columns.app_id == app_id).where(columns.is_deleted.is_(False)))
         return result.scalar_one_or_none()
 
     async def assign_permissions(
@@ -43,13 +42,13 @@ class APIAppRepository(BaseRepository[APIApplication]):
         from src.app.api_auth.models.relationships import api_app_permissions
 
         # 删除旧的权限关联
-        await db.execute(
+        _ = await db.execute(
             api_app_permissions.delete().where(api_app_permissions.c.app_id == app_id)
         )
 
         # 插入新的权限关联
         if permission_ids:
-            await db.execute(
+            _ = await db.execute(
                 api_app_permissions.insert(),
                 [{"app_id": app_id, "permission_id": pid} for pid in permission_ids],
             )

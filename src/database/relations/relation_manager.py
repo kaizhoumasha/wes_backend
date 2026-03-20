@@ -7,14 +7,12 @@
 此类现在作为 RelationLoader 和 RelationCRUD 的组合门面。
 """
 
-from typing import Any, TypeVar
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.relations.relation_crud import RelationCRUD
 from src.database.relations.relation_loader import RelationLoader
-
-T = TypeVar("T")
 
 
 class RelationManager:
@@ -24,7 +22,7 @@ class RelationManager:
     组合 RelationLoader 和 RelationCRUD，提供统一的关系管理接口。
     """
 
-    def __init__(self, model: type[T], pk_column: str = "id"):
+    def __init__(self, model: type[Any], pk_column: str = "id"):
         self.model = model
         self._pk_column = pk_column
         self.loader = RelationLoader(model, pk_column)
@@ -39,19 +37,19 @@ class RelationManager:
     def add_specific_relation_loads(self, statement: Any, relation_names: list[str]) -> Any:
         return self.loader.add_specific_relation_loads(statement, relation_names)
 
-    async def handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
+    async def handle_relations(self, db: AsyncSession, instance: Any, data: dict[str, Any]) -> None:
         await self.crud.handle_relations(db, instance, data)
 
-    async def preload_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+    async def preload_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
         await self.loader.preload_relations(db, instance, relation_info)
 
-    async def refresh_with_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
+    async def refresh_with_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
         await self.loader.refresh_with_relations(db, instance, relation_info)
 
     async def handle_one_to_many_relation(
         self,
         db: AsyncSession,
-        instance: T,
+        instance: Any,
         relation_name: str,
         relation_data: list[dict[str, Any]],
     ) -> None:
@@ -60,7 +58,7 @@ class RelationManager:
     async def update_relations(
         self,
         db: AsyncSession,
-        instance: T,
+        instance: Any,
         data: dict[str, Any],
     ) -> None:
         await self.crud.update_relations(db, instance, data)
@@ -85,7 +83,7 @@ class RelationManager:
         self,
         db: AsyncSession,
         relation_attr: Any,
-        parent_obj: T,
+        parent_obj: Any,
         objects_to_create: list[dict[str, Any]],
     ) -> None:
         await self.crud.create_relation_objects(db, relation_attr, parent_obj, objects_to_create)
@@ -94,7 +92,7 @@ class RelationManager:
         self,
         item_data: dict[str, Any] | Any,
         foreign_key_field: str,
-        parent_obj: T,
+        parent_obj: Any,
         parent_tablename: str | None,
     ) -> None:
         self.crud._set_foreign_key_value(item_data, foreign_key_field, parent_obj, parent_tablename)

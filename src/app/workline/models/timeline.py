@@ -10,7 +10,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
@@ -148,11 +148,14 @@ class WorklineTimelineBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     stage: TimelineStage = Field(
         index=True,
-        sa_type=SQLAEnum(
-            TimelineStage,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TimelineStage,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="阶段",
     )
@@ -160,22 +163,28 @@ class WorklineTimelineBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     action_type: TimelineActionType = Field(
         index=True,
-        sa_type=SQLAEnum(
-            TimelineActionType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TimelineActionType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="动作类型",
     )
 
     # 🔥 使用 VARCHAR + CHECK 约束
     actor_type: TimelineActorType = Field(
-        sa_type=SQLAEnum(
-            TimelineActorType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TimelineActorType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="参与者类型",
     )
@@ -202,11 +211,14 @@ class WorklineTimelineBase(BaseMixin):
     status: TimelineStatus = Field(
         default=TimelineStatus.SUCCESS,
         index=True,
-        sa_type=SQLAEnum(
-            TimelineStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TimelineStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="条目状态",
     )
@@ -279,7 +291,7 @@ class WorklineTimeline(
     - Timeline 由编排层统一生成，插件不直接构造
     """
 
-    __tablename__: str = "workline_timelines"
+    __tablename__: ClassVar[str] = "workline_timelines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     # 关系定义

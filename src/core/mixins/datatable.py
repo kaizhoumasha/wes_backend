@@ -52,7 +52,7 @@ class DataTableMixin(SchemaMixin, PrimaryKeyMixin, TimestampMixin):
     )
 
     @declared_attr.directive
-    def __tablename__(self) -> str:
+    def __tablename__(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
         """自动生成表名（类名转小写）"""
         return self.__name__.lower()
 

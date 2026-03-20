@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,7 @@ class TreeServiceMixin[M]:
         root_id: int | None = None,
         max_depth: int = -1,
         relation_max_depth: int = 1,
-    ) -> list:
+    ) -> list[dict[str, Any]]:
         """获取树形结构数据（支持关联数据加载）
 
         Args:
@@ -61,10 +61,10 @@ class TreeServiceMixin[M]:
                 max_depth=relation_max_depth,
             )
 
-        dict_items = [self._to_dict(item, schema) for item in items]
+        dict_items: list[dict[str, Any]] = [self._to_dict(item, schema) for item in items]
         return self._build_tree_optimized(dict_items)
 
-    def _to_dict(self, item, schema: type | None = None) -> dict:
+    def _to_dict(self, item: Any, schema: type[Any] | None = None) -> dict[str, Any]:
         """将模型转换为字典（支持关联数据）
 
         Args:
@@ -80,22 +80,22 @@ class TreeServiceMixin[M]:
 
             try:
                 schema_obj = model_to_schema(item, schema)
-                return schema_obj.model_dump(mode="json")
+                return cast(dict[str, Any], schema_obj.model_dump(mode="json"))
             except (AttributeError, TypeError, ValueError) as e:
                 # 只捕获预期的异常，避免隐藏真实错误
                 logger.debug(f"Schema serialization failed for {item.__class__.__name__}: {e}")
 
         # 回退到默认的列序列化
-        mapper = inspect(item.__class__)
-        result = {}
+        mapper = cast(Any, inspect(item.__class__))
+        result: dict[str, Any] = {}
         for c in mapper.columns:
             value = getattr(item, c.key, None)
             result[c.key] = value.isoformat() if isinstance(value, datetime) else value
         return result
 
-    def _build_tree_optimized(self, items: list[dict]) -> list:
-        node_map: dict[int, dict] = {}
-        root_nodes: list[dict] = []
+    def _build_tree_optimized(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        node_map: dict[int, dict[str, Any]] = {}
+        root_nodes: list[dict[str, Any]] = []
 
         for item in items:
             item["children"] = []
@@ -114,7 +114,7 @@ class TreeServiceMixin[M]:
         db: AsyncSession,
         node_id: int,
         include_self: bool = False,
-    ) -> list:
+    ) -> list[dict[str, Any]]:
         node = await self.repo.get_by_id(db, node_id)
         if not node:
             return []
@@ -128,7 +128,7 @@ class TreeServiceMixin[M]:
         db: AsyncSession,
         node_id: int,
         include_self: bool = False,
-    ) -> list:
+    ) -> list[dict[str, Any]]:
         ancestors = await self.repo.get_ancestors(db, node_id)
         if not include_self:
             ancestors = [a for a in ancestors if a.id != node_id]  # type: ignore[attr-defined]
@@ -139,7 +139,7 @@ class TreeServiceMixin[M]:
         db: AsyncSession,
         node_id: int,
         new_parent_id: int | None,
-    ):
+    ) -> dict[str, Any]:
         result = await self.repo.move_node(db, node_id, new_parent_id)
         return self._to_dict(result)
 

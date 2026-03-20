@@ -4,7 +4,7 @@
 提供审计日志的创建和查询功能
 """
 
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +20,8 @@ from src.utils.timezone import timezone
 class AuditLogService(BaseService[AuditLog, BaseRepository]):
     """审计日志服务类"""
 
-    def __init__(self, repo: BaseRepository = audit_log_repository):
-        super().__init__(repo)
+    def __init__(self, repo: BaseRepository[AuditLog] = audit_log_repository):
+        cast(Any, BaseService.__init__)(self, repo)
 
     async def create_audit_log(
         self,
@@ -30,7 +30,7 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
         method: str,
         title: str,
         path: str,
-        args: dict | None = None,
+        args: dict[str, Any] | None = None,
         status: OperaStatus = OperaStatus.SUCCESS,
         code: str = "200",
         msg: str | None = None,
@@ -54,12 +54,12 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
             创建的审计日志对象
         """
         # 获取请求信息
-        request_info = get_request_info()
+        request_info = cast("dict[str, Any]", get_request_info())
         request_id = get_request_id() or "unknown"
         username = get_current_username()
 
         # 构建审计日志数据
-        audit_data = {
+        audit_data: dict[str, Any] = {
             "trace_id": request_id,
             "username": username,
             "method": method,
@@ -83,7 +83,10 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
 
         try:
             # 创建审计日志
-            return await self.repo.create(db, audit_data)
+            audit_log = await self._repo_base.create(db, audit_data)
+            if audit_log is None:
+                raise RuntimeError("创建审计日志失败")
+            return cast(AuditLog, audit_log)
         except Exception as e:
             logger.error(f"创建审计日志失败: {e}")
             raise

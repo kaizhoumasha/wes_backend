@@ -1,14 +1,22 @@
 """树形数据 Repository（物化路径模式）"""
 
-from typing import TypeVar
+from typing import Protocol, TypeVar, cast
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.base_repository import BaseRepository
 from src.database.hooks import HookContext, HookFunc, HookType
 
 T = TypeVar("T")
+FilterClause = ColumnElement[bool]
+
+
+class TreeNodeLike(Protocol):
+    id: int
+    parent_id: int | None
+    tree_path: str
+    level: int
 
 
 class TreeRepository[T](BaseRepository[T]):
@@ -77,7 +85,7 @@ class TreeRepository[T](BaseRepository[T]):
         async def hook(ctx: HookContext) -> None:
             # ⚠️ 重要：BaseRepository 传递的是 session，不是 db
             db = ctx.params.get("session") or ctx.session
-            instance = ctx.params.get("instance")
+            instance = cast("TreeNodeLike | None", ctx.params.get("instance"))
 
             if not instance or not db:
                 return
@@ -98,9 +106,10 @@ class TreeRepository[T](BaseRepository[T]):
                 parent = parent.scalar_one_or_none()
 
                 if parent:
+                    parent_node = cast("TreeNodeLike", parent)
                     # 父节点存在：tree_path = parent.tree_path + current_id + /
-                    parent_path = parent.tree_path
-                    new_level = parent.level + 1
+                    parent_path = parent_node.tree_path
+                    new_level = parent_node.level + 1
                     new_tree_path = f"{parent_path}{current_id}/"
                 else:
                     # 父节点不存在：作为根节点处理
@@ -110,7 +119,7 @@ class TreeRepository[T](BaseRepository[T]):
             # 更新实例并同步到数据库
             instance.tree_path = new_tree_path
             instance.level = new_level
-            await db.flush()
+            _ = await db.flush()
 
         return hook
 
@@ -121,7 +130,7 @@ class TreeRepository[T](BaseRepository[T]):
             # ⚠️ 重要：BaseRepository 传递的是 session，不是 db
             db = ctx.params.get("session") or ctx.session
             data = ctx.params.get("data", {})
-            instance = ctx.params.get("instance")
+            instance = cast("TreeNodeLike | None", ctx.params.get("instance"))
 
             if not instance or not db:
                 return
@@ -153,13 +162,14 @@ class TreeRepository[T](BaseRepository[T]):
                 parent = parent.scalar_one_or_none()
 
                 if parent:
-                    new_parent_level = parent.level
-                    new_tree_path = f"{parent.tree_path}{instance.id}/"
+                    parent_node = cast("TreeNodeLike", parent)
+                    new_parent_level = parent_node.level
+                    new_tree_path = f"{parent_node.tree_path}{instance.id}/"
                 else:
                     new_parent_level = 0
                     new_tree_path = f"/{instance.id}/"
 
-            await db.flush()
+            _ = await db.flush()
             instance.tree_path = new_tree_path
             instance.level = new_parent_level + 1
             level_delta = instance.level - old_level
@@ -177,9 +187,10 @@ class TreeRepository[T](BaseRepository[T]):
             descendants = descendants.scalars().all()
 
             for descendant in descendants:
+                descendant_node = cast("TreeNodeLike", descendant)
                 # 替换路径前缀
-                descendant.tree_path = descendant.tree_path.replace(old_tree_path, new_tree_path)
-                descendant.level += level_delta
+                descendant_node.tree_path = descendant_node.tree_path.replace(old_tree_path, new_tree_path)
+                descendant_node.level += level_delta
 
         return hook
 
@@ -192,13 +203,13 @@ class TreeRepository[T](BaseRepository[T]):
         """获取直接子节点"""
         # 使用 getattr 避免泛型类型的属性访问错误
         parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
-        where_clauses = [parent_id_attr == parent_id]
+        where_clauses: list[FilterClause] = [cast(FilterClause, parent_id_attr == parent_id)]
 
         # 使用软删除控制状态
         if not include_inactive:
             is_deleted_attr = getattr(self.model, "is_deleted", None)
             if is_deleted_attr is not None:
-                where_clauses.append(is_deleted_attr == False)  # noqa: E712
+                where_clauses.append(cast(FilterClause, is_deleted_attr == False))  # noqa: E712
 
         sort_order_attr = self.model.sort_order  # type: ignore[attr-defined]
         _, children = await self.get_list(
@@ -247,7 +258,7 @@ class TreeRepository[T](BaseRepository[T]):
             self.model.sort_order,  # type: ignore[attr-defined]
         )  # type: ignore[attr-defined]
         result = await db.execute(stmt)
-        items = result.scalars().all()  # .scalars().all() 已返回 list，无需再次包装
+        items = list(result.scalars().all())
 
         # 如果提供了 schema，自动加载关联数据
         if schema and items:

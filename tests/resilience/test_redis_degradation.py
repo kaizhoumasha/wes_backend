@@ -6,11 +6,24 @@ Redis 故障降级测试脚本
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.manual,
+    pytest.mark.skipif(
+        os.getenv("RUN_REDIS_DEGRADATION") != "1" or not sys.stdin.isatty(),
+        reason="manual resilience drill; requires interactive TTY and explicit opt-in",
+    ),
+]
 
 
 async def test_redis_degradation():

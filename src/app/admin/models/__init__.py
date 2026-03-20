@@ -46,13 +46,13 @@ from .user import (
 # ==================== 处理循环引用 ====================
 # User-Role 多对多关系需要在两个模型都定义后才能建立
 User.roles = relationship(
-    "Role",
+    Role,
     secondary=user_role,
     back_populates="users",
 )
 
 Role.users = relationship(
-    "User",
+    User,
     secondary=user_role,
     back_populates="roles",
 )
@@ -62,14 +62,14 @@ Role.permissions = relationship(
     back_populates="roles",
 )
 Permission.roles = relationship(
-    "Role",
+    Role,
     secondary=role_permission,
     back_populates="permissions",
 )
 
 # Menu-Role 多对多关系
 Menu.roles = relationship(
-    "Role",
+    Role,
     secondary=role_menu,
     back_populates="menus",
 )
@@ -81,10 +81,10 @@ Role.menus = relationship(
 
 # ==================== 重建 Pydantic 响应模型 ====================
 
-MenuResponse.model_rebuild()
-MenuTreeResponse.model_rebuild()
-RoleResponse.model_rebuild()
-UserResponse.model_rebuild()
+_ = MenuResponse.model_rebuild()
+_ = MenuTreeResponse.model_rebuild()
+_ = RoleResponse.model_rebuild()
+_ = UserResponse.model_rebuild()
 
 # ==================== 导出所有公开内容 ====================
 

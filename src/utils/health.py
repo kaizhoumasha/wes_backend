@@ -5,7 +5,7 @@
 """
 
 import time
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,7 @@ async def check_database_health(db: AsyncSession) -> dict[str, Any]:
     """
     try:
         start_time = time.time()
-        await db.execute(text("SELECT 1"))
+        _ = await db.execute(text("SELECT 1"))
         response_time = (time.time() - start_time) * 1000
 
         return {
@@ -50,7 +50,7 @@ async def check_redis_health() -> dict[str, Any]:
     """
     try:
         # 尝试确保 Redis 连接（会自动重连）
-        await ensure_redis_connection()
+        _ = await ensure_redis_connection()
 
         if not is_redis_available():
             return {
@@ -67,12 +67,12 @@ async def check_redis_health() -> dict[str, Any]:
 
         # 测试连接并获取延迟
         start_time = time.time()
-        await redis_client.ping()
+        await cast("Any", redis_client).ping()
         response_time = (time.time() - start_time) * 1000
 
         # 获取 Redis 信息
-        info = await redis_client.info()
-        db_size = await redis_client.dbsize()
+        info = await cast("Any", redis_client).info()
+        db_size = await cast("Any", redis_client).dbsize()
 
         return {
             "status": "connected",
@@ -105,7 +105,7 @@ async def check_database_pool_status(db: AsyncSession) -> dict[str, Any] | None:
         if engine is None:
             return None
 
-        pool = engine.pool
+        pool = cast("Any", engine.pool)
         return {
             "pool_size": pool.size(),
             "checked_out": pool.checkedout(),

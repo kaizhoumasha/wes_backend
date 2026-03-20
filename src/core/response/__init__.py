@@ -89,7 +89,7 @@ def error_response_dict(
     code: str,
     message: str,
     detail: Any = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     构建错误响应字典（与error_response格式一致）
 

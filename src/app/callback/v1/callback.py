@@ -12,7 +12,7 @@
 """
 
 import time
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
@@ -73,7 +73,7 @@ async def _record_callback_audit_log(
     message: str | None = None,
 ) -> None:
     try:
-        await audit_log_service.create_audit_log(
+        _ = await audit_log_service.create_audit_log(
             db,
             method=request.method,
             title=title,
@@ -103,7 +103,7 @@ async def callback_result(
     callback: CommandCallbackResult,
     request: Request,
     db: AsyncSessionDep,
-) -> dict:
+) -> dict[str, Any]:
     """
     任务结果回传接口
 
@@ -137,7 +137,7 @@ async def callback_result(
     """
     start_time = time.time()
     request_id = get_request_id()
-    callback_data = callback.model_dump()
+    callback_data = cast("dict[str, Any]", callback.model_dump())
     is_duplicate = False  # 幂等重复标记
 
     logger.info(f"收到指令结果回调: {callback.command_code} -> {callback.result} (request_id={request_id})")
@@ -145,7 +145,7 @@ async def callback_result(
     try:
         # 写入 WorklineInbox（统一编排入口）
         try:
-            await inbox_service.create_command_result_inbox(
+            _ = await inbox_service.create_command_result_inbox(
                 db=db,
                 command_code=callback.command_code,
                 device_code=callback.device_code,
@@ -167,6 +167,8 @@ async def callback_result(
         if not is_duplicate:
             # 处理回调结果（原有逻辑）
             command = await device_command_service.handle_callback_result(db, callback)
+            if command is None:
+                raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
             await db.commit()
 
             logger.info(
@@ -179,7 +181,7 @@ async def callback_result(
         response_time_ms = int(cost_time * 1000)
 
         # 无论是否重复，都记录回调日志
-        await callback_log_service.log_callback(
+        _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,
@@ -210,7 +212,7 @@ async def callback_result(
         logger.error(f"指令结果回调处理失败: {e}")
 
         # 记录失败回调日志
-        await callback_log_service.log_callback(
+        _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,
@@ -248,7 +250,7 @@ async def callback_event(
     event_request: EventRequest,
     request: Request,
     db: AsyncSessionDep,
-) -> dict:
+) -> dict[str, Any]:
     """
     设备事件上报接口
 
@@ -287,7 +289,7 @@ async def callback_event(
     """
     start_time = time.time()
     request_id = get_request_id()
-    event_data = event_request.model_dump()
+    event_data = cast("dict[str, Any]", event_request.model_dump())
     is_duplicate = False  # 幂等重复标记
 
     logger.info(
@@ -307,12 +309,12 @@ async def callback_event(
 
         # 写入 WorklineInbox（统一编排入口）
         try:
-            await inbox_service.create_device_event_inbox(
+            _ = await inbox_service.create_device_event_inbox(
                 db=db,
                 device_code=event_request.device_code,
                 event_type=event_request.event_type.value,
                 timestamp=timestamp,
-                data=event_request.data or {},
+                data=cast("dict[str, Any]", event_request.data or {}),
                 correlation_id=request_id,
             )
             logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type.value}")
@@ -329,16 +331,16 @@ async def callback_event(
         # 只在非重复时提交 Celery 任务
         if not is_duplicate:
             # 构建事件数据，传递 request_id 用于链路追踪
-            event_data = {
+            event_data: dict[str, Any] = {
                 "device_code": event_request.device_code,
                 "event_type": event_request.event_type.value,
                 "timestamp": timestamp,
-                "data": event_request.data,
+                "data": cast("dict[str, Any] | None", event_request.data),
                 "request_id": request_id,  # 传递 request_id 到 Celery
             }
 
             # 使用 send_task 异步处理事件（更可靠，确保任务被正确调度）
-            celery_app.send_task(
+            cast("Any", celery_app).send_task(
                 "src.celery_app.tasks.device.process_device_event",
                 args=[event_data],
             )
@@ -347,7 +349,7 @@ async def callback_event(
         response_time_ms = int(cost_time * 1000)
 
         # 无论是否重复，都记录回调日志
-        await callback_log_service.log_callback(
+        _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,
@@ -386,7 +388,7 @@ async def callback_event(
         logger.error(f"设备事件上报处理失败: {e}")
 
         # 记录失败回调日志
-        await callback_log_service.log_callback(
+        _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,

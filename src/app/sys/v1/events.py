@@ -7,6 +7,7 @@ SSE 实时事件推送 API
 
 import asyncio
 import json
+from typing import Any, cast
 
 from fastapi import APIRouter, Query, Request, status
 from starlette.responses import StreamingResponse
@@ -35,7 +36,10 @@ class SSEEventType:
 )
 async def event_stream(
     request: Request,
-    token: str | None = Query(default=None, description="访问令牌（EventSource 无法设置 Authorization 头时使用）"),
+    token: str | None = Query(  # pyright: ignore[reportCallInDefaultInitializer]
+        default=None,
+        description="访问令牌（EventSource 无法设置 Authorization 头时使用）",
+    ),
 ):
     """
     SSE 实时事件推送端点
@@ -75,7 +79,7 @@ async def event_stream(
     if not bearer_token:
         raise AuthException("缺少访问令牌")
 
-    await _verify_token(bearer_token, request)
+    _ = await _verify_token(bearer_token, request)
 
     redis_client = get_redis()
     if not redis_client:
@@ -92,7 +96,7 @@ async def event_stream(
         while True:
             try:
                 # 从 Redis 队列获取事件（阻塞 1 秒）
-                event = await redis_client.brpop("events:stream", timeout=1)
+                event = await cast("Any", redis_client).brpop(["events:stream"], timeout=1)
                 if event:
                     _, data = event
                     event_dict = json.loads(data)

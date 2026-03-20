@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable  # noqa: TC003
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -37,6 +38,8 @@ from src.core.exceptions import AuthException, InvalidTokenException, TokenExpir
 from src.core.logger import logger
 from src.database.redis_client import get_redis, is_redis_available
 from src.utils.timezone import timezone
+
+RedisResultT = TypeVar("RedisResultT")
 
 # Argon2 密码哈希器（推荐配置）
 pwd_hasher = PasswordHash(
@@ -338,8 +341,8 @@ def _make_refresh_mapping_key(user_id: int, access_jti: str) -> str:
     return f"{REFRESH_TOKEN_PREFIX}:mapping:{user_id}:{access_jti}"
 
 
-async def _delete_refresh_token_and_mapping(
-    redis_client,
+async def _delete_refresh_token_and_mapping(  # pyright: ignore[reportUnusedFunction]
+    redis_client: Any,
     user_id: int,
     access_jti: str,
 ) -> None:
@@ -386,7 +389,11 @@ async def _delete_refresh_token_and_mapping(
         logger.debug(f"No refresh token mapping found for access_jti: {access_jti}")
 
 
-async def _safe_redis_operation(operation_name: str, operation, fallback_result=None):
+async def _safe_redis_operation(
+    operation_name: str,
+    operation: Callable[[Any], Awaitable[RedisResultT]],
+    fallback_result: RedisResultT | None = None,
+) -> RedisResultT | None:
     """
     安全执行 Redis 操作（自动降级）
 
@@ -427,7 +434,7 @@ async def _safe_redis_operation(operation_name: str, operation, fallback_result=
 
 
 async def create_access_token(
-    user_id: int, *, multi_login: bool = True, is_superuser: bool = False, **extra_info
+    user_id: int, *, multi_login: bool = True, is_superuser: bool = False, **extra_info: Any
 ) -> AccessTokenData:
     """
     创建访问令牌
@@ -451,7 +458,7 @@ async def create_access_token(
     access_token = jwt_encode(payload)
 
     # Redis 存储
-    async def _store_redis(redis_client):
+    async def _store_redis(redis_client: Any) -> None:
         # 如果不允许多端登录，删除该用户所有旧 token
         if not multi_login:
             # 使用 SET 存储所有活跃 token 的 JTI（O(1) 查找）
@@ -534,7 +541,7 @@ async def create_refresh_token(
     refresh_token = jwt_encode(payload)
 
     # Redis 存储
-    async def _store_redis(redis_client):
+    async def _store_redis(redis_client: Any) -> None:
         # 如果不允许多端登录，删除旧 refresh tokens
         if not multi_login:
             # 使用 SET 存储所有活跃 refresh token 的 JTI
@@ -591,7 +598,7 @@ async def create_new_token(
     *,
     is_superuser: bool = False,
     multi_login: bool = True,
-    **extra_info,
+    **extra_info: Any,
 ) -> NewTokenData:
     """
     创建新令牌（刷新令牌）
@@ -704,7 +711,7 @@ async def revoke_token(user_id: int, session_uuid: str, jti: str | None = None) 
         jti: JWT ID（可选，用于精确撤销）
     """
 
-    async def _revoke(redis_client):
+    async def _revoke(redis_client: Any) -> None:
         # 获取会话信息
         session_key = _make_user_session_key(user_id, session_uuid)
         session_data_str = await redis_client.get(session_key)
@@ -747,7 +754,7 @@ async def revoke_all_user_tokens(user_id: int) -> int:
         撤销的 token 数量
     """
 
-    async def _revoke_all(redis_client):
+    async def _revoke_all(redis_client: Any) -> int:
         # 获取所有 access token JTI
         access_set_key = _make_multi_login_set_key(user_id)
         access_jtis = await redis_client.smembers(access_set_key)
@@ -828,7 +835,7 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
         raise InvalidTokenException(f"无效的 token 类型: {token_payload.token_type.value}")
 
     # 验证 Redis 中的 token
-    async def _verify_redis(redis_client):
+    async def _verify_redis(redis_client: Any) -> None:
         # 检查黑名单
         blacklist_key = _make_blacklist_key(token_payload.jti)
         if await redis_client.exists(blacklist_key):
@@ -865,7 +872,8 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
 
 
 async def get_current_user(
-    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),  # pyright: ignore[reportCallInDefaultInitializer]
 ) -> int | None:
     """
     获取当前用户 ID（依赖注入）
@@ -887,7 +895,10 @@ async def get_current_user(
     return int(token_payload.sub) if token_payload else None
 
 
-async def require_auth(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> int:
+async def require_auth(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),  # pyright: ignore[reportCallInDefaultInitializer]
+) -> int:
     """
     要求认证（依赖注入）
 

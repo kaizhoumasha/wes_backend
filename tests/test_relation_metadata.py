@@ -47,7 +47,7 @@ class Child(SQLModel, table=True):
     parent: Optional["Parent"] = Relationship(back_populates="children")  # type: ignore[assignment]
 
 
-class User(SQLModel, table=True):
+class RelationUser(SQLModel, table=True):
     """用户模型（用于测试一对一关系）"""
 
     __tablename__ = "test_user"
@@ -56,12 +56,12 @@ class User(SQLModel, table=True):
     username: str
 
     # 一对一关系（通过 uselist=False 实现）
-    profile: Optional["UserProfile"] = Relationship(  # type: ignore[assignment]
+    profile: Optional["RelationUserProfile"] = Relationship(  # type: ignore[assignment]
         back_populates="user", sa_relationship_kwargs={"uselist": False}
     )
 
 
-class UserProfile(SQLModel, table=True):
+class RelationUserProfile(SQLModel, table=True):
     """用户资料模型（用于测试一对一关系）"""
 
     __tablename__ = "test_user_profile"
@@ -71,7 +71,7 @@ class UserProfile(SQLModel, table=True):
     user_id: int = Field(foreign_key="test_user.id")
 
     # 一对一关系
-    user: Optional["User"] = Relationship(back_populates="profile")  # type: ignore[assignment]
+    user: Optional["RelationUser"] = Relationship(back_populates="profile")  # type: ignore[assignment]
 
 
 class SimpleModel(SQLModel, table=True):
@@ -128,10 +128,10 @@ class TestRelationMetadata:
 
     def test_get_relation_info_one_to_one(self):
         """测试获取一对一关系信息"""
-        relation_info = RelationMetadata.get_relation_info(User)
+        relation_info = RelationMetadata.get_relation_info(RelationUser)
 
         assert "profile" in relation_info
-        assert relation_info["profile"]["relation_model"] == UserProfile
+        assert relation_info["profile"]["relation_model"] == RelationUserProfile
         # 注意：SQLAlchemy 的 uselist=False 不会改变 direction.name
         # 它仍然是 ONETOMANY，但 uselist=False 表示单个对象
         assert relation_info["profile"]["relation_type"] == "ONETOMANY"
@@ -170,7 +170,7 @@ class TestRelationMetadata:
         """测试 has_relations 返回 True"""
         assert RelationMetadata.has_relations(Parent) is True
         assert RelationMetadata.has_relations(Child) is True
-        assert RelationMetadata.has_relations(User) is True
+        assert RelationMetadata.has_relations(RelationUser) is True
 
     def test_has_relations_false(self):
         """测试 has_relations 返回 False"""
@@ -187,7 +187,7 @@ class TestRelationMetadata:
         assert relation_type == RelationType.MANYTOONE
 
         # 注意：User.profile 的 uselist=False 但 direction 仍是 ONETOMANY
-        relation_type = RelationMetadata.get_relation_type(User, "profile")
+        relation_type = RelationMetadata.get_relation_type(RelationUser, "profile")
         assert relation_type == RelationType.ONETOMANY
 
         # 不存在的关系
@@ -199,13 +199,13 @@ class TestRelationMetadata:
         assert RelationMetadata.is_one_to_many(Parent, "children") is True
         assert RelationMetadata.is_one_to_many(Child, "parent") is False
         # User.profile 的 direction 是 ONETOMANY（尽管 uselist=False）
-        assert RelationMetadata.is_one_to_many(User, "profile") is True
+        assert RelationMetadata.is_one_to_many(RelationUser, "profile") is True
 
     def test_is_one_to_one(self):
         """测试 is_one_to_one 方法"""
         # SQLAlchemy 没有 ONETOONE direction，需要通过 uselist=False 判断
         # 但 RelationType.ONETOONE 枚举存在，所以测试基于 direction 的判断
-        assert RelationMetadata.is_one_to_one(User, "profile") is False  # direction 是 ONETOMANY
+        assert RelationMetadata.is_one_to_one(RelationUser, "profile") is False  # direction 是 ONETOMANY
         assert RelationMetadata.is_one_to_one(Parent, "children") is False
         assert RelationMetadata.is_one_to_one(Child, "parent") is False
 

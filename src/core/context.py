@@ -4,6 +4,8 @@
 基于 starlette-context 实现请求级别的上下文存储
 """
 
+from typing import Any, cast
+
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
@@ -20,7 +22,8 @@ class RequestContext:
     def get_request_id() -> str:
         """获取当前请求的 ID"""
         if context.exists():
-            return context.get("request_id", "SYSTEM")
+            request_id = cast("str | None", cast("Any", context).get("request_id"))
+            return request_id or "SYSTEM"
         return "SYSTEM"
 
 

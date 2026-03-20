@@ -8,11 +8,18 @@ Loguru 日志配置模块
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger as _logger
 
 from .conf import settings
 from .path_conf import BasePath
+
+if TYPE_CHECKING:
+    from loguru import Record
+else:
+    class Record(TypedDict):
+        extra: dict[Any, Any]
 
 # 日志目录
 LOG_DIR = Path(BasePath) / "logs"
@@ -52,7 +59,7 @@ class InterceptHandler(logging.Handler):
         _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-def add_request_id_filter(record):
+def add_request_id_filter(record: Record) -> bool:
     """
     日志过滤器：自动从上下文注入 request_id
 
@@ -69,7 +76,7 @@ def add_request_id_filter(record):
         except (ImportError, RuntimeError):
             # context 模块不可用或不在请求上下文中
             record["extra"]["request_id"] = "SYSTEM"
-    return record
+    return True
 
 
 def setup_logger() -> None:
@@ -108,7 +115,7 @@ def setup_logger() -> None:
             "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
             "<level>{message}</level>"
         )
-        _logger.add(
+        _ = _logger.add(
             sys.stderr,
             format=console_format,
             level=log_level,
@@ -119,7 +126,7 @@ def setup_logger() -> None:
         )
     else:
         console_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
-        _logger.add(
+        _ = _logger.add(
             sys.stderr,
             format=console_format,
             level=log_level,
@@ -133,7 +140,7 @@ def setup_logger() -> None:
         "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}"
     )
 
-    _logger.add(
+    _ = _logger.add(
         LOG_DIR / "app.log",
         format=file_log_format,
         level=log_level,
@@ -147,7 +154,7 @@ def setup_logger() -> None:
         filter=add_request_id_filter,
     )
 
-    _logger.add(
+    _ = _logger.add(
         LOG_DIR / "error.log",
         format=file_log_format,
         level="ERROR",
@@ -163,7 +170,7 @@ def setup_logger() -> None:
 
     # ==================== 结构化日志（可选） ====================
     if not is_debug and settings.LOG_JSON_OUTPUT:
-        _logger.add(
+        _ = _logger.add(
             LOG_DIR / "structured.json",
             serialize=True,
             level=log_level,

@@ -10,7 +10,7 @@
 """
 
 import time
-from typing import Any
+from typing import Any, cast
 
 import psutil
 from fastapi import APIRouter, Depends
@@ -26,7 +26,9 @@ router = APIRouter(prefix="/performance", tags=["性能监控"])
 
 
 @router.get("/metrics", summary="获取系统性能指标")
-async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_performance_metrics(
+    db: AsyncSession = Depends(get_db),  # pyright: ignore[reportCallInDefaultInitializer]
+) -> dict[str, Any]:
     """
     获取系统性能指标
 
@@ -41,7 +43,7 @@ async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[st
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 
-    system_metrics = {
+    system_metrics: dict[str, Any] = {
         "cpu": {
             "percent": cpu_percent,
             "count": psutil.cpu_count(),
@@ -66,7 +68,7 @@ async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[st
         # 获取连接池状态
         pool_status = await check_database_pool_status(db)
         if pool_status:
-            db_metrics = {
+            db_metrics: dict[str, Any] = {
                 "status": "connected",
                 "response_time_ms": db_health["response_time_ms"],
                 **pool_status,
@@ -77,16 +79,16 @@ async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[st
                 "response_time_ms": db_health["response_time_ms"],
             }
     else:
-        db_metrics = db_health
+        db_metrics = cast("dict[str, Any]", db_health)
 
     # Redis 指标
     redis_metrics = await check_redis_health()
 
     # 缓存指标
     try:
-        cache = get_cache()
-        cache_status = cache.get_status()
-        cache_metrics = {
+        cache = cast("Any", get_cache())
+        cache_status = cast("dict[str, Any]", cache.get_status())
+        cache_metrics: dict[str, Any] = {
             "status": "active" if cache_status["available"] else "degraded",
             "prefix": cache.prefix,
             "circuit_breaker": {
@@ -113,7 +115,9 @@ async def get_performance_metrics(db: AsyncSession = Depends(get_db)) -> dict[st
 
 
 @router.get("/health", summary="健康检查")
-async def health_check(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def health_check(
+    db: AsyncSession = Depends(get_db),  # pyright: ignore[reportCallInDefaultInitializer]
+) -> dict[str, Any]:
     """
     简单健康检查
 
@@ -142,7 +146,9 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.post("/load-test/reset", summary="重置性能测试数据")
-async def reset_load_test_data(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def reset_load_test_data(
+    db: AsyncSession = Depends(get_db),  # pyright: ignore[reportCallInDefaultInitializer]
+) -> dict[str, Any]:
     """
     重置性能测试数据
 
@@ -151,7 +157,7 @@ async def reset_load_test_data(db: AsyncSession = Depends(get_db)) -> dict[str, 
     try:
         # 清空 Redis 缓存
         cache = get_cache()
-        await cache.delete_pattern("*")
+        _ = await cache.delete_pattern("*")
 
         logger.info("性能测试数据已重置")
         return {

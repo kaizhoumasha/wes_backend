@@ -54,7 +54,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
         Returns:
             创建的回调日志对象
         """
-        log_data = {
+        log_data: dict[str, Any] = {
             "callback_type": callback_type,
             "device_id": device_id,
             "request_body": request_body,

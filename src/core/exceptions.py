@@ -197,7 +197,7 @@ class NotFoundException(ResourceException):
         message: str | None = None,
         resource_type: str | None = None,
         resource_id: Any | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         初始化资源未找到异常
@@ -210,7 +210,7 @@ class NotFoundException(ResourceException):
         if resource_type and resource_id:
             if message is None:
                 message = f"{resource_type} (ID: {resource_id}) 不存在"
-            detail = {"resource_type": resource_type, "resource_id": str(resource_id)}
+            detail: dict[str, Any] = {"resource_type": resource_type, "resource_id": str(resource_id)}
             super().__init__(message=message, detail=detail, **kwargs)
         else:
             super().__init__(message=message, **kwargs)
@@ -235,7 +235,7 @@ class DuplicateException(ConflictException):
         message: str | None = None,
         field: str | None = None,
         value: Any | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         初始化重复资源异常
@@ -248,7 +248,7 @@ class DuplicateException(ConflictException):
         if field and value:
             if message is None:
                 message = f"{field} '{value}' 已存在"
-            detail = {"field": field, "value": str(value)}
+            detail: dict[str, Any] = {"field": field, "value": str(value)}
             super().__init__(message=message, detail=detail, **kwargs)
         else:
             super().__init__(message=message, **kwargs)
@@ -285,7 +285,7 @@ class OptimisticLockException(ConflictException):
         resource_id: Any | None = None,
         current_version: int | None = None,
         provided_version: int | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         初始化乐观锁异常
@@ -300,7 +300,7 @@ class OptimisticLockException(ConflictException):
         if resource_type and resource_id:
             if message is None:
                 message = f"{resource_type} (ID: {resource_id}) 已被其他用户修改，请刷新后重试"
-            detail = {
+            detail: dict[str, Any] = {
                 "resource_type": resource_type,
                 "resource_id": str(resource_id),
             }
@@ -354,7 +354,7 @@ class InvalidParameterException(ValidationException):
         self,
         message: str | None = None,
         field: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         初始化无效参数异常
@@ -366,7 +366,7 @@ class InvalidParameterException(ValidationException):
         if field:
             if message is None:
                 message = f"参数 '{field}' 无效"
-            detail = {"field": field}
+            detail: dict[str, Any] = {"field": field}
             super().__init__(message=message, detail=detail, **kwargs)
         else:
             super().__init__(message=message, **kwargs)

@@ -23,7 +23,7 @@
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +43,10 @@ else:
 
 # 泛型类型变量
 T = TypeVar("T")
+
+
+def _as_version(value: object) -> int | None:
+    return value if isinstance(value, int) else None
 
 
 class BaseRepository[T]:
@@ -313,19 +317,22 @@ class BaseRepository[T]:
             if not instance or not data or not isinstance(data, dict):
                 return
 
+            typed_data = cast(dict[str, Any], data)
+
             # 检查模型是否有 version 字段
             if not hasattr(instance, "version") or not hasattr(self.model, "version"):
                 return
 
             # 获取当前数据库中的版本号
-            current_version = instance.version  # type: ignore[attr-defined]
+            current_version = _as_version(getattr(instance, "version", None))
 
             # 获取客户端提供的版本号
-            provided_version = data.get("version")
+            provided_version_raw = typed_data.get("version")
+            provided_version = _as_version(provided_version_raw)
 
             # 如果客户端没有提供 version 字段，抛出异常
             # 这是必需的，因为缺少 version 字段意味着客户端使用了旧的数据
-            if provided_version is None:
+            if provided_version_raw is None:
                 raise OptimisticLockException(
                     resource_type=self._model_name,
                     resource_id=getattr(instance, self._pk_column),
@@ -334,7 +341,7 @@ class BaseRepository[T]:
                 )
 
             # 验证版本号是否匹配
-            if current_version != provided_version:
+            if current_version != provided_version_raw:
                 raise OptimisticLockException(
                     resource_type=self._model_name,
                     resource_id=getattr(instance, self._pk_column),
@@ -652,7 +659,7 @@ class BaseRepository[T]:
 
         # 记录开始时间用于审计日志
         start_time = time.time()
-        await self._run_hooks(HookType.BEFORE_CREATE, session=db, data=data, _audit_start_time=start_time)
+        _ = await self._run_hooks(HookType.BEFORE_CREATE, session=db, data=data, _audit_start_time=start_time)
 
         try:
             # 分离主表字段和关联对象字段
@@ -676,7 +683,7 @@ class BaseRepository[T]:
             pk_value = getattr(instance, self._pk_column)
             logger.info(f"创建 {self._model_name} 成功: {self._pk_column}={pk_value}")
 
-            await self._run_hooks(
+            _ = await self._run_hooks(
                 HookType.AFTER_CREATE,
                 session=db,
                 instance=instance,
@@ -727,9 +734,10 @@ class BaseRepository[T]:
         # 注意：完整的验证逻辑在 Hook 中（_create_optimistic_lock_validation_hook）
         # 这里只是提前验证，避免在 Hook 阶段才发现冲突
         if hasattr(instance, "version") and "version" in data:
-            current_version = instance.version  # type: ignore[attr-defined]
-            provided_version = data["version"]
-            if current_version != provided_version:
+            current_version = _as_version(getattr(instance, "version", None))
+            provided_version_raw = data["version"]
+            provided_version = _as_version(provided_version_raw)
+            if current_version != provided_version_raw:
                 from src.core.exceptions import OptimisticLockException
 
                 raise OptimisticLockException(
@@ -779,7 +787,7 @@ class BaseRepository[T]:
         return await self.get_by_id(db, id)
 
     def _capture_old_values(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> dict[str, Any]:
-        old_values = {}
+        old_values: dict[str, Any] = {}
         for key in data:
             if key not in relation_info and hasattr(instance, key):
                 old_values[key] = getattr(instance, key)
@@ -788,7 +796,7 @@ class BaseRepository[T]:
     async def _run_before_update_hooks(
         self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
     ) -> None:
-        await self._run_hooks(
+        _ = await self._run_hooks(
             HookType.BEFORE_UPDATE,
             session=db,
             instance=instance,
@@ -841,7 +849,7 @@ class BaseRepository[T]:
 
         logger.info(f"更新 {self._model_name} 成功: id={getattr(instance, self._pk_column)}")
 
-        await self._run_hooks(
+        _ = await self._run_hooks(
             HookType.AFTER_UPDATE,
             session=db,
             instance=instance,
@@ -917,7 +925,7 @@ class BaseRepository[T]:
             self._handle_integrity_error(e)
 
     def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
-        old_values = {}
+        old_values: dict[str, Any] = {}
         model_fields = getattr(type(instance), "model_fields", None)
         if model_fields:
             for field_name in model_fields:
@@ -933,7 +941,7 @@ class BaseRepository[T]:
     async def _run_before_delete_hooks(
         self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]
     ) -> None:
-        await self._run_hooks(
+        _ = await self._run_hooks(
             HookType.BEFORE_DELETE,
             session=db,
             instance=instance,
@@ -971,7 +979,7 @@ class BaseRepository[T]:
     async def _run_after_delete_hooks(
         self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]
     ) -> None:
-        await self._run_hooks(
+        _ = await self._run_hooks(
             HookType.AFTER_DELETE,
             session=db,
             instance=instance,

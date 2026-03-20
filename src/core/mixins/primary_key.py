@@ -5,11 +5,15 @@
 - PrimaryKeyMixin: 根据配置动态选择的主键 Mixin
 """
 
-from sqlalchemy import BigInteger
+from typing import Any, cast
+
+from sqlalchemy import BigInteger, Integer
 from sqlmodel import Field
 
 from src.core.conf import settings
 from src.core.mixins.base import BaseMixin
+
+SQL_COMPAT_BIGINT = cast("Any", BigInteger().with_variant(Integer, "sqlite"))
 
 # 动态主键 Mixin(根据配置自动选择)
 # 根据配置动态设置 id 字段
@@ -26,7 +30,7 @@ if settings.USE_SNOWFLAKE_ID:
             default_factory=generate_snowflake_id,
             primary_key=True,
             index=True,
-            sa_type=BigInteger,
+            sa_type=SQL_COMPAT_BIGINT,
             sa_column_kwargs={"nullable": False, "comment": "雪花算法主键 ID"},
         )  # type: ignore[assignment]
 else:
@@ -41,7 +45,7 @@ else:
             primary_key=True,
             index=True,
             unique=True,
-            sa_type=BigInteger,
+            sa_type=SQL_COMPAT_BIGINT,
             sa_column_kwargs={
                 "autoincrement": True,
                 "nullable": False,

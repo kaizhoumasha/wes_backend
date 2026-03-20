@@ -66,6 +66,15 @@ DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTG
 TEST_BARCODE = "PKG-TEST-001"
 TEST_LOCATION = "CONVEYOR-STATION-01"
 
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.e2e,
+    pytest.mark.skipif(
+        os.getenv("RUN_CONVEYOR_E2E") != "1",
+        reason="requires running WES/Celery/mock services and seeded PostgreSQL data",
+    ),
+]
+
 
 # ============================================
 # Pytest Fixtures

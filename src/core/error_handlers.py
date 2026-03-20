@@ -13,7 +13,7 @@
 """
 
 import re
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -65,7 +65,10 @@ def error_response(
     # 自动添加 request_id 到 detail
     final_detail: dict[str, Any] = {}
     if detail is not None:
-        final_detail = dict(detail) if isinstance(detail, dict) else {"info": detail}
+        if isinstance(detail, dict):
+            final_detail = dict(cast("dict[str, Any]", detail))
+        else:
+            final_detail = {"info": detail}
 
     # 尝试获取 request_id
     try:
@@ -246,7 +249,7 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
         标准化的错误响应
     """
     # 格式化验证错误
-    errors = []
+    errors: list[dict[str, str]] = []
     for error in exc.errors():
         field = " -> ".join(str(loc) for loc in error["loc"])
         errors.append(
@@ -276,7 +279,7 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
 
 async def pydantic_validation_exception_handler(request: Request, exc: ValidationError) -> ORJSONResponse:
     """处理 Pydantic 验证异常"""
-    errors = []
+    errors: list[dict[str, str]] = []
     for error in exc.errors():
         field = " -> ".join(str(loc) for loc in error["loc"])
         errors.append(

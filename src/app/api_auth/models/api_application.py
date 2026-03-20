@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
 from enum import Enum
 from ipaddress import ip_address
-from typing import Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import computed_field, field_validator, model_validator
-from sqlalchemy import JSON, Enum as SQLAEnum, Index
+from sqlalchemy import JSON, Index
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
@@ -38,7 +39,7 @@ class ValidityPeriod(str, Enum):
 
     def to_timedelta(self) -> timedelta | None:
         """转换为 timedelta 对象"""
-        mapping = {
+        mapping: dict[ValidityPeriod, timedelta | None] = {
             self.ONE_DAY: timedelta(days=1),
             self.ONE_WEEK: timedelta(weeks=1),
             self.ONE_MONTH: timedelta(days=30),
@@ -78,7 +79,7 @@ class APIApplicationBase(BaseMixin):
             return v
         for ip in v:
             try:
-                ip_address(ip)  # 验证 IP 格式
+                _ = ip_address(ip)  # 验证 IP 格式
             except ValueError as ve:
                 raise ValueError(f"无效的 IP 地址: {ip}") from ve
         return v
@@ -102,7 +103,7 @@ class APIApplication(
     DataTableMixin,
     table=True,
 ):
-    __tablename__: Literal["api_applications"] = "api_applications"
+    __tablename__: ClassVar[Literal["api_applications"]] = "api_applications"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value
 
     app_id: str = Field(max_length=50, description="应用ID")
@@ -111,11 +112,14 @@ class APIApplication(
     # 🔥 使用 VARCHAR + CHECK 约束，避免 PostgreSQL ENUM 限制
     status: AppStatus = Field(
         default=AppStatus.ACTIVE,
-        sa_type=SQLAEnum(
-            AppStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                AppStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="状态",
     )
@@ -123,11 +127,14 @@ class APIApplication(
     # 🔥 使用 VARCHAR + CHECK 约束
     app_type: AppType = Field(
         default=AppType.ECS,
-        sa_type=SQLAEnum(
-            AppType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                AppType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="应用类型",
     )
@@ -135,11 +142,14 @@ class APIApplication(
     # 🔥 使用 VARCHAR + CHECK 约束
     validity_period: ValidityPeriod = Field(
         default=ValidityPeriod.ONE_YEAR,
-        sa_type=SQLAEnum(
-            ValidityPeriod,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                ValidityPeriod,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="有效期时长",
     )
@@ -172,7 +182,7 @@ class ResetValidityPeriodSchema(BaseMixin):
 
 class APIApplicationResponse(APIApplicationBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin):
     app_id: str
-    version: int
+    version: int = Field(default=0)
     status: AppStatus = Field(default=AppStatus.ACTIVE)
     expires_at: datetime | None = None
 

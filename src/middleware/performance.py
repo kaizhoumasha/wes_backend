@@ -9,9 +9,9 @@
 """
 
 import time
-from collections.abc import Callable
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.types import ASGIApp
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -21,7 +21,7 @@ from src.core.logger import logger
 class PerformanceMiddleware(BaseHTTPMiddleware):
     """性能监控中间件"""
 
-    def __init__(self, app, slow_request_threshold: int = 100):
+    def __init__(self, app: ASGIApp, slow_request_threshold: int = 100):
         """
         初始化性能监控中间件
 
@@ -31,7 +31,7 @@ class PerformanceMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.slow_request_threshold = slow_request_threshold
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """处理请求并记录性能指标"""
         start_time = time.time()
 

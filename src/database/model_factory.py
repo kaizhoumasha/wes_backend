@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import ClassVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import ConfigDict
 from sqlmodel import Field
@@ -13,7 +13,7 @@ from sqlmodel import Field
 from src.core.mixins import BaseMixin
 
 
-def _is_optional_type(field_type) -> bool:
+def _is_optional_type(field_type: Any) -> bool:
     """检查类型是否为 Optional（即 Union[T, None] 或 T | None）"""
     if field_type is None:
         return True
@@ -52,7 +52,7 @@ class ModelFactory:
         # 避免重复初始化
         if not hasattr(self, "_initialized"):
             self.base_model = base_model
-            self._cache: dict = {}
+            self._cache: dict[object, type[BaseMixin]] = {}
             self._initialized = True
 
     def create_model(  # noqa: PLR0912
@@ -63,7 +63,7 @@ class ModelFactory:
         make_optional: bool = True,
         keep_required: set[str] | None = None,
         add_timestamps: bool = False,
-        config_dict: dict | None = None,
+        config_dict: dict[str, Any] | None = None,
     ) -> type[BaseMixin]:
         """
         根据基础模型创建对应的 Update 模型
@@ -93,10 +93,10 @@ class ModelFactory:
             keep_required = set()
 
         # 准备字段定义（使用 (type, Field) 元组格式）
-        fields: dict = {}
+        fields: dict[str, tuple[Any, Any]] = {}
 
         # 获取基础模型的类型提示
-        type_hints = get_type_hints(model, include_extras=True)
+        type_hints: dict[str, Any] = get_type_hints(model, include_extras=True)
 
         # 处理基础模型的字段
         for field_name, field_info in model.model_fields.items():
@@ -107,7 +107,7 @@ class ModelFactory:
             field_type = type_hints.get(field_name, field_info.annotation)
 
             # 构建字段属性
-            field_kwargs = {}
+            field_kwargs: dict[str, Any] = {}
 
             # 复制元数据
             if field_info.description:
@@ -176,14 +176,14 @@ class ModelFactory:
             if "default_factory" not in field_kwargs:
                 field_kwargs["default"] = default_value
 
-            fields[field_name] = (final_type, Field(**field_kwargs))
+            fields[field_name] = (final_type, cast("Any", Field(**field_kwargs)))
 
         # 添加时间戳字段
         if add_timestamps:
             fields["updated_at"] = (datetime | None, Field(default=None, description="更新时间"))
 
         # 合并配置
-        model_config_dict = {
+        model_config_dict: dict[str, Any] = {
             "extra": "forbid",
             "from_attributes": True,
             "str_strip_whitespace": True,
@@ -194,22 +194,21 @@ class ModelFactory:
 
         # 使用 type() 创建类，继承自 base_model（保留所有验证器）
         # 然后在 namespace 中覆盖字段定义以修改可选性
-        namespace = {
+        namespace: dict[str, Any] = {
             "model_config": ConfigDict(**model_config_dict),
+            "__annotations__": {},
         }
 
         # 添加字段到 namespace（覆盖基类的字段定义）
         for field_name, (field_type, field_obj) in fields.items():
             # 设置类型注解
-            if "__annotations__" not in namespace:
-                namespace["__annotations__"] = {}
             namespace["__annotations__"][field_name] = field_type
             # 设置字段对象
             namespace[field_name] = field_obj
 
         # 创建新类，继承自 base_model 和 BaseMixin
         # 这样可以保留 base_model 的所有验证器
-        return type(model_name, (model, BaseMixin), namespace)
+        return cast("type[BaseMixin]", type(model_name, (model, BaseMixin), namespace))
 
     def create(
         self,
@@ -232,8 +231,8 @@ class ModelFactory:
         cache_key = (name_suffix, exclude, make_optional, keep_required, add_timestamps)
 
         if cache_key not in self._cache:
-            exclude_set = set(exclude) if exclude else set()
-            keep_required_set = set(keep_required) if keep_required else set()
+            exclude_set: set[str] = set(exclude or ())
+            keep_required_set: set[str] = set(keep_required or ())
 
             self._cache[cache_key] = self.create_model(
                 base_model=self.base_model,
@@ -286,7 +285,7 @@ class ModelFactory:
                 exclude=exclude,
                 make_optional=True,
             )
-            namespace = {
+            namespace: dict[str, Any] = {
                 "__annotations__": {"version": int},
                 "version": Field(..., description="乐观锁版本号，更新时必传"),
             }

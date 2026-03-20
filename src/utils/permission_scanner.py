@@ -281,7 +281,7 @@ async def sync_permissions_to_db(
             parent_id = resolved_ids.get(parent_key)
 
         leaf_orders[parent_key] = leaf_orders.get(parent_key, 0) + 1
-        payload = {
+        payload: dict[str, Any] = {
             **permission_data,
             "parent_id": parent_id,
             "sort_order": leaf_orders[parent_key],

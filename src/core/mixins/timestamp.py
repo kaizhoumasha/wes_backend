@@ -7,6 +7,7 @@
 """
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import event
 from sqlmodel import Field
@@ -56,7 +57,7 @@ class TimestampMixin(BaseMixin):
 
 
 @event.listens_for(TimestampMixin, "before_update", propagate=True)
-def timestamp_before_update(mapper, connection, target):
+def timestamp_before_update(mapper: Any, connection: Any, target: TimestampMixin) -> None:
     """
     自动更新 updated_at 字段
 

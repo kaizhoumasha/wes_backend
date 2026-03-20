@@ -36,7 +36,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         enable_permission: bool = True,
         max_depth: int = 2,
         # 使用与 BaseAPI 兼容的类型（函数类型参数是不变的）
-        custom_routes: list[Callable[[APIRouter, "BaseAPI"], None]] | None = None,
+        custom_routes: list[Callable[[APIRouter, Any], None]] | None = None,
     ) -> None:
         super().__init__(
             module_name,
@@ -72,7 +72,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             "/tree",
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
         )
-        async def get_tree(
+        async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             root_id: Annotated[int | None, Query(description="根节点ID")] = None,
             max_depth: Annotated[int, Query(description="最大深度,-1表示不限制")] = -1,
@@ -85,7 +85,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             "/siblings/{node_id}",
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
         )
-        async def get_siblings(
+        async def get_siblings(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Path(description="节点ID")],
             include_self: Annotated[bool, Query(description="是否包含自身")] = False,
@@ -98,7 +98,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             "/ancestors/{node_id}",
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
         )
-        async def get_ancestors(
+        async def get_ancestors(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Path(description="节点ID")],
             include_self: Annotated[bool, Query(description="是否包含自身")] = False,
@@ -111,7 +111,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             "/move",
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:update"))] if self.enable_permission else [],
         )
-        async def move_node(
+        async def move_node(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Body(description="要移动的节点ID")],
             new_parent_id: Annotated[int | None, Body(description="新的父节点ID")],

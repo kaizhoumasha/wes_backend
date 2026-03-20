@@ -38,7 +38,7 @@ def set_background_tasks(tasks: BackgroundTasks) -> None:
     Note:
         通常由全局依赖注入自动调用，无需手动调用
     """
-    _background_tasks.set(tasks)
+    _ = _background_tasks.set(tasks)
 
 
 def get_background_tasks() -> BackgroundTasks | None:

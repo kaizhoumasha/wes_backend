@@ -5,10 +5,11 @@
 """
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from main import app
+from src.core.error_handlers import register_exception_handlers
 from src.core.exceptions import (
     AdminRequiredException,
     AppException,
@@ -34,10 +35,12 @@ from src.core.exceptions import (
     raise_not_found,
 )
 
-# ==================== 测试客户端 ====================
 
-
-client = TestClient(app)
+def create_test_client() -> tuple[FastAPI, TestClient]:
+    """创建隔离的测试应用，避免污染全局 main.app。"""
+    app = FastAPI(debug=False)
+    register_exception_handlers(app)
+    return app, TestClient(app, raise_server_exceptions=False)
 
 
 # ==================== 异常类测试 ====================
@@ -50,7 +53,7 @@ class TestAppException:
         """测试异常默认值"""
         exc = AppException()
         assert exc.status_code == 500
-        assert exc.code == "INTERNAL_ERROR"
+        assert exc.code == "5000"
         assert exc.message == "服务器内部错误"
         assert exc.detail is None
 
@@ -81,7 +84,7 @@ class TestBusinessException:
         """测试业务异常默认值"""
         exc = BusinessException()
         assert exc.status_code == 400
-        assert exc.code == "BUSINESS_ERROR"
+        assert exc.code == "4000"
         assert exc.message == "业务逻辑错误"
 
     def test_business_exception_custom_message(self):
@@ -98,26 +101,26 @@ class TestAuthExceptions:
         """测试未认证异常"""
         exc = UnauthorizedException()
         assert exc.status_code == 401
-        assert exc.code == "UNAUTHORIZED"
+        assert exc.code == "2010"
         assert exc.message == "请先登录"
 
     def test_invalid_token_exception(self):
         """测试无效 Token 异常"""
         exc = InvalidTokenException()
         assert exc.status_code == 401
-        assert exc.code == "INVALID_TOKEN"
+        assert exc.code == "2012"
 
     def test_invalid_credentials_exception(self):
         """测试无效凭证异常"""
         exc = InvalidCredentialsException()
         assert exc.status_code == 401
-        assert exc.code == "INVALID_CREDENTIALS"
+        assert exc.code == "2011"
 
     def test_token_expired_exception(self):
         """测试 Token 过期异常"""
         exc = TokenExpiredException()
         assert exc.status_code == 401
-        assert exc.code == "TOKEN_EXPIRED"
+        assert exc.code == "2013"
 
 
 class TestPermissionExceptions:
@@ -127,14 +130,14 @@ class TestPermissionExceptions:
         """测试禁止访问异常"""
         exc = ForbiddenException()
         assert exc.status_code == 403
-        assert exc.code == "FORBIDDEN"
+        assert exc.code == "2020"
         assert exc.message == "您没有权限访问该资源"
 
     def test_admin_required_exception(self):
         """测试需要管理员权限异常"""
         exc = AdminRequiredException()
         assert exc.status_code == 403
-        assert exc.code == "ADMIN_REQUIRED"
+        assert exc.code == "2021"
         assert exc.message == "此操作需要管理员权限"
 
 
@@ -145,7 +148,7 @@ class TestResourceExceptions:
         """测试资源未找到异常默认值"""
         exc = NotFoundException()
         assert exc.status_code == 404
-        assert exc.code == "NOT_FOUND"
+        assert exc.code == "3000"
         assert exc.message == "请求的资源不存在"
 
     def test_not_found_exception_with_resource_info(self):
@@ -158,13 +161,13 @@ class TestResourceExceptions:
         """测试资源冲突异常"""
         exc = ConflictException()
         assert exc.status_code == 409
-        assert exc.code == "CONFLICT"
+        assert exc.code == "3012"
 
     def test_duplicate_exception_defaults(self):
         """测试重复资源异常默认值"""
         exc = DuplicateException()
         assert exc.status_code == 409
-        assert exc.code == "DUPLICATE"
+        assert exc.code == "3010"
 
     def test_duplicate_exception_with_field_value(self):
         """测试带字段值的重复异常"""
@@ -180,13 +183,13 @@ class TestValidationExceptions:
         """测试验证异常默认值"""
         exc = ValidationException()
         assert exc.status_code == 422
-        assert exc.code == "VALIDATION_ERROR"
+        assert exc.code == "2004"
 
     def test_invalid_parameter_exception_defaults(self):
         """测试无效参数异常默认值"""
         exc = InvalidParameterException()
         assert exc.status_code == 422
-        assert exc.code == "INVALID_PARAMETER"
+        assert exc.code == "2001"
 
     def test_invalid_parameter_exception_with_field(self):
         """测试带字段名的无效参数异常"""
@@ -202,25 +205,25 @@ class TestServiceExceptions:
         """测试服务不可用异常"""
         exc = ServiceUnavailableException()
         assert exc.status_code == 503
-        assert exc.code == "SERVICE_UNAVAILABLE"
+        assert exc.code == "5030"
 
     def test_rate_limit_exception(self):
         """测试请求频率限制异常"""
         exc = RateLimitException()
         assert exc.status_code == 429
-        assert exc.code == "RATE_LIMIT_EXCEEDED"
+        assert exc.code == "9000"
 
     def test_database_exception(self):
         """测试数据库异常"""
         exc = DatabaseException()
         assert exc.status_code == 500
-        assert exc.code == "DATABASE_ERROR"
+        assert exc.code == "5010"
 
     def test_cache_exception(self):
         """测试缓存异常"""
         exc = CacheException()
         assert exc.status_code == 500
-        assert exc.code == "CACHE_ERROR"
+        assert exc.code == "5020"
 
 
 class TestExternalServiceExceptions:
@@ -230,13 +233,13 @@ class TestExternalServiceExceptions:
         """测试外部服务异常"""
         exc = ExternalServiceException()
         assert exc.status_code == 502
-        assert exc.code == "EXTERNAL_SERVICE_ERROR"
+        assert exc.code == "8000"
 
     def test_third_party_api_exception(self):
         """测试第三方 API 异常"""
         exc = ThirdPartyAPIException()
         assert exc.status_code == 502
-        assert exc.code == "THIRD_PARTY_API_ERROR"
+        assert exc.code == "8000"
 
 
 class TestConvenienceFunctions:
@@ -269,6 +272,7 @@ class TestExceptionHandlers:
 
     def test_app_exception_handler_response_format(self):
         """测试应用异常处理器的响应格式"""
+        app, client = create_test_client()
 
         @app.get("/test/app-exception")
         async def test_app_exception():
@@ -284,11 +288,12 @@ class TestExceptionHandlers:
         data = response.json()
         assert data["code"] == "TEST_ERROR"
         assert data["message"] == "测试错误"
-        assert data["detail"] == {"key": "value"}
+        assert data["detail"]["key"] == "value"
         assert "timestamp" in data
 
     def test_not_found_exception_handler(self):
         """测试资源未找到异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/not-found")
         async def test_not_found():
@@ -297,12 +302,13 @@ class TestExceptionHandlers:
         response = client.get("/test/not-found")
         assert response.status_code == 404
         data = response.json()
-        assert data["code"] == "NOT_FOUND"
+        assert data["code"] == "3000"
         assert "User" in data["message"]
         assert data["detail"]["resource_type"] == "User"
 
     def test_duplicate_exception_handler(self):
         """测试重复资源异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/duplicate")
         async def test_duplicate():
@@ -311,12 +317,13 @@ class TestExceptionHandlers:
         response = client.get("/test/duplicate")
         assert response.status_code == 409
         data = response.json()
-        assert data["code"] == "DUPLICATE"
+        assert data["code"] == "3010"
         assert "username" in data["message"]
         assert data["detail"]["field"] == "username"
 
     def test_validation_exception_handler(self):
         """测试验证异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/validation")
         async def test_validation():
@@ -325,10 +332,11 @@ class TestExceptionHandlers:
         response = client.get("/test/validation")
         assert response.status_code == 422
         data = response.json()
-        assert data["code"] == "INVALID_PARAMETER"
+        assert data["code"] == "2001"
 
     def test_unauthorized_exception_handler(self):
         """测试未认证异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/unauthorized")
         async def test_unauthorized():
@@ -337,10 +345,11 @@ class TestExceptionHandlers:
         response = client.get("/test/unauthorized")
         assert response.status_code == 401
         data = response.json()
-        assert data["code"] == "UNAUTHORIZED"
+        assert data["code"] == "2010"
 
     def test_forbidden_exception_handler(self):
         """测试禁止访问异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/forbidden")
         async def test_forbidden():
@@ -349,10 +358,11 @@ class TestExceptionHandlers:
         response = client.get("/test/forbidden")
         assert response.status_code == 403
         data = response.json()
-        assert data["code"] == "FORBIDDEN"
+        assert data["code"] == "2020"
 
     def test_rate_limit_exception_handler(self):
         """测试限流异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/rate-limit")
         async def test_rate_limit():
@@ -361,7 +371,7 @@ class TestExceptionHandlers:
         response = client.get("/test/rate-limit")
         assert response.status_code == 429
         data = response.json()
-        assert data["code"] == "RATE_LIMIT_EXCEEDED"
+        assert data["code"] == "9000"
 
 
 class TestFastAPIBuiltInExceptions:
@@ -369,11 +379,13 @@ class TestFastAPIBuiltInExceptions:
 
     def test_request_validation_error_handler(self):
         """测试请求验证错误处理器"""
+        _, client = create_test_client()
         response = client.get("/test/invalid-endpoint")
         assert response.status_code == 404
 
     def test_validation_error_response_format(self):
         """测试验证错误响应格式"""
+        app, client = create_test_client()
 
         @app.post("/test/validate")
         async def test_validate(data: dict):
@@ -393,6 +405,7 @@ class TestDatabaseExceptions:
 
     def test_sqlalchemy_error_handler(self):
         """测试 SQLAlchemy 异常处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/db-error")
         async def test_db_error():
@@ -401,19 +414,25 @@ class TestDatabaseExceptions:
         response = client.get("/test/db-error")
         assert response.status_code == 500
         data = response.json()
-        assert data["code"] == "DATABASE_ERROR"
+        assert data["code"] == "5010"
 
     def test_integrity_error_handler(self):
         """测试完整性约束冲突处理器"""
+        app, client = create_test_client()
 
         @app.get("/test/integrity-error")
         async def test_integrity_error():
-            raise IntegrityError("INSERT statement", {}, Exception())
+            raise IntegrityError(
+                "INSERT statement",
+                {},
+                Exception('duplicate key value violates unique constraint "uq_user_username" Key (username)=(admin) already exists'),
+            )
 
         response = client.get("/test/integrity-error")
         assert response.status_code == 409
         data = response.json()
-        assert data["code"] == "INTEGRITY_ERROR"
+        assert data["code"] == "3010"
+        assert data["detail"]["constraint"] == "unique"
 
 
 class TestGeneralException:
@@ -421,6 +440,7 @@ class TestGeneralException:
 
     def test_general_exception_handler(self):
         """测试通用异常处理器（兜底）"""
+        app, client = create_test_client()
 
         @app.get("/test/general-error")
         async def test_general_error():
@@ -428,16 +448,9 @@ class TestGeneralException:
 
         response = client.get("/test/general-error")
         assert response.status_code == 500
-
-        # 检查响应是否为 JSON 格式
-        try:
-            data = response.json()
-            assert data["code"] == "INTERNAL_ERROR"
-            assert "timestamp" in data
-        except Exception:
-            # 如果响应不是 JSON 格式，可能使用了服务器默认错误页面
-            # 这种情况下我们只检查状态码
-            assert response.status_code == 500
+        data = response.json()
+        assert data["code"] == "5000"
+        assert "timestamp" in data
 
 
 # ==================== 响应格式测试 ====================
@@ -448,6 +461,7 @@ class TestErrorResponseFormat:
 
     def test_error_response_contains_required_fields(self):
         """测试错误响应包含必需字段"""
+        app, client = create_test_client()
 
         @app.get("/test/error-format")
         async def test_error_format():
@@ -466,6 +480,7 @@ class TestErrorResponseFormat:
 
     def test_error_response_optional_detail_field(self):
         """测试错误响应可选的 detail 字段"""
+        app, client = create_test_client()
 
         @app.get("/test/error-detail")
         async def test_error_detail():

@@ -39,7 +39,7 @@
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, cast
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +65,11 @@ M = TypeVar("M")
 R = TypeVar("R", bound=BaseRepository)
 
 _NULL_CACHE_MARKER = CACHE_NULL_MARKER
+
+
+class ListCachePayload(TypedDict):
+    total: int
+    items: list[Any]
 
 
 # ==================== 通用 Service 基类 ====================
@@ -104,6 +109,27 @@ class BaseService[M, R]:
         warehouse = await service.get_by_id(db, cache, 1)
     """
 
+    @property
+    def repo(self) -> R:
+        return self._repo
+
+    @repo.setter
+    def repo(self, repository: R) -> None:
+        self._repo = repository
+        self._repo_base = cast(BaseRepository[M], repository)
+        model_name = getattr(repository, "_model_name", None)
+        if isinstance(model_name, str):
+            self._model_name = model_name
+            return
+
+        model = getattr(repository, "model", None)
+        inferred_model_name = getattr(model, "__name__", None)
+        if isinstance(inferred_model_name, str):
+            self._model_name = inferred_model_name
+            return
+
+        self._model_name = type(repository).__name__
+
     def __init__(
         self,
         repository: R,
@@ -128,8 +154,7 @@ class BaseService[M, R]:
             null_cache_expire: 空值缓存过期时间(秒)，None 表示不缓存空值
             response_schema: 响应 Schema (用于自动加载关系)
         """
-        self.repo: R = repository
-        self._model_name = repository._model_name  # type: ignore[attr-defined]
+        self.repo = repository
         self.enable_cache = enable_cache
         self.cache_prefix = cache_prefix or f"{self._model_name.lower()}:detail"
         self.cache_expire = cache_expire
@@ -161,9 +186,9 @@ class BaseService[M, R]:
         response_model = self._get_response_model()
         if response_model is not None:
             return self.to_response(item, response_model)
-        model_validate = getattr(self.repo.model, "model_validate", None)  # type: ignore[attr-defined]
+        model_validate = getattr(self._repo_base.model, "model_validate", None)
         if callable(model_validate):
-            return model_validate(item)
+            return cast(Any, model_validate)(item)
         return item
 
     def add_hook(
@@ -184,7 +209,7 @@ class BaseService[M, R]:
             condition: 执行条件
             error_handler: 错误处理器
         """
-        self.repo.add_hook(hook_type, func, priority, condition, error_handler)  # type: ignore[attr-defined]
+        self._repo_base.add_hook(hook_type, func, priority, condition, error_handler)
 
     async def invalidate_cache(self, cache: object, id: int | None = None, invalidate_list: bool = False) -> None:
         """
@@ -205,11 +230,11 @@ class BaseService[M, R]:
                 return
 
             if id is not None:
-                await cache.delete_pattern(f"{self.cache_prefix}:{id}:*")
+                _ = await cache.delete_pattern(f"{self.cache_prefix}:{id}:*")
                 logger.debug(f"缓存失效: {self.cache_prefix}:{id}:*")
 
             if invalidate_list:
-                await cache.delete_pattern(f"{self.list_cache_prefix}:*")
+                _ = await cache.delete_pattern(f"{self.list_cache_prefix}:*")
                 logger.debug(f"列表缓存失效: {self.list_cache_prefix}")
         except ImportError:
             pass
@@ -234,7 +259,7 @@ class BaseService[M, R]:
             模型实例或 None
         """
         if not self.enable_cache or not cache:
-            return await self.repo.get_by_id(  # type: ignore[attr-defined]
+            return await self._repo_base.get_by_id(
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
             )
 
@@ -242,33 +267,33 @@ class BaseService[M, R]:
             from src.database.redis_cache import RedisCache
 
             if not isinstance(cache, RedisCache):
-                return await self.repo.get_by_id(  # type: ignore[attr-defined]
+                return await self._repo_base.get_by_id(
                     db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
-                )  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+                )
 
             cache_key = f"{self.cache_prefix}:{id}:depth{max_depth}:del{include_deleted}"
             hit, cached_data = await get_cached_value(cache, cache_key)
             if hit:
                 logger.debug(f"缓存命中: {cache_key}")
-                if isinstance(cached_data, dict) and hasattr(self.repo.model, "model_validate"):  # type: ignore[attr-defined]
-                    return self.repo.model.model_validate(cached_data)  # type: ignore[attr-defined]
+                if isinstance(cached_data, dict) and hasattr(self._repo_base.model, "model_validate"):
+                    return cast(M, cast(Any, self._repo_base.model).model_validate(cached_data))
                 return cached_data  # type: ignore[return-value]
 
-            result = await self.repo.get_by_id(  # type: ignore[attr-defined]
+            result = await self._repo_base.get_by_id(
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
-            )  # type: ignore[attr-defined]
+            )
 
             if result:
-                await set_cached_value(cache, cache_key, result, expire=self.cache_expire)
+                _ = await set_cached_value(cache, cache_key, result, expire=self.cache_expire)
             else:
-                await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
+                _ = await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
 
             return result  # type: ignore[return-value]
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
-            return await self.repo.get_by_id(  # type: ignore[attr-defined]
+            return await self._repo_base.get_by_id(
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
-            )  # type: ignore[attr-defined]
+            )
 
     async def get_list(
         self,
@@ -282,7 +307,7 @@ class BaseService[M, R]:
         include_deleted: bool = False,
     ) -> tuple[int, list[M]]:
         if not self.enable_cache or not cache:
-            return await self.repo.get_list(  # type: ignore[attr-defined]
+            return await self._repo_base.get_list(
                 db,
                 limit,
                 offset,
@@ -297,7 +322,7 @@ class BaseService[M, R]:
             from src.database.redis_cache import RedisCache
 
             if not isinstance(cache, RedisCache):
-                return await self.repo.get_list(  # type: ignore[attr-defined]
+                return await self._repo_base.get_list(
                     db,
                     limit,
                     offset,
@@ -323,13 +348,14 @@ class BaseService[M, R]:
             if cached_data is not None:
                 logger.debug(f"缓存命中: {cache_key}")
                 if isinstance(cached_data, dict):
-                    total = cached_data.get("total", 0)
-                    items_data = cached_data.get("items", [])
-                    items = [self._deserialize_list_item_from_cache(item) for item in items_data] if items_data else []
+                    payload = cast(ListCachePayload, cached_data)
+                    total = payload["total"] if isinstance(payload.get("total"), int) else 0
+                    items_data = payload["items"] if isinstance(payload.get("items"), list) else []
+                    items = [self._deserialize_list_item_from_cache(item) for item in items_data]
                     return total, items
                 return 0, []  # 缓存数据格式不符，返回空列表
 
-            total, items = await self.repo.get_list(  # type: ignore[attr-defined]
+            total, items = await self._repo_base.get_list(
                 db,
                 limit,
                 offset,
@@ -341,12 +367,12 @@ class BaseService[M, R]:
             )
 
             items_data = [self._serialize_list_item_for_cache(item) for item in items]
-            await cache.set(cache_key, {"total": total, "items": items_data}, expire=self.list_cache_expire)
+            _ = await cache.set(cache_key, {"total": total, "items": items_data}, expire=self.list_cache_expire)
 
             return total, items
         except ImportError:
             logger.warning("Redis缓存模块未安装，跳过缓存")
-            return await self.repo.get_list(  # type: ignore[attr-defined]
+            return await self._repo_base.get_list(
                 db, limit, offset, filters, sort, schema=self.response_schema, max_depth=max_depth
             )
 
@@ -365,7 +391,7 @@ class BaseService[M, R]:
             exists = await service.exists(db, name=\"仓库A\")
             exists = await service.exists(db, code=\"WH001\", is_deleted=False)
         """
-        return await self.repo.exists(db, **kwargs)  # type: ignore[attr-defined]
+        return await self._repo_base.exists(db, **kwargs)
 
     async def count(self, db: AsyncSession, where_clauses: list[Any] | None = None) -> int:
         """
@@ -382,7 +408,7 @@ class BaseService[M, R]:
             total = await service.count(db)
             active_count = await service.count(db, where_clauses=[Warehouse.is_deleted == False])
         """
-        return await self.repo.count(db, where_clauses)  # type: ignore[attr-defined]
+        return await self._repo_base.count(db, where_clauses)
 
     # ==================== CRUD 方法 ====================
 
@@ -411,7 +437,7 @@ class BaseService[M, R]:
         Raises:
             IntegrityError: 数据完整性约束冲突
         """
-        result = await self.repo.create(db, data)  # type: ignore[attr-defined]
+        result = await self._repo_base.create(db, data)
         if cache:
             await self.invalidate_cache(cache, invalidate_list=True)
         return result
@@ -432,7 +458,7 @@ class BaseService[M, R]:
         Raises:
             ValueError: 记录不存在
         """
-        result = await self.repo.update(db, id, data)  # type: ignore[attr-defined]
+        result = await self._repo_base.update(db, id, data)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -449,7 +475,7 @@ class BaseService[M, R]:
         Returns:
             是否删除成功
         """
-        success = await self.repo.delete(db, id)  # type: ignore[attr-defined]
+        success = await self._repo_base.delete(db, id)
         if not success:
             logger.warning(f"删除 {self._model_name} 失败: id={id} 不存在")
         elif cache:
@@ -477,7 +503,7 @@ class BaseService[M, R]:
             return model
         if isinstance(model, dict):
             return response_schema.model_validate(model)
-        return model_to_schema(model, response_schema)
+        return cast(Any, model_to_schema(model, response_schema))
 
     def to_list_response(self, models: list[M], response_schema: type) -> list[Any]:
         """
@@ -508,7 +534,7 @@ class BaseService[M, R]:
         """
         from src.utils.audit import get_current_user_id
 
-        result = await self.repo.soft_delete(db, id, get_current_user_id())  # type: ignore[attr-defined]
+        result = await self._repo_base.soft_delete(db, id, get_current_user_id())
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -525,7 +551,7 @@ class BaseService[M, R]:
         Returns:
             恢复后的模型实例
         """
-        result = await self.repo.restore(db, id)  # type: ignore[attr-defined]
+        result = await self._repo_base.restore(db, id)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -542,7 +568,7 @@ class BaseService[M, R]:
         Returns:
             (总数, 记录列表)
         """
-        return await self.repo.get_deleted(db, limit, offset)  # type: ignore[attr-defined]
+        return await self._repo_base.get_deleted(db, limit, offset)
 
     async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
         """
@@ -558,7 +584,7 @@ class BaseService[M, R]:
         Returns:
             是否删除成功
         """
-        success = await self.repo.permanent_delete(db, id)  # type: ignore[attr-defined]
+        success = await self._repo_base.permanent_delete(db, id)
         if success and cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return success

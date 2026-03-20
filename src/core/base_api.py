@@ -5,7 +5,7 @@
 """
 
 from collections.abc import Callable
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, TypeVar, cast
 
 from fastapi import APIRouter, Body, Depends, Path, Query
 
@@ -21,6 +21,7 @@ from src.database.dependencies import AsyncSessionDep, CacheDep
 ModelType = TypeVar("ModelType")
 CreateModelType = TypeVar("CreateModelType")
 UpdateModelType = TypeVar("UpdateModelType")
+RouteRegistrar = Callable[[APIRouter, Any], None]
 
 
 class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
@@ -42,7 +43,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
-        custom_routes: list[Callable[[APIRouter, "BaseAPI"], None]] | None = None,
+        custom_routes: list[RouteRegistrar] | None = None,
     ) -> None:
         self.module_name = module_name
         self.model = model
@@ -62,7 +63,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.resource_name = model.__name__
         self.supports_soft_delete = all(hasattr(model, attr) for attr in ("is_deleted", "soft_delete", "restore"))
         # 自定义路由列表（接收 router 和 api 实例作为参数）
-        self._custom_route_funcs = custom_routes or []
+        self._custom_route_funcs: list[RouteRegistrar] = custom_routes or []
 
         if hasattr(service, "response_schema"):
             service.response_schema = response_schema
@@ -94,7 +95,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self._register_get()
         self._register_list()
 
-    def add_custom_route(self, route_func: Callable[[APIRouter, "BaseAPI"], None], insert_first: bool = False) -> None:
+    def add_custom_route(self, route_func: RouteRegistrar, insert_first: bool = False) -> None:
         """动态添加自定义路由
 
         Args:
@@ -140,7 +141,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     @staticmethod
     def _dump_response_data(data: Any) -> Any:
         """将 Pydantic/ORM 响应对象转换为基础数据结构。"""
-        return data.model_dump() if hasattr(data, "model_dump") else data
+        return cast("Any", data).model_dump() if hasattr(data, "model_dump") else data
 
     def _dump_response_items(self, items: list[Any]) -> list[Any]:
         """批量转换列表响应对象。"""
@@ -152,9 +153,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         action: Callable[[int], Any],
         log_message: str,
     ) -> dict[str, Any]:
+        response_builder_any = cast("Any", response_builder)
         success_count = 0
         failed_count = 0
-        errors = []
+        errors: list[dict[str, Any]] = []
 
         for id in ids:
             try:
@@ -165,7 +167,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 errors.append({"id": id, "message": str(e)})
 
         logger.info(f"{log_message}: success={success_count}, failed={failed_count}")
-        return response_builder.batch_operation(
+        return response_builder_any.batch_operation(
             success=success_count, failed=failed_count, errors=errors if errors else None
         )
 
@@ -179,17 +181,19 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:create"))] if self.enable_permission else [],
         )
-        async def create(
+        async def create(  # pyright: ignore[reportUnusedFunction]
             obj_in: Annotated[self.create_schema, Body(...)],  # type: ignore[type-var]
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            data = obj_in.model_dump() if hasattr(obj_in, "model_dump") else obj_in
+            response_builder_any = cast("Any", response_builder)
+            obj_in_any = cast("Any", obj_in)
+            data = obj_in_any.model_dump() if hasattr(obj_in_any, "model_dump") else obj_in_any
             resource = await self.service.create(db, data, cache)
 
             logger.info(f"创建{self.resource_name}成功: id={resource.id if resource else ''}")
             response_data = self.service.to_response(resource, self.response_schema)
-            return response_builder.success(data=response_data)
+            return response_builder_any.success(data=response_data)
 
     def _register_update(self) -> None:
         """注册更新接口"""
@@ -201,30 +205,32 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:update"))] if self.enable_permission else [],
         )
-        async def update(
+        async def update(  # pyright: ignore[reportUnusedFunction]
             id: Annotated[int, Path(...)],
             obj_in: Annotated[self.update_schema, Body(...)],  # type: ignore[type-var]
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             # exclude_unset=True: 只包含用户显式设置的字段，忽略使用默认值的字段。
             # 对于可选字段，显式传入 null 代表清空原值，不能再额外过滤掉 None。
-            data = obj_in.model_dump(exclude_unset=True) if hasattr(obj_in, "model_dump") else obj_in
+            obj_in_any = cast("Any", obj_in)
+            data = obj_in_any.model_dump(exclude_unset=True) if hasattr(obj_in_any, "model_dump") else obj_in_any
             try:
                 resource = await self.service.update(db, id, data, cache)
             except ValueError as e:
                 # 处理记录不存在的情况
                 if "不存在" in str(e):
-                    return response_builder.fail(
+                    return response_builder_any.fail(
                         code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在"
                     )
                 # 其他验证错误
-                return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
+                return response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
             response_resource = await self.service.get_by_id(db, cache, id, max_depth=1) or resource
             response_data = self.service.to_response(response_resource, self.response_schema)
-            return response_builder.success(data=response_data)
+            return response_builder_any.success(data=response_data)
 
     def _register_delete(self) -> None:
         """注册删除接口（自动检测软删除支持）"""
@@ -236,29 +242,30 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ResponseSchemaModel[dict[str, str]],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
         )
-        async def delete(
+        async def delete(  # pyright: ignore[reportUnusedFunction]
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
-            permanent: bool = Query(False, description="是否永久删除"),
+            permanent: bool = Query(False, description="是否永久删除"),  # pyright: ignore[reportCallInDefaultInitializer]
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             if permanent:
                 # 永久删除
                 success = await self.service.permanent_delete(db, id, cache)
                 if not success:
-                    return response_builder.fail(
+                    return response_builder_any.fail(
                         code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                     )
                 logger.info(f"永久删除{self.resource_name}成功: id={id}")
-                return response_builder.success(data={"message": f"{self.resource_name}已永久删除"})
+                return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
             # 软删除或物理删除（根据模型支持情况）
             success = await self.service.delete(db, id, cache)
             if not success:
-                return response_builder.fail(
+                return response_builder_any.fail(
                     code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                 )
             logger.info(f"删除{self.resource_name}成功: id={id}")
-            return response_builder.success(data={"message": f"{self.resource_name}删除成功"})
+            return response_builder_any.success(data={"message": f"{self.resource_name}删除成功"})
 
     def _register_bulk_delete(self) -> None:
         """注册批量删除接口"""
@@ -272,7 +279,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             if self.enable_permission
             else [],  # dependencies=[PermissionDep(f"{self.perm_prefix}:bulk_delete")] if self.enable_permission else [],
         )
-        async def bulk_delete(
+        async def bulk_delete(  # pyright: ignore[reportUnusedFunction]
             ids: list[int],
             db: AsyncSessionDep,
             cache: CacheDep,
@@ -296,13 +303,14 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:detail"))] if self.enable_permission else [],
         )
-        async def get(
+        async def get(  # pyright: ignore[reportUnusedFunction]
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
-            max_depth: int = Query(self.max_depth, ge=0, le=3, description="关系加载深度"),
-            include_deleted: bool = Query(False, description="是否包含已删除记录（仅软删除模型生效）"),
+            max_depth: int = Query(self.max_depth, ge=0, le=3, description="关系加载深度"),  # pyright: ignore[reportCallInDefaultInitializer]
+            include_deleted: bool = Query(False, description="是否包含已删除记录（仅软删除模型生效）"),  # pyright: ignore[reportCallInDefaultInitializer]
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             resource = await self.service.get_by_id(
                 db,
                 cache,
@@ -311,11 +319,11 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 include_deleted=include_deleted if self.supports_soft_delete else False,
             )
             if not resource:
-                return response_builder.fail(
+                return response_builder_any.fail(
                     code=ResourceErrorCode.NOT_FOUND, message=f"{self.resource_name} (ID: {id}) 不存在或已被删除"
                 )
             response_data = self.service.to_response(resource, self.response_schema)
-            return response_builder.success(data=response_data)
+            return response_builder_any.success(data=response_data)
 
     def _register_list(self) -> None:
         """注册列表接口"""
@@ -327,11 +335,12 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:list"))] if self.enable_permission else [],
         )
-        async def query_items(
+        async def query_items(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             cache: CacheDep,
             options: Annotated[QueryOptions, Body(...)],
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             # 根据模型是否支持软删除来决定 include_deleted 的值
             include_deleted = options.include_deleted if self.supports_soft_delete else False
 
@@ -349,7 +358,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             items_data = self._dump_response_items(items)
 
             logger.info(f"获取{self.resource_name}列表: limit={options.limit}, offset={options.offset}, total={total}")
-            return response_builder.success(
+            return response_builder_any.success(
                 data={"total": total, "items": items_data, "limit": options.limit, "offset": options.offset}
             )
 
@@ -368,15 +377,16 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
         )
-        async def restore(
+        async def restore(  # pyright: ignore[reportUnusedFunction]
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             resource = await self.service.restore(db, id, cache)
             logger.info(f"恢复{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)
-            return response_builder.success(data=response_data)
+            return response_builder_any.success(data=response_data)
 
         # 2. 回收站接口
         trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
@@ -387,17 +397,18 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:trash"))] if self.enable_permission else [],
         )
-        async def get_deleted(
+        async def get_deleted(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
-            limit: int = Query(10, ge=1, le=100),
-            offset: int = Query(0, ge=0),
+            limit: int = Query(10, ge=1, le=100),  # pyright: ignore[reportCallInDefaultInitializer]
+            offset: int = Query(0, ge=0),  # pyright: ignore[reportCallInDefaultInitializer]
         ) -> dict[str, Any]:
+            response_builder_any = cast("Any", response_builder)
             total, resources = await self.service.get_deleted(db, limit, offset)
             items = self.service.to_list_response(resources, self.response_schema)
             items_data = self._dump_response_items(items)
 
             logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
-            return response_builder.success(
+            return response_builder_any.success(
                 data={"total": total, "items": items_data, "limit": limit, "offset": offset}
             )
 
@@ -410,7 +421,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=BatchOperationResponseModel,
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:restore"))] if self.enable_permission else [],
         )
-        async def batch_restore(
+        async def batch_restore(  # pyright: ignore[reportUnusedFunction]
             ids: Annotated[list[int], Body(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
@@ -435,7 +446,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             response_model=BatchOperationResponseModel,
             dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:delete"))] if self.enable_permission else [],
         )
-        async def batch_permanent_delete(
+        async def batch_permanent_delete(  # pyright: ignore[reportUnusedFunction]
             ids: Annotated[list[int], Body(...)],
             db: AsyncSessionDep,
             cache: CacheDep,

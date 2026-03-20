@@ -1,11 +1,23 @@
 """API 权限 Repository"""
 
-from sqlalchemy import select
+from typing import Any, cast
+
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.app.admin.models import Permission, Role, User, role_permission, user_role
 from src.database.tree_repository import TreeRepository
+
+FilterClause = ColumnElement[bool]
+
+
+def _roles(user: User) -> list[Role]:
+    return cast("list[Role]", getattr(cast("Any", user), "roles", []))
+
+
+def _permissions(role: Role) -> list[Permission]:
+    return cast("list[Permission]", getattr(cast("Any", role), "permissions", []))
 
 
 class PermissionRepository(TreeRepository[Permission]):
@@ -14,7 +26,7 @@ class PermissionRepository(TreeRepository[Permission]):
     def __init__(self):
         super().__init__(Permission)
 
-    def _add_deleted_filter(self, where_clauses: list, exclude_deleted: bool) -> None:
+    def _add_deleted_filter(self, where_clauses: list[FilterClause], exclude_deleted: bool) -> None:
         """添加软删除过滤条件（DRY 原则）
 
         Args:
@@ -22,7 +34,7 @@ class PermissionRepository(TreeRepository[Permission]):
             exclude_deleted: 是否排除已删除记录（True 表示只返回未删除的）
         """
         if exclude_deleted and hasattr(self.model, "is_deleted"):
-            where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[arg-type]
+            where_clauses.append(cast("FilterClause", self.model.is_deleted.is_(False)))  # type: ignore[attr-defined]
 
     async def get_api_permissions(
         self,
@@ -40,14 +52,15 @@ class PermissionRepository(TreeRepository[Permission]):
         Returns:
             API 权限列表
         """
-        where_clauses: list = []
+        permission_columns = cast("Any", Permission).__table__.c
+        where_clauses: list[FilterClause] = []
 
         # 类型过滤
         if perm_type:
-            where_clauses.append(Permission.type == perm_type)
+            where_clauses.append(cast("FilterClause", permission_columns.type == perm_type))
         else:
             # 默认获取所有 API 类型
-            where_clauses.append(Permission.type.in_(["user_api", "app_api"]))
+            where_clauses.append(cast("FilterClause", permission_columns.type.in_(["user_api", "app_api"])))
 
         # 软删除过滤
         self._add_deleted_filter(where_clauses, exclude_deleted)
@@ -70,9 +83,12 @@ class PermissionRepository(TreeRepository[Permission]):
             - is_deleted=False 表示角色/权限启用
             - is_deleted=True 表示角色/权限已禁用/删除
         """
+        user_columns = cast("Any", User).__table__.c
         # 查询用户（预加载 roles 和 permissions）
         result = await db.execute(
-            select(User).where(User.id == user_id).options(selectinload(User.roles).selectinload(Role.permissions))
+            select(User)
+            .where(user_columns.id == user_id)
+            .options(selectinload(cast("Any", User).roles).selectinload(cast("Any", Role).permissions))
         )
         user = result.scalar_one_or_none()
 
@@ -84,14 +100,14 @@ class PermissionRepository(TreeRepository[Permission]):
             return {"*"}
 
         # 收集权限标识
-        permissions = set()
-        for role in user.roles:
+        permissions: set[str] = set()
+        for role in _roles(user):
             # 只收集未删除的角色权限
             if not role.is_deleted:
-                for perm in role.permissions:
+                for perm in _permissions(role):
                     # 只收集未删除的权限
                     if not perm.is_deleted:
-                        permissions.add(perm.name)
+                        permissions.add(cast("str", perm.name))
         return permissions
 
     async def get_user_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
@@ -132,8 +148,8 @@ class PermissionRepository(TreeRepository[Permission]):
         # 延迟导入避免循环导入
         from src.app.api_auth.models.relationships import api_app_permissions
 
-        where_clauses: list = [
-            api_app_permissions.c.app_id == app_id,
+        where_clauses: list[FilterClause] = [
+            cast("FilterClause", api_app_permissions.c.app_id == app_id),
         ]
 
         # 添加软删除过滤
@@ -147,7 +163,7 @@ class PermissionRepository(TreeRepository[Permission]):
         )
 
         result = await db.execute(query)
-        return {row.name for row in result.scalars()}
+        return {cast("str", row.name) for row in result.scalars()}
 
     async def get_app_ids_by_permission_id(self, db: AsyncSession, permission_id: int) -> set[int]:
         """根据权限 ID 查询使用该权限的应用 ID 集合
@@ -168,9 +184,7 @@ class PermissionRepository(TreeRepository[Permission]):
         from src.app.api_auth.models.relationships import api_app_permissions
 
         query = (
-            select(api_app_permissions.c.app_id)
-            .where(api_app_permissions.c.permission_id == permission_id)
-            .distinct()
+            select(api_app_permissions.c.app_id).where(api_app_permissions.c.permission_id == permission_id).distinct()
         )
         result = await db.execute(query)
         return {int(app_id) for app_id in result.scalars().all() if app_id is not None}

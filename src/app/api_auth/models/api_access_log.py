@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import ClassVar, Literal
 
 from sqlalchemy import Index
 from sqlmodel import Field
@@ -22,7 +22,7 @@ class APIAccessLogBase(BaseMixin):
 
 
 class APIAccessLog(APIAccessLogBase, DataTableMixin, table=True):
-    __tablename__: Literal["api_access_logs"] = "api_access_logs"
+    __tablename__: ClassVar[Literal["api_access_logs"]] = "api_access_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.SYS.value
 
     __table_args__ = (

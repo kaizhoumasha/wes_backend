@@ -131,22 +131,23 @@ class TestCrudOperations:
     @pytest.mark.asyncio
     async def test_get_by_field_with_soft_delete(self, db_session: AsyncSession):
         """测试 get_by_field 的软删除过滤功能"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+
         # 创建两条记录，一条软删除
-        await self.repo.create(db_session, {"code": "ACTIVE", "name": "Active Item", "is_deleted": False})
-        await self.repo.create(db_session, {"code": "DELETED", "name": "Deleted Item", "is_deleted": True})
+        await repo.create(db_session, {"code": "ACTIVE", "name": "Active Item"})
+        deleted = await repo.create(db_session, {"code": "DELETED", "name": "Deleted Item"})
+        deleted.soft_delete()
         await db_session.commit()
 
         # 默认不包含已删除记录
-        found_active = await self.repo.get_by_field(db_session, "code", "ACTIVE")
-        found_deleted = await self.repo.get_by_field(db_session, "code", "DELETED")
+        found_active = await repo.get_by_field(db_session, "code", "ACTIVE")
+        found_deleted = await repo.get_by_field(db_session, "code", "DELETED")
         assert found_active is not None
         assert found_active.name == "Active Item"
         assert found_deleted is None  # 软删除记录被过滤
 
         # 使用 include_deleted=True 可以查询到已删除记录
-        found_deleted_with_flag = await self.repo.get_by_field(
-            db_session, "code", "DELETED", include_deleted=True
-        )
+        found_deleted_with_flag = await repo.get_by_field(db_session, "code", "DELETED", include_deleted=True)
         assert found_deleted_with_flag is not None
         assert found_deleted_with_flag.name == "Deleted Item"
 

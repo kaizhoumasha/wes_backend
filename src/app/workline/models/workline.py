@@ -5,7 +5,7 @@
 """
 
 from enum import Enum
-from typing import Literal
+from typing import Any, ClassVar, Literal, cast
 
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
@@ -36,11 +36,14 @@ class WorkLineBase(BaseMixin):
 
     # 🔥 使用 VARCHAR + CHECK 约束
     line_type: LineType = Field(
-        sa_type=SQLAEnum(
-            LineType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                LineType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
         ),
         description="作业线类型",
     )
@@ -69,7 +72,7 @@ class WorkLine(
     作业线是生产线或工作站的抽象，用于组织和管理设备
     """
 
-    __tablename__: Literal["work_lines"] = "work_lines"
+    __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
 

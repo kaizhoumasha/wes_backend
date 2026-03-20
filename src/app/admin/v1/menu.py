@@ -4,7 +4,7 @@
 使用 TreeAPI 提供完整的 CRUD + 树形操作能力
 """
 
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends
 
@@ -19,7 +19,7 @@ from src.database.dependencies import AsyncSessionDep
 # ==================== 自定义路由注册函数 ====================
 
 
-def register_my_menu_route(router: APIRouter, api) -> None:
+def register_my_menu_route(router: APIRouter, api: Any) -> None:
     """注册用户菜单路由（使用 add_custom_route 时会被调用）
 
     Args:
@@ -40,7 +40,7 @@ def register_my_menu_route(router: APIRouter, api) -> None:
         description="兼容旧版前端，返回当前用户可访问的菜单树（基于角色权限过滤）",
         deprecated=True,
     )
-    async def get_my_menus(
+    async def get_my_menus(  # pyright: ignore[reportUnusedFunction]
         db: AsyncSessionDep,
         current_user_id: Annotated[int, Depends(require_auth)],
     ) -> ResponseSchemaModel[list[MenuTreeResponse]]:

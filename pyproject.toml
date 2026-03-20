@@ -322,6 +322,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "live: requires running external services or seeded live environment",
+    "e2e: end-to-end multi-service workflow tests",
+    "manual: requires explicit operator interaction or interactive terminal",
+]
 
 # 测试报告配置
 # 使用方式：pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
@@ -348,6 +353,11 @@ dev = [
 
 [tool.basedpyright]
 # 基于 pyright 的类型检查器配置
+# 本地只想看 error/warning 时，使用 `scripts/basedpyright-local.sh`
+# 原则：
+# - warning 只保留高信号、可能代表真实缺陷的问题
+# - untyped 三方库与样板卫生问题以下沉为主，避免稀释信号
+# - Unknown 信息继续保留为 information，作为持续收敛的技术债雷达
 # 目标 Python 版本
 pythonVersion = "3.13"
 
@@ -360,35 +370,54 @@ typeCheckingMode = "standard"
 
 # 分析报告配置
 reportMissingImports = "error"
-reportMissingTypeStubs = "warning"
+reportMissingTypeStubs = "hint"
 reportUndefinedVariable = "error"
-reportUnknownMemberType = "warning"
-reportUnknownVariableType = "warning"
-reportUnknownArgumentType = "warning"
-reportUnknownParameterType = "warning"
+reportUnknownMemberType = "information"
+reportUnknownVariableType = "information"
+reportUnknownArgumentType = "information"
+reportUnknownParameterType = "information"
 reportInvalidTypeArguments = "error"
-reportPrivateImportUsage = "warning"
+reportPrivateImportUsage = "hint"
 reportUnusedCallResult = "warning"
-reportUnusedVariable = "warning"
-reportUnusedImport = "warning"
-reportUnusedClass = "warning"
-reportUnusedFunction = "warning"
+reportUnusedVariable = "hint"
+reportUnusedImport = "hint"
+reportUnusedClass = "hint"
+reportUnusedFunction = "hint"
 
 # Pydantic 特殊支持
-reportCallInDefaultInitializer = "warning"
+reportCallInDefaultInitializer = "hint"
 reportUnnecessaryComparison = "warning"
+
+# 对动态且缺少高质量类型信息的三方库降噪
+allowedUntypedLibraries = [
+    "celery",
+    "user_agents",
+    "XdbSearchIP",
+]
+
+# 仅对高风险边界模块启用局部 strict，避免把低收益样板代码一起拉进高成本治理
+strict = [
+    "src/core/security.py",
+    "src/core/api_security.py",
+    "src/database/redis_client.py",
+]
 
 # 排除目录
 exclude = [
     ".git",
     ".venv",
+    ".claude",
     "__pycache__",
     "*.egg-info",
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
+    "backups",
+    "claudedocs",
     "migrations",
     "node_modules",
+    "scripts",
+    "tests",
     "dist",
     "build",
 ]

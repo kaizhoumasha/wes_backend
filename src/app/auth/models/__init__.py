@@ -25,8 +25,8 @@ from .auth import (
 )
 
 # 重建 LoginResponse 模型，解析 user 字段的类型注解
-LoginResponse.model_rebuild()
-AuthMyResponse.model_rebuild()
+_ = LoginResponse.model_rebuild()
+_ = AuthMyResponse.model_rebuild()
 
 # ==================== 导出所有公开内容 ====================
 

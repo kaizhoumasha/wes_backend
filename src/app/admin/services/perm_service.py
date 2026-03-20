@@ -7,6 +7,8 @@ API 权限管理 Service
 - API 权限查询
 """
 
+from typing import Any, cast
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import Permission
@@ -28,9 +30,9 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
 
     def __init__(self, repo: PermissionRepository = permission_repository):
         # 初始化 TreeServiceMixin（设置 self.repo）
-        TreeServiceMixin.__init__(self, repo)
+        cast("Any", TreeServiceMixin.__init__)(self, repo)
         # 初始化 BaseService（缓存配置）
-        BaseService.__init__(
+        cast("Any", BaseService.__init__)(
             self,
             repo,
             enable_cache=True,
