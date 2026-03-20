@@ -92,7 +92,7 @@ uv run python scripts/sync_menus_from_frontend.py --frontend-path ~/SynologyDriv
     permission: ADMIN_PERMISSIONS.user.page,
     menu: {
       name: 'admin:user:menu',
-      icon: 'User',
+      icon: 'ep:user',
       sortOrder: 10,
       parentName: 'admin:system:menu',
       hidden: false,

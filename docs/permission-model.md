@@ -291,7 +291,7 @@ menu = PermissionCreate(
     path="/admin/users",
     component="views/admin/user/index.vue",
     title="用户管理",
-    icon="User",
+    icon="ep:user",
     sort_order=1
 )
 
@@ -312,7 +312,7 @@ external_menu = PermissionCreate(
     type="menu",
     path="/docs",
     title="文档中心",
-    icon="Document",
+    icon="ep:document",
     is_external=True,
     external_url="https://docs.example.com"
 )
@@ -462,7 +462,7 @@ def create_permissions(session: Session):
         path="/admin/users",
         component="views/admin/user/index.vue",
         title="用户管理",
-        icon="User",
+        icon="ep:user",
         sort_order=1
     )
     db_menu = Permission.from_orm(menu_perm)
@@ -1212,7 +1212,7 @@ INSERT INTO permissions (name, type, method, path, resource, action, description
 
 -- Menu 权限
 INSERT INTO permissions (name, type, path, component, title, icon, sort_order) VALUES
-('admin:user:menu', 'menu', '/admin/users', 'views/admin/user/index.vue', '用户管理', 'User', 1);
+('admin:user:menu', 'menu', '/admin/users', 'views/admin/user/index.vue', '用户管理', 'ep:user', 1);
 
 -- Button 权限
 INSERT INTO permissions (name, type, description, api_permissions) VALUES

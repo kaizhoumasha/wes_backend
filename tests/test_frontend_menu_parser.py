@@ -1,5 +1,4 @@
-from types import SimpleNamespace
-
+from app.admin.models import Menu
 from src.app.admin.services.menu_sync_service import MenuSyncService
 from src.utils.frontend_menu_parser import parse_frontend_router_menus
 
@@ -86,7 +85,7 @@ const routes = [
           title: '系统管理',
           menu: {
             name: 'admin:system:menu',
-            icon: 'Setting',
+            icon: 'ep:setting',
             sortOrder: 10
           }
         },
@@ -101,7 +100,7 @@ const routes = [
               menu: {
                 name: 'admin:user:menu',
                 parentName: 'admin:system:menu',
-                icon: 'User',
+                icon: 'ep:user',
                 sortOrder: 11,
                 hidden: true
               }
@@ -121,22 +120,22 @@ const routes = [
         "admin:user:menu",
     ]
     assert menus[0].path == "/admin"
-    assert menus[0].icon == "Setting"
+    assert menus[0].icon == "ep:setting"
     assert menus[0].sort_order == 10
     assert menus[1].path == "/admin/users"
     assert menus[1].parent_name == "admin:system:menu"
-    assert menus[1].icon == "User"
+    assert menus[1].icon == "ep:user"
     assert menus[1].is_hidden is True
 
 
 def test_menu_sync_service_update_payload_includes_version_when_data_changes() -> None:
-    existing = SimpleNamespace(
+    existing = Menu(
         id=1,
         name="admin:user:menu",
         title="用户管理",
         path="/admin/users",
         component="views/admin/users/UserListPage.vue",
-        icon="User",
+        icon="ep:user",
         parent_id=None,
         sort_order=10,
         is_hidden=False,
@@ -147,7 +146,7 @@ def test_menu_sync_service_update_payload_includes_version_when_data_changes() -
         "title": "用户管理",
         "path": "/admin/users",
         "component": "views/admin/users/UserListPage.vue",
-        "icon": "UserFilled",
+        "icon": "ep:user-filled",
         "parent_id": None,
         "sort_order": 10,
         "is_hidden": False,
@@ -155,5 +154,5 @@ def test_menu_sync_service_update_payload_includes_version_when_data_changes() -
 
     update_data = MenuSyncService._build_update_data(existing, payload)
 
-    assert update_data["icon"] == "UserFilled"
+    assert update_data["icon"] == "ep:user-filled"
     assert update_data["version"] == 7
