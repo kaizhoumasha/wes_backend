@@ -5,10 +5,10 @@
 # 直接解析前端 src/router/index.ts，并同步到后端数据库。
 #
 # 使用方式：
-#   bash scripts/sync_menus.sh
-#   bash scripts/sync_menus.sh --dry-run
-#   bash scripts/sync_menus.sh --preview
-#   bash scripts/sync_menus.sh --frontend-path /path/to/wes_frontend
+#   bash scripts/data/sync_menus.sh
+#   bash scripts/data/sync_menus.sh --dry-run
+#   bash scripts/data/sync_menus.sh --preview
+#   bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
 #
 
 set -e
@@ -19,7 +19,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_DIR="$(dirname "$SCRIPT_DIR")"
+BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 FRONTEND_DIR="$(dirname "$BACKEND_DIR")/wes_frontend"
 
 ARGS=()
@@ -64,7 +64,7 @@ if [[ ! -f "$FRONTEND_DIR/src/router/index.ts" ]]; then
 fi
 
 cd "$BACKEND_DIR"
-uv run python scripts/sync_menus_from_frontend.py "${ARGS[@]}"
+uv run python scripts/data/sync_menus.py "${ARGS[@]}"
 
 echo ""
 echo "=================================================================="

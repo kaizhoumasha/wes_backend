@@ -9,7 +9,13 @@
 """
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -675,7 +681,7 @@ async def seed_all(db: AsyncSession) -> None:
     print("  - finance / admin123 (财务人员)")
     print("  - user1 / admin123 (普通用户)")
     print("  - user2 / admin123 (普通用户)")
-    print("\n💡 E2E 测试数据请运行: uv run python migrations/seed_data/e2e_test_data.py")
+    print("\n💡 E2E 测试数据请运行: uv run python scripts/data/seed_e2e_test_data.py")
     print("\n⚠️  生产环境请立即修改默认密码！")
 
 

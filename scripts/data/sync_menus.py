@@ -2,10 +2,10 @@
 从前端 router 自动同步菜单到数据库
 
 使用方式：
-    uv run python scripts/sync_menus_from_frontend.py
-    uv run python scripts/sync_menus_from_frontend.py --frontend-path ../wes_frontend
-    uv run python scripts/sync_menus_from_frontend.py --dry-run
-    uv run python scripts/sync_menus_from_frontend.py --preview
+    uv run python scripts/data/sync_menus.py
+    uv run python scripts/data/sync_menus.py --frontend-path ../wes_frontend
+    uv run python scripts/data/sync_menus.py --dry-run
+    uv run python scripts/data/sync_menus.py --preview
 """
 
 # ruff: noqa: E402
@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 

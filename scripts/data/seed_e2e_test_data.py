@@ -7,16 +7,22 @@ E2E 测试数据初始化脚本
 - API 应用 (APIApplication)
 - API 权限 (api:callback:result, api:callback:event)
 
-与系统初始化数据 (initial_data.py) 分离，避免冲突。
+与系统初始化数据 (seed_initial_data.py) 分离，避免冲突。
 
 运行方式:
-    PYTHONPATH=. uv run python migrations/seed_data/e2e_test_data.py
+    uv run python scripts/data/seed_e2e_test_data.py
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

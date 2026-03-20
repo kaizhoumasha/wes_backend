@@ -406,11 +406,14 @@ curl http://localhost:8004/api/v1/robot/status
 在运行 E2E 测试前，需要先初始化测试数据：
 
 ```bash
-# 方式 1：直接运行 E2E 测试数据脚本
-PYTHONPATH=. uv run python migrations/seed_data/e2e_test_data.py
+# 方式 1：使用便捷脚本
+bash scripts/data/seed_e2e_test_data.sh
 
-# 方式 2：在 Docker 容器内运行
-docker compose exec api uv run python migrations/seed_data/e2e_test_data.py
+# 方式 2：直接运行 Python 脚本
+uv run python scripts/data/seed_e2e_test_data.py
+
+# 方式 3：在 Docker 容器内运行
+docker compose exec api uv run python scripts/data/seed_e2e_test_data.py
 ```
 
 这将创建以下 E2E 测试数据：
@@ -422,7 +425,7 @@ docker compose exec api uv run python migrations/seed_data/e2e_test_data.py
 
 > 💡 此脚本可重复运行，已存在的数据会被跳过（幂等设计）。
 >
-> ⚠️ 系统初始化数据（用户/角色/权限）请使用 `migrations/seed_data/initial_data.py`
+> ⚠️ 系统初始化数据（用户/角色/权限）请使用 `scripts/data/seed_initial_data.py`
 
 ## 测试用例
 

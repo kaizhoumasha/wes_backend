@@ -2,10 +2,10 @@
 从后端路由自动同步权限到数据库，并按内置规则补齐角色权限。
 
 使用方式：
-    uv run python scripts/sync_permissions.py
-    uv run python scripts/sync_permissions.py --dry-run
-    uv run python scripts/sync_permissions.py --preview
-    uv run python scripts/sync_permissions.py --permissions-only
+    uv run python scripts/data/sync_permissions.py
+    uv run python scripts/data/sync_permissions.py --dry-run
+    uv run python scripts/data/sync_permissions.py --preview
+    uv run python scripts/data/sync_permissions.py --permissions-only
 """
 
 # ruff: noqa: E402
@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 

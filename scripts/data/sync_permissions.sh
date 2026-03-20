@@ -6,10 +6,10 @@
 # 同步到 permissions 表，并按内置规则补齐角色权限。
 #
 # 使用方式：
-#   bash scripts/sync_permissions.sh
-#   bash scripts/sync_permissions.sh --dry-run
-#   bash scripts/sync_permissions.sh --preview
-#   bash scripts/sync_permissions.sh --permissions-only
+#   bash scripts/data/sync_permissions.sh
+#   bash scripts/data/sync_permissions.sh --dry-run
+#   bash scripts/data/sync_permissions.sh --preview
+#   bash scripts/data/sync_permissions.sh --permissions-only
 #
 
 set -e
@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_DIR="$(dirname "$SCRIPT_DIR")"
+BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 ARGS=()
 
@@ -44,7 +44,7 @@ echo -e "${BLUE}📦 后端目录:${NC} $BACKEND_DIR"
 echo ""
 
 cd "$BACKEND_DIR"
-uv run python scripts/sync_permissions.py "${ARGS[@]}"
+uv run python scripts/data/sync_permissions.py "${ARGS[@]}"
 
 echo ""
 echo "=================================================================="

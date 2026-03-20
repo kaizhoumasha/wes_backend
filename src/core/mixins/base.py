@@ -7,6 +7,11 @@
 from sqlmodel import SQLModel
 from sqlmodel._compat import SQLModelConfig
 
+from src.database.metadata import metadata as shared_metadata
+
+# 所有 SQLModel 表统一使用同一份 metadata，确保命名约定对 FK/PK/UK 生效。
+SQLModel.metadata = shared_metadata
+
 
 class BaseMixin(SQLModel):
     """

@@ -726,7 +726,7 @@ init_database_data() {
     fi
 
     # 检查初始化脚本
-    local init_script="${SCRIPT_DIR}/migrations/seed_data/initial_data.py"
+    local init_script="${SCRIPT_DIR}/scripts/data/seed_initial_data.py"
     if [[ ! -f "${init_script}" ]]; then
         print_warning "初始化脚本不存在: ${init_script}"
         return 0
@@ -752,7 +752,7 @@ init_database_data() {
     print_info "开始初始化数据库基础数据..."
 
     # 运行初始化脚本
-    if compose_exec "api" python -m migrations.seed_data.initial_data; then
+    if compose_exec "api" python scripts/data/seed_initial_data.py; then
         print_success "数据库初始化完成"
         return 0
     else
@@ -934,7 +934,7 @@ main() {
     if [[ "${RUN_SEED_DATA}" == "true" ]]; then
         if ! init_database_data; then
             print_warning "数据库初始化失败，但服务已启动"
-            print_info "可以稍后手动运行: docker compose exec api python -m migrations.seed_data.initial_data"
+            print_info "可以稍后手动运行: docker compose exec api python scripts/data/seed_initial_data.py"
         fi
         echo ""
     fi

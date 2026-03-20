@@ -1,7 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -15,21 +14,13 @@ from sqlalchemy.pool import StaticPool
 # 导入 SQLModel 以确保模型被注册
 from src.core.conf import settings
 from src.core.logger import logger
+from src.database.metadata import metadata as shared_metadata
 from src.database.schema_conf import get_schema_search_path
 from src.database.sqlite_schema import configure_sqlite_schemas
 
-# 推荐的命名约定，防止 Alembic 自动生成迁移时出现未命名约束问题
-naming_convention = {
-    "ix": "ix_%(column_0_label)s",
-    "uq": "uq_%(table_name)s_%(column_0_name)s",
-    "ck": "ck_%(table_name)s_%(constraint_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",
-}
-
 
 class Base(DeclarativeBase):
-    metadata = MetaData(naming_convention=naming_convention)
+    metadata = shared_metadata
 
 
 # 全局数据库引擎

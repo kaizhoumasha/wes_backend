@@ -24,21 +24,21 @@ menus 表
 
 ```bash
 # 仅预览 router 会生成哪些菜单
-uv run python scripts/sync_menus_from_frontend.py --preview
+uv run python scripts/data/sync_menus.py --preview
 
 # 对比前端 router 与数据库，不写入
-uv run python scripts/sync_menus_from_frontend.py --dry-run
+uv run python scripts/data/sync_menus.py --dry-run
 
 # 实际同步
-uv run python scripts/sync_menus_from_frontend.py
+uv run python scripts/data/sync_menus.py
 ```
 
 也可以使用便捷脚本：
 
 ```bash
-bash scripts/sync_menus.sh --preview
-bash scripts/sync_menus.sh --dry-run
-bash scripts/sync_menus.sh
+bash scripts/data/sync_menus.sh --preview
+bash scripts/data/sync_menus.sh --dry-run
+bash scripts/data/sync_menus.sh
 ```
 
 同步菜单后，脚本会按系统内置角色规则自动补齐默认菜单：
@@ -52,7 +52,7 @@ bash scripts/sync_menus.sh
 如果前端目录不在默认位置，可显式指定：
 
 ```bash
-uv run python scripts/sync_menus_from_frontend.py --frontend-path ~/SynologyDrive/works/wes_frontend
+uv run python scripts/data/sync_menus.py --frontend-path ~/SynologyDrive/works/wes_frontend
 ```
 
 ## 默认解析规则
@@ -112,10 +112,10 @@ uv run python scripts/sync_menus_from_frontend.py --frontend-path ~/SynologyDriv
 
 ## 种子初始化
 
-空库初始化时，可直接从前端 router 注入菜单：
+空库或已有库同步菜单时，统一使用数据同步脚本：
 
 ```bash
-uv run python -m migrations.seed_data.seed_menus --use-frontend-data
+uv run python scripts/data/sync_menus.py
 ```
 
 如果前端目录不可用，则会回退到脚本内置的默认菜单数据。
@@ -128,4 +128,4 @@ uv run python -m migrations.seed_data.seed_menus --use-frontend-data
 - 不再依赖不存在的 `src/router/menu_data.json`
 - 统一使用 router 作为菜单注入源头，避免前后端各维护一份菜单清单
 - 预览模式不再要求先初始化数据库
-- `seed_menus.py` 现在会正确传递 `--use-frontend-data`
+- 菜单初始化与同步入口统一到 `scripts/data/sync_menus.py`

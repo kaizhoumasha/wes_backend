@@ -252,18 +252,18 @@ async def create_user(
 **推荐同步方式**：
 
 - `API 权限` 以路由上的 `RequirePermission(...)` / `RequireAPIPermission(...)` 为唯一代码源头
-- 通过后端脚本 `scripts/sync_permissions.py` 扫描路由并幂等同步到 `permissions` 表
+- 通过后端脚本 `scripts/data/sync_permissions.py` 扫描路由并幂等同步到 `permissions` 表
 - 同步完成后，再按内置角色规则补齐 `role_permissions`，避免新增权限后管理员角色漏授权
 
 ```bash
 # 仅预览代码中扫描到的权限
-uv run python scripts/sync_permissions.py --preview
+uv run python scripts/data/sync_permissions.py --preview
 
 # 对比代码与数据库，不写入
-uv run python scripts/sync_permissions.py --dry-run
+uv run python scripts/data/sync_permissions.py --dry-run
 
 # 实际同步权限，并补齐内置角色权限
-uv run python scripts/sync_permissions.py
+uv run python scripts/data/sync_permissions.py
 ```
 
 ### 2. Menu 权限 (type='menu')
