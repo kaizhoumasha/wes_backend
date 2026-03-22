@@ -212,4 +212,4 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
             await invalidate_app_permissions(cache, app_id)
 
 
-permission_service = PermissionService()
+permission_service = PermissionService(permission_repository)

@@ -10,19 +10,18 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, field_validator
 from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
+from src.app.device.models.device import (
+    Device,  # noqa: TC001 - runtime import ensures related device/workline metadata loads
+)
 from src.core.mixins import BaseMixin, DataTableMixin, SoftDeleteMixin
 from src.database.schema_conf import SchemaType
-
-if TYPE_CHECKING:
-    from src.app.device.models.device import Device
-
 
 # ==================== 枚举定义 ====================
 

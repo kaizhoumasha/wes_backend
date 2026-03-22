@@ -11,19 +11,16 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Index, Relationship
 
+from src.app.workline.models.workline import WorkLine  # noqa: TC001 - runtime import keeps WorkLine mapper registered
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-
-if TYPE_CHECKING:
-    from src.app.workline.models.workline import WorkLine
-
 
 # ==================== 枚举定义 ====================
 
@@ -80,12 +77,15 @@ class DeviceBase(BaseMixin):
 
     # 🔥 使用 VARCHAR + CHECK 约束
     device_type: DeviceType = Field(
-        sa_type=cast("Any", SQLAEnum(
-            DeviceType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                DeviceType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="设备类型",
     )
 
@@ -134,12 +134,15 @@ class DeviceBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     protocol: DeviceProtocol = Field(
         default=DeviceProtocol.HTTP,
-        sa_type=cast("Any", SQLAEnum(
-            DeviceProtocol,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                DeviceProtocol,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="通信协议",
     )
 
@@ -150,12 +153,15 @@ class DeviceBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     device_status: DeviceStatus = Field(
         default=DeviceStatus.IDLE,
-        sa_type=cast("Any", SQLAEnum(
-            DeviceStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                DeviceStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="设备实时状态（IDLE/RUNNING/ERROR/OFFLINE）",
     )
 

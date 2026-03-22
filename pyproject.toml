@@ -322,6 +322,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+norecursedirs = [
+    "tests/e2e",
+    "tests/resilience",
+    "tests/load",
+    "tests/mock",
+]
 markers = [
     "live: requires running external services or seeded live environment",
     "e2e: end-to-end multi-service workflow tests",

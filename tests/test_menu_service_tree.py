@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.app.admin.models.menu import MenuTreeResponse
+from src.app.admin.models.menu import MenuTreeResponseSimple
 from src.app.admin.services.menu_service import MenuService
 
 
@@ -23,6 +23,8 @@ def _menu(
         tree_path="/",
         level=1 if parent_id is None else 2,
         sort_order=sort_order,
+        version=0,
+        roles=[],
         is_hidden=False,
     )
 
@@ -38,7 +40,7 @@ def test_build_tree_returns_menu_tree_response_with_children() -> None:
 
     tree = service._build_tree(menus)
 
-    assert all(isinstance(node, MenuTreeResponse) for node in tree)
+    assert all(isinstance(node, MenuTreeResponseSimple) for node in tree)
     assert [node.id for node in tree] == [1, 2]
     assert [child.id for child in tree[0].children] == [3, 4]
 

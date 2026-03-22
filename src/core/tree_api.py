@@ -3,11 +3,10 @@
 from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
 
-from fastapi import APIRouter, Body, Depends, Path, Query
+from fastapi import APIRouter, Body, Path, Query
 
 from src.core.base_api import BaseAPI
-from src.core.rbac import RequirePermission
-from src.core.response.response_util import response_builder
+from src.core.response.response_schema import ResponseSchemaModel
 from src.core.service_protocols import TreeServiceProtocol
 from src.database.dependencies import AsyncSessionDep
 
@@ -27,6 +26,8 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         create_schema: type[CreateModelType] | None = None,
         update_schema: type[UpdateModelType] | None = None,
         response_schema: type[ModelType] | Any = Any,
+        *,
+        tree_response_schema: type[Any],
         prefix: str = "",
         tags: list[str] | None = None,
         gen_create: bool = True,
@@ -35,9 +36,14 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
+        tree_node_response_schema: type[Any] | None = None,
         # 使用与 BaseAPI 兼容的类型（函数类型参数是不变的）
         custom_routes: list[Callable[[APIRouter, Any], None]] | None = None,
     ) -> None:
+        self.tree_response_schema = tree_response_schema
+        self.tree_node_response_schema = (
+            tree_node_response_schema if tree_node_response_schema is not None else response_schema
+        )
         super().__init__(
             module_name,
             model,
@@ -65,60 +71,70 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         self._register_tree_routes()
         super()._register_routes()
 
-    def _register_tree_routes(self):
+    def _register_tree_routes(self) -> None:
         """注册树形结构路由"""
+        view_dependencies = self._permission_dependencies("view")
+        update_dependencies = self._permission_dependencies("update")
 
         @self.router.get(
             "/tree",
-            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
+            response_model=ResponseSchemaModel[list[self.tree_response_schema]],
+            dependencies=view_dependencies,
         )
         async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             root_id: Annotated[int | None, Query(description="根节点ID")] = None,
             max_depth: Annotated[int, Query(description="最大深度,-1表示不限制")] = -1,
-        ):
+        ) -> dict[str, Any]:
             """获取树形结构"""
-            items = await self.service.get_tree(db, root_id, max_depth)
-            return response_builder.fast_success(data=items)
+            response_builder_any = self._response_builder()
+            items = await self.service.get_tree(db, root_id, max_depth, schema=self.tree_response_schema)
+            return response_builder_any.success(data=items)
 
         @self.router.get(
             "/siblings/{node_id}",
-            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
+            response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
+            dependencies=view_dependencies,
         )
         async def get_siblings(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Path(description="节点ID")],
             include_self: Annotated[bool, Query(description="是否包含自身")] = False,
-        ):
+        ) -> dict[str, Any]:
             """获取同级节点"""
+            response_builder_any = self._response_builder()
             items = await self.service.get_siblings(db, node_id, include_self)
-            return response_builder.success(data=items)
+            return response_builder_any.success(data=items)
 
         @self.router.get(
             "/ancestors/{node_id}",
-            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:view"))] if self.enable_permission else [],
+            response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
+            dependencies=view_dependencies,
         )
         async def get_ancestors(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Path(description="节点ID")],
             include_self: Annotated[bool, Query(description="是否包含自身")] = False,
-        ):
+        ) -> dict[str, Any]:
             """获取祖先节点"""
+            response_builder_any = self._response_builder()
             items = await self.service.get_ancestors(db, node_id, include_self)
-            return response_builder.success(data=items)
+            return response_builder_any.success(data=items)
 
         @self.router.put(
             "/move",
-            dependencies=[Depends(RequirePermission(f"{self.perm_prefix}:update"))] if self.enable_permission else [],
+            response_model=ResponseSchemaModel[self.tree_node_response_schema],
+            dependencies=update_dependencies,
         )
         async def move_node(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
             node_id: Annotated[int, Body(description="要移动的节点ID")],
             new_parent_id: Annotated[int | None, Body(description="新的父节点ID")],
-        ):
+        ) -> dict[str, Any]:
             """移动节点"""
+            response_builder_any = self._response_builder()
             result = await self.service.move_node(db, node_id, new_parent_id)
-            return response_builder.success(data=result)
+            return response_builder_any.success(data=result)
 
 
 __all__ = ["TreeAPI"]

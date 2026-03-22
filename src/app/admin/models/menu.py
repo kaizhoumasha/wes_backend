@@ -69,11 +69,18 @@ class MenuResponse(MenuBase):
     roles: list["RoleResponse"] = Field(default_factory=list)  # 关联角色
 
 
-class MenuTreeResponse(MenuBase):
+class MenuTreeResponse(MenuResponse):
+    """菜单树响应 Schema"""
+
+    children: list["MenuResponse"] = Field(default_factory=list)
+
+
+class MenuTreeResponseSimple(MenuBase):
     """菜单树响应 Schema"""
 
     id: int
-    children: list["MenuTreeResponse"] = Field(default_factory=list)
+    version: int
+    children: list["MenuTreeResponseSimple"] = Field(default_factory=list)
 
 
 __all__ = [
@@ -82,5 +89,6 @@ __all__ = [
     "MenuCreate",
     "MenuResponse",
     "MenuTreeResponse",
+    "MenuTreeResponseSimple",
     "MenuUpdate",
 ]

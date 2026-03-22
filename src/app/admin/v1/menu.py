@@ -8,7 +8,14 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends
 
-from src.app.admin.models import Menu, MenuCreate, MenuResponse, MenuTreeResponse, MenuUpdate
+from src.app.admin.models import (
+    Menu,
+    MenuCreate,
+    MenuResponse,
+    MenuTreeResponse,
+    MenuTreeResponseSimple,
+    MenuUpdate,
+)
 from src.app.admin.services.menu_service import menu_service
 from src.core.rbac import require_auth
 from src.core.response.response_schema import ResponseSchemaModel
@@ -28,22 +35,15 @@ def register_my_menu_route(router: APIRouter, api: Any) -> None:
     """
 
     @router.get(
-        "/my",
-        response_model=ResponseSchemaModel[list[MenuTreeResponse]],
+        "/my_menu",
+        response_model=ResponseSchemaModel[list[MenuTreeResponseSimple]],
         summary="获取当前用户的菜单树",
         description="返回当前用户可访问的菜单树（基于角色权限过滤）",
-    )
-    @router.get(
-        "/my_menu",
-        response_model=ResponseSchemaModel[list[MenuTreeResponse]],
-        summary="获取当前用户的菜单树（兼容旧路径）",
-        description="兼容旧版前端，返回当前用户可访问的菜单树（基于角色权限过滤）",
-        deprecated=True,
     )
     async def get_my_menus(  # pyright: ignore[reportUnusedFunction]
         db: AsyncSessionDep,
         current_user_id: Annotated[int, Depends(require_auth)],
-    ) -> ResponseSchemaModel[list[MenuTreeResponse]]:
+    ) -> ResponseSchemaModel[list[MenuTreeResponseSimple]]:
         """
         获取当前用户的菜单树
 
@@ -66,7 +66,7 @@ def register_my_menu_route(router: APIRouter, api: Any) -> None:
         - 前端根据菜单树动态生成导航栏
         """
         menus = await menu_service.get_user_menu_tree(db, current_user_id)
-        return cast("ResponseSchemaModel[list[MenuTreeResponse]]", response_builder.success(data=menus))
+        return cast("ResponseSchemaModel[list[MenuTreeResponseSimple]]", response_builder.success(data=menus))
 
 
 # ==================== 创建 TreeAPI 实例 ====================
@@ -85,6 +85,7 @@ menu_api = TreeAPI(
     gen_delete=True,
     enable_permission=True,
     max_depth=2,
+    tree_response_schema=MenuTreeResponse,
     custom_routes=[register_my_menu_route],  # 注册自定义路由
 )
 

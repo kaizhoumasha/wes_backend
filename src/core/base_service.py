@@ -72,6 +72,19 @@ class ListCachePayload(TypedDict):
     items: list[Any]
 
 
+def _infer_model_name(repository: object) -> str:
+    model_name = getattr(repository, "_model_name", None)
+    if isinstance(model_name, str):
+        return model_name
+
+    model = getattr(repository, "model", None)
+    inferred_name = getattr(model, "__name__", None)
+    if isinstance(inferred_name, str):
+        return inferred_name
+
+    return type(repository).__name__
+
+
 # ==================== 通用 Service 基类 ====================
 
 
@@ -117,18 +130,7 @@ class BaseService[M, R]:
     def repo(self, repository: R) -> None:
         self._repo = repository
         self._repo_base = cast(BaseRepository[M], repository)
-        model_name = getattr(repository, "_model_name", None)
-        if isinstance(model_name, str):
-            self._model_name = model_name
-            return
-
-        model = getattr(repository, "model", None)
-        inferred_model_name = getattr(model, "__name__", None)
-        if isinstance(inferred_model_name, str):
-            self._model_name = inferred_model_name
-            return
-
-        self._model_name = type(repository).__name__
+        self._model_name = _infer_model_name(repository)
 
     def __init__(
         self,
@@ -158,14 +160,16 @@ class BaseService[M, R]:
         self.enable_cache = enable_cache
         self.cache_prefix = cache_prefix or f"{self._model_name.lower()}:detail"
         self.cache_expire = cache_expire
-        self.list_cache_prefix = list_cache_prefix or (
-            self.cache_prefix.replace(":detail", ":list")
-            if ":detail" in self.cache_prefix
-            else f"{self.cache_prefix}:list"
-        )
+        self.list_cache_prefix = list_cache_prefix or self._get_list_cache_prefix(self.cache_prefix)
         self.list_cache_expire = list_cache_expire if list_cache_expire is not None else cache_expire
         self.null_cache_expire = null_cache_expire
         self.response_schema = response_schema
+
+    @staticmethod
+    def _get_list_cache_prefix(cache_prefix: str) -> str:
+        if ":detail" in cache_prefix:
+            return cache_prefix.replace(":detail", ":list")
+        return f"{cache_prefix}:list"
 
     def _get_response_model(self) -> type[BaseModel] | None:
         """返回可用于序列化/反序列化的响应 Schema。"""

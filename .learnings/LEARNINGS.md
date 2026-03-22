@@ -995,3 +995,38 @@ last_inbox_id: int | None = Field(
 
 ---
 
+
+## [LRN-20260322-001] best_practice
+
+**Logged**: 2026-03-22T11:32:42Z
+**Priority**: high
+**Status**: pending
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+SQLModel 关系依赖的目标模型如果只放在 `TYPE_CHECKING` 中，测试导入顺序变化时可能导致 mapper 或外键表注册缺失。
+
+### Details
+这次快速回归里暴露了一个隐蔽问题：
+
+- `src/app/device/models/device.py` 里的 `work_line: "WorkLine" = Relationship(...)`
+- `src/app/device/models/command.py` / `src/app/device/models/event_log.py` 里依赖 `Device` 与 `wes_biz.work_lines`
+
+原先这些目标模型只在 `TYPE_CHECKING` 中导入，静态类型没问题，但运行时并不会真正加载对应模块。结果是当测试以不同顺序导入模型时，SQLAlchemy 在配置 mapper / 解析外键时会报：
+
+- `InvalidRequestError: expression 'WorkLine' failed to locate a name`
+- `NoReferencedTableError: ... could not find table 'wes_biz.work_lines'`
+
+本次的最小可用修复不是改业务逻辑，而是让这些关键目标模型在运行时也被导入，确保 mapper 和 metadata 已注册。对这类导入，`ruff` 的 `TC001` 会建议移回 type-checking block，但这里应保留运行时导入，并显式加 `# noqa: TC001` 说明原因。
+
+### Suggested Action
+对所有使用字符串关系名或跨模块外键的 SQLModel/SQLAlchemy 模型，检查目标模型是否真的会在运行时导入；如果注册顺序依赖运行时导入，不要机械遵循 `TC001`。
+
+### Metadata
+- Source: conversation
+- Related Files: src/app/device/models/device.py, src/app/device/models/command.py, src/app/device/models/event_log.py, src/app/workline/models/workline.py
+- Tags: sqlalchemy, sqlmodel, mapper, metadata, import-order, ruff, tc001
+- See Also: LRN-20260314-001
+
+---

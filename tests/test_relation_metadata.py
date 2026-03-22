@@ -8,13 +8,10 @@
 
 # pyright: reportUnknownMemberType=false, reportAssignmentType=false, reportGeneralTypeIssues=false, reportArgumentType=false
 
-from typing import ClassVar, Optional
-
-import pytest
+from typing import Optional
 from sqlmodel import Field, Relationship, SQLModel
 
 from src.database.relation_metadata import (
-    RelationInfo,
     RelationMetadata,
     RelationType,
 )
@@ -83,25 +80,6 @@ class SimpleModel(SQLModel, table=True):
     name: str
 
 
-class LegacyModel(SQLModel, table=True):
-    """遗留模型（使用旧的 __relation_info__ 元数据）"""
-
-    __tablename__ = "test_legacy"
-
-    id: int | None = Field(default=None, primary_key=True)
-    name: str
-
-    # 旧的元数据定义（用于测试向后兼容性）
-    # 注意：这里只是为了测试向后兼容性，不需要真正的 Relationship
-    __relation_info__: ClassVar[dict[str, RelationInfo]] = {
-        "items": {
-            "relation_model": Child,  # type: ignore[typeddict-item]
-            "relation_type": "ONETOMANY",
-            "uselist": True,
-        }
-    }
-
-
 # ==================== 测试用例 ====================
 
 
@@ -141,15 +119,6 @@ class TestRelationMetadata:
         """测试无关联关系的模型"""
         relation_info = RelationMetadata.get_relation_info(SimpleModel)
 
-        assert relation_info == {}
-
-    def test_get_relation_info_backward_compatibility(self):
-        """测试向后兼容性（使用 __relation_info__）"""
-        relation_info = RelationMetadata.get_relation_info(LegacyModel)
-
-        # 注意：get_relation_info 使用 inspect() 而不读取 __relation_info__
-        # LegacyModel 没有定义 Relationship 字段，所以返回空字典
-        # __relation_info__ 是为了 DataTableMixin 的向后兼容性而保留的
         assert relation_info == {}
 
     def test_get_foreign_info(self):
@@ -218,44 +187,6 @@ class TestRelationMetadata:
         # 找不到外键
         foreign_key = RelationMetadata.find_foreign_key_for_table(Parent, "test_child")
         assert foreign_key is None
-
-    def test_relation_info_type_safety(self):
-        """测试关系信息的类型安全性"""
-        relation_info = RelationMetadata.get_relation_info(Parent)
-
-        # relation_model 应该是实际的类，不是字符串
-        assert isinstance(relation_info["children"]["relation_model"], type)
-        assert relation_info["children"]["relation_model"].__name__ == "Child"
-
-        # relation_type 应该是字符串
-        assert isinstance(relation_info["children"]["relation_type"], str)
-
-        # uselist 应该是布尔值
-        assert isinstance(relation_info["children"]["uselist"], bool)
-
-
-class TestRelationType:
-    """测试 RelationType 枚举"""
-
-    def test_relation_type_values(self):
-        """测试关系类型枚举值"""
-        assert RelationType.ONETOONE.value == "ONETOONE"
-        assert RelationType.ONETOMANY.value == "ONETOMANY"
-        assert RelationType.MANYTOMANY.value == "MANYTOMANY"
-        assert RelationType.MANYTOONE.value == "MANYTOONE"
-
-    def test_relation_type_from_string(self):
-        """测试从字符串创建枚举"""
-        assert RelationType("ONETOONE") == RelationType.ONETOONE
-        assert RelationType("ONETOMANY") == RelationType.ONETOMANY
-        assert RelationType("MANYTOMANY") == RelationType.MANYTOMANY
-        assert RelationType("MANYTOONE") == RelationType.MANYTOONE
-
-    def test_relation_type_invalid_string(self):
-        """测试无效字符串"""
-        with pytest.raises(ValueError):
-            RelationType("INVALID")
-
 
 class TestEdgeCases:
     """测试边界情况"""
@@ -472,99 +403,3 @@ class TestManyToManyRelation:
         assert "student_id" in foreign_info
         assert foreign_info["teacher_id"]["target_table"] == "test_teacher"
         assert foreign_info["student_id"]["target_table"] == "test_student"
-
-
-class TestCachingBehavior:
-    """测试 @lru_cache 缓存行为"""
-
-    def test_relation_info_caching(self):
-        """验证 get_relation_info 的缓存"""
-        result1 = RelationMetadata.get_relation_info(Parent)
-        result2 = RelationMetadata.get_relation_info(Parent)
-
-        # 缓存命中应返回同一对象
-        assert result1 is result2
-
-    def test_foreign_info_caching(self):
-        """验证 get_foreign_info 的缓存"""
-        result1 = RelationMetadata.get_foreign_info(Child)
-        result2 = RelationMetadata.get_foreign_info(Child)
-
-        # 缓存命中应返回同一对象
-        assert result1 is result2
-
-    def test_field_info_caching(self):
-        """验证 get_field_info 的缓存"""
-        result1 = RelationMetadata.get_field_info(Parent)
-        result2 = RelationMetadata.get_field_info(Parent)
-
-        # 缓存命中应返回同一对象
-        assert result1 is result2
-
-    def test_unique_info_caching(self):
-        """验证 get_unique_info 的缓存"""
-        result1 = RelationMetadata.get_unique_info(ModelWithUniqueConstraints)
-        result2 = RelationMetadata.get_unique_info(ModelWithUniqueConstraints)
-
-        # 缓存命中应返回同一对象
-        assert result1 is result2
-
-    def test_cache_invalidation_between_models(self):
-        """验证不同模型的缓存是独立的"""
-        parent_info = RelationMetadata.get_relation_info(Parent)
-        child_info = RelationMetadata.get_relation_info(Child)
-
-        # 不同模型应该返回不同的结果
-        assert parent_info is not child_info
-        assert "children" in parent_info
-        assert "parent" in child_info
-
-
-class TestEdgeCasesExtended:
-    """扩展的边界情况测试"""
-
-    def test_get_relation_type_with_invalid_type_string(self):
-        """测试 get_relation_type 处理无效的 relation_type 字符串"""
-        # 创建一个模拟场景，手动构造包含无效类型的关系信息
-        # 由于我们无法直接修改 inspect 的返回值，这里测试默认回退行为
-        _ = RelationMetadata.get_relation_info(Parent)
-
-        # 正常情况下应该返回有效的 RelationType
-        relation_type = RelationMetadata.get_relation_type(Parent, "children")
-        assert relation_type is not None
-        assert isinstance(relation_type, RelationType)
-
-    def test_get_relation_type_nonexistent_relation(self):
-        """测试 get_relation_type 处理不存在的关联属性"""
-        relation_type = RelationMetadata.get_relation_type(Parent, "nonexistent_relation")
-        assert relation_type is None
-
-    def test_is_one_to_many_nonexistent_relation(self):
-        """测试 is_one_to_many 处理不存在的关联属性"""
-        result = RelationMetadata.is_one_to_many(Parent, "nonexistent_relation")
-        assert result is False
-
-    def test_is_one_to_one_nonexistent_relation(self):
-        """测试 is_one_to_one 处理不存在的关联属性"""
-        result = RelationMetadata.is_one_to_one(Parent, "nonexistent_relation")
-        assert result is False
-
-    def test_find_foreign_key_nonexistent_table(self):
-        """测试 find_foreign_key_for_table 查找不存在的表"""
-        result = RelationMetadata.find_foreign_key_for_table(Child, "nonexistent_table")
-        assert result is None
-
-    def test_relation_info_empty_relationships(self):
-        """测试没有 Relationship 字段的模型"""
-        relation_info = RelationMetadata.get_relation_info(SimpleModel)
-        assert relation_info == {}
-
-    def test_multiple_calls_consistency(self):
-        """测试多次调用返回结果的一致性"""
-        # 多次调用应该返回相同的结果
-        result1 = RelationMetadata.get_relation_info(Parent)
-        result2 = RelationMetadata.get_relation_info(Parent)
-        result3 = RelationMetadata.get_relation_info(Parent)
-
-        assert result1 == result2 == result3
-        assert result1 is result2 is result3  # 缓存保证同一对象

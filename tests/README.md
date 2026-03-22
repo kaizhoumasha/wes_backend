@@ -4,14 +4,71 @@
 
 ## 快速开始
 
+### 默认快速回归集
+
+默认快速回归集用于日常开发、本地自测和提交前检查，目标是：
+
+- 覆盖高价值单元测试、核心服务测试、关键 API 测试
+- 避免依赖长时间运行、外部环境、人工交互或高波动性能基线
+- 保持 `pytest` 默认执行成本可控，适合作为日常回归入口
+
+当前默认快速回归集的收集规则：
+
+- 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
+- 默认包含：
+  - `tests/` 根目录中的单元/服务/仓储测试
+  - `tests/api/` 中的接口测试
+  - `tests/auth/` 中的鉴权测试
+  - `tests/workline_runtime/` 中的纯逻辑测试
+- 默认不包含：
+  - `tests/e2e/`
+  - `tests/resilience/`
+  - `tests/load/`
+  - `tests/mock/`
+
+放置新测试时建议遵循：
+
+- 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
+- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录
+
 ### 运行所有测试
 
 ```bash
-# 基础测试
+# 默认快速回归（不包含 e2e / resilience / mock / load）
 pytest
 
 # 生成 HTML 报告 + 覆盖率
 pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+```
+
+### 运行重测试
+
+```bash
+# E2E 测试（默认不会被 pytest 自动收集）
+pytest tests/e2e/
+
+# 韧性/降级测试（默认不会被 pytest 自动收集）
+pytest tests/resilience/
+
+# 指定运行负载测试或 mock 相关测试
+pytest tests/load/
+pytest tests/mock/
+```
+
+### 推荐使用方式
+
+```bash
+# 1) 日常开发：跑默认快速回归集
+pytest
+
+# 2) 改动集中在某个模块：跑对应文件/目录
+pytest tests/auth/
+pytest tests/api/
+pytest tests/test_menu_service_tree.py
+
+# 3) 改动涉及系统稳定性或多服务联调：显式补跑重测试
+pytest tests/resilience/
+pytest tests/e2e/
 ```
 
 ### 测试报告
@@ -47,6 +104,10 @@ xdg-open reports/coverage/index.html
 ```bash
 # 只运行某个测试文件
 pytest tests/test_relation_metadata.py
+
+# 显式运行 E2E 或韧性测试目录
+pytest tests/e2e/test_conveyor_robot_arm.py
+pytest tests/resilience/test_redis_degradation.py
 
 # 只运行某个测试类
 pytest tests/test_relation_metadata.py::TestRelationMetadata

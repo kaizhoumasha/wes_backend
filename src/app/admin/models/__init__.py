@@ -13,6 +13,7 @@ from .menu import (
     MenuCreate,
     MenuResponse,
     MenuTreeResponse,
+    MenuTreeResponseSimple,
     MenuUpdate,
 )
 from .perm import (
@@ -81,8 +82,19 @@ Role.menus = relationship(
 
 # ==================== 重建 Pydantic 响应模型 ====================
 
-_ = MenuResponse.model_rebuild()
-_ = MenuTreeResponse.model_rebuild()
+_ = MenuResponse.model_rebuild(_types_namespace={"RoleResponse": RoleResponse})
+_ = MenuTreeResponse.model_rebuild(
+    _types_namespace={
+        "MenuTreeResponse": MenuTreeResponse,
+        "RoleResponse": RoleResponse,
+    }
+)
+_ = MenuTreeResponseSimple.model_rebuild(
+    _types_namespace={
+        "MenuTreeResponseSimple": MenuTreeResponseSimple,
+        "RoleResponse": RoleResponse,
+    }
+)
 _ = RoleResponse.model_rebuild()
 _ = UserResponse.model_rebuild()
 
@@ -95,6 +107,7 @@ __all__ = [
     "MenuCreate",
     "MenuResponse",
     "MenuTreeResponse",
+    "MenuTreeResponseSimple",
     "MenuUpdate",
     # Permission 模型
     "Permission",

@@ -26,7 +26,9 @@ class RelationCRUD:
 
     @staticmethod
     def _item_id(item_data: dict[str, Any] | object) -> int | None:
-        raw_id = cast(dict[str, Any], item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+        raw_id = (
+            cast(dict[str, Any], item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+        )
         return raw_id if isinstance(raw_id, int) else None
 
     @staticmethod
@@ -38,12 +40,16 @@ class RelationCRUD:
         model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
         return cast(dict[str, Any], model_data)
 
-    async def handle_relations(self, db: AsyncSession, instance: Any, data: dict[str, Any]) -> None:
+    @staticmethod
+    def _relation_model(relation_attr: Any) -> type[Any]:
+        return cast(type[Any], relation_attr.property.mapper.class_)
+
+    def _iter_relation_entries(self, data: dict[str, Any]) -> list[tuple[str, Any, str]]:
         if not RelationMetadata.has_relations(self.model):
-            return
+            return []
 
         relation_info = RelationMetadata.get_relation_info(self.model)
-
+        entries: list[tuple[str, Any, str]] = []
         for relation_name, info in relation_info.items():
             if relation_name not in data:
                 continue
@@ -52,8 +58,50 @@ class RelationCRUD:
             if relation_data is None:
                 continue
 
-            relation_type = info.get("relation_type", "ONETOMANY")
+            relation_type = cast(str, info.get("relation_type", "ONETOMANY"))
+            entries.append((relation_name, relation_data, relation_type))
+        return entries
 
+    def _split_relation_changes(
+        self, relation_data: Sequence[dict[str, Any] | object]
+    ) -> tuple[set[int], list[dict[str, Any] | object], list[dict[str, Any] | object]]:
+        new_ids: set[int] = set()
+        to_create: list[dict[str, Any] | object] = []
+        to_update: list[dict[str, Any] | object] = []
+
+        for item_data in relation_data:
+            item_id = self._item_id(item_data)
+            if item_id is None:
+                to_create.append(item_data)
+                continue
+
+            new_ids.add(item_id)
+            to_update.append(item_data)
+
+        return new_ids, to_create, to_update
+
+    def _apply_update_data(self, db_obj: Any, obj_data: dict[str, Any] | object) -> None:
+        update_data = self._model_data(obj_data)
+        for field, value in update_data.items():
+            if field == "id" or field.endswith("_id"):
+                continue
+            if hasattr(db_obj, field):
+                setattr(db_obj, field, value)
+
+    @staticmethod
+    def _parent_table_name(parent_obj: Any) -> str | None:
+        return cast(str | None, getattr(parent_obj.__class__, "__tablename__", None))
+
+    def _foreign_key_field(self, relation_model: type[Any], parent_obj: Any) -> tuple[str | None, str | None]:
+        parent_tablename = self._parent_table_name(parent_obj)
+        if not parent_tablename:
+            return None, parent_tablename
+
+        foreign_key_field = RelationMetadata.find_foreign_key_for_table(relation_model, parent_tablename)
+        return foreign_key_field, parent_tablename
+
+    async def handle_relations(self, db: AsyncSession, instance: Any, data: dict[str, Any]) -> None:
+        for relation_name, relation_data, relation_type in self._iter_relation_entries(data):
             if relation_type == RelationType.ONETOMANY:
                 await self.handle_one_to_many_relation(db, instance, relation_name, relation_data)
 
@@ -76,21 +124,7 @@ class RelationCRUD:
         instance: Any,
         data: dict[str, Any],
     ) -> None:
-        if not RelationMetadata.has_relations(self.model):
-            return
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-
-        for relation_name, info in relation_info.items():
-            if relation_name not in data:
-                continue
-
-            new_relation_data = data[relation_name]
-            if new_relation_data is None:
-                continue
-
-            relation_type = info.get("relation_type", "ONETOMANY")
-
+        for relation_name, new_relation_data, relation_type in self._iter_relation_entries(data):
             if relation_type != RelationType.ONETOMANY:
                 continue
 
@@ -100,20 +134,7 @@ class RelationCRUD:
 
             current_relations = cast(list[Any], getattr(instance, relation_name, []))
             current_ids = {rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None}
-
-            new_ids: set[int] = set()
-            to_create: list[dict[str, Any] | object] = []
-            to_update: list[dict[str, Any] | object] = []
-
-            for item_data in new_relation_data:
-                item_id = self._item_id(item_data)
-
-                if item_id is None:
-                    to_create.append(item_data)
-                else:
-                    new_ids.add(item_id)
-                    to_update.append(item_data)
-
+            new_ids, to_create, to_update = self._split_relation_changes(new_relation_data)
             to_delete_ids = current_ids - new_ids
 
             if to_delete_ids:
@@ -134,7 +155,7 @@ class RelationCRUD:
         if not ids_to_delete:
             return
 
-        relation_model = relation_attr.property.mapper.class_
+        relation_model = self._relation_model(relation_attr)
 
         stmt = delete(relation_model).where(relation_model.id.in_(ids_to_delete))
         _ = await db.execute(stmt)
@@ -151,7 +172,7 @@ class RelationCRUD:
         if not objects_to_update:
             return
 
-        relation_model = relation_attr.property.mapper.class_
+        relation_model = self._relation_model(relation_attr)
 
         for obj_data in objects_to_update:
             obj_id = self._item_id(obj_data)
@@ -163,12 +184,7 @@ class RelationCRUD:
             db_obj = result.scalar_one_or_none()
 
             if db_obj:
-                update_data = self._model_data(obj_data)
-                for field, value in update_data.items():
-                    if field == "id" or field.endswith("_id"):
-                        continue
-                    if hasattr(db_obj, field):
-                        setattr(db_obj, field, value)
+                self._apply_update_data(db_obj, obj_data)
                 db.add(db_obj)
 
         await db.flush()
@@ -184,12 +200,8 @@ class RelationCRUD:
         if not objects_to_create:
             return
 
-        relation_model = relation_attr.property.mapper.class_
-        parent_tablename = getattr(parent_obj.__class__, "__tablename__", None)
-
-        foreign_key_field = None
-        if parent_tablename:
-            foreign_key_field = RelationMetadata.find_foreign_key_for_table(relation_model, parent_tablename)
+        relation_model = self._relation_model(relation_attr)
+        foreign_key_field, parent_tablename = self._foreign_key_field(relation_model, parent_obj)
 
         for item_data in objects_to_create:
             if foreign_key_field:

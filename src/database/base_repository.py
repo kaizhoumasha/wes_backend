@@ -49,6 +49,12 @@ def _as_version(value: object) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _split_model_data(data: dict[str, Any], relation_info: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    main_data = {key: value for key, value in data.items() if key not in relation_info}
+    relation_data = {key: value for key, value in data.items() if key in relation_info}
+    return main_data, relation_data
+
+
 class BaseRepository[T]:
     """
     通用 Repository 基类
@@ -384,6 +390,18 @@ class BaseRepository[T]:
         """
         self.error_translator.handle_integrity_error(e)
 
+    def _should_filter_deleted(self, include_deleted: bool) -> bool:
+        return self._has_soft_delete_mixin() and not include_deleted
+
+    def _apply_soft_delete_filter(self, statement: Any, include_deleted: bool) -> Any:
+        if self._should_filter_deleted(include_deleted):
+            return statement.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+        return statement
+
+    @staticmethod
+    def _has_relation_payload(data: dict[str, Any], relation_info: dict[str, Any]) -> bool:
+        return any(key in relation_info for key in data)
+
     def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
         return self._get_relation_manager().add_relation_load(statement, relation_name, relation_info)
 
@@ -466,16 +484,11 @@ class BaseRepository[T]:
             from src.core.schema_loader import get_with_schema
 
             where_clauses = [self._pk_attr == id]
-            if self._has_soft_delete_mixin() and not include_deleted:
+            if self._should_filter_deleted(include_deleted):
                 where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
             return await get_with_schema(db, self.model, schema, *where_clauses, max_depth=max_depth)
 
-        statement = select(self.model).where(self._pk_attr == id)
-
-        # 自动过滤软删除记录
-        # 使用 .is_(False) 而不是 not，避免 Python 的 not 关键字将表达式求值为布尔值
-        if self._has_soft_delete_mixin() and not include_deleted:
-            statement = statement.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+        statement = self._apply_soft_delete_filter(select(self.model).where(self._pk_attr == id), include_deleted)
 
         # 添加关联对象加载
         if include_relations:
@@ -523,8 +536,7 @@ class BaseRepository[T]:
         query = select(self.model).where(getattr(self.model, field_name) == value)
 
         # 自动过滤软删除记录
-        if self._has_soft_delete_mixin() and not include_deleted:
-            query = query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+        query = self._apply_soft_delete_filter(query, include_deleted)
 
         if relationships:
             from sqlalchemy.orm import selectinload
@@ -595,9 +607,7 @@ class BaseRepository[T]:
                 where_clauses.append(filter_clause)
 
         # 自动添加软删除过滤到计数查询
-        count_query = select(func.count(self._pk_attr))
-        if self._has_soft_delete_mixin() and not include_deleted:
-            count_query = count_query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+        count_query = self._apply_soft_delete_filter(select(func.count(self._pk_attr)), include_deleted)
         if where_clauses:
             count_query = count_query.where(*where_clauses)
         count_result = await db.execute(count_query)
@@ -611,7 +621,7 @@ class BaseRepository[T]:
 
             # 构建完整的 where_clauses，包括软删除过滤
             all_where_clauses = list(where_clauses)
-            if self._has_soft_delete_mixin() and not include_deleted:
+            if self._should_filter_deleted(include_deleted):
                 all_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
 
             items = await get_all_with_schema(
@@ -625,10 +635,7 @@ class BaseRepository[T]:
                 order_by=order_by,
             )
         else:
-            query = select(self.model)
-            # 自动添加软删除过滤到数据查询
-            if self._has_soft_delete_mixin() and not include_deleted:
-                query = query.where(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+            query = self._apply_soft_delete_filter(select(self.model), include_deleted)
             if where_clauses:
                 query = query.where(*where_clauses)
             if order_by:
@@ -664,8 +671,7 @@ class BaseRepository[T]:
         try:
             # 分离主表字段和关联对象字段
             relation_info = RelationMetadata.get_relation_info(self.model)
-            main_data = {k: v for k, v in data.items() if k not in relation_info}
-            relation_data = {k: v for k, v in data.items() if k in relation_info}
+            main_data, relation_data = _split_model_data(data, relation_info)
 
             # 创建主表实例
             instance = self.model(**main_data)
@@ -733,19 +739,7 @@ class BaseRepository[T]:
         # 乐观锁预验证：在 Hook 之前快速检查，提供更早的反馈
         # 注意：完整的验证逻辑在 Hook 中（_create_optimistic_lock_validation_hook）
         # 这里只是提前验证，避免在 Hook 阶段才发现冲突
-        if hasattr(instance, "version") and "version" in data:
-            current_version = _as_version(getattr(instance, "version", None))
-            provided_version_raw = data["version"]
-            provided_version = _as_version(provided_version_raw)
-            if current_version != provided_version_raw:
-                from src.core.exceptions import OptimisticLockException
-
-                raise OptimisticLockException(
-                    resource_type=self._model_name,
-                    resource_id=id,
-                    current_version=current_version,
-                    provided_version=provided_version,
-                )
+        self._validate_version_before_update(instance, id, data)
 
         old_values = self._capture_old_values(instance, data, relation_info)
         await self._run_before_update_hooks(db, instance, data, start_time, old_values)
@@ -762,8 +756,27 @@ class BaseRepository[T]:
         from src.database.relation_metadata import RelationMetadata
 
         relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = any(k in relation_info for k in data)
+        has_relations = self._has_relation_payload(data, relation_info)
         return relation_info, has_relations
+
+    def _validate_version_before_update(self, instance: T, id: int, data: dict[str, Any]) -> None:
+        if not hasattr(instance, "version") or "version" not in data:
+            return
+
+        current_version = _as_version(getattr(instance, "version", None))
+        provided_version_raw = data["version"]
+        provided_version = _as_version(provided_version_raw)
+        if current_version == provided_version_raw:
+            return
+
+        from src.core.exceptions import OptimisticLockException
+
+        raise OptimisticLockException(
+            resource_type=self._model_name,
+            resource_id=id,
+            current_version=current_version,
+            provided_version=provided_version,
+        )
 
     async def _load_instance_for_update(
         self, db: AsyncSession, id: int, relation_info: dict[str, Any], has_relations: bool
@@ -793,6 +806,24 @@ class BaseRepository[T]:
                 old_values[key] = getattr(instance, key)
         return old_values
 
+    def _apply_model_updates(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> None:
+        for field, value in data.items():
+            if field in relation_info or field == "version":
+                continue
+            if hasattr(instance, field):
+                setattr(instance, field, value)
+
+    def _increment_instance_version(self, instance: T) -> None:
+        if not hasattr(instance, "increment_version"):
+            return
+
+        old_version = instance.version  # type: ignore[attr-defined]
+        instance.increment_version()  # type: ignore[attr-defined]
+        pk_value = getattr(instance, self._pk_column)
+        logger.debug(
+            f"乐观锁：{self._model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
+        )
+
     async def _run_before_update_hooks(
         self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
     ) -> None:
@@ -808,26 +839,12 @@ class BaseRepository[T]:
     async def _execute_update(
         self, db: AsyncSession, instance: T, data: dict[str, Any], relation_info: dict[str, Any], has_relations: bool
     ) -> None:
-        for field, value in data.items():
-            if field in relation_info:
-                continue
-            # 跳过 version 字段，因为它将在后面自动递增
-            if field == "version":
-                continue
-            if hasattr(instance, field):
-                setattr(instance, field, value)
+        self._apply_model_updates(instance, data, relation_info)
 
         if has_relations:
             await self._update_relations(db, instance, data)
 
-        # 乐观锁：自动递增版本号（委托给 Mixin 处理）
-        if hasattr(instance, "increment_version"):
-            old_version = instance.version  # type: ignore[attr-defined]
-            instance.increment_version()  # type: ignore[attr-defined]
-            pk_value = getattr(instance, self._pk_column)
-            logger.debug(
-                f"乐观锁：{self._model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
-            )
+        self._increment_instance_version(instance)
 
         await db.flush()
 
@@ -837,7 +854,7 @@ class BaseRepository[T]:
         from src.database.relation_metadata import RelationMetadata
 
         relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = any(k in relation_info for k in data)
+        has_relations = self._has_relation_payload(data, relation_info)
 
         if has_relations:
             for relation_name in relation_info:

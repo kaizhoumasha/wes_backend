@@ -68,6 +68,7 @@ class TreeServiceProtocol(CrudServiceProtocol, Protocol):
         db: AsyncSession,
         root_id: int | None = None,
         max_depth: int = -1,
+        schema: type[Any] | None = None,
     ) -> list[Any]: ...
 
     async def get_siblings(

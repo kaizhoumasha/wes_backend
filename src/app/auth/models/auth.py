@@ -14,7 +14,7 @@ from pydantic import computed_field
 from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
-from src.app.admin.models import MenuTreeResponse, UserResponse
+from src.app.admin.models import MenuTreeResponseSimple, UserResponse
 from src.core.mixins import BaseMixin
 
 # ==================== 请求 Schema ====================
@@ -180,4 +180,4 @@ class AuthMyResponse(BaseMixin):
 
     user: UserResponse = Field(description="当前用户信息")
     permissions: list[ApiPermissionInfo] = Field(description="当前用户 API 权限列表")
-    menus: list[MenuTreeResponse] = Field(description="当前用户可访问菜单树")
+    menus: list[MenuTreeResponseSimple] = Field(description="当前用户可访问菜单树")

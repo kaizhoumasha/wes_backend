@@ -18,8 +18,39 @@ from .path_conf import BasePath
 if TYPE_CHECKING:
     from loguru import Record
 else:
+
     class Record(TypedDict):
         extra: dict[Any, Any]
+
+
+DEBUG_CONSOLE_FORMAT = (
+    "<green>{time:HH:mm:ss.SSS}</green> | "
+    "<level>{level: <8}</level> | "
+    "<magenta>[{extra[request_id]}]</magenta> | "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+    "<level>{message}</level>"
+)
+DEFAULT_CONSOLE_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
+FILE_LOG_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}"
+)
+DEBUG_LOGGER_LEVELS = {
+    "uvicorn": logging.INFO,
+    "uvicorn.access": logging.WARNING,
+    "uvicorn.error": logging.ERROR,
+    "sqlalchemy": logging.WARNING,
+    "sqlalchemy.engine": logging.INFO,
+    "sqlalchemy.pool": logging.WARNING,
+    "httpx": logging.INFO,
+}
+DEFAULT_LOGGER_LEVELS = {
+    "uvicorn": logging.INFO,
+    "uvicorn.access": logging.WARNING,
+    "uvicorn.error": logging.ERROR,
+    "sqlalchemy": logging.WARNING,
+    "sqlalchemy.pool": logging.WARNING,
+    "httpx": logging.WARNING,
+}
 
 # 日志目录
 LOG_DIR = Path(BasePath) / "logs"
@@ -79,6 +110,12 @@ def add_request_id_filter(record: Record) -> bool:
     return True
 
 
+def _configure_standard_loggers(is_debug: bool) -> None:
+    logger_levels = DEBUG_LOGGER_LEVELS if is_debug else DEFAULT_LOGGER_LEVELS
+    for logger_name, logger_level in logger_levels.items():
+        logging.getLogger(logger_name).setLevel(logger_level)
+
+
 def setup_logger() -> None:
     """
     配置 loguru 日志系统
@@ -106,18 +143,10 @@ def setup_logger() -> None:
     rotation_day = settings.LOG_RETENTION_DAYS
     log_compression = settings.LOG_COMPRESSION
 
-    # ==================== 控制台输出 ====================
     if is_debug:
-        console_format = (
-            "<green>{time:HH:mm:ss.SSS}</green> | "
-            "<level>{level: <8}</level> | "
-            "<magenta>[{extra[request_id]}]</magenta> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
-            "<level>{message}</level>"
-        )
         _ = _logger.add(
             sys.stderr,
-            format=console_format,
+            format=DEBUG_CONSOLE_FORMAT,
             level=log_level,
             colorize=True,
             backtrace=True,
@@ -125,24 +154,17 @@ def setup_logger() -> None:
             filter=add_request_id_filter,
         )
     else:
-        console_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | [{extra[request_id]}] | {message}"
         _ = _logger.add(
             sys.stderr,
-            format=console_format,
+            format=DEFAULT_CONSOLE_FORMAT,
             level=log_level,
             colorize=False,
             filter=add_request_id_filter,
         )
 
-    # ==================== 文件输出 ====================
-    # 文件日志格式字符串（避免超过行长度限制）
-    file_log_format = (
-        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | [{extra[request_id]}] | {name}:{function}:{line} | {message}"
-    )
-
     _ = _logger.add(
         LOG_DIR / "app.log",
-        format=file_log_format,
+        format=FILE_LOG_FORMAT,
         level=log_level,
         rotation=rotation_size,
         retention=rotation_day,
@@ -156,7 +178,7 @@ def setup_logger() -> None:
 
     _ = _logger.add(
         LOG_DIR / "error.log",
-        format=file_log_format,
+        format=FILE_LOG_FORMAT,
         level="ERROR",
         rotation=rotation_size,
         retention=rotation_day,
@@ -168,7 +190,6 @@ def setup_logger() -> None:
         filter=add_request_id_filter,
     )
 
-    # ==================== 结构化日志（可选） ====================
     if not is_debug and settings.LOG_JSON_OUTPUT:
         _ = _logger.add(
             LOG_DIR / "structured.json",
@@ -181,31 +202,13 @@ def setup_logger() -> None:
             filter=add_request_id_filter,
         )
 
-    # ==================== 拦截标准 logging ====================
     logging.basicConfig(
         handlers=[InterceptHandler()],
         level=0,
         force=True,
     )
 
-    # 根据环境设置不同模块的日志级别
-    if is_debug:
-        # 开发环境：显示 INFO 级别，便于调试
-        logging.getLogger("uvicorn").setLevel(logging.INFO)
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-        logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
-        logging.getLogger("sqlalchemy").setLevel(logging.WARNING)  # 抑制 pool 日志
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # 仅显示 SQL 查询
-        logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)  # 抑制 pool 详细日志
-        logging.getLogger("httpx").setLevel(logging.INFO)
-    else:
-        # 生产环境：只显示 WARNING 及以上
-        logging.getLogger("uvicorn").setLevel(logging.INFO)
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-        logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
-        logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
-        logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)  # 抑制 pool 日志
-        logging.getLogger("httpx").setLevel(logging.WARNING)
+    _configure_standard_loggers(is_debug)
 
     _initialized = True
 

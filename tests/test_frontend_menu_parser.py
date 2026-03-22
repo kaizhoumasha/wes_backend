@@ -1,4 +1,4 @@
-from app.admin.models import Menu
+from src.app.admin.models import Menu
 from src.app.admin.services.menu_sync_service import MenuSyncService
 from src.utils.frontend_menu_parser import parse_frontend_router_menus
 

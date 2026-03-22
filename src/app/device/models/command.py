@@ -11,21 +11,20 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from pydantic import field_validator
 from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
+from src.app.device.models.device import (
+    Device,  # noqa: TC001 - runtime import ensures related device/workline metadata loads
+)
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
-
-if TYPE_CHECKING:
-    from src.app.device.models.device import Device
-
 
 # ==================== 枚举定义 ====================
 
@@ -81,12 +80,15 @@ class CommandBase(BaseMixin):
 
     # 🔥 使用 VARCHAR + CHECK 约束
     task_type: TaskType = Field(
-        sa_type=cast("Any", SQLAEnum(
-            TaskType,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                TaskType,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="任务类型",
     )
 
@@ -249,12 +251,15 @@ class DeviceCommand(
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,
         index=True,
-        sa_type=cast("Any", SQLAEnum(
-            CommandStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                CommandStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="指令状态",
     )
 
@@ -275,12 +280,15 @@ class DeviceCommand(
     # 🔥 执行结果：使用 VARCHAR + CHECK 约束
     result: CommandResult | None = Field(
         default=None,
-        sa_type=cast("Any", SQLAEnum(
-            CommandResult,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                CommandResult,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="执行结果（SUCCESS/FAILED）",
     )
     result_data: dict[str, Any] | None = Field(
