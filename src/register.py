@@ -1,0 +1,187 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
+from fastapi.responses import HTMLResponse, ORJSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from src.core.logger import logger
+from src.core.path_conf import STATIC_DIR
+from src.utils.background_tasks import inject_background_tasks
+
+from .core.conf import settings
+
+
+def register_logger() -> None:
+    """
+    注册系统日志管理模块
+    """
+    from .core.logger import setup_logger
+
+    setup_logger()
+
+
+@asynccontextmanager
+async def register_init(_app: FastAPI) -> AsyncIterator[None]:
+    """注册初始化"""
+    from src.database.db import close_db, init_db
+    from src.database.redis_client import close_redis, init_redis
+
+    try:
+        logger.info("Initializing application resources...")
+        await init_db()
+        await init_redis()
+
+        logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
+        yield
+    except Exception as e:
+        # exc_info=True 捕获完整堆栈跟踪
+        # 开发模式下 loguru 会自动显示详细变量值（diagnose=True）
+        logger.error(
+            f"FastAPI 初始化失败: {e}",
+        )
+        raise
+    finally:
+        await close_db()
+        await close_redis()
+        logger.info("FastAPI 应用关闭")
+
+
+def register_middleware(app: FastAPI) -> None:
+    """注册中间件"""
+    # GZip
+    from fastapi.middleware.gzip import GZipMiddleware
+
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # 方案A: 注册请求限流中间件（最大500并发）
+    from .middleware.rate_limit import RateLimitMiddleware
+
+    app.add_middleware(RateLimitMiddleware, max_concurrent=200)
+
+    # 注册性能监控中间件
+    from .middleware.performance import PerformanceMiddleware
+
+    app.add_middleware(PerformanceMiddleware, slow_request_threshold=1000)
+
+    # 注册请求日志中间件
+    # RequestLogMiddleware 内部使用 request_cycle_context 自主管理上下文
+    # 确保 request_id 在整个请求周期内可用
+    from .middleware.request_log import RequestLogMiddleware
+
+    app.add_middleware(RequestLogMiddleware)
+
+    # CORS
+    # https://github.com/fastapi-practices/fastapi_best_architecture/pull/789/changes
+    # https://github.com/open-telemetry/opentelemetry-python-contrib/issues/4031
+    from starlette.middleware.cors import CORSMiddleware
+
+    if settings.MIDDLEWARE_CORS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.CORS_ALLOWED_ORIGINS,
+            allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=settings.CORS_EXPOSE_HEADERS,
+        )
+
+
+def register_routers(app: FastAPI) -> None:
+    """注册路由"""
+    from src.app.admin import router_v1 as admin_router
+    from src.app.api_auth import router_v1 as api_auth_router
+    from src.app.auth import router_v1 as auth_router
+    from src.app.callback.v1 import router_v1 as callback_router
+    from src.app.demo import router_v1 as demo_router
+    from src.app.device import router_v1 as device_router
+    from src.app.sys import router_v1 as sys_router
+    from src.app.workline import router_v1 as workline_router
+
+    app.include_router(auth_router, prefix=settings.API_PATH)
+    app.include_router(admin_router, prefix=settings.API_PATH)
+    app.include_router(sys_router, prefix=settings.API_PATH)
+    app.include_router(workline_router, prefix=settings.API_PATH)
+    app.include_router(device_router, prefix=settings.API_PATH)
+    app.include_router(api_auth_router, prefix=settings.API_PATH)
+    app.include_router(callback_router, prefix=settings.API_PATH)
+    app.include_router(demo_router, prefix=settings.API_PATH)
+
+
+def register_exception(app: FastAPI) -> None:
+    """注册全局异常处理器"""
+    from .core.error_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
+
+
+def register_app() -> FastAPI:
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    static_path = "/static"
+    swagger_js_url = f"{static_path}/swagger-ui/swagger-ui-bundle.js"
+    swagger_css_url = f"{static_path}/swagger-ui/swagger-ui.css"
+
+    register_logger()
+
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        version=settings.VERSION,
+        description=settings.DESCRIPTION,
+        docs_url=None,  # 设置为 None，使用自定义路由
+        redoc_url=settings.REDOC_URL,
+        openapi_url=settings.OPENAPI_URL,
+        default_response_class=ORJSONResponse,
+        lifespan=register_init,
+        # 全局依赖：自动为所有路由注入 BackgroundTasks 到上下文
+        # 使得 Repository 层可以透明地使用后台任务功能
+        dependencies=[Depends(inject_background_tasks)],
+    )
+
+    # 挂载静态文件目录
+    local_static_path = STATIC_DIR
+    app.mount("/static", StaticFiles(directory=local_static_path), name="static")
+
+    # 自定义 Swagger UI 路由
+    @app.get(settings.DOCS_URL, include_in_schema=False)
+    async def custom_swagger_ui_html() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
+        openapi_url = app.openapi_url
+        if openapi_url is None:
+            openapi_url = settings.OPENAPI_URL
+
+        return get_swagger_ui_html(
+            openapi_url=openapi_url,
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            swagger_js_url=swagger_js_url,
+            swagger_css_url=swagger_css_url,
+            swagger_ui_parameters={
+                "docExpansion": "none",
+                "defaultModelsExpandDepth": 0,
+                "persistAuthorization": True,
+                "displayRequestDuration": True,
+                "filter": True,
+                "tryItOutEnabled": True,
+                "syntaxHighlight.theme": "monokai",
+            },
+        )
+
+    # 添加 OAuth2 重定向路由
+    @app.get(f"{settings.DOCS_URL}/oauth2-redirect", include_in_schema=False)
+    async def swagger_ui_redirect() -> HTMLResponse:  # pyright: ignore[reportUnusedFunction]
+        from fastapi.openapi.docs import get_swagger_ui_oauth2_redirect_html
+
+        return get_swagger_ui_oauth2_redirect_html()
+
+    register_middleware(app)
+
+    # 注册路由
+    register_routers(app)
+
+    register_exception(app)
+
+    return app
+
+
+# 创建应用实例
+app = register_app()

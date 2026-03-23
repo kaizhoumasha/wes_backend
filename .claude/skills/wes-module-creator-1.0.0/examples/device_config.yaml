@@ -1,0 +1,84 @@
+# WES Backend 模块配置示例
+# 使用方法：python scripts/module_generator_v2.py --config examples/device_config.yaml
+
+# 模块基本信息
+module_name: device          # 模块名称（snake_case）
+class_name: Device            # 类名（PascalCase），可选，默认自动生成
+app_name: biz                 # 应用名称（sys/biz）
+description: "设备管理模块"
+
+# 结构配置
+is_tree: false                # 是否树形结构
+schema: BIZ                   # Schema 类型（SYS/BIZ）
+
+# Mixin 配置（按顺序应用）
+mixins:
+  - DataTableMixin            # 所有表必需
+  - EnterpriseMixin           # 企业字段（created_by, updated_by, remark）
+  - SoftDeleteMixin           # 软删除（is_deleted, deleted_at, deleted_by）
+
+# 业务字段定义
+fields:
+  - name: device_code
+    type: str
+    description: "设备编码（业务主键）"
+    max_length: 50
+    index: true
+
+  - name: device_name
+    type: str
+    description: "设备名称"
+    max_length: 100
+
+  - name: device_type
+    type: str
+    description: "设备类型"
+    max_length: 50
+    enum: true
+    enum_name: "DeviceType"
+    enum_values:
+      - PDA
+      - INDUSTRIAL_PC
+      - PRINTER
+      - COMPUTER
+      - LCR_TESTER
+      - ROBOTIC_ARM
+      - VISION_CAMERA
+      - CONVEYOR
+      - LABELER
+      - XRAY
+      - SCANNER
+
+  - name: work_line_id
+    type: int | None
+    description: "所属作业线 ID"
+    optional: true
+    foreign_key: "wes_biz.work_lines.id"
+
+  - name: description
+    type: str | None
+    description: "设备用途说明"
+    max_length: 500
+    optional: true
+
+  - name: is_active
+    type: bool
+    description: "是否启用"
+    default: true
+
+  - name: sort_order
+    type: int
+    description: "排序顺序"
+    default: 0
+
+# 关系定义
+relationships:
+  - name: work_line
+    target_model: WorkLine
+    back_populates: devices
+    sa_relationship_kwargs: '{"lazy": "selectin"}'
+
+# Response Schema 中的关系
+response_relationships:
+  - name: work_line
+    type: WorkLineResponse | None = None

@@ -1,0 +1,222 @@
+{
+    // ═══════════════════════════════════════════════════
+    // 拼写检查
+    // ═══════════════════════════════════════════════════
+    "cSpell.words": [
+        "acks",
+        "aiosqlite",
+        "alembic",
+        "asyncpg",
+        "datatable",
+        "dbsize",
+        "dotenv",
+        "getdel",
+        "ILIKE",
+        "joinedload",
+        "jtis",
+        "loguru",
+        "MANYTOONE",
+        "ondelete",
+        "ONETOMANY",
+        "ONETOONE",
+        "orjson",
+        "primaryjoin",
+        "pwdlib",
+        "pydantic",
+        "redis",
+        "redoc",
+        "sadd",
+        "SDAF",
+        "selectin",
+        "selectinload",
+        "setex",
+        "smembers",
+        "sqlalchemy",
+        "sqlmodel",
+        "sqltypes",
+        "srem",
+        "timescaledb",
+        "uselist",
+        "uvicorn",
+        "workline"
+    ],
+
+    // ═══════════════════════════════════════════════════
+    // Python 配置 (uv 管理 + Ruff + basedpyright)
+    // ═══════════════════════════════════════════════════
+    // 使用 uv 作为 Python 包管理器
+    "python.packageManager": "uv",
+
+    // 终端激活虚拟环境
+    "python.terminal.activateEnvironment": true,
+
+    // 额外路径配置
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+
+    // 即使用户本机启用了 Pylance，也不要让它在本仓库里做类型检查，避免与 basedpyright 重复报错
+    "python.analysis.typeCheckingMode": "off",
+
+    // 禁用 Python 扩展的内置语言服务器（使用基于 pyright 的扩展替代）
+    "python.languageServer": "None",
+
+    // 禁用 PET 自动发现（避免冲突）
+    "python.experiments.enabled": false,
+
+    // ═══════════════════════════════════════════════════
+    // Ruff 配置 (Linter + Formatter)
+    // ═══════════════════════════════════════════════════
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "always",
+            "source.organizeImports.ruff": "always"
+        },
+        "editor.rulers": [120]
+    },
+
+    // Ruff 原生服务器
+    "ruff.nativeServer": "auto",
+
+    // 启用 Ruff lint 和 format
+    "ruff.lint.enable": true,
+    "ruff.format.enable": true,
+
+    // ═══════════════════════════════════════════════════
+    // basedpyright 配置 (类型检查)
+    // ═══════════════════════════════════════════════════
+    // 日常编辑只看当前打开文件，避免 300+ notes 淹没有效问题
+    "basedpyright.analysis.diagnosticMode": "openFilesOnly",
+    // 与 pyproject.toml 中的 standard 保持一致，避免编辑器与 CLI 结果漂移
+    "basedpyright.analysis.typeCheckingMode": "standard",
+    "basedpyright.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+
+    // Ruff 排除目录（与 pyproject.toml 保持一致）
+    "ruff.exclude": [
+        ".git",
+        ".venv",
+        "__pycache__",
+        "*.egg-info",
+        ".ruff_cache",
+        "migrations",
+        ".pytest_cache",
+        "node_modules"
+    ],
+
+    // ═══════════════════════════════════════════════════
+    // 测试配置 (pytest)
+    // ═══════════════════════════════════════════════════
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests",
+        "-v",
+        "--tb=short"
+    ],
+    "python.testing.unittestEnabled": false,
+
+    // 测试覆盖率配置
+    "coverage-gutters.showGutterCoverage": true,
+    "coverage-gutters.ignoredPathGlobs": [
+        "**/migrations/**",
+        "**/.venv/**",
+        "**/node_modules/**"
+    ],
+
+    // ═══════════════════════════════════════════════════
+    // 文件关联
+    // ═══════════════════════════════════════════════════
+    "files.associations": {
+        "*.py": "python",
+        "pyproject.toml": "toml",
+        "*.env": "dotenv",
+        ".env*": "dotenv",
+        "alembic.ini": "ini",
+        "ruff.toml": "toml"
+    },
+
+    // 文件监视排除
+    "files.watcherExclude": {
+        "**/.git/**": true,
+        "**/.venv/**": true,
+        "**/__pycache__/**": true,
+        "**/.pytest_cache/**": true,
+        "**/.ruff_cache/**": true,
+        "**/node_modules/**": true,
+        "**/.mypy_cache/**": true
+    },
+
+    // 搜索排除
+    "search.exclude": {
+        "**/.git": true,
+        "**/.venv": true,
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/.ruff_cache": true,
+        "**/node_modules": true,
+        "**/.mypy_cache": true,
+        "**/migrations": true
+    },
+
+    // ═══════════════════════════════════════════════════
+    // 编辑器通用配置
+    // ═══════════════════════════════════════════════════
+    "editor.formatOnSaveMode": "file",
+    "editor.formatOnPaste": true,
+    "editor.formatOnType": true,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+
+    // 代码提示
+    "editor.suggestSelection": "first",
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": true
+    },
+
+    // ═══════════════════════════════════════════════════
+    // 终端配置
+    // ═══════════════════════════════════════════════════
+    "terminal.integrated.defaultProfile.osx": "zsh",
+    "terminal.integrated.defaultProfile.linux": "zsh",
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+    },
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+    },
+
+    // ═══════════════════════════════════════════════════
+    // Git 配置
+    // ═══════════════════════════════════════════════════
+    "git.ignoreLimitWarning": true,
+    "git.autofetch": true,
+
+    // ═══════════════════════════════════════════════════
+    // FastAPI/Pydantic 优化
+    // ═══════════════════════════════════════════════════
+    // 优化 JSON Schema 显示
+    "json.schemaDownload.enable": true,
+
+    // ═══════════════════════════════════════════════════
+    // 禁用已弃用/冲突的工具
+    // ═══════════════════════════════════════════════════
+    "pylint.lintTask": "disabled",
+    "isort.checkTask": "disabled",
+    "mypy.enabled": false,
+
+    // ═══════════════════════════════════════════════════
+    // 调试配置
+    // ═══════════════════════════════════════════════════
+    "debug.internalConsoleOptions": "neverOpen",
+    "debug.console.closeOnEnd": false,
+
+    // ═══════════════════════════════════════════════════
+    // 工作区信任
+    // ═══════════════════════════════════════════════════
+    "security.workspace.trust.enabled": true
+}

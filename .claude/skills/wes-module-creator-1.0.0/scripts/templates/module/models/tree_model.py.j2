@@ -1,0 +1,75 @@
+"""
+{{ class_name }} 模型定义
+"""
+
+from datetime import datetime
+from typing import Literal
+
+from sqlmodel import Field, Relationship
+
+from src.core.mixins import BaseMixin, {% for mixin in mixins %}{{ mixin }}{{ "," if not loop.last else "" }}{% endfor %}
+from src.database.model_factory import ModelFactory
+from src.database.schema_conf import SchemaType
+
+
+class {{ class_name }}Base(TreeMixin, BaseMixin):
+    """
+    {{ class_name }} 基础字段（用于 Schema 复用）
+
+    TODO: 添加业务字段
+    示例：
+    name: str = Field(max_length=50, description="名称")
+    code: str = Field(max_length=20, description="编码", index=True)
+    """
+    pass
+
+
+class {{ class_name }}({{ class_name }}Base, {% for mixin in mixins if mixin != 'TreeMixin' %}{{ mixin }}{{ ", " if not loop.last else "" }}{% endfor %}table=True):
+    """
+    {{ class_name }} 数据库表模型
+    """
+
+    __tablename__: Literal["{{ table_name }}"] = "{{ table_name }}"
+    __schema__ = SchemaType.{{ schema }}.value
+
+    # TODO: 添加表特有字段（不在 Base 中的字段）
+    # 示例：
+    # capacity: int | None = Field(default=None, description="容量")
+
+
+class {{ class_name }}Create(ModelFactory({{ class_name }}Base).for_create()):
+    """
+    {{ class_name }} 创建 Schema（基于 {{ class_name }}Base，所有字段必需）
+    """
+    pass
+
+
+class {{ class_name }}Update(ModelFactory({{ class_name }}Base).for_update()):
+    """
+    {{ class_name }} 更新 Schema（基于 {{ class_name }}Base，所有字段可选）
+    """
+    pass
+
+
+class {{ class_name }}Response({{ class_name }}Base):
+    """
+    {{ class_name }} 响应 Schema（基于 {{ class_name }}Base，添加系统字段）
+    """
+
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    created_by: int | None
+    updated_by: int | None
+    parent_id: int | None
+    tree_path: str | None
+    level: int
+    sort_order: int
+
+
+class {{ class_name }}TreeResponse({{ class_name }}Response):
+    """
+    {{ class_name }} 树形响应 Schema
+    """
+
+    children: list["{{ class_name }}TreeResponse"] = []

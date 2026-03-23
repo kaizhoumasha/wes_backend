@@ -1,3 +1,22 @@
+# Environments
+.env.backup.*
+.env.new_keys
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+
+# customer config
+/docker_data/*
+/reports/*
+/claudedocs/*
+/backups/*
+
+# Docker backup files (old docker-compose files)
+docker-compose.backup/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -8,6 +27,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+logs/
 build/
 develop-eggs/
 dist/
@@ -50,6 +70,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+reports/  # HTML 测试报告和覆盖率报告
 
 # Translations
 *.mo
@@ -134,16 +155,6 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -205,3 +216,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.DS_Store
+
+# Proactive Agent (AI session state, not for version control)
+SESSION-STATE.md
+HEARTBEAT.md
+MEMORY.md
+SOUL.md
+USER.md
+memory/
+TOOLS.md
