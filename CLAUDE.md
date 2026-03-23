@@ -245,3 +245,42 @@ serena list_dir . --recursive --skip-ignored
 - 提交消息必须清晰、简洁，遵循 [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) 规范
 - 不要生成 Co-Authored-By 字段
 - 每个提交都必须包含相关的测试用例
+
+---
+
+## GStack 技能套件
+
+**网页浏览规则**：
+- 使用 `/browse` skill 进行所有网页浏览操作
+- 禁止使用 `mcp__claude-in-chrome__*` 工具
+
+**可用技能**：
+| 技能 | 用途 |
+|------|------|
+| `/office-hours` | 办公时间管理 |
+| `/plan-ceo-review` | CEO 计划评审 |
+| `/plan-eng-review` | 工程计划评审 |
+| `/plan-design-review` | 设计计划评审 |
+| `/design-consultation` | 设计咨询 |
+| `/review` | 代码审查 |
+| `/ship` | 发布流程 |
+| `/land-and-deploy` | 部署上线 |
+| `/canary` | 金丝雀发布 |
+| `/benchmark` | 性能基准测试 |
+| `/browse` | 网页浏览（替代 chrome MCP） |
+| `/qa` | 质量保证 |
+| `/qa-only` | 仅质量保证 |
+| `/design-review` | 设计评审 |
+| `/setup-browser-cookies` | 设置浏览器 Cookie |
+| `/setup-deploy` | 设置部署 |
+| `/retro` | 回顾总结 |
+| `/investigate` | 问题调查 |
+| `/document-release` | 发布文档 |
+| `/codex` | 代码索引 |
+| `/cso` | CSO 流程 |
+| `/autoplan` | 自动规划 |
+| `/careful` | 谨慎模式 |
+| `/freeze` | 冻结 |
+| `/guard` | 守护 |
+| `/unfreeze` | 解冻 |
+| `/gstack-upgrade` | GStack 升级 |
