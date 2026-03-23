@@ -74,26 +74,29 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_routes(self) -> None:
         """注册所有路由
 
-        路由注册顺序很重要：
-        1. 先注册自定义路由（具体路径优先）
-        2. 再注册标准 CRUD 路由
+        路由注册顺序原则：从具体到抽象，避免路径冲突
+        1. 自定义路由（用户定义的特定路径）
+        2. 专用路由（软删除、批量操作等具体路径）
+        3. 标准 CRUD 路由（通用路径如 /{id}）
         """
-        # 1. 先注册自定义路由（优先级高，避免被 /{id} 匹配）
+        # 1. 先注册自定义路由（具体路径优先）
         for route_func in self._custom_route_funcs:
             route_func(self.router, self)
 
-        # 2. 再注册标准 CRUD 路由
-        if self.gen_create:
-            self._register_create()
-        if self.gen_update:
-            self._register_update()
-        if self.gen_delete:
-            self._register_delete()
+        # 2. 注册专用路由（具体路径，避免被 /{id} 匹配）
         if self.gen_bulk_delete:
-            self._register_bulk_delete()
-        self._register_soft_delete_routes()
-        self._register_get()
-        self._register_list()
+            self._register_bulk_delete()  # DELETE /bulk
+        self._register_soft_delete_routes()  # GET /trash, POST /{id}/restore, etc.
+
+        # 3. 注册标准 CRUD 路由（通用路径，最后注册）
+        if self.gen_create:
+            self._register_create()  # POST /
+        if self.gen_update:
+            self._register_update()  # PUT /{id}
+        if self.gen_delete:
+            self._register_delete()  # DELETE /{id}
+        self._register_get()  # GET /{id}
+        self._register_list()  # POST /query
 
     def add_custom_route(self, route_func: RouteRegistrar, insert_first: bool = False) -> None:
         """动态添加自定义路由
@@ -389,48 +392,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         if not self.supports_soft_delete:
             return
 
-        # 1. 恢复接口
-        restore_summary = self._build_summary("restore", f"恢复{self.resource_name}")
-
-        @self.router.post(
-            "/{id}/restore",
-            summary=restore_summary,
-            response_model=ResponseSchemaModel[self.response_schema],
-            dependencies=self._permission_dependencies("restore"),
-        )
-        async def restore(  # pyright: ignore[reportUnusedFunction]
-            id: Annotated[int, Path(...)],
-            db: AsyncSessionDep,
-            cache: CacheDep,
-        ) -> dict[str, Any]:
-            response_builder_any = self._response_builder()
-            resource = await self.service.restore(db, id, cache)
-            logger.info(f"恢复{self.resource_name}成功: id={id}")
-            response_data = self.service.to_response(resource, self.response_schema)
-            return response_builder_any.success(data=response_data)
-
-        # 2. 回收站接口
-        trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
-
-        @self.router.get(
-            "/trash",
-            summary=trash_summary,
-            response_model=ListResponseSchemaModel[self.response_schema],
-            dependencies=self._permission_dependencies("trash"),
-        )
-        async def get_deleted(  # pyright: ignore[reportUnusedFunction]
-            db: AsyncSessionDep,
-            limit: int = Query(10, ge=1, le=100),  # pyright: ignore[reportCallInDefaultInitializer]
-            offset: int = Query(0, ge=0),  # pyright: ignore[reportCallInDefaultInitializer]
-        ) -> dict[str, Any]:
-            response_builder_any = self._response_builder()
-            total, resources = await self.service.get_deleted(db, limit, offset)
-            items = self.service.to_list_response(resources, self.response_schema)
-
-            logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
-            return response_builder_any.success(data=self._list_response_data(total, items, limit, offset))
-
-        # 3. 批量恢复接口
+        # 1. 批量恢复接口
         batch_restore_summary = self._build_summary("batch_restore", f"批量恢复{self.resource_name}")
 
         @self.router.post(
@@ -453,7 +415,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 f"批量恢复{self.resource_name}",
             )
 
-        # 4. 批量永久删除接口
+        # 2. 批量永久删除接口
         batch_permanent_delete_summary = self._build_summary(
             "batch_permanent_delete", f"批量永久删除{self.resource_name}"
         )
@@ -477,6 +439,47 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 permanent_delete_one,
                 f"批量永久删除{self.resource_name}",
             )
+
+        # 3. 恢复接口
+        restore_summary = self._build_summary("restore", f"恢复{self.resource_name}")
+
+        @self.router.post(
+            "/{id}/restore",
+            summary=restore_summary,
+            response_model=ResponseSchemaModel[self.response_schema],
+            dependencies=self._permission_dependencies("restore"),
+        )
+        async def restore(  # pyright: ignore[reportUnusedFunction]
+            id: Annotated[int, Path(...)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+        ) -> dict[str, Any]:
+            response_builder_any = self._response_builder()
+            resource = await self.service.restore(db, id, cache)
+            logger.info(f"恢复{self.resource_name}成功: id={id}")
+            response_data = self.service.to_response(resource, self.response_schema)
+            return response_builder_any.success(data=response_data)
+
+        # 4. 回收站接口
+        trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
+
+        @self.router.get(
+            "/trash",
+            summary=trash_summary,
+            response_model=ListResponseSchemaModel[self.response_schema],
+            dependencies=self._permission_dependencies("trash"),
+        )
+        async def get_deleted(  # pyright: ignore[reportUnusedFunction]
+            db: AsyncSessionDep,
+            limit: int = Query(10, ge=1, le=100),  # pyright: ignore[reportCallInDefaultInitializer]
+            offset: int = Query(0, ge=0),  # pyright: ignore[reportCallInDefaultInitializer]
+        ) -> dict[str, Any]:
+            response_builder_any = self._response_builder()
+            total, resources = await self.service.get_deleted(db, limit, offset)
+            items = self.service.to_list_response(resources, self.response_schema)
+
+            logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
+            return response_builder_any.success(data=self._list_response_data(total, items, limit, offset))
 
 
 __all__ = ["BaseAPI"]

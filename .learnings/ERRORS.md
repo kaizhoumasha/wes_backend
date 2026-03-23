@@ -104,3 +104,46 @@ TypeError: unhashable type: 'list'
 - **Notes**: RBAC 缓存中的 `["*"]`、`["menu:view"]` 等列表值不再被空值判断提前打断。
 
 ---
+
+## [ERR-20260323-001] local_api_verification_in_codex_sandbox
+
+**Logged**: 2026-03-23T17:16:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+在当前 Codex 环境里验证本地 API 时，`curl` 与 `uv run pytest` 容易先被代理变量和沙箱权限阻断，导致初始排查信号失真。
+
+### Error
+```text
+curl: (7) Failed to connect to 127.0.0.1 port 7890 after 0 ms: Couldn't connect to server
+error: Failed to initialize cache at `/Users/kaizhou/.cache/uv`
+nc: connectx to 127.0.0.1 port 8001 (tcp) failed: Operation not permitted
+```
+
+### Context
+- Command/operation: 本地 `curl` 调用 `http://127.0.0.1:8001/...`，以及 `PYTHONPATH=. uv run pytest -q ...`
+- Environment: Codex `workspace-write` sandbox + shell 环境带 `all_proxy=http://127.0.0.1:7890`
+- Trigger:
+  - 未显式取消代理时，`curl` 会先尝试走 `127.0.0.1:7890`
+  - 未提权时，访问本机监听端口或读取 `~/.cache/uv` 可能被沙箱拒绝
+
+### Suggested Fix
+在当前环境验证本地服务时，优先采用以下策略：
+
+- `env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY curl ...`
+- 对 `uv run pytest` 和本机端口访问，直接使用已批准前缀或提权执行
+- 在确认接口行为前，先区分“代理/沙箱失败”与“应用本身失败”
+
+### Metadata
+- Reproducible: yes
+- Related Files: AGENTS.md
+- See Also: ERR-20260306-001
+
+### Resolution
+- **Resolved**: 2026-03-23T17:16:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 本次已确认无代理 `curl` 和提权 pytest 是当前环境下的稳定验证路径，并拿到了真实接口响应。
+
+---

@@ -35,6 +35,7 @@ from .role import (
     RoleUpdate,
 )
 from .user import (
+    AssignRolesRequest,
     ResetPasswordRequest,
     User,
     UserBase,
@@ -101,6 +102,8 @@ _ = UserResponse.model_rebuild()
 # ==================== 导出所有公开内容 ====================
 
 __all__ = [
+    # User 模型
+    "AssignRolesRequest",
     # Menu 模型
     "Menu",
     "MenuBase",
@@ -117,7 +120,6 @@ __all__ = [
     "PermissionResponseSimple",
     "PermissionTree",
     "PermissionUpdate",
-    # User 模型
     "ResetPasswordRequest",
     # Role 模型
     "Role",

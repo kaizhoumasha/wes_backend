@@ -32,6 +32,35 @@ class RoleService(BaseService[Role, RoleRepository]):
         self.add_hook(HookType.AFTER_UPDATE, self._after_role_change_invalidate_user_permissions, priority=100)
         self.add_hook(HookType.AFTER_DELETE, self._after_role_change_invalidate_user_permissions, priority=100)
 
+    async def get_active_roles_by_ids(self, db: AsyncSession, role_ids: list[int]) -> list[Role]:
+        """按 ID 列表获取有效角色。
+
+        统一通过 RoleService 校验角色是否存在或已删除，避免其他 Service 直接访问 RoleRepository。
+        """
+        from src.core.exceptions import NotFoundException
+
+        if not role_ids:
+            return []
+
+        # 批量查询避免 N+1
+        roles = await self.repo.get_by_ids(db, role_ids)
+        found_ids = {role.id for role in roles}
+        requested_ids = list(dict.fromkeys(role_ids))
+
+        # 校验所有角色都存在
+        missing_ids = [role_id for role_id in requested_ids if role_id not in found_ids]
+        if missing_ids:
+            missing_text = ", ".join(str(role_id) for role_id in missing_ids)
+            raise NotFoundException(f"角色 {missing_text} 不存在")
+
+        # 校验没有已删除的角色
+        deleted_roles = [role for role in roles if role.is_deleted]
+        if deleted_roles:
+            deleted_text = ", ".join(str(role.id) for role in deleted_roles)
+            raise NotFoundException(f"角色 {deleted_text} 已删除")
+
+        return roles
+
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Role | None:
         role = await super().restore(db, id, cache)
         if role is None:

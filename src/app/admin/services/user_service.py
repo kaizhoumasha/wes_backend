@@ -18,7 +18,9 @@ API 层 → Service 层（UserService）→ Repository 层（UserRepository）
 - 单例模式提高性能
 """
 
-from src.app.admin.models import User
+from sqlalchemy.orm.attributes import set_attribute
+
+from src.app.admin.models import Role, User
 from src.app.admin.repositories.user_repository import UserRepository, user_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
@@ -143,7 +145,7 @@ class UserService(BaseService[User, UserRepository]):
         from src.core.security import revoke_all_user_tokens
 
         # 1. 获取用户（检查是否存在）
-        user = await self.repo.get_by_id(db, user_id)
+        user = await self.repo.get_by_id_with_roles(db, user_id)
         if user is None:
             raise NotFoundException(f"用户 {user_id} 不存在")
 
@@ -175,6 +177,56 @@ class UserService(BaseService[User, UserRepository]):
         await self._invalidate_permissions_for_user(user_id)
 
         return updated_user
+
+    async def assign_roles(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        role_ids: list[int],
+        cache: object | None = None,
+    ) -> User:
+        """
+        为用户分配角色
+
+        分配角色后：
+        1. 失效用户详情缓存
+        2. 刷新用户关系（roles）
+        3. 清除权限缓存
+
+        Args:
+            db: 数据库会话
+            user_id: 用户 ID
+            role_ids: 角色 ID 列表
+            cache: 缓存服务（用于失效缓存）
+
+        Returns:
+            更新后的用户对象
+
+        Raises:
+            NotFoundException: 用户不存在或角色不存在
+        """
+        from src.app.admin.services.role_service import role_service
+        from src.core.exceptions import NotFoundException
+
+        # 1. 获取用户（检查是否存在）
+        user = await self.repo.get_by_id_with_roles(db, user_id)
+        if user is None:
+            raise NotFoundException(f"用户 {user_id} 不存在")
+
+        # 2. 通过 RoleService 校验所有角色并获取角色对象
+        valid_roles: list[Role] = await role_service.get_active_roles_by_ids(db, role_ids)
+
+        # 3. 更新用户的角色集合（SQLAlchemy 会自动处理关联表）
+        set_attribute(user, "roles", valid_roles)
+        await db.flush()
+
+        # 4. 失效缓存
+        await self.invalidate_cache(cache, user_id)
+
+        # 5. 清除权限缓存
+        await self._invalidate_permissions_for_user(user_id)
+
+        return user
 
 
 user_service = UserService()

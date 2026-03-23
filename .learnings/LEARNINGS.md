@@ -1030,3 +1030,97 @@ SQLModel 关系依赖的目标模型如果只放在 `TYPE_CHECKING` 中，测试
 - See Also: LRN-20260314-001
 
 ---
+
+## [LRN-20260323-001] best_practice
+
+**Logged**: 2026-03-23T17:15:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+对启用了 `validate_assignment=True` 的 SQLModel 实例，不要直接给运行时动态挂载的关系属性赋值，应该走 SQLAlchemy 的关系赋值入口。
+
+### Details
+这次排查 `PUT /api/v1/users/{id}/assign-roles` 时，最初看到的是两类表象错误：
+
+- `MissingGreenlet: greenlet_spawn has not been called`
+- `ValidationError: roles -> Object has no attribute 'roles'`
+
+真正的根因分成两层：
+
+1. `assign_roles()` 最初使用 `get_by_id()` 获取用户，`user.roles = valid_roles` 会触发异步懒加载，导致 `MissingGreenlet`
+2. 即便改成 `get_by_id_with_roles()` 预加载角色，`User` 继承链里仍然开启了 `validate_assignment=True`，而 `roles` 是在 `src/app/admin/models/__init__.py` 中通过 `relationship()` 运行时挂到模型上的，不属于 Pydantic 声明字段。于是直接执行 `user.roles = valid_roles` 时，Pydantic 会抛出 `Object has no attribute 'roles'`
+
+本次可工作的修复组合是：
+
+- 先通过 `get_by_id_with_roles()` 预加载当前用户角色，避免异步懒加载
+- 使用 `sqlalchemy.orm.attributes.set_attribute(user, "roles", valid_roles)` 更新关系集合，而不是直接做 `user.roles = valid_roles`
+- 用户响应模型中的 `roles` 使用 `RoleResponseSimple`，避免为普通用户接口隐式要求 `permissions` 关系
+
+### Suggested Action
+在所有为 SQLModel 实例更新多对多/一对多关系的 Service 中，优先检查：
+
+1. 关系是否已预加载
+2. 模型是否启用了 `validate_assignment=True`
+3. 关系属性是否是运行时动态挂载而非 Pydantic 声明字段
+
+若三者同时成立，禁止直接 `instance.relation = ...`，统一使用 SQLAlchemy 关系赋值入口并补回归测试。
+
+### Metadata
+- Source: conversation
+- Related Files: src/app/admin/services/user_service.py, src/app/admin/models/__init__.py, src/app/admin/models/user.py, tests/test_user_service_assign_roles.py, tests/test_user_model.py
+- Tags: sqlmodel, sqlalchemy, relationship, validate-assignment, async, missinggreenlet, pydantic
+- See Also: LRN-20260314-001
+
+### Resolution
+- **Resolved**: 2026-03-23T17:15:00+08:00
+- **Commit/PR**: local workspace
+- **Notes**: `assign_roles()` 已改为预加载 `roles` 并使用 `set_attribute()` 更新关系，相关定向测试已补齐并通过。
+
+---
+
+## [LRN-20260323-002] correction
+
+**Logged**: 2026-03-23T17:20:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: correction
+**Area**: tests
+
+### Summary
+这个仓库执行 pytest 时，默认命令应为 `PYTHONPATH=. uv run pytest ...`，不能直接写成 `uv run pytest ...`。
+
+### Details
+本次用户明确纠正了一个重复性错误：我在仓库里多次先执行了 `uv run pytest ...`，随后才因为 `ModuleNotFoundError: No module named 'src'` 改成带环境变量的版本。
+
+对这个仓库而言，`tests/conftest.py` 和应用代码都直接从 `src` 顶层包导入模块，因此在当前运行方式下，pytest 需要显式把仓库根目录加入 `PYTHONPATH`。正确命令应统一为：
+
+```bash
+PYTHONPATH=. uv run pytest -q ...
+```
+
+而不是：
+
+```bash
+uv run pytest -q ...
+```
+
+这不是一次性的命令修补，而是该仓库的测试执行约定。
+
+### Suggested Action
+后续在本仓库运行任何 pytest 命令时，默认使用 `PYTHONPATH=. uv run pytest ...`，不要再先尝试不带 `PYTHONPATH` 的版本。
+
+### Metadata
+- Source: user_feedback
+- Related Files: AGENTS.md, tests/conftest.py
+- Tags: pytest, pythonpath, test-runner, correction, repo-convention
+- See Also: ERR-20260323-001
+
+### Resolution
+- **Resolved**: 2026-03-23T17:20:00+08:00
+- **Commit/PR**: local workspace
+- **Notes**: 已记录为仓库级测试约定；后续本仓库中的 pytest 命令将默认带 `PYTHONPATH=.`。
+
+---

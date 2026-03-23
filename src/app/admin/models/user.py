@@ -11,7 +11,7 @@ from pydantic import EmailStr, field_validator
 from sqlalchemy import Index, text
 from sqlmodel import Field
 
-from src.app.admin.models.role import RoleResponse
+from src.app.admin.models.role import RoleResponseSimple
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -96,13 +96,17 @@ class UserSimpleResponse(UserBase):
     is_superuser: bool
     is_multi_login: bool
     created_at: datetime
-    updated_at: datetime | None
+    created_by: int
+    updated_at: datetime | None = None  # 最后更新时间
+    updated_by: int | None = None  # 最后更新用户 ID
+    deleted_by: int | None = None  # 软删除用户 ID
+    deleted_at: datetime | None = None  # 软删除时间
 
 
 class UserResponse(UserSimpleResponse):
     """用户响应 Schema - 返回给客户端"""
 
-    roles: list[RoleResponse] = Field(default_factory=list)
+    roles: list[RoleResponseSimple] = Field(default_factory=list)
 
 
 # ==================== 密码相关 Schema ====================
@@ -112,3 +116,9 @@ class ResetPasswordRequest(BaseMixin):
     """管理员重置密码请求"""
 
     new_password: str = Field(min_length=6, max_length=100, description="新密码")
+
+
+class AssignRolesRequest(BaseMixin):
+    """为用户分配角色请求"""
+
+    role_ids: list[int] = Field(description="角色 ID 列表")
