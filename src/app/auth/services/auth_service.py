@@ -9,7 +9,6 @@
 - 强制登出所有设备
 """
 
-import json
 from typing import Any, cast
 
 from fastapi import Request, Response
@@ -36,6 +35,7 @@ from src.core.security import (
     REFRESH_TOKEN_PREFIX,
     USER_SESSION_PREFIX,
     TokenType,
+    _load_session_data,
     create_access_token,
     create_new_token,
     create_refresh_token,
@@ -323,13 +323,12 @@ class AuthService:
 
                     # 读取会话中的 access_jti（若存在）
                     session_key = f"{USER_SESSION_PREFIX}:{user_id}:{refresh_payload.session_uuid}"
-                    session_data_str = await redis_client.get(session_key)
-                    if session_data_str:
-                        try:
-                            session_data = json.loads(session_data_str)
-                            access_jti = session_data.get("access_jti") or session_data.get("jti")
-                        except json.JSONDecodeError:
-                            logger.warning(f"登出时解析会话数据失败: {session_key}")
+                    session_data = _load_session_data(
+                        await redis_client.get(session_key),
+                        context=f"登出时解析会话数据失败: {session_key}",
+                    )
+                    if session_data:
+                        access_jti = session_data.get("access_jti") or session_data.get("jti")
 
                     # 如果有 access_jti，则先尝试按映射清理
                     if access_jti:
@@ -413,11 +412,9 @@ class AuthService:
                 for key, data_str in zip(session_keys, session_data_list, strict=False):
                     if data_str:
                         try:
-                            session_data_raw = json.loads(data_str)
-                            if not isinstance(session_data_raw, dict):
-                                logger.warning(f"解析会话数据失败 [{key}]: 数据格式错误")
+                            session_data = _load_session_data(data_str, context=f"解析会话数据失败 [{key}]")
+                            if session_data is None:
                                 continue
-                            session_data = cast("dict[str, Any]", session_data_raw)
 
                             # 提取 session_uuid（从 key 中解析）
                             # key 格式: auth:user_session:{user_id}:{session_uuid}
@@ -449,7 +446,7 @@ class AuthService:
                                 )
                             )
 
-                        except (json.JSONDecodeError, ValueError, KeyError) as e:
+                        except (ValueError, KeyError) as e:
                             logger.warning(f"解析会话数据失败 [{key}]: {e}")
                             continue
 
@@ -490,7 +487,12 @@ class AuthService:
             if not session_data_str:
                 raise AuthException("会话不存在")
 
-            session_data = json.loads(session_data_str)
+            session_data = _load_session_data(
+                session_data_str,
+                context=f"撤销会话时解析会话数据失败: {session_key}",
+            )
+            if session_data is None:
+                raise AuthException("会话数据无效")
             access_jti = session_data.get("jti")
 
             if not access_jti:
@@ -548,18 +550,7 @@ class AuthService:
         Returns:
             UserResponse 对象
         """
-        return UserResponse(
-            id=user.id,  # type: ignore[arg-type]
-            version=user.version,  # type: ignore[attr-defined]
-            username=user.username,
-            email=user.email,
-            full_name=user.full_name,
-            is_superuser=user.is_superuser,
-            is_multi_login=user.is_multi_login,
-            created_at=user.created_at,  # type: ignore[attr-defined]
-            updated_at=user.updated_at,  # type: ignore[attr-defined]
-            roles=[],  # roles 会通过预加载自动填充
-        )
+        return UserResponse.model_validate(user)
 
 
 # 创建服务实例

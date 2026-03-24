@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable  # noqa: TC003
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -188,6 +188,34 @@ def get_password_hash(password: str) -> str:
         哈希密码
     """
     return pwd_hasher.hash(password)
+
+
+def _decode_redis_text(value: str | bytes | None) -> str | None:
+    """统一解码 Redis 返回值。"""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
+def _load_session_data(value: str | bytes | None, *, context: str) -> dict[str, Any] | None:
+    """统一解析 Redis 中的会话 JSON 数据。"""
+    text = _decode_redis_text(value)
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning(f"{context}: JSON 解析失败")
+        return None
+
+    if not isinstance(data, dict):
+        logger.warning(f"{context}: 数据格式错误")
+        return None
+
+    return cast("dict[str, Any]", data)
 
 
 # ==================== JWT 工具函数 ====================
@@ -365,8 +393,9 @@ async def _delete_refresh_token_and_mapping(  # pyright: ignore[reportUnusedFunc
     refresh_jti = await redis_client.get(mapping_key)
 
     if refresh_jti:
-        # 转换为字符串（如果需要）
-        refresh_jti_str = refresh_jti.decode() if isinstance(refresh_jti, bytes) else refresh_jti
+        refresh_jti_str = _decode_redis_text(refresh_jti)
+        if not refresh_jti_str:
+            return
 
         # 使用 pipeline 批量删除
         pipe = redis_client.pipeline()
@@ -642,9 +671,9 @@ async def create_new_token(
         raise InvalidTokenException("Refresh Token 已被撤销")
 
     # 验证并原子性删除 Redis 中的 token（使用 GETDEL）
-    stored_refresh_token = await redis_client.getdel(_make_refresh_token_key(user_id, token_payload.jti))
-    if isinstance(stored_refresh_token, bytes):
-        stored_refresh_token = stored_refresh_token.decode()
+    stored_refresh_token = _decode_redis_text(
+        await redis_client.getdel(_make_refresh_token_key(user_id, token_payload.jti))
+    )
     if not stored_refresh_token or stored_refresh_token != refresh_token:
         raise InvalidTokenException("Refresh Token 已过期或不存在")
 
@@ -659,15 +688,13 @@ async def create_new_token(
 
     # 2. 获取旧会话信息以获取 access_jti
     old_session_key = _make_user_session_key(user_id, old_session_uuid)
-    old_session_data_str = await redis_client.get(old_session_key)
-
     old_access_jti = None
-    if old_session_data_str:
-        try:
-            old_session_data = json.loads(old_session_data_str)
-            old_access_jti = old_session_data.get("access_jti")
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse old session data for cleanup")
+    old_session_data = _load_session_data(
+        await redis_client.get(old_session_key),
+        context="Failed to parse old session data for cleanup",
+    )
+    if old_session_data:
+        old_access_jti = old_session_data.get("access_jti")
 
     # 3. 删除旧的会话信息
     await redis_client.delete(old_session_key)
@@ -714,10 +741,12 @@ async def revoke_token(user_id: int, session_uuid: str, jti: str | None = None) 
     async def _revoke(redis_client: Any) -> None:
         # 获取会话信息
         session_key = _make_user_session_key(user_id, session_uuid)
-        session_data_str = await redis_client.get(session_key)
+        session_data = _load_session_data(
+            await redis_client.get(session_key),
+            context=f"撤销 token 时解析会话失败: {session_key}",
+        )
 
-        if session_data_str:
-            session_data = json.loads(session_data_str)
+        if session_data:
             session_jti = session_data.get("jti") or jti
 
             if session_jti:
@@ -842,23 +871,24 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
             raise InvalidTokenException("Token 已被撤销")
 
         # 验证 token 是否存在
-        stored_token = await redis_client.get(_make_access_token_key(user_id, token_payload.jti))
+        stored_token = _decode_redis_text(
+            await redis_client.get(_make_access_token_key(user_id, token_payload.jti))
+        )
         if not stored_token or stored_token != token:
             raise InvalidTokenException("Token 已失效")
 
         # 获取用户额外信息
         session_key = _make_user_session_key(user_id, token_payload.session_uuid)
-        session_data_str = await redis_client.get(session_key)
-        if session_data_str:
-            try:
-                session_data = json.loads(session_data_str)
-                extra_info = session_data.get("extra", {})
-                if "username" in extra_info:
-                    request.state.username = extra_info["username"]
-                if "email" in extra_info:
-                    request.state.email = extra_info["email"]
-            except json.JSONDecodeError:
-                logger.warning(f"无法解析用户会话信息: {session_data_str}")
+        session_data = _load_session_data(
+            await redis_client.get(session_key),
+            context=f"无法解析用户会话信息: {session_key}",
+        )
+        if session_data:
+            extra_info = session_data.get("extra", {})
+            if "username" in extra_info:
+                request.state.username = extra_info["username"]
+            if "email" in extra_info:
+                request.state.email = extra_info["email"]
 
     await _safe_redis_operation("验证 token", _verify_redis)
 
