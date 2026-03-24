@@ -220,8 +220,8 @@ class UserService(BaseService[User, UserRepository]):
         set_attribute(user, "roles", valid_roles)
         await db.flush()
 
-        # 4. 失效缓存
-        await self.invalidate_cache(cache, user_id)
+        # 4. 失效缓存（详情 + 列表）
+        await self.invalidate_cache(cache, user_id, invalidate_list=True)
 
         # 5. 清除权限缓存
         await self._invalidate_permissions_for_user(user_id)

@@ -51,6 +51,13 @@ from src.utils.timezone import timezone
 class AuthService:
     """认证服务类"""
 
+    # TODO(auth-cookie-migration):
+    # 1. 将 access token 迁移到 HttpOnly Cookie，并在 require_auth/get_current_user 中优先读取 Cookie
+    # 2. Bearer 认证保留为迁移期兼容兜底，待前端完全切换后再移除
+    # 3. 若前后端跨站部署且需要 SameSite=None，补充显式 CSRF 防护契约
+    # 4. 前端完成切流后，停止在登录/刷新响应中返回 access token 明文
+    # 5. 同步更新 Swagger、测试夹具与前端初始化流程，完全收敛为浏览器持有会话模式
+
     @staticmethod
     def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         """
@@ -166,10 +173,9 @@ class AuthService:
         # 设置刷新令牌到 HttpOnly Cookie
         AuthService._set_refresh_cookie(response, refresh_data.refresh_token)
 
-        # 构建响应
+        # 最小安全收敛：refresh token 仅保留在 HttpOnly Cookie 中，不再明文返回给前端。
         return LoginResponse(
             access_token=access_data.access_token,
-            refresh_token=refresh_data.refresh_token,
             access_token_jti=access_data.jti,
             refresh_token_jti=refresh_data.jti,
             access_token_expire_time=access_data.access_token_expire_time,
@@ -247,7 +253,6 @@ class AuthService:
 
         return RefreshTokenResponse(
             access_token=new_token_data.new_access_token,
-            refresh_token=new_token_data.new_refresh_token,
             access_token_jti=new_token_data.new_access_jti,
             refresh_token_jti=new_token_data.new_refresh_jti,
             access_token_expire_time=new_token_data.new_access_token_expire_time,

@@ -151,9 +151,11 @@ class TestAuthAPI:
         assert data["code"] == "1000"
         assert "data" in data
         assert "access_token" in data["data"]
-        assert "refresh_token" in data["data"]
+        assert "refresh_token" not in data["data"]
         assert "user" in data["data"]
         assert data["data"]["user"]["username"] == "testuser"
+        assert client.cookies.get("refresh_token")
+        assert "refresh_token=" in response.headers.get("set-cookie", "")
 
     @pytest.mark.asyncio()
     async def test_login_wrong_password(self, client: AsyncClient, test_user: User):
@@ -278,6 +280,7 @@ class TestRBAC:
             email="admin@example.com",
             hashed_password=get_password_hash("admin123"),
             is_superuser=True,
+            created_by=1,
         )
         db_session.add(superuser)
         await db_session.commit()
@@ -315,7 +318,7 @@ class TestAuthIntegration:
         assert login_data["code"] == "1000"
         access_token = login_data["data"]["access_token"]
         assert isinstance(access_token, str) and access_token
-        assert "refresh_token" in login_data["data"]
+        assert "refresh_token" not in login_data["data"]
 
         # 2. 校验访问令牌可正确解析（避免依赖环境中的会话接口行为差异）
         token_payload = jwt_decode(access_token)
@@ -368,6 +371,7 @@ async def test_user(db_session: AsyncSession):
         email="test@example.com",
         hashed_password=get_password_hash("testpass123"),
         is_superuser=False,
+        created_by=1,
     )
     db_session.add(user)
     await db_session.commit()

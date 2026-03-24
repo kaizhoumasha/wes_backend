@@ -43,15 +43,14 @@ class LoginResponse(BaseMixin):
     """
     登录响应 Schema
 
-    包含访问令牌、刷新令牌和用户信息
+    包含访问令牌、刷新令牌元数据和用户信息
     """
 
     access_token: str = Field(description="访问令牌")
-    refresh_token: str = Field(description="刷新令牌")
     access_token_jti: str = Field(description="访问令牌唯一标识符（用于撤销）")
     refresh_token_jti: str = Field(description="刷新令牌唯一标识符（用于撤销）")
     access_token_expire_time: datetime = Field(description="访问令牌过期时间")
-    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间")
+    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间（令牌仅存储于 HttpOnly Cookie）")
     session_uuid: str = Field(description="会话 UUID")
     user: UserResponse = Field(description="用户信息")
 
@@ -74,15 +73,14 @@ class RefreshTokenResponse(BaseMixin):
     """
     刷新令牌响应 Schema
 
-    包含新的访问令牌和刷新令牌
+    包含新的访问令牌和刷新令牌元数据
     """
 
     access_token: str = Field(description="新的访问令牌")
-    refresh_token: str = Field(description="新的刷新令牌")
     access_token_jti: str = Field(description="访问令牌唯一标识符")
     refresh_token_jti: str = Field(description="刷新令牌唯一标识符")
     access_token_expire_time: datetime = Field(description="访问令牌过期时间")
-    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间")
+    refresh_token_expire_time: datetime = Field(description="刷新令牌过期时间（令牌仅存储于 HttpOnly Cookie）")
     session_uuid: str = Field(description="会话 UUID")
 
     @computed_field

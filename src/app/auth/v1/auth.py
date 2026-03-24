@@ -89,7 +89,7 @@ async def login(
     """
     用户登录
 
-    返回访问令牌和刷新令牌。刷新令牌存储在 HttpOnly Cookie 中。
+    返回访问令牌和刷新令牌元数据。刷新令牌仅存储在 HttpOnly Cookie 中。
 
     - **username**: 用户名（3-50字符）
     - **password**: 密码（6-100字符）
@@ -122,7 +122,7 @@ async def refresh_token(
     """
     刷新访问令牌
 
-    使用刷新令牌（从 Cookie 中获取）获取新的访问令牌和刷新令牌。
+    使用刷新令牌（从 Cookie 中获取）获取新的访问令牌和刷新令牌元数据。
     新的刷新令牌会自动更新到 HttpOnly Cookie 中。
 
     **安全特性**：

@@ -52,5 +52,5 @@ async def test_user_service_assign_roles_uses_role_service(monkeypatch: pytest.M
     db.flush.assert_awaited_once()
     assert db.refresh.await_count == 0
     assert service.repo.get_by_id_with_roles.await_count == 1  # type: ignore[attr-defined]
-    service.invalidate_cache.assert_awaited_once_with(cache, 7)
+    service.invalidate_cache.assert_awaited_once_with(cache, 7, invalidate_list=True)
     service._invalidate_permissions_for_user.assert_awaited_once_with(7)
