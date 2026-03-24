@@ -129,7 +129,7 @@ class BaseService[M, R]:
     @repo.setter
     def repo(self, repository: R) -> None:
         self._repo = repository
-        self._repo_base = cast(BaseRepository[M], repository)
+        self._repo_base = cast("BaseRepository[M]", repository)
         self._model_name = _infer_model_name(repository)
 
     def __init__(
@@ -192,7 +192,7 @@ class BaseService[M, R]:
             return self.to_response(item, response_model)
         model_validate = getattr(self._repo_base.model, "model_validate", None)
         if callable(model_validate):
-            return cast(Any, model_validate)(item)
+            return cast("Any", model_validate)(item)
         return item
 
     def add_hook(
@@ -280,7 +280,7 @@ class BaseService[M, R]:
             if hit:
                 logger.debug(f"缓存命中: {cache_key}")
                 if isinstance(cached_data, dict) and hasattr(self._repo_base.model, "model_validate"):
-                    return cast(M, cast(Any, self._repo_base.model).model_validate(cached_data))
+                    return cast("M", cast("Any", self._repo_base.model).model_validate(cached_data))
                 return cached_data  # type: ignore[return-value]
 
             result = await self._repo_base.get_by_id(
@@ -352,7 +352,7 @@ class BaseService[M, R]:
             if cached_data is not None:
                 logger.debug(f"缓存命中: {cache_key}")
                 if isinstance(cached_data, dict):
-                    payload = cast(ListCachePayload, cached_data)
+                    payload = cast("ListCachePayload", cached_data)
                     total = payload["total"] if isinstance(payload.get("total"), int) else 0
                     items_data = payload["items"] if isinstance(payload.get("items"), list) else []
                     items = [self._deserialize_list_item_from_cache(item) for item in items_data]
@@ -507,7 +507,7 @@ class BaseService[M, R]:
             return model
         if isinstance(model, dict):
             return response_schema.model_validate(model)
-        return cast(Any, model_to_schema(model, response_schema))
+        return cast("Any", model_to_schema(model, response_schema))
 
     def to_list_response(self, models: list[M], response_schema: type) -> list[Any]:
         """

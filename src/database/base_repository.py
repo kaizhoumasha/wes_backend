@@ -323,7 +323,7 @@ class BaseRepository[T]:
             if not instance or not data or not isinstance(data, dict):
                 return
 
-            typed_data = cast(dict[str, Any], data)
+            typed_data = cast("dict[str, Any]", data)
 
             # 检查模型是否有 version 字段
             if not hasattr(instance, "version") or not hasattr(self.model, "version"):

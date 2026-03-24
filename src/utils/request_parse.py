@@ -7,8 +7,7 @@
 # @Software: Cursor
 # @Description: 请求解析工具
 
-from collections.abc import Callable
-from typing import Any, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 import httpx
 from asgiref.sync import sync_to_async
@@ -21,6 +20,9 @@ from src.core.conf import settings
 from src.core.logger import logger
 from src.core.path_conf import IP2REGION_XDB
 from src.database.redis_client import get_redis
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class LocationInfo(TypedDict):
@@ -85,7 +87,7 @@ async def get_location_online(ip: str, user_agent: str) -> LocationInfo | None:
         try:
             response = await client.get(ip_api_url, headers=headers)
             if response.status_code == 200:
-                return cast(LocationInfo, response.json())
+                return cast("LocationInfo", response.json())
         except Exception as e:
             logger.error(f"在线获取 ip 地址属地失败，错误信息：{getattr(e, 'data', e)!s}")
             return None
@@ -101,10 +103,10 @@ def get_location_offline(ip: str) -> LocationInfo | None:
     :return:
     """
     try:
-        searcher_cls = cast(Any, XdbSearcher)
-        cb = cast(bytes | None, searcher_cls.loadContentFromFile(dbfile=IP2REGION_XDB))
-        searcher = cast(Any, searcher_cls(contentBuff=cb))
-        data = cast(str, searcher.search(ip))
+        searcher_cls = cast("Any", XdbSearcher)
+        cb = cast("bytes | None", searcher_cls.loadContentFromFile(dbfile=IP2REGION_XDB))
+        searcher = cast("Any", searcher_cls(contentBuff=cb))
+        data = cast("str", searcher.search(ip))
         searcher.close()
         parts = data.split("|")
         return {
@@ -155,7 +157,7 @@ def parse_user_agent_info(request: Request) -> UserAgentInfo:
     """
     user_agent = request.headers.get("User-Agent")
     if user_agent:
-        parse_user_agent = cast(Callable[[str], ParsedUserAgent], parse)
+        parse_user_agent = cast("Callable[[str], ParsedUserAgent]", parse)
         _user_agent = parse_user_agent(user_agent)
         os = _user_agent.get_os()
         browser = _user_agent.get_browser()

@@ -47,7 +47,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
             .where(columns.status == InboxStatus.NEW)
             .order_by(columns.received_at)
             .limit(limit)
-            .with_for_update()  # 加锁，避免并发消费
+            .with_for_update(skip_locked=True)  # 加锁，避免并发消费
         )
         return list(result.scalars().all())
 
@@ -89,7 +89,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         # 计算 payload_hash
         payload_items: list[tuple[str, Any]] = sorted(data.items())
         payload_str = str(payload_items)  # 确保字典顺序一致
-        payload_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]  # noqa: S324
+        payload_hash = hashlib.md5(payload_str.encode(), usedforsecurity=False).hexdigest()[:8]
 
         # 组合键
         return f"device_event:{device_code}:{event_type}:{timestamp}:{payload_hash}"
@@ -110,7 +110,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         # 计算 payload_hash
         payload_items: list[tuple[str, Any]] = sorted(data.items())
         payload_str = str(payload_items)  # 确保字典顺序一致
-        payload_hash = hashlib.md5(payload_str.encode()).hexdigest()[:8]  # noqa: S324
+        payload_hash = hashlib.md5(payload_str.encode(), usedforsecurity=False).hexdigest()[:8]
 
         # 组合键
         return f"command_result:{command_code}:{result}:{finish_time}:{payload_hash}"

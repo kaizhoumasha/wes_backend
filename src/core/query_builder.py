@@ -86,7 +86,7 @@ class QueryBuilder:
             logger.warning(f"字段 {condition.field} 不存在于模型 {self.model.__name__}")
             return None
 
-        field = cast(Any, getattr(self.model, condition.field))
+        field = cast("Any", getattr(self.model, condition.field))
         builder = self._FIELD_OPERATOR_MAP.get(condition.op)
 
         return builder(field, condition.value) if builder else None
@@ -103,18 +103,18 @@ class QueryBuilder:
             logger.warning(f"关联 {rel_name} 不存在于模型 {self.model.__name__}")
             return None
 
-        rel_attr = cast(Any, getattr(self.model, rel_name))
-        rel_property = cast(Any, getattr(rel_attr, "property", None))
+        rel_attr = cast("Any", getattr(self.model, rel_name))
+        rel_property = cast("Any", getattr(rel_attr, "property", None))
         if rel_property is None or not hasattr(rel_property, "mapper"):
             logger.warning(f"关联 {rel_name} 不是有效的关系字段")
             return None
 
-        rel_model = cast(type[Any], rel_property.mapper.class_)
+        rel_model = cast("type[Any]", rel_property.mapper.class_)
         if not hasattr(rel_model, rel_field):
             logger.warning(f"字段 {rel_field} 不存在于关联模型 {rel_model.__name__}")
             return None
 
-        rel_field_attr = cast(Any, getattr(rel_model, rel_field))
+        rel_field_attr = cast("Any", getattr(rel_model, rel_field))
         builder = self._REL_OPERATOR_MAP.get(condition.op)
 
         return builder(rel_attr, rel_field_attr, condition.value) if builder else None
@@ -127,7 +127,7 @@ class QueryBuilder:
                 logger.warning(f"排序字段 {sort_field.field} 不存在于模型 {self.model.__name__}")
                 continue
 
-            field = cast(Any, getattr(self.model, sort_field.field))
+            field = cast("Any", getattr(self.model, sort_field.field))
             if sort_field.order == "desc":
                 order_by.append(field.desc())
             else:

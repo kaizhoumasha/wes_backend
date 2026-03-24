@@ -27,22 +27,22 @@ class RelationCRUD:
     @staticmethod
     def _item_id(item_data: dict[str, Any] | object) -> int | None:
         raw_id = (
-            cast(dict[str, Any], item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+            cast("dict[str, Any]", item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
         )
         return raw_id if isinstance(raw_id, int) else None
 
     @staticmethod
     def _model_data(item_data: dict[str, Any] | object) -> dict[str, Any]:
         if isinstance(item_data, dict):
-            return cast(dict[str, Any], item_data)
+            return cast("dict[str, Any]", item_data)
         if hasattr(item_data, "model_dump"):
-            return cast(dict[str, Any], cast(Any, item_data).model_dump(exclude_unset=True))
+            return cast("dict[str, Any]", cast("Any", item_data).model_dump(exclude_unset=True))
         model_data = item_data.__dict__ if hasattr(item_data, "__dict__") else {}
-        return cast(dict[str, Any], model_data)
+        return cast("dict[str, Any]", model_data)
 
     @staticmethod
     def _relation_model(relation_attr: Any) -> type[Any]:
-        return cast(type[Any], relation_attr.property.mapper.class_)
+        return cast("type[Any]", relation_attr.property.mapper.class_)
 
     def _iter_relation_entries(self, data: dict[str, Any]) -> list[tuple[str, Any, str]]:
         if not RelationMetadata.has_relations(self.model):
@@ -58,7 +58,7 @@ class RelationCRUD:
             if relation_data is None:
                 continue
 
-            relation_type = cast(str, info.get("relation_type", "ONETOMANY"))
+            relation_type = cast("str", info.get("relation_type", "ONETOMANY"))
             entries.append((relation_name, relation_data, relation_type))
         return entries
 
@@ -90,7 +90,7 @@ class RelationCRUD:
 
     @staticmethod
     def _parent_table_name(parent_obj: Any) -> str | None:
-        return cast(str | None, getattr(parent_obj.__class__, "__tablename__", None))
+        return cast("str | None", getattr(parent_obj.__class__, "__tablename__", None))
 
     def _foreign_key_field(self, relation_model: type[Any], parent_obj: Any) -> tuple[str | None, str | None]:
         parent_tablename = self._parent_table_name(parent_obj)
@@ -132,7 +132,7 @@ class RelationCRUD:
             if relation_attr is None:
                 continue
 
-            current_relations = cast(list[Any], getattr(instance, relation_name, []))
+            current_relations = cast("list[Any]", getattr(instance, relation_name, []))
             current_ids = {rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None}
             new_ids, to_create, to_update = self._split_relation_changes(new_relation_data)
             to_delete_ids = current_ids - new_ids

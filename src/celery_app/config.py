@@ -39,6 +39,8 @@ task_routes = {
     "src.celery_app.tasks.core.*": {"queue": "default"},
     # 设备事件处理任务 -> device 队列
     "src.celery_app.tasks.device.*": {"queue": "device"},
+    # 作业线编排任务 -> celery 队列
+    "src.celery_app.tasks.workline.*": {"queue": "celery"},
     # 可扩展：添加新的任务路由
     # "src.celery_app.tasks.inventory.*": {"queue": "inventory"},
     # "src.celery_app.tasks.reporting.*": {"queue": "reporting"},

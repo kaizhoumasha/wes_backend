@@ -34,7 +34,7 @@ class HealthCheckResult(TypedDict, total=False):
     error: str
 
 
-def _run_async(coro: Awaitable[T]) -> T:
+def _run_async[T](coro: Awaitable[T]) -> T:
     """
     在 Celery 同步任务中运行异步函数
 

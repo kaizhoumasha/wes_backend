@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 from fnmatch import fnmatch
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.api_auth.constants import CacheKeys
 from src.app.api_auth.models.api_application import APIApplication, AppStatus, AppType, ValidityPeriod
 from src.app.api_auth.services.app_service import APIAppService
 from src.common.cache_config import cache_settings
 from src.database.redis_cache import RedisCache
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class FakeRedisCache(RedisCache):
@@ -108,13 +110,13 @@ class FakeAPIAppRepository:
 
 def _build_service(repo: FakeAPIAppRepository) -> APIAppService:
     service = APIAppService()
-    service.repo = cast(Any, repo)
+    service.repo = cast("Any", repo)
     service._model_name = repo._model_name
     return service
 
 
 def _db_session() -> AsyncSession:
-    return cast(AsyncSession, object())
+    return cast("AsyncSession", object())
 
 
 def _require_id(app: APIApplication) -> int:

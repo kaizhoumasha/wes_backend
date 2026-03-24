@@ -106,12 +106,12 @@ def apply_schema_loads(
             if field_name not in model_relationships:
                 continue
 
-            rel_attr = cast(Any, getattr(current_model, field_name))
+            rel_attr = cast("Any", getattr(current_model, field_name))
             load_func = _get_optimal_loader(field_name, current_model)
 
             if current_depth < max_depth and nested_schema:
                 # 递归处理嵌套关系
-                nested_model = cast(type[Any], rel_attr.property.mapper.class_)
+                nested_model = cast("type[Any]", rel_attr.property.mapper.class_)
                 loader = load_func(rel_attr)
 
                 # 为嵌套关系也应用智能加载
@@ -164,10 +164,10 @@ async def get_with_schema[T](
     Example:
         user = await get_with_schema(db, User, UserResponse, User.id == 1)
     """
-    query = cast(Select[Any], select(model).where(*where_clauses))
+    query = cast("Select[Any]", select(model).where(*where_clauses))
     query = apply_schema_loads(query, model, schema, max_depth)
     result = await db.execute(query)
-    return cast(T | None, result.scalars().first())
+    return cast("T | None", result.scalars().first())
 
 
 async def get_all_with_schema[T](
@@ -204,7 +204,7 @@ async def get_all_with_schema[T](
         users = await get_all_with_schema(db, User, UserResponse, limit=10)
         users = await get_all_with_schema(db, User, UserResponse, order_by=[User.id.desc()])
     """
-    query = cast(Select[Any], select(model))
+    query = cast("Select[Any]", select(model))
     if where_clauses:
         query = query.where(*where_clauses)
     query = apply_schema_loads(query, model, schema, max_depth)
@@ -215,7 +215,7 @@ async def get_all_with_schema[T](
     if limit:
         query = query.limit(limit)
     result = await db.execute(query)
-    return cast(list[T], list(result.scalars().all()))
+    return cast("list[T]", list(result.scalars().all()))
 
 
 def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
@@ -252,7 +252,7 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
             elif isinstance(value, list):
                 nested_schema = relationships.get(field_name)
                 if nested_schema:
-                    items = cast(list[Any], value)
+                    items = cast("list[Any]", value)
                     data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in items]
                 else:
                     data[field_name] = value

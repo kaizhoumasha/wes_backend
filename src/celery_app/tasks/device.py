@@ -6,8 +6,8 @@
 # ============================================
 
 import asyncio
-from collections.abc import Awaitable, Coroutine
-from typing import Any, TypeVar, TypedDict, cast
+from collections.abc import Awaitable
+from typing import Any, TypedDict, TypeVar, cast
 
 from celery import Task  # pyright: ignore[reportMissingTypeStubs]
 from loguru import logger
@@ -67,7 +67,7 @@ class DeviceTask(Task):
         cast("Any", super()).on_success(retval, task_id, args, kwargs)
 
 
-def _run_async(coro: Awaitable[T]) -> T:
+def _run_async[T](coro: Awaitable[T]) -> T:
     """在 Celery 同步任务中运行异步函数"""
     try:
         loop = asyncio.get_event_loop()
@@ -165,11 +165,13 @@ def process_device_event(self: DeviceTask, event_data: dict[str, Any]) -> Proces
                 "message": error_msg,
             }
 
-        # 类型断言：验证后确保 device_code 和 event_type 不为 None
-        assert device_code is not None
-        assert event_type is not None
-        assert isinstance(device_code, str)
-        assert isinstance(event_type, str)
+        if not isinstance(device_code, str) or not isinstance(event_type, str):
+            error_msg = "事件数据字段类型非法 (device_code, event_type)"
+            logger.error(f"{error_msg}: {event_data}")
+            return {
+                "status": "error",
+                "message": error_msg,
+            }
 
         # 3. 异步处理（在 Celery Worker 中）
         async def _process() -> ProcessDeviceEventResult:

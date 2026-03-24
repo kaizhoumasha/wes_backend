@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import argparse
@@ -9,7 +7,6 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-
 
 DIAG_RE = re.compile(r"^\s+.+ - (information|warning|error): ")
 RULE_RE = re.compile(r"\((report[^)]+)\)$")
@@ -71,7 +68,7 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", ".")
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 - fixed internal tooling command
         cmd,
         cwd=repo_root,
         env=env,

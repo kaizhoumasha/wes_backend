@@ -37,7 +37,10 @@ async def test_partial_unique_index():
 
             # 清理测试数据
             print("\n📋 步骤1: 清理现有测试数据")
-            await conn.execute(text(f"DELETE FROM {qualified_table} WHERE name IN ('apple', 'banana', 'orange')"))
+            delete_sql = f"DELETE FROM {qualified_table} WHERE name IN ('apple', 'banana', 'orange')"  # noqa: S608
+            await conn.execute(
+                text(delete_sql)
+            )
 
             # 场景1: 创建第一个记录
             print("\n✅ 场景1: 创建 name='apple' 的记录")

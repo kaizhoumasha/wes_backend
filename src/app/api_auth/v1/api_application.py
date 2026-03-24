@@ -15,14 +15,14 @@ from src.app.api_auth.services import api_app_service
 from src.core.api_security import RequireAPIAuth, RequireAPIPermission
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
-from src.core.response.response_schema import ResponseSchemaModel
 from src.core.response import BusinessErrorCode, ResourceErrorCode
+from src.core.response.response_schema import ResponseSchemaModel
 from src.core.response.response_util import response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.utils.permission_scanner import sync_permissions_to_db
 
-response_builder_any = cast(Any, response_builder)
-api_app_service_any = cast(Any, api_app_service)
+response_builder_any = cast("Any", response_builder)
+api_app_service_any = cast("Any", api_app_service)
 
 
 def register_custom_route(

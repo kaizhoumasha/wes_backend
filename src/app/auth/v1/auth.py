@@ -37,7 +37,7 @@ from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
 
 router = APIRouter(prefix="/auth", tags=["认证"])
-response_builder_any = cast(Any, response_builder)
+response_builder_any = cast("Any", response_builder)
 
 
 class PermissionLike(Protocol):

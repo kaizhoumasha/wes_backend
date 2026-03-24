@@ -25,7 +25,7 @@ class TreeServiceMixin[M]:
         self.repo = repo
 
     def _get_response_schema(self) -> type[Any] | None:
-        return cast(type[Any] | None, getattr(self, "response_schema", None))
+        return cast("type[Any] | None", getattr(self, "response_schema", None))
 
     def _serialize_items(self, items: list[Any], schema: type[Any] | None = None) -> list[dict[str, Any]]:
         return [self._to_dict(item, schema) for item in items]
@@ -90,13 +90,13 @@ class TreeServiceMixin[M]:
 
             try:
                 schema_obj = model_to_schema(item, schema)
-                return cast(dict[str, Any], schema_obj.model_dump(mode="json"))
+                return cast("dict[str, Any]", schema_obj.model_dump(mode="json"))
             except (AttributeError, TypeError, ValueError) as e:
                 # 只捕获预期的异常，避免隐藏真实错误
                 logger.debug(f"Schema serialization failed for {item.__class__.__name__}: {e}")
 
         # 回退到默认的列序列化
-        mapper = cast(Any, inspect(item.__class__))
+        mapper = cast("Any", inspect(item.__class__))
         result: dict[str, Any] = {}
         for c in mapper.columns:
             value = getattr(item, c.key, None)

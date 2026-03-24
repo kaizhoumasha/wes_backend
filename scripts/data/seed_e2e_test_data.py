@@ -12,6 +12,7 @@ E2E 测试数据初始化脚本
 运行方式:
     uv run python scripts/data/seed_e2e_test_data.py
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -97,7 +98,6 @@ async def seed_devices(db: AsyncSession) -> None:
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
     device_repo = DeviceRepository()
-    workline_repo = WorkLineRepository()
     _disable_audit_hooks(device_repo)
 
     # 获取作业线（取最新的）

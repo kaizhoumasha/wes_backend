@@ -7,6 +7,7 @@
 - 自动处理自增 ID（ORM flush）
 - 易于维护和扩展
 """
+# ruff: noqa: E402
 
 import asyncio
 import sys

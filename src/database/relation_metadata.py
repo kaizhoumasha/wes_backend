@@ -30,11 +30,13 @@
 
 from enum import Enum
 from functools import lru_cache
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import sqlalchemy as sa
 from sqlalchemy import inspect
-from sqlalchemy.orm import Mapper, RelationshipProperty
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Mapper, RelationshipProperty
 
 
 class RelationType(str, Enum):
@@ -154,23 +156,23 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = cast(Mapper[Any], inspect(model))
+            mapper = cast("Mapper[Any]", inspect(model))
         except Exception:
             return {}
 
         relation_info: dict[str, RelationInfo] = {}
 
         relationships = cast(
-            Any,
+            "Any",
             mapper.relationships.items(),
         )
         for rel_name, rel in relationships:
-            rel_name = cast(str, rel_name)
-            rel = cast(RelationshipProperty[Any], rel)
-            relation_model = cast(type[Any], rel.mapper.class_)
+            rel_name = cast("str", rel_name)
+            rel = cast("RelationshipProperty[Any]", rel)
+            relation_model = cast("type[Any]", rel.mapper.class_)
             relation_table = getattr(relation_model, "__tablename__", None)
             if not isinstance(relation_table, str):
-                relation_table = cast(str, getattr(cast(Any, rel.mapper.local_table), "name", ""))
+                relation_table = cast("str", getattr(cast("Any", rel.mapper.local_table), "name", ""))
             info: RelationInfo = {
                 "relation_type": rel.direction.name,
                 "relation_model": relation_model,
@@ -207,15 +209,15 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = cast(Mapper[Any], inspect(model))
+            mapper = cast("Mapper[Any]", inspect(model))
         except Exception:
             return {}
 
         foreign_info: dict[str, ForeignKeyInfo] = {}
 
-        for column in cast(Any, mapper.columns):
+        for column in cast("Any", mapper.columns):
             if column.foreign_keys:
-                for fk in cast(Any, column.foreign_keys):
+                for fk in cast("Any", column.foreign_keys):
                     foreign_info[column.name] = {
                         "target_table": fk.column.table.name,
                         "target_column": fk.column.name,
@@ -245,18 +247,18 @@ class RelationMetadata:
             }
         """
         try:
-            mapper = cast(Mapper[Any], inspect(model))
+            mapper = cast("Mapper[Any]", inspect(model))
         except Exception:
             return {}
 
         field_info: dict[str, FieldInfo] = {}
 
-        for column in cast(Any, mapper.persist_selectable.columns):
+        for column in cast("Any", mapper.persist_selectable.columns):
             field_info[column.name] = {
                 "type": str(column.type),
                 "nullable": column.nullable,
                 "primary_key": column.primary_key,
-                "default": str(cast(Any, column.default).arg) if column.default else None,
+                "default": str(cast("Any", column.default).arg) if column.default else None,
                 "comment": column.comment,
                 "unique": column.unique,
                 "index": column.index,
@@ -286,11 +288,11 @@ class RelationMetadata:
             ]
         """
         try:
-            mapper = cast(Mapper[Any], inspect(model))
+            mapper = cast("Mapper[Any]", inspect(model))
             if not mapper:
                 return []
 
-            local_table = cast(sa.Table | None, getattr(mapper, "local_table", None))
+            local_table = cast("sa.Table | None", getattr(mapper, "local_table", None))
             if local_table is None:
                 return []
 

@@ -21,7 +21,7 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
     """审计日志服务类"""
 
     def __init__(self, repo: BaseRepository[AuditLog] = audit_log_repository):
-        cast(Any, BaseService.__init__)(self, repo)
+        cast("Any", BaseService.__init__)(self, repo)
 
     async def create_audit_log(
         self,
@@ -86,7 +86,7 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
             audit_log = await self._repo_base.create(db, audit_data)
             if audit_log is None:
                 raise RuntimeError("创建审计日志失败")
-            return cast(AuditLog, audit_log)
+            return cast("AuditLog", audit_log)
         except Exception as e:
             logger.error(f"创建审计日志失败: {e}")
             raise
