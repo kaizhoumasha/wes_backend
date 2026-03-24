@@ -23,14 +23,48 @@ P9 WES Backend 快速开发框架指南 - 基于 FastAPI + SQLModel + SQLAlchemy
 ```bash
 # 环境管理
 docker-compose up -d          # 启动基础设施
-uv sync                       # 安装依赖
+uv sync --dev                 # 安装依赖
 ./scripts/migrate.sh upgrade  # 数据库迁移
-uvicorn main:app --reload     # 开发服务器
+uv run uvicorn main:app --reload  # 开发服务器
 
 # 代码质量
-ruff format . && ruff check . # 格式化和检查
-pytest --cov=src              # 测试和覆盖率
+uv run ruff format . && uv run ruff check . # 格式化和检查
+uv run pytest --cov=src       # 测试和覆盖率
 ```
+
+## Worktree 开发流程
+
+使用 git worktree 时，每个 worktree 都必须维护自己的本地运行环境，避免分支之间相互污染。
+
+**必须遵守**：
+- 每个 worktree 单独维护 `.venv`
+- 每个 worktree 单独维护 `.env`
+- 不要复用其他 worktree 的虚拟环境
+- 项目命令统一使用 `uv run ...`
+
+**推荐流程**：
+
+```bash
+# 1. 创建 worktree
+git worktree add ../wes_backend-feature-x -b feature/x develop
+
+# 2. 进入 worktree
+cd ../wes_backend-feature-x
+
+# 3. 初始化当前 worktree 的环境
+./scripts/init-env.sh dev
+uv sync --dev
+
+# 4. 在当前 worktree 中执行命令
+uv run pytest tests/
+uv run ruff check .
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8001
+```
+
+**切换分支或依赖变更后**：
+- 如果 `pyproject.toml` 或 `uv.lock` 变化，重新执行 `uv sync --dev`
+- 如果环境配置变化，重新执行 `./scripts/init-env.sh dev`
+- 删除废弃 worktree 后执行 `git worktree prune`
 
 ---
 
