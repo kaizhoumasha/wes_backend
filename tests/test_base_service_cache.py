@@ -189,6 +189,47 @@ async def test_get_list_cache_preserves_relation_fields_via_response_schema(monk
     assert response_items[0].children[0].name == "child"
 
 
+@pytest.mark.asyncio
+async def test_get_by_id_cache_preserves_relation_fields_via_response_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = FakeRepo()
+    repo.model = FakeModelFlat
+    repo.by_id_result = _FakeRowWithRelation(1, "parent", [_FakeChildRow(10, "child")])
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        response_schema=FakeModelWithRelationResponse,
+    )
+
+    def fake_model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
+        if schema is FakeModelWithRelationResponse:
+            return FakeModelWithRelationResponse(
+                id=obj.id,
+                name=obj.name,
+                children=[FakeChildResponse(id=child.id, name=child.name) for child in obj.children],
+            )
+        raise AssertionError(f"unexpected schema: {schema}")
+
+    monkeypatch.setattr("src.core.base_service.model_to_schema", fake_model_to_schema)
+
+    first_item = await service.get_by_id(object(), cache, 1)
+    assert first_item is not None
+
+    cache_key, cache_value, cache_expire, _ = cache.set_calls[-1]
+    assert cache_key == "fake:detail:1:depth2:delFalse"
+    assert cache_value == {"id": 1, "name": "parent", "children": [{"id": 10, "name": "child"}]}
+    assert cache_expire == 7200
+
+    cached_item = await service.get_by_id(object(), cache, 1)
+    assert repo.get_by_id_calls == 1
+
+    response_item = service.to_response(cached_item, FakeModelWithRelationResponse)
+    assert response_item.children[0].id == 10
+    assert response_item.children[0].name == "child"
+
+
 def test_to_response_uses_model_to_schema_for_non_schema_basemodel(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = FakeRepo()
     service = BaseService(repo, response_schema=FakeModelWithRelationResponse)

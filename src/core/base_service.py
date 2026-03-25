@@ -177,16 +177,16 @@ class BaseService[M, R]:
             return self.response_schema
         return None
 
-    def _serialize_list_item_for_cache(self, item: Any) -> Any:
-        """列表缓存优先使用 response_schema 序列化，保留已加载的关联字段。"""
+    def _serialize_item_for_cache(self, item: Any) -> Any:
+        """缓存优先使用 response_schema 序列化，保留已加载的关联字段。"""
         response_model = self._get_response_model()
         if response_model is not None:
             payload = self.to_response(item, response_model)
             return payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         return item.model_dump(mode="json") if isinstance(item, BaseModel) else item
 
-    def _deserialize_list_item_from_cache(self, item: Any) -> Any:
-        """从列表缓存恢复条目。存在 response_schema 时优先恢复为该 schema。"""
+    def _deserialize_item_from_cache(self, item: Any) -> Any:
+        """从缓存恢复条目。存在 response_schema 时优先恢复为该 schema。"""
         response_model = self._get_response_model()
         if response_model is not None:
             return self.to_response(item, response_model)
@@ -279,16 +279,22 @@ class BaseService[M, R]:
             hit, cached_data = await get_cached_value(cache, cache_key)
             if hit:
                 logger.debug(f"缓存命中: {cache_key}")
-                if isinstance(cached_data, dict) and hasattr(self._repo_base.model, "model_validate"):
-                    return cast(M, cast(Any, self._repo_base.model).model_validate(cached_data))
-                return cached_data  # type: ignore[return-value]
+                if cached_data is None:
+                    return None
+                return cast(M, self._deserialize_item_from_cache(cached_data))
 
             result = await self._repo_base.get_by_id(
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
             )
 
             if result:
-                _ = await set_cached_value(cache, cache_key, result, expire=self.cache_expire)
+                _ = await set_cached_value(
+                    cache,
+                    cache_key,
+                    result,
+                    expire=self.cache_expire,
+                    serializer=self._serialize_item_for_cache,
+                )
             else:
                 _ = await set_cached_value(cache, cache_key, None, null_expire=self.null_cache_expire)
 
@@ -355,7 +361,7 @@ class BaseService[M, R]:
                     payload = cast(ListCachePayload, cached_data)
                     total = payload["total"] if isinstance(payload.get("total"), int) else 0
                     items_data = payload["items"] if isinstance(payload.get("items"), list) else []
-                    items = [self._deserialize_list_item_from_cache(item) for item in items_data]
+                    items = [self._deserialize_item_from_cache(item) for item in items_data]
                     return total, items
                 return 0, []  # 缓存数据格式不符，返回空列表
 
@@ -370,7 +376,7 @@ class BaseService[M, R]:
                 include_deleted=include_deleted,
             )
 
-            items_data = [self._serialize_list_item_for_cache(item) for item in items]
+            items_data = [self._serialize_item_for_cache(item) for item in items]
             _ = await cache.set(cache_key, {"total": total, "items": items_data}, expire=self.list_cache_expire)
 
             return total, items
