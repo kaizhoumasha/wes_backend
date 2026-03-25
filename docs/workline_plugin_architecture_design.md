@@ -10,6 +10,12 @@
 > **相关文档**:
 > - 软件需求规格说明书: `@docs/SRS.md`
 > - 第三方设备接入白皮书: `@docs/third_party_integration_whitepaper.md`
+> - 运行时语义 SSOT: `@docs/workline_business_data_event_flow_spec.md`
+
+> **口径修订（2026-03-25）**:
+> 本文档保留作业线插件化、Inbox/Outbox、编排分层等架构设计内容；
+> 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、`session_id`、
+> 工作线边界、设备拓扑来源等运行时语义时，以 `docs/workline_business_data_event_flow_spec.md` 为准。
 
 ---
 
@@ -17,7 +23,7 @@
 
 当前 P9 WES 已具备基础设备接入能力：
 
-* 设备通过 `POST /api/v1/callback/event` 上报事件，WES 立即 ACK 后投递 Celery 异步处理。
+* 设备通过 `POST /api/v1/callback/event` 上报事件；目标口径是“立即 ACK + 写 Inbox + 异步编排”，当前代码中仍存在待收敛的旧异步处理链。
 * WES 通过设备标准接口下发指令，设备同步 ACK，异步回传 `POST /api/v1/callback/result`。
 * 当前代码已具备 `DeviceEventLog`、`DeviceCommand`、Celery Worker、设备处理器注册表等基础设施。
 
@@ -145,7 +151,7 @@
 
 * 业务逻辑绑定 `WorkLine` 实例。
 * 设备只声明角色和能力。
-* 插件根据 `workline + mode + inbound_kind + role` 决定流程。
+* 插件根据 `workline + mode + inbox_kind + role` 决定流程。
 
 ### 4.2 事件、结果、超时、人工操作都要进入同一编排主线
 
@@ -257,10 +263,10 @@ Timeline、Metrics、日志、落库动作都由编排层统一投影生成。
 
 ### 6.1 统一输入模型
 
-所有进入编排器的输入统一抽象为 `WorklineInbound`：
+所有进入编排器的输入统一落为 `WorklineInbox` 记录，并以统一字段口径进入编排器：
 
 ```python
-class InboundKind(str, Enum):
+class InboxKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
     COMMAND_RESULT = "COMMAND_RESULT"
     EXTERNAL_CALLBACK = "EXTERNAL_CALLBACK"
@@ -268,14 +274,15 @@ class InboundKind(str, Enum):
     MANUAL_OPERATION = "MANUAL_OPERATION"
 
 
-class WorklineInbound(BaseModel):
+class WorklineInbox(BaseModel):
     inbox_id: int
-    kind: InboundKind
+    kind: InboxKind
     source_system: str
     source_message_id: str | None
     workline_id: int | None
     device_id: int | None
     command_id: int | None
+    command_code: str | None
     session_id: int | None
     correlation_id: str | None
     event_time: datetime
@@ -283,6 +290,11 @@ class WorklineInbound(BaseModel):
 ```
 
 设计意图：
+
+* `source_message_id` 用于来源系统幂等与来源侧追踪
+* `correlation_id` 用于业务主链路追溯
+* `command_code` 用于控制流归属
+* `command_id` 若出现，仅表示内部数据库外键
 
 * Callback 层只负责把外部请求归一化为 `WorklineInbox`。
 * 编排器只消费统一输入模型，不关心来源 API。
@@ -318,7 +330,7 @@ class BusinessKeyResolver(ABC):
     """业务键解析器基类 - 强制插件实现校验逻辑"""
 
     @abstractmethod
-    def derive_business_key(self, inbound: "WorklineInbound") -> str | None:
+    def derive_business_key(self, inbox: "WorklineInbox") -> str | None:
         """从输入中提取业务键"""
         ...
 
@@ -328,7 +340,7 @@ class BusinessKeyResolver(ABC):
         ...
 
     @abstractmethod
-    def is_session_start(self, inbound: "WorklineInbound") -> bool:
+    def is_session_start(self, inbox: "WorklineInbox") -> bool:
         """判断是否为会话起始事件"""
         ...
 
@@ -348,8 +360,8 @@ class WorklinePlugin(Protocol):
 
 编排器按以下顺序归属 Session：
 
-1. `inbound.session_id` 已给定，则直接命中该 Session。
-2. `COMMAND_RESULT` 通过 `command_id -> DeviceCommand.session_id` 命中。
+1. `inbox.session_id` 已给定，则直接命中该 Session。
+2. `COMMAND_RESULT` 优先通过 `command_code -> DeviceCommand -> session_id` 命中；若运行时已显式解析出内部 `command_id`，可作为实现细节辅助恢复。
 3. `TIMEOUT` 通过超时任务写入的 `session_id` 命中。
 4. `MANUAL_OPERATION` 通过 UI 显式传入 `session_id` 命中。
 5. `DEVICE_EVENT` / `EXTERNAL_CALLBACK` 通过 `workline_id + business_key + open_session` 命中。
@@ -683,7 +695,7 @@ async def get_downstream_devices(db: AsyncSession, device_id: int) -> list[Devic
 **插件使用示例**：
 ```python
 class PackingZonePlugin:
-    async def on_device_event(self, ctx: PluginContext, inbound: WorklineInbound) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         # 按角色和序号获取设备
         main_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=1)
         aux_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=2)
@@ -711,7 +723,7 @@ class PackingZonePlugin:
 # 不需要复杂的拓扑配置
 # 在插件中根据业务逻辑选择下游设备
 class ConveyorPlugin:
-    async def on_device_event(self, ctx: PluginContext, inbound: WorklineInbound) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         # 根据条码前缀决定走哪个分支
         if ctx.session.barcode.startswith("A"):
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=1)  # A线
@@ -792,7 +804,8 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 
 * `status` 必须由插件定义的状态机管理
 * `context_json` 由插件自己的上下文模型做版本化管理
-* `awaiting_command_id` 用于结果回调快速定位
+* `awaiting_command_id` 若保留，仅表示内部数据库外键（`DeviceCommand.id`）
+* 业务语义层仍应以 `command_code` 表示“正在等待哪条控制流命令结果”
 * `last_inbox_id` 用于辅助重放和排障
 * `last_decision_id` 用于快速定位最后一次决策，便于排障和回溯
 
@@ -820,7 +833,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `payload_json`
 * `related_inbox_id`
 * `related_event_log_id`
-* `related_command_id`
+* `related_command_id`  # 内部数据库外键；业务语义仍以 `command_code` 表达
 * `related_external_call_id`
 
 建议 `stage`：
@@ -899,10 +912,11 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `kind`
 * `idempotency_key`
 * `source_system`
-* `source_message_id`
+* `source_message_id`  # 来源系统消息标识，如 WMS request_id
 * `workline_id`
 * `device_id`
-* `command_id`
+* `command_id`         # 可选内部数据库外键
+* `command_code`       # 控制流主键
 * `session_id`
 * `correlation_id`
 * `payload_json`
@@ -1029,11 +1043,11 @@ class WorklinePlugin(Protocol):
     async def validate_topology(self, ctx: "PluginBootstrapContext") -> None: ...
 
     # 事件处理入口
-    async def on_device_event(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_command_result(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_external_callback(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_timeout(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_manual_operation(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
+    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_external_callback(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
 ```
 
 **设计说明**：
@@ -1419,7 +1433,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 3. 根据归属规则创建或恢复 `WorklineSession`。
 4. 锁定 Session。
 5. 构建 `PluginContext`。
-6. 根据 `inbound.kind` 调用插件入口。
+6. 根据 `inbox.kind` 调用插件入口。
 7. 校验 `PluginResult.transition` 合法性。
 8. 在单一事务中更新 `Session / Timeline / Decision / Outbox / Inbox`。
 
@@ -1445,7 +1459,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
    * `current_wait_token`
    * `deadline_at`
    * `wait_payload`
-4. 正常回调优先通过 `wait_token / command_id / source_message_id` 命中同一 Session。
+4. 正常回调优先通过 `wait_token / command_code / source_message_id` 命中同一 Session。
 5. 若超过 `deadline_at` 仍无回调，则 Timeout Scanner 生成 `TIMEOUT Inbox`。
 6. 插件决定超时后是：
    * 重试

@@ -2,6 +2,12 @@
 
 > 本文档用于统一整理 `docs/hardware/` 下各类设备与作业线的拓扑结构，便于架构设计、联调评审和插件建模。
 > 当前已整理：`SMT 粗分机`、`SMT 流水线`、`SMT 分拣机`。
+> 运行时语义 SSOT：`docs/workline_business_data_event_flow_spec.md`
+
+> **口径修订（2026-03-25）**:
+> 本文档用于描述硬件实例、设备角色、位置命名和样例时序，不直接定义运行时主链路语义。
+> `LEFT/RIGHT` 在本文中表示两条独立 `WorkLine` 实例，不表示插件内部分支。
+> 位置 ID 命名可作为设备协议样例，但不能作为运行时按前缀分线、按前缀推导拓扑的依据。
 
 ---
 
@@ -16,7 +22,7 @@
 | **1. 总体说明** | 设备组成、业务目标、外部协同系统 | 理解业务背景 |
 | **2. 设备角色定义** | 设备ID、角色、能力、上游关系 | 映射到 Device 表 |
 | **3. 位置与路由** | 位置ID、类型、所属作业线、设备归属 | 映射命令的 source/target |
-| **4. 事件类型映射** | 事件类型 → InboundKind → Session 影响 | 编排器入口逻辑 |
+| **4. 事件类型映射** | 事件类型 → InboxKind → Session 影响 | 编排器入口逻辑 |
 | **5. 命令类型映射** | 命令类型 → dispatch_type → Outbox | 编排器出口逻辑 |
 | **6. 状态机定义** | 状态枚举、迁移规则、回调定义 | Session 状态管理 |
 | **7. Session 上下文** | context_json 字段定义 | 业务数据载体 |
@@ -46,12 +52,14 @@ SMT 粗分机由**左右两条独立并行作业线**组成，每条作业线遵
 
 **作业线实例**:
 
-| 实例名称 | 流水线 | 进料机械臂 | 出料机械臂 | 位置前缀 |
+| 实例名称 | 流水线 | 进料机械臂 | 出料机械臂 | 实例说明 |
 |---------|--------|-----------|-----------|---------|
-| 左侧粗分线 | `PIPELINE01` | `ARM01` | `ARM02` | `LEFT_` |
-| 右侧粗分线 | `PIPELINE02` | `ARM03` | `ARM04` | `RIGHT_` |
+| 左侧粗分线 | `PIPELINE01` | `ARM01` | `ARM02` | 独立 `WorkLine` 实例 |
+| 右侧粗分线 | `PIPELINE02` | `ARM03` | `ARM04` | 独立 `WorkLine` 实例 |
 
-> **设计决策**: 左右作业线使用独立位置ID，完全隔离，避免资源竞争和状态混淆。
+> **设计决策**:
+> 左右作业线是两条独立 `WorkLine`，运行时按 `Device.work_line_id` 归线，
+> 按 `Device.upstream_device_id` 推导拓扑；外部位置命名中的前缀只作为命名示例，不作为运行时分线依据。
 
 ### 1.2 设备流拓扑总图
 
@@ -236,6 +244,8 @@ class SmtClassifierCapabilities(str, Enum):
 
 #### 1.4.1 位置ID清单
 
+> 以下位置 ID 仅用于描述左右两个 `WorkLine` 实例在设备协议中的命名示例，不表示插件内部按前缀分支，也不表示运行时依赖前缀进行归线。
+
 | 位置ID | 位置类型 | 所属作业线 | 关联设备 | 说明 |
 |--------|---------|-----------|---------|------|
 | `LEFT_STATION_INPUT` | `INPUT_PLATFORM` | 左侧 | `ARM01` | 左侧串杆扫码位置 |
@@ -261,7 +271,7 @@ class SmtClassifierLocationType(str, Enum):
 
 #### 1.4.3 路由映射
 
-**左侧作业线路由表**:
+**左侧作业线实例路由示例表**:
 
 | 当前位置 | 条件 | 目标位置 | 下发设备 | 命令类型 |
 |---------|------|---------|---------|---------|
@@ -273,7 +283,7 @@ class SmtClassifierLocationType(str, Enum):
 
 ### 1.5 事件类型映射
 
-| 事件类型 | InboundKind | Session影响 | 处理逻辑 |
+| 事件类型 | InboxKind | Session影响 | 处理逻辑 |
 |---------|-------------|------------|---------|
 | `SCAN_COMPLETED` | `DEVICE_EVENT` | 创建/恢复Session | 解析条码，判断OK/NG |
 | `ESTOP_PRESSED` | `DEVICE_EVENT` | 中断当前Session | 进入MANUAL_HOLD |
@@ -307,14 +317,14 @@ class EstopPressedEvent(BaseModel):
 | `PICK_AND_PUT` | `DEVICE_COMMAND` | `INPUT_ARM`/`OUTPUT_ARM` | 源位置 | 目标位置 |
 | `MOVE_FORWARD` | `DEVICE_COMMAND` | `CONVEYOR` | 流水线进料位 | 流水线出料位 |
 | `MOVE_BACKWARD` | `DEVICE_COMMAND` | `CONVEYOR` | 流水线出料位 | 流水线进料位 |
-| CANCEL | `DEVICE_COMMAND` | 任意 | command_id | - |
+| CANCEL | `DEVICE_COMMAND` | 任意 | command_code | - |
 
 **命令数据结构映射**:
 
 ```python
 class PickAndPutCommand(BaseModel):
     device_id: str                    # 设备ID
-    command_id: str                   # 命令ID
+    command_code: str                 # 命令编码
     timestamp: str                    # 时间戳
     task_type: str = “PICK_AND_PUT”   # 任务类型
     priority: int = 1                 # 优先级
@@ -511,7 +521,7 @@ sequenceDiagram
     Orch->>Outbox: 写入 Outbox(dispatch_type=DEVICE_COMMAND)
 
     Note over Device,Outbox: 阶段2: 扫码结果回调
-    Device->>API: POST /callback/result<br/>{command_id, result: SUCCESS, barcode1, reel_diameter}
+    Device->>API: POST /callback/result<br/>{command_code, result: SUCCESS, barcode1, reel_diameter}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
@@ -521,7 +531,7 @@ sequenceDiagram
     Orch->>Outbox: 写入 Outbox
 
     Note over Device,Outbox: 阶段3: 移料结果回调
-    Device->>API: POST /callback/result<br/>{command_id, result: SUCCESS}
+    Device->>API: POST /callback/result<br/>{command_code, result: SUCCESS}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
@@ -530,7 +540,7 @@ sequenceDiagram
     Orch->>Outbox: 写入 Outbox
 
     Note over Device,Outbox: 阶段4: 出料结果回调
-    Device->>API: POST /callback/result<br/>{command_id, result: SUCCESS}
+    Device->>API: POST /callback/result<br/>{command_code, result: SUCCESS}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
@@ -562,7 +572,7 @@ sequenceDiagram
     Orch->>Session: 状态迁移 NEW → RUNNING → FAILED
     Orch->>Outbox: 写入 Outbox(target=NG_PLATFORM)
 
-    Device->>API: POST /callback/result<br/>{command_id, result: SUCCESS}
+    Device->>API: POST /callback/result<br/>{command_code, result: SUCCESS}
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
     Plugin-->>Orch: PluginResult(complete=True)
@@ -775,7 +785,7 @@ INSERT INTO devices (code, device_role, role_index, workline_id) VALUES
 ```python
 # 插件代码无需感知具体是哪条线
 class SmtClassifierPlugin:
-    async def on_device_event(self, ctx: PluginContext, inbound: WorklineInbound):
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox):
         # 自动获取当前 WorkLine 对应角色的设备
         input_arm = ctx.get_device_by_role(DeviceRole.INPUT_ARM)
         output_arm = ctx.get_device_by_role(DeviceRole.OUTPUT_ARM)
@@ -883,7 +893,7 @@ class CallbackResponse(BaseModel):
 ```python
 class CommandResultCallback(BaseModel):
     """命令结果回调请求"""
-    command_id: str = Field(..., description="命令ID")
+    command_code: str = Field(..., description="命令编码（控制流主键）")
     device_id: str = Field(..., description="设备ID")
     result: Literal["SUCCESS", "FAILED"] = Field(..., description="执行结果")
     finish_time: int = Field(..., description="完成时间戳(ms)")
@@ -896,7 +906,7 @@ class CommandResultCallback(BaseModel):
 
 | 字段 | 校验规则 | 错误响应 |
 |------|---------|---------|
-| `command_id` | 必须为已发送命令 | 400, "Unknown command" |
+| `command_code` | 必须命中已发送命令 | 400, "Unknown command" |
 | `result` | 必须为枚举值 | 400, "Invalid result" |
 | `error_detail` | result=FAILED 时必填 | 400, "Missing error_detail" |
 
@@ -916,8 +926,8 @@ async def handle_event_callback(event: DeviceEventCallback) -> CallbackResponse:
     await redis.setex(cache_key, IDEMPOTENT_WINDOW, "1")
 
     # 3. 写入 Inbox
-    await inbox_service.create(inbound=WorklineInbound(
-        kind=InboundKind.DEVICE_EVENT,
+    await inbox_service.create(inbox=WorklineInbox(
+        kind=InboxKind.DEVICE_EVENT,
         device_id=event.device_id,
         payload=event.model_dump(),
         raw_data=event.model_dump_json(),
@@ -926,9 +936,9 @@ async def handle_event_callback(event: DeviceEventCallback) -> CallbackResponse:
     return CallbackResponse(status="SUCCESS", trace_id=generate_trace_id())
 ```
 
-### 1.14 右侧粗分线位置映射表
+### 1.14 右侧粗分线位置映射表示例
 
-右侧粗分线使用 `RIGHT_` 前缀的位置 ID，与左侧完全对称。
+右侧粗分线在设备协议示例中使用 `RIGHT_` 命名，与左侧实例对称；该命名仅为协议样例，不是运行时分线依据。
 
 | 位置ID | 位置类型 | 关联设备 | 说明 |
 |--------|---------|---------|------|
@@ -938,7 +948,7 @@ async def handle_event_callback(event: DeviceEventCallback) -> CallbackResponse:
 | `RIGHT_STATION_PIPELINE_OUTPUT` | `PIPELINE_PLATFORM` | `PIPELINE02` | 右侧流水线出料位 |
 | `RIGHT_STATION_OUTPUT` | `BIN` | `ARM04` | 右侧出料位（料箱） |
 
-**右侧作业线路由表**:
+**右侧作业线实例路由示例表**:
 
 | 当前位置 | 条件 | 目标位置 | 下发设备 | 命令类型 |
 |---------|------|---------|---------|---------|

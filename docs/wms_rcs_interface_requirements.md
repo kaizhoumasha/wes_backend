@@ -4,6 +4,13 @@
 > **日期**: 2026-03-14
 > **依据**: SRS.md, third_party_integration_whitepaper.md, workline_plugin_architecture_design.md
 > **范围**: 基础数据需求 + 装箱区 WMS/RCS 接口
+> **运行时语义 SSOT**: `docs/workline_business_data_event_flow_spec.md`
+
+> **口径修订（2026-03-25）**:
+> 本文档主要描述 WMS/RCS 与 WES 的接口需求和外部协同边界。
+> 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、
+> `WorklineInbox` 类型、工作线边界与运行时主链路语义时，以
+> `docs/workline_business_data_event_flow_spec.md` 为准。
 
 ---
 
@@ -814,7 +821,7 @@ Authorization: Bearer <WES_TOKEN>
 
 **设计原则**（遵循 workline_plugin_architecture_design.md §6.1）:
 
-- 所有进入编排器的输入统一抽象为 `WorklineInbound`
+- 所有进入编排器的输入统一落为 `WorklineInbox`
 - Callback API 只做接收、校验、原始落库、ACK、写 Inbox
 - 不直接承载复杂业务逻辑
 
@@ -956,9 +963,11 @@ class EventType(str, Enum):
 
 根据白皮书 4.1 节，WMS 必须为每个事件生成唯一标识：
 
-- `request_id`: 全局请求 ID
-- WES 根据 `(device_code + event_type + timestamp + request_id)` 进行幂等检查
+- `request_id`: 来源消息唯一标识，用作 `source_message_id` / 幂等键
+- WES 根据 `(source_system + request_id)` 或等价组合进行接入层幂等检查
 - 重复事件返回 200 OK，不重复处理
+
+> `request_id` 用于来源侧幂等与重试控制，不等同于业务主链路的 `correlation_id`。
 
 ---
 
@@ -1048,10 +1057,10 @@ class EventType(str, Enum):
 
 ### 5.1 统一输入模型
 
-根据设计方案，所有进入编排器的输入统一抽象为 `WorklineInbound`：
+根据设计方案，所有进入编排器的输入统一落为 `WorklineInbox` 记录：
 
 ```python
-class InboundKind(str, Enum):
+class InboxKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"           # 设备事件
     COMMAND_RESULT = "COMMAND_RESULT"       # 指令结果
     EXTERNAL_CALLBACK = "EXTERNAL_CALLBACK" # 外部系统回调 (WMS)
@@ -1059,19 +1068,27 @@ class InboundKind(str, Enum):
     MANUAL_OPERATION = "MANUAL_OPERATION"   # 人工操作
 
 
-class WorklineInbound(BaseModel):
+class WorklineInbox(BaseModel):
     inbox_id: int
-    kind: InboundKind
+    kind: InboxKind
     source_system: str                    # "WMS" / "ECS" / "RCS" / ...
-    source_message_id: str | None         # WMS request_id
+    source_message_id: str | None         # 来源请求唯一标识（如 WMS request_id），用于幂等和来源侧追踪
     workline_id: int | None
     device_id: int | None
-    command_id: int | None
+    command_id: int | None                # 可选内部数据库外键
+    command_code: str | None              # 控制流主键，结果回流第一归属键
     session_id: int | None
     correlation_id: str | None
     event_time: datetime
     payload: dict
 ```
+
+> 术语约束：
+> `request_id` 在 WES 侧映射为 `source_message_id`；
+> `source_message_id` 负责来源侧幂等；
+> `correlation_id` 负责业务主链路追溯；
+> `command_code` 负责控制流归属；
+> `command_id` 若出现，仅表示内部数据库外键。
 
 ### 5.2 接入层职责
 
@@ -1226,7 +1243,7 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 
 1. WMS 侧定义虚拟设备：`WMS_SYSTEM`, `WMS_RCS`
 2. WMS 调用 WES 时使用标准回调接口
-3. WMS 生成 `request_id` 保证幂等性
+3. WMS 生成 `request_id` 作为来源消息幂等键；业务主链路追溯仍由 WES 侧 `correlation_id` 统一维护
 
 ---
 
@@ -1252,8 +1269,9 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 **事件上报要求**:
 1. 所有调用 WES `callback/event` 和 `callback/result` 的请求必须携带唯一 `request_id`
 2. `request_id` 格式建议：`REQ-{YYYYMMDD}-{SEQ}`，如 `REQ-20260314-001`
-3. 若 WES 返回 200 OK，表示事件已接收；若返回 4xx/5xx，WMS 需记录失败并重试
-4. 重复事件会被 WES 拦截，WMS 不应依赖重复上报来保证可靠性
+3. `request_id` 在 WES 侧作为 `source_message_id` / 幂等键使用，不等同于 `correlation_id`
+4. 若 WES 返回 200 OK，表示事件已接收；若返回 4xx/5xx，WMS 需记录失败并重试
+5. 重复事件会被 WES 拦截，WMS 不应依赖重复上报来保证可靠性
 
 **数据一致性**:
 - WMS 是库存唯一真实源，WES 所有库存查询都实时透传 WMS

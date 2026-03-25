@@ -150,7 +150,7 @@ Use `uv` locally.
 - `uv sync --dev`: install runtime and dev dependencies from `pyproject.toml` and `uv.lock`.
 - `./scripts/migrate.sh upgrade`: apply the latest database migrations.
 - `uv run uvicorn main:app --reload --host 0.0.0.0 --port 8001`: run the API locally.
-- `uv run celery -A src.celery_app.app worker --loglevel=info --queues=default,celery,device`: start the async worker used by callback and device flows.
+- `uv run celery -A src.celery_app.app worker --loglevel=info --queues=default,celery`: start the async worker used by callback and workline flows.
 - `sh src/celery_app/dev_worker_autoreload.sh`: run the Celery worker with source watching during active backend development.
 - `uv run pytest tests/`: run the full test suite.
 - `uv run ruff format . && uv run ruff check .`: match the formatter and linter used in CI.
