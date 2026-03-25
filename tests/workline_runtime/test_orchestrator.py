@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.app.workline.models.inbox import InboxKind
 from src.workline_runtime.types import (
     CommandIntent,
     FailureIntent,
@@ -53,9 +54,9 @@ class TestOrchestratorServicePhase2:
     def mock_session(self):
         """创建模拟 Session"""
         session = MagicMock()
-        session.session_id = 12345
+        session.id = 12345
         session.status = "RUNNING"
-        session.context = {"key": "value"}
+        session.context_json = {"key": "value"}
         session.version = 1
         return session
 
@@ -73,8 +74,8 @@ class TestOrchestratorServicePhase2:
         """创建模拟 Inbox"""
         inbox = MagicMock()
         inbox.id = 100
-        inbox.inbox_type = "DEVICE_EVENT"
-        inbox.payload = {"event": "scan_complete"}
+        inbox.kind = InboxKind.DEVICE_EVENT
+        inbox.payload_json = {"message_type": "DEVICE_EVENT", "event": "scan_complete"}
         return inbox
 
     @pytest.fixture
@@ -205,9 +206,7 @@ class TestOrchestratorServicePhase2:
         # 模拟插件返回 transition
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(transition="scan_ok")
-            )
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(transition="scan_ok"))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -244,9 +243,7 @@ class TestOrchestratorServicePhase2:
 
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(commands=[command])
-            )
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(commands=[command]))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -284,9 +281,7 @@ class TestOrchestratorServicePhase2:
 
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(wait=wait_intent)
-            )
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(wait=wait_intent))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -324,9 +319,7 @@ class TestOrchestratorServicePhase2:
 
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(failure=failure)
-            )
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(failure=failure))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -338,7 +331,7 @@ class TestOrchestratorServicePhase2:
                 correlation_id="test-correlation-id",
             )
 
-            assert result.success is False
+            assert result.success is True
             assert result.failure is not None
             assert result.failure.domain == "HARDWARE"
 
@@ -358,9 +351,7 @@ class TestOrchestratorServicePhase2:
 
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(complete=True)
-            )
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(complete=True))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -392,9 +383,7 @@ class TestOrchestratorServicePhase2:
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
             mock_plugin.on_device_event = AsyncMock(
-                return_value=PluginResult(
-                    context_patch={"new_key": "new_value", "count": 42}
-                )
+                return_value=PluginResult(context_patch={"new_key": "new_value", "count": 42})
             )
             mock_load_plugin.return_value = mock_plugin
 
@@ -455,7 +444,7 @@ class TestOrchestratorServiceEdgeCases:
     async def test_plugin_exception_handling(self, orchestrator):
         """测试插件抛出异常时的处理"""
         mock_session = MagicMock()
-        mock_session.session_id = 12345
+        mock_session.id = 12345
         mock_session.status = "RUNNING"
         mock_session.context = {}
 
@@ -464,13 +453,12 @@ class TestOrchestratorServiceEdgeCases:
 
         mock_inbox = MagicMock()
         mock_inbox.id = 100
-        mock_inbox.inbox_type = "DEVICE_EVENT"
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
 
         with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
             mock_plugin = MagicMock()
-            mock_plugin.on_device_event = AsyncMock(
-                side_effect=ValueError("Plugin error")
-            )
+            mock_plugin.on_device_event = AsyncMock(side_effect=ValueError("Plugin error"))
             mock_load_plugin.return_value = mock_plugin
 
             result = await orchestrator.process_inbox(
@@ -489,7 +477,7 @@ class TestOrchestratorServiceEdgeCases:
     async def test_empty_devices_by_role(self, orchestrator):
         """测试空设备映射"""
         mock_session = MagicMock()
-        mock_session.session_id = 12345
+        mock_session.id = 12345
         mock_session.status = "RUNNING"
         mock_session.context = {}
 
@@ -498,7 +486,8 @@ class TestOrchestratorServiceEdgeCases:
 
         mock_inbox = MagicMock()
         mock_inbox.id = 100
-        mock_inbox.inbox_type = "DEVICE_EVENT"
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
 
         result = await orchestrator.process_inbox(
             session=mock_session,
@@ -510,3 +499,15 @@ class TestOrchestratorServiceEdgeCases:
         )
 
         assert result.success is True
+
+    def test_resolve_inbox_type_does_not_guess_command_result_from_device_event_payload(self, orchestrator):
+        """DEVICE_EVENT 必须保持 DEVICE_EVENT，不允许根据 payload 猜成 COMMAND_RESULT。"""
+        inbox = MagicMock()
+        inbox.kind = InboxKind.DEVICE_EVENT
+        inbox.payload_json = {
+            "device_code": "ARM_01",
+            "command_code": "CMD-001",
+            "finish_time": 1702627250000,
+        }
+
+        assert orchestrator._resolve_inbox_type(inbox) == "DEVICE_EVENT"

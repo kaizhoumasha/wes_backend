@@ -85,14 +85,30 @@ class OrchestratorService:
 
     @staticmethod
     def _resolve_session_pk(session: Any) -> int | None:
-        """优先使用真实整型主键，兼容旧测试中的 session_id 替身字段。"""
-        for field_name in ("id", "session_id"):
-            value = getattr(session, field_name, None)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, int):
-                return value
-        return None
+        """提取 Session 的真实整型主键。"""
+        value = getattr(session, "id", None)
+        if isinstance(value, bool):
+            return None
+        return value if isinstance(value, int) else None
+
+    @staticmethod
+    def _resolve_transition_state(session: Any, state_machine_class: type[Any] | None) -> str:
+        """为插件状态机解析当前状态。
+
+        有插件状态机时优先使用 session.context_json['stage']；
+        否则退回通用 session.status。
+        """
+
+        if state_machine_class is not None:
+            session_ctx = getattr(session, "context_json", None)
+            if isinstance(session_ctx, dict):
+                stage = session_ctx.get("stage")
+                if isinstance(stage, str) and stage:
+                    return stage
+            return "IDLE"
+
+        status = getattr(session, "status", None)
+        return status if isinstance(status, str) and status else ""
 
     def _get_lock(self, lock_key: str) -> AbstractAsyncContextManager[None]:
         """获取锁上下文管理器
@@ -112,10 +128,7 @@ class OrchestratorService:
         async def noop_lock():
             yield
 
-        logger.warning(
-            "No lock provider configured, using noop lock. "
-            "This is only suitable for testing."
-        )
+        logger.warning("No lock provider configured, using noop lock. This is only suitable for testing.")
         return noop_lock()
 
     async def process_inbox(
@@ -263,9 +276,9 @@ class OrchestratorService:
         inbox_kind = getattr(inbox, "kind", None)
         if inbox_kind is not None:
             kind_value = getattr(inbox_kind, "value", inbox_kind)
+            if kind_value == "COMMAND_RESULT":
+                return "COMMAND_RESULT"
             if kind_value == "DEVICE_EVENT":
-                if "command_code" in payload and "finish_time" in payload:
-                    return "COMMAND_RESULT"
                 return "DEVICE_EVENT"
             if kind_value == "EXTERNAL_HTTP":
                 return "EXTERNAL_HTTP"
@@ -274,8 +287,7 @@ class OrchestratorService:
             if kind_value in {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}:
                 return "MANUAL_OPERATION"
 
-        legacy_type = getattr(inbox, "inbox_type", None)
-        return legacy_type or "DEVICE_EVENT"
+        return "DEVICE_EVENT"
 
     def _process_result(
         self,
@@ -294,17 +306,12 @@ class OrchestratorService:
             OrchestratorResult: 编排器结果
         """
         # 1. 检查失败归因
-        if result.failure:
-            logger.warning(f"Plugin returned failure: {result.failure}")
-            return OrchestratorResult(
-                success=False,
-                failure=result.failure,
-            )
+        current_transition_state = self._resolve_transition_state(session, state_machine_class)
 
-        # 2. 验证状态迁移
+        # 1. 验证状态迁移
         if result.transition:
             is_valid, error = self.validator.validate(
-                current_status=session.status,
+                current_status=current_transition_state,
                 transition=result.transition,
                 state_machine_class=state_machine_class,
             )
@@ -312,12 +319,17 @@ class OrchestratorService:
                 logger.error(f"Invalid transition: {error}")
                 return OrchestratorResult(success=False, error=error)
 
+        # 2. failure 是业务归因，不代表编排处理失败
+        if result.failure:
+            logger.warning(f"Plugin returned failure intent: {result.failure}")
+
         # 3. 返回成功结果
         return OrchestratorResult(
             success=True,
             transition=result.transition,
             commands=result.commands if result.commands else None,
             wait=result.wait,
+            failure=result.failure,
             complete=result.complete,
             context_patch=result.context_patch if result.context_patch else None,
         )

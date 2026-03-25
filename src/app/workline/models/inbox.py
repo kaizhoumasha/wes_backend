@@ -32,6 +32,7 @@ class InboxKind(str, Enum):
 
     # 设备事件
     DEVICE_EVENT = "DEVICE_EVENT"  # 设备上报的事件
+    COMMAND_RESULT = "COMMAND_RESULT"  # 设备指令结果回传
 
     # 外部系统调用
     EXTERNAL_HTTP = "EXTERNAL_HTTP"  # HTTP 回调

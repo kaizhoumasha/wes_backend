@@ -24,7 +24,6 @@ celery_app = Celery(
     backend=settings.CELERY_BACKEND,
     include=[
         "src.celery_app.tasks.core",  # 核心任务
-        "src.celery_app.tasks.device",  # 设备事件处理任务
         "src.celery_app.tasks.workline",  # 作业线编排任务
     ],
 )

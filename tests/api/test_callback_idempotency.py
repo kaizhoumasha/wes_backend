@@ -5,7 +5,8 @@ Callback API 幂等性专项测试
 
 测试覆盖（基于 claudedocs/idempotency_fix_20260317.md）:
 - ✅ 相同 command_code 第二次调用 → 业务处理只执行一次
-- ✅ 相同事件（device_code + event_type + timestamp + data）第二次调用 → Celery 任务只提交一次
+- ✅ 相同事件第二次调用 → 业务处理仍保持幂等，
+  但会重新触发编排补偿
 - ✅ callback_log 中正确记录了两次请求
 - ✅ 第二次的 callback_log.error_message 包含"幂等重复"
 - ✅ audit_log 只记录一次（非重复的那次）
@@ -20,6 +21,7 @@ Callback API 幂等性专项测试
 - 测试使用延迟导入模式：在 patch 块内部导入 callback 模块
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -90,6 +92,7 @@ class TestCallbackResultIdempotency:
         mock_command.status = MagicMock()
         mock_command.status.value = "SUCCESS"
         mock_command.get_duration_ms = MagicMock(return_value=100)
+        existing_command = SimpleNamespace(correlation_id="corr-001", workline_id=1)
 
         request_data = {
             "command_code": "CMD-20250317-001",
@@ -117,6 +120,11 @@ class TestCallbackResultIdempotency:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
         ):
             # 在 patch 块内部导入，避免循环导入
@@ -138,6 +146,7 @@ class TestCallbackResultIdempotency:
 
             # 验证业务处理被调用
             assert mock_handle.call_count == 1
+            assert mock_enqueue.call_count == 1
 
             # 验证 callback_log 被记录（无错误消息）
             assert mock_log_callback.call_count == 1
@@ -166,6 +175,7 @@ class TestCallbackResultIdempotency:
 
             # ===== 关键验证：业务处理只执行一次 =====
             assert mock_handle.call_count == 1, "业务处理应该只执行一次（第二次调用时未执行）"
+            assert mock_enqueue.call_count == 2, "幂等重试仍应重新触发编排，覆盖首包 enqueue 失败场景"
 
             # ===== 验证 callback_log 记录了两次 =====
             assert mock_log_callback.call_count == 2, "callback_log 应该记录两次（包括幂等重复）"
@@ -198,13 +208,10 @@ class TestCallbackEventIdempotency:
         mock_request,
     ) -> None:
         """
-        测试相同事件重复发送时，Celery 任务只提交一次
+        测试相同事件重复发送时，业务处理保持幂等，但会重新触发编排补偿
 
         这是事件幂等性的核心验证：确保重复请求不会导致重复的异步处理。
         """
-        mock_celery_app = MagicMock()
-        mock_celery_app.send_task = MagicMock()
-
         request_data = {
             "device_code": "CONVEYOR_01",
             "event_type": "MATERIAL_ARRIVED",
@@ -218,8 +225,8 @@ class TestCallbackEventIdempotency:
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.celery_app.app.celery_app",
-                mock_celery_app,
+                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                new=AsyncMock(return_value=SimpleNamespace(work_line_id=1)),
             ),
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
@@ -229,6 +236,7 @@ class TestCallbackEventIdempotency:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
         ):
             # 在 patch 块内部导入
@@ -245,8 +253,8 @@ class TestCallbackEventIdempotency:
             assert response1["code"] == "1000"
             assert response1["data"]["status"] == "submitted"
 
-            # 验证 Celery 任务被提交
-            assert mock_celery_app.send_task.call_count == 1
+            # 验证统一编排任务被触发
+            assert mock_enqueue.call_count == 1
             assert mock_create_inbox.call_count == 1
 
             # 验证 callback_log 被记录（无错误消息）
@@ -275,10 +283,8 @@ class TestCallbackEventIdempotency:
             # ✅ 关键验证：响应中标记为 duplicate
             assert response2["data"]["status"] == "duplicate"
 
-            # ===== 关键验证：Celery 任务只提交一次 =====
-            assert (
-                mock_celery_app.send_task.call_count == 1
-            ), "Celery 任务应该只提交一次（第二次调用时未提交）"
+            # ===== 关键验证：幂等重试仍会重新触发编排 =====
+            assert mock_enqueue.call_count == 2, "幂等重试应重新触发编排，避免首包 enqueue 失败后消息卡死"
 
             # ===== 验证 callback_log 记录了两次 =====
             assert mock_log_callback.call_count == 2, "callback_log 应该记录两次"
@@ -314,6 +320,7 @@ class TestIdempotencyEdgeCases:
         mock_command.status = MagicMock()
         mock_command.status.value = "SUCCESS"
         mock_command.get_duration_ms = MagicMock(return_value=100)
+        existing_command = SimpleNamespace(correlation_id="corr-001", workline_id=1)
 
         with (
             patch(
@@ -332,6 +339,11 @@ class TestIdempotencyEdgeCases:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
+            patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -370,6 +382,7 @@ class TestIdempotencyEdgeCases:
             # 验证：两次都应该执行业务处理（因为幂等键不同）
             assert mock_handle.call_count == 2, "不同结果的指令应该被分别处理"
             assert mock_create_inbox.call_count == 2
+            assert mock_enqueue.call_count == 2
 
     @pytest.mark.asyncio
     async def test_different_events_should_not_be_duplicate(
@@ -383,17 +396,14 @@ class TestIdempotencyEdgeCases:
         场景：相同 device_code，但不同的 event_type
         期望：两次都正常处理，不触发幂等逻辑
         """
-        mock_celery_app = MagicMock()
-        mock_celery_app.send_task = MagicMock()
-
         with (
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ),
             patch(
-                "src.celery_app.app.celery_app",
-                mock_celery_app,
+                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                new=AsyncMock(return_value=SimpleNamespace(work_line_id=1)),
             ),
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
@@ -403,6 +413,7 @@ class TestIdempotencyEdgeCases:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -437,6 +448,4 @@ class TestIdempotencyEdgeCases:
                 )
 
             # 验证：两次都应该提交 Celery 任务（因为幂等键不同）
-            assert (
-                mock_celery_app.send_task.call_count == 2
-            ), "不同的事件应该被分别处理并提交 Celery 任务"
+            assert mock_enqueue.call_count == 2, "不同的事件应该被分别处理并触发编排"

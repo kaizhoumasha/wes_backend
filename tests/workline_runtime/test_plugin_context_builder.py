@@ -41,9 +41,9 @@ class TestPluginContextBuilder:
     def mock_session(self):
         """创建模拟的 Session"""
         session = MagicMock()
-        session.session_id = "session-123"
+        session.id = 123
         session.status = "RUNNING"
-        session.context = {"barcode": "ABC123"}
+        session.context_json = {"barcode": "ABC123"}
         return session
 
     @pytest.fixture

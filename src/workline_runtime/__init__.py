@@ -12,7 +12,7 @@ WES 作业线运行时模块
 - 时间线追踪（Timeline）
 - 决策记录（Decision）
 - 外部调用日志（ExternalCall）
-- 枚举定义（InboundKind, SessionStatus, FailureDomain 等）
+- 枚举定义（SessionStatus, FailureDomain 等）
 
 设计原则：
 - DRY: 横切能力统一实现，不散落到插件中
@@ -25,7 +25,6 @@ from src.workline_runtime.atomic_writer import AtomicWriter, atomic_writer
 from src.workline_runtime.enums import (
     DecisionType,
     FailureDomain,
-    InboundKind,
     InboxStatus,
     ManualOperationType,
     OutboxDispatchType,
@@ -58,7 +57,6 @@ __all__ = [
     "DecisionType",
     "FailureDomain",
     "FailureIntent",
-    "InboundKind",
     "InboxStatus",
     "LockAcquireError",
     "LockReleaseError",

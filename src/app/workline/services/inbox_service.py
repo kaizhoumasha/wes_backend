@@ -99,6 +99,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         result: str,
         finish_time: int,
         data: dict[str, Any] | None = None,
+        command_type: str | None = None,
+        error_detail: dict[str, Any] | None = None,
         source_message_id: str | None = None,
         correlation_id: str | None = None,
     ) -> WorklineInbox:
@@ -136,12 +138,16 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "finish_time": finish_time,
             "data": payload_data,
         }
+        if command_type:
+            payload["command_type"] = command_type
+        if error_detail:
+            payload["error_detail"] = error_detail
 
         return await self._create_inbox_message(
             db=db,
             idempotency_key=idempotency_key,
             duplicate_message="指令结果已存在（幂等键重复）",
-            kind=InboxKind.DEVICE_EVENT,
+            kind=InboxKind.COMMAND_RESULT,
             payload=payload,
             source_message_id=source_message_id,
             correlation_id=correlation_id,
@@ -327,9 +333,5 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         return created
 
 
-# 别名，用于测试
-InboxService = WorklineInboxService
-
-
 # 创建单例
-inbox_service = WorklineInboxService()
+inbox_service: WorklineInboxService = WorklineInboxService()

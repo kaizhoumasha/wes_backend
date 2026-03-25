@@ -117,6 +117,29 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
+    async def get_open_session_by_awaiting_command_id(
+        self,
+        db: AsyncSession,
+        command_id: int,
+    ) -> WorklineSession | None:
+        """根据 awaiting_command_id 查询未结束的会话。"""
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            "NEW",
+            "RUNNING",
+            "WAITING_DEVICE_RESULT",
+            "WAITING_EXTERNAL",
+            "MANUAL_HOLD",
+        ]
+        result = await db.execute(
+            select(WorklineSession).where(
+                columns.awaiting_command_id == command_id,
+                columns.status.in_(open_statuses),
+                columns.is_deleted.is_(False),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_timed_out_sessions(
         self,
         db: AsyncSession,

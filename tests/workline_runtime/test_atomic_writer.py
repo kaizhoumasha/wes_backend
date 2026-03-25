@@ -33,7 +33,6 @@ class MockSession:
         context: dict[str, Any] | None = None,
     ):
         self.id = session_id
-        self.session_id = session_id  # 用于兼容不同的属性访问
         self.status = status
         self.context_json = context or {}
         self.version = 1

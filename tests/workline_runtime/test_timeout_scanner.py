@@ -9,12 +9,10 @@ TimeoutScanner 单元测试
 设计参考: 设计文档 phase2-orchestrator § timeout_scanner
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from src.workline_runtime.enums import InboundKind, InboxStatus, SessionStatus
 
 
 class MockSession:
@@ -28,7 +26,7 @@ class MockSession:
         workline_id: int = 1,
         correlation_id: str | None = None,
     ):
-        self.session_id = session_id
+        self.id = session_id
         self.status = status
         self.deadline_at = deadline_at
         self.workline_id = workline_id
@@ -55,7 +53,7 @@ class TestTimeoutScanner:
 
     @pytest.fixture
     def mock_inbox_service(self):
-        """创建模拟 InboxService"""
+        """创建模拟 WorklineInboxService"""
         service = MagicMock()
         service.create_timeout_inbox = AsyncMock()
         return service
@@ -220,9 +218,9 @@ class TestTimeoutInboxCreation:
     @pytest.mark.asyncio
     async def test_timeout_inbox_contains_correct_fields(self):
         """测试超时 Inbox 包含正确字段"""
-        from src.app.workline.services.inbox_service import InboxService
+        from src.app.workline.services.inbox_service import WorklineInboxService
 
-        service = InboxService()
+        service = WorklineInboxService()
 
         # 验证 create_timeout_inbox 方法签名
         # 应包含：session_id, workline_id, correlation_id

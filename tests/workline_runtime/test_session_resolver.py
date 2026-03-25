@@ -81,6 +81,22 @@ class MockSessionRepository:
         self.created_sessions.append(session)
         return session
 
+    async def get_open_session_by_awaiting_command_id(self, db: object, command_id: int) -> object | None:
+        self.find_calls.append(("awaiting_command_id", command_id, None))
+        for session in self.sessions.values():
+            s = session if isinstance(session, dict) else session.__dict__
+            if s.get("awaiting_command_id") == command_id:
+                return session
+        return None
+
+
+class MockCommandRepository:
+    def __init__(self) -> None:
+        self.commands: dict[str, object] = {}
+
+    async def get_by_command_code(self, db: object, command_code: str) -> object | None:
+        return self.commands.get(command_code)
+
 
 def make_inbox(
     kind: InboxKind,
@@ -88,6 +104,7 @@ def make_inbox(
     command_id: int | None = None,
     session_id: int | None = None,
     correlation_id: str | None = None,
+    source_message_id: str | None = None,
     payload_json: dict | None = None,
 ) -> MagicMock:
     """创建模拟 Inbox"""
@@ -97,6 +114,7 @@ def make_inbox(
     inbox.command_id = command_id
     inbox.session_id = session_id
     inbox.correlation_id = correlation_id
+    inbox.source_message_id = source_message_id
     inbox.payload_json = payload_json or {}
     return inbox
 
@@ -140,6 +158,7 @@ class TestSessionResolver:
 
         resolver = SessionResolver()
         resolver.session_repo = mock_session_repo
+        resolver.command_repo = MockCommandRepository()
         return resolver
 
     @pytest.mark.asyncio
@@ -173,6 +192,7 @@ class TestSessionResolver:
         assert session.plugin_key == "smt_coarse"
         assert session.business_key == "ORDER_001"
         assert session.status == SessionStatus.NEW
+        assert session.correlation_id is not None
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
@@ -420,3 +440,46 @@ class TestSessionResolver:
         # business_key 应该生成一个唯一的值
         assert session.business_key is not None
         assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_command_result_finds_session_by_awaiting_command_id(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        command = SimpleNamespace(
+            id=301,
+            command_code="CMD-001",
+            device_id=11,
+            workline_id=1,
+            correlation_id="corr-301",
+        )
+        resolver.command_repo.commands["CMD-001"] = command
+
+        existing_session = SimpleNamespace(
+            id=401,
+            awaiting_command_id=301,
+            correlation_id="corr-301",
+            status=SessionStatus.WAITING_DEVICE_RESULT,
+        )
+        mock_session_repo.sessions[401] = existing_session
+
+        inbox = make_inbox(
+            kind=InboxKind.COMMAND_RESULT,
+            payload_json={"command_code": "CMD-001"},
+        )
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=make_workline(),
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.id == 401
+        assert inbox.command_id == 301
+        assert inbox.device_id == 11
+        assert inbox.workline_id == 1
+        assert inbox.session_id == 401
+        assert inbox.correlation_id == "corr-301"

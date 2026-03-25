@@ -5,6 +5,7 @@ Session 归属解析器
 
 规则（按 InboxKind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
+- COMMAND_RESULT: 按 command_code -> awaiting_command_id / correlation_id 恢复 Session
 - EXTERNAL_HTTP: 按 correlation_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.repositories.session_repository import (
@@ -42,6 +44,7 @@ class SessionResolver:
     def __init__(
         self,
         session_repo: WorklineSessionRepository | None = None,
+        command_repo: DeviceCommandRepository | None = None,
     ) -> None:
         """初始化 SessionResolver
 
@@ -49,6 +52,7 @@ class SessionResolver:
             session_repo: Session 仓库实例（可选，默认使用全局单例）
         """
         self.session_repo = session_repo or workline_session_repository
+        self.command_repo = command_repo or DeviceCommandRepository()
 
     async def resolve_or_create(
         self,
@@ -76,6 +80,8 @@ class SessionResolver:
 
         if kind == InboxKind.DEVICE_EVENT:
             return await self._resolve_device_event(db, inbox, workline)
+        if kind == InboxKind.COMMAND_RESULT:
+            return await self._resolve_command_result(db, inbox)
         if kind == InboxKind.EXTERNAL_HTTP:
             return await self._resolve_external_http(db, inbox)
         if (
@@ -135,8 +141,10 @@ class SessionResolver:
             "plugin_key": getattr(workline, "plugin_key", None) or getattr(workline, "line_code", "default"),
             "business_key": business_key,
             "status": SessionStatus.NEW,
+            "correlation_id": getattr(inbox, "correlation_id", None) or f"corr_{uuid.uuid4().hex}",
             "context_json": {
                 "device_id": inbox.device_id,
+                "source_message_id": getattr(inbox, "source_message_id", None),
                 "initial_payload": payload_json,
             },
             "started_at": now,
@@ -147,6 +155,41 @@ class SessionResolver:
             raise RuntimeError("Failed to create session for DEVICE_EVENT")
 
         return new_session
+
+    async def _resolve_command_result(
+        self,
+        db: AsyncSession,
+        inbox: "WorklineInbox",
+    ) -> WorklineSession:
+        """处理 COMMAND_RESULT 类型的 Session 解析。"""
+        payload_json = inbox.payload_json if isinstance(inbox.payload_json, dict) else {}
+        command_code = payload_json.get("command_code")
+        if not isinstance(command_code, str) or not command_code:
+            raise ValueError("command_code is required for COMMAND_RESULT")
+
+        command = await self.command_repo.get_by_command_code(db, command_code)
+        if command is None:
+            raise ValueError(f"DeviceCommand not found for command_code: {command_code}")
+
+        inbox.command_id = command.id
+        inbox.device_id = command.device_id
+        if command.workline_id is not None:
+            inbox.workline_id = command.workline_id
+        if command.correlation_id:
+            inbox.correlation_id = command.correlation_id
+
+        session = await self.session_repo.get_open_session_by_awaiting_command_id(db, command.id)
+        if session:
+            inbox.session_id = session.id
+            return session
+
+        if command.correlation_id:
+            session = await self.session_repo.get_by_correlation_id(db, command.correlation_id)
+            if session:
+                inbox.session_id = session.id
+                return session
+
+        raise ValueError(f"Session not found for command_code: {command_code}")
 
     async def _resolve_external_http(
         self,

@@ -1915,6 +1915,7 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiosqlite" },
     { name = "bandit" },
     { name = "basedpyright" },
     { name = "pytest-asyncio" },
@@ -1961,6 +1962,7 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "bandit", specifier = ">=1.9.3" },
     { name = "basedpyright", specifier = ">=1.28.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },

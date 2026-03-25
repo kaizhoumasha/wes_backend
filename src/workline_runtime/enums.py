@@ -20,30 +20,6 @@
 from enum import Enum
 
 
-class InboundKind(str, Enum):
-    """
-    统一输入类型枚举
-
-    定义所有进入编排器的输入类型（架构 6.1 节）。
-
-    所有输入必须先写入 WorklineInbox，再由编排器统一消费。
-    这样可以确保异步系统的可靠性和可追溯性。
-
-    属性:
-        DEVICE_EVENT: 设备上报的事件（如扫码、传感器触发）
-        COMMAND_RESULT: 设备执行指令后回传的结果
-        EXTERNAL_CALLBACK: 外部系统（WMS/RCS/AGV）的回调
-        TIMEOUT: 超时事件（由定时任务扫描生成）
-        MANUAL_OPERATION: 人工操作（通过操作终端提交）
-    """
-
-    DEVICE_EVENT = "DEVICE_EVENT"
-    COMMAND_RESULT = "COMMAND_RESULT"
-    EXTERNAL_CALLBACK = "EXTERNAL_CALLBACK"
-    TIMEOUT = "TIMEOUT"
-    MANUAL_OPERATION = "MANUAL_OPERATION"
-
-
 class SessionStatus(str, Enum):
     """
     作业线会话状态枚举
@@ -256,7 +232,6 @@ class DecisionType(str, Enum):
 __all__ = [
     "DecisionType",
     "FailureDomain",
-    "InboundKind",
     "InboxStatus",
     "ManualOperationType",
     "OutboxDispatchType",
