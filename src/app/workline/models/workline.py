@@ -7,12 +7,14 @@
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
+from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+from src.workline_plugin_registry import WorklinePluginDefinition, get_workline_plugin_definition
 
 
 class LineType(str, Enum):
@@ -53,6 +55,17 @@ class WorkLineBase(BaseMixin):
         max_length=100,
         description="区域名称",
     )
+    plugin_key: str | None = Field(
+        default=None,
+        max_length=100,
+        index=True,
+        description="工作线执行插件标识",
+    )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="工作线插件配置",
+    )
     description: str | None = Field(default=None, max_length=500, description="作业线描述")
     is_active: bool = Field(default=True, description="是否启用")
     capacity: int | None = Field(default=None, description="产能（件/小时）")
@@ -74,6 +87,26 @@ class WorkLine(
 
     __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+
+    @property
+    def plugin_definition(self) -> WorklinePluginDefinition | None:
+        """按 plugin_key 解析插件定义。"""
+
+        return get_workline_plugin_definition(self.plugin_key)
+
+    @property
+    def plugin_class(self) -> type[Any] | None:
+        """按 plugin_key 解析插件类。"""
+
+        definition = self.plugin_definition
+        return definition.plugin_class if definition else None
+
+    @property
+    def state_machine_class(self) -> type[Any] | None:
+        """按 plugin_key 解析状态机类。"""
+
+        definition = self.plugin_definition
+        return definition.state_machine_class if definition else None
 
 
 class WorkLineCreate(ModelFactory(WorkLineBase).for_create()):
