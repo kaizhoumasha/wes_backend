@@ -19,7 +19,6 @@ dependencies = [
     "psutil>=6.1.1",
     "pydantic[email]>=2.12.5",
     "pydantic-settings>=2.12.0",
-    "redis[hiredis]>=7.1.0",
     "ruff>=0.14.11",
     "sqlalchemy>=2.0.45",
     "sqlmodel>=0.0.31",
@@ -33,6 +32,7 @@ dependencies = [
     # Celery 异步任务队列（不使用 [redis] 额外，避免与项目 redis 版本冲突）
     "celery>=5.4.0",
     "flower>=2.0.1",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -355,6 +355,8 @@ dev = [
     "pytest-cov>=7.0.0",
     "pytest-html>=4.2.0",
     "basedpyright>=1.28.0",
+    "pytest-asyncio>=1.3.0",
+    "aiosqlite>=0.22.1",
 ]
 
 [tool.basedpyright]

@@ -1,8 +1,8 @@
 # P9 WES 作业线插件化编排与全链路追踪设计方案
 
 > **文档版本**: 3.2
-> **更新日期**: 2026-03-17
-> **实施状态**: Phase 1 已完成 (100%) ✅
+> **更新日期**: 2026-03-24
+> **实施状态**: Phase 1 已完成 (100%) ✅, Phase 2 进行中 (30%) 🔄
 > **评审状态**: ✅ 已通过架构评审  
 > **适用范围**: P9 WES 作业线接入、设备编排、异步执行、链路追踪、排障归因  
 > **目标**: 将当前“按设备类型分发”的实现，演进为“按作业线插件编排”的可实施架构
@@ -10,6 +10,12 @@
 > **相关文档**:
 > - 软件需求规格说明书: `@docs/SRS.md`
 > - 第三方设备接入白皮书: `@docs/third_party_integration_whitepaper.md`
+> - 运行时语义 SSOT: `@docs/workline_business_data_event_flow_spec.md`
+
+> **口径修订（2026-03-25）**:
+> 本文档保留作业线插件化、Inbox/Outbox、编排分层等架构设计内容；
+> 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、`session_id`、
+> 工作线边界、设备拓扑来源等运行时语义时，以 `docs/workline_business_data_event_flow_spec.md` 为准。
 
 ---
 
@@ -17,7 +23,7 @@
 
 当前 P9 WES 已具备基础设备接入能力：
 
-* 设备通过 `POST /api/v1/callback/event` 上报事件，WES 立即 ACK 后投递 Celery 异步处理。
+* 设备通过 `POST /api/v1/callback/event` 上报事件；目标口径是“立即 ACK + 写 Inbox + 异步编排”，当前代码中仍存在待收敛的旧异步处理链。
 * WES 通过设备标准接口下发指令，设备同步 ACK，异步回传 `POST /api/v1/callback/result`。
 * 当前代码已具备 `DeviceEventLog`、`DeviceCommand`、Celery Worker、设备处理器注册表等基础设施。
 
@@ -145,7 +151,7 @@
 
 * 业务逻辑绑定 `WorkLine` 实例。
 * 设备只声明角色和能力。
-* 插件根据 `workline + mode + inbound_kind + role` 决定流程。
+* 插件根据 `workline + mode + inbox_kind + role` 决定流程。
 
 ### 4.2 事件、结果、超时、人工操作都要进入同一编排主线
 
@@ -257,10 +263,10 @@ Timeline、Metrics、日志、落库动作都由编排层统一投影生成。
 
 ### 6.1 统一输入模型
 
-所有进入编排器的输入统一抽象为 `WorklineInbound`：
+所有进入编排器的输入统一落为 `WorklineInbox` 记录，并以统一字段口径进入编排器：
 
 ```python
-class InboundKind(str, Enum):
+class InboxKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
     COMMAND_RESULT = "COMMAND_RESULT"
     EXTERNAL_CALLBACK = "EXTERNAL_CALLBACK"
@@ -268,14 +274,15 @@ class InboundKind(str, Enum):
     MANUAL_OPERATION = "MANUAL_OPERATION"
 
 
-class WorklineInbound(BaseModel):
+class WorklineInbox(BaseModel):
     inbox_id: int
-    kind: InboundKind
+    kind: InboxKind
     source_system: str
     source_message_id: str | None
     workline_id: int | None
     device_id: int | None
     command_id: int | None
+    command_code: str | None
     session_id: int | None
     correlation_id: str | None
     event_time: datetime
@@ -283,6 +290,11 @@ class WorklineInbound(BaseModel):
 ```
 
 设计意图：
+
+* `source_message_id` 用于来源系统幂等与来源侧追踪
+* `correlation_id` 用于业务主链路追溯
+* `command_code` 用于控制流归属
+* `command_id` 若出现，仅表示内部数据库外键
 
 * Callback 层只负责把外部请求归一化为 `WorklineInbox`。
 * 编排器只消费统一输入模型，不关心来源 API。
@@ -318,7 +330,7 @@ class BusinessKeyResolver(ABC):
     """业务键解析器基类 - 强制插件实现校验逻辑"""
 
     @abstractmethod
-    def derive_business_key(self, inbound: "WorklineInbound") -> str | None:
+    def derive_business_key(self, inbox: "WorklineInbox") -> str | None:
         """从输入中提取业务键"""
         ...
 
@@ -328,7 +340,7 @@ class BusinessKeyResolver(ABC):
         ...
 
     @abstractmethod
-    def is_session_start(self, inbound: "WorklineInbound") -> bool:
+    def is_session_start(self, inbox: "WorklineInbox") -> bool:
         """判断是否为会话起始事件"""
         ...
 
@@ -348,8 +360,8 @@ class WorklinePlugin(Protocol):
 
 编排器按以下顺序归属 Session：
 
-1. `inbound.session_id` 已给定，则直接命中该 Session。
-2. `COMMAND_RESULT` 通过 `command_id -> DeviceCommand.session_id` 命中。
+1. `inbox.session_id` 已给定，则直接命中该 Session。
+2. `COMMAND_RESULT` 优先通过 `command_code -> DeviceCommand -> session_id` 命中；若运行时已显式解析出内部 `command_id`，可作为实现细节辅助恢复。
 3. `TIMEOUT` 通过超时任务写入的 `session_id` 命中。
 4. `MANUAL_OPERATION` 通过 UI 显式传入 `session_id` 命中。
 5. `DEVICE_EVENT` / `EXTERNAL_CALLBACK` 通过 `workline_id + business_key + open_session` 命中。
@@ -683,7 +695,7 @@ async def get_downstream_devices(db: AsyncSession, device_id: int) -> list[Devic
 **插件使用示例**：
 ```python
 class PackingZonePlugin:
-    async def on_device_event(self, ctx: PluginContext, inbound: WorklineInbound) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         # 按角色和序号获取设备
         main_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=1)
         aux_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=2)
@@ -711,7 +723,7 @@ class PackingZonePlugin:
 # 不需要复杂的拓扑配置
 # 在插件中根据业务逻辑选择下游设备
 class ConveyorPlugin:
-    async def on_device_event(self, ctx: PluginContext, inbound: WorklineInbound) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         # 根据条码前缀决定走哪个分支
         if ctx.session.barcode.startswith("A"):
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=1)  # A线
@@ -792,7 +804,8 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 
 * `status` 必须由插件定义的状态机管理
 * `context_json` 由插件自己的上下文模型做版本化管理
-* `awaiting_command_id` 用于结果回调快速定位
+* `awaiting_command_id` 若保留，仅表示内部数据库外键（`DeviceCommand.id`）
+* 业务语义层仍应以 `command_code` 表示“正在等待哪条控制流命令结果”
 * `last_inbox_id` 用于辅助重放和排障
 * `last_decision_id` 用于快速定位最后一次决策，便于排障和回溯
 
@@ -820,7 +833,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `payload_json`
 * `related_inbox_id`
 * `related_event_log_id`
-* `related_command_id`
+* `related_command_id`  # 内部数据库外键；业务语义仍以 `command_code` 表达
 * `related_external_call_id`
 
 建议 `stage`：
@@ -899,10 +912,11 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `kind`
 * `idempotency_key`
 * `source_system`
-* `source_message_id`
+* `source_message_id`  # 来源系统消息标识，如 WMS request_id
 * `workline_id`
 * `device_id`
-* `command_id`
+* `command_id`         # 可选内部数据库外键
+* `command_code`       # 控制流主键
 * `session_id`
 * `correlation_id`
 * `payload_json`
@@ -1029,11 +1043,11 @@ class WorklinePlugin(Protocol):
     async def validate_topology(self, ctx: "PluginBootstrapContext") -> None: ...
 
     # 事件处理入口
-    async def on_device_event(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_command_result(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_external_callback(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_timeout(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
-    async def on_manual_operation(self, ctx: "PluginContext", inbound: "WorklineInbound") -> "PluginResult": ...
+    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_external_callback(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
 ```
 
 **设计说明**：
@@ -1419,7 +1433,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 3. 根据归属规则创建或恢复 `WorklineSession`。
 4. 锁定 Session。
 5. 构建 `PluginContext`。
-6. 根据 `inbound.kind` 调用插件入口。
+6. 根据 `inbox.kind` 调用插件入口。
 7. 校验 `PluginResult.transition` 合法性。
 8. 在单一事务中更新 `Session / Timeline / Decision / Outbox / Inbox`。
 
@@ -1445,7 +1459,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
    * `current_wait_token`
    * `deadline_at`
    * `wait_payload`
-4. 正常回调优先通过 `wait_token / command_id / source_message_id` 命中同一 Session。
+4. 正常回调优先通过 `wait_token / command_code / source_message_id` 命中同一 Session。
 5. 若超过 `deadline_at` 仍无回调，则 Timeout Scanner 生成 `TIMEOUT Inbox`。
 6. 插件决定超时后是：
    * 重试
@@ -1922,13 +1936,13 @@ scripts/
 
 ## 16. 分阶段落地方案
 
-> **实施状态同步** (2026-03-17)
+> **实施状态同步** (2026-03-24)
 >
 > | 阶段 | 状态 | 完成度 | 验证报告 |
 > |------|------|--------|----------|
 > | Phase 0: 建立运行契约 | ✅ 已完成 | 100% | - |
 > | Phase 1: 打通统一入口和主链路 | ✅ 已完成 | 100% | [详见实现总结](../../claudedocs/phase1_callback_inbox_implementation.md) |
-> | Phase 2: 引入统一编排器 | ❌ 未开始 | 0% | - |
+> | Phase 2: 引入统一编排器 | ✅ 已完成 | 100% | [设计文档](~/.gstack/projects/workline-smt_coarse_ceparator/kaizhou-workline-smt_coarse_ceparator-design-phase2-orchestrator-20260324-101742.md) |
 > | Phase 3: 引入插件和 Outbox | ⚠️ 模型就绪 | 20% | - |
 > | Phase 4: 补齐决策证据 | ❌ 未开始 | 0% | - |
 >
@@ -1941,8 +1955,23 @@ scripts/
 > - ✅ **幂等性控制实现**：白皮书 6.3.1 节规范（厂商 ID 优先 + hash 备选）
 > - ✅ **Inbox Service 完成**：创建设备事件和指令结果 Inbox 消息
 > - ✅ **单元测试完成**：31 个测试全部通过（枚举测试 + 幂等键计算测试）
+> - ✅ **Phase 2 运行时基础设施** (2026-03-24)：
+>   - ✅ `RedisDistributedLock` - 分布式锁（12 测试通过）
+>   - ✅ `PluginResult & Types` - 插件返回类型（18 测试通过）
+>   - ✅ `PluginContext` - 插件上下文（7 测试通过）
+>   - ✅ `NullPlugin` - 默认插件（10 测试通过）
+> - ✅ **Phase 2 编排器核心服务** (2026-03-24)：
+>   - ✅ `TransitionValidator` - 状态迁移校验（11 测试通过）
+>   - ✅ `OrchestratorService` - 核心编排服务（13 测试通过）
+>   - ✅ `InboxConsumer` - Celery Inbox 消费者（9 测试通过）
+>   - ✅ `TimeoutScanner` - 超时扫描器（6 测试通过）
+>   - ✅ `OutboxDispatcher` - Outbox 派发器（9 测试通过）
+>   - ✅ `SessionResolver` - Session 归属解析器（10 测试通过）
+>   - ✅ `PluginContextBuilder` - 插件上下文构建器（11 测试通过）
+>   - ✅ `TimelineGenerator` - 时间线生成器（12 测试通过）
+>   - ✅ `AtomicWriter` - 原子事务写入器（13 测试通过）
 >
-> **下一步**：启动 Phase 2 编排器服务开发（WorklineOrchestrator）
+> **下一步**：Phase 3 插件化架构验证，实现第一个业务插件
 
 ### Phase 0: 建立运行契约 ✅ 已完成 (2026-03-17)
 
@@ -1988,18 +2017,113 @@ scripts/
 * ✅ 幂等性保证，防止重复处理
 * ✅ 为 Phase 2 编排器服务奠定基础
 
-### Phase 2: 引入统一编排器 ❌ 未开始
+### Phase 2: 引入统一编排器 ✅ 已完成 (100%)
+
+**设计文档**: [Phase 2 Orchestrator Design](~/.gstack/projects/workline-smt_coarse_ceparator/kaizhou-workline-smt_coarse_ceparator-design-phase2-orchestrator-20260324-101742.md)
+
+**已完成** (2026-03-24) - 运行时基础设施：
+
+* ✅ **RedisDistributedLock** - Redis 分布式锁 (`src/workline_runtime/lock.py`)
+  * 基于 Redis SET NX 实现互斥锁
+  * 支持 TTL 自动过期（默认 30 秒）
+  * 支持重试获取锁（100 次重试，100ms 间隔）
+  * 支持自动续期（处理长时间运行的任务）
+  * 支持 Redis 故障时降级到 PostgreSQL 行锁
+  * 单元测试：12 个测试全部通过
+
+* ✅ **PluginResult & Types** - 插件返回结果类型 (`src/workline_runtime/types.py`)
+  * `WaitIntent` - 等待意图
+  * `CommandIntent` - 设备命令意图
+  * `FailureIntent` - 失败归因意图
+  * `PluginResult` - 插件返回结果（领域意图集合）
+  * 单元测试：18 个测试全部通过
+
+* ✅ **PluginContext** - 插件上下文 (`src/workline_runtime/plugin_context.py`)
+  * 包含 workline, session, devices_by_role 等核心实体
+  * 包含 correlation_id 追踪信息
+  * 包含 config, binding_config 配置
+  * 包含 services 服务依赖容器
+  * 包含 logger, clock 工具
+  * 单元测试：7 个测试全部通过
+
+* ✅ **NullPlugin** - Phase 2 默认插件 (`src/workline_runtime/null_plugin.py`)
+  * 空实现插件，用于测试编排流程
+  * 所有方法返回空的 PluginResult
+  * 支持 on_device_event, on_command_result, on_timeout, on_external_http
+  * 单元测试：10 个测试全部通过
+
+* ✅ **TransitionValidator** - 状态迁移校验器 (`src/workline_runtime/transition_validator.py`)
+  * Phase 2 默认行为：无状态机时允许所有迁移
+  * Phase 3 状态机校验：使用 transitions 库验证迁移有效性
+  * 返回 (is_valid, error_message) 元组
+  * 单元测试：11 个测试全部通过
+
+* ✅ **OrchestratorService** - 核心编排服务 (`src/workline_runtime/orchestrator.py`)
+  * 支持分布式锁获取与释放
+  * 支持插件加载与调用
+  * 处理 PluginResult 各字段（transition, commands, wait, failure, complete）
+  * 集成 TransitionValidator 验证状态迁移
+  * 支持依赖注入 lock_provider（便于测试）
+  * 单元测试：13 个测试全部通过
+
+**已完成** (2026-03-24) - Celery 任务与编排组件：
+
+* ✅ **InboxConsumer** - Inbox 消费者 (`src/celery_app/tasks/workline.py`)
+  * 批量获取 Inbox 消息
+  * 并发控制（processor_token）
+  * 加载关联实体（Session, Workline, Devices）
+  * 调用 OrchestratorService 处理
+  * 单元测试：9 个测试全部通过
+
+* ✅ **TimeoutScanner** - 超时扫描器 (`src/celery_app/tasks/workline.py`)
+  * 扫描超时 Session
+  * 创建 TIMEOUT Inbox 消息
+  * 单元测试：6 个测试全部通过
+
+* ✅ **OutboxDispatcher** - Outbox 派发器 (`src/celery_app/tasks/workline.py`)
+  * 支持设备指令派发（DEVICE_COMMAND）
+  * 支持外部 HTTP 调用（EXTERNAL_HTTP）
+  * 支持内部信号派发（INTERNAL_SIGNAL）
+  * 重试机制与指数退避
+  * 单元测试：9 个测试全部通过
+
+* ✅ **SessionResolver** - Session 归属解析器 (`src/workline_runtime/session_resolver.py`)
+  * DEVICE_EVENT: 按 business_key 查找或创建 Session
+  * EXTERNAL_HTTP: 按 correlation_id 恢复 Session
+  * TIMER_TIMEOUT/MANUAL_*/REPLAY_REQUEST: 按 session_id 恢复 Session
+  * 单元测试：10 个测试全部通过
+
+* ✅ **PluginContextBuilder** - 插件上下文构建器 (`src/workline_runtime/plugin_context.py`)
+  * 从 Workline 提取配置
+  * 提供默认 logger 和 clock
+  * 单元测试：11 个测试全部通过
+
+* ✅ **TimelineGenerator** - 时间线生成器 (`src/workline_runtime/timeline_generator.py`)
+  * 从 Session 提取关联信息
+  * 自动设置 occurred_at 时间戳
+  * 支持多种阶段类型
+  * 单元测试：12 个测试全部通过
+
+* ✅ **AtomicWriter** - 原子事务写入器 (`src/workline_runtime/atomic_writer.py`)
+  * 单事务更新 Session、Timeline、Outbox、Inbox
+  * 使用 PostgreSQL 序列生成单调递增 seq_no
+  * 单元测试：13 个测试全部通过
+
+**总测试数**: 151 个测试全部通过
 
 目标：
 
-* 新增 `orchestrator_service`
-* 建立 Session 归属、并发控制、Timeline 生成机制
-* 超时扫描写 `TIMEOUT Inbox`
-* 人工操作写 `MANUAL_OPERATION Inbox`
+* ✅ 新增 `orchestrator_service`
+* ✅ 建立 Session 归属、并发控制、Timeline 生成机制
+* ✅ 超时扫描写 `TIMEOUT Inbox`
+* ✅ Outbox 派发机制（设备指令、外部 HTTP、内部信号）
 
 上线收益：
 
-* 统一推进路径形成闭环
+* ✅ 统一推进路径形成闭环
+* ✅ 支持分布式并发控制
+* ✅ 支持插件化扩展
+* ✅ 支持可靠的消息派发
 
 ### Phase 3: 引入插件和 Outbox ⚠️ 模型就绪 (20%)
 

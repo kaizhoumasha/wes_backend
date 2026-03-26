@@ -17,32 +17,33 @@
 ### 1.1 异步事件驱动流程
 
 ```
-Step 1 设备事件上报（同步，快速返回）
+Step 1 设备事件上报（同步 ACK，快速返回）
 POST /api/v1/callback/event
   -> callback_event:
      1) 记录回调日志和审计日志
-     2) 发送 Celery 任务 process_device_event
-     3) 立即返回 Event received
+     2) 写入 WorklineInbox(kind=DEVICE_EVENT)
+     3) 提交 Celery 任务 process_inbox_batch
+     4) 立即返回 Event received
 
-Step 2 Celery 异步处理（process_device_event）
-  SENSE:
-    1) 校验 event_data（device_code/event_type/timestamp）
-    2) 写入 device_event_logs（内部存 device_id）
+Step 2 统一编排异步处理（process_inbox_batch）
+  INGRESS:
+    1) 消费 WorklineInbox
+    2) 解析 device -> workline -> plugin
+    3) 基于 workline / upstream_device_id 恢复或创建 WorklineSession
   DECIDE:
-    3) 根据设备类型选择处理器
-    4) 处理器返回动作参数（外部语义，含 device_code）
+    4) 插件根据当前事件和 Session 状态做业务决策
+    5) 解析下游设备，生成 DeviceCommand / WorklineOutbox
   ACT:
-    5) 将动作参数的 device_code 解析为内部 device_id
-    6) build_command + create_command
-    7) DeviceCommandService.send_command 下发到设备
-  FEEDBACK:
-    8) 更新 event_log 处理结果
+    6) Dispatcher 下发设备命令
+    7) 持久化 Session / Timeline / DeviceCommand / Outbox
 
 Step 3 设备结果回调
 POST /api/v1/callback/result
-  -> handle_callback_result:
-     1) 按 command_id 更新指令状态
-     2) SUCCESS => COMPLETED
+  -> callback_result:
+     1) 先按 command_code 命中既有 DeviceCommand，继承 correlation_id
+     2) 写入 WorklineInbox(kind=COMMAND_RESULT)
+     3) 同步更新 DeviceCommand 结果状态（控制流证据）
+     4) 再次提交 Celery 任务 process_inbox_batch
 ```
 
 ---
@@ -52,21 +53,21 @@ POST /api/v1/callback/result
 ### 2.1 核心任务链路
 
 - `src/app/callback/v1/callback.py`
-  - `/event`：异步提交 `src.celery_app.tasks.device.process_device_event`
-  - `/result`：处理设备执行结果回调
-- `src/celery_app/tasks/device.py`
-  - `process_device_event`：SDAF 主流程
-  - `_resolve_target_device_id`：`device_code -> device_id` 解析
+  - `/event`：写 `WorklineInbox(DEVICE_EVENT)` 并触发 `src.celery_app.tasks.workline.process_inbox_batch`
+  - `/result`：写 `WorklineInbox(COMMAND_RESULT)`、更新 `DeviceCommand` 并触发统一编排
+- `src/celery_app/tasks/workline.py`
+  - `process_inbox_batch`：统一编排主流程入口
+  - `_load_related_entities`：解析 `device -> workline -> session` 归属
 - `src/app/device/services/device_command_service.py`
-  - `create_event_log`：外部 `device_code` 转内部 `device_id`
   - `send_command`：下发指令并更新 ACK 状态
+  - `handle_callback_result`：落单条命令控制流结果
 
 ### 2.2 Celery 配置
 
 - `src/celery_app/app.py`
-  - include `src.celery_app.tasks.device`
+  - include `src.celery_app.tasks.workline`
 - `src/celery_app/config.py`
-  - 设备任务路由到 `device` 队列
+  - 作业线任务路由到 `celery` 队列
 
 ### 2.3 E2E 与 Mock
 
@@ -90,8 +91,8 @@ docker-compose up -d
 # 3. 启动 WES 服务（终端1）
 uv run uvicorn main:app --reload --port 8001
 
-# 4. 启动 Celery Worker（终端2，必须包含 device 队列）
-uv run celery -A src.celery_app.app worker --loglevel=info --pool=solo --queues=default,celery,device
+# 4. 启动作业线 Celery Worker（终端2）
+uv run celery -A src.celery_app.app worker --loglevel=info --pool=solo --queues=default,celery
 
 # 5. 启动 Mock 服务（终端3、4）
 uv run python tests/mock/camera_mock_server.py
@@ -143,7 +144,7 @@ curl -X POST http://localhost:8001/api/v1/callback/event \
 ### 3.4 预期结果
 
 1. 回调接口立即返回（`message=Event received`，`status=submitted`）。
-2. Celery Worker 日志显示 `process_device_event` 被执行。
+2. Celery Worker 日志显示 `process_inbox_batch` 被执行。
 3. 机械臂 Mock 服务收到 `/api/v1/device/command` 请求。
 4. `device_commands` 有记录，状态到达 `ACK_RECEIVED`。
 5. 机械臂回调结果后，状态更新为 `COMPLETED`。

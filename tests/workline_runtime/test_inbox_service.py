@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.app.workline.models.inbox import InboxStatus
+from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
 from src.app.workline.services.inbox_service import WorklineInboxService
 
@@ -166,9 +166,29 @@ class _FakeInboxRepo:
     def __init__(self, inbox: object | None) -> None:
         self.inbox = inbox
         self.update_calls: list[tuple[object, int, dict[str, object]]] = []
+        self.created_data: dict[str, object] | None = None
+
+    def calculate_command_result_idempotency_key(
+        self,
+        *,
+        command_code: str,
+        result: str,
+        finish_time: int,
+        data: dict[str, object],
+    ) -> str:
+        _ = result, finish_time, data
+        return f"command_result:{command_code}"
 
     async def get_by_id(self, db: object, inbox_id: int) -> object | None:
         return self.inbox
+
+    async def get_by_idempotency_key(self, db: object, idempotency_key: str) -> object | None:
+        _ = db, idempotency_key
+        return None
+
+    async def create(self, db: object, data: dict[str, object]) -> object:
+        self.created_data = data
+        return SimpleNamespace(id=99, **data)
 
     async def update(self, db: object, inbox_id: int, data: dict[str, object]) -> object:
         self.update_calls.append((db, inbox_id, data))
@@ -224,3 +244,32 @@ async def test_mark_as_processed_raises_when_message_missing() -> None:
 
     with pytest.raises(ValueError, match="消息不存在: 99"):
         await service.mark_as_processed(object(), 99)
+
+
+@pytest.mark.asyncio
+async def test_create_command_result_inbox_uses_command_result_kind() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=None)
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    result = await service.create_command_result_inbox(
+        db=object(),
+        command_code="CMD-001",
+        device_code="ARM_01",
+        result="SUCCESS",
+        finish_time=1702627250000,
+        data={"foo": "bar"},
+        command_type="PICK_AND_PUT",
+        error_detail={"message": "ok"},
+        source_message_id="req-001",
+        correlation_id="corr-001",
+    )
+
+    assert result.id == 99
+    assert fake_repo.created_data is not None
+    assert fake_repo.created_data["kind"] == InboxKind.COMMAND_RESULT
+    assert fake_repo.created_data["source_system"] == SourceSystem.DEVICE
+    assert fake_repo.created_data["source_message_id"] == "req-001"
+    assert fake_repo.created_data["correlation_id"] == "corr-001"
+    assert fake_repo.created_data["payload_json"]["command_type"] == "PICK_AND_PUT"
+    assert fake_repo.created_data["payload_json"]["error_detail"] == {"message": "ok"}

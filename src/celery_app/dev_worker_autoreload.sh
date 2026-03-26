@@ -7,7 +7,7 @@ set -eu
 WATCH_PATH="${CELERY_WATCH_PATH:-/app/src}"
 RELOAD_INTERVAL="${CELERY_RELOAD_INTERVAL:-2}"
 
-CELERY_CMD="celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device"
+CELERY_CMD="celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery"
 
 worker_pid=""
 

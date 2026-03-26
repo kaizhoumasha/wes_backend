@@ -25,27 +25,27 @@ from src.database.sqlite_schema import configure_sqlite_schemas
 
 
 def _where_clause(condition: Any) -> ColumnElement[bool]:
-    return cast(ColumnElement[bool], condition)
+    return cast("ColumnElement[bool]", condition)
 
 
 def _is_null(column: Any) -> ColumnElement[bool]:
-    return cast(ColumnElement[bool], cast(Any, column).is_(None))
+    return cast("ColumnElement[bool]", cast("Any", column).is_(None))
 
 
 def _desc(column: Any) -> Any:
-    return cast(Any, column).desc()
+    return cast("Any", column).desc()
 
 
 def _roles(user: Any) -> list[Any]:
-    return cast(list[Any], getattr(user, "roles", []))
+    return cast("list[Any]", getattr(user, "roles", []))
 
 
 def _permissions(role: Any) -> list[Any]:
-    return cast(list[Any], getattr(role, "permissions", []))
+    return cast("list[Any]", getattr(role, "permissions", []))
 
 
 def _children(node: Any) -> list[Any]:
-    return cast(list[Any], getattr(node, "children", []))
+    return cast("list[Any]", getattr(node, "children", []))
 
 # ==================== Fixtures ====================
 

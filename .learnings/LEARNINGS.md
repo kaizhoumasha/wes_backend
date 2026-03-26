@@ -1122,5 +1122,189 @@ uv run pytest -q ...
 - **Resolved**: 2026-03-23T17:20:00+08:00
 - **Commit/PR**: local workspace
 - **Notes**: 已记录为仓库级测试约定；后续本仓库中的 pytest 命令将默认带 `PYTHONPATH=.`。
+---
+## [LRN-20260326-001] best_practice
+
+**Logged**: 2026-03-26T15:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: tests
+
+### Summary
+Mock 服务必须使用 WES 标准事件类型，业务结果放在 data 字段，而非自建事件类型。
+
+### Details
+SMT 粗分机 E2E 测试中发现，Pipeline Mock 最初使用了内部事件类型（`SCAN_OK`, `SCAN_NG`），但 WES 回调接口只接受标准事件类型（`SCAN_COMPLETED`, `PROCESS_COMPLETED`），导致 422 错误。
+
+正确做法：
+- Mock 直接使用 WES 标准事件类型
+- 扫码/检测结果通过 `data.result` 传递
+- Mock 是 WES 规范的实现方，不是规范的定义方
+
+### Suggested Action
+Mock 开发规范：
+1. 严格遵循硬件接口文档，不自建类型
+2. 事件类型使用 WES 标准枚举（`SCAN_COMPLETED`, `PROCESS_COMPLETED`）
+3. 业务结果放在 data 字段，不通过事件类型区分
+
+### Metadata
+- Source: error
+- Related Files: tests/mock/smt_classifier/pipeline_mock.py
+- Tags: mock, e2e-testing, event-types, wes-callback
+- See Also: LRN-20260326-002
+
+### Resolution
+- **Resolved**: 2026-03-26T15:40:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已在 pipeline_mock.py 中修正事件类型，使用 WES 标准类型
+
+---
+
+## [LRN-20260326-002] best_practice
+
+**Logged**: 2026-03-26T15:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: tests
+
+### Summary
+macOS 上使用 multiprocessing spawn 模式时，必须显式传递环境变量给子进程。
+
+### Details
+macOS 必须使用 `spawn` 方式启动多进程（`fork` 与 Objective-C runtime 不兼容），但 spawn 模式下子进程不会自动继承父进程的环境变量。
+
+解决方案：
+1. 父进程从 `.env.e2e` 加载环境变量
+2. 通过 `multiprocessing.Process(kwargs={"env_vars": ...})` 传递给子进程
+3. 子进程在启动时设置这些环境变量
+
+### Suggested Action
+E2E 测试使用 multiprocessing 时：
+1. 环境变量统一配置，使用 `.env.e2e` 文件
+2. 子进程环境变量显式传递，特别是在 spawn 模式下
+3. 子进程启动时从 kwargs 读取并设置环境变量
+
+### Metadata
+- Source: error
+- Related Files: tests/e2e/smt_classifier/conftest.py, tests/mock/smt_classifier/run_all.py
+- Tags: macos, multiprocessing, spawn, environment-variables, e2e-testing
+- See Also: LRN-20260326-001
+
+### Resolution
+- **Resolved**: 2026-03-26T15:40:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已实现 _load_env_from_file() 方法和 env_vars 传递机制
+
+---
+
+## [LRN-20260326-003] best_practice
+
+**Logged**: 2026-03-26T15:40:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: tests
+
+### Summary
+E2E 测试运行前必须确保数据库迁移已完成，数据初始化依赖于完整的数据库 schema。
+
+### Details
+运行 `seed_e2e_test_data.py` 时遇到错误：`column work_lines.plugin_key does not exist`，原因是数据库表结构缺少字段，需要先运行迁移。
+
+正确顺序：
+1. `uv run alembic upgrade head` - 运行数据库迁移
+2. `uv run python scripts/data/seed_e2e_test_data.py` - 初始化 E2E 测试数据
+
+### Suggested Action
+在 E2E 测试文档和脚本中明确：
+1. 数据库迁移先于数据初始化
+2. `seed_e2e_test_data.py` 是幂等的，可以重复运行
+3. 提供一键运行脚本确保顺序正确
+
+### Metadata
+- Source: error
+- Related Files: scripts/data/seed_e2e_test_data.py, tests/e2e/smt_classifier/run_e2e_tests.sh
+- Tags: e2e-testing, database-migration, alembic, data-seeding
+
+### Resolution
+- **Resolved**: 2026-03-26T15:40:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已在 run_e2e_tests.sh 中确保正确的执行顺序
+
+---
+
+## [LRN-20260326-004] best_practice
+
+**Logged**: 2026-03-26T15:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: tests
+
+### Summary
+E2E 测试需要完整的外部依赖：数据库、Redis、WES 服务、Mock 服务必须全部就绪。
+
+### Details
+E2E 测试不是单元测试，需要完整的外部依赖链：
+1. PostgreSQL 数据库
+2. Redis 缓存
+3. WES 后端服务（uvicorn）
+4. Mock 服务（Pipeline, ARM）
+
+Mock 服务会回调 WES，如果 WES 未启动会导致测试失败。
+
+### Suggested Action
+创建完整的测试运行脚本：
+1. 检查 WES 服务是否运行
+2. 启动基础设施（docker-compose）
+3. 运行迁移和种子数据
+4. 运行 E2E 测试
+5. 提供故障排查指南
+
+### Metadata
+- Source: error
+- Related Files: tests/e2e/smt_classifier/run_e2e_tests.sh, tests/e2e/smt_classifier/README.md
+- Tags: e2e-testing, infrastructure, dependencies, docker-compose
+
+### Resolution
+- **Resolved**: 2026-03-26T15:40:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已创建完整的测试运行脚本 run_e2e_tests.sh 和详细文档
+
+---
+
+## [LRN-20260326-005] knowledge_gap
+
+**Logged**: 2026-03-26T15:40:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: backend
+
+### Summary
+API 认证凭证需要双向配置：WES 数据库中创建应用，Mock 服务配置相同凭证。
+
+### Details
+Mock 服务回调 WES 时返回 401/403 错误，原因是：
+- WES 后端需要知道 Mock 使用的 app_id/app_secret
+- Mock 需要知道 WES 的回调地址和凭证
+
+解决方案：
+1. WES 数据库中创建 API 应用（seed_e2e_test_data.py）
+2. 分配回调权限（`api:callback:result`, `api:callback:event`）
+3. Mock 从环境变量读取相同凭证（`.env.e2e`）
+
+### Suggested Action
+E2E 测试认证配置：
+1. API 应用凭证双向配置（WES DB + Mock 环境变量）
+2. 签名算法必须与 WES 完全一致
+3. 使用 `.env.e2e` 统一配置环境变量
+
+### Metadata
+- Source: error
+- Related Files: scripts/data/seed_e2e_test_data.py, tests/e2e/smt_classifier/setup_e2e_app.py
+- Tags: api-authentication, hmac, callback, e2e-testing
+
+### Resolution
+- **Resolved**: 2026-03-26T15:40:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已实现 setup_e2e_app.py 生成 .env.e2e，seed_e2e_test_data.py 创建 API 应用
 
 ---

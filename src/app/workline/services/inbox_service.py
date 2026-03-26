@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.app.workline.models.inbox import (
     InboxKind,
@@ -16,6 +16,18 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@runtime_checkable
+class _SupportsIsoformat(Protocol):
+    def isoformat(self) -> str: ...
+
+
+def _format_deadline(deadline_at: object | None) -> str:
+    if deadline_at is None or not isinstance(deadline_at, _SupportsIsoformat):
+        return "unknown"
+
+    return deadline_at.isoformat()
 
 
 class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
@@ -62,6 +74,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             data=data,
         )
         payload: dict[str, Any] = {
+            "message_type": "DEVICE_EVENT",
             "device_code": device_code,
             "event_type": event_type,
             "timestamp": timestamp,
@@ -86,6 +99,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         result: str,
         finish_time: int,
         data: dict[str, Any] | None = None,
+        command_type: str | None = None,
+        error_detail: dict[str, Any] | None = None,
         source_message_id: str | None = None,
         correlation_id: str | None = None,
     ) -> WorklineInbox:
@@ -116,18 +131,23 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             data=payload_data,
         )
         payload: dict[str, Any] = {
+            "message_type": "COMMAND_RESULT",
             "command_code": command_code,
             "device_code": device_code,
             "result": result,
             "finish_time": finish_time,
             "data": payload_data,
         }
+        if command_type:
+            payload["command_type"] = command_type
+        if error_detail:
+            payload["error_detail"] = error_detail
 
         return await self._create_inbox_message(
             db=db,
             idempotency_key=idempotency_key,
             duplicate_message="指令结果已存在（幂等键重复）",
-            kind=InboxKind.DEVICE_EVENT,  # 结果也是事件的一种
+            kind=InboxKind.COMMAND_RESULT,
             payload=payload,
             source_message_id=source_message_id,
             correlation_id=correlation_id,
@@ -263,6 +283,55 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             raise RuntimeError(f"更新 Inbox 消息失败: {inbox_id}")
         return updated
 
+    async def create_timeout_inbox(
+        self,
+        db: AsyncSession,
+        session_id: int,
+        workline_id: int,
+        deadline_at: object | None = None,
+        correlation_id: str | None = None,
+    ) -> WorklineInbox:
+        """
+        创建超时 Inbox 消息
+
+        Args:
+            db: 数据库会话
+            session_id: 会话 ID
+            workline_id: 作业线 ID
+            correlation_id: 关联 ID（可选）
+
+        Returns:
+            创建的 Inbox 消息
+        """
+        timeout_key = _format_deadline(deadline_at)
+        idempotency_key = f"timeout:{session_id}:{timeout_key}"
+        payload: dict[str, Any] = {
+            "message_type": "TIMEOUT",
+            "session_id": session_id,
+            "workline_id": workline_id,
+            "timeout_at": timezone.now_for_db().isoformat(),
+            "deadline_at": timeout_key,
+        }
+
+        inbox_data: dict[str, Any] = {
+            "kind": InboxKind.TIMER_TIMEOUT,
+            "idempotency_key": idempotency_key,
+            "source_system": SourceSystem.SYSTEM,
+            "session_id": session_id,
+            "workline_id": workline_id,
+            "payload_json": payload,
+            "status": InboxStatus.NEW,
+            "received_at": timezone.now_for_db(),
+        }
+
+        if correlation_id:
+            inbox_data["correlation_id"] = correlation_id
+
+        created = await self.repo.create(db, inbox_data)
+        if created is None:
+            raise RuntimeError("创建超时 Inbox 消息失败")
+        return created
+
 
 # 创建单例
-inbox_service = WorklineInboxService()
+inbox_service: WorklineInboxService = WorklineInboxService()

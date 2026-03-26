@@ -42,11 +42,11 @@ def parse_set_from_cached(value: Any) -> set[Any]:
         if not isinstance(parsed_value, list):
             raise TypeError("unsupported cached set payload")
         parsed_list = cast("list[Any]", parsed_value)
-        return {item for item in parsed_list}
+        return set(parsed_list)
     if isinstance(value, list):
         # 优化：直接转换列表（常见场景）
         list_value = cast("list[Any]", value)
-        return {item for item in list_value}
+        return set(list_value)
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray, Mapping)):
         iterable_value = cast("Iterable[Any]", value)
         return {str(item) for item in iterable_value}

@@ -11,19 +11,19 @@ from src.database.tree_repository import TreeRepository
 
 
 def _roles(user: User) -> list[Role]:
-    return cast(list[Role], getattr(cast(Any, user), "roles", []))
+    return cast("list[Role]", getattr(cast("Any", user), "roles", []))
 
 
 def _menus(role: Role) -> list[Menu]:
-    return cast(list[Menu], getattr(cast(Any, role), "menus", []))
+    return cast("list[Menu]", getattr(cast("Any", role), "menus", []))
 
 
 def _is_deleted(instance: Any) -> bool:
-    return cast(bool, getattr(cast(Any, instance), "is_deleted", False))
+    return cast("bool", getattr(cast("Any", instance), "is_deleted", False))
 
 
 def _menu_id(menu: Menu) -> int | None:
-    return cast(int | None, getattr(cast(Any, menu), "id", None))
+    return cast("int | None", getattr(cast("Any", menu), "id", None))
 
 
 class MenuRepository(TreeRepository[Menu]):

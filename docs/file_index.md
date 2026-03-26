@@ -337,6 +337,7 @@
 - **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
 
 **相关文档**：
+- 运行时语义 SSOT：`docs/workline_business_data_event_flow_spec.md` v0.1
 - 架构设计：`docs/workline_plugin_architecture_design.md` v3.2
 - Phase 1 实现总结：`claudedocs/phase1_callback_inbox_implementation.md`
 

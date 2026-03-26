@@ -37,9 +37,9 @@ class RedisManager:
         应用将以降级模式运行（直接查询数据库）。
         """
         try:
-            connection_pool_cls = cast(Any, ConnectionPool)
+            connection_pool_cls = cast("Any", ConnectionPool)
             self.connection_pool = cast(
-                ConnectionPool,
+                "ConnectionPool",
                 connection_pool_cls.from_url(
                     settings.REDIS_URL,
                     db=0,
@@ -115,7 +115,7 @@ class RedisManager:
         if self.is_available and self.redis_client:
             try:
                 # 快速检查连接
-                ping_result = cast(Any, self.redis_client).ping()
+                ping_result = cast("Any", self.redis_client).ping()
                 if asyncio.iscoroutine(ping_result):
                     await asyncio.wait_for(ping_result, timeout=1.0)
                 elif not ping_result:

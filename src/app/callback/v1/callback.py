@@ -20,10 +20,10 @@ from loguru import logger
 from src.app.callback.services import callback_log_service
 from src.app.device.models.command import CommandCallbackResult
 from src.app.device.models.event_log import EventRequest
-from src.app.device.services import device_command_service
+from src.app.device.services import device_command_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.workline.services import inbox_service
+from src.app.workline.services.inbox_service import inbox_service
 from src.core.api_security import RequireAPIPermission
 from src.core.response import response_builder
 from src.database.dependencies import AsyncSessionDep
@@ -36,6 +36,46 @@ _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
 
 def _is_duplicate_inbox_error(error: ValueError) -> bool:
     return _DUPLICATE_ERROR_MARKER in str(error)
+
+
+def _enqueue_workline_processing() -> None:
+    from src.celery_app.app import celery_app
+
+    cast("Any", celery_app).send_task(
+        "src.celery_app.tasks.workline.process_inbox_batch",
+        kwargs={"limit": 10},
+    )
+
+
+def _has_workline_binding(value: object) -> bool:
+    return isinstance(value, int) and value > 0
+
+
+async def _is_workline_device_callback(db: AsyncSessionDep, device_code: str) -> bool:
+    device = await device_service.get_device_by_code(db, device_code)
+    return _has_workline_binding(getattr(device, "work_line_id", None))
+
+
+async def _is_workline_command_callback(
+    db: AsyncSessionDep,
+    *,
+    existing_command: object | None,
+    device_code: str,
+) -> bool:
+    if _has_workline_binding(getattr(existing_command, "workline_id", None)):
+        return True
+    return await _is_workline_device_callback(db, device_code)
+
+
+async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
+    """先持久化 Inbox，再触发异步编排。
+
+    如果 broker 在 commit 后短暂失败，请求会返回失败，设备重试进入幂等路径时
+    仍会再次触发 enqueue，避免 durable inbox 永久滞留在 NEW。
+    """
+
+    await db.commit()
+    _enqueue_workline_processing()
 
 
 def _build_callback_log_payload(
@@ -97,7 +137,7 @@ async def _record_callback_audit_log(
     status_code=status.HTTP_200_OK,
     summary="任务结果回传",
     dependencies=[Depends(RequireAPIPermission("api:callback:result"))],
-    description="设备完成指令后，调用此接口回传执行结果（白皮书 3.2.1）",
+    description="设备完成指令后，调用此接口回传执行结果",
 )
 async def callback_result(
     callback: CommandCallbackResult,
@@ -143,36 +183,72 @@ async def callback_result(
     logger.info(f"收到指令结果回调: {callback.command_code} -> {callback.result} (request_id={request_id})")
 
     try:
-        # 写入 WorklineInbox（统一编排入口）
-        try:
-            _ = await inbox_service.create_command_result_inbox(
-                db=db,
-                command_code=callback.command_code,
-                device_code=callback.device_code,
-                result=callback.result.value,
-                finish_time=callback.finish_time,
-                data=callback.data or {},
-                correlation_id=request_id,
-            )
-            logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
-        except ValueError as e:
-            # 幂等重复，标记并跳过业务处理
-            if _is_duplicate_inbox_error(e):
-                is_duplicate = True
-                logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
-            else:
-                raise
+        existing_command = await device_command_service.get_command_by_code(db, callback.command_code)
+        inherited_correlation_id = (
+            existing_command.correlation_id
+            if existing_command is not None and isinstance(existing_command.correlation_id, str)
+            else None
+        )
+        raw_command_params = getattr(existing_command, "params", None) if existing_command is not None else None
+        command_params = cast("dict[str, Any]", raw_command_params) if isinstance(raw_command_params, dict) else {}
+        callback_data_payload = cast("dict[str, Any]", callback.data) if isinstance(callback.data, dict) else {}
+        command_type = callback_data_payload.get("command_type")
+        if not isinstance(command_type, str) or not command_type:
+            derived_action = command_params.get("action")
+            command_type = derived_action if isinstance(derived_action, str) and derived_action else None
+        is_workline_callback = await _is_workline_command_callback(
+            db,
+            existing_command=existing_command,
+            device_code=callback.device_code,
+        )
 
-        # 只在非重复时执行业务处理
-        if not is_duplicate:
-            # 处理回调结果（原有逻辑）
+        if is_workline_callback:
+            # 写入 WorklineInbox（统一编排入口）
+            try:
+                _ = await inbox_service.create_command_result_inbox(
+                    db=db,
+                    command_code=callback.command_code,
+                    device_code=callback.device_code,
+                    result=callback.result.value,
+                    finish_time=callback.finish_time,
+                    data=callback.data or {},
+                    command_type=command_type,
+                    error_detail=callback.error_detail,
+                    source_message_id=request_id,
+                    correlation_id=inherited_correlation_id,
+                )
+                logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
+            except ValueError as e:
+                # 幂等重复，标记并跳过业务处理
+                if _is_duplicate_inbox_error(e):
+                    is_duplicate = True
+                    logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
+                else:
+                    raise
+
+            # 重复回调只跳过控制流副作用；但 commit 后仍需重新触发编排，
+            # 以便覆盖“首包已落库但 enqueue 失败”的恢复场景。
+            if is_duplicate:
+                await _commit_and_enqueue_workline_processing(db)
+            else:
+                command = await device_command_service.handle_callback_result(db, callback)
+                if command is None:
+                    raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
+                inherited_correlation_id = command.correlation_id or inherited_correlation_id
+                await _commit_and_enqueue_workline_processing(db)
+                logger.info(
+                    f"指令结果处理完成: {callback.command_code} -> "
+                    f"status={command.status.value}, "
+                    f"duration={command.get_duration_ms()}ms"
+                )
+        else:
             command = await device_command_service.handle_callback_result(db, callback)
             if command is None:
                 raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
+            inherited_correlation_id = command.correlation_id or inherited_correlation_id
             await db.commit()
-
             logger.info(
-                f"指令结果处理完成: {callback.command_code} -> "
+                f"非 Workline 指令结果已同步处理: {callback.command_code} -> "
                 f"status={command.status.value}, "
                 f"duration={command.get_duration_ms()}ms"
             )
@@ -297,8 +373,6 @@ async def callback_event(
     )
 
     try:
-        # 异步处理事件（通过 Celery）
-        from src.celery_app.app import celery_app
         from src.utils.timezone import timezone
 
         # 如果设备未提供时间戳，使用服务器当前时间（毫秒）
@@ -306,44 +380,31 @@ async def callback_event(
         if timestamp is None:
             timestamp = int(timezone.now_utc().timestamp() * 1000)
             logger.debug(f"设备未提供时间戳，使用服务器时间: {timestamp}")
+        is_workline_event = await _is_workline_device_callback(db, event_request.device_code)
 
-        # 写入 WorklineInbox（统一编排入口）
-        try:
-            _ = await inbox_service.create_device_event_inbox(
-                db=db,
-                device_code=event_request.device_code,
-                event_type=event_request.event_type.value,
-                timestamp=timestamp,
-                data=cast("dict[str, Any]", event_request.data or {}),
-                correlation_id=request_id,
-            )
-            logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type.value}")
-        except ValueError as e:
-            # 幂等重复，标记并跳过业务处理
-            if _is_duplicate_inbox_error(e):
-                is_duplicate = True
-                logger.info(
-                    f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type.value}"
+        if is_workline_event:
+            # 写入 WorklineInbox（统一编排入口）
+            try:
+                _ = await inbox_service.create_device_event_inbox(
+                    db=db,
+                    device_code=event_request.device_code,
+                    event_type=event_request.event_type.value,
+                    timestamp=timestamp,
+                    data=cast("dict[str, Any]", event_request.data or {}),
+                    source_message_id=request_id,
                 )
-            else:
-                raise
+                logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type.value}")
+            except ValueError as e:
+                # 幂等重复，标记并跳过业务处理
+                if _is_duplicate_inbox_error(e):
+                    is_duplicate = True
+                    logger.info(
+                        f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type.value}"
+                    )
+                else:
+                    raise
 
-        # 只在非重复时提交 Celery 任务
-        if not is_duplicate:
-            # 构建事件数据，传递 request_id 用于链路追踪
-            event_data: dict[str, Any] = {
-                "device_code": event_request.device_code,
-                "event_type": event_request.event_type.value,
-                "timestamp": timestamp,
-                "data": cast("dict[str, Any] | None", event_request.data),
-                "request_id": request_id,  # 传递 request_id 到 Celery
-            }
-
-            # 使用 send_task 异步处理事件（更可靠，确保任务被正确调度）
-            cast("Any", celery_app).send_task(
-                "src.celery_app.tasks.device.process_device_event",
-                args=[event_data],
-            )
+            await _commit_and_enqueue_workline_processing(db)
 
         cost_time = time.time() - start_time
         response_time_ms = int(cost_time * 1000)

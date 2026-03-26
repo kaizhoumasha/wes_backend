@@ -308,10 +308,10 @@ curl -X POST http://localhost:8004/api/v1/robot/execute \
 │  3. WES 事件接收                                                         │
 │     ├─ POST /api/v1/callback/event                                     │
 │     ├─ 立即返回 ACK (200 OK)                                           │
-│     └─ 触发 Celery 任务                                                 │
+│     └─ 写入 WorklineInbox 并触发 process_inbox_batch                    │
 │                                                                         │
 │  4. WES 业务处理                                                         │
-│     ├─ process_material_arrived 任务                                    │
+│     ├─ 恢复 WorklineSession / 调用插件                                  │
 │     ├─ 创建搬运指令记录                                                 │
 │     └─ 下发指令到机械臂                                                  │
 │                                                                         │

@@ -203,13 +203,13 @@ class TreeRepository[T](BaseRepository[T]):
         """获取直接子节点"""
         # 使用 getattr 避免泛型类型的属性访问错误
         parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
-        where_clauses: list[FilterClause] = [cast(FilterClause, parent_id_attr == parent_id)]
+        where_clauses: list[FilterClause] = [cast("FilterClause", parent_id_attr == parent_id)]
 
         # 使用软删除控制状态
         if not include_inactive:
             is_deleted_attr = getattr(self.model, "is_deleted", None)
             if is_deleted_attr is not None:
-                where_clauses.append(cast(FilterClause, is_deleted_attr == False))  # noqa: E712
+                where_clauses.append(cast("FilterClause", is_deleted_attr == False))  # noqa: E712
 
         sort_order_attr = self.model.sort_order  # type: ignore[attr-defined]
         _, children = await self.get_list(

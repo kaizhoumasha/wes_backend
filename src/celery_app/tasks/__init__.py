@@ -2,6 +2,6 @@
 # Celery 任务模块 - P9 WES Backend
 # ============================================
 
-from . import core, device
+from . import core, workline
 
-__all__ = ["core", "device"]
+__all__ = ["core", "workline"]

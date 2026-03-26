@@ -9,6 +9,7 @@
 # pyright: reportUnknownMemberType=false, reportAssignmentType=false, reportGeneralTypeIssues=false, reportArgumentType=false
 
 from typing import Optional
+
 from sqlmodel import Field, Relationship, SQLModel
 
 from src.database.relation_metadata import (
