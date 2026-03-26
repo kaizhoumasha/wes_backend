@@ -29,6 +29,9 @@ from src.workline_runtime.types import (
     WaitIntent,
 )
 
+# 从 event_handlers 导入 LocationType
+from src.workline_plugins.smt_classifier.event_handlers import LocationType
+
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
@@ -49,17 +52,19 @@ class SmtClassifierDeviceRole(str, Enum):
     CONVEYOR = "CONVEYOR"  # 流水线 - OK 产品传输
 
 
-class SmtClassifierLocationId(str, Enum):
-    """SMT 粗分机位置类型。
+class SmtClassifierCapabilities(str, Enum):
+    """SMT 粗分机设备能力枚举
 
-    位置前缀属于具体 WorkLine 实例，插件内部只关心单条工作线的槽位类型。
+    定义设备支持的操作能力，用于设备能力声明和校验。
     """
 
-    INPUT = "INPUT"
-    NG = "NG"
-    PIPELINE_INPUT = "PIPELINE_INPUT"
-    PIPELINE_OUTPUT = "PIPELINE_OUTPUT"
-    OUTPUT = "OUTPUT"
+    SCAN = "SCAN"  # 扫码
+    SIZE_DETECT = "SIZE_DETECT"  # 尺寸检测
+    THICKNESS_DETECT = "THICKNESS_DETECT"  # 测厚
+    PICK = "PICK"  # 抓取
+    PUT = "PUT"  # 放置
+    MOVE_FORWARD = "MOVE_FORWARD"  # 前进
+    MOVE_BACKWARD = "MOVE_BACKWARD"  # 后退
 
 
 class SmtClassifierStage(str, Enum):
@@ -128,33 +133,6 @@ class WorklineTopology:
 
 
 # ==================== 辅助函数 ====================
-
-
-def build_location_id(current_location_id: str, location: SmtClassifierLocationId) -> str:
-    """基于当前工作线位置 ID 构造同线目标位置 ID。"""
-
-    prefix, separator, _ = current_location_id.partition("_STATION_")
-    if prefix and separator:
-        return f"{prefix}_STATION_{location.value}"
-    return location.value
-
-
-def _get_ng_location(current_location_id: str) -> str:
-    """获取当前工作线的 NG 缓存位置。"""
-
-    return build_location_id(current_location_id, SmtClassifierLocationId.NG)
-
-
-def _get_output_location(current_location_id: str) -> str:
-    """获取当前工作线的出料位置。"""
-
-    return build_location_id(current_location_id, SmtClassifierLocationId.OUTPUT)
-
-
-def _get_pipeline_output(current_location_id: str) -> str:
-    """获取当前工作线的流水线输出位置。"""
-
-    return build_location_id(current_location_id, SmtClassifierLocationId.PIPELINE_OUTPUT)
 
 
 def _resolve_int_attr(entity: Any, field: str) -> int | None:
@@ -566,6 +544,7 @@ class SmtClassifierPlugin:
             "last_barcode": barcode,
             "scan_result": scan_result,
             "location_id": location_id,
+            "context_schema_version": "1.0",
         }
 
         # NG 流程：扫码 NG 直接放入 NG 缓存位
@@ -649,20 +628,21 @@ class SmtClassifierPlugin:
         if input_arm_id is None:
             return _missing_device_result(SmtClassifierDeviceRole.INPUT_ARM.value)
 
-        # 构建抓取放置命令
+        # 构建抓取放置命令 - 使用逻辑位置类型而非物理位置ID
         command = _build_command(
             device_id=input_arm_id,
             action=SmtClassifierCommandType.PICK_AND_PUT.value,
             params={
-                "from_location": current_location,
-                "to_location": _get_ng_location(current_location),
+                "source_type": LocationType.INPUT_PLATFORM.value,
+                "target_type": LocationType.NG_PLATFORM.value,
                 "reason": reason,
             },
         )
 
         context_patch["stage"] = SmtClassifierStage.WAITING_PICK_PLACE.value
-        context_patch["pick_place_reason"] = reason
-        context_patch["pending_location_id"] = _get_ng_location(current_location)
+        context_patch["ng_reason"] = reason
+        context_patch["source_type"] = LocationType.INPUT_PLATFORM.value
+        context_patch["target_type"] = LocationType.NG_PLATFORM.value
 
         return self._build_command_result(
             transition=_ng_transition(reason),
@@ -684,20 +664,19 @@ class SmtClassifierPlugin:
         if conveyor_id is None:
             return _missing_device_result(SmtClassifierDeviceRole.CONVEYOR.value)
 
-        pipeline_output_location = _get_pipeline_output(location_id)
-
-        # 构建流水线传输命令
+        # 构建流水线传输命令 - 使用逻辑位置类型
         command = _build_command(
             device_id=conveyor_id,
             action=SmtClassifierCommandType.MOVE_FORWARD.value,
             params={
-                "from_location": location_id,
-                "to_location": pipeline_output_location,
+                "source_type": LocationType.PIPELINE_PLATFORM.value,
+                "target_type": LocationType.PIPELINE_PLATFORM.value,
             },
         )
 
         context_patch["stage"] = SmtClassifierStage.WAITING_CONVEYOR.value
-        context_patch["pending_location_id"] = pipeline_output_location
+        context_patch["source_type"] = LocationType.PIPELINE_PLATFORM.value
+        context_patch["target_type"] = LocationType.PIPELINE_PLATFORM.value
 
         return self._build_command_result(
             transition="inspection_ok",
@@ -747,20 +726,22 @@ class SmtClassifierPlugin:
 
         # 获取当前会话上下文
         session_ctx = ctx.session.context_json or {}
-        pick_place_reason = session_ctx.get("pick_place_reason", "")
-        pending_location_id = session_ctx.get("pending_location_id")
+        ng_reason = session_ctx.get("ng_reason", "")
+        current_location = session_ctx.get("current_location")
         resolved_location_id = (
-            pending_location_id if isinstance(pending_location_id, str) and pending_location_id else None
+            current_location if isinstance(current_location, str) and current_location else None
         )
         topology = _resolve_workline_topology(ctx)
 
         # 命令失败处理
         if result != "SUCCESS":
-            return self._handle_command_failure(ctx, command_type, result_data)
+            # 递增重试计数
+            current_retry = session_ctx.get("retry_count", 0)
+            return self._handle_command_failure(ctx, command_type, result_data, current_retry)
 
         # 抓取放置完成
         if command_type == SmtClassifierCommandType.PICK_AND_PUT.value:
-            return self._handle_pick_place_completed(pick_place_reason, resolved_location_id)
+            return self._handle_pick_place_completed(ng_reason, resolved_location_id)
 
         # 流水线传输完成
         if command_type == SmtClassifierCommandType.MOVE_FORWARD.value:
@@ -769,22 +750,22 @@ class SmtClassifierPlugin:
         ctx.logger.warning(f"Unknown command type: {command_type}")
         return PluginResult()
 
-    def _handle_pick_place_completed(self, pick_place_reason: str, location_id: str | None) -> PluginResult:
+    def _handle_pick_place_completed(self, ng_reason: str, location_id: str | None) -> PluginResult:
         """处理抓取放置完成"""
         # NG 处理完成
-        if pick_place_reason in ("SCAN_NG", "INSPECTION_NG"):
+        if ng_reason in ("SCAN_NG", "INSPECTION_NG"):
             return PluginResult(
                 transition="ng_handled",
                 context_patch={
                     "stage": SmtClassifierStage.COMPLETED.value,
                     "ng_handled": True,
-                    "ng_reason": pick_place_reason,
+                    "ng_reason": ng_reason,
                     "location_id": location_id,
                 },
                 complete=True,
             )
 
-        if pick_place_reason == "OUTPUT":
+        if ng_reason == "OUTPUT":
             return PluginResult(
                 transition="output_handled",
                 context_patch={
@@ -802,22 +783,18 @@ class SmtClassifierPlugin:
 
     async def _handle_move_forward_completed(self, ctx: "PluginContext", topology: WorklineTopology) -> PluginResult:
         """处理流水线传输完成。"""
-        session_ctx = ctx.session.context_json or {}
-        current_location = session_ctx.get("pending_location_id") or session_ctx.get("location_id", "")
-        pipeline_output_location = str(current_location)
-
         # 获取出料机械臂
         output_arm_id = topology.output_arm_id
         if output_arm_id is None:
             return _missing_device_result(SmtClassifierDeviceRole.OUTPUT_ARM.value)
 
-        # 构建出料命令
+        # 构建出料命令 - 使用逻辑位置类型
         command = _build_command(
             device_id=output_arm_id,
             action=SmtClassifierCommandType.PICK_AND_PUT.value,
             params={
-                "from_location": pipeline_output_location,
-                "to_location": _get_output_location(pipeline_output_location),
+                "source_type": LocationType.PIPELINE_PLATFORM.value,
+                "target_type": LocationType.OUTPUT_PLATFORM.value,
                 "reason": "OUTPUT",
             },
         )
@@ -826,26 +803,52 @@ class SmtClassifierPlugin:
             transition="conveyor_complete",
             context_patch={
                 "stage": SmtClassifierStage.WAITING_OUTPUT.value,
-                "location_id": pipeline_output_location,
+                "source_type": LocationType.PIPELINE_PLATFORM.value,
+                "target_type": LocationType.OUTPUT_PLATFORM.value,
                 "pick_place_reason": "OUTPUT",
-                "pending_location_id": _get_output_location(pipeline_output_location),
             },
             command=command,
             wait_token=f"output_{ctx.session.id}",
         )
 
-    def _handle_command_failure(self, ctx: "PluginContext", command_type: str, result_data: dict) -> PluginResult:
+    def _handle_command_failure(
+        self,
+        ctx: "PluginContext",
+        command_type: str,
+        result_data: dict,
+        retry_count: int = 0,
+    ) -> PluginResult:
         """处理命令失败"""
         error_detail = result_data.get("error_detail", {})
         error_code = error_detail.get("code", "UNKNOWN_ERROR")
         error_message = error_detail.get("message", "Command execution failed")
 
-        ctx.logger.error(f"Command failed: type={command_type}, code={error_code}, message={error_message}")
+        ctx.logger.error(f"Command failed: type={command_type}, code={error_code}, message={error_message}, retry={retry_count}")
+
+        # 递增重试计数
+        new_retry_count = retry_count + 1
+
+        # 获取错误恢复策略
+        recovery_strategy = get_error_recovery_strategy(error_code)
+        should_auto_retry = recovery_strategy.auto_retry if recovery_strategy else False
+        max_retries = recovery_strategy.max_retries if recovery_strategy else 0
+
+        # 如果允许自动重试且未达到最大重试次数，进入重试逻辑
+        if should_auto_retry and new_retry_count <= max_retries:
+            ctx.logger.info(f"Auto-retrying command: {command_type}, attempt {new_retry_count}/{max_retries}")
+            return PluginResult(
+                transition="retry",
+                context_patch={
+                    "retry_count": new_retry_count,
+                    "last_retry_at": ctx.clock().isoformat(),
+                },
+            )
 
         return PluginResult(
             transition="command_failed",
             context_patch={
                 "stage": SmtClassifierStage.ERROR.value,
+                "retry_count": new_retry_count,
                 "last_error": {
                     "command_type": command_type,
                     "code": error_code,
@@ -1045,17 +1048,184 @@ class SmtClassifierPlugin:
         )
 
 
-# ==================== 单例导出 ====================
+# ==================== 错误码映射 ====================
+
+
+class ErrorCode(str, Enum):
+    """SMT 粗分机错误码定义"""
+
+    # 设备错误
+    DEVICE_TIMEOUT = "DEVICE_TIMEOUT"  # 设备响应超时
+    DEVICE_OFFLINE = "DEVICE_OFFLINE"  # 设备离线
+    DEVICE_BUSY = "DEVICE_BUSY"  # 设备忙
+
+    # 扫码错误
+    SCAN_FAILED = "SCAN_FAILED"  # 扫码失败
+    SCAN_EMPTY = "SCAN_EMPTY"  # 未扫描到条码
+    SCAN_INVALID = "SCAN_INVALID"  # 条码无效
+
+    # 检测错误
+    DETECT_FAILED = "DETECT_FAILED"  # 检测失败
+    SIZE_NG = "SIZE_NG"  # 尺寸不合格
+    THICKNESS_NG = "THICKNESS_NG"  # 厚度不合格
+
+    # 机械臂错误
+    PICK_FAILED = "PICK_FAILED"  # 抓取失败
+    PUT_FAILED = "PUT_FAILED"  # 放置失败
+    ARM_BLOCKED = "ARM_BLOCKED"  # 机械臂被阻挡
+
+    # 流水线错误
+    CONVEYOR_JAM = "CONVEYOR_JAM"  # 流水线卡料
+    CONVEYOR_TIMEOUT = "CONVEYOR_TIMEOUT"  # 流水线传输超时
+
+    # 系统错误
+    SESSION_NOT_FOUND = "SESSION_NOT_FOUND"  # 会话不存在
+    INVALID_STATE = "INVALID_STATE"  # 无效状态
+    TOPOLOGY_ERROR = "TOPOLOGY_ERROR"  # 拓扑错误
+
+
+@dataclass
+class ErrorRecoveryStrategy:
+    """错误恢复策略"""
+
+    code: str  # 错误码
+    description: str  # 错误描述
+    auto_retry: bool  # 是否自动重试
+    max_retries: int  # 最大重试次数
+    recovery_action: str  # 恢复动作
+    manual_hold: bool  # 是否需要人工介入
+
+
+# 错误码到恢复策略的映射表
+ERROR_RECOVERY_MAP: dict[str, ErrorRecoveryStrategy] = {
+    ErrorCode.DEVICE_TIMEOUT.value: ErrorRecoveryStrategy(
+        code=ErrorCode.DEVICE_TIMEOUT.value,
+        description="设备响应超时",
+        auto_retry=True,
+        max_retries=3,
+        recovery_action="retry_command",
+        manual_hold=False,
+    ),
+    ErrorCode.DEVICE_OFFLINE.value: ErrorRecoveryStrategy(
+        code=ErrorCode.DEVICE_OFFLINE.value,
+        description="设备离线",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="wait_device_online",
+        manual_hold=True,
+    ),
+    ErrorCode.SCAN_FAILED.value: ErrorRecoveryStrategy(
+        code=ErrorCode.SCAN_FAILED.value,
+        description="扫码失败",
+        auto_retry=True,
+        max_retries=2,
+        recovery_action="retry_scan",
+        manual_hold=False,
+    ),
+    ErrorCode.SCAN_EMPTY.value: ErrorRecoveryStrategy(
+        code=ErrorCode.SCAN_EMPTY.value,
+        description="未扫描到条码",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="manual_inspection",
+        manual_hold=True,
+    ),
+    ErrorCode.DETECT_FAILED.value: ErrorRecoveryStrategy(
+        code=ErrorCode.DETECT_FAILED.value,
+        description="检测失败",
+        auto_retry=True,
+        max_retries=2,
+        recovery_action="retry_detect",
+        manual_hold=False,
+    ),
+    ErrorCode.SIZE_NG.value: ErrorRecoveryStrategy(
+        code=ErrorCode.SIZE_NG.value,
+        description="尺寸不合格",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="ng_flow",
+        manual_hold=False,
+    ),
+    ErrorCode.THICKNESS_NG.value: ErrorRecoveryStrategy(
+        code=ErrorCode.THICKNESS_NG.value,
+        description="厚度不合格",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="ng_flow",
+        manual_hold=False,
+    ),
+    ErrorCode.PICK_FAILED.value: ErrorRecoveryStrategy(
+        code=ErrorCode.PICK_FAILED.value,
+        description="抓取失败",
+        auto_retry=True,
+        max_retries=1,
+        recovery_action="retry_pick",
+        manual_hold=False,
+    ),
+    ErrorCode.CONVEYOR_JAM.value: ErrorRecoveryStrategy(
+        code=ErrorCode.CONVEYOR_JAM.value,
+        description="流水线卡料",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="clear_jam",
+        manual_hold=True,
+    ),
+    ErrorCode.SESSION_NOT_FOUND.value: ErrorRecoveryStrategy(
+        code=ErrorCode.SESSION_NOT_FOUND.value,
+        description="会话不存在",
+        auto_retry=False,
+        max_retries=0,
+        recovery_action="create_new_session",
+        manual_hold=False,
+    ),
+}
+
+
+def get_error_recovery_strategy(error_code: str) -> ErrorRecoveryStrategy | None:
+    """获取错误码对应的恢复策略"""
+    return ERROR_RECOVERY_MAP.get(error_code)
+
+
+def determine_error_code(event_data: dict[str, Any], command_result: dict[str, Any] | None = None) -> str:
+    """根据事件数据和命令结果确定错误码
+
+    Args:
+        event_data: 事件数据
+        command_result: 命令结果（可选）
+
+    Returns:
+        错误码字符串
+    """
+    # 从命令结果解析错误码
+    if command_result:
+        result_code = command_result.get("result", "")
+        if result_code == "FAILED":
+            error_detail = command_result.get("error_detail", {})
+            device_error = error_detail.get("error_code", "")
+            if device_error:
+                return device_error
+
+    # 从事件数据解析错误码
+    event_type = event_data.get("event_type", "")
+    if event_type == "ESTOP_PRESSED":
+        return ErrorCode.DEVICE_OFFLINE.value
+
+    # 默认返回通用错误
+    return ErrorCode.DEVICE_TIMEOUT.value
 
 smt_classifier_plugin = SmtClassifierPlugin()
 
 __all__ = [
     "DeviceRoleRequirement",
+    "ErrorCode",
+    "ErrorRecoveryStrategy",
+    "ERROR_RECOVERY_MAP",
+    "SmtClassifierCapabilities",
     "SmtClassifierCommandType",
     "SmtClassifierDeviceRole",
     "SmtClassifierEventType",
-    "SmtClassifierLocationId",
     "SmtClassifierPlugin",
     "SmtClassifierStage",
+    "get_error_recovery_strategy",
     "smt_classifier_plugin",
 ]

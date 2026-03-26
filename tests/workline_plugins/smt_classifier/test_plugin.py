@@ -17,14 +17,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.workline_plugins.smt_classifier.event_handlers import LocationType
 from src.workline_plugins.smt_classifier.plugin import (
     SmtClassifierCommandType,
     SmtClassifierDeviceRole,
     SmtClassifierEventType,
-    SmtClassifierLocationId,
     SmtClassifierPlugin,
     SmtClassifierStage,
-    build_location_id,
 )
 from src.workline_runtime.types import (
     CommandIntent,
@@ -42,19 +41,6 @@ class TestSmtClassifierPluginEnums:
         assert SmtClassifierDeviceRole.INPUT_ARM.value == "INPUT_ARM"
         assert SmtClassifierDeviceRole.OUTPUT_ARM.value == "OUTPUT_ARM"
         assert SmtClassifierDeviceRole.CONVEYOR.value == "CONVEYOR"
-
-    def test_location_id_values(self):
-        """测试位置 ID 枚举值"""
-        assert SmtClassifierLocationId.INPUT.value == "INPUT"
-        assert SmtClassifierLocationId.NG.value == "NG"
-        assert SmtClassifierLocationId.PIPELINE_INPUT.value == "PIPELINE_INPUT"
-        assert SmtClassifierLocationId.PIPELINE_OUTPUT.value == "PIPELINE_OUTPUT"
-        assert SmtClassifierLocationId.OUTPUT.value == "OUTPUT"
-
-        assert build_location_id("LEFT_STATION_INPUT", SmtClassifierLocationId.INPUT) == "LEFT_STATION_INPUT"
-        assert (
-            build_location_id("RIGHT_STATION_PIPELINE_OUTPUT", SmtClassifierLocationId.OUTPUT) == "RIGHT_STATION_OUTPUT"
-        )
 
     def test_stage_values(self):
         """测试阶段枚举值"""
@@ -170,7 +156,7 @@ class TestSmtClassifierPluginScanEvents:
             "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
             "barcode": "BC001",
             "scan_result": "OK",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.INPUT),
+            "source_type": LocationType.INPUT_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(mock_context_with_devices, mock_inbox)
@@ -179,7 +165,8 @@ class TestSmtClassifierPluginScanEvents:
         assert result.context_patch["scan_result"] == "OK"
         assert result.context_patch["last_barcode"] == "BC001"
         assert result.context_patch["stage"] == SmtClassifierStage.WAITING_INSPECTION.value
-        assert result.context_patch["location_id"] == build_location_id("LEFT", SmtClassifierLocationId.INPUT)
+        assert result.context_patch["source_type"] == LocationType.INPUT_PLATFORM.value
+        assert result.context_patch["target_type"] == LocationType.PIPELINE_PLATFORM.value
 
     @pytest.mark.asyncio
     async def test_scan_ng_flow(self, plugin, mock_context_with_devices, mock_inbox):
@@ -188,15 +175,16 @@ class TestSmtClassifierPluginScanEvents:
             "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
             "barcode": "BC002",
             "scan_result": "NG",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.INPUT),
+            "source_type": LocationType.INPUT_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(mock_context_with_devices, mock_inbox)
 
         assert result.transition == "scan_ng"
-        assert result.context_patch["scan_result"] == "NG"
         assert len(result.commands) == 1
         assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
+        assert result.commands[0].parameters["params"]["source_type"] == LocationType.INPUT_PLATFORM.value
+        assert result.commands[0].parameters["params"]["target_type"] == LocationType.NG_PLATFORM.value
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
 
@@ -207,13 +195,14 @@ class TestSmtClassifierPluginScanEvents:
             "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
             "barcode": "BC003",
             "scan_result": "NG",
-            "location_id": build_location_id("RIGHT", SmtClassifierLocationId.INPUT),
+            "source_type": LocationType.INPUT_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(mock_context_with_devices, mock_inbox)
 
         assert result.transition == "scan_ng"
-        assert result.commands[0].parameters["to_location"] == build_location_id("RIGHT", SmtClassifierLocationId.NG)
+        assert result.commands[0].parameters["params"]["source_type"] == LocationType.INPUT_PLATFORM.value
+        assert result.commands[0].parameters["params"]["target_type"] == LocationType.NG_PLATFORM.value
 
 
 class TestSmtClassifierPluginEstop:
@@ -304,7 +293,7 @@ class TestSmtClassifierPluginInspectionEvents:
         mock_inbox.payload_json = {
             "event_type": SmtClassifierEventType.INSPECTION_COMPLETED.value,
             "inspection_result": "OK",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_INPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(mock_context_with_devices, mock_inbox)
@@ -320,7 +309,7 @@ class TestSmtClassifierPluginInspectionEvents:
         mock_inbox.payload_json = {
             "event_type": SmtClassifierEventType.INSPECTION_COMPLETED.value,
             "inspection_result": "NG",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_INPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(mock_context_with_devices, mock_inbox)
@@ -347,7 +336,7 @@ class TestSmtClassifierPluginCommandResult:
         context.session.id = 123
         context.session.context_json = {
             "stage": SmtClassifierStage.WAITING_PICK_PLACE.value,
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_OUTPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
         context.devices_by_role = {}
 
@@ -376,7 +365,7 @@ class TestSmtClassifierPluginCommandResult:
         """测试 NG 抓取放置完成"""
         mock_context_with_devices.session.context_json = {
             "stage": SmtClassifierStage.WAITING_PICK_PLACE.value,
-            "pick_place_reason": "SCAN_NG",
+            "ng_reason": "SCAN_NG",
         }
         mock_inbox.payload_json = {
             "command_type": SmtClassifierCommandType.PICK_AND_PUT.value,
@@ -394,8 +383,8 @@ class TestSmtClassifierPluginCommandResult:
         """测试流水线传输完成"""
         mock_context_with_devices.session.context_json = {
             "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_INPUT),
-            "pending_location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_OUTPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
+            "target_type": LocationType.PIPELINE_PLATFORM.value,
         }
         mock_inbox.payload_json = {
             "command_type": SmtClassifierCommandType.MOVE_FORWARD.value,
@@ -437,8 +426,8 @@ class TestSmtClassifierPluginCommandResult:
         context.session.id = 123
         context.session.context_json = {
             "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
-            "location_id": build_location_id("RIGHT", SmtClassifierLocationId.PIPELINE_INPUT),
-            "pending_location_id": build_location_id("RIGHT", SmtClassifierLocationId.PIPELINE_OUTPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
+            "target_type": LocationType.PIPELINE_PLATFORM.value,
         }
 
         input_arm = MagicMock(
@@ -467,12 +456,8 @@ class TestSmtClassifierPluginCommandResult:
 
         assert result.transition == "conveyor_complete"
         assert result.commands[0].target_device_id == 33
-        assert result.commands[0].parameters["from_location"] == build_location_id(
-            "RIGHT", SmtClassifierLocationId.PIPELINE_OUTPUT
-        )
-        assert result.commands[0].parameters["to_location"] == build_location_id(
-            "RIGHT", SmtClassifierLocationId.OUTPUT
-        )
+        assert result.commands[0].parameters["params"]["source_type"] == LocationType.PIPELINE_PLATFORM.value
+        assert result.commands[0].parameters["params"]["target_type"] == LocationType.OUTPUT_PLATFORM.value
 
 
 class TestSmtClassifierPluginTimeout:
@@ -592,7 +577,7 @@ class TestSmtClassifierPluginExternalHttp:
         context.session = MagicMock()
         context.session.id = 123
         context.session.context_json = {
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_INPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
         context.devices_by_role = {}
 
@@ -722,7 +707,7 @@ class TestSmtClassifierPluginIntegration:
             "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
             "barcode": "BC001",
             "scan_result": "OK",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.INPUT),
+            "source_type": LocationType.INPUT_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(context, inbox)
@@ -733,7 +718,7 @@ class TestSmtClassifierPluginIntegration:
         inbox.payload_json = {
             "event_type": SmtClassifierEventType.INSPECTION_COMPLETED.value,
             "inspection_result": "OK",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.PIPELINE_INPUT),
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(context, inbox)
@@ -771,7 +756,7 @@ class TestSmtClassifierPluginIntegration:
             "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
             "barcode": "BC002",
             "scan_result": "NG",
-            "location_id": build_location_id("LEFT", SmtClassifierLocationId.INPUT),
+            "source_type": LocationType.INPUT_PLATFORM.value,
         }
 
         result = await plugin.on_device_event(context, inbox)

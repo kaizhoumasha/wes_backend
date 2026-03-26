@@ -81,6 +81,7 @@ def run_server(
     port: int,
     device_code: str,
     log_level: str = "info",
+    env_vars: dict[str, str] | None = None,
 ) -> None:
     """在子进程中运行 uvicorn 服务器
 
@@ -91,7 +92,13 @@ def run_server(
         port: 监听端口
         device_code: 设备编码（用于环境变量传递）
         log_level: 日志级别
+        env_vars: 要设置的环境变量字典
     """
+    # 首先设置从父进程传递的环境变量（spawn 方式需要）
+    if env_vars:
+        for key, value in env_vars.items():
+            os.environ[key] = value
+
     # 设置子进程环境变量
     os.environ["DEVICE_CODE"] = device_code
     if device_code.startswith("ARM") and "WES_RESULT_CALLBACK_URL" in os.environ and "WES_CALLBACK_URL" not in os.environ:

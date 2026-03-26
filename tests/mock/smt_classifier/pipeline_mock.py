@@ -108,16 +108,22 @@ def build_api_auth_headers(method: str, path: str) -> dict:
 # 数据模型
 # ============================================
 
-# 事件类型枚举
+# 事件类型枚举（与 WES EventType 保持一致）
 class EventType(str):
-    """事件类型"""
+    """事件类型（遵循 WES 回调接口规范）"""
 
-    SCAN_OK = "SCAN_OK"
-    SCAN_NG = "SCAN_NG"
-    DETECT_OK = "DETECT_OK"
-    DETECT_NG = "DETECT_NG"
-    THICKNESS_OK = "THICKNESS_OK"
-    THICKNESS_NG = "THICKNESS_NG"
+    # 设备状态事件
+    ESTOP_PRESSED = "ESTOP_PRESSED"
+    DEVICE_ONLINE = "DEVICE_ONLINE"
+    DEVICE_OFFLINE = "DEVICE_OFFLINE"
+    DEVICE_ERROR = "DEVICE_ERROR"
+
+    # 业务触发事件（WES 回调使用）
+    MATERIAL_ARRIVED = "MATERIAL_ARRIVED"
+    SCAN_COMPLETED = "SCAN_COMPLETED"
+    PICK_COMPLETED = "PICK_COMPLETED"
+    PUT_COMPLETED = "PUT_COMPLETED"
+    PROCESS_COMPLETED = "PROCESS_COMPLETED"
 
 
 # 位置 ID 枚举
@@ -341,11 +347,14 @@ class PipelineSimulator:
             事件记录
         """
         async with self._lock:
-            # 确定事件类型
-            event_type = EventType.SCAN_OK if result.upper() == "OK" else EventType.SCAN_NG
+            # 使用 WES 标准事件类型 SCAN_COMPLETED
+            event_type = EventType.SCAN_COMPLETED
+            # 扫码结果放在 data.result 中
+            scan_result = result.upper()
 
-            # 生成事件 ID
-            event_id = self._generate_event_id(event_type)
+            # 生成事件 ID（使用内部标识便于追踪）
+            internal_type = f"SCAN_{scan_result}"
+            event_id = self._generate_event_id(internal_type)
 
             # 构建事件数据
             event_data = {
@@ -355,21 +364,21 @@ class PipelineSimulator:
                 "data": {
                     "barcode": barcode,
                     "location": LocationID.SCAN,
-                    "result": result.upper(),
+                    "result": scan_result,  # OK 或 NG
                 },
             }
 
             # 上报事件到 WES
             await self._report_event_to_wes(event_data)
 
-            # 记录事件
+            # 记录事件（内部保留原始类型便于日志追踪）
             event_record = EventRecord(
                 event_id=event_id,
                 device_code=self.device_code,
-                event_type=event_type,
+                event_type=internal_type,  # 内部使用 SCAN_OK/SCAN_NG 便于日志识别
                 barcode=barcode,
                 location=LocationID.SCAN,
-                result=result.upper(),
+                result=scan_result,
                 timestamp=event_data["timestamp"],
                 data=event_data["data"],
                 reported_at=datetime.now(),
@@ -399,11 +408,13 @@ class PipelineSimulator:
             事件记录
         """
         async with self._lock:
-            # 确定事件类型
-            event_type = EventType.DETECT_OK if result.upper() == "OK" else EventType.DETECT_NG
+            # 使用 WES 标准事件类型 PROCESS_COMPLETED
+            event_type = EventType.PROCESS_COMPLETED
+            detect_result = result.upper()
 
-            # 生成事件 ID
-            event_id = self._generate_event_id(event_type)
+            # 生成事件 ID（使用内部标识便于追踪）
+            internal_type = f"DETECT_{detect_result}"
+            event_id = self._generate_event_id(internal_type)
 
             # 默认尺寸
             if dimensions is None:
@@ -417,7 +428,7 @@ class PipelineSimulator:
                 "data": {
                     "barcode": barcode,
                     "location": LocationID.DETECT,
-                    "result": result.upper(),
+                    "result": detect_result,
                     "dimensions": {
                         "length": dimensions.length,
                         "width": dimensions.width,
@@ -433,10 +444,10 @@ class PipelineSimulator:
             event_record = EventRecord(
                 event_id=event_id,
                 device_code=self.device_code,
-                event_type=event_type,
+                event_type=internal_type,
                 barcode=barcode,
                 location=LocationID.DETECT,
-                result=result.upper(),
+                result=detect_result,
                 timestamp=event_data["timestamp"],
                 data=event_data["data"],
                 reported_at=datetime.now(),
@@ -469,11 +480,13 @@ class PipelineSimulator:
             事件记录
         """
         async with self._lock:
-            # 确定事件类型
-            event_type = EventType.THICKNESS_OK if result.upper() == "OK" else EventType.THICKNESS_NG
+            # 使用 WES 标准事件类型 PROCESS_COMPLETED
+            event_type = EventType.PROCESS_COMPLETED
+            thickness_result = result.upper()
 
-            # 生成事件 ID
-            event_id = self._generate_event_id(event_type)
+            # 生成事件 ID（使用内部标识便于追踪）
+            internal_type = f"THICKNESS_{thickness_result}"
+            event_id = self._generate_event_id(internal_type)
 
             # 构建事件数据
             event_data = {
@@ -483,7 +496,7 @@ class PipelineSimulator:
                 "data": {
                     "barcode": barcode,
                     "location": LocationID.THICKNESS,
-                    "result": result.upper(),
+                    "result": thickness_result,
                     "thickness_mm": thickness_mm,
                 },
             }
@@ -495,10 +508,10 @@ class PipelineSimulator:
             event_record = EventRecord(
                 event_id=event_id,
                 device_code=self.device_code,
-                event_type=event_type,
+                event_type=internal_type,
                 barcode=barcode,
                 location=LocationID.THICKNESS,
-                result=result.upper(),
+                result=thickness_result,
                 timestamp=event_data["timestamp"],
                 data=event_data["data"],
                 reported_at=datetime.now(),

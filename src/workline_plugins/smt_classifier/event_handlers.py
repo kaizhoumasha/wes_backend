@@ -80,31 +80,6 @@ class CommandResult(str, Enum):
     FAILED = "FAILED"
 
 
-# ==================== 位置定义 ====================
-
-# 左侧位置 ID
-LEFT_STATION_INPUT = "STATION_INPUT1"
-LEFT_PIPELINE_INPUT1 = "STATION_PIPELINE1_INPUT1"
-LEFT_PIPELINE_INPUT2 = "STATION_PIPELINE1_INPUT2"
-LEFT_PIPELINE_OUTPUT = "STATION_PIPELINE1_OUTPUT1"
-LEFT_NG_PLATFORM1 = "STATION_NG_PLATFORM1"
-LEFT_NG_PLATFORM2 = "STATION_NG_PLATFORM2"
-LEFT_OUTPUT = "STATION_OUTPUT1"
-
-# 右侧位置 ID
-RIGHT_STATION_INPUT = "STATION_INPUT1"
-RIGHT_PIPELINE_INPUT = "STATION_PIPELINE2_INPUT1"
-RIGHT_PIPELINE_OUTPUT = "STATION_PIPELINE2_OUTPUT1"
-
-# 设备 ID
-DEVICE_PIPELINE_LEFT = "PIPELINE01"
-DEVICE_PIPELINE_RIGHT = "PIPELINE02"
-DEVICE_ARM_INPUT_LEFT = "ARM01"
-DEVICE_ARM_INPUT_RIGHT = "ARM03"
-DEVICE_ARM_OUTPUT_LEFT = "ARM02"
-DEVICE_ARM_OUTPUT_RIGHT = "ARM04"
-
-
 # ==================== 数据模型 ====================
 
 
@@ -180,11 +155,9 @@ def _ensure_dict(value: Any) -> JsonDict:
 
 
 def generate_pick_and_put_command(
-    source: str,
-    target: str,
     device_id: int,
-    source_type: LocationType = LocationType.INPUT_PLATFORM,
-    target_type: LocationType = LocationType.PIPELINE_PLATFORM,
+    source_type: LocationType,
+    target_type: LocationType,
     target_info: dict[str, Any] | None = None,
     command_id: str | None = None,
     priority: int = 1,
@@ -193,11 +166,9 @@ def generate_pick_and_put_command(
     """生成抓取放置命令
 
     Args:
-        source: 源位置 ID
-        target: 目标位置 ID
         device_id: 设备 ID
-        source_type: 源位置类型
-        target_type: 目标位置类型
+        source_type: 源位置类型（逻辑类型）
+        target_type: 目标位置类型（逻辑类型）
         target_info: 目标位置附加信息（料箱信息等）
         command_id: 命令 ID（可选）
         priority: 优先级 (1-10)
@@ -210,11 +181,9 @@ def generate_pick_and_put_command(
 
     params: dict[str, Any] = {
         "source": {
-            "location_id": source,
             "location_type": source_type.value,
         },
         "target": {
-            "location_id": target,
             "location_type": target_type.value,
         },
     }
@@ -237,8 +206,6 @@ def generate_pick_and_put_command(
 
 
 def generate_move_forward_command(
-    source: str,
-    target: str,
     device_id: int,
     command_id: str | None = None,
     priority: int = 1,
@@ -247,8 +214,6 @@ def generate_move_forward_command(
     """生成流水线前进命令
 
     Args:
-        source: 流水线进料位 ID
-        target: 流水线出料位 ID
         device_id: 设备 ID
         command_id: 命令 ID（可选）
         priority: 优先级 (1-10)
@@ -267,13 +232,13 @@ def generate_move_forward_command(
             "task_type": TaskType.MOVE_FORWARD.value,
             "priority": priority,
             "timeout": timeout,
-            "source": {
-                "location_id": source,
-                "location_type": LocationType.PIPELINE_PLATFORM.value,
-            },
-            "target": {
-                "location_id": target,
-                "location_type": LocationType.PIPELINE_PLATFORM.value,
+            "params": {
+                "source": {
+                    "location_type": LocationType.PIPELINE_PLATFORM.value,
+                },
+                "target": {
+                    "location_type": LocationType.PIPELINE_PLATFORM.value,
+                },
             },
         },
     )
@@ -507,9 +472,11 @@ class SmtClassifierEventHandler:
         context_patch: JsonDict = {
             "barcode": primary_barcode,
             "scan_result": "OK" if is_ok else "NG",
-            "all_barcodes": barcodes,
+            "barcodes": barcodes,
             "scan_location": scan_data.location,
             "current_location": scan_data.location,
+            "source_type": LocationType.INPUT_PLATFORM.value,
+            "target_type": LocationType.PIPELINE_PLATFORM.value if is_ok else LocationType.NG_PLATFORM.value,
             "retry_count": 0,
         }
 
@@ -529,8 +496,6 @@ class SmtClassifierEventHandler:
                 )
 
             command = generate_pick_and_put_command(
-                source=scan_data.location or LEFT_STATION_INPUT,
-                target=LEFT_PIPELINE_INPUT1,
                 device_id=getattr(arm_device, "id", 0),
                 source_type=LocationType.INPUT_PLATFORM,
                 target_type=LocationType.PIPELINE_PLATFORM,
@@ -562,8 +527,6 @@ class SmtClassifierEventHandler:
             )
 
         command = generate_pick_and_put_command(
-            source=scan_data.location or LEFT_STATION_INPUT,
-            target=LEFT_NG_PLATFORM1,
             device_id=getattr(arm_device, "id", 0),
             source_type=LocationType.INPUT_PLATFORM,
             target_type=LocationType.NG_PLATFORM,
@@ -640,7 +603,7 @@ class SmtClassifierEventHandler:
         context_patch: JsonDict = {}
 
         if result_data.reel_diameter:
-            context_patch["diameter"] = result_data.reel_diameter
+            context_patch["reel_diameter"] = result_data.reel_diameter
         if result_data.reel_thickness:
             context_patch["thickness"] = result_data.reel_thickness
         if result_data.location:
@@ -653,7 +616,9 @@ class SmtClassifierEventHandler:
         ctx.logger.info(f"Command success: device={device_id}, location={current_location}, scan_result={scan_result}")
 
         # 根据位置判断下一步操作
-        if current_location in (LEFT_PIPELINE_INPUT1, LEFT_PIPELINE_INPUT2):
+        # 检查当前位置是否为流水线进料位置（通过source_type判断）
+        source_type = str(context.get("source_type", ""))
+        if source_type == LocationType.PIPELINE_PLATFORM.value:
             # 流水线进料位置 -> 流水线前进
             pipeline_device = ctx.get_device_by_role("PIPELINE")
             if not pipeline_device:
@@ -666,14 +631,12 @@ class SmtClassifierEventHandler:
                 )
 
             command = generate_move_forward_command(
-                source=current_location,
-                target=LEFT_PIPELINE_OUTPUT,
                 device_id=getattr(pipeline_device, "id", 0),
             )
 
             return PluginResult(
                 transition="move_ok",
-                context_patch={**context_patch, "current_location": LEFT_PIPELINE_OUTPUT},
+                context_patch=context_patch,
                 commands=[command],
                 wait=WaitIntent(
                     wait_type="COMMAND_RESULT",
@@ -682,7 +645,9 @@ class SmtClassifierEventHandler:
                 ),
             )
 
-        if current_location == LEFT_PIPELINE_OUTPUT:
+        # 检查是否处于流水线出料阶段（通过target_type判断）
+        target_type = str(context.get("target_type", ""))
+        if target_type == LocationType.PIPELINE_PLATFORM.value:
             # 流水线出料位置 -> 出料到料箱
             output_arm = ctx.get_device_by_role("OUTPUT_ARM")
             if not output_arm:
@@ -698,43 +663,60 @@ class SmtClassifierEventHandler:
             target_bin = _ensure_dict(context.get("target_bin")) or {
                 "rack_id": "RACK_001",
                 "bin_id": "BIN_001",
+                "bin_cell": "A1",
             }
 
             command = generate_pick_and_put_command(
-                source=LEFT_PIPELINE_OUTPUT,
-                target=LEFT_OUTPUT,
                 device_id=getattr(output_arm, "id", 0),
                 source_type=LocationType.PIPELINE_PLATFORM,
                 target_type=LocationType.BIN,
                 target_info={
                     "rack_id": target_bin.get("rack_id", "RACK_001"),
                     "bin_id": target_bin.get("bin_id", "BIN_001"),
+                    "bin_cell": target_bin.get("bin_cell", "A1"),
                     "bin_type": "三格箱",
-                    "bin_cell_location": "1",
+                    "bin_cell_location": target_bin.get("bin_cell", "A1"),
                     "reel_layer": "1",
                     "reel_thickness": str(context.get("thickness", "20")),
-                    "reel_diameter": str(context.get("diameter", "15inch")),
+                    "reel_diameter": str(context.get("reel_diameter", "15inch")),
                 },
             )
 
             return PluginResult(
                 transition="put_ok",
-                context_patch=context_patch,
+                context_patch={
+                    **context_patch,
+                    "target_bin": {
+                        "rack_id": target_bin.get("rack_id", "RACK_001"),
+                        "bin_id": target_bin.get("bin_id", "BIN_001"),
+                        "bin_cell": target_bin.get("bin_cell", "A1"),
+                    },
+                },
                 commands=[command],
                 wait=WaitIntent(
                     wait_type="COMMAND_RESULT",
-                    wait_token=f"pick_and_put_output_{context.get('barcode', '')!s}",
+                    wait_token=f"pick_and_put_output_{context.get('barcode', '')!s}_{target_bin.get('bin_cell', 'A1')}",
                     deadline_seconds=60,
                 ),
             )
 
-        if current_location in (LEFT_OUTPUT, LEFT_NG_PLATFORM1, LEFT_NG_PLATFORM2):
+        # 检查流程是否完成（根据target_type判断）
+        if target_type in (LocationType.BIN.value, LocationType.NG_PLATFORM.value, LocationType.OUTPUT_PLATFORM.value):
             # 出料或 NG 完成 -> 流程结束
-            ctx.logger.info(f"Process completed: location={current_location}")
+            ctx.logger.info(f"Process completed: target_type={target_type}")
+
+            # 构建完成时的上下文字段
+            final_context_patch = {
+                **context_patch,
+                "target_type": target_type,
+                "target_bin_id": context.get("target_bin", {}).get("bin_id") if isinstance(context.get("target_bin"), dict) else None,
+                "target_bin_cell": context.get("target_bin", {}).get("bin_cell") if isinstance(context.get("target_bin"), dict) else None,
+                "completed_at": ctx.clock().isoformat(),
+            }
 
             return PluginResult(
                 transition="complete",
-                context_patch=context_patch,
+                context_patch=final_context_patch,
                 complete=True,
             )
 
