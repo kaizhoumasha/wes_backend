@@ -240,6 +240,11 @@ async def _apply_orchestrator_effects(
     if orch_result.context_patch:
         session_ctx.update(orch_result.context_patch)
         _set_session_context(session, session_ctx)
+        # 同步 barcode 到 session 字段
+        if "barcode" in orch_result.context_patch:
+            barcode_value = orch_result.context_patch["barcode"]
+            if barcode_value:
+                session.barcode = barcode_value
 
     if correlation_id and getattr(session, "correlation_id", None) is None:
         session.correlation_id = correlation_id

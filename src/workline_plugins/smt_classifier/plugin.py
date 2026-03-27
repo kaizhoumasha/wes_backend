@@ -22,15 +22,15 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from src.core.exceptions import BadRequestException
+
+# 从 event_handlers 导入 LocationType
+from src.workline_plugins.smt_classifier.event_handlers import LocationType
 from src.workline_runtime.types import (
     CommandIntent,
     FailureIntent,
     PluginResult,
     WaitIntent,
 )
-
-# 从 event_handlers 导入 LocationType
-from src.workline_plugins.smt_classifier.event_handlers import LocationType
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -507,9 +507,14 @@ class SmtClassifierPlugin:
         """
         event_data = inbox.payload_json or {}
         event_type = event_data.get("event_type", "")
-        location_id = event_data.get("location_id", "")
 
-        ctx.logger.info(f"SmtClassifierPlugin received device event: {event_type}, inbox_id={inbox.id}")
+        # 兼容 Mock 数据格式: location 可能在 data.location
+        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
+        location_id = event_data.get("location_id") or data.get("location") or ""
+
+        ctx.logger.info(
+            f"SmtClassifierPlugin received device event: {event_type}, inbox_id={inbox.id}, location={location_id}"
+        )
 
         # 急停处理
         if event_type == SmtClassifierEventType.ESTOP_PRESSED.value:
@@ -533,14 +538,18 @@ class SmtClassifierPlugin:
         location_id: str,
     ) -> PluginResult:
         """处理扫码完成事件"""
-        barcode = event_data.get("barcode", "")
-        scan_result = event_data.get("scan_result", "OK")
+        # 兼容 Mock 服务数据格式: 优先从 data 字段获取
+        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
+        barcode = data.get("barcode") or event_data.get("barcode") or ""
+        scan_result = data.get("result") or event_data.get("scan_result") or "OK"
+
         topology = _resolve_workline_topology(ctx)
 
         ctx.logger.info(f"Scan completed: barcode={barcode}, result={scan_result}, location={location_id}")
 
         context_patch = {
             "stage": SmtClassifierStage.SCAN_RESULT_RECEIVED.value,
+            "barcode": barcode,
             "last_barcode": barcode,
             "scan_result": scan_result,
             "location_id": location_id,
@@ -568,7 +577,10 @@ class SmtClassifierPlugin:
         location_id: str,
     ) -> PluginResult:
         """处理检测完成事件"""
-        inspection_result = event_data.get("inspection_result", "OK")
+        # 兼容 Mock 服务数据格式: 优先从 data 字段获取
+        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
+        inspection_result = data.get("result") or event_data.get("inspection_result") or "OK"
+
         topology = _resolve_workline_topology(ctx)
 
         ctx.logger.info(f"Inspection completed: result={inspection_result}, location={location_id}")
@@ -728,9 +740,7 @@ class SmtClassifierPlugin:
         session_ctx = ctx.session.context_json or {}
         ng_reason = session_ctx.get("ng_reason", "")
         current_location = session_ctx.get("current_location")
-        resolved_location_id = (
-            current_location if isinstance(current_location, str) and current_location else None
-        )
+        resolved_location_id = current_location if isinstance(current_location, str) and current_location else None
         topology = _resolve_workline_topology(ctx)
 
         # 命令失败处理
@@ -823,7 +833,9 @@ class SmtClassifierPlugin:
         error_code = error_detail.get("code", "UNKNOWN_ERROR")
         error_message = error_detail.get("message", "Command execution failed")
 
-        ctx.logger.error(f"Command failed: type={command_type}, code={error_code}, message={error_message}, retry={retry_count}")
+        ctx.logger.error(
+            f"Command failed: type={command_type}, code={error_code}, message={error_message}, retry={retry_count}"
+        )
 
         # 递增重试计数
         new_retry_count = retry_count + 1
@@ -1213,13 +1225,14 @@ def determine_error_code(event_data: dict[str, Any], command_result: dict[str, A
     # 默认返回通用错误
     return ErrorCode.DEVICE_TIMEOUT.value
 
+
 smt_classifier_plugin = SmtClassifierPlugin()
 
 __all__ = [
+    "ERROR_RECOVERY_MAP",
     "DeviceRoleRequirement",
     "ErrorCode",
     "ErrorRecoveryStrategy",
-    "ERROR_RECOVERY_MAP",
     "SmtClassifierCapabilities",
     "SmtClassifierCommandType",
     "SmtClassifierDeviceRole",

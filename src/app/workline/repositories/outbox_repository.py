@@ -40,7 +40,6 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             select(WorklineOutbox)
             .where(
                 columns.status == OutboxStatus.NEW,
-                columns.is_deleted.is_(False),
                 # next_retry_at 为空或已过重试时间
                 (columns.next_retry_at.is_(None))
                 | (columns.next_retry_at <= now),

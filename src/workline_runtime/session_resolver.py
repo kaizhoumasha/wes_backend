@@ -113,7 +113,15 @@ class SessionResolver:
         payload_json = inbox.payload_json if isinstance(inbox.payload_json, dict) else {}
         business_key = payload_json.get("business_key")
 
-        # 如果没有 business_key，生成一个唯一的
+        # 如果没有 business_key，尝试从 data.barcode 提取
+        if not isinstance(business_key, str) or not business_key:
+            data = payload_json.get("data", {})
+            if isinstance(data, dict):
+                barcode = data.get("barcode")
+                if isinstance(barcode, str) and barcode:
+                    business_key = barcode
+
+        # 如果仍然没有 business_key，生成一个唯一的
         if not isinstance(business_key, str) or not business_key:
             business_key = f"auto_{uuid.uuid4().hex[:12]}"
 
