@@ -75,8 +75,10 @@ uv run python scripts/data/seed_e2e_test_data.py
 
 这会创建：
 - 作业线: WL-CONVEYOR-01
-- 设备: CAMERA-CONVEYOR-01, ROBOT-ARM-01
+- 设备: ARM01(进料臂), PIPELINE01(流水线), ARM02(出料臂)
 - API 应用: app_Gqnvr3dpjGwlrjtO（带回调权限）
+
+设备拓扑: ARM01 -> PIPELINE01 -> ARM02
 
 #### 步骤 3: 启动 WES 服务
 

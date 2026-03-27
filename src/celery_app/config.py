@@ -18,16 +18,26 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "schedule": 60.0,  # 每分钟
     },
     # ============================================
-    # 可扩展：添加新的定时任务
-    # 示例：
-    # "daily-inventory-check": {
-    #     "task": "src.celery_app.tasks.inventory.check_low_stock",
-    #     "schedule": 3600.0,  # 每小时
-    # },
-    # "daily-data-summary": {
-    #     "task": "src.celery_app.tasks.reporting.generate_daily_summary",
-    #     "schedule": 86400.0,  # 每天
-    # },
+    # Inbox 消息处理任务 - 定期扫描并处理新消息
+    # ============================================
+    "process-inbox-batch": {
+        "task": "src.celery_app.tasks.workline.process_inbox_batch",
+        "schedule": 5.0,  # 每5秒处理一次
+    },
+    # ============================================
+    # Outbox 消息派发任务 - 定期将命令下发给设备
+    # ============================================
+    "dispatch-outbox-batch": {
+        "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
+        "schedule": 5.0,  # 每5秒派发一次
+    },
+    # ============================================
+    # 超时 Session 扫描任务
+    # ============================================
+    "scan-timeouts-batch": {
+        "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
+        "schedule": 30.0,  # 每30秒扫描一次
+    },
 }
 
 # ============================================
