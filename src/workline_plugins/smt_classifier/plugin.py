@@ -547,6 +547,13 @@ class SmtClassifierPlugin:
 
         ctx.logger.info(f"Scan completed: barcode={barcode}, result={scan_result}, location={location_id}")
 
+        # 检查当前 Session 状态，避免重复处理
+        current_stage = getattr(ctx.session, "context_json", {}).get("stage") if ctx.session else None
+        if current_stage and current_stage != SmtClassifierStage.IDLE.value:
+            ctx.logger.warning(f"Session already in stage '{current_stage}', ignoring duplicate scan event")
+            # 返回空结果，不进行状态转换
+            return PluginResult()
+
         context_patch = {
             "stage": SmtClassifierStage.SCAN_RESULT_RECEIVED.value,
             "barcode": barcode,
@@ -566,9 +573,30 @@ class SmtClassifierPlugin:
                 reason="SCAN_NG",
             )
 
-        # OK 流程：继续检测
+        # OK 流程：生成 PICK_AND_PUT 命令，将货物从扫码位抓取到检测位
+        input_arm_id = topology.input_arm_id
+        if input_arm_id is None:
+            return _missing_device_result(SmtClassifierDeviceRole.INPUT_ARM.value)
+
+        command = _build_command(
+            device_id=input_arm_id,
+            action=SmtClassifierCommandType.PICK_AND_PUT.value,
+            params={
+                "source_type": LocationType.INPUT_PLATFORM.value,
+                "target_type": LocationType.PIPELINE_PLATFORM.value,
+            },
+        )
+
         context_patch["stage"] = SmtClassifierStage.WAITING_INSPECTION.value
-        return PluginResult(transition="scan_ok", context_patch=context_patch)
+        context_patch["source_type"] = LocationType.INPUT_PLATFORM.value
+        context_patch["target_type"] = LocationType.PIPELINE_PLATFORM.value
+
+        return self._build_command_result(
+            transition="scan_ok",
+            context_patch=context_patch,
+            command=command,
+            wait_token=f"scan_pick_place_{ctx.session.id}",
+        )
 
     async def _handle_inspection_completed(
         self,

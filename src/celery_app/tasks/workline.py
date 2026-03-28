@@ -190,12 +190,15 @@ def _build_command_code(task_type: str) -> str:
 
 
 def _build_outbox_payload(command: Any) -> dict[str, Any]:
+    from src.utils.timezone import timezone
+
     return {
         "command_code": command.command_code,
         "task_type": command.task_type.value if hasattr(command.task_type, "value") else command.task_type,
         "priority": command.priority,
         "timeout": command.timeout_ms,
         "params": command.params,
+        "timestamp": int(timezone.now_utc().timestamp() * 1000),
     }
 
 
@@ -605,7 +608,9 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
 class WorklineTask(Task):
     """作业线任务基类 - 提供数据库会话管理"""
 
-    _db: Any | None = None
+    def __init__(self) -> None:
+        super().__init__()
+        self._db: Any | None = None
 
     @property
     def db(self) -> Any:
@@ -622,7 +627,10 @@ class WorklineTask(Task):
     def cleanup(self) -> None:
         """清理资源"""
         if self._db:
-            asyncio.get_event_loop().run_until_complete(self._db.close())
+            try:
+                asyncio.get_event_loop().run_until_complete(self._db.close())
+            except Exception:
+                pass
             self._db = None
 
     def on_failure(
@@ -978,38 +986,32 @@ class OutboxDispatcher:
             import httpx
 
             from src.app.device.repositories.device_repository import device_repository
-            from src.app.device.services.device_service import device_service
-
-            send_command_obj = getattr(device_service, "send_command", None)
-            if callable(send_command_obj):
-                send_command = cast("Callable[..., Awaitable[object] | object]", send_command_obj)
-                command_result: Awaitable[object] | object = send_command(
-                    device_code=outbox.target_code,
-                    command_data=outbox.payload_json,
-                )
-                if isinstance(command_result, Awaitable):
-                    awaited_result = await cast("Awaitable[object]", command_result)
-                    if not isinstance(awaited_result, dict):
-                        awaited_result = None
-                    result_dict = cast("dict[str, object] | None", awaited_result)
-                else:
-                    result_dict = cast(
-                        "dict[str, object] | None", command_result if isinstance(command_result, dict) else None
-                    )
-
-                if result_dict is not None:
-                    return bool(result_dict.get("success", False))
 
             device = await device_repository.get_by_device_code(db, outbox.target_code)
             if device is None or not device.host or not device.port:
                 logger.error(f"设备不存在或通信配置不完整: {outbox.target_code}")
                 return False
 
-            scheme = str(getattr(device, "protocol", "http")).lower()
+            # 确保 scheme 是 http 或 https
+            protocol_value = getattr(device, "protocol", None)
+            if protocol_value:
+                scheme = str(protocol_value).lower()
+                if scheme not in ("http", "https"):
+                    scheme = "http"
+            else:
+                scheme = "http"
+
             url = f"{scheme}://{device.host}:{device.port}/api/v1/device/command"
-            async with httpx.AsyncClient(timeout=(device.timeout or 10000) / 1000) as client:
+            logger.info(f"发送设备指令到 {url}: {outbox.payload_json.get('command_code')}")
+            timeout = (device.timeout or 10000) / 1000
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=outbox.payload_json)
-                return response.status_code == 200
+                if response.status_code == 200:
+                    logger.info(f"设备指令发送成功: {outbox.payload_json.get('command_code')}")
+                    return True
+                else:
+                    logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"设备指令派发失败: {e}")
             return False
