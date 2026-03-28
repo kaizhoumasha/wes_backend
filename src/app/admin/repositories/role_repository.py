@@ -39,7 +39,13 @@ class RoleRepository(BaseRepository[Role]):
         """
         if not role_ids:
             return []
-        _, roles = await self.get_list(db, where_clauses_raw=[Role.id.in_(role_ids)], include_deleted=True)  # type: ignore[attr-defined]
+        # 使用足够大的 limit 确保返回所有请求的角色
+        _, roles = await self.get_list(
+            db,
+            limit=len(role_ids),
+            where_clauses_raw=[Role.id.in_(role_ids)],  # type: ignore[attr-defined]
+            include_deleted=True,
+        )  # type: ignore[attr-defined]
         return roles
 
 

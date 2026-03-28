@@ -279,9 +279,7 @@ class BaseService[M, R]:
             hit, cached_data = await get_cached_value(cache, cache_key)
             if hit:
                 logger.debug(f"缓存命中: {cache_key}")
-                if isinstance(cached_data, dict) and hasattr(self._repo_base.model, "model_validate"):
-                    return cast("M", cast("Any", self._repo_base.model).model_validate(cached_data))
-                return cached_data  # type: ignore[return-value]
+                return self._deserialize_item_from_cache(cached_data)
 
             result = await self._repo_base.get_by_id(
                 db, id, schema=self.response_schema, max_depth=max_depth, include_deleted=include_deleted
