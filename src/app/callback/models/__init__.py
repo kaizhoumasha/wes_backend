@@ -5,8 +5,10 @@ from src.app.callback.models.callback_log import (
     CallbackLogCreate,
     CallbackLogResponse,
 )
+from src.app.callback.models.event import CallbackEventRequest
 
 __all__ = [
+    "CallbackEventRequest",
     "CallbackLog",
     "CallbackLogCreate",
     "CallbackLogResponse",

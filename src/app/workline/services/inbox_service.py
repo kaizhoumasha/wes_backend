@@ -153,6 +153,41 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             correlation_id=correlation_id,
         )
 
+    async def create_external_http_inbox(
+        self,
+        db: AsyncSession,
+        *,
+        callback_type: str,
+        correlation_id: str,
+        payload: dict[str, Any],
+        source_system: SourceSystem = SourceSystem.SYSTEM,
+        source_message_id: str | None = None,
+    ) -> WorklineInbox:
+        """创建外部 HTTP 回调 Inbox 消息。"""
+
+        idempotency_key = self.repo.calculate_external_http_idempotency_key(
+            callback_type=callback_type,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+
+        inbox_payload: dict[str, Any] = {
+            **payload,
+            "message_type": "EXTERNAL_HTTP",
+            "callback_type": callback_type,
+        }
+
+        return await self._create_inbox_message(
+            db=db,
+            idempotency_key=idempotency_key,
+            duplicate_message="外部 HTTP 回调已存在（幂等键重复）",
+            kind=InboxKind.EXTERNAL_HTTP,
+            payload=inbox_payload,
+            source_message_id=source_message_id,
+            correlation_id=correlation_id,
+            source_system=source_system,
+        )
+
     async def get_new_messages(
         self,
         db: AsyncSession,
@@ -250,6 +285,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         payload: dict[str, Any],
         source_message_id: str | None = None,
         correlation_id: str | None = None,
+        source_system: SourceSystem = SourceSystem.DEVICE,
     ) -> WorklineInbox:
         existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
         if existing:
@@ -258,7 +294,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         inbox_data: dict[str, Any] = {
             "kind": kind,
             "idempotency_key": idempotency_key,
-            "source_system": SourceSystem.DEVICE,
+            "source_system": source_system,
             "source_message_id": source_message_id,
             "payload_json": payload,
             "status": InboxStatus.NEW,

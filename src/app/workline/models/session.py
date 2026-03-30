@@ -130,6 +130,17 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="上下文 Schema 版本（插件管理）",
     )
+    contract_version: str | None = Field(
+        default=None,
+        max_length=50,
+        description="执行时绑定的协议版本",
+    )
+    step_code: str | None = Field(
+        default=None,
+        max_length=100,
+        index=True,
+        description="当前会话所处的步骤语义编码",
+    )
 
     started_at: datetime | None = Field(
         default=None,

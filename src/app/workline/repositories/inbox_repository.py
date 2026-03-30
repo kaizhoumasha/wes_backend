@@ -115,6 +115,19 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         # 组合键
         return f"command_result:{command_code}:{result}:{finish_time}:{payload_hash}"
 
+    def calculate_external_http_idempotency_key(
+        self,
+        callback_type: str,
+        correlation_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """计算外部 HTTP 回调的幂等键。"""
+
+        payload_items: list[tuple[str, Any]] = sorted(payload.items())
+        payload_str = str(payload_items)
+        payload_hash = hashlib.md5(payload_str.encode(), usedforsecurity=False).hexdigest()[:8]
+        return f"external_http:{callback_type}:{correlation_id}:{payload_hash}"
+
 
 # 创建单例
 inbox_repository = WorklineInboxRepository()

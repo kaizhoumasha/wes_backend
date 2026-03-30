@@ -18,8 +18,8 @@ from src.app.device.models.command import (
     CommandRequest,
     TaskType,
 )
-from src.app.device.models.event_log import EventType
 from src.device_processors.base import BaseDeviceProcessor
+from src.device_processors.types import DeviceProcessorEventType
 
 
 class ConveyorProcessor(BaseDeviceProcessor):
@@ -61,11 +61,11 @@ class ConveyorProcessor(BaseDeviceProcessor):
         data = event_data.get("data", {})
 
         # 根据事件类型进行特定验证
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 物料到位事件：必须有位置信息
             if "location" not in data:
                 return False, "MATERIAL_ARRIVED 事件缺少 location 字段"
-        elif event_type == EventType.DEVICE_ERROR.value and "error_code" not in data:
+        elif event_type == DeviceProcessorEventType.DEVICE_ERROR.value and "error_code" not in data:
             # 设备故障事件：必须有错误码
             return False, "DEVICE_ERROR 事件缺少 error_code 字段"
 
@@ -89,7 +89,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
         event_type = event_data.get("event_type")
         data = event_data.get("data", {})
 
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 物料到位：通知机械臂抓取
             location = data.get("location")
             barcode = data.get("barcode")
@@ -106,7 +106,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.DEVICE_ERROR.value:
+        if event_type == DeviceProcessorEventType.DEVICE_ERROR.value:
             # 设备故障：停止输送，告警
             error_code = data.get("error_code")
             logger.error(f"输送线故障: {error_code} -> 停止输送")
@@ -121,7 +121,7 @@ class ConveyorProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.DEVICE_ONLINE.value:
+        if event_type == DeviceProcessorEventType.DEVICE_ONLINE.value:
             # 设备上线：恢复输送
             logger.info("输送线上线 -> 恢复运行")
 

@@ -121,6 +121,22 @@ class DeviceBase(BaseMixin):
         max_length=50,
         description="厂商类型（ECS, KEYENCE, FANUC...）",
     )
+    plugin_key: str | None = Field(
+        default=None,
+        max_length=100,
+        index=True,
+        description="设备绑定的工作线插件标识",
+    )
+    contract_profile: str | None = Field(
+        default=None,
+        max_length=100,
+        description="设备绑定的协议 profile",
+    )
+    contract_version: str | None = Field(
+        default=None,
+        max_length=50,
+        description="设备绑定的协议版本",
+    )
     capabilities: list[str] = Field(
         default_factory=list,
         sa_column=Column(JSON),
@@ -225,7 +241,6 @@ class Device(
     - upstream_device: 上游设备（多对一）
     - downstream_devices: 下游设备（一对多，隐式关系）
     - commands: 设备指令（一对多，在 command.py 中定义）
-    - events: 设备事件（一对多，在 event_log.py 中定义）
     """
 
     __tablename__: ClassVar[Literal["devices"]] = "devices"  # pyright: ignore[reportIncompatibleVariableOverride]

@@ -15,6 +15,8 @@ SMT 粗分机工作线插件
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import asyncio
+import os
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,8 +24,19 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from src.core.exceptions import BadRequestException
-
-# 从 event_handlers 导入 LocationType
+from src.workline_plugins.smt_classifier.contract import (
+    CONTRACT_VERSION,
+    EVENT_FIELD_ALIASES,
+    RESULT_FIELD_ALIASES,
+    STEP_CODE_KEY,
+    SmtClassifierCommandType,
+    SmtClassifierEventType,
+    SmtClassifierResultType,
+    SmtClassifierStepCode,
+    infer_step_from_command,
+    resolve_first_str,
+    resolve_step_from_context,
+)
 from src.workline_plugins.smt_classifier.event_handlers import LocationType
 from src.workline_runtime.types import (
     CommandIntent,
@@ -35,6 +48,24 @@ from src.workline_runtime.types import (
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
+
+
+JsonDict = dict[str, Any]
+_SYNC_HTTP_TIMEOUT_SECONDS = 10.0
+_SYNC_HTTP_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_DEFAULT_AGV_CALLBACK_TYPE = "AGV_TASK_RESULT"
+_EXTERNAL_HTTP_DECISION_TYPE = "EXTERNAL_HTTP_REQUEST"
+_REQUIRED_TARGET_BIN_FIELDS = (
+    "station_location_id",
+    "rack_id",
+    "bin_id",
+    "bin_type",
+    "bin_cell_location",
+    "reel_layer",
+    "reel_thickness",
+    "reel_diameter",
+    "reel_totalthickness",
+)
 
 
 # ==================== 枚举定义 ====================
@@ -80,30 +111,10 @@ class SmtClassifierStage(str, Enum):
     INSPECTION_RESULT_RECEIVED = "INSPECTION_RESULT_RECEIVED"
     WAITING_PICK_PLACE = "WAITING_PICK_PLACE"
     WAITING_CONVEYOR = "WAITING_CONVEYOR"
+    WAITING_AGV_DELIVERY = "WAITING_AGV_DELIVERY"
     WAITING_OUTPUT = "WAITING_OUTPUT"
     COMPLETED = "COMPLETED"
     ERROR = "ERROR"
-
-
-class SmtClassifierEventType(str, Enum):
-    """SMT 粗分机事件类型
-
-    用于 DeviceEventLog.payload_json['event_type']。
-    """
-
-    SCAN_COMPLETED = "SCAN_COMPLETED"
-    ESTOP_PRESSED = "ESTOP_PRESSED"
-    INSPECTION_COMPLETED = "INSPECTION_COMPLETED"
-
-
-class SmtClassifierCommandType(str, Enum):
-    """SMT 粗分机命令类型
-
-    用于 DeviceCommand.action 字段。
-    """
-
-    PICK_AND_PUT = "PICK_AND_PUT"  # 抓取并放置
-    MOVE_FORWARD = "MOVE_FORWARD"  # 流水线前进
 
 
 # ==================== 设备需求声明 ====================
@@ -140,6 +151,31 @@ def _resolve_int_attr(entity: Any, field: str) -> int | None:
 
     value = getattr(entity, field, None)
     return value if isinstance(value, int) else None
+
+
+def _ensure_dict(value: Any) -> JsonDict:
+    """将动态输入收敛为字典，避免 Unknown 类型扩散。"""
+
+    return cast("JsonDict", value) if isinstance(value, dict) else {}
+
+
+def _ensure_str(value: Any, default: str = "") -> str:
+    """将动态输入收敛为字符串。"""
+
+    return value if isinstance(value, str) else default
+
+
+def _has_embedded_inspection_payload(payload: JsonDict) -> bool:
+    """判断命令结果是否已携带检测/测厚结果。"""
+
+    return any(
+        resolve_first_str(payload, aliases)
+        for aliases in (
+            ("inspection_result", "data.inspection_result", "data.result"),
+            ("reel_diameter", "data.reel_diameter"),
+            ("reel_thickness", "data.reel_thickness"),
+        )
+    )
 
 
 def _resolve_device_role(device: Any) -> str | None:
@@ -337,7 +373,7 @@ def _get_device_id(ctx: "PluginContext", role: str) -> int | None:
 def _build_command(
     device_id: int,
     action: str,
-    params: dict,
+    params: JsonDict,
 ) -> CommandIntent:
     """构建设备命令意图
 
@@ -352,7 +388,10 @@ def _build_command(
     return CommandIntent(
         target_device_id=device_id,
         action=action,
-        parameters=params,
+        parameters={
+            **params,
+            "params": params,
+        },
     )
 
 
@@ -402,6 +441,141 @@ def _ng_transition(reason: str) -> str:
     return reason.lower()
 
 
+def _resolve_env_or_config(
+    ctx: "PluginContext",
+    *,
+    config_key: str,
+    nested_key: str | None = None,
+    env_key: str,
+) -> str:
+    config_value = ctx.config.get(config_key)
+    if nested_key and isinstance(config_value, dict):
+        nested_value = config_value.get(nested_key)
+        if isinstance(nested_value, str) and nested_value:
+            return nested_value
+    if isinstance(config_value, str) and config_value:
+        return config_value
+
+    env_value = os.getenv(env_key, "")
+    return env_value if env_value else ""
+
+
+def _resolve_timeout_seconds(ctx: "PluginContext", *, config_key: str, env_key: str) -> float:
+    config_value = ctx.config.get(config_key)
+    if isinstance(config_value, int) and config_value > 0:
+        return float(config_value)
+    if isinstance(config_value, float) and config_value > 0:
+        return config_value
+
+    env_value = os.getenv(env_key, "")
+    try:
+        timeout_value = float(env_value)
+    except ValueError:
+        timeout_value = 0.0
+    return timeout_value if timeout_value > 0 else _SYNC_HTTP_TIMEOUT_SECONDS
+
+
+def _normalize_identifier(value: str) -> str:
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in value.strip())
+    compact = normalized.strip("-")
+    return compact or "unknown"
+
+
+def _session_business_key(ctx: "PluginContext", context: JsonDict) -> str:
+    session_business_key = getattr(ctx.session, "business_key", None)
+    if isinstance(session_business_key, str) and session_business_key:
+        return session_business_key
+    barcode = context.get("barcode")
+    if isinstance(barcode, str) and barcode:
+        return barcode
+    return ctx.correlation_id or f"session-{getattr(ctx.session, 'id', 'unknown')}"
+
+
+def _next_request_code(
+    ctx: "PluginContext",
+    context: JsonDict,
+    *,
+    prefix: str,
+    counter_key: str,
+) -> tuple[str, int]:
+    raw_counter = context.get(counter_key, 0)
+    current_counter = raw_counter if isinstance(raw_counter, int) and raw_counter >= 0 else 0
+    next_counter = current_counter + 1
+    business_key = _normalize_identifier(_session_business_key(ctx, context))
+    return f"{prefix}-{business_key}-{next_counter:02d}", next_counter
+
+
+def _current_workline_code(ctx: "PluginContext") -> str:
+    workline_code = getattr(ctx.workline, "line_code", None)
+    if isinstance(workline_code, str) and workline_code:
+        return workline_code
+    workline_name = getattr(ctx.workline, "line_name", None)
+    if isinstance(workline_name, str) and workline_name:
+        return workline_name
+    return f"workline-{getattr(ctx.workline, 'id', 'unknown')}"
+
+
+def _current_source_location(context: JsonDict) -> str:
+    location_value = context.get("current_location")
+    if isinstance(location_value, str) and location_value:
+        return location_value
+    location_id = context.get("location_id")
+    if isinstance(location_id, str) and location_id:
+        return location_id
+    return "PIPELINE_OUTPUT"
+
+
+def _normalize_target_bin(context: JsonDict, raw_target_bin: JsonDict) -> tuple[JsonDict | None, list[str]]:
+    target_bin: JsonDict = {
+        "station_location_id": _ensure_str(
+            raw_target_bin.get("station_location_id") or raw_target_bin.get("station_location")
+        ),
+        "rack_id": _ensure_str(raw_target_bin.get("rack_id")),
+        "bin_id": _ensure_str(raw_target_bin.get("bin_id")),
+        "bin_type": _ensure_str(raw_target_bin.get("bin_type")),
+        "bin_cell_location": _ensure_str(raw_target_bin.get("bin_cell_location") or raw_target_bin.get("bin_cell")),
+        "reel_layer": _ensure_str(raw_target_bin.get("reel_layer")),
+        "reel_thickness": _ensure_str(raw_target_bin.get("reel_thickness") or context.get("thickness")),
+        "reel_diameter": _ensure_str(raw_target_bin.get("reel_diameter") or context.get("reel_diameter")),
+        "reel_totalthickness": _ensure_str(raw_target_bin.get("reel_totalthickness")),
+    }
+    target_bin["bin_cell"] = target_bin["bin_cell_location"]
+
+    missing_fields = [field for field in _REQUIRED_TARGET_BIN_FIELDS if not _ensure_str(target_bin.get(field))]
+    if missing_fields:
+        return None, missing_fields
+    return target_bin, []
+
+
+async def _post_json_with_retry(
+    *,
+    url: str,
+    payload: JsonDict,
+    timeout_seconds: float,
+) -> JsonDict:
+    import httpx
+
+    last_error: Exception | None = None
+
+    for attempt_index in range(len(_SYNC_HTTP_RETRY_BACKOFF_SECONDS) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(url, json=payload)
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            response_payload = response.json()
+            if not isinstance(response_payload, dict):
+                raise RuntimeError("response body must be an object")
+            return cast("JsonDict", response_payload)
+        except Exception as exc:
+            last_error = exc
+            if attempt_index >= len(_SYNC_HTTP_RETRY_BACKOFF_SECONDS):
+                break
+            await asyncio.sleep(_SYNC_HTTP_RETRY_BACKOFF_SECONDS[attempt_index])
+
+    raise RuntimeError(f"request failed: {last_error}")
+
+
 # ==================== 插件实现 ====================
 
 
@@ -419,6 +593,7 @@ class SmtClassifierPlugin:
     """
 
     plugin_key = "smt_classifier"
+    contract_version = CONTRACT_VERSION
 
     # ==================== 设备需求声明 ====================
     # 系统在保存工作线时验证设备配置是否满足这些需求
@@ -459,6 +634,166 @@ class SmtClassifierPlugin:
             commands=[command],
             wait=_build_command_wait(wait_token, self.DEFAULT_TIMEOUT_SECONDS),
         )
+
+    async def _request_bin_allocation(
+        self,
+        ctx: "PluginContext",
+        context: JsonDict,
+        *,
+        source_location: str,
+    ) -> tuple[JsonDict, str, int]:
+        allocation_url = _resolve_env_or_config(
+            ctx,
+            config_key="bin_allocation",
+            nested_key="url",
+            env_key="SMT_CLASSIFIER_BIN_ALLOCATION_URL",
+        )
+        if not allocation_url:
+            raise RuntimeError("bin allocation url is not configured")
+
+        request_code, allocation_attempt = _next_request_code(
+            ctx,
+            context,
+            prefix="ALLOC",
+            counter_key="allocation_request_count",
+        )
+
+        from src.utils.timezone import timezone
+
+        payload: JsonDict = {
+            "request_code": request_code,
+            "workline_code": _current_workline_code(ctx),
+            "business_key": _session_business_key(ctx, context),
+            "barcode": _ensure_str(context.get("barcode")),
+            "reel_diameter": _ensure_str(context.get("reel_diameter")),
+            "reel_thickness": _ensure_str(context.get("thickness")),
+            "inspection_result": _ensure_str(context.get("inspection_result"), "OK"),
+            "source_location": source_location,
+            "timestamp": int(timezone.now_utc().timestamp() * 1000),
+        }
+        response_payload = await _post_json_with_retry(
+            url=allocation_url,
+            payload=payload,
+            timeout_seconds=_resolve_timeout_seconds(
+                ctx,
+                config_key="bin_allocation_timeout_seconds",
+                env_key="SMT_CLASSIFIER_BIN_ALLOCATION_TIMEOUT_SECONDS",
+            ),
+        )
+        return response_payload, request_code, allocation_attempt
+
+    def _build_output_command(
+        self,
+        output_arm_id: int,
+        target_bin: JsonDict,
+    ) -> CommandIntent:
+        return _build_command(
+            device_id=output_arm_id,
+            action=SmtClassifierCommandType.PICK_AND_PUT.value,
+            params={
+                "source_type": LocationType.PIPELINE_PLATFORM.value,
+                "target_type": LocationType.BIN.value,
+                "reason": "OUTPUT",
+                "target_info": {
+                    "station_location_id": target_bin["station_location_id"],
+                    "rack_id": target_bin["rack_id"],
+                    "bin_id": target_bin["bin_id"],
+                    "bin_type": target_bin["bin_type"],
+                    "bin_cell_location": target_bin["bin_cell_location"],
+                    "bin_cell": target_bin["bin_cell"],
+                    "reel_layer": target_bin["reel_layer"],
+                    "reel_thickness": target_bin["reel_thickness"],
+                    "reel_diameter": target_bin["reel_diameter"],
+                    "reel_totalthickness": target_bin["reel_totalthickness"],
+                },
+            },
+        )
+
+    def _build_output_command_result(
+        self,
+        *,
+        ctx: "PluginContext",
+        output_arm_id: int,
+        target_bin: JsonDict,
+        transition: str,
+        extra_context_patch: JsonDict | None = None,
+    ) -> PluginResult:
+        context_patch: JsonDict = {
+            "stage": SmtClassifierStage.WAITING_OUTPUT.value,
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
+            "target_type": LocationType.BIN.value,
+            "pick_place_reason": "OUTPUT",
+            "target_bin": target_bin,
+            "target_bin_id": target_bin["bin_id"],
+            "target_bin_cell": target_bin["bin_cell"],
+            STEP_CODE_KEY: SmtClassifierStepCode.OUTPUT_PICK_PLACE.value,
+        }
+        if extra_context_patch:
+            context_patch.update(extra_context_patch)
+
+        return self._build_command_result(
+            transition=transition,
+            context_patch=context_patch,
+            command=self._build_output_command(output_arm_id, target_bin),
+            wait_token=f"output_{ctx.session.id}",
+        )
+
+    def _build_agv_request_decision(
+        self,
+        ctx: "PluginContext",
+        context: JsonDict,
+        *,
+        agv_request: JsonDict,
+        agv_request_code: str,
+    ) -> dict[str, Any]:
+        agv_url = _resolve_env_or_config(
+            ctx,
+            config_key="agv_dispatch",
+            nested_key="url",
+            env_key="SMT_CLASSIFIER_AGV_DISPATCH_URL",
+        )
+        if not agv_url:
+            raise RuntimeError("agv dispatch url is not configured")
+
+        callback_url = _resolve_env_or_config(
+            ctx,
+            config_key="external_callback",
+            nested_key="url",
+            env_key="WES_EXTERNAL_CALLBACK_URL",
+        )
+        callback_type = _resolve_env_or_config(
+            ctx,
+            config_key="external_callback_type",
+            nested_key=None,
+            env_key="SMT_CLASSIFIER_AGV_CALLBACK_TYPE",
+        ) or _DEFAULT_AGV_CALLBACK_TYPE
+
+        from src.utils.timezone import timezone
+
+        payload: JsonDict = {
+            "command_code": agv_request_code,
+            "task_type": "MOVE_RACK",
+            "priority": 5,
+            "timeout": 300000,
+            "correlation_id": ctx.correlation_id,
+            "callback_type": callback_type,
+            "params": {
+                "workline_code": _current_workline_code(ctx),
+                "business_key": _session_business_key(ctx, context),
+                **agv_request,
+            },
+            "timestamp": int(timezone.now_utc().timestamp() * 1000),
+        }
+        if callback_url:
+            payload["callback_url"] = callback_url
+
+        return {
+            "decision_type": _EXTERNAL_HTTP_DECISION_TYPE,
+            "dispatch_key": f"external-http:{agv_request_code}",
+            "target_code": agv_url,
+            "payload": payload,
+            "source_system": "AGV",
+        }
 
     # ==================== 设备事件处理 ====================
 
@@ -505,12 +840,9 @@ class SmtClassifierPlugin:
         Returns:
             PluginResult 包含状态转换、命令意图等
         """
-        event_data = inbox.payload_json or {}
-        event_type = event_data.get("event_type", "")
-
-        # 兼容 Mock 数据格式: location 可能在 data.location
-        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
-        location_id = event_data.get("location_id") or data.get("location") or ""
+        event_data = _ensure_dict(inbox.payload_json)
+        event_type = resolve_first_str(event_data, EVENT_FIELD_ALIASES["event_type"]["aliases"])
+        location_id = resolve_first_str(event_data, EVENT_FIELD_ALIASES["location_id"]["aliases"])
 
         ctx.logger.info(
             f"SmtClassifierPlugin received device event: {event_type}, inbox_id={inbox.id}, location={location_id}"
@@ -534,33 +866,36 @@ class SmtClassifierPlugin:
     async def _handle_scan_completed(
         self,
         ctx: "PluginContext",
-        event_data: dict,
+        event_data: JsonDict,
         location_id: str,
     ) -> PluginResult:
         """处理扫码完成事件"""
-        # 兼容 Mock 服务数据格式: 优先从 data 字段获取
-        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
-        barcode = data.get("barcode") or event_data.get("barcode") or ""
-        scan_result = data.get("result") or event_data.get("scan_result") or "OK"
+        barcode = resolve_first_str(event_data, EVENT_FIELD_ALIASES["barcode"]["aliases"])
+        scan_result = resolve_first_str(
+            event_data,
+            EVENT_FIELD_ALIASES["scan_result"]["aliases"],
+            default="OK",
+        )
 
         topology = _resolve_workline_topology(ctx)
 
         ctx.logger.info(f"Scan completed: barcode={barcode}, result={scan_result}, location={location_id}")
 
         # 检查当前 Session 状态，避免重复处理
-        current_stage = getattr(ctx.session, "context_json", {}).get("stage") if ctx.session else None
+        current_stage = _ensure_str(_ensure_dict(getattr(ctx.session, "context_json", None)).get("stage"))
         if current_stage and current_stage != SmtClassifierStage.IDLE.value:
             ctx.logger.warning(f"Session already in stage '{current_stage}', ignoring duplicate scan event")
             # 返回空结果，不进行状态转换
             return PluginResult()
 
-        context_patch = {
+        context_patch: JsonDict = {
             "stage": SmtClassifierStage.SCAN_RESULT_RECEIVED.value,
             "barcode": barcode,
             "last_barcode": barcode,
             "scan_result": scan_result,
             "location_id": location_id,
             "context_schema_version": "1.0",
+            STEP_CODE_KEY: SmtClassifierStepCode.WAITING_SCAN_EVENT.value,
         }
 
         # NG 流程：扫码 NG 直接放入 NG 缓存位
@@ -569,7 +904,7 @@ class SmtClassifierPlugin:
                 ctx=ctx,
                 topology=topology,
                 context_patch=context_patch,
-                current_location=location_id,
+                _current_location=location_id,
                 reason="SCAN_NG",
             )
 
@@ -590,6 +925,7 @@ class SmtClassifierPlugin:
         context_patch["stage"] = SmtClassifierStage.WAITING_INSPECTION.value
         context_patch["source_type"] = LocationType.INPUT_PLATFORM.value
         context_patch["target_type"] = LocationType.PIPELINE_PLATFORM.value
+        context_patch[STEP_CODE_KEY] = SmtClassifierStepCode.INPUT_PICK_PLACE.value
 
         return self._build_command_result(
             transition="scan_ok",
@@ -601,21 +937,24 @@ class SmtClassifierPlugin:
     async def _handle_inspection_completed(
         self,
         ctx: "PluginContext",
-        event_data: dict,
+        event_data: JsonDict,
         location_id: str,
     ) -> PluginResult:
         """处理检测完成事件"""
-        # 兼容 Mock 服务数据格式: 优先从 data 字段获取
-        data = event_data.get("data", {}) if isinstance(event_data.get("data"), dict) else {}
-        inspection_result = data.get("result") or event_data.get("inspection_result") or "OK"
+        inspection_result = resolve_first_str(
+            event_data,
+            EVENT_FIELD_ALIASES["inspection_result"]["aliases"],
+            default="OK",
+        )
 
         topology = _resolve_workline_topology(ctx)
 
         ctx.logger.info(f"Inspection completed: result={inspection_result}, location={location_id}")
 
-        context_patch = {
+        context_patch: JsonDict = {
             "stage": SmtClassifierStage.INSPECTION_RESULT_RECEIVED.value,
             "inspection_result": inspection_result,
+            STEP_CODE_KEY: SmtClassifierStepCode.WAITING_INSPECTION_EVENT.value,
         }
         return await self._process_inspection_result(
             ctx=ctx,
@@ -640,7 +979,7 @@ class SmtClassifierPlugin:
                 ctx=ctx,
                 topology=topology,
                 context_patch=context_patch,
-                current_location=location_id,
+                _current_location=location_id,
                 reason="INSPECTION_NG",
             )
 
@@ -650,8 +989,8 @@ class SmtClassifierPlugin:
         self,
         ctx: "PluginContext",
         topology: WorklineTopology,
-        context_patch: dict,
-        current_location: str,
+        context_patch: JsonDict,
+        _current_location: str,
         reason: str,
     ) -> PluginResult:
         """处理 NG 流程：放入 NG 缓存位
@@ -681,8 +1020,10 @@ class SmtClassifierPlugin:
 
         context_patch["stage"] = SmtClassifierStage.WAITING_PICK_PLACE.value
         context_patch["ng_reason"] = reason
+        context_patch["pick_place_reason"] = reason
         context_patch["source_type"] = LocationType.INPUT_PLATFORM.value
         context_patch["target_type"] = LocationType.NG_PLATFORM.value
+        context_patch[STEP_CODE_KEY] = SmtClassifierStepCode.NG_PICK_PLACE.value
 
         return self._build_command_result(
             transition=_ng_transition(reason),
@@ -695,8 +1036,8 @@ class SmtClassifierPlugin:
         self,
         ctx: "PluginContext",
         topology: WorklineTopology,
-        context_patch: dict,
-        location_id: str,
+        context_patch: JsonDict,
+        _location_id: str,
     ) -> PluginResult:
         """启动流水线传输"""
         # 获取流水线设备
@@ -717,6 +1058,7 @@ class SmtClassifierPlugin:
         context_patch["stage"] = SmtClassifierStage.WAITING_CONVEYOR.value
         context_patch["source_type"] = LocationType.PIPELINE_PLATFORM.value
         context_patch["target_type"] = LocationType.PIPELINE_PLATFORM.value
+        context_patch[STEP_CODE_KEY] = SmtClassifierStepCode.PIPELINE_MOVE_FORWARD.value
 
         return self._build_command_result(
             transition="inspection_ok",
@@ -725,7 +1067,7 @@ class SmtClassifierPlugin:
             wait_token=f"conveyor_transfer_{ctx.session.id}",
         )
 
-    def _handle_estop(self, ctx: "PluginContext", event_data: dict) -> PluginResult:
+    def _handle_estop(self, ctx: "PluginContext", event_data: JsonDict) -> PluginResult:
         """处理急停事件"""
         ctx.logger.warning("Emergency stop pressed, pausing session")
 
@@ -735,6 +1077,7 @@ class SmtClassifierPlugin:
                 "stage": SmtClassifierStage.ERROR.value,
                 "estop_pressed": True,
                 "estop_timestamp": event_data.get("timestamp"),
+                STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
             },
             failure=_create_failure(
                 domain="HARDWARE",
@@ -755,43 +1098,91 @@ class SmtClassifierPlugin:
         Returns:
             PluginResult 包含状态转换
         """
-        result_data = inbox.payload_json or {}
-        payload_data = (
-            cast("dict[str, Any]", result_data.get("data")) if isinstance(result_data.get("data"), dict) else {}
+        result_data = _ensure_dict(inbox.payload_json)
+        command_type = resolve_first_str(result_data, RESULT_FIELD_ALIASES["command_type"]["aliases"])
+        result = resolve_first_str(
+            result_data,
+            RESULT_FIELD_ALIASES["result"]["aliases"],
+            default=SmtClassifierResultType.SUCCESS.value,
         )
-        command_type = result_data.get("command_type") or payload_data.get("command_type") or ""
-        result = result_data.get("result", "SUCCESS")
 
         ctx.logger.info(f"SmtClassifierPlugin received command result: {command_type}, result={result}")
 
         # 获取当前会话上下文
-        session_ctx = ctx.session.context_json or {}
-        ng_reason = session_ctx.get("ng_reason", "")
+        session_ctx = _ensure_dict(getattr(ctx.session, "context_json", None))
+        current_step = resolve_step_from_context(session_ctx) or infer_step_from_command(command_type, session_ctx)
+        ng_reason = _ensure_str(session_ctx.get("ng_reason"))
         current_location = session_ctx.get("current_location")
-        resolved_location_id = current_location if isinstance(current_location, str) and current_location else None
+        session_location_id = current_location if isinstance(current_location, str) and current_location else None
+        resolved_location_id = (
+            resolve_first_str(result_data, EVENT_FIELD_ALIASES["location_id"]["aliases"]) or session_location_id
+        )
         topology = _resolve_workline_topology(ctx)
 
         # 命令失败处理
-        if result != "SUCCESS":
+        if result != SmtClassifierResultType.SUCCESS.value:
             # 递增重试计数
-            current_retry = session_ctx.get("retry_count", 0)
-            return self._handle_command_failure(ctx, command_type, result_data, current_retry)
+            retry_value = session_ctx.get("retry_count", 0)
+            current_retry = retry_value if isinstance(retry_value, int) else 0
+            return self._handle_command_failure(ctx, command_type, result_data, current_retry, current_step)
 
-        # 抓取放置完成
+        # Step 驱动主流程（P0-6）
+        if current_step == SmtClassifierStepCode.INPUT_PICK_PLACE and _has_embedded_inspection_payload(result_data):
+            inspection_result = resolve_first_str(
+                result_data,
+                EVENT_FIELD_ALIASES["inspection_result"]["aliases"],
+                default="OK",
+            )
+            reel_diameter = resolve_first_str(result_data, ("reel_diameter", "data.reel_diameter"))
+            reel_thickness = resolve_first_str(result_data, ("reel_thickness", "data.reel_thickness"))
+            return await self._process_inspection_result(
+                ctx=ctx,
+                inspection_result=inspection_result,
+                topology=topology,
+                location_id=resolved_location_id or "",
+                context_patch={
+                    "stage": SmtClassifierStage.INSPECTION_RESULT_RECEIVED.value,
+                    "inspection_result": inspection_result,
+                    "location_id": resolved_location_id,
+                    **({"reel_diameter": reel_diameter} if reel_diameter else {}),
+                    **({"thickness": reel_thickness} if reel_thickness else {}),
+                    STEP_CODE_KEY: SmtClassifierStepCode.WAITING_INSPECTION_EVENT.value,
+                },
+            )
+
+        if current_step is not None and current_step in {
+            SmtClassifierStepCode.INPUT_PICK_PLACE,
+            SmtClassifierStepCode.NG_PICK_PLACE,
+            SmtClassifierStepCode.OUTPUT_PICK_PLACE,
+        }:
+            return self._handle_pick_place_completed(current_step, ng_reason, resolved_location_id)
+
+        if current_step == SmtClassifierStepCode.PIPELINE_MOVE_FORWARD:
+            return await self._handle_move_forward_completed(ctx, topology)
+
+        # 兼容旧上下文字段（step_code 缺失时）
         if command_type == SmtClassifierCommandType.PICK_AND_PUT.value:
-            return self._handle_pick_place_completed(ng_reason, resolved_location_id)
+            inferred_step = infer_step_from_command(command_type, session_ctx)
+            if inferred_step is not None:
+                return self._handle_pick_place_completed(inferred_step, ng_reason, resolved_location_id)
+            return self._handle_pick_place_completed(
+                SmtClassifierStepCode.INPUT_PICK_PLACE, ng_reason, resolved_location_id
+            )
 
-        # 流水线传输完成
         if command_type == SmtClassifierCommandType.MOVE_FORWARD.value:
             return await self._handle_move_forward_completed(ctx, topology)
 
         ctx.logger.warning(f"Unknown command type: {command_type}")
         return PluginResult()
 
-    def _handle_pick_place_completed(self, ng_reason: str, location_id: str | None) -> PluginResult:
+    def _handle_pick_place_completed(
+        self,
+        current_step: SmtClassifierStepCode,
+        ng_reason: str,
+        location_id: str | None,
+    ) -> PluginResult:
         """处理抓取放置完成"""
-        # NG 处理完成
-        if ng_reason in ("SCAN_NG", "INSPECTION_NG"):
+        if current_step == SmtClassifierStepCode.NG_PICK_PLACE:
             return PluginResult(
                 transition="ng_handled",
                 context_patch={
@@ -799,67 +1190,192 @@ class SmtClassifierPlugin:
                     "ng_handled": True,
                     "ng_reason": ng_reason,
                     "location_id": location_id,
+                    STEP_CODE_KEY: SmtClassifierStepCode.COMPLETED.value,
                 },
                 complete=True,
             )
 
-        if ng_reason == "OUTPUT":
+        if current_step == SmtClassifierStepCode.OUTPUT_PICK_PLACE:
             return PluginResult(
                 transition="output_handled",
                 context_patch={
                     "stage": SmtClassifierStage.COMPLETED.value,
                     "location_id": location_id,
+                    STEP_CODE_KEY: SmtClassifierStepCode.COMPLETED.value,
                 },
                 complete=True,
             )
 
-        # OK 流程继续
+        # 输入机械臂搬运完成后等待检测/后续事件
         return PluginResult(
             transition="pick_place_ok",
-            context_patch={"stage": SmtClassifierStage.WAITING_INSPECTION.value},
+            context_patch={
+                "stage": SmtClassifierStage.WAITING_INSPECTION.value,
+                STEP_CODE_KEY: SmtClassifierStepCode.WAITING_INSPECTION_EVENT.value,
+            },
         )
 
     async def _handle_move_forward_completed(self, ctx: "PluginContext", topology: WorklineTopology) -> PluginResult:
         """处理流水线传输完成。"""
-        # 获取出料机械臂
+        session_context = _ensure_dict(getattr(ctx.session, "context_json", None))
         output_arm_id = topology.output_arm_id
         if output_arm_id is None:
             return _missing_device_result(SmtClassifierDeviceRole.OUTPUT_ARM.value)
 
-        # 构建出料命令 - 使用逻辑位置类型
-        command = _build_command(
-            device_id=output_arm_id,
-            action=SmtClassifierCommandType.PICK_AND_PUT.value,
-            params={
-                "source_type": LocationType.PIPELINE_PLATFORM.value,
-                "target_type": LocationType.OUTPUT_PLATFORM.value,
-                "reason": "OUTPUT",
-            },
-        )
+        source_location = _current_source_location(session_context)
 
-        return self._build_command_result(
-            transition="conveyor_complete",
+        try:
+            allocation_response, allocation_request_code, allocation_attempt = await self._request_bin_allocation(
+                ctx,
+                session_context,
+                source_location=source_location,
+            )
+        except Exception as exc:
+            ctx.logger.error(f"Bin allocation request failed: {exc}")
+            return PluginResult(
+                transition="command_failed",
+                context_patch={
+                    "stage": SmtClassifierStage.ERROR.value,
+                    "allocation_error": str(exc),
+                    STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                },
+                failure=_create_failure(
+                    domain="UPSTREAM",
+                    code="BIN_ALLOCATION_REQUEST_FAILED",
+                    message=str(exc),
+                ),
+            )
+
+        allocation_message = _ensure_str(allocation_response.get("message")).upper()
+        allocation_data = _ensure_dict(allocation_response.get("data"))
+        allocation_status = _ensure_str(allocation_data.get("allocation_status"), allocation_message).upper()
+
+        base_context_patch: JsonDict = {
+            "current_location": source_location,
+            "allocation_request_code": allocation_request_code,
+            "allocation_request_count": allocation_attempt,
+            "allocation_status": allocation_status,
+        }
+
+        if allocation_status == "ALLOCATED":
+            target_bin, missing_fields = _normalize_target_bin(
+                session_context,
+                _ensure_dict(allocation_data.get("target_bin")),
+            )
+            if target_bin is None:
+                return PluginResult(
+                    transition="command_failed",
+                    context_patch={
+                        **base_context_patch,
+                        "stage": SmtClassifierStage.ERROR.value,
+                        "target_bin_missing_fields": missing_fields,
+                        STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                    },
+                    failure=_create_failure(
+                        domain="UPSTREAM",
+                        code="TARGET_BIN_INVALID",
+                        message=f"target_bin missing required fields: {', '.join(missing_fields)}",
+                    ),
+                )
+
+            return self._build_output_command_result(
+                ctx=ctx,
+                output_arm_id=output_arm_id,
+                target_bin=target_bin,
+                transition="conveyor_complete",
+                extra_context_patch=base_context_patch,
+            )
+
+        if allocation_status == "AGV_REQUIRED":
+            raw_agv_request = _ensure_dict(allocation_data.get("agv_request"))
+            agv_request_code = _ensure_str(raw_agv_request.get("request_code"))
+            raw_agv_request_count = session_context.get("agv_request_count", 0)
+            agv_request_count = raw_agv_request_count if isinstance(raw_agv_request_count, int) and raw_agv_request_count >= 0 else 0
+            if not agv_request_code:
+                agv_request_code, agv_request_count = _next_request_code(
+                    ctx,
+                    session_context,
+                    prefix="AGV",
+                    counter_key="agv_request_count",
+                )
+                raw_agv_request["request_code"] = agv_request_code
+            else:
+                agv_request_count += 1
+
+            try:
+                agv_decision = self._build_agv_request_decision(
+                    ctx,
+                    session_context,
+                    agv_request=raw_agv_request,
+                    agv_request_code=agv_request_code,
+                )
+            except Exception as exc:
+                return PluginResult(
+                    transition="command_failed",
+                    context_patch={
+                        **base_context_patch,
+                        "stage": SmtClassifierStage.ERROR.value,
+                        "agv_request_error": str(exc),
+                        STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                    },
+                    failure=_create_failure(
+                        domain="UPSTREAM",
+                        code="AGV_REQUEST_PREPARE_FAILED",
+                        message=str(exc),
+                    ),
+                )
+
+            return PluginResult(
+                transition="agv_requested",
+                context_patch={
+                    **base_context_patch,
+                    "stage": SmtClassifierStage.WAITING_AGV_DELIVERY.value,
+                    "agv_request_code": agv_request_code,
+                    "agv_request_count": agv_request_count,
+                    "agv_request": raw_agv_request,
+                    STEP_CODE_KEY: SmtClassifierStepCode.WAITING_AGV_DELIVERY.value,
+                },
+                decisions=[agv_decision],
+                wait=WaitIntent(
+                    wait_type="EXTERNAL_HTTP",
+                    wait_token=agv_request_code,
+                    deadline_seconds=self.DEFAULT_TIMEOUT_SECONDS,
+                ),
+            )
+
+        return PluginResult(
+            transition="command_failed",
             context_patch={
-                "stage": SmtClassifierStage.WAITING_OUTPUT.value,
-                "source_type": LocationType.PIPELINE_PLATFORM.value,
-                "target_type": LocationType.OUTPUT_PLATFORM.value,
-                "pick_place_reason": "OUTPUT",
+                **base_context_patch,
+                "stage": SmtClassifierStage.ERROR.value,
+                STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
             },
-            command=command,
-            wait_token=f"output_{ctx.session.id}",
+            failure=_create_failure(
+                domain="UPSTREAM",
+                code="BIN_ALLOCATION_UNSUPPORTED_STATUS",
+                message=f"unsupported allocation status: {allocation_status or allocation_message or 'UNKNOWN'}",
+            ),
         )
 
     def _handle_command_failure(
         self,
         ctx: "PluginContext",
         command_type: str,
-        result_data: dict,
+        result_data: JsonDict,
         retry_count: int = 0,
+        current_step: SmtClassifierStepCode | None = None,
     ) -> PluginResult:
         """处理命令失败"""
-        error_detail = result_data.get("error_detail", {})
-        error_code = error_detail.get("code", "UNKNOWN_ERROR")
-        error_message = error_detail.get("message", "Command execution failed")
+        error_code = resolve_first_str(
+            result_data,
+            RESULT_FIELD_ALIASES["error_code"]["aliases"],
+            default="UNKNOWN_ERROR",
+        )
+        error_message = resolve_first_str(
+            result_data,
+            RESULT_FIELD_ALIASES["error_message"]["aliases"],
+            default="Command execution failed",
+        )
 
         ctx.logger.error(
             f"Command failed: type={command_type}, code={error_code}, message={error_message}, retry={retry_count}"
@@ -881,6 +1397,7 @@ class SmtClassifierPlugin:
                 context_patch={
                     "retry_count": new_retry_count,
                     "last_retry_at": ctx.clock().isoformat(),
+                    **({STEP_CODE_KEY: current_step.value} if current_step is not None else {}),
                 },
             )
 
@@ -889,6 +1406,7 @@ class SmtClassifierPlugin:
             context_patch={
                 "stage": SmtClassifierStage.ERROR.value,
                 "retry_count": new_retry_count,
+                STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
                 "last_error": {
                     "command_type": command_type,
                     "code": error_code,
@@ -916,14 +1434,15 @@ class SmtClassifierPlugin:
         """
         ctx.logger.warning(f"SmtClassifierPlugin received timeout: inbox_id={inbox.id}")
 
-        session_ctx = ctx.session.context_json or {}
-        current_stage = session_ctx.get("stage", SmtClassifierStage.IDLE.value)
+        session_ctx = _ensure_dict(getattr(ctx.session, "context_json", None))
+        current_stage = _ensure_str(session_ctx.get("stage"), SmtClassifierStage.IDLE.value)
 
         return PluginResult(
             transition="timeout",
             context_patch={
                 "stage": SmtClassifierStage.ERROR.value,
                 "timeout_at_stage": current_stage,
+                STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
             },
             failure=_create_failure(
                 domain="HARDWARE",
@@ -944,14 +1463,17 @@ class SmtClassifierPlugin:
         Returns:
             PluginResult 包含状态转换
         """
-        callback_data = inbox.payload_json or {}
-        callback_type = callback_data.get("callback_type", "")
+        callback_data = _ensure_dict(inbox.payload_json)
+        callback_type = _ensure_str(callback_data.get("callback_type"))
 
         ctx.logger.info(f"SmtClassifierPlugin received external HTTP: type={callback_type}")
 
         # MES 检测结果回调
         if callback_type == "MES_INSPECTION_RESULT":
             return await self._handle_mes_inspection_callback(ctx, callback_data)
+
+        if callback_type == _DEFAULT_AGV_CALLBACK_TYPE:
+            return await self._handle_agv_task_result(ctx, callback_data)
 
         # WCS 任务状态回调
         if callback_type == "WCS_TASK_STATUS":
@@ -960,18 +1482,127 @@ class SmtClassifierPlugin:
         ctx.logger.warning(f"Unknown external callback type: {callback_type}")
         return PluginResult()
 
-    async def _handle_mes_inspection_callback(self, ctx: "PluginContext", callback_data: dict) -> PluginResult:
+    async def _handle_agv_task_result(self, ctx: "PluginContext", callback_data: JsonDict) -> PluginResult:
+        """处理 AGV 搬运完成回调。"""
+        session_context = _ensure_dict(getattr(ctx.session, "context_json", None))
+        topology = _resolve_workline_topology(ctx)
+        output_arm_id = topology.output_arm_id
+        if output_arm_id is None:
+            return _missing_device_result(SmtClassifierDeviceRole.OUTPUT_ARM.value)
+
+        agv_result = _ensure_str(callback_data.get("result"), "FAILED").upper()
+        callback_data_payload = _ensure_dict(callback_data.get("data"))
+        command_id = _ensure_str(callback_data.get("command_code") or callback_data.get("command_id"))
+        source_location = _ensure_str(callback_data_payload.get("to_location")) or _current_source_location(session_context)
+
+        if agv_result != SmtClassifierResultType.SUCCESS.value:
+            error_message = _ensure_str(
+                callback_data_payload.get("message") or callback_data.get("message"),
+                "AGV task failed",
+            )
+            return PluginResult(
+                transition="command_failed",
+                context_patch={
+                    "stage": SmtClassifierStage.ERROR.value,
+                    "agv_request_code": command_id or _ensure_str(session_context.get("agv_request_code")),
+                    "agv_result": agv_result,
+                    STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                },
+                failure=_create_failure(
+                    domain="UPSTREAM",
+                    code="AGV_TASK_FAILED",
+                    message=error_message,
+                ),
+            )
+
+        try:
+            allocation_response, allocation_request_code, allocation_attempt = await self._request_bin_allocation(
+                ctx,
+                session_context,
+                source_location=source_location,
+            )
+        except Exception as exc:
+            return PluginResult(
+                transition="command_failed",
+                context_patch={
+                    "stage": SmtClassifierStage.ERROR.value,
+                    "agv_request_code": command_id or _ensure_str(session_context.get("agv_request_code")),
+                    "allocation_error": str(exc),
+                    STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                },
+                failure=_create_failure(
+                    domain="UPSTREAM",
+                    code="BIN_ALLOCATION_REQUEST_FAILED",
+                    message=str(exc),
+                ),
+            )
+
+        allocation_message = _ensure_str(allocation_response.get("message")).upper()
+        allocation_data = _ensure_dict(allocation_response.get("data"))
+        allocation_status = _ensure_str(allocation_data.get("allocation_status"), allocation_message).upper()
+        if allocation_status != "ALLOCATED":
+            return PluginResult(
+                transition="command_failed",
+                context_patch={
+                    "stage": SmtClassifierStage.ERROR.value,
+                    "agv_request_code": command_id or _ensure_str(session_context.get("agv_request_code")),
+                    "allocation_request_code": allocation_request_code,
+                    "allocation_request_count": allocation_attempt,
+                    "allocation_status": allocation_status,
+                    STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                },
+                failure=_create_failure(
+                    domain="UPSTREAM",
+                    code="BIN_ALLOCATION_UNAVAILABLE_AFTER_AGV",
+                    message=f"allocation status after AGV is {allocation_status or allocation_message or 'UNKNOWN'}",
+                ),
+            )
+
+        target_bin, missing_fields = _normalize_target_bin(session_context, _ensure_dict(allocation_data.get("target_bin")))
+        if target_bin is None:
+            return PluginResult(
+                transition="command_failed",
+                context_patch={
+                    "stage": SmtClassifierStage.ERROR.value,
+                    "target_bin_missing_fields": missing_fields,
+                    "allocation_request_code": allocation_request_code,
+                    "allocation_request_count": allocation_attempt,
+                    STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
+                },
+                failure=_create_failure(
+                    domain="UPSTREAM",
+                    code="TARGET_BIN_INVALID",
+                    message=f"target_bin missing required fields: {', '.join(missing_fields)}",
+                ),
+            )
+
+        return self._build_output_command_result(
+            ctx=ctx,
+            output_arm_id=output_arm_id,
+            target_bin=target_bin,
+            transition="agv_completed",
+            extra_context_patch={
+                "current_location": source_location,
+                "agv_request_code": command_id or _ensure_str(session_context.get("agv_request_code")),
+                "agv_result": agv_result,
+                "allocation_request_code": allocation_request_code,
+                "allocation_request_count": allocation_attempt,
+                "allocation_status": allocation_status,
+            },
+        )
+
+    async def _handle_mes_inspection_callback(self, ctx: "PluginContext", callback_data: JsonDict) -> PluginResult:
         """处理 MES 检测结果回调"""
-        inspection_result = callback_data.get("inspection_result", "OK")
-        barcode = callback_data.get("barcode", "")
+        inspection_result = _ensure_str(callback_data.get("inspection_result"), "OK")
+        barcode = _ensure_str(callback_data.get("barcode"))
 
         ctx.logger.info(f"MES inspection callback: barcode={barcode}, result={inspection_result}")
 
-        session_ctx = ctx.session.context_json or {}
-        location_id = session_ctx.get("location_id", "")
+        session_ctx = _ensure_dict(getattr(ctx.session, "context_json", None))
+        location_id = _ensure_str(session_ctx.get("location_id"))
         topology = _resolve_workline_topology(ctx)
 
-        context_patch = {
+        context_patch: JsonDict = {
             "stage": SmtClassifierStage.INSPECTION_RESULT_RECEIVED.value,
             "inspection_result": inspection_result,
             "mes_callback": True,
@@ -984,10 +1615,10 @@ class SmtClassifierPlugin:
             context_patch=context_patch,
         )
 
-    def _handle_wcs_task_callback(self, ctx: "PluginContext", callback_data: dict) -> PluginResult:
+    def _handle_wcs_task_callback(self, ctx: "PluginContext", callback_data: JsonDict) -> PluginResult:
         """处理 WCS 任务状态回调"""
-        task_status = callback_data.get("task_status", "")
-        task_id = callback_data.get("task_id", "")
+        task_status = _ensure_str(callback_data.get("task_status"))
+        task_id = _ensure_str(callback_data.get("task_id"))
 
         ctx.logger.info(f"WCS task callback: task_id={task_id}, status={task_status}")
 
@@ -1001,7 +1632,7 @@ class SmtClassifierPlugin:
             )
 
         if task_status == "FAILED":
-            error_message = callback_data.get("error_message", "WCS task failed")
+            error_message = _ensure_str(callback_data.get("error_message"), "WCS task failed")
             return PluginResult(
                 transition="wcs_task_failed",
                 context_patch={
@@ -1083,6 +1714,7 @@ class SmtClassifierPlugin:
                 "cancelled": True,
                 "cancel_reason": reason,
                 "cancelled_at": ctx.clock().isoformat(),
+                STEP_CODE_KEY: SmtClassifierStepCode.COMPLETED.value,
             },
             complete=True,
         )
@@ -1266,7 +1898,9 @@ __all__ = [
     "SmtClassifierDeviceRole",
     "SmtClassifierEventType",
     "SmtClassifierPlugin",
+    "SmtClassifierResultType",
     "SmtClassifierStage",
+    "SmtClassifierStepCode",
     "get_error_recovery_strategy",
     "smt_classifier_plugin",
 ]

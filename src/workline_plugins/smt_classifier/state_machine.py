@@ -151,6 +151,7 @@ class SmtClassifierStageStatus(str, Enum):
     WAITING_INSPECTION = "WAITING_INSPECTION"
     WAITING_PICK_PLACE = "WAITING_PICK_PLACE"
     WAITING_CONVEYOR = "WAITING_CONVEYOR"
+    WAITING_AGV_DELIVERY = "WAITING_AGV_DELIVERY"
     WAITING_OUTPUT = "WAITING_OUTPUT"
     COMPLETED = "COMPLETED"
     ERROR = "ERROR"
@@ -182,6 +183,16 @@ STAGE_TRANSITIONS: list[dict[str, Any]] = [
     {
         "trigger": "conveyor_complete",
         "source": SmtClassifierStageStatus.WAITING_CONVEYOR.value,
+        "dest": SmtClassifierStageStatus.WAITING_OUTPUT.value,
+    },
+    {
+        "trigger": "agv_requested",
+        "source": SmtClassifierStageStatus.WAITING_CONVEYOR.value,
+        "dest": SmtClassifierStageStatus.WAITING_AGV_DELIVERY.value,
+    },
+    {
+        "trigger": "agv_completed",
+        "source": SmtClassifierStageStatus.WAITING_AGV_DELIVERY.value,
         "dest": SmtClassifierStageStatus.WAITING_OUTPUT.value,
     },
     {

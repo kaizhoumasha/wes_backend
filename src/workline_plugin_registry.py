@@ -13,6 +13,7 @@ class WorklinePluginDefinition:
     plugin_key: str
     plugin_module: str
     plugin_class_name: str
+    contract_module: str | None = None
     state_machine_module: str | None = None
     state_machine_class_name: str | None = None
 
@@ -36,6 +37,7 @@ WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
         plugin_key="smt_classifier",
         plugin_module="src.workline_plugins.smt_classifier.plugin",
         plugin_class_name="SmtClassifierPlugin",
+        contract_module="src.workline_plugins.smt_classifier.contract",
         state_machine_module="src.workline_plugins.smt_classifier.state_machine",
         state_machine_class_name="SmtClassifierStageMachine",
     ),

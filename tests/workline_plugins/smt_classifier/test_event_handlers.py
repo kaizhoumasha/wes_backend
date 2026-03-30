@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.workline_plugins.smt_classifier.contract import SmtClassifierStepCode
 from src.workline_plugins.smt_classifier.event_handlers import (
     CommandResult,
     CommandResultData,
@@ -293,6 +294,7 @@ class TestScanCompletedHandling:
         assert result.transition == "scan_ok"
         assert len(result.commands) == 1
         assert result.commands[0].action == TaskType.PICK_AND_PUT.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.INPUT_PICK_PLACE.value
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
 
@@ -316,6 +318,7 @@ class TestScanCompletedHandling:
         result = await event_handler.on_device_event(mock_context, mock_inbox)
 
         assert result.transition == "scan_ng"
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.NG_PICK_PLACE.value
         assert result.failure is not None
         assert result.failure.domain == FailureDomain.DATA.value
 
@@ -388,6 +391,7 @@ class TestCommandResultHandling:
             "barcode": "PKG001",
             "scan_result": "OK",
             "current_location": "STATION_PIPELINE1_INPUT1",
+            "step_code": SmtClassifierStepCode.INPUT_PICK_PLACE.value,
             "retry_count": 0,
         }
         mock_inbox.payload_json = {
@@ -406,6 +410,7 @@ class TestCommandResultHandling:
         assert result.transition == "move_ok"
         assert len(result.commands) == 1
         assert result.commands[0].action == TaskType.MOVE_FORWARD.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.PIPELINE_MOVE_FORWARD.value
 
     @pytest.mark.asyncio
     async def test_handle_command_success_pipeline_output(
@@ -437,6 +442,7 @@ class TestCommandResultHandling:
         assert result.transition == "put_ok"
         assert len(result.commands) == 1
         assert result.commands[0].action == TaskType.PICK_AND_PUT.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.OUTPUT_PICK_PLACE.value
 
     @pytest.mark.asyncio
     async def test_handle_command_success_output(
@@ -465,6 +471,37 @@ class TestCommandResultHandling:
 
         assert result.transition == "complete"
         assert result.complete is True
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_handle_command_success_step_code_precedence(
+        self,
+        event_handler: SmtClassifierEventHandler,
+        mock_context: MagicMock,
+        mock_inbox: MagicMock,
+    ) -> None:
+        """step_code 应优先于位置字符串启发式。"""
+        mock_context.session.context_json = {
+            "barcode": "PKG001",
+            "scan_result": "OK",
+            "current_location": "STATION_OUTPUT1",
+            "step_code": SmtClassifierStepCode.INPUT_PICK_PLACE.value,
+            "retry_count": 0,
+        }
+        mock_inbox.payload_json = {
+            "result": CommandResult.SUCCESS.value,
+            "device_id": "ARM01",
+            "data": {
+                "actual_qty": 1,
+                "location": "STATION_OUTPUT1",
+            },
+        }
+
+        result = await event_handler.on_command_result(mock_context, mock_inbox)
+
+        assert result.transition == "move_ok"
+        assert len(result.commands) == 1
+        assert result.commands[0].action == TaskType.MOVE_FORWARD.value
 
     @pytest.mark.asyncio
     async def test_handle_command_failed(

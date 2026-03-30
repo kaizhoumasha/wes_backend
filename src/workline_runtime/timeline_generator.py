@@ -44,7 +44,6 @@ class TimelineGenerator:
         actor_code: str | None = None,
         message: str | None = None,
         related_inbox_id: int | None = None,
-        related_event_log_id: int | None = None,
         related_command_id: int | None = None,
         related_external_call_id: int | None = None,
         status: TimelineStatus | None = None,
@@ -63,7 +62,6 @@ class TimelineGenerator:
             actor_code: 参与者编码
             message: 消息
             related_inbox_id: 关联的 Inbox ID
-            related_event_log_id: 关联的事件日志 ID
             related_command_id: 关联的设备指令 ID
             related_external_call_id: 关联的外部调用 ID
             status: 条目状态（默认为 SUCCESS）
@@ -89,7 +87,6 @@ class TimelineGenerator:
             message=message,
             payload_json=payload,
             related_inbox_id=related_inbox_id,
-            related_event_log_id=related_event_log_id,
             related_command_id=related_command_id,
             related_external_call_id=related_external_call_id,
         )

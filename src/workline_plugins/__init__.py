@@ -21,7 +21,6 @@ if TYPE_CHECKING:
         SmtClassifierCommandType,
         SmtClassifierDeviceRole,
         SmtClassifierEventType,
-        SmtClassifierLocationId,
         SmtClassifierPlugin,
         SmtClassifierStage,
         smt_classifier_plugin,
@@ -41,7 +40,6 @@ __all__ = [
     "SmtClassifierDeviceRole",
     "SmtClassifierEventHandler",
     "SmtClassifierEventType",
-    "SmtClassifierLocationId",
     "SmtClassifierPlugin",
     "SmtClassifierStage",
     "SmtClassifierStageMachine",
@@ -77,10 +75,6 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
     "SmtClassifierEventType": (
         "src.workline_plugins.smt_classifier.plugin",
         "SmtClassifierEventType",
-    ),
-    "SmtClassifierLocationId": (
-        "src.workline_plugins.smt_classifier.plugin",
-        "SmtClassifierLocationId",
     ),
     "SmtClassifierPlugin": (
         "src.workline_plugins.smt_classifier.plugin",

@@ -8,8 +8,10 @@
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
+from contextlib import suppress
 from datetime import timedelta
+from enum import Enum
 from typing import Any, TypedDict, cast
 
 from celery import Task
@@ -19,6 +21,7 @@ from loguru import logger
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
 from src.celery_app.app import celery_app
+from src.workline_plugins.contracts import STEP_CODE_FIELD, resolve_contract_version
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 
 # ============================================
@@ -59,6 +62,10 @@ class LoadedEntities(TypedDict):
     workline: Any | None
     devices_by_role: dict[str, list[Any]]
     services: Any | None
+
+
+JsonDict = dict[str, Any]
+_EXTERNAL_HTTP_DECISION_TYPE = "EXTERNAL_HTTP_REQUEST"
 
 
 # ============================================
@@ -129,19 +136,39 @@ def _resolve_required_pk(entity: Any, entity_name: str, *field_names: str) -> in
     return pk
 
 
-def _payload_dict(raw_payload: Any) -> dict[str, Any]:
-    return cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+def _payload_dict(raw_payload: Any) -> JsonDict:
+    return cast("JsonDict", raw_payload) if isinstance(raw_payload, dict) else {}
+
+
+def _string_value(value: Any, default: str = "") -> str:
+    return value if isinstance(value, str) else default
 
 
 def _session_context(session: Any) -> dict[str, Any]:
     raw_context = getattr(session, "context_json", None)
     if isinstance(raw_context, dict):
-        return dict(raw_context)
+        return dict(cast("JsonDict", raw_context))
     return {}
 
 
 def _set_session_context(session: Any, context: dict[str, Any]) -> None:
     session.context_json = context
+
+
+def _sync_session_contract_snapshot(session: Any, *, workline: Any, context: dict[str, Any]) -> None:
+    plugin_key = getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None)
+    if isinstance(plugin_key, str) and plugin_key:
+        session.plugin_key = plugin_key
+
+    contract_version = getattr(session, "contract_version", None)
+    if not isinstance(contract_version, str) or not contract_version:
+        candidate = resolve_contract_version(plugin_key)
+        if isinstance(candidate, str) and candidate:
+            session.contract_version = candidate
+
+    step_code = context.get(STEP_CODE_FIELD)
+    if isinstance(step_code, str) and step_code:
+        session.step_code = step_code
 
 
 def _clear_session_wait(session: Any) -> None:
@@ -189,15 +216,61 @@ def _build_command_code(task_type: str) -> str:
     return f"CMD-{date_str}-{task_type}-{uuid.uuid4().hex[:8].upper()}"
 
 
-def _build_outbox_payload(command: Any) -> dict[str, Any]:
+def _normalize_vendor_command_payload(
+    parameters: Any,
+    *,
+    action: str,
+    default_command_code: str,
+) -> JsonDict:
+    """归一化插件产出的设备协议 payload。
+
+    目标是保留 vendor payload 语义，只补齐派发必须字段。
+    """
+
     from src.utils.timezone import timezone
+
+    payload = dict(_payload_dict(parameters))
+    payload_command_code = (
+        _string_value(payload.get("command_code"))
+        or _string_value(payload.get("command_id"))
+        or default_command_code
+    )
+    payload["command_code"] = payload_command_code
+    payload["task_type"] = _string_value(payload.get("task_type"), action)
+
+    if not isinstance(payload.get("priority"), int):
+        payload["priority"] = 5
+    if not isinstance(payload.get("timeout"), int):
+        payload["timeout"] = 300000
+    if not isinstance(payload.get("timestamp"), int):
+        payload["timestamp"] = int(timezone.now_utc().timestamp() * 1000)
+
+    return payload
+
+
+def _build_outbox_payload(command: Any) -> dict[str, Any]:
+    command_params = _payload_dict(getattr(command, "params", None))
+    if command_params:
+        payload = dict(command_params)
+        command_code = _string_value(getattr(command, "command_code", None))
+        if command_code and not _string_value(payload.get("command_code")):
+            payload["command_code"] = command_code
+        return payload
+
+    from src.utils.timezone import timezone
+
+    command_task_type = getattr(command, "task_type", None)
+    if isinstance(command_task_type, Enum):
+        normalized_task_type = _string_value(command_task_type.value)
+    else:
+        normalized_task_type = _string_value(command_task_type)
 
     return {
         "command_code": command.command_code,
-        "task_type": command.task_type.value if hasattr(command.task_type, "value") else command.task_type,
+        "task_type": normalized_task_type,
         "priority": command.priority,
         "timeout": command.timeout_ms,
-        "params": command.params,
+        "params": {},
         "timestamp": int(timezone.now_utc().timestamp() * 1000),
     }
 
@@ -243,11 +316,14 @@ async def _apply_orchestrator_effects(
     if orch_result.context_patch:
         session_ctx.update(orch_result.context_patch)
         _set_session_context(session, session_ctx)
+        _sync_session_contract_snapshot(session, workline=workline, context=session_ctx)
         # 同步 barcode 到 session 字段
         if "barcode" in orch_result.context_patch:
             barcode_value = orch_result.context_patch["barcode"]
             if barcode_value:
                 session.barcode = barcode_value
+    else:
+        _sync_session_contract_snapshot(session, workline=workline, context=session_ctx)
 
     if correlation_id and getattr(session, "correlation_id", None) is None:
         session.correlation_id = correlation_id
@@ -271,6 +347,54 @@ async def _apply_orchestrator_effects(
             ),
         )
 
+    for decision in orch_result.decisions or []:
+        if not isinstance(decision, dict):
+            continue
+
+        decision_type = _string_value(decision.get("decision_type"))
+        if decision_type != _EXTERNAL_HTTP_DECISION_TYPE:
+            continue
+
+        dispatch_key = _string_value(decision.get("dispatch_key"))
+        target_code = _string_value(decision.get("target_code"))
+        payload_json = _payload_dict(decision.get("payload"))
+        source_system = _string_value(decision.get("source_system"), "EXTERNAL_SYSTEM")
+        if not dispatch_key:
+            raise ValueError("EXTERNAL_HTTP decision missing dispatch_key")
+        if not target_code:
+            raise ValueError("EXTERNAL_HTTP decision missing target_code")
+        if not payload_json:
+            raise ValueError("EXTERNAL_HTTP decision missing payload")
+
+        db.add(
+            WorklineOutbox(
+                session_id=session.id,
+                workline_id=session.workline_id,
+                dispatch_type=DispatchType.EXTERNAL_HTTP,
+                dispatch_key=dispatch_key,
+                target_type=TargetType.HTTP_ENDPOINT,
+                target_code=target_code,
+                payload_json=payload_json,
+            )
+        )
+        await _add_timeline(
+            db,
+            timeline_generator.generate(
+                session=session,
+                stage=TimelineStage.DISPATCH_PREPARE,
+                action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
+                payload={
+                    "dispatch_key": dispatch_key,
+                    "target_code": target_code,
+                    "payload": payload_json,
+                },
+                actor_type=TimelineActorType.EXTERNAL_SYSTEM,
+                actor_code=source_system,
+                related_inbox_id=_resolve_entity_id(inbox),
+                status=TimelineStatus.PENDING,
+            ),
+        )
+
     for command_intent in orch_result.commands or []:
         target_device_id = command_intent.target_device_id
         target_device = device_by_id.get(target_device_id)
@@ -283,19 +407,30 @@ async def _apply_orchestrator_effects(
         if not isinstance(device_code, str) or not device_code:
             raise ValueError(f"Target device missing device_code: {target_device_id}")
 
-        command_data = {
-            "command_code": _build_command_code(_map_command_task_type(command_intent.action)),
+        generated_command_code = _build_command_code(_map_command_task_type(command_intent.action))
+        vendor_payload = _normalize_vendor_command_payload(
+            command_intent.parameters,
+            action=command_intent.action,
+            default_command_code=generated_command_code,
+        )
+        resolved_command_code = _string_value(vendor_payload.get("command_code"), generated_command_code)
+        vendor_task_type = _string_value(vendor_payload.get("task_type"), command_intent.action)
+        priority_value = vendor_payload.get("priority")
+        timeout_value = vendor_payload.get("timeout")
+
+        command_data: dict[str, Any] = {
+            "command_code": resolved_command_code,
             "device_id": target_device_id,
-            "task_type": _map_command_task_type(command_intent.action),
-            "priority": 5,
-            "timeout_ms": 300000,
-            "params": {
-                **command_intent.parameters,
-                "action": command_intent.action,
-            },
+            "task_type": _map_command_task_type(vendor_task_type),
+            "priority": priority_value if isinstance(priority_value, int) else 5,
+            "timeout_ms": timeout_value if isinstance(timeout_value, int) else 300000,
+            "params": vendor_payload,
             "correlation_id": correlation_id,
             "session_id": str(session.id),
             "workline_id": session.workline_id,
+            "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
+            "contract_version": getattr(session, "contract_version", None),
+            "step_code": session_ctx.get(STEP_CODE_FIELD),
         }
         command = await command_repo.create(db, command_data)
         if command is None:
@@ -324,7 +459,7 @@ async def _apply_orchestrator_effects(
                 payload={
                     "command_code": command.command_code,
                     "command_type": command_intent.action,
-                    "parameters": command_intent.parameters,
+                    "parameters": vendor_payload,
                 },
                 actor_type=TimelineActorType.ORCHESTRATOR,
                 actor_code=device_code,
@@ -439,7 +574,7 @@ async def _apply_orchestrator_effects(
         session.ended_at = None
         return
 
-    if orch_result.transition or orch_result.context_patch or orch_result.commands:
+    if orch_result.transition or orch_result.context_patch or orch_result.commands or orch_result.decisions:
         session.status = "RUNNING"
 
     _clear_session_wait(session)
@@ -578,7 +713,7 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
 
     devices_by_role = await _load_devices_by_role(db, workline, device_repo)
 
-    if session is None and workline is not None and _should_resolve_session(inbox):
+    if session is None and _should_resolve_session(inbox):
         session = await session_resolver.resolve_or_create(
             db=db,
             inbox=inbox,
@@ -588,6 +723,11 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
         session_pk = _resolve_entity_id(session)
         if session_pk is not None:
             inbox.session_id = session_pk
+        if workline is None:
+            workline = await _load_workline_entity(db, inbox, session, workline_repo)
+            if workline is None and device is not None:
+                workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
+            devices_by_role = await _load_devices_by_role(db, workline, device_repo)
 
     # 服务容器（Phase 2 简化实现）
     services: dict[str, Any] = {}
@@ -627,10 +767,8 @@ class WorklineTask(Task):
     def cleanup(self) -> None:
         """清理资源"""
         if self._db:
-            try:
+            with suppress(Exception):
                 asyncio.get_event_loop().run_until_complete(self._db.close())
-            except Exception:
-                pass
             self._db = None
 
     def on_failure(
@@ -1009,9 +1147,8 @@ class OutboxDispatcher:
                 if response.status_code == 200:
                     logger.info(f"设备指令发送成功: {outbox.payload_json.get('command_code')}")
                     return True
-                else:
-                    logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
-                    return False
+                logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
+                return False
         except Exception as e:
             logger.error(f"设备指令派发失败: {e}")
             return False

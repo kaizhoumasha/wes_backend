@@ -11,6 +11,7 @@ OutboxDispatcher 单元测试
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,13 +68,6 @@ class TestOutboxDispatcher:
         repo.mark_as_failed = AsyncMock(return_value=MagicMock())
         return repo
 
-    @pytest.fixture
-    def mock_device_service(self):
-        """创建模拟设备服务"""
-        service = MagicMock()
-        service.send_command = AsyncMock(return_value={"success": True})
-        return service
-
     @pytest.mark.asyncio
     async def test_dispatch_no_pending_messages(self, mock_db, mock_outbox_repo):
         """测试无待派发消息时正常退出"""
@@ -95,7 +89,6 @@ class TestOutboxDispatcher:
         self,
         mock_db,
         mock_outbox_repo,
-        mock_device_service,
     ):
         """测试派发单个设备指令"""
         from src.celery_app.tasks.workline import dispatch_outbox
@@ -108,6 +101,10 @@ class TestOutboxDispatcher:
             payload_json={"command": "SCAN"},
         )
         mock_outbox_repo.get_pending_messages.return_value = [outbox]
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
 
         with (
             patch(
@@ -115,23 +112,28 @@ class TestOutboxDispatcher:
                 return_value=mock_outbox_repo,
             ),
             patch(
-                "src.app.device.services.device_service.device_service",
-                mock_device_service,
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
+            patch(
+                "httpx.AsyncClient",
+            ) as mock_client,
         ):
+            mock_response = MagicMock(status_code=200)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
             result = await dispatch_outbox._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 1
         assert result["failed"] == 0
-        mock_device_service.send_command.assert_called_once()
+        mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "SCANNER_001")
+        mock_client.return_value.__aenter__.return_value.post.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_dispatch_multiple_messages(
         self,
         mock_db,
         mock_outbox_repo,
-        mock_device_service,
     ):
         """测试批量派发多条消息"""
         from src.celery_app.tasks.workline import dispatch_outbox
@@ -145,6 +147,10 @@ class TestOutboxDispatcher:
             for i in range(1, 4)
         ]
         mock_outbox_repo.get_pending_messages.return_value = outboxes
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
 
         with (
             patch(
@@ -152,23 +158,28 @@ class TestOutboxDispatcher:
                 return_value=mock_outbox_repo,
             ),
             patch(
-                "src.app.device.services.device_service.device_service",
-                mock_device_service,
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
+            patch(
+                "httpx.AsyncClient",
+            ) as mock_client,
         ):
+            mock_response = MagicMock(status_code=200)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
             result = await dispatch_outbox._dispatch(mock_db)
 
         assert result["dispatched"] == 3
         assert result["success"] == 3
         assert result["failed"] == 0
-        assert mock_device_service.send_command.call_count == 3
+        assert mock_device_repo.get_by_device_code.await_count == 3
+        assert mock_client.return_value.__aenter__.return_value.post.await_count == 3
 
     @pytest.mark.asyncio
     async def test_dispatch_handles_failure_with_retry(
         self,
         mock_db,
         mock_outbox_repo,
-        mock_device_service,
     ):
         """测试派发失败时的重试机制"""
         from src.celery_app.tasks.workline import dispatch_outbox
@@ -180,9 +191,10 @@ class TestOutboxDispatcher:
             attempt_count=0,
         )
         mock_outbox_repo.get_pending_messages.return_value = [outbox]
-
-        # 模拟派发失败
-        mock_device_service.send_command.side_effect = Exception("Device offline")
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
 
         # 让 mark_as_failed 实际修改 outbox 对象
         async def mock_mark_failed(db, outbox_id, error, max_retries):
@@ -198,10 +210,14 @@ class TestOutboxDispatcher:
                 return_value=mock_outbox_repo,
             ),
             patch(
-                "src.app.device.services.device_service.device_service",
-                mock_device_service,
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
+            patch(
+                "httpx.AsyncClient",
+            ) as mock_client,
         ):
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
             result = await dispatch_outbox._dispatch(mock_db)
 
         # 应该记录失败并设置重试
@@ -215,7 +231,6 @@ class TestOutboxDispatcher:
         self,
         mock_db,
         mock_outbox_repo,
-        mock_device_service,
     ):
         """测试达到最大重试次数后标记为失败"""
         from src.celery_app.tasks.workline import dispatch_outbox
@@ -228,7 +243,10 @@ class TestOutboxDispatcher:
             attempt_count=3,
         )
         mock_outbox_repo.get_pending_messages.return_value = [outbox]
-        mock_device_service.send_command.side_effect = Exception("Device offline")
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
 
         # 让 mark_as_failed 实际修改 outbox 对象
         async def mock_mark_failed(db, outbox_id, error, max_retries):
@@ -246,16 +264,67 @@ class TestOutboxDispatcher:
                 return_value=mock_outbox_repo,
             ),
             patch(
-                "src.app.device.services.device_service.device_service",
-                mock_device_service,
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
+            patch(
+                "httpx.AsyncClient",
+            ) as mock_client,
         ):
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
             result = await dispatch_outbox._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
         # 达到最大重试次数，状态应为 FAILED
         assert outbox.status == OutboxStatus.FAILED
+
+    def test_build_outbox_payload_passes_vendor_payload_as_is(self):
+        """测试发往设备的 payload 直接使用命令里保存的 vendor payload。"""
+        from src.celery_app.tasks.workline import _build_outbox_payload
+
+        command = MagicMock()
+        command.command_code = "CMD-001"
+        command.task_type = "PICK_AND_PLACE"
+        command.priority = 5
+        command.timeout_ms = 300000
+        command.params = {
+            "command_code": "CMD-VENDOR-001",
+            "task_type": "PICK_AND_PUT",
+            "priority": 1,
+            "timeout": 30000,
+            "source": {"location_type": "INPUT_PLATFORM", "location_id": "STATION_INPUT1"},
+            "target": {"location_type": "NG_PLATFORM", "location_id": "STATION_NG_PLATFORM1"},
+            "params": {
+                "source": {"location_type": "INPUT_PLATFORM", "location_id": "STATION_INPUT1"},
+                "target": {"location_type": "NG_PLATFORM", "location_id": "STATION_NG_PLATFORM1"},
+            },
+            "timestamp": 1743235200000,
+        }
+
+        payload = _build_outbox_payload(command)
+
+        assert payload == command.params
+
+    def test_build_outbox_payload_legacy_command_fallback(self):
+        """测试历史命令 params 为空时回退到基础字段组装。"""
+        from src.celery_app.tasks.workline import _build_outbox_payload
+
+        command = MagicMock()
+        command.command_code = "CMD-LEGACY-001"
+        command.task_type = "PROCESS"
+        command.priority = 3
+        command.timeout_ms = 120000
+        command.params = {}
+
+        payload = _build_outbox_payload(command)
+
+        assert payload["command_code"] == "CMD-LEGACY-001"
+        assert payload["task_type"] == "PROCESS"
+        assert payload["priority"] == 3
+        assert payload["timeout"] == 120000
+        assert payload["params"] == {}
+        assert isinstance(payload["timestamp"], int)
 
     @pytest.mark.asyncio
     async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
@@ -302,17 +371,24 @@ class TestDispatchByType:
             payload_json={"action": "MOVE", "position": {"x": 100, "y": 200}},
         )
 
-        mock_device_service = MagicMock()
-        mock_device_service.send_command = AsyncMock(return_value={"success": True})
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
 
-        with patch(
-            "src.app.device.services.device_service.device_service",
-            mock_device_service,
+        with (
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
+            ),
+            patch("httpx.AsyncClient") as mock_client,
         ):
+            mock_response = MagicMock(status_code=200)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
             result = await dispatch_outbox._dispatch_single(mock_db, outbox)
 
         assert result is True
-        mock_device_service.send_command.assert_called_once()
+        mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "ROBOT_001")
 
     @pytest.mark.asyncio
     async def test_dispatch_external_http(self, mock_db):

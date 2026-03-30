@@ -23,6 +23,17 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
+from src.workline_plugins.smt_classifier.contract import (
+    RESULT_FIELD_ALIASES,
+    STEP_CODE_KEY,
+    SmtClassifierCommandType,
+    SmtClassifierEventType,
+    SmtClassifierResultType,
+    SmtClassifierStepCode,
+    infer_step_from_command,
+    resolve_first_str,
+    resolve_step_from_context,
+)
 from src.workline_runtime.enums import DecisionType, FailureDomain
 from src.workline_runtime.types import (
     CommandIntent,
@@ -42,25 +53,9 @@ JsonDict = dict[str, Any]
 # ==================== 枚举定义 ====================
 
 
-class EventType(str, Enum):
-    """SMT 粗分机事件类型"""
-
-    SCAN_COMPLETED = "SCAN_COMPLETED"
-    ESTOP_PRESSED = "ESTOP_PRESSED"
-    DETECT_OK = "DETECT_OK"
-    DETECT_NG = "DETECT_NG"
-    THICKNESS_OK = "THICKNESS_OK"
-    THICKNESS_NG = "THICKNESS_NG"
-
-
-class TaskType(str, Enum):
-    """SMT 粗分机任务类型"""
-
-    PICK_AND_PUT = "PICK_AND_PUT"
-    MOVE_FORWARD = "MOVE_FORWARD"
-    MOVE_BACKWARD = "MOVE_BACKWARD"
-    SCAN = "SCAN"
-    TEST = "TEST"
+EventType = SmtClassifierEventType
+TaskType = SmtClassifierCommandType
+CommandResult = SmtClassifierResultType
 
 
 class LocationType(str, Enum):
@@ -71,13 +66,6 @@ class LocationType(str, Enum):
     PIPELINE_PLATFORM = "PIPELINE_PLATFORM"
     OUTPUT_PLATFORM = "OUTPUT_PLATFORM"
     BIN = "BIN"
-
-
-class CommandResult(str, Enum):
-    """命令执行结果"""
-
-    SUCCESS = "SUCCESS"
-    FAILED = "FAILED"
 
 
 # ==================== 数据模型 ====================
@@ -156,8 +144,10 @@ def _ensure_dict(value: Any) -> JsonDict:
 
 def generate_pick_and_put_command(
     device_id: int,
-    source_type: LocationType,
-    target_type: LocationType,
+    source: str | None = None,
+    target: str | None = None,
+    source_type: LocationType = LocationType.INPUT_PLATFORM,
+    target_type: LocationType = LocationType.OUTPUT_PLATFORM,
     target_info: dict[str, Any] | None = None,
     command_id: str | None = None,
     priority: int = 1,
@@ -187,6 +177,10 @@ def generate_pick_and_put_command(
             "location_type": target_type.value,
         },
     }
+    if source:
+        params["source"]["location_id"] = source
+    if target:
+        params["target"]["location_id"] = target
 
     # 合并目标位置附加信息
     if target_info:
@@ -207,6 +201,8 @@ def generate_pick_and_put_command(
 
 def generate_move_forward_command(
     device_id: int,
+    source: str | None = None,
+    target: str | None = None,
     command_id: str | None = None,
     priority: int = 1,
     timeout: int = 30000,
@@ -224,6 +220,12 @@ def generate_move_forward_command(
     """
     import time
 
+    location_payload: JsonDict = {}
+    if source:
+        location_payload["source"] = {"location_id": source}
+    if target:
+        location_payload["target"] = {"location_id": target}
+
     return CommandIntent(
         target_device_id=device_id,
         action=TaskType.MOVE_FORWARD.value,
@@ -232,16 +234,31 @@ def generate_move_forward_command(
             "task_type": TaskType.MOVE_FORWARD.value,
             "priority": priority,
             "timeout": timeout,
+            **location_payload,
             "params": {
                 "source": {
                     "location_type": LocationType.PIPELINE_PLATFORM.value,
+                    **({"location_id": source} if source else {}),
                 },
                 "target": {
                     "location_type": LocationType.PIPELINE_PLATFORM.value,
+                    **({"location_id": target} if target else {}),
                 },
             },
         },
     )
+
+
+def _is_pipeline_input_location(location_id: str) -> bool:
+    return "PIPELINE" in location_id and "INPUT" in location_id
+
+
+def _is_pipeline_output_location(location_id: str) -> bool:
+    return "PIPELINE" in location_id and "OUTPUT" in location_id
+
+
+def _is_terminal_location(location_id: str) -> bool:
+    return ("OUTPUT" in location_id and "PIPELINE" not in location_id) or "NG_PLATFORM" in location_id
 
 
 # ==================== 条码验证逻辑 ====================
@@ -329,7 +346,7 @@ class SmtClassifierEventHandler:
             PluginResult: 处理结果
         """
         payload = _ensure_dict(inbox.payload_json)
-        event_type = str(payload.get("event_type", ""))
+        event_type = resolve_first_str(payload, ("event_type",), default="")
 
         ctx.logger.info(f"SmtClassifier received device event: {event_type}")
 
@@ -357,7 +374,7 @@ class SmtClassifierEventHandler:
             PluginResult: 处理结果
         """
         payload = _ensure_dict(inbox.payload_json)
-        result = str(payload.get("result", ""))
+        result = resolve_first_str(payload, RESULT_FIELD_ALIASES["result"]["aliases"], default="")
         device_id = str(payload.get("device_id", ""))
 
         ctx.logger.info(f"SmtClassifier received command result: device={device_id}, result={result}")
@@ -386,11 +403,12 @@ class SmtClassifierEventHandler:
         ctx.logger.warning(f"SmtClassifier received timeout: {inbox.id}")
 
         return PluginResult(
+            context_patch={STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value},
             failure=FailureIntent(
                 domain=FailureDomain.TIMEOUT.value,
                 code="DEVICE_TIMEOUT",
                 message="设备响应超时",
-            )
+            ),
         )
 
     async def on_external_http(
@@ -478,6 +496,9 @@ class SmtClassifierEventHandler:
             "source_type": LocationType.INPUT_PLATFORM.value,
             "target_type": LocationType.PIPELINE_PLATFORM.value if is_ok else LocationType.NG_PLATFORM.value,
             "retry_count": 0,
+            STEP_CODE_KEY: (
+                SmtClassifierStepCode.INPUT_PICK_PLACE.value if is_ok else SmtClassifierStepCode.NG_PICK_PLACE.value
+            ),
         }
 
         if is_ok:
@@ -572,6 +593,7 @@ class SmtClassifierEventHandler:
                 "estop_device": device_id,
                 "estop_timestamp": timestamp,
                 "estop_handled": False,
+                STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value,
             },
         )
 
@@ -592,16 +614,13 @@ class SmtClassifierEventHandler:
             PluginResult: 处理结果
         """
         data = _ensure_dict(payload.get("data"))
+        command_type = resolve_first_str(payload, RESULT_FIELD_ALIASES["command_type"]["aliases"])
         device_id = str(payload.get("device_id", ""))
         session = ctx.session
         context = _ensure_dict(getattr(session, "context_json", None)) if session else {}
 
-        # 解析命令结果数据
-        result_data = CommandResultData(**data) if data else CommandResultData()
-
-        # 更新上下文中的物料信息
+        result_data = CommandResultData(**data) if data else CommandResultData(location="")
         context_patch: JsonDict = {}
-
         if result_data.reel_diameter:
             context_patch["reel_diameter"] = result_data.reel_diameter
         if result_data.reel_thickness:
@@ -609,17 +628,31 @@ class SmtClassifierEventHandler:
         if result_data.location:
             context_patch["current_location"] = result_data.location
 
-        # 获取当前位置和流程阶段
-        current_location = str(context.get("current_location", ""))
-        scan_result = str(context.get("scan_result", "OK"))
+        current_location = result_data.location or str(context.get("current_location", ""))
+        current_step = resolve_step_from_context(context) or infer_step_from_command(command_type, context)
 
-        ctx.logger.info(f"Command success: device={device_id}, location={current_location}, scan_result={scan_result}")
+        # 向后兼容：无 step_code 的旧记录继续允许位置字符串兜底推断
+        if current_step is None:
+            if _is_pipeline_input_location(current_location):
+                current_step = SmtClassifierStepCode.INPUT_PICK_PLACE
+            elif _is_pipeline_output_location(current_location):
+                current_step = SmtClassifierStepCode.PIPELINE_MOVE_FORWARD
+            elif _is_terminal_location(current_location):
+                target_type = str(context.get("target_type", ""))
+                if target_type == LocationType.NG_PLATFORM.value:
+                    current_step = SmtClassifierStepCode.NG_PICK_PLACE
+                else:
+                    current_step = SmtClassifierStepCode.OUTPUT_PICK_PLACE
 
-        # 根据位置判断下一步操作
-        # 检查当前位置是否为流水线进料位置（通过source_type判断）
-        source_type = str(context.get("source_type", ""))
-        if source_type == LocationType.PIPELINE_PLATFORM.value:
-            # 流水线进料位置 -> 流水线前进
+        ctx.logger.info(
+            "Command success: device=%s, command_type=%s, step=%s, location=%s",
+            device_id,
+            command_type,
+            current_step.value if current_step is not None else "",
+            current_location,
+        )
+
+        if current_step == SmtClassifierStepCode.INPUT_PICK_PLACE:
             pipeline_device = ctx.get_device_by_role("PIPELINE")
             if not pipeline_device:
                 return PluginResult(
@@ -630,13 +663,15 @@ class SmtClassifierEventHandler:
                     )
                 )
 
-            command = generate_move_forward_command(
-                device_id=getattr(pipeline_device, "id", 0),
-            )
-
+            command = generate_move_forward_command(device_id=getattr(pipeline_device, "id", 0))
             return PluginResult(
                 transition="move_ok",
-                context_patch=context_patch,
+                context_patch={
+                    **context_patch,
+                    "source_type": LocationType.PIPELINE_PLATFORM.value,
+                    "target_type": LocationType.PIPELINE_PLATFORM.value,
+                    STEP_CODE_KEY: SmtClassifierStepCode.PIPELINE_MOVE_FORWARD.value,
+                },
                 commands=[command],
                 wait=WaitIntent(
                     wait_type="COMMAND_RESULT",
@@ -645,10 +680,7 @@ class SmtClassifierEventHandler:
                 ),
             )
 
-        # 检查是否处于流水线出料阶段（通过target_type判断）
-        target_type = str(context.get("target_type", ""))
-        if target_type == LocationType.PIPELINE_PLATFORM.value:
-            # 流水线出料位置 -> 出料到料箱
+        if current_step == SmtClassifierStepCode.PIPELINE_MOVE_FORWARD:
             output_arm = ctx.get_device_by_role("OUTPUT_ARM")
             if not output_arm:
                 return PluginResult(
@@ -659,13 +691,11 @@ class SmtClassifierEventHandler:
                     )
                 )
 
-            # 获取目标料箱信息（这里简化处理，实际应从分箱算法获取）
             target_bin = _ensure_dict(context.get("target_bin")) or {
                 "rack_id": "RACK_001",
                 "bin_id": "BIN_001",
                 "bin_cell": "A1",
             }
-
             command = generate_pick_and_put_command(
                 device_id=getattr(output_arm, "id", 0),
                 source_type=LocationType.PIPELINE_PLATFORM,
@@ -681,16 +711,17 @@ class SmtClassifierEventHandler:
                     "reel_diameter": str(context.get("reel_diameter", "15inch")),
                 },
             )
-
             return PluginResult(
                 transition="put_ok",
                 context_patch={
                     **context_patch,
+                    "target_type": LocationType.BIN.value,
                     "target_bin": {
                         "rack_id": target_bin.get("rack_id", "RACK_001"),
                         "bin_id": target_bin.get("bin_id", "BIN_001"),
                         "bin_cell": target_bin.get("bin_cell", "A1"),
                     },
+                    STEP_CODE_KEY: SmtClassifierStepCode.OUTPUT_PICK_PLACE.value,
                 },
                 commands=[command],
                 wait=WaitIntent(
@@ -700,30 +731,31 @@ class SmtClassifierEventHandler:
                 ),
             )
 
-        # 检查流程是否完成（根据target_type判断）
-        if target_type in (LocationType.BIN.value, LocationType.NG_PLATFORM.value, LocationType.OUTPUT_PLATFORM.value):
-            # 出料或 NG 完成 -> 流程结束
-            ctx.logger.info(f"Process completed: target_type={target_type}")
-
-            # 构建完成时的上下文字段
-            final_context_patch = {
+        if current_step in {SmtClassifierStepCode.OUTPUT_PICK_PLACE, SmtClassifierStepCode.NG_PICK_PLACE}:
+            target_type = str(context.get("target_type", ""))
+            final_context_patch: JsonDict = {
                 **context_patch,
                 "target_type": target_type,
-                "target_bin_id": context.get("target_bin", {}).get("bin_id") if isinstance(context.get("target_bin"), dict) else None,
-                "target_bin_cell": context.get("target_bin", {}).get("bin_cell") if isinstance(context.get("target_bin"), dict) else None,
+                "target_bin_id": (
+                    context.get("target_bin", {}).get("bin_id") if isinstance(context.get("target_bin"), dict) else None
+                ),
+                "target_bin_cell": (
+                    context.get("target_bin", {}).get("bin_cell")
+                    if isinstance(context.get("target_bin"), dict)
+                    else None
+                ),
                 "completed_at": ctx.clock().isoformat(),
+                STEP_CODE_KEY: SmtClassifierStepCode.COMPLETED.value,
             }
-
+            if current_step == SmtClassifierStepCode.NG_PICK_PLACE:
+                final_context_patch["ng_handled"] = True
             return PluginResult(
                 transition="complete",
                 context_patch=final_context_patch,
                 complete=True,
             )
 
-        # 默认情况
-        return PluginResult(
-            context_patch=context_patch,
-        )
+        return PluginResult(context_patch=context_patch)
 
     async def _handle_command_failed(
         self,
@@ -741,13 +773,21 @@ class SmtClassifierEventHandler:
         Returns:
             PluginResult: 处理结果
         """
-        error_detail = _ensure_dict(payload.get("error_detail"))
         device_id = str(payload.get("device_id", ""))
         session = ctx.session
         context = _ensure_dict(getattr(session, "context_json", None)) if session else {}
 
-        error_code = str(error_detail.get("error_code", "9999"))
-        error_message = str(error_detail.get("error_message", "未知错误"))
+        error_code = resolve_first_str(
+            payload,
+            RESULT_FIELD_ALIASES["error_code"]["aliases"],
+            default="9999",
+        )
+        error_message = resolve_first_str(
+            payload,
+            RESULT_FIELD_ALIASES["error_message"]["aliases"],
+            default="未知错误",
+        )
+        current_step = resolve_step_from_context(context)
 
         ctx.logger.error(f"Command failed: device={device_id}, error_code={error_code}, message={error_message}")
 
@@ -765,13 +805,17 @@ class SmtClassifierEventHandler:
 
             return PluginResult(
                 transition="retry",
-                context_patch={"retry_count": retry_count + 1},
+                context_patch={
+                    "retry_count": retry_count + 1,
+                    **({STEP_CODE_KEY: current_step.value} if current_step is not None else {}),
+                },
                 # 这里应该重新生成命令，但需要更多信息
             )
 
         # 不可重试或超过最大重试次数
         return PluginResult(
             transition="failed",
+            context_patch={STEP_CODE_KEY: SmtClassifierStepCode.ERROR.value},
             failure=FailureIntent(
                 domain=failure_domain,
                 code=error_code,

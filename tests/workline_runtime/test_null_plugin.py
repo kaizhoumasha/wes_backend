@@ -55,7 +55,7 @@ class TestNullPlugin:
         assert result.context_patch == {}
 
     @pytest.mark.asyncio
-    async def test_on_device_event_logs_event(self, plugin, mock_context, mock_inbox):
+    async def test_on_device_event_writes_logger_entry(self, plugin, mock_context, mock_inbox):
         """测试设备事件处理记录日志"""
         await plugin.on_device_event(mock_context, mock_inbox)
         mock_context.logger.info.assert_called_once()

@@ -23,13 +23,6 @@ from .device import (
     DeviceType,
     DeviceUpdate,
 )
-from .event_log import (
-    DeviceEventLog,
-    DeviceEventLogBase,
-    EventRequest,
-    EventResponse,
-    EventType,
-)
 
 __all__ = [
     "CommandAck",
@@ -45,15 +38,10 @@ __all__ = [
     "DeviceCommandCreate",
     "DeviceCommandUpdate",
     "DeviceCreate",
-    "DeviceEventLog",
-    "DeviceEventLogBase",
     "DeviceProtocol",
     "DeviceResponse",
     "DeviceStatus",
     "DeviceType",
     "DeviceUpdate",
-    "EventRequest",
-    "EventResponse",
-    "EventType",
     "TaskType",
 ]

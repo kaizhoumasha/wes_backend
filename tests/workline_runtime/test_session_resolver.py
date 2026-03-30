@@ -196,6 +196,33 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
+    async def test_resolve_device_event_does_not_use_line_code_as_plugin_key_fallback(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """plugin_key 缺失时不应回退为业务 line_code。"""
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            payload_json={"barcode": "PKG12345", "business_key": "ORDER_002"},
+        )
+        workline = make_workline(workline_id=1, plugin_key=None)
+        workline.line_code = "WL-001"
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.plugin_key is None
+        assert session.workline_id == 1
+        assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
     async def test_resolve_device_event_finds_existing_session(
         self,
         mock_db,
@@ -319,6 +346,8 @@ class TestSessionResolver:
         assert session.id == 300
         assert session.status == SessionStatus.WAITING_EXTERNAL
         assert session.correlation_id == "CORR_12345"
+        assert inbox.session_id == 300
+        assert inbox.workline_id == 1
         assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio

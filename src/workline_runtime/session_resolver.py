@@ -14,7 +14,7 @@ Session 归属解析器
 """
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,10 +26,18 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.utils.timezone import timezone
+from src.workline_plugins.contracts import resolve_contract_version
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.workline import WorkLine
+
+
+JsonDict = dict[str, Any]
+
+
+def _ensure_dict(value: Any) -> JsonDict:
+    return cast("JsonDict", value) if isinstance(value, dict) else {}
 
 
 class SessionResolver:
@@ -58,7 +66,7 @@ class SessionResolver:
         self,
         db: AsyncSession,
         inbox: "WorklineInbox",
-        workline: "WorkLine",
+        workline: "WorkLine | None",
         devices_by_role: dict[str, list[Any]],
     ) -> WorklineSession:
         """根据 Inbox 和归属规则解析或创建 Session
@@ -79,6 +87,8 @@ class SessionResolver:
         kind = inbox.kind
 
         if kind == InboxKind.DEVICE_EVENT:
+            if workline is None:
+                raise ValueError("workline is required for DEVICE_EVENT")
             return await self._resolve_device_event(db, inbox, workline)
         if kind == InboxKind.COMMAND_RESULT:
             return await self._resolve_command_result(db, inbox)
@@ -110,16 +120,15 @@ class SessionResolver:
         Returns:
             解析或创建的 Session
         """
-        payload_json = inbox.payload_json if isinstance(inbox.payload_json, dict) else {}
+        payload_json = _ensure_dict(inbox.payload_json)
         business_key = payload_json.get("business_key")
 
         # 如果没有 business_key，尝试从 data.barcode 提取
         if not isinstance(business_key, str) or not business_key:
-            data = payload_json.get("data", {})
-            if isinstance(data, dict):
-                barcode = data.get("barcode")
-                if isinstance(barcode, str) and barcode:
-                    business_key = barcode
+            data = _ensure_dict(payload_json.get("data"))
+            barcode = data.get("barcode")
+            if isinstance(barcode, str) and barcode:
+                business_key = barcode
 
         # 如果仍然没有 business_key，生成一个唯一的
         if not isinstance(business_key, str) or not business_key:
@@ -146,7 +155,8 @@ class SessionResolver:
         session_data: dict[str, Any] = {
             "session_code": session_code,
             "workline_id": workline_id,
-            "plugin_key": getattr(workline, "plugin_key", None) or getattr(workline, "line_code", "default"),
+            "plugin_key": getattr(workline, "plugin_key", None),
+            "contract_version": resolve_contract_version(getattr(workline, "plugin_key", None)),
             "business_key": business_key,
             "status": SessionStatus.NEW,
             "correlation_id": getattr(inbox, "correlation_id", None) or f"corr_{uuid.uuid4().hex}",
@@ -170,7 +180,7 @@ class SessionResolver:
         inbox: "WorklineInbox",
     ) -> WorklineSession:
         """处理 COMMAND_RESULT 类型的 Session 解析。"""
-        payload_json = inbox.payload_json if isinstance(inbox.payload_json, dict) else {}
+        payload_json = _ensure_dict(inbox.payload_json)
         command_code = payload_json.get("command_code")
         if not isinstance(command_code, str) or not command_code:
             raise ValueError("command_code is required for COMMAND_RESULT")
@@ -178,6 +188,8 @@ class SessionResolver:
         command = await self.command_repo.get_by_command_code(db, command_code)
         if command is None:
             raise ValueError(f"DeviceCommand not found for command_code: {command_code}")
+        if command.id is None:
+            raise ValueError(f"DeviceCommand id is missing for command_code: {command_code}")
 
         inbox.command_id = command.id
         inbox.device_id = command.device_id
@@ -232,6 +244,8 @@ class SessionResolver:
         if not session:
             raise ValueError(f"Session not found for correlation_id: {correlation_id}")
 
+        inbox.session_id = session.id
+        inbox.workline_id = getattr(session, "workline_id", None)
         return session
 
     async def _resolve_by_session_id(

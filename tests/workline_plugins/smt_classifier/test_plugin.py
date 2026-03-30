@@ -13,7 +13,7 @@ SmtClassifierPlugin 单元测试
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,7 @@ from src.workline_plugins.smt_classifier.plugin import (
     SmtClassifierEventType,
     SmtClassifierPlugin,
     SmtClassifierStage,
+    SmtClassifierStepCode,
 )
 from src.workline_runtime.types import (
     CommandIntent,
@@ -167,6 +168,7 @@ class TestSmtClassifierPluginScanEvents:
         assert result.context_patch["stage"] == SmtClassifierStage.WAITING_INSPECTION.value
         assert result.context_patch["source_type"] == LocationType.INPUT_PLATFORM.value
         assert result.context_patch["target_type"] == LocationType.PIPELINE_PLATFORM.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.INPUT_PICK_PLACE.value
 
     @pytest.mark.asyncio
     async def test_scan_ng_flow(self, plugin, mock_context_with_devices, mock_inbox):
@@ -185,6 +187,7 @@ class TestSmtClassifierPluginScanEvents:
         assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
         assert result.commands[0].parameters["params"]["source_type"] == LocationType.INPUT_PLATFORM.value
         assert result.commands[0].parameters["params"]["target_type"] == LocationType.NG_PLATFORM.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.NG_PICK_PLACE.value
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
 
@@ -301,6 +304,7 @@ class TestSmtClassifierPluginInspectionEvents:
         assert result.transition == "inspection_ok"
         assert len(result.commands) == 1
         assert result.commands[0].action == SmtClassifierCommandType.MOVE_FORWARD.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.PIPELINE_MOVE_FORWARD.value
         assert result.wait is not None
 
     @pytest.mark.asyncio
@@ -338,6 +342,10 @@ class TestSmtClassifierPluginCommandResult:
             "stage": SmtClassifierStage.WAITING_PICK_PLACE.value,
             "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
+        context.workline = MagicMock()
+        context.workline.line_code = "WL-TEST-01"
+        context.config = {}
+        context.correlation_id = "corr-test-001"
         context.devices_by_role = {}
 
         output_arm = MagicMock()
@@ -377,6 +385,7 @@ class TestSmtClassifierPluginCommandResult:
         assert result.transition == "ng_handled"
         assert result.complete is True
         assert result.context_patch["stage"] == SmtClassifierStage.COMPLETED.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.COMPLETED.value
 
     @pytest.mark.asyncio
     async def test_conveyor_completed(self, plugin, mock_context_with_devices, mock_inbox):
@@ -385,6 +394,100 @@ class TestSmtClassifierPluginCommandResult:
             "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
             "source_type": LocationType.PIPELINE_PLATFORM.value,
             "target_type": LocationType.PIPELINE_PLATFORM.value,
+            "barcode": "PKG-001",
+            "inspection_result": "OK",
+            "reel_diameter": "15inch",
+            "thickness": "20",
+        }
+        mock_inbox.payload_json = {
+            "command_type": SmtClassifierCommandType.MOVE_FORWARD.value,
+            "result": "SUCCESS",
+        }
+
+        with patch.object(
+            plugin,
+            "_request_bin_allocation",
+            new=AsyncMock(
+                return_value=(
+                    {
+                        "message": "ALLOCATED",
+                        "data": {
+                            "allocation_status": "ALLOCATED",
+                            "target_bin": {
+                                "station_location_id": "STATION_OUTPUT1",
+                                "rack_id": "RACK_001",
+                                "bin_id": "BIN_001",
+                                "bin_type": "三格箱",
+                                "bin_cell_location": "A1",
+                                "reel_layer": "15",
+                                "reel_thickness": "20",
+                                "reel_diameter": "15inch",
+                                "reel_totalthickness": "300",
+                            },
+                        },
+                    },
+                    "ALLOC-PKG-001-01",
+                    1,
+                )
+            ),
+        ):
+            result = await plugin.on_command_result(mock_context_with_devices, mock_inbox)
+
+        assert result.transition == "conveyor_complete"
+        assert len(result.commands) == 1
+        assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.OUTPUT_PICK_PLACE.value
+        assert result.context_patch["target_bin"]["bin_id"] == "BIN_001"
+
+    @pytest.mark.asyncio
+    async def test_input_pick_place_result_with_embedded_inspection_ok(self, plugin, mock_context_with_devices, mock_inbox):
+        """输入机械臂结果若带检测数据，应直接推进到流水线命令。"""
+        input_arm = MagicMock(
+            id=10,
+            device_role=SmtClassifierDeviceRole.INPUT_ARM.value,
+            role_index=1,
+            upstream_device_id=None,
+        )
+        conveyor = MagicMock(
+            id=30,
+            device_role=SmtClassifierDeviceRole.CONVEYOR.value,
+            role_index=1,
+            upstream_device_id=10,
+        )
+        mock_context_with_devices.devices_by_role = {
+            SmtClassifierDeviceRole.INPUT_ARM.value: [input_arm],
+            SmtClassifierDeviceRole.CONVEYOR.value: [conveyor],
+        }
+        mock_context_with_devices.session.context_json = {
+            "stage": SmtClassifierStage.WAITING_INSPECTION.value,
+            "step_code": SmtClassifierStepCode.INPUT_PICK_PLACE.value,
+        }
+        mock_inbox.payload_json = {
+            "result": "SUCCESS",
+            "data": {
+                "location": "STATION_PIPELINE1_INPUT1",
+                "reel_diameter": "15inch",
+                "reel_thickness": "20",
+            },
+        }
+
+        result = await plugin.on_command_result(mock_context_with_devices, mock_inbox)
+
+        assert result.transition == "inspection_ok"
+        assert len(result.commands) == 1
+        assert result.commands[0].action == SmtClassifierCommandType.MOVE_FORWARD.value
+        assert result.context_patch["inspection_result"] == "OK"
+        assert result.context_patch["reel_diameter"] == "15inch"
+        assert result.context_patch["thickness"] == "20"
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.PIPELINE_MOVE_FORWARD.value
+
+    @pytest.mark.asyncio
+    async def test_command_result_step_code_precedence(self, plugin, mock_context_with_devices, mock_inbox):
+        """step_code 与 command_type 冲突时优先使用 step_code 推进。"""
+        mock_context_with_devices.session.context_json = {
+            "stage": SmtClassifierStage.WAITING_OUTPUT.value,
+            "step_code": SmtClassifierStepCode.OUTPUT_PICK_PLACE.value,
+            "current_location": "STATION_PIPELINE1_OUTPUT1",
         }
         mock_inbox.payload_json = {
             "command_type": SmtClassifierCommandType.MOVE_FORWARD.value,
@@ -393,9 +496,8 @@ class TestSmtClassifierPluginCommandResult:
 
         result = await plugin.on_command_result(mock_context_with_devices, mock_inbox)
 
-        assert result.transition == "conveyor_complete"
-        assert len(result.commands) == 1
-        assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
+        assert result.transition == "output_handled"
+        assert result.complete is True
 
     @pytest.mark.asyncio
     async def test_command_failure(self, plugin, mock_context_with_devices, mock_inbox):
@@ -428,7 +530,15 @@ class TestSmtClassifierPluginCommandResult:
             "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
             "source_type": LocationType.PIPELINE_PLATFORM.value,
             "target_type": LocationType.PIPELINE_PLATFORM.value,
+            "barcode": "PKG-002",
+            "inspection_result": "OK",
+            "reel_diameter": "15inch",
+            "thickness": "20",
         }
+        context.workline = MagicMock()
+        context.workline.line_code = "WL-TEST-TOPOLOGY"
+        context.config = {}
+        context.correlation_id = "corr-topology-001"
 
         input_arm = MagicMock(
             id=31, device_role=SmtClassifierDeviceRole.INPUT_ARM.value, role_index=2, upstream_device_id=None
@@ -452,12 +562,93 @@ class TestSmtClassifierPluginCommandResult:
             "result": "SUCCESS",
         }
 
-        result = await plugin.on_command_result(context, mock_inbox)
+        with patch.object(
+            plugin,
+            "_request_bin_allocation",
+            new=AsyncMock(
+                return_value=(
+                    {
+                        "message": "ALLOCATED",
+                        "data": {
+                            "allocation_status": "ALLOCATED",
+                            "target_bin": {
+                                "station_location_id": "STATION_OUTPUT1",
+                                "rack_id": "RACK_002",
+                                "bin_id": "BIN_002",
+                                "bin_type": "三格箱",
+                                "bin_cell_location": "B1",
+                                "reel_layer": "12",
+                                "reel_thickness": "20",
+                                "reel_diameter": "15inch",
+                                "reel_totalthickness": "300",
+                            },
+                        },
+                    },
+                    "ALLOC-PKG-002-01",
+                    1,
+                )
+            ),
+        ):
+            result = await plugin.on_command_result(context, mock_inbox)
 
         assert result.transition == "conveyor_complete"
         assert result.commands[0].target_device_id == 33
         assert result.commands[0].parameters["params"]["source_type"] == LocationType.PIPELINE_PLATFORM.value
-        assert result.commands[0].parameters["params"]["target_type"] == LocationType.OUTPUT_PLATFORM.value
+        assert result.commands[0].parameters["params"]["target_type"] == LocationType.BIN.value
+
+    @pytest.mark.asyncio
+    async def test_move_forward_requests_agv_when_bin_unavailable(self, plugin, mock_context_with_devices, mock_inbox):
+        """流水线完成后若 allocation 返回 AGV_REQUIRED，应生成 EXTERNAL_HTTP 决策并等待外部回调。"""
+        mock_context_with_devices.session.context_json = {
+            "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
+            "source_type": LocationType.PIPELINE_PLATFORM.value,
+            "target_type": LocationType.PIPELINE_PLATFORM.value,
+            "barcode": "PKG-003",
+            "inspection_result": "OK",
+        }
+        mock_context_with_devices.config = {
+            "agv_dispatch": {"url": "http://agv.mock/api/v1/device/command"},
+        }
+        mock_context_with_devices.correlation_id = "corr-agv-001"
+        mock_inbox.payload_json = {
+            "command_type": SmtClassifierCommandType.MOVE_FORWARD.value,
+            "result": "SUCCESS",
+        }
+
+        with patch.object(
+            plugin,
+            "_request_bin_allocation",
+            new=AsyncMock(
+                return_value=(
+                    {
+                        "message": "AGV_REQUIRED",
+                        "data": {
+                            "allocation_status": "AGV_REQUIRED",
+                            "agv_request": {
+                                "request_code": "AGV-REQ-001",
+                                "from_location": "RACK_BUFFER_A",
+                                "to_location": "STATION_OUTPUT1",
+                                "rack_type": "SMT_BIN_RACK",
+                                "reason": "NO_AVAILABLE_BIN",
+                            },
+                        },
+                    },
+                    "ALLOC-PKG-003-01",
+                    1,
+                )
+            ),
+        ):
+            result = await plugin.on_command_result(mock_context_with_devices, mock_inbox)
+
+        assert result.transition == "agv_requested"
+        assert result.wait is not None
+        assert result.wait.wait_type == "EXTERNAL_HTTP"
+        assert result.wait.wait_token == "AGV-REQ-001"
+        assert result.decisions[0]["decision_type"] == "EXTERNAL_HTTP_REQUEST"
+        assert result.decisions[0]["target_code"] == "http://agv.mock/api/v1/device/command"
+        assert result.context_patch["stage"] == SmtClassifierStage.WAITING_AGV_DELIVERY.value
+        assert result.context_patch["step_code"] == SmtClassifierStepCode.WAITING_AGV_DELIVERY.value
+        assert result.commands == []
 
 
 class TestSmtClassifierPluginTimeout:
@@ -579,6 +770,10 @@ class TestSmtClassifierPluginExternalHttp:
         context.session.context_json = {
             "source_type": LocationType.PIPELINE_PLATFORM.value,
         }
+        context.workline = MagicMock()
+        context.workline.line_code = "WL-TEST-EXTERNAL"
+        context.config = {}
+        context.correlation_id = "corr-external-001"
         context.devices_by_role = {}
 
         conveyor = MagicMock()
@@ -587,10 +782,14 @@ class TestSmtClassifierPluginExternalHttp:
         input_arm = MagicMock()
         input_arm.id = 10
 
+        output_arm = MagicMock()
+        output_arm.id = 20
+
         def mock_get_device(role, index=0):
             devices_map = {
                 SmtClassifierDeviceRole.CONVEYOR.value: [conveyor],
                 SmtClassifierDeviceRole.INPUT_ARM.value: [input_arm],
+                SmtClassifierDeviceRole.OUTPUT_ARM.value: [output_arm],
             }
             devices = devices_map.get(role, [])
             return devices[index] if index < len(devices) else None
@@ -663,6 +862,82 @@ class TestSmtClassifierPluginExternalHttp:
         assert result.transition == "wcs_task_failed"
         assert result.failure is not None
         assert result.failure.code == "WCS_TASK_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_agv_task_success_callback_allocates_bin(self, plugin, mock_context_with_devices, mock_inbox):
+        """AGV 成功回调后应再次 allocation，并创建 ARM02 出料命令。"""
+        mock_context_with_devices.session.context_json = {
+            "stage": SmtClassifierStage.WAITING_AGV_DELIVERY.value,
+            "step_code": SmtClassifierStepCode.WAITING_AGV_DELIVERY.value,
+            "barcode": "PKG-004",
+            "inspection_result": "OK",
+            "reel_diameter": "15inch",
+            "thickness": "20",
+            "agv_request_code": "AGV-REQ-002",
+        }
+        mock_inbox.payload_json = {
+            "callback_type": "AGV_TASK_RESULT",
+            "correlation_id": "corr-external-001",
+            "command_id": "AGV-REQ-002",
+            "result": "SUCCESS",
+            "data": {"to_location": "STATION_OUTPUT1"},
+        }
+
+        with patch.object(
+            plugin,
+            "_request_bin_allocation",
+            new=AsyncMock(
+                return_value=(
+                    {
+                        "message": "ALLOCATED",
+                        "data": {
+                            "allocation_status": "ALLOCATED",
+                            "target_bin": {
+                                "station_location_id": "STATION_OUTPUT1",
+                                "rack_id": "RACK_003",
+                                "bin_id": "BIN_003",
+                                "bin_type": "三格箱",
+                                "bin_cell_location": "C1",
+                                "reel_layer": "15",
+                                "reel_thickness": "20",
+                                "reel_diameter": "15inch",
+                                "reel_totalthickness": "300",
+                            },
+                        },
+                    },
+                    "ALLOC-PKG-004-02",
+                    2,
+                )
+            ),
+        ):
+            result = await plugin.on_external_http(mock_context_with_devices, mock_inbox)
+
+        assert result.transition == "agv_completed"
+        assert result.commands[0].target_device_id == 20
+        assert result.context_patch["target_bin_id"] == "BIN_003"
+        assert result.context_patch["allocation_status"] == "ALLOCATED"
+
+    @pytest.mark.asyncio
+    async def test_agv_task_failed_callback_marks_session_failed(self, plugin, mock_context_with_devices, mock_inbox):
+        """AGV 失败回调应直接进入失败。"""
+        mock_context_with_devices.session.context_json = {
+            "stage": SmtClassifierStage.WAITING_AGV_DELIVERY.value,
+            "step_code": SmtClassifierStepCode.WAITING_AGV_DELIVERY.value,
+            "agv_request_code": "AGV-REQ-003",
+        }
+        mock_inbox.payload_json = {
+            "callback_type": "AGV_TASK_RESULT",
+            "correlation_id": "corr-external-001",
+            "command_id": "AGV-REQ-003",
+            "result": "FAILED",
+            "data": {"message": "Rack delivery timeout"},
+        }
+
+        result = await plugin.on_external_http(mock_context_with_devices, mock_inbox)
+
+        assert result.transition == "command_failed"
+        assert result.failure is not None
+        assert result.failure.code == "AGV_TASK_FAILED"
 
 
 class TestSmtClassifierPluginIntegration:

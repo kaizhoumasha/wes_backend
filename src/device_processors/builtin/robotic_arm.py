@@ -18,8 +18,8 @@ from src.app.device.models.command import (
     CommandRequest,
     TaskType,
 )
-from src.app.device.models.event_log import EventType
 from src.device_processors.base import BaseDeviceProcessor
+from src.device_processors.types import DeviceProcessorEventType
 
 
 class RoboticArmProcessor(BaseDeviceProcessor):
@@ -61,15 +61,15 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         data = event_data.get("data", {})
 
         # 根据事件类型进行特定验证
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 料盘到达事件：必须有位置信息
             if "location" not in data:
                 return False, "MATERIAL_ARRIVED 事件缺少 location 字段"
         elif (
             event_type
             in [
-                EventType.PICK_COMPLETED.value,
-                EventType.PUT_COMPLETED.value,
+                DeviceProcessorEventType.PICK_COMPLETED.value,
+                DeviceProcessorEventType.PUT_COMPLETED.value,
             ]
             and "command_code" not in data
         ):
@@ -96,7 +96,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         event_type = event_data.get("event_type")
         data = event_data.get("data", {})
 
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 料盘到达：执行抓取并放置
             source_loc = data.get("location")
             barcode = data.get("barcode")
@@ -116,7 +116,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.PICK_COMPLETED.value:
+        if event_type == DeviceProcessorEventType.PICK_COMPLETED.value:
             # 抓取完成：执行放置
             command_code = data.get("command_code")
 
@@ -133,7 +133,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.PUT_COMPLETED.value:
+        if event_type == DeviceProcessorEventType.PUT_COMPLETED.value:
             # 放置完成：流程结束
             logger.info("机械臂决策: 放置完成 -> 流程结束")
             return None

@@ -247,12 +247,6 @@ class WorklineTimelineBase(BaseMixin):
         description="关联的 Inbox ID（不设外键，避免循环依赖）",
     )
 
-    related_event_log_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.device_event_logs.id",
-        description="关联的事件日志 ID",
-    )
-
     related_command_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.device_commands.id",

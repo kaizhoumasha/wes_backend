@@ -1,0 +1,31 @@
+"""Callback event request models."""
+
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class CallbackEventRequest(BaseModel):
+    """Minimal callback event envelope validated before plugin-specific normalization."""
+
+    device_code: str = Field(description="设备编码（device_code，设备标识）")
+    event_type: str = Field(description="事件类型（具体合法值由 plugin contract 决定）")
+    timestamp: int | None = Field(
+        default=None,
+        description="事件时间戳（Unix 时间戳，毫秒）。设备无时钟可不传，服务器将使用接收时间",
+    )
+    data: dict[str, Any] | None = Field(default=None, description="事件负载数据")
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp(cls, value: int | None) -> int | None:
+        """验证时间戳合理性。"""
+
+        if value is None:
+            return None
+        if not (1577836800000 <= value <= 1924991999000):
+            raise ValueError("时间戳不在合理范围内")
+        return value
+
+
+__all__ = ["CallbackEventRequest"]

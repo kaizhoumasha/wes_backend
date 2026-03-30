@@ -4,6 +4,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
+router_v1: APIRouter
+
 __all__ = ["router_v1"]
 
 

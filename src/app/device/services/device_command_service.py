@@ -21,14 +21,9 @@ from src.app.device.models.command import (
     CommandStatus,
     DeviceCommand,
 )
-from src.app.device.models.event_log import DeviceEventLog, EventRequest
 from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
-)
-from src.app.device.repositories.device_event_log_repository import (
-    DeviceEventLogRepository,
-    device_event_log_repository,
 )
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
@@ -43,14 +38,8 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     业务逻辑（SDAF 流程）在 Celery 任务层实现。
     """
 
-    def __init__(
-        self,
-        event_log_repo: DeviceEventLogRepository = device_event_log_repository,
-    ) -> None:
+    def __init__(self) -> None:
         """初始化服务
-
-        Args:
-            event_log_repo: 设备事件日志 Repository（依赖注入）
         """
         super().__init__(
             device_command_repository,
@@ -60,8 +49,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         # HTTP 客户端配置
         self.http_timeout = 10.0  # 10 秒超时
         self.max_retries = 3
-        # 事件日志 Repository
-        self.event_log_repo = event_log_repo
 
     async def _invalidate_command_cache(self, command_id: int | None = None, invalidate_list: bool = False) -> None:
         """清理指令详情/列表缓存。"""
@@ -207,72 +194,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             )
 
         return updated_command
-
-    async def create_event_log(
-        self,
-        db: AsyncSession,
-        event_request: EventRequest,
-    ) -> DeviceEventLog:
-        """
-        创建事件日志记录
-
-        只负责记录，不做业务处理。
-        如果设备未提供时间戳，使用服务器当前时间。
-
-        注意：
-        - event_request.device_code 是设备编码（字符串）
-        - 数据库存储的是 Device.id（整数）
-        - 需要通过 device_code 查找对应的 Device.id
-        """
-        # 通过 device_code 查找 device.id
-        from src.app.device.repositories.device_repository import device_repository
-
-        device = await device_repository.get_by_device_code(db, event_request.device_code)
-        if not device or not device.id:
-            raise NotFoundException(f"设备不存在: {event_request.device_code}")
-
-        # 处理时间戳：设备未提供则使用服务器时间
-        if event_request.timestamp is None:
-            event_timestamp = timezone.now_for_db()
-            logger.debug(f"设备 {event_request.device_code} 未提供时间戳，使用服务器时间")
-        else:
-            # 将 Unix 时间戳（毫秒）转换为 naive UTC datetime
-            # timezone.to_utc 返回 aware datetime，需要转换为 naive 用于数据库存储
-            aware_dt = timezone.to_utc(int(event_request.timestamp / 1000))
-            event_timestamp = aware_dt.replace(tzinfo=None)
-
-        event_log = DeviceEventLog(
-            device_id=device.id,  # 存储 Device.id 而非 device_code
-            event_type=event_request.event_type,
-            event_timestamp=event_timestamp,
-            event_data=event_request.data,
-            processed=False,
-        )
-        db.add(event_log)
-        await db.flush()
-
-        logger.info(f"记录设备事件: {event_request.device_code} -> {event_request.event_type.value}")
-
-        return event_log
-
-    async def update_event_log(
-        self,
-        db: AsyncSession,
-        event_log: DeviceEventLog,
-        processed: bool,
-        processing_result: dict[str, Any] | None = None,
-        error_message: str | None = None,
-    ) -> DeviceEventLog:
-        """更新事件日志处理状态（委托给 Repository）
-
-        设计原则:
-            - SRP: Service 层不应直接访问数据库，应委托给 Repository
-            - KISS: 简洁的委托模式，保持代码清晰
-            - 依赖注入: 通过构造函数注入 DeviceEventLogRepository
-        """
-        return await self.event_log_repo.update_event_log(
-            db, event_log, processed, processing_result, error_message
-        )
 
     # ==================== 指令状态管理 ====================
 

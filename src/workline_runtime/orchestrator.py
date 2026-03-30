@@ -19,15 +19,20 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
 from src.workline_runtime.transition_validator import TransitionValidator
-from src.workline_runtime.types import PluginResult
+from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
 
 logger = logging.getLogger(__name__)
+JsonDict = dict[str, Any]
+
+
+def _ensure_dict(value: Any) -> JsonDict:
+    return cast("JsonDict", value) if isinstance(value, dict) else {}
 
 
 @dataclass
@@ -38,6 +43,7 @@ class OrchestratorResult:
         success: 是否成功
         error: 错误信息（失败时）
         transition: 触发的状态迁移
+        decisions: 待派发的外部决策
         commands: 待派发的命令列表
         wait: 等待条件
         failure: 失败归因
@@ -48,9 +54,10 @@ class OrchestratorResult:
     success: bool
     error: str | None = None
     transition: str | None = None
-    commands: list[Any] | None = None
-    wait: Any | None = None
-    failure: Any | None = None
+    decisions: list[dict[str, Any]] | None = None
+    commands: list[CommandIntent] | None = None
+    wait: WaitIntent | None = None
+    failure: FailureIntent | None = None
     complete: bool = False
     context_patch: dict[str, Any] | None = None
 
@@ -100,11 +107,9 @@ class OrchestratorService:
         """
 
         if state_machine_class is not None:
-            session_ctx = getattr(session, "context_json", None)
-            if isinstance(session_ctx, dict):
-                stage = session_ctx.get("stage")
-                if isinstance(stage, str) and stage:
-                    return stage
+            stage = _ensure_dict(getattr(session, "context_json", None)).get("stage")
+            if isinstance(stage, str) and stage:
+                return stage
             return "IDLE"
 
         status = getattr(session, "status", None)
@@ -327,6 +332,7 @@ class OrchestratorService:
         return OrchestratorResult(
             success=True,
             transition=result.transition,
+            decisions=result.decisions if result.decisions else None,
             commands=result.commands if result.commands else None,
             wait=result.wait,
             failure=result.failure,

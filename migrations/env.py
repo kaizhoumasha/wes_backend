@@ -32,7 +32,6 @@ from src.app.demo.models.demo_product_list import DemoProductList  # noqa: F401
 from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
-    DeviceEventLog,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 # 导入所有 workline 模型

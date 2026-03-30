@@ -12,30 +12,52 @@
 """
 
 import time
+import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
+from pydantic import ValidationError
 
+from src.app.callback.models import CallbackEventRequest
 from src.app.callback.services import callback_log_service
 from src.app.device.models.command import CommandCallbackResult
-from src.app.device.models.event_log import EventRequest
 from src.app.device.services import device_command_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.workline.services.inbox_service import inbox_service
+from src.app.workline.models.inbox import SourceSystem
+from src.app.workline.services import inbox_service, workline_service
 from src.core.api_security import RequireAPIPermission
 from src.core.response import response_builder
+from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
+from src.workline_plugins.contracts import (
+    normalize_callback_event_payload,
+    normalize_callback_result_payload,
+    resolve_contract_version,
+)
 
 router = APIRouter()
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
+JsonDict = dict[str, Any]
 
 
 def _is_duplicate_inbox_error(error: ValueError) -> bool:
     return _DUPLICATE_ERROR_MARKER in str(error)
+
+
+def _ensure_dict(value: Any) -> JsonDict:
+    return cast("JsonDict", value) if isinstance(value, dict) else {}
+
+
+def _resolve_first_str(payload: JsonDict, aliases: tuple[str, ...]) -> str:
+    for alias in aliases:
+        value = payload.get(alias)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _enqueue_workline_processing() -> None:
@@ -51,44 +73,18 @@ def _has_workline_binding(value: object) -> bool:
     return isinstance(value, int) and value > 0
 
 
-async def _is_workline_device_callback(db: AsyncSessionDep, device_code: str) -> bool:
-    device = await device_service.get_device_by_code(db, device_code)
-    return _has_workline_binding(getattr(device, "work_line_id", None))
-
-
-async def _is_workline_command_callback(
-    db: AsyncSessionDep,
-    *,
-    existing_command: object | None,
-    device_code: str,
-) -> bool:
-    if _has_workline_binding(getattr(existing_command, "workline_id", None)):
-        return True
-    return await _is_workline_device_callback(db, device_code)
-
-
-async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
-    """先持久化 Inbox，再触发异步编排。
-
-    如果 broker 在 commit 后短暂失败，请求会返回失败，设备重试进入幂等路径时
-    仍会再次触发 enqueue，避免 durable inbox 永久滞留在 NEW。
-    """
-
-    await db.commit()
-    _enqueue_workline_processing()
-
-
 def _build_callback_log_payload(
     request: Request,
     *,
     callback_type: str,
     device_id: str,
-    request_body: dict[str, Any],
+    request_body: JsonDict,
     request_id: str | None,
+    correlation_id: str | None,
     response_status: int,
     response_time_ms: int,
     error_message: str | None = None,
-) -> dict[str, Any]:
+) -> JsonDict:
     return {
         "callback_type": callback_type,
         "device_id": device_id,
@@ -96,6 +92,7 @@ def _build_callback_log_payload(
         "client_ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("User-Agent"),
         "request_id": request_id,
+        "correlation_id": correlation_id,
         "response_status": response_status,
         "response_time_ms": response_time_ms,
         "error_message": error_message,
@@ -107,7 +104,7 @@ async def _record_callback_audit_log(
     request: Request,
     *,
     title: str,
-    args: dict[str, Any],
+    args: JsonDict,
     cost_time: float,
     success: bool,
     message: str | None = None,
@@ -128,7 +125,221 @@ async def _record_callback_audit_log(
         logger.error(f"记录回调审计日志失败: {audit_error}")
 
 
-# ==================== 回调接口 ====================
+async def _read_request_json(request: Request) -> JsonDict:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+    return cast("JsonDict", payload)
+
+
+async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
+    """先持久化 Inbox，再触发异步编排。"""
+
+    await db.commit()
+    _enqueue_workline_processing()
+
+
+async def _resolve_device_context(
+    db: AsyncSessionDep,
+    device_code: str,
+) -> tuple[object | None, object | None, str | None, str | None]:
+    device = await device_service.get_device_by_code(db, device_code)
+    if device is None:
+        return None, None, None, None
+
+    workline = None
+    work_line_id = getattr(device, "work_line_id", None)
+    if isinstance(work_line_id, int) and work_line_id > 0:
+        workline = await workline_service.get_by_id(db, cache=None, id=work_line_id)
+
+    plugin_key = getattr(device, "plugin_key", None)
+    if not isinstance(plugin_key, str) or not plugin_key:
+        candidate = getattr(workline, "plugin_key", None)
+        plugin_key = candidate if isinstance(candidate, str) and candidate else None
+
+    contract_version = getattr(device, "contract_version", None)
+    if not isinstance(contract_version, str) or not contract_version:
+        contract_version = resolve_contract_version(plugin_key)
+
+    return device, workline, plugin_key, contract_version
+
+
+def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
+    callback_type = _resolve_first_str(payload, ("callback_type",))
+    if not callback_type:
+        raise ValueError("callback_type is required")
+
+    correlation_id = _resolve_first_str(payload, ("correlation_id",))
+    if not correlation_id:
+        raise ValueError("correlation_id is required")
+
+    return {
+        "callback_type": callback_type,
+        "correlation_id": correlation_id,
+        "payload": payload,
+    }
+
+
+def _build_contract_fail(message: str) -> JsonDict:
+    return response_builder.fail(
+        code=ClientErrorCode.VALIDATION_ERROR,
+        message=message,
+        data={"ack": False},
+    )
+
+
+def _build_not_found_fail(message: str) -> JsonDict:
+    return response_builder.fail(
+        code=ResourceErrorCode.NOT_FOUND,
+        message=message,
+        data={"ack": False},
+    )
+
+
+async def _log_callback_outcome(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    callback_type: str,
+    device_id: str,
+    request_body: JsonDict,
+    request_id: str | None,
+    correlation_id: str | None,
+    response_status: int,
+    response_time_ms: int,
+    success: bool,
+    record_audit: bool,
+    audit_title: str,
+    error_message: str | None = None,
+) -> None:
+    _ = await callback_log_service.log_callback(
+        db,
+        **_build_callback_log_payload(
+            request,
+            callback_type=callback_type,
+            device_id=device_id,
+            request_body=request_body,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            response_status=response_status,
+            response_time_ms=response_time_ms,
+            error_message=error_message,
+        ),
+    )
+    if not record_audit:
+        return
+    if success:
+        await _record_callback_audit_log(
+            db,
+            request,
+            title=audit_title,
+            args=request_body,
+            cost_time=response_time_ms / 1000,
+            success=True,
+        )
+        return
+    await _record_callback_audit_log(
+        db,
+        request,
+        title=audit_title,
+        args=request_body,
+        cost_time=response_time_ms / 1000,
+        success=False,
+        message=error_message,
+    )
+
+
+async def _handle_result_validation_failure(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    request_id: str | None,
+    callback_data: JsonDict,
+    message: str,
+) -> JsonDict:
+    response_time_ms = 0
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type="result",
+        device_id=_resolve_first_str(callback_data, ("device_code", "device_id")) or "UNKNOWN",
+        request_body=callback_data,
+        request_id=request_id,
+        correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+        response_status=400,
+        response_time_ms=response_time_ms,
+        success=False,
+        record_audit=True,
+        audit_title="设备回调结果",
+        error_message=message,
+    )
+    return _build_contract_fail(message)
+
+
+async def _handle_event_validation_failure(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    request_id: str | None,
+    event_data: JsonDict,
+    message: str,
+) -> JsonDict:
+    response_time_ms = 0
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type="event",
+        device_id=_resolve_first_str(event_data, ("device_code", "device_id")) or "UNKNOWN",
+        request_body=event_data,
+        request_id=request_id,
+        correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
+        response_status=400,
+        response_time_ms=response_time_ms,
+        success=False,
+        record_audit=True,
+        audit_title="设备事件上报",
+        error_message=message,
+    )
+    return _build_contract_fail(message)
+
+
+async def _handle_external_validation_failure(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    request_id: str | None,
+    callback_data: JsonDict,
+    message: str,
+) -> JsonDict:
+    response_time_ms = 0
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type="external",
+        device_id=_resolve_first_str(callback_data, ("callback_type", "source_system")) or "UNKNOWN",
+        request_body=callback_data,
+        request_id=request_id,
+        correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+        response_status=400,
+        response_time_ms=response_time_ms,
+        success=False,
+        record_audit=True,
+        audit_title="外部系统回调",
+        error_message=message,
+    )
+    return _build_contract_fail(message)
+
+
+async def _is_workline_command_callback(
+    db: AsyncSessionDep,
+    *,
+    existing_command: object | None,
+    device_code: str,
+) -> bool:
+    if _has_workline_binding(getattr(existing_command, "workline_id", None)):
+        return True
+    device = await device_service.get_device_by_code(db, device_code)
+    return _has_workline_binding(getattr(device, "work_line_id", None))
 
 
 @router.post(
@@ -140,62 +351,102 @@ async def _record_callback_audit_log(
     description="设备完成指令后，调用此接口回传执行结果",
 )
 async def callback_result(
-    callback: CommandCallbackResult,
     request: Request,
     db: AsyncSessionDep,
-) -> dict[str, Any]:
-    """
-    任务结果回传接口
-
-    设备完成指令后，必须调用此接口通知 WES 更新业务状态。
-
-    请求体格式:
-    ```json
-    {
-      "command_code": "CMD-20251215-1001",
-      "device_code": "ARM_01",
-      "result": "SUCCESS",
-      "finish_time": 1702627250000,
-      "data": {
-        "actual_qty": 10,
-        "scan_result": "PKG-X-99"
-      },
-      "error_detail": {
-        "code": "E-MOTOR-01",
-        "msg": "Servo motor timeout"
-      }
-    }
-    ```
-
-    响应格式:
-    ```json
-    {
-      "code": 200,
-      "message": "ACK"
-    }
-    ```
-    """
+) -> JsonDict:
     start_time = time.time()
     request_id = get_request_id()
-    callback_data = cast("dict[str, Any]", callback.model_dump())
-    is_duplicate = False  # 幂等重复标记
-
-    logger.info(f"收到指令结果回调: {callback.command_code} -> {callback.result} (request_id={request_id})")
+    callback_data: JsonDict = {}
+    is_duplicate = False
 
     try:
-        existing_command = await device_command_service.get_command_by_code(db, callback.command_code)
+        callback_data = await _read_request_json(request)
+    except Exception as exc:
+        logger.error(f"指令结果回调解析失败: {exc}")
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"结果回调报文格式错误: {exc}",
+        )
+
+    try:
+        fallback_payload, _ = normalize_callback_result_payload(plugin_key=None, payload=callback_data)
+        device_code = cast("str", fallback_payload["device_code"])
+        command_code = cast("str", fallback_payload["command_code"])
+    except ValueError as exc:
+        logger.error(f"指令结果回调最小包络校验失败: {exc}")
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"结果回调最小包络校验失败: {exc}",
+        )
+
+    logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
+
+    try:
+        existing_command = await device_command_service.get_command_by_code(db, command_code)
+        if existing_command is None:
+            message = f"未找到指令: {command_code}"
+            await _log_callback_outcome(
+                db,
+                request,
+                callback_type="result",
+                device_id=device_code,
+                request_body=callback_data,
+                request_id=request_id,
+                correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+                response_status=404,
+                response_time_ms=int((time.time() - start_time) * 1000),
+                success=False,
+                record_audit=True,
+                audit_title="设备回调结果",
+                error_message=message,
+            )
+            return _build_not_found_fail(message)
+
+        _, _, plugin_key, resolved_contract_version = await _resolve_device_context(db, device_code)
+        command_plugin_key = getattr(existing_command, "plugin_key", None)
+        if isinstance(command_plugin_key, str) and command_plugin_key:
+            plugin_key = command_plugin_key
+        command_contract_version = getattr(existing_command, "contract_version", None)
+        if isinstance(command_contract_version, str) and command_contract_version:
+            resolved_contract_version = command_contract_version
+
+        normalized_payload, plugin_contract_version = normalize_callback_result_payload(
+            plugin_key=plugin_key,
+            payload=callback_data,
+        )
+        if plugin_contract_version:
+            resolved_contract_version = plugin_contract_version
+
+        callback = CommandCallbackResult(**normalized_payload)
         inherited_correlation_id = (
             existing_command.correlation_id
-            if existing_command is not None and isinstance(existing_command.correlation_id, str)
+            if isinstance(existing_command.correlation_id, str)
             else None
         )
-        raw_command_params = getattr(existing_command, "params", None) if existing_command is not None else None
-        command_params = cast("dict[str, Any]", raw_command_params) if isinstance(raw_command_params, dict) else {}
-        callback_data_payload = cast("dict[str, Any]", callback.data) if isinstance(callback.data, dict) else {}
-        command_type = callback_data_payload.get("command_type")
-        if not isinstance(command_type, str) or not command_type:
+        raw_command_params = getattr(existing_command, "params", None)
+        command_params = _ensure_dict(raw_command_params)
+        callback_result_data = _ensure_dict(callback.data)
+        command_type = cast("str | None", callback_result_data.get("command_type"))
+        if not command_type:
             derived_action = command_params.get("action")
-            command_type = derived_action if isinstance(derived_action, str) and derived_action else None
+            if isinstance(derived_action, str) and derived_action:
+                command_type = derived_action
+        if not command_type:
+            derived_task_type = command_params.get("task_type")
+            if isinstance(derived_task_type, str) and derived_task_type:
+                command_type = derived_task_type
+        if not command_type:
+            existing_task_type = getattr(existing_command, "task_type", None)
+            existing_task_type_value = getattr(existing_task_type, "value", existing_task_type)
+            if isinstance(existing_task_type_value, str) and existing_task_type_value:
+                command_type = existing_task_type_value
+
         is_workline_callback = await _is_workline_command_callback(
             db,
             existing_command=existing_command,
@@ -203,7 +454,6 @@ async def callback_result(
         )
 
         if is_workline_callback:
-            # 写入 WorklineInbox（统一编排入口）
             try:
                 _ = await inbox_service.create_command_result_inbox(
                     db=db,
@@ -218,16 +468,13 @@ async def callback_result(
                     correlation_id=inherited_correlation_id,
                 )
                 logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
-            except ValueError as e:
-                # 幂等重复，标记并跳过业务处理
-                if _is_duplicate_inbox_error(e):
+            except ValueError as exc:
+                if _is_duplicate_inbox_error(exc):
                     is_duplicate = True
                     logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
                 else:
                     raise
 
-            # 重复回调只跳过控制流副作用；但 commit 后仍需重新触发编排，
-            # 以便覆盖“首包已落库但 enqueue 失败”的恢复场景。
             if is_duplicate:
                 await _commit_and_enqueue_workline_processing(db)
             else:
@@ -239,7 +486,8 @@ async def callback_result(
                 logger.info(
                     f"指令结果处理完成: {callback.command_code} -> "
                     f"status={command.status.value}, "
-                    f"duration={command.get_duration_ms()}ms"
+                    f"duration={command.get_duration_ms()}ms, "
+                    f"contract_version={resolved_contract_version}"
                 )
         else:
             command = await device_command_service.handle_callback_result(db, callback)
@@ -253,52 +501,58 @@ async def callback_result(
                 f"duration={command.get_duration_ms()}ms"
             )
 
-        cost_time = time.time() - start_time
-        response_time_ms = int(cost_time * 1000)
-
-        # 无论是否重复，都记录回调日志
-        _ = await callback_log_service.log_callback(
+        response_time_ms = int((time.time() - start_time) * 1000)
+        _ = inherited_correlation_id
+        await _log_callback_outcome(
             db,
-            **_build_callback_log_payload(
-                request,
-                callback_type="result",
-                device_id=callback.device_code,
-                request_body=callback_data,
-                request_id=request_id,
-                response_status=200,
-                response_time_ms=response_time_ms,
-                error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
-            ),
+            request,
+            callback_type="result",
+            device_id=callback.device_code,
+            request_body=callback_data,
+            request_id=request_id,
+            correlation_id=inherited_correlation_id,
+            response_status=200,
+            response_time_ms=response_time_ms,
+            success=not is_duplicate,
+            record_audit=not is_duplicate,
+            audit_title="设备回调结果",
+            error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
         )
-        if not is_duplicate:
-            await _record_callback_audit_log(
-                db,
-                request,
-                title="设备回调结果",
-                args=callback_data,
-                cost_time=cost_time,
-                success=True,
-            )
-
         return response_builder.success(data={"ack": True})
 
-    except Exception as e:
-        cost_time = time.time() - start_time
-        response_time_ms = int(cost_time * 1000)
-        logger.error(f"指令结果回调处理失败: {e}")
-
-        # 记录失败回调日志
+    except ValidationError as exc:
+        logger.error(f"指令结果回调模型校验失败: {exc}")
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message="结果回调模型校验失败",
+        )
+    except ValueError as exc:
+        logger.error(f"指令结果回调契约校验失败: {exc}")
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"结果回调契约校验失败: {exc}",
+        )
+    except Exception as exc:
+        response_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"指令结果回调处理失败: {exc}")
         _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,
                 callback_type="result",
-                device_id=callback.device_code,
+                device_id=device_code,
                 request_body=callback_data,
                 request_id=request_id,
+                correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
                 response_status=500,
                 response_time_ms=response_time_ms,
-                error_message=str(e),
+                error_message=str(exc),
             ),
         )
         await _record_callback_audit_log(
@@ -306,11 +560,10 @@ async def callback_result(
             request,
             title="设备回调结果",
             args=callback_data,
-            cost_time=cost_time,
+            cost_time=response_time_ms / 1000,
             success=False,
-            message=str(e),
+            message=str(exc),
         )
-
         raise
 
 
@@ -323,143 +576,169 @@ async def callback_result(
     description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )
 async def callback_event(
-    event_request: EventRequest,
     request: Request,
     db: AsyncSessionDep,
-) -> dict[str, Any]:
-    """
-    设备事件上报接口
-
-    设备发生以下情况时调用此接口：
-    1. 状态变更：急停、上线、离线、故障
-    2. 传感器触发：物料到位、扫码完成
-
-    请求体格式:
-    ```json
-    {
-      "device_code": "CONVEYOR_01",
-      "event_type": "MATERIAL_ARRIVED",
-      "timestamp": 1702627300000,
-      "data": {
-        "location": "STATION_04",
-        "barcode": "PKG12345678"
-      }
-    }
-    ```
-
-    注意：timestamp 为可选字段，设备无时钟可不传，服务器将使用接收时间。
-
-    响应格式:
-    ```json
-    {
-      "code": 200,
-      "message": "Event received",
-      "data": {
-        "status": "success",
-        "event_id": 123,
-        "commands_created": ["CMD-20251215-1001"],
-        "action_params": {...}
-      }
-    }
-    ```
-    """
+) -> JsonDict:
     start_time = time.time()
     request_id = get_request_id()
-    event_data = cast("dict[str, Any]", event_request.model_dump())
-    is_duplicate = False  # 幂等重复标记
-
-    logger.info(
-        f"收到设备事件上报: {event_request.device_code} -> {event_request.event_type.value} (request_id={request_id})"
-    )
+    event_data: JsonDict = {}
+    is_duplicate = False
 
     try:
+        event_data = await _read_request_json(request)
+    except Exception as exc:
+        logger.error(f"设备事件上报解析失败: {exc}")
+        return await _handle_event_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            message=f"事件上报报文格式错误: {exc}",
+        )
+
+    try:
+        minimal_payload, _, _ = normalize_callback_event_payload(plugin_key=None, payload=event_data)
+        device_code = cast("str", minimal_payload["device_code"])
+    except ValueError as exc:
+        logger.error(f"设备事件最小包络校验失败: {exc}")
+        return await _handle_event_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            message=f"事件上报最小包络校验失败: {exc}",
+        )
+
+    logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
+
+    try:
+        device, _, plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
+        if device is None:
+            message = f"未找到设备: {device_code}"
+            await _log_callback_outcome(
+                db,
+                request,
+                callback_type="event",
+                device_id=device_code,
+                request_body=event_data,
+                request_id=request_id,
+                correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
+                response_status=404,
+                response_time_ms=int((time.time() - start_time) * 1000),
+                success=False,
+                record_audit=True,
+                audit_title="设备事件上报",
+                error_message=message,
+            )
+            return _build_not_found_fail(message)
+
+        normalized_payload, _plugin_contract_version, _inferred_step_code = normalize_callback_event_payload(
+            plugin_key=plugin_key,
+            payload=event_data,
+        )
+
         from src.utils.timezone import timezone
 
-        # 如果设备未提供时间戳，使用服务器当前时间（毫秒）
-        timestamp = event_request.timestamp
-        if timestamp is None:
-            timestamp = int(timezone.now_utc().timestamp() * 1000)
-            logger.debug(f"设备未提供时间戳，使用服务器时间: {timestamp}")
-        is_workline_event = await _is_workline_device_callback(db, event_request.device_code)
+        normalized_event_request = CallbackEventRequest(
+            device_code=cast("str", normalized_payload["device_code"]),
+            event_type=cast("str", normalized_payload["event_type"]),
+            timestamp=cast("int | None", normalized_payload.get("timestamp")),
+            data=cast("dict[str, Any] | None", normalized_payload.get("data")),
+        )
+        event_timestamp = normalized_event_request.timestamp
+        if event_timestamp is None:
+            event_timestamp = int(timezone.now_utc().timestamp() * 1000)
+
+        is_workline_event = _has_workline_binding(getattr(device, "work_line_id", None))
+        event_correlation_id = _resolve_first_str(event_data, ("correlation_id",)) or None
+        if is_workline_event and event_correlation_id is None:
+            event_correlation_id = f"corr_{uuid.uuid4().hex}"
 
         if is_workline_event:
-            # 写入 WorklineInbox（统一编排入口）
             try:
                 _ = await inbox_service.create_device_event_inbox(
                     db=db,
-                    device_code=event_request.device_code,
-                    event_type=event_request.event_type.value,
-                    timestamp=timestamp,
-                    data=cast("dict[str, Any]", event_request.data or {}),
+                    device_code=normalized_event_request.device_code,
+                    event_type=normalized_event_request.event_type,
+                    timestamp=event_timestamp,
+                    data=cast("dict[str, Any]", normalized_event_request.data or {}),
                     source_message_id=request_id,
+                    correlation_id=event_correlation_id,
                 )
-                logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type.value}")
-            except ValueError as e:
-                # 幂等重复，标记并跳过业务处理
-                if _is_duplicate_inbox_error(e):
+                logger.info(
+                    f"设备事件已写入 Inbox: "
+                    f"{normalized_event_request.device_code} -> {normalized_event_request.event_type}"
+                )
+            except ValueError as exc:
+                if _is_duplicate_inbox_error(exc):
                     is_duplicate = True
                     logger.info(
-                        f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type.value}"
+                        "设备事件幂等重复，将跳过业务处理: "
+                        f"{normalized_event_request.device_code} -> {normalized_event_request.event_type}"
                     )
                 else:
                     raise
 
             await _commit_and_enqueue_workline_processing(db)
 
-        cost_time = time.time() - start_time
-        response_time_ms = int(cost_time * 1000)
-
-        # 无论是否重复，都记录回调日志
-        _ = await callback_log_service.log_callback(
+        response_time_ms = int((time.time() - start_time) * 1000)
+        await _log_callback_outcome(
             db,
-            **_build_callback_log_payload(
-                request,
-                callback_type="event",
-                device_id=event_request.device_code,
-                request_body=event_data,
-                request_id=request_id,
-                response_status=200,
-                response_time_ms=response_time_ms,
-                error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
-            ),
+            request,
+            callback_type="event",
+            device_id=normalized_event_request.device_code,
+            request_body=event_data,
+            request_id=request_id,
+            correlation_id=event_correlation_id,
+            response_status=200,
+            response_time_ms=response_time_ms,
+            success=not is_duplicate,
+            record_audit=not is_duplicate,
+            audit_title="设备事件上报",
+            error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
         )
-        if not is_duplicate:
-            await _record_callback_audit_log(
-                db,
-                request,
-                title="设备事件上报",
-                args=event_data,
-                cost_time=cost_time,
-                success=True,
-            )
-
-        # 立即返回响应（不含业务指令，符合白皮书要求）
-        logger.info(f"设备事件已提交处理: {event_request.device_code} (request_id={request_id})")
+        logger.info(f"设备事件已提交处理: {normalized_event_request.device_code} (request_id={request_id})")
         return response_builder.success(
             message="Event received",
             data={
                 "status": "duplicate" if is_duplicate else "submitted",
-                "device_code": event_request.device_code,
+                "device_code": normalized_event_request.device_code,
             },
         )
 
-    except Exception as e:
-        cost_time = time.time() - start_time
-        response_time_ms = int(cost_time * 1000)
-        logger.error(f"设备事件上报处理失败: {e}")
-
-        # 记录失败回调日志
+    except ValidationError as exc:
+        logger.error(f"设备事件上报模型校验失败: {exc}")
+        return await _handle_event_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            message="事件上报模型校验失败",
+        )
+    except ValueError as exc:
+        logger.error(f"设备事件上报契约校验失败: {exc}")
+        return await _handle_event_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            message=f"事件上报契约校验失败: {exc}",
+        )
+    except Exception as exc:
+        response_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"设备事件上报处理失败: {exc}")
         _ = await callback_log_service.log_callback(
             db,
             **_build_callback_log_payload(
                 request,
                 callback_type="event",
-                device_id=event_request.device_code,
+                device_id=device_code,
                 request_body=event_data,
                 request_id=request_id,
+                correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
                 response_status=500,
                 response_time_ms=response_time_ms,
-                error_message=str(e),
+                error_message=str(exc),
             ),
         )
         await _record_callback_audit_log(
@@ -467,15 +746,139 @@ async def callback_event(
             request,
             title="设备事件上报",
             args=event_data,
-            cost_time=cost_time,
+            cost_time=response_time_ms / 1000,
             success=False,
-            message=str(e),
+            message=str(exc),
         )
-
         raise
 
 
-# ==================== 导出 ====================
+@router.post(
+    "/external",
+    response_model=None,
+    status_code=status.HTTP_200_OK,
+    summary="外部系统回调",
+    dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
+    description="库位分配、AGV 等外部系统异步回调入口",
+)
+async def callback_external(
+    request: Request,
+    db: AsyncSessionDep,
+) -> JsonDict:
+    start_time = time.time()
+    request_id = get_request_id()
+    callback_data: JsonDict = {}
+    is_duplicate = False
+    callback_type = "UNKNOWN"
+
+    try:
+        callback_data = await _read_request_json(request)
+    except Exception as exc:
+        logger.error(f"外部回调解析失败: {exc}")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"外部回调报文格式错误: {exc}",
+        )
+
+    try:
+        normalized_payload = _normalize_external_callback_payload(callback_data)
+        callback_type = cast("str", normalized_payload["callback_type"])
+        correlation_id = cast("str", normalized_payload["correlation_id"])
+    except ValueError as exc:
+        logger.error(f"外部回调最小包络校验失败: {exc}")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"外部回调最小包络校验失败: {exc}",
+        )
+
+    logger.info(f"收到外部系统回调: {callback_type} (request_id={request_id})")
+
+    try:
+        try:
+            _ = await inbox_service.create_external_http_inbox(
+                db=db,
+                callback_type=callback_type,
+                correlation_id=correlation_id,
+                payload=callback_data,
+                source_system=SourceSystem.SYSTEM,
+                source_message_id=request_id,
+            )
+            logger.info(f"外部回调已写入 Inbox: {callback_type}")
+        except ValueError as exc:
+            if _is_duplicate_inbox_error(exc):
+                is_duplicate = True
+                logger.info(f"外部回调幂等重复，将跳过业务处理: {callback_type}")
+            else:
+                raise
+
+        await _commit_and_enqueue_workline_processing(db)
+
+        response_time_ms = int((time.time() - start_time) * 1000)
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="external",
+            device_id=callback_type,
+            request_body=callback_data,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            response_status=200,
+            response_time_ms=response_time_ms,
+            success=not is_duplicate,
+            record_audit=not is_duplicate,
+            audit_title="外部系统回调",
+            error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
+        )
+        return response_builder.success(
+            message="External callback received",
+            data={
+                "status": "duplicate" if is_duplicate else "submitted",
+                "callback_type": callback_type,
+            },
+        )
+
+    except ValueError as exc:
+        logger.error(f"外部回调契约校验失败: {exc}")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"外部回调契约校验失败: {exc}",
+        )
+    except Exception as exc:
+        response_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"外部回调处理失败: {exc}")
+        _ = await callback_log_service.log_callback(
+            db,
+            **_build_callback_log_payload(
+                request,
+                callback_type="external",
+                device_id=callback_type,
+                request_body=callback_data,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                response_status=500,
+                response_time_ms=response_time_ms,
+                error_message=str(exc),
+            ),
+        )
+        await _record_callback_audit_log(
+            db,
+            request,
+            title="外部系统回调",
+            args=callback_data,
+            cost_time=response_time_ms / 1000,
+            success=False,
+            message=str(exc),
+        )
+        raise
 
 
 __all__ = ["router"]

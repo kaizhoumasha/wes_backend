@@ -526,6 +526,82 @@ class TestInboxConsumer:
         assert captured_timelines[-1].to_status == "CANCELLED"
 
     @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_creates_external_http_outbox(self, mock_db):
+        """Plugin decisions 中的 EXTERNAL_HTTP 请求应落成 Outbox，并让 Session 进入 WAITING_EXTERNAL。"""
+        from src.app.workline.models.outbox import DispatchType, TargetType
+        from src.app.workline.models.timeline import TimelineActionType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        captured_timelines: list[Any] = []
+        added_models: list[Any] = []
+
+        session = SimpleNamespace(
+            id=123,
+            workline_id=1,
+            status="RUNNING",
+            context_json={"stage": "WAITING_CONVEYOR"},
+            correlation_id="corr-external-001",
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="smt_classifier")
+        inbox = SimpleNamespace(id=99, correlation_id="corr-external-001")
+        orch_result = OrchestratorResult(
+            success=True,
+            transition="agv_requested",
+            decisions=[
+                {
+                    "decision_type": "EXTERNAL_HTTP_REQUEST",
+                    "dispatch_key": "external-http:AGV-REQ-001",
+                    "target_code": "http://agv.mock/api/v1/device/command",
+                    "payload": {"command_id": "AGV-REQ-001"},
+                    "source_system": "AGV",
+                }
+            ],
+            wait=SimpleNamespace(wait_type="EXTERNAL_HTTP", wait_token="AGV-REQ-001", deadline_seconds=300),
+            context_patch={"stage": "WAITING_AGV_DELIVERY"},
+        )
+
+        def capture_add(model: Any) -> None:
+            added_models.append(model)
+
+        mock_db.add = MagicMock(side_effect=capture_add)
+
+        with (
+            patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t))),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={},
+                orch_result=orch_result,
+            )
+
+        outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
+        assert len(outboxes) == 1
+        assert outboxes[0].dispatch_type == DispatchType.EXTERNAL_HTTP
+        assert outboxes[0].target_type == TargetType.HTTP_ENDPOINT
+        assert outboxes[0].dispatch_key == "external-http:AGV-REQ-001"
+        assert session.status == "WAITING_EXTERNAL"
+        assert session.current_wait_type == "EXTERNAL_HTTP"
+        assert session.current_wait_token == "AGV-REQ-001"
+        assert TimelineActionType.EXTERNAL_CALL_STARTED in [item.action_type for item in captured_timelines]
+
+    @pytest.mark.asyncio
     async def test_process_inbox_skips_already_processing(
         self,
         mock_db,
@@ -642,3 +718,65 @@ class TestLoadRelatedEntities:
         assert "SCANNER" in entities["devices_by_role"]
         assert "ROBOT_ARM" in entities["devices_by_role"]
         assert len(entities["devices_by_role"]["SCANNER"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_load_external_http_entities_from_correlation_id(self, mock_db):
+        """测试 EXTERNAL_HTTP 可先按 correlation_id 恢复 session，再回填 workline 和设备。"""
+        from src.celery_app.tasks.workline import _load_related_entities
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.EXTERNAL_HTTP,
+            correlation_id="corr-external-001",
+            payload_json={"callback_type": "AGV_TASK_RESULT"},
+        )
+
+        mock_session = MockSession(session_id=100)
+        mock_session.workline_id = 1
+        mock_workline = MockWorkline(workline_id=1)
+
+        mock_device = MagicMock()
+        mock_device.id = 18
+        mock_device.device_role = "OUTPUT_ARM"
+
+        with (
+            patch(
+                "src.app.workline.repositories.session_repository.WorklineSessionRepository",
+            ) as MockSessionRepo,
+            patch(
+                "src.app.workline.repositories.WorkLineRepository",
+            ) as MockWorklineRepo,
+            patch(
+                "src.app.device.repositories.DeviceRepository",
+            ) as MockDeviceRepo,
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+            ) as MockCommandRepo,
+            patch(
+                "src.workline_runtime.session_resolver.session_resolver.resolve_or_create",
+                new=AsyncMock(return_value=mock_session),
+            ) as mock_resolve_or_create,
+        ):
+            mock_session_repo_instance = AsyncMock()
+            mock_session_repo_instance.get_by_id = AsyncMock(return_value=None)
+            MockSessionRepo.return_value = mock_session_repo_instance
+
+            mock_workline_repo_instance = AsyncMock()
+            mock_workline_repo_instance.get_by_id = AsyncMock(side_effect=lambda _db, workline_id: mock_workline if workline_id == 1 else None)
+            MockWorklineRepo.return_value = mock_workline_repo_instance
+
+            mock_device_repo_instance = AsyncMock()
+            mock_device_repo_instance.get_by_id = AsyncMock(return_value=None)
+            mock_device_repo_instance.get_by_work_line_id = AsyncMock(return_value=[mock_device])
+            MockDeviceRepo.return_value = mock_device_repo_instance
+
+            mock_command_repo_instance = AsyncMock()
+            mock_command_repo_instance.get_by_id = AsyncMock(return_value=None)
+            MockCommandRepo.return_value = mock_command_repo_instance
+
+            entities = await _load_related_entities(mock_db, inbox)
+
+        mock_resolve_or_create.assert_awaited_once()
+        assert entities["session"] is mock_session
+        assert entities["workline"] is mock_workline
+        assert entities["devices_by_role"]["OUTPUT_ARM"] == [mock_device]

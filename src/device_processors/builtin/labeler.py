@@ -18,8 +18,8 @@ from src.app.device.models.command import (
     CommandRequest,
     TaskType,
 )
-from src.app.device.models.event_log import EventType
 from src.device_processors.base import BaseDeviceProcessor
+from src.device_processors.types import DeviceProcessorEventType
 
 
 class LabelerProcessor(BaseDeviceProcessor):
@@ -61,19 +61,19 @@ class LabelerProcessor(BaseDeviceProcessor):
         data = event_data.get("data", {})
 
         # 根据事件类型进行特定验证
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 物料到位事件：必须有位置和条码
             if "location" not in data:
                 return False, "MATERIAL_ARRIVED 事件缺少 location 字段"
             if "barcode" not in data:
                 return False, "MATERIAL_ARRIVED 事件缺少 barcode 字段"
 
-        elif event_type == EventType.PROCESS_COMPLETED.value:
+        elif event_type == DeviceProcessorEventType.PROCESS_COMPLETED.value:
             # 贴标完成事件：必须有指令 ID
             if "command_code" not in data:
                 return False, "PROCESS_COMPLETED 事件缺少 command_code 字段"
 
-        elif event_type == EventType.DEVICE_ERROR.value:
+        elif event_type == DeviceProcessorEventType.DEVICE_ERROR.value:
             # 设备故障事件：必须有错误码
             if "error_code" not in data:
                 return False, "DEVICE_ERROR 事件缺少 error_code 字段"
@@ -98,7 +98,7 @@ class LabelerProcessor(BaseDeviceProcessor):
         event_type = event_data.get("event_type")
         data = event_data.get("data", {})
 
-        if event_type == EventType.MATERIAL_ARRIVED.value:
+        if event_type == DeviceProcessorEventType.MATERIAL_ARRIVED.value:
             # 物料到位：打印并粘贴标签
             location = data.get("location")
             barcode = data.get("barcode")
@@ -117,7 +117,7 @@ class LabelerProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.PROCESS_COMPLETED.value:
+        if event_type == DeviceProcessorEventType.PROCESS_COMPLETED.value:
             # 贴标完成：通知下游设备（如输送线继续输送）
             command_code = data.get("command_code")
 
@@ -131,7 +131,7 @@ class LabelerProcessor(BaseDeviceProcessor):
                 },
             }
 
-        if event_type == EventType.DEVICE_ERROR.value:
+        if event_type == DeviceProcessorEventType.DEVICE_ERROR.value:
             # 设备故障：暂停贴标，告警
             error_code = data.get("error_code")
             logger.error(f"贴标机故障: {error_code} -> 暂停贴标")

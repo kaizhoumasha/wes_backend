@@ -1,33 +1,15 @@
-"""
-Callback API 单元测试
+"""Callback API 单元测试。"""
 
-测试设备回调 API 的功能：
-- POST /api/v1/callback/result - 指令结果回传
-- POST /api/v1/callback/event - 设备事件上报
-
-相关文档:
-- 白皮书 3.2 节: 第三方设备接入规范
-- claudedocs/idempotency_fix_20260317.md: 幂等性控制逻辑修复
-
-注意: 由于循环导入问题（api_security.py ↔ api_auth/__init__.py），
-部分测试需要特殊处理。核心功能已在 test_callback_idempotency.py 中验证。
-"""
-
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.device.models.command import CommandCallbackResult, CommandResult
-from src.app.device.models.event_log import EventRequest, EventType
-
-# ==================== 测试 Fixtures ====================
-
 
 @pytest.fixture
 def db_session():
-    """创建 mock 数据库会话（支持 commit 方法）"""
     mock = AsyncMock(spec=AsyncSession)
     mock.commit = AsyncMock()
     mock.rollback = AsyncMock()
@@ -35,243 +17,173 @@ def db_session():
 
 
 @pytest.fixture
-def mock_request():
-    """创建 mock Request 对象"""
-
-    def _create_mock_request(
+def build_request():
+    def _build_request(
+        *,
+        body: dict,
+        path: str,
         client_ip: str = "192.168.1.100",
-        path: str = "/api/v1/callback/result",
         user_agent: str = "TestClient",
     ):
-        mock_req = MagicMock()
-        mock_req.client = MagicMock()
-        mock_req.client.host = client_ip
-        mock_req.url = MagicMock()
-        mock_req.url.path = path
-        mock_req.headers = {"User-Agent": user_agent}
-        return mock_req
+        request = MagicMock()
+        request.client = MagicMock()
+        request.client.host = client_ip
+        request.url = MagicMock()
+        request.url.path = path
+        request.headers = {"User-Agent": user_agent}
+        request.method = "POST"
+        request.json = AsyncMock(return_value=body)
+        return request
 
-    return _create_mock_request
+    return _build_request
 
 
-# ==================== 辅助函数 ====================
-
-
-def create_callback_result_request(
-    command_code: str = "CMD-20250317-001",
-    device_code: str = "ARM_01",
-    result: CommandResult = CommandResult.SUCCESS,
-    finish_time: int = 1702627250000,
-    data: dict | None = None,
-) -> dict:
-    """创建指令结果回调请求"""
-    return {
-        "command_code": command_code,
-        "device_code": device_code,
-        "result": result.value,
-        "finish_time": finish_time,
-        "data": data or {},
+def create_result_payload(**overrides) -> dict:
+    payload = {
+        "command_id": "CMD-20250317-001",
+        "device_id": "ARM_01",
+        "result": "SUCCESS",
+        "finish_time": 1702627250000,
+        "data": {"task_type": "PICK_AND_PUT"},
     }
+    payload.update(overrides)
+    return payload
 
 
-def create_event_request(
-    device_code: str = "CONVEYOR_01",
-    event_type: EventType = EventType.MATERIAL_ARRIVED,
-    timestamp: int = 1702627300000,
-    data: dict | None = None,
-) -> dict:
-    """创建设备事件请求"""
-    return {
-        "device_code": device_code,
-        "event_type": event_type.value,
-        "timestamp": timestamp,
-        "data": data or {},
+def create_event_payload(**overrides) -> dict:
+    payload = {
+        "device_id": "ARM_01",
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": 1702627300000,
+        "data": {
+            "location": "STATION_INPUT1",
+            "barcode1": "PKG1_12345678",
+            "barcode2": "PKG2_12345678",
+        },
     }
+    payload.update(overrides)
+    return payload
 
 
-# ==================== callback/result 测试 ====================
+def create_external_payload(**overrides) -> dict:
+    payload = {
+        "callback_type": "AGV_TASK_RESULT",
+        "correlation_id": "corr-agv-001",
+        "command_id": "AGV-REQ-001",
+        "result": "SUCCESS",
+        "data": {"to_location": "STATION_OUTPUT1"},
+    }
+    payload.update(overrides)
+    return payload
 
 
 class TestCallbackResultAPI:
-    """测试指令结果回调 API"""
+    @pytest.mark.asyncio
+    async def test_callback_result_success(self, db_session: AsyncSession, build_request) -> None:
+        existing_command = SimpleNamespace(
+            correlation_id="corr-001",
+            params={"task_type": "PICK_AND_PUT"},
+            workline_id=1,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+        )
+        handled_command = MagicMock()
+        handled_command.status = MagicMock()
+        handled_command.status.value = "SUCCESS"
+        handled_command.get_duration_ms = MagicMock(return_value=100)
+        handled_command.correlation_id = "corr-001"
+
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch(
+                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        work_line_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.v1.callback.workline_service.get_by_id",
+                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+            ),
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                new=AsyncMock(return_value=handled_command),
+            ) as mock_handle,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(body=create_result_payload(), path="/api/v1/callback/result"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert response["data"]["ack"] is True
+        assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
+        assert mock_log_callback.await_args.kwargs["correlation_id"] == "corr-001"
+        mock_handle.assert_awaited_once()
+        mock_enqueue.assert_called_once()
+        db_session.commit.assert_awaited_once()
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_success(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """
-        测试成功的指令结果回调
-
-        验证:
-        - ✅ 返回成功
-        - ✅ 响应包含 ack: true
-        - ✅ 调用了 handle_callback_result
-        - ✅ 记录了 callback_log
-        - ✅ 记录了 audit_log
-        """
-        mock_command = MagicMock()
-        mock_command.status = MagicMock()
-        mock_command.status.value = "SUCCESS"
-        mock_command.get_duration_ms = MagicMock(return_value=100)
+    async def test_callback_result_rejects_invalid_plugin_result(self, db_session: AsyncSession, build_request) -> None:
         existing_command = SimpleNamespace(
             correlation_id="corr-001",
             params={"action": "PICK_AND_PUT"},
             workline_id=1,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
         )
 
         with (
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
-                new=AsyncMock(return_value=mock_command),
-            ) as mock_handle,
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch(
                 "src.app.callback.v1.callback.device_command_service.get_command_by_code",
                 new=AsyncMock(return_value=existing_command),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-001"),
-        ):
-            # 在 patch 块内导入（patch 阻止循环导入解析）
-            from src.app.callback.v1.callback import callback_result
-
-            request_data = create_callback_result_request()
-
-            response = await callback_result(
-                callback=CommandCallbackResult(**request_data),
-                request=mock_request(),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            assert response["data"]["ack"] is True
-
-            create_inbox_kwargs = mock_create_inbox.call_args.kwargs
-            assert create_inbox_kwargs["command_type"] == "PICK_AND_PUT"
-            mock_handle.assert_called_once()
-            mock_enqueue.assert_called_once()
-            db_session.commit.assert_called_once()
-
-            mock_log_callback.assert_called_once()
-            log_call_kwargs = mock_log_callback.call_args[1]
-            assert log_call_kwargs["callback_type"] == "result"
-            assert log_call_kwargs["device_id"] == "ARM_01"
-            assert log_call_kwargs["response_status"] == 200
-            assert log_call_kwargs["error_message"] is None
-
-            mock_audit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_callback_result_idempotent_duplicate(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """
-        测试幂等重复的指令结果回调
-
-        验证:
-        - ✅ 返回 200 OK（幂等重复也应返回成功）
-        - ✅ 调用了 create_command_result_inbox
-        - ✅ **未调用** handle_callback_result（跳过业务处理）
-        - ✅ 仍会重新触发统一编排（覆盖首包 enqueue 失败后的补偿）
-        - ✅ 记录了 callback_log（error_message 标记为幂等重复）
-        - ✅ **未记录** audit_log（跳过审计）
-        """
-        existing_command = SimpleNamespace(correlation_id="corr-002", workline_id=1)
-
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
-                new=AsyncMock(side_effect=ValueError("指令结果已存在（幂等键重复）: test-key, 原消息 ID: 123")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
-                new=AsyncMock(),
-            ) as mock_handle,
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
-                new=AsyncMock(return_value=existing_command),
-            ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-002"),
-        ):
-            from src.app.callback.v1.callback import callback_result
-
-            request_data = create_callback_result_request()
-
-            response = await callback_result(
-                callback=CommandCallbackResult(**request_data),
-                request=mock_request(),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            assert response["data"]["ack"] is True
-
-            mock_create_inbox.assert_called_once()
-
-            # ✅ 关键验证：业务处理**未被调用**
-            mock_handle.assert_not_called()
-            mock_enqueue.assert_called_once()
-
-            # ✅ 验证 callback_log 仍然被记录
-            mock_log_callback.assert_called_once()
-            log_call_kwargs = mock_log_callback.call_args[1]
-            assert log_call_kwargs["callback_type"] == "result"
-            assert log_call_kwargs["device_id"] == "ARM_01"
-            assert log_call_kwargs["response_status"] == 200
-            # ✅ 关键验证：error_message 标记为幂等重复
-            assert log_call_kwargs["error_message"] == "幂等重复: 已存在相同事件"
-
-            # ✅ 关键验证：audit_log **未被记录**
-            mock_audit.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_callback_result_non_workline_skips_inbox_and_enqueue(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        mock_command = MagicMock()
-        mock_command.status = MagicMock()
-        mock_command.status.value = "SUCCESS"
-        mock_command.get_duration_ms = MagicMock(return_value=100)
-        existing_command = SimpleNamespace(correlation_id="corr-003", params={"action": "PICK_AND_PUT"}, workline_id=None)
-
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.v1.callback.device_service.get_device_by_code",
-                new=AsyncMock(return_value=SimpleNamespace(work_line_id=None)),
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        work_line_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
+                ),
             ),
             patch(
+                "src.app.callback.v1.callback.workline_service.get_by_id",
+                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+            ),
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
                 "src.app.callback.v1.callback.device_command_service.handle_callback_result",
-                new=AsyncMock(return_value=mock_command),
+                new=AsyncMock(),
             ) as mock_handle,
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
@@ -281,395 +193,202 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
-                new=AsyncMock(return_value=existing_command),
-            ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-003a"),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-002"),
         ):
             from src.app.callback.v1.callback import callback_result
 
-            request_data = create_callback_result_request()
-
             response = await callback_result(
-                callback=CommandCallbackResult(**request_data),
-                request=mock_request(),
+                request=build_request(
+                    body=create_result_payload(result="BROKEN"),
+                    path="/api/v1/callback/result",
+                ),
                 db=db_session,
             )
 
-            assert response["code"] == "1000"
-            assert response["data"]["ack"] is True
-            mock_create_inbox.assert_not_called()
-            mock_handle.assert_called_once()
-            mock_enqueue.assert_not_called()
-            db_session.commit.assert_called_once()
-            mock_log_callback.assert_called_once()
-            mock_audit.assert_called_once()
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        mock_create_inbox.assert_not_called()
+        mock_handle.assert_not_called()
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
 
 
-# ==================== callback/event 测试 ====================
+class TestCallbackContractBoundary:
+    def test_device_models_no_longer_export_event_contract_types(self) -> None:
+        device_models = importlib.import_module("src.app.device.models")
+
+        assert not hasattr(device_models, "EventRequest")
+        assert not hasattr(device_models, "EventType")
 
 
 class TestCallbackEventAPI:
-    """测试设备事件上报 API"""
-
     @pytest.mark.asyncio
-    async def test_callback_event_success(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """
-        测试成功的设备事件上报
-
-        验证:
-        - ✅ 返回 200 OK
-        - ✅ 响应包含 status: submitted
-        - ✅ 调用了 Celery send_task
-        - ✅ 记录了 callback_log
-        - ✅ 记录了 audit_log
-        """
+    async def test_callback_event_success(self, db_session: AsyncSession, build_request) -> None:
         with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.v1.callback.device_service.get_device_by_code",
-                new=AsyncMock(return_value=SimpleNamespace(work_line_id=1)),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-003"),
-        ):
-            from src.app.callback.v1.callback import callback_event
-
-            request_data = create_event_request()
-
-            response = await callback_event(
-                event_request=EventRequest(**request_data),
-                request=mock_request(path="/api/v1/callback/event"),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            assert response["data"]["status"] == "submitted"
-            assert response["data"]["device_code"] == "CONVEYOR_01"
-
-            mock_create_inbox.assert_called_once()
-            mock_enqueue.assert_called_once()
-
-            mock_log_callback.assert_called_once()
-            log_call_kwargs = mock_log_callback.call_args[1]
-            assert log_call_kwargs["callback_type"] == "event"
-            assert log_call_kwargs["device_id"] == "CONVEYOR_01"
-            assert log_call_kwargs["error_message"] is None
-
-            mock_audit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_callback_event_idempotent_duplicate(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """
-        测试幂等重复的设备事件上报
-
-        验证:
-        - ✅ 返回 200 OK
-        - ✅ 响应包含 status: duplicate（区分正常和重复）
-        - ✅ 仍会重新触发 Celery send_task（覆盖首包 enqueue 失败后的补偿）
-        - ✅ 记录了 callback_log（error_message 标记为幂等重复）
-        - ✅ **未记录** audit_log（跳过审计）
-        """
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
-                new=AsyncMock(side_effect=ValueError("设备事件已存在（幂等键重复）: test-key, 原消息 ID: 456")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
-                new=AsyncMock(return_value=SimpleNamespace(work_line_id=1)),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-004"),
-        ):
-            from src.app.callback.v1.callback import callback_event
-
-            request_data = create_event_request()
-
-            response = await callback_event(
-                event_request=EventRequest(**request_data),
-                request=mock_request(path="/api/v1/callback/event"),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            # ✅ 关键验证：响应中标记为 duplicate
-            assert response["data"]["status"] == "duplicate"
-            assert response["data"]["device_code"] == "CONVEYOR_01"
-
-            mock_create_inbox.assert_called_once()
-            mock_enqueue.assert_called_once()
-
-            # ✅ 验证 callback_log 仍然被记录
-            mock_log_callback.assert_called_once()
-            log_call_kwargs = mock_log_callback.call_args[1]
-            assert log_call_kwargs["callback_type"] == "event"
-            assert log_call_kwargs["device_id"] == "CONVEYOR_01"
-            # ✅ 关键验证：error_message 标记为幂等重复
-            assert log_call_kwargs["error_message"] == "幂等重复: 已存在相同事件"
-
-            # ✅ 关键验证：audit_log **未被记录**
-            mock_audit.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_callback_event_non_workline_skips_inbox_and_enqueue(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
-                new=AsyncMock(return_value=SimpleNamespace(work_line_id=None)),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-005"),
-        ):
-            from src.app.callback.v1.callback import callback_event
-
-            request_data = create_event_request()
-            response = await callback_event(
-                event_request=EventRequest(**request_data),
-                request=mock_request(path="/api/v1/callback/event"),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            assert response["data"]["status"] == "submitted"
-            mock_create_inbox.assert_not_called()
-            mock_enqueue.assert_not_called()
-            mock_log_callback.assert_called_once()
-            mock_audit.assert_called_once()
-
-
-# ==================== 错误处理测试 ====================
-
-
-class TestCallbackErrorHandling:
-    """测试错误处理"""
-
-    @pytest.mark.asyncio
-    async def test_callback_result_service_error(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """
-        测试指令结果回调时服务层抛出异常
-
-        验证:
-        - ✅ 异常被正确抛出
-        - ✅ 记录了失败的 callback_log
-        - ✅ 记录了失败的 audit_log
-        """
-        existing_command = SimpleNamespace(correlation_id="corr-error", workline_id=1)
-
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
-                new=AsyncMock(),
-            ),
-            patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
-                new=AsyncMock(side_effect=Exception("Database connection failed")),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
-                new=AsyncMock(return_value=existing_command),
-            ),
-            patch("src.app.callback.v1.callback.get_request_id", return_value="test-req-error"),
-        ):
-            from src.app.callback.v1.callback import callback_result
-
-            request_data = create_callback_result_request()
-
-            # 调用 API，预期抛出异常
-            with pytest.raises(Exception, match="Database connection failed"):
-                await callback_result(
-                    callback=CommandCallbackResult(**request_data),
-                    request=mock_request(),
-                    db=db_session,
-                )
-
-            # 验证失败的 callback_log 被记录
-            mock_log_callback.assert_called_once()
-            log_call_kwargs = mock_log_callback.call_args[1]
-            assert log_call_kwargs["response_status"] == 500
-            assert log_call_kwargs["error_message"] == "Database connection failed"
-            mock_audit.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_callback_result_duplicate_reenqueues_after_post_commit_broker_failure(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """首包 commit 后 enqueue 失败时，幂等重试仍应重新触发编排。"""
-        mock_command = MagicMock()
-        mock_command.status = MagicMock()
-        mock_command.status.value = "SUCCESS"
-        mock_command.get_duration_ms = MagicMock(return_value=100)
-        existing_command = SimpleNamespace(
-            correlation_id="corr-retry",
-            params={"action": "PICK_AND_PUT"},
-            workline_id=1,
-        )
-
-        with (
-            patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
                 new=AsyncMock(
-                    side_effect=[
-                        None,
-                        ValueError("指令结果已存在（幂等键重复）: retry-key, 原消息 ID: 123"),
-                    ]
+                    return_value=SimpleNamespace(
+                        work_line_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
-                new=AsyncMock(return_value=mock_command),
-            ) as mock_handle,
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
-                new=AsyncMock(),
+                "src.app.callback.v1.callback.workline_service.get_by_id",
+                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
             ),
-            patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ),
-            patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
-                new=AsyncMock(return_value=existing_command),
-            ),
-            patch(
-                "src.app.callback.v1.callback._enqueue_workline_processing",
-                side_effect=[RuntimeError("broker unavailable"), None],
-            ) as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-first", "req-second"]),
-        ):
-            from src.app.callback.v1.callback import callback_result
-
-            request_data = create_callback_result_request()
-
-            with pytest.raises(RuntimeError, match="broker unavailable"):
-                await callback_result(
-                    callback=CommandCallbackResult(**request_data),
-                    request=mock_request(),
-                    db=db_session,
-                )
-
-            response = await callback_result(
-                callback=CommandCallbackResult(**request_data),
-                request=mock_request(),
-                db=db_session,
-            )
-
-            assert response["code"] == "1000"
-            assert response["data"]["ack"] is True
-            assert mock_handle.call_count == 1
-            assert mock_enqueue.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_callback_event_duplicate_reenqueues_after_post_commit_broker_failure(
-        self,
-        db_session: AsyncSession,
-        mock_request,
-    ) -> None:
-        """事件首包 commit 后 enqueue 失败时，幂等重试仍应重新触发编排。"""
-        with (
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
-                new=AsyncMock(
-                    side_effect=[
-                        None,
-                        ValueError("设备事件已存在（幂等键重复）: retry-key, 原消息 ID: 456"),
-                    ]
-                ),
-            ),
+                new=AsyncMock(),
+            ) as mock_create_inbox,
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),
-            ),
-            patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
-                new=AsyncMock(return_value=SimpleNamespace(work_line_id=1)),
-            ),
+            ) as mock_log_callback,
             patch(
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
-            ),
-            patch(
-                "src.app.callback.v1.callback._enqueue_workline_processing",
-                side_effect=[RuntimeError("broker unavailable"), None],
-            ) as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-first", "req-second"]),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-003"),
         ):
             from src.app.callback.v1.callback import callback_event
 
-            request_data = create_event_request()
-
-            with pytest.raises(RuntimeError, match="broker unavailable"):
-                await callback_event(
-                    event_request=EventRequest(**request_data),
-                    request=mock_request(path="/api/v1/callback/event"),
-                    db=db_session,
-                )
-
             response = await callback_event(
-                event_request=EventRequest(**request_data),
-                request=mock_request(path="/api/v1/callback/event"),
+                request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
                 db=db_session,
             )
 
-            assert response["code"] == "1000"
-            assert response["data"]["status"] == "duplicate"
-            assert mock_enqueue.call_count == 2
+        assert response["code"] == "1000"
+        assert response["data"]["status"] == "submitted"
+        create_inbox_kwargs = mock_create_inbox.call_args.kwargs
+        event_correlation_id = create_inbox_kwargs["correlation_id"]
+        assert create_inbox_kwargs["event_type"] == "SCAN_COMPLETED"
+        assert create_inbox_kwargs["data"]["barcode"] == "PKG1_12345678"
+        assert create_inbox_kwargs["data"]["barcode_list"] == ["PKG1_12345678", "PKG2_12345678"]
+        assert isinstance(event_correlation_id, str)
+        assert event_correlation_id.startswith("corr_")
+        assert create_inbox_kwargs["correlation_id"] == event_correlation_id
+        assert mock_log_callback.await_args.kwargs["correlation_id"] == event_correlation_id
+        mock_enqueue.assert_called_once()
+        db_session.commit.assert_awaited_once()
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_rejects_invalid_plugin_event(self, db_session: AsyncSession, build_request) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        work_line_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.v1.callback.workline_service.get_by_id",
+                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+            ),
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-004"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(
+                    body=create_event_payload(event_type="UNKNOWN_EVENT"),
+                    path="/api/v1/callback/event",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        mock_create_inbox.assert_not_called()
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
+
+
+class TestCallbackExternalAPI:
+    @pytest.mark.asyncio
+    async def test_callback_external_success(self, db_session: AsyncSession, build_request) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-001"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=create_external_payload(), path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert response["data"]["status"] == "submitted"
+        assert mock_create_inbox.await_args.kwargs["callback_type"] == "AGV_TASK_RESULT"
+        assert mock_create_inbox.await_args.kwargs["correlation_id"] == "corr-agv-001"
+        assert mock_log_callback.await_args.kwargs["correlation_id"] == "corr-agv-001"
+        mock_enqueue.assert_called_once()
+        db_session.commit.assert_awaited_once()
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_missing_correlation_id(
+        self,
+        db_session: AsyncSession,
+        build_request,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-002"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_external_payload(correlation_id=""),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
