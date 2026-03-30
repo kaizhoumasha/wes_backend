@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.core.logger import logger
+from src.core.openapi import generate_route_operation_id
 from src.core.path_conf import STATIC_DIR
 from src.utils.background_tasks import inject_background_tasks
 
@@ -133,6 +134,7 @@ def register_app() -> FastAPI:
         openapi_url=settings.OPENAPI_URL,
         default_response_class=ORJSONResponse,
         lifespan=register_init,
+        generate_unique_id_function=generate_route_operation_id,
         # 全局依赖：自动为所有路由注入 BackgroundTasks 到上下文
         # 使得 Repository 层可以透明地使用后台任务功能
         dependencies=[Depends(inject_background_tasks)],

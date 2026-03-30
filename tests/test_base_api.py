@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.base_api import BaseAPI
+from src.core.openapi import generate_route_operation_id
 
 
 class DummyModel:
@@ -117,6 +119,13 @@ def _get_get_endpoint(api: BaseAPI[Any, Any, Any]):
     raise AssertionError("get endpoint not found")
 
 
+def _get_route_operation_id(api: BaseAPI[Any, Any, Any], path: str, method: str) -> str:
+    for route in api.router.routes:
+        if method in route.methods and route.path == path:
+            return route.operation_id
+    raise AssertionError(f"{method} {path} route not found")
+
+
 @pytest.mark.asyncio
 async def test_get_endpoint_forwards_include_deleted_for_soft_delete_models() -> None:
     service = FakeService()
@@ -146,3 +155,52 @@ async def test_get_endpoint_forwards_include_deleted_for_soft_delete_models() ->
 
     assert service.get_by_id_calls == [(db, cache, 5, 3, True)]
     assert response["data"].id == 5
+
+
+def test_base_api_assigns_stable_operation_ids() -> None:
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=FakeService(),
+        response_schema=DummyResponse,
+        prefix="/dummy-items",
+        gen_create=True,
+        gen_update=True,
+        gen_delete=True,
+        gen_bulk_delete=True,
+        enable_permission=False,
+    )
+
+    assert _get_route_operation_id(api, "/dummy-items", "POST") == "dummy_items_create"
+    assert _get_route_operation_id(api, "/dummy-items/{id}", "PUT") == "dummy_items_update"
+    assert _get_route_operation_id(api, "/dummy-items/{id}", "DELETE") == "dummy_items_delete"
+    assert _get_route_operation_id(api, "/dummy-items/{id}", "GET") == "dummy_items_get"
+    assert _get_route_operation_id(api, "/dummy-items/query", "POST") == "dummy_items_query"
+    assert _get_route_operation_id(api, "/dummy-items/bulk", "DELETE") == "dummy_items_bulk_delete"
+    assert _get_route_operation_id(api, "/dummy-items/trash", "GET") == "dummy_items_trash"
+    assert _get_route_operation_id(api, "/dummy-items/trash/restore", "POST") == "dummy_items_batch_restore"
+    assert (
+        _get_route_operation_id(api, "/dummy-items/trash/permanent", "DELETE")
+        == "dummy_items_batch_permanent_delete"
+    )
+    assert _get_route_operation_id(api, "/dummy-items/{id}/restore", "POST") == "dummy_items_restore"
+
+
+def test_generate_route_operation_id_produces_compact_path_based_ids() -> None:
+    app = FastAPI(generate_unique_id_function=generate_route_operation_id)
+
+    @app.post("/api/v1/auth/login")
+    async def login() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.put("/api/v1/users/{id}/assign-roles")
+    async def assign_roles(id: int) -> dict[str, int]:
+        return {"id": id}
+
+    schema = app.openapi()
+
+    assert schema["paths"]["/api/v1/auth/login"]["post"]["operationId"] == "auth_login_post"
+    assert (
+        schema["paths"]["/api/v1/users/{id}/assign-roles"]["put"]["operationId"]
+        == "users_by_id_assign_roles_put"
+    )

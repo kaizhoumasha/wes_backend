@@ -10,6 +10,7 @@ from typing import Annotated, Any, TypeVar, cast
 from fastapi import APIRouter, Body, Depends, Path, Query
 
 from src.core.logger import logger
+from src.core.openapi import normalize_operation_id_part
 from src.core.query_models import QueryOptions
 from src.core.rbac import RequirePermission
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
@@ -61,6 +62,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.max_depth = max_depth
         self.perm_prefix = f"{module_name}:{model.__name__.lower()}"
         self.resource_name = model.__name__
+        self.operation_id_prefix = self._build_operation_id_prefix()
         self.supports_soft_delete = all(hasattr(model, attr) for attr in ("is_deleted", "soft_delete", "restore"))
         # 自定义路由列表（接收 router 和 api 实例作为参数）
         self._custom_route_funcs: list[RouteRegistrar] = custom_routes or []
@@ -145,6 +147,18 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         perm_code = self._get_permission_code(action)
         return [Depends(RequirePermission(perm_code))] if perm_code else []
 
+    def _build_operation_id_prefix(self) -> str:
+        parts = [normalize_operation_id_part(part) for part in self.prefix.strip("/").split("/") if part]
+        normalized_parts = [part for part in parts if part]
+        if normalized_parts:
+            return "_".join(normalized_parts)
+
+        fallback_name = normalize_operation_id_part(self.model.__name__)
+        return fallback_name or "resource"
+
+    def _operation_id(self, action: str) -> str:
+        return f"{self.operation_id_prefix}_{action}"
+
     @staticmethod
     def _response_builder() -> Any:
         return cast("Any", response_builder)
@@ -211,6 +225,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "",
             summary=summary,
+            operation_id=self._operation_id("create"),
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("create"),
         )
@@ -234,6 +249,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.put(
             "/{id}",
             summary=summary,
+            operation_id=self._operation_id("update"),
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("update"),
         )
@@ -270,6 +286,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/{id}",
             summary=summary,
+            operation_id=self._operation_id("delete"),
             response_model=ResponseSchemaModel[dict[str, str]],
             dependencies=self._permission_dependencies("delete"),
         )
@@ -303,6 +320,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/bulk",
             summary=summary,
+            operation_id=self._operation_id("bulk_delete"),
             response_model=BatchOperationResponseModel,
             dependencies=self._permission_dependencies("bulk_delete"),
         )
@@ -327,6 +345,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.get(
             "/{id}",
             summary=summary,
+            operation_id=self._operation_id("get"),
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("detail"),
         )
@@ -357,6 +376,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/query",
             summary=summary,
+            operation_id=self._operation_id("query"),
             response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("list"),
         )
@@ -398,6 +418,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/trash/restore",
             summary=batch_restore_summary,
+            operation_id=self._operation_id("batch_restore"),
             response_model=BatchOperationResponseModel,
             dependencies=self._permission_dependencies("restore"),
         )
@@ -423,6 +444,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.delete(
             "/trash/permanent",
             summary=batch_permanent_delete_summary,
+            operation_id=self._operation_id("batch_permanent_delete"),
             response_model=BatchOperationResponseModel,
             dependencies=self._permission_dependencies("delete"),
         )
@@ -446,6 +468,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.post(
             "/{id}/restore",
             summary=restore_summary,
+            operation_id=self._operation_id("restore"),
             response_model=ResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("restore"),
         )
@@ -466,6 +489,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         @self.router.get(
             "/trash",
             summary=trash_summary,
+            operation_id=self._operation_id("trash"),
             response_model=ListResponseSchemaModel[self.response_schema],
             dependencies=self._permission_dependencies("trash"),
         )
