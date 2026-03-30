@@ -25,7 +25,7 @@
 
 * 设备通过 `POST /api/v1/callback/event` 上报事件；目标口径是“立即 ACK + 写 Inbox + 异步编排”，当前代码中仍存在待收敛的旧异步处理链。
 * WES 通过设备标准接口下发指令，设备同步 ACK，异步回传 `POST /api/v1/callback/result`。
-* 当前代码已具备 `DeviceEventLog`、`DeviceCommand`、Celery Worker、设备处理器注册表等基础设施。
+* 当前代码已具备 `CallbackLog`、`DeviceCommand`、Celery Worker、设备处理器注册表等基础设施。
 
 当前方案能支撑“单设备触发 -> 单设备动作”的简单场景，但无法稳定支撑真实产线：
 
@@ -81,6 +81,7 @@
 后续设计和编码必须遵循以下硬约束：
 
 * **Callback API 只做接收、校验、原始落库、ACK、写 Inbox，不直接承载复杂业务逻辑。**
+* **厂商协议枚举（命令 / 事件 / 结果）只能定义在对应 workline plugin 的 `contract.py`，禁止回流到 `src/app/device/models` 或 runtime 通用模型。**
 * **插件不直接写 Repository，不直接调 HTTP Client，不直接构造 SQL。**
 * **所有业务推进都必须回到统一编排入口，禁止出现平行状态机。**
 * **所有副作用都必须通过 Outbox 产生，禁止在事务中直接发送设备命令或外部 HTTP。**
@@ -127,7 +128,33 @@
 * **依赖倒置**:
   * 插件依赖 `PluginContext.services` 暴露的抽象服务，不依赖底层 HTTP 或数据库实现。
 
-### 3.4 YAGNI
+### 3.4 协议边界
+
+必须明确区分三层协议对象：
+
+* **Plugin Contract**
+  * 厂商命令枚举
+  * 厂商事件枚举
+  * 厂商结果枚举
+  * 字段别名、归一化、值域校验
+* **Callback Minimal Envelope**
+  * `device_code`
+  * `event_type` / `result` 原始字符串
+  * `timestamp`
+  * `data`
+  * 仅用于入站最小包络校验，不拥有厂商语义真相
+* **Runtime Control Flow**
+  * `WorklineInbox / Session / Timeline / Outbox`
+  * `step_code / correlation_id / wait_token / dispatch_key`
+  * 只表达控制流，不定义厂商协议枚举
+
+禁止的实现方式：
+
+* 在 `src/app/device/models` 中新增某条 workline 的 `EventType / ResultType / CommandType`
+* 在 runtime 通用层维护某个厂商专属枚举
+* callback 直接依赖设备域模型作为厂商协议真相
+
+### 3.5 YAGNI
 
 当前阶段不做以下能力：
 
@@ -170,11 +197,11 @@
 * 超时由定时任务私自改 Session 状态
 * 人工恢复直接修改数据库
 
-### 4.3 Session 是业务主链路，Command / Event 是证据
+### 4.3 Session 是业务主链路，Command / Callback 是证据
 
-保留现有设备层证据表：
+保留现有设备层证据：
 
-* `DeviceEventLog`
+* `CallbackLog`
 * `DeviceCommand`
 
 新增作业线主链路表：
@@ -185,6 +212,12 @@
 * `ExternalCallLog`
 * `WorklineInbox`
 * `WorklineOutbox`
+
+补充约束：
+
+* 设备域不再维护厂商事件枚举或事件请求模型
+* callback 层仅维护最小包络模型
+* 厂商协议合法值以 plugin contract 为唯一准绳
 
 ### 4.4 插件返回“领域意图”，不直接操作基础设施
 
@@ -832,7 +865,6 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `message`
 * `payload_json`
 * `related_inbox_id`
-* `related_event_log_id`
 * `related_command_id`  # 内部数据库外键；业务语义仍以 `command_code` 表达
 * `related_external_call_id`
 
@@ -1825,7 +1857,7 @@ workline_failure_total = Counter(
 
 * Callback API
 * Celery App
-* `DeviceEventLog`
+* `CallbackLog`
 * `DeviceCommand`
 * 设备命令发送服务
 * `WorkLine / Device` 基础模型
@@ -1950,7 +1982,7 @@ scripts/
 > - ✅ 4 个核心表模型已创建：`WorklineSession`, `WorklineTimeline`, `WorklineInbox`, `WorklineOutbox`
 > - ✅ 所有枚举类型使用 VARCHAR + CHECK 约束
 > - ✅ 外键设计避免循环依赖（辅助追溯字段不设外键）
-> - ✅ `DeviceEventLog` 和 `DeviceCommand` 已扩展 `session_id`, `workline_id`, `correlation_id`
+> - ✅ `Device`、`DeviceCommand`、`WorklineSession` 已承载 contract 快照；事件原始报文保存在 `callback_logs`
 > - ✅ **Callback API 集成完成**：`callback/event` 和 `callback/result` 写入 WorklineInbox
 > - ✅ **幂等性控制实现**：白皮书 6.3.1 节规范（厂商 ID 优先 + hash 备选）
 > - ✅ **Inbox Service 完成**：创建设备事件和指令结果 Inbox 消息
@@ -1994,10 +2026,10 @@ scripts/
 * ✅ 新增 `WorklineSession` (8.3 节所有字段已实现)
 * ✅ 新增 `WorklineTimeline` (8.4 节所有字段已实现)
 * ✅ 新增 `WorklineInbox` (8.7 节所有字段已实现)
-* ✅ 给 `DeviceEventLog`、`DeviceCommand` 增加：
-  * ✅ `session_id`
-  * ✅ `workline_id`
-  * ✅ `correlation_id`
+* ✅ 设备事件入口统一收敛到：
+  * ✅ `callback_logs` 保留原始请求报文
+  * ✅ `workline_inbox` 作为统一编排入口
+  * ✅ `DeviceCommand` 作为控制流证据
 * ✅ **Callback API 集成**：
   * ✅ `callback/event` 写 WorklineInbox
   * ✅ `callback/result` 写 WorklineInbox
@@ -2338,7 +2370,7 @@ scripts/
 
 最适合 P9 WES 当前阶段的可实施方案是：
 
-* 保留现有 `DeviceEventLog` 和 `DeviceCommand` 作为设备层证据。
+* 保留现有 `CallbackLog` 和 `DeviceCommand` 作为设备层证据。
 * 新增 `WorklineSession` 作为业务主链路，其状态由插件定义的显式状态机管理。
 * 新增 `WorklineTimeline` 作为排障主视图。
 * 新增 `WorklineInbox` 作为统一编排入口，解决异步输入可靠消费问题。

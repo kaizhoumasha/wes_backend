@@ -1095,7 +1095,7 @@ class WorklineInbox(BaseModel):
 Callback API (`callback/event`, `callback/result`) 只做：
 
 1. **请求校验**: 验证请求格式、权限
-2. **原始日志落库**: 记录 `DeviceEventLog` / `DeviceCommand`
+2. **原始日志落库**: 记录 `CallbackLog`，并在结果回调时关联/更新 `DeviceCommand`
 3. **写 WorklineInbox**: 将输入持久化到 Inbox
 4. **立即 ACK**: 快速返回响应
 
@@ -1103,6 +1103,14 @@ Callback API (`callback/event`, `callback/result`) 只做：
 - 执行业务决策
 - 直接改 Session
 - 直接发设备命令
+- 不在 callback / device domain / runtime 通用层定义 WMS 专属事件枚举
+
+补充边界：
+
+- callback 层只维护最小包络模型，例如 `device_code / event_type / timestamp / data`
+- `event_type` 在 callback 层保持原始字符串
+- WMS 专属事件合法值只能定义在对应 workline plugin 的 `contract.py`
+- runtime 只消费归一化后的控制流事实，不维护 WMS 枚举
 
 ### 5.3 编排层职责
 
@@ -1210,10 +1218,10 @@ sequenceDiagram
 | `/api/wms/inventory/reserve/{id}` | DELETE | 释放预留 | P1 |
 | `/api/wms/inventory/transfer` | POST | 库存转移确认 | P1 |
 
-### 7.3 需要新增的 EventType
+### 7.3 需要新增的 Plugin Contract EventType
 
 ```python
-# 在 src/app/device/models/event_log.py 中新增
+# 在对应 plugin 的 contract.py 中新增
 WMS_GRN_RECEIVED = "WMS_GRN_RECEIVED"
 WMS_PALLET_ARRIVED = "WMS_PALLET_ARRIVED"
 WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
@@ -1226,10 +1234,11 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 
 ## 8. 实施建议
 
-### 8.1 第一阶段：扩展 EventType
+### 8.1 第一阶段：扩展 plugin contract
 
-1. 在 `src/app/device/models/event_log.py` 中新增 WMS 相关事件类型
-2. 更新 `device_event_log` 表的数据验证
+1. 在对应 plugin 的 `contract.py` 中新增 WMS 相关事件类型
+2. 更新 callback 入站的 plugin contract 校验逻辑
+3. 不再向 `src/app/device/models` 或 runtime 通用层补充 WMS 枚举
 
 ### 8.2 第二阶段：实现 WorklineInbox
 

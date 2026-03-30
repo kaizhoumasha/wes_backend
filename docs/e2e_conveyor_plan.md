@@ -7,7 +7,7 @@
 ## 字段约定（必须统一）
 
 - 外部接口（HTTP 回调、Mock 设备、处理器决策输出）统一使用 `device_code`。
-- 内部数据库关联（`device_commands.device_id`、`device_event_logs.device_id`）统一使用 `device_id`（整数主键）。
+- 内部数据库关联（`device_commands.device_id`、`workline_inbox.device_id`）统一使用 `device_id`（整数主键）。
 - Celery 在 ACT 阶段负责将 `device_code` 解析为内部 `device_id` 后再创建设备指令。
 
 ---
@@ -161,13 +161,15 @@ FROM wes_biz.devices
 WHERE device_code IN ('CAMERA-CONVEYOR-01', 'ROBOT-ARM-01');
 ```
 
-### 4.2 事件记录（内部 `device_id`，联表看 `device_code`）
+### 4.2 事件入口记录（内部 `device_id`，联表看 `device_code`）
 
 ```sql
-SELECT del.id, del.device_id, d.device_code, del.event_type, del.processed, del.created_at
-FROM wes_biz.device_event_logs del
-JOIN wes_biz.devices d ON d.id = del.device_id
-ORDER BY del.id DESC;
+SELECT wi.id, wi.device_id, d.device_code, wi.kind, wi.status, wi.received_at,
+       wi.payload_json ->> 'event_type' AS event_type
+FROM wes_biz.workline_inbox wi
+JOIN wes_biz.devices d ON d.id = wi.device_id
+WHERE wi.kind = 'DEVICE_EVENT'
+ORDER BY wi.id DESC;
 ```
 
 ### 4.3 指令记录（内部 `device_id`，联表看 `device_code`）
@@ -184,7 +186,7 @@ ORDER BY dc.id DESC;
 ## 五、验证检查点
 
 - [ ] 设备注册成功（`devices` 表有两条记录，`device_code` 正确）
-- [ ] 摄像头上报事件成功（`device_event_logs` 表有记录）
+- [ ] 摄像头上报事件成功（`callback_logs` 与 `workline_inbox` 表有记录）
 - [ ] Celery 任务执行成功（Worker 日志显示任务完成）
 - [ ] 搬运指令创建成功（`device_commands` 有记录，状态到 `ACK_RECEIVED`）
 - [ ] 机械臂收到指令（Mock 服务日志显示收到请求）

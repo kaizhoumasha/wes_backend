@@ -118,6 +118,38 @@ When a learning is promoted to a skill, add these fields:
 
 ### Suggested Action
 将 `.vscode/settings.json` 的 `python.defaultInterpreterPath` 固定为：
+
+---
+
+## [LRN-20260329-001] correction
+
+**Logged**: 2026-03-29T22:45:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: tests
+
+### Summary
+SMT mock 的 `/debug/*` 路由仍需保留，不能在“正式接口化”时一并删除。
+
+### Details
+本轮继续实现 allocation/agv mock 时，误把“正式接口优先”扩展成“移除现有 `/debug/*`”。
+用户明确纠正：当前仓库的 SMT mock 需要保持“正式接口 + debug 接口”并存，`/debug/*` 依旧是开发联调时的有效入口，只是不应替代正式协议。
+
+### Suggested Action
+后续处理 mock 服务时遵循这条边界：
+1. 正式接口必须完整、可独立联调；
+2. `/debug/*` 可以保留，但只作为开发辅助入口；
+3. 不再把“避免依赖 debug 接口”误解成“删除 debug 路由”。
+
+### Metadata
+- Source: user_feedback
+- Related Files: tests/mock/smt_classifier/arm_mock.py, tests/mock/smt_classifier/pipeline_mock.py, tests/mock/smt_classifier/run_all.py
+- Tags: correction, mock, debug-endpoints, contract-boundary
+
+### Resolution
+- **Resolved**: 2026-03-29T22:45:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 新增 mock 服务时保持正式接口与 `/debug/*` 同时存在。
 `/Users/kaizhou/SynologyDrive/works/wes_backend/.venv/bin/python`。
 
 ### Metadata

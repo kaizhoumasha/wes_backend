@@ -339,6 +339,8 @@
 **相关文档**：
 - 运行时语义 SSOT：`docs/workline_business_data_event_flow_spec.md` v0.1
 - 架构设计：`docs/workline_plugin_architecture_design.md` v3.2
+- SMT 粗分机完整数据流：`docs/workline_smt_classifier_runtime_flow.md`
+- SMT 粗分机硬件偏差分析：`docs/workline_smt_classifier_hardware_gap_analysis.md`
 - Phase 1 实现总结：`claudedocs/phase1_callback_inbox_implementation.md`
 
 ---
@@ -435,6 +437,8 @@
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
 | `third_party_integration_whitepaper.md` | 第三方集成指南 | 📚 参考资料 |
+| `workline_smt_classifier_runtime_flow.md` | SMT 粗分机插件与 Mock 设备端到端数据流说明 | 📚 参考资料 |
+| `workline_smt_classifier_hardware_gap_analysis.md` | SMT 粗分机当前实现与真实硬件协议偏差分析 | 📚 参考资料 |
 | `JENKINS.md` | Jenkins 使用指南 | 📚 参考资料 |
 | `jenkins-setup-current-env.md` | Jenkins 环境配置 | 📚 参考资料 |
 | `jenkins-checklist.md` | Jenkins 部署检查清单 | 📚 参考资料 |
