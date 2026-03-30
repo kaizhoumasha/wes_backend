@@ -124,22 +124,32 @@ uv run pytest tests/e2e/smt_classifier/ -v -m e2e
 
 ## Mock 服务
 
+说明：
+
+- 正式接口统一使用 `/api/v1/device/*`
+- 为便于本地开发和 E2E 联调，mock 同服务内额外保留 `/debug/*` 调试接口
+- `/debug/*` 仅用于开发辅助，不代表供应商正式协议
+- 当前约定下，`/debug/*` 默认对本地开发环境开放，不额外鉴权
+
 ### Pipeline Mock (端口 8005)
 
-模拟 SMT 粗分机流水线，支持：
-- `POST /api/v1/pipeline/scan` - 扫码事件
-- `POST /api/v1/pipeline/detect` - 检测事件
-- `POST /api/v1/pipeline/thickness` - 测厚事件
-- `POST /api/v1/device/command` - 执行命令（MOVE_FORWARD）
-- 自动回调 WES 事件和结果接口
+模拟 SMT 粗分机单线流水线，支持：
+- `POST /api/v1/device/command` - 正式执行命令（MOVE_FORWARD）
+- `GET /api/v1/device/status` - 正式状态查询
+- `POST /api/v1/device/cancel` - 正式取消命令
+- `POST /debug/execute` - 调试执行传输
+- 自动回调 WES 结果接口
 
 ### Arm Mock (端口 8006/8007)
 
 模拟进料/出料机械臂，支持：
-- `POST /api/v1/device/command` - 执行命令（PICK_AND_PUT）
-- `POST /api/v1/arm/execute` - 手动执行
-- `GET /api/v1/device/status` - 查询状态
-- 自动回调 WES 结果接口
+- `POST /api/v1/device/command` - 正式执行命令（PICK_AND_PUT）
+- `GET /api/v1/device/status` - 正式状态查询
+- `POST /api/v1/device/cancel` - 正式取消命令
+- `POST /debug/execute` - 调试执行搬运
+- `POST /debug/scan-completed` - ARM01 调试上报扫码事件
+- `POST /debug/inspection-completed` - ARM01 调试上报检测完成事件
+- 自动回调 WES 事件和结果接口
 
 ## 环境变量
 

@@ -20,7 +20,9 @@ from sqlalchemy.pool import NullPool
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.session import WorklineSession
+from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.database.schema_conf import get_schema_search_path
@@ -279,10 +281,56 @@ async def test_prefix(
             )
         )
         await cleanup_session.execute(
+            delete(WorklineOutbox).where(  # type: ignore[arg-type]
+                or_(
+                    WorklineOutbox.dispatch_key.like(f"{prefix}%"),
+                    WorklineOutbox.workline_id.in_(prefixed_worklines),
+                    WorklineOutbox.session_id.in_(
+                        select(WorklineSession.id).where(
+                            or_(
+                                WorklineSession.correlation_id.like(f"{prefix}%"),
+                                WorklineSession.workline_id.in_(prefixed_worklines),
+                            )
+                        )
+                    ),
+                )
+            )
+        )
+        await cleanup_session.execute(
+            delete(WorklineTimeline).where(  # type: ignore[arg-type]
+                or_(
+                    WorklineTimeline.workline_id.in_(prefixed_worklines),
+                    WorklineTimeline.session_id.in_(
+                        select(WorklineSession.id).where(
+                            or_(
+                                WorklineSession.correlation_id.like(f"{prefix}%"),
+                                WorklineSession.workline_id.in_(prefixed_worklines),
+                            )
+                        )
+                    ),
+                )
+            )
+        )
+        await cleanup_session.execute(
             delete(WorklineSession).where(  # type: ignore[arg-type]
                 or_(
                     WorklineSession.correlation_id.like(f"{prefix}%"),
                     WorklineSession.workline_id.in_(prefixed_worklines),
+                )
+            )
+        )
+        await cleanup_session.execute(
+            delete(DeviceCommand).where(  # type: ignore[arg-type]
+                or_(
+                    DeviceCommand.correlation_id.like(f"{prefix}%"),
+                    DeviceCommand.device_id.in_(
+                        select(Device.id).where(
+                            or_(
+                                Device.device_code.like(f"{prefix}%"),
+                                Device.work_line_id.in_(prefixed_worklines),
+                            )
+                        )
+                    ),
                 )
             )
         )

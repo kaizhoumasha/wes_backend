@@ -23,7 +23,6 @@ import multiprocessing
 import os
 import sys
 import time
-from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -46,10 +45,10 @@ if _e2e_env_file.exists():
     logger = logging.getLogger(__name__)
     logger.info(f"已加载 E2E 环境变量: {_e2e_env_file}")
 
-from tests.mock.smt_classifier.run_all import MOCK_SERVICES, run_server
-
 if TYPE_CHECKING:
-    pass
+    from collections.abc import AsyncGenerator
+
+from tests.mock.smt_classifier.run_all import MOCK_SERVICES, run_server  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +77,8 @@ class MockServiceManager:
         _e2e_env_file = Path(__file__).parent / ".env.e2e"
         if _e2e_env_file.exists():
             content = _e2e_env_file.read_text(encoding="utf-8")
-            for line in content.splitlines():
-                line = line.strip()
+            for raw_line in content.splitlines():
+                line = raw_line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, value = line.split("=", 1)
                     env_vars[key.strip()] = value.strip()
@@ -226,7 +225,7 @@ def event_loop():
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
-async def mock_services() -> AsyncGenerator[MockServiceManager, None]:
+async def mock_services() -> AsyncGenerator[MockServiceManager]:
     """会话级别的 Mock 服务 Fixture
 
     自动启动所有 Mock 服务，会话结束时自动停止。
@@ -251,7 +250,7 @@ async def clean_mock_state() -> AsyncGenerator[None]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             # 停止自动触发（如果正在运行）
             try:
-                await client.post("http://127.0.0.1:8005/api/v1/pipeline/auto/stop")
+                await client.post("http://127.0.0.1:8005/debug/auto/stop")
             except Exception:
                 pass
     except Exception as e:
@@ -263,7 +262,7 @@ async def clean_mock_state() -> AsyncGenerator[None]:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 # 停止自动执行（如果正在运行）
                 try:
-                    await client.post(f"http://127.0.0.1:{port}/api/v1/arm/auto/stop")
+                    await client.post(f"http://127.0.0.1:{port}/debug/auto/stop")
                 except Exception:
                     pass
         except Exception as e:

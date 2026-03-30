@@ -5,6 +5,8 @@ SMT 粗分机工作线 Mock 服务启动脚本
 - Pipeline Mock (PIPELINE01, port 8005)
 - Arm Mock (ARM01, port 8006)
 - Arm Mock (ARM02, port 8007)
+- Allocation Mock (port 8008)
+- AGV Mock (AGV01, port 8009)
 
 运行方式:
     python tests/mock/smt_classifier/run_all.py
@@ -71,6 +73,22 @@ MOCK_SERVICES = [
         "port": 8007,
         "device_code": "ARM02",
     },
+    {
+        "name": "Allocation Mock",
+        "module": "tests.mock.smt_classifier.allocation_mock",
+        "app_attr": "app",
+        "host": "127.0.0.1",
+        "port": 8008,
+        "device_code": "ALLOCATION",
+    },
+    {
+        "name": "AGV Mock (AGV01)",
+        "module": "tests.mock.smt_classifier.agv_mock",
+        "app_attr": "app",
+        "host": "127.0.0.1",
+        "port": 8009,
+        "device_code": "AGV01",
+    },
 ]
 
 
@@ -101,8 +119,6 @@ def run_server(
 
     # 设置子进程环境变量
     os.environ["DEVICE_CODE"] = device_code
-    if device_code.startswith("ARM") and "WES_RESULT_CALLBACK_URL" in os.environ and "WES_CALLBACK_URL" not in os.environ:
-        os.environ["WES_CALLBACK_URL"] = os.environ["WES_RESULT_CALLBACK_URL"]
 
     # 动态导入模块
     import importlib
@@ -141,6 +157,15 @@ def start_all_services() -> None:
     logger.info("=" * 60)
     logger.info(f"WES 事件回调地址: {os.getenv('WES_EVENT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/event')}")
     logger.info(f"WES 结果回调地址: {os.getenv('WES_RESULT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/result')}")
+    logger.info(
+        f"WES 外部回调地址: {os.getenv('WES_EXTERNAL_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/external')}"
+    )
+    logger.info(
+        f"库位分配正式接口: {os.getenv('SMT_CLASSIFIER_BIN_ALLOCATION_URL', 'http://127.0.0.1:8008/api/v1/bin-allocation/allocate')}"
+    )
+    logger.info(
+        f"AGV 正式接口: {os.getenv('SMT_CLASSIFIER_AGV_DISPATCH_URL', 'http://127.0.0.1:8009/api/v1/device/command')}"
+    )
     logger.info(f"API App ID: {os.getenv('API_APP_ID', '未设置')}")
     logger.info("-" * 60)
 

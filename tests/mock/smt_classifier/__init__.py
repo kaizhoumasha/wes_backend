@@ -6,6 +6,8 @@
 - Pipeline Mock (PIPELINE01): 皮带线模拟，端口 8005
 - Arm Mock (ARM01): 进料机械臂模拟，端口 8006
 - Arm Mock (ARM02): 出料机械臂模拟，端口 8007
+- Allocation Mock: 库位分配模拟，端口 8008
+- AGV Mock (AGV01): 货架搬运模拟，端口 8009
 
 运行方式:
     # 运行所有 Mock 服务
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["ArmSimulator", "SmtArmMockServer"]
+__all__ = ["AgvSimulator", "AllocationSimulator", "ArmSimulator", "SmtArmMockServer"]
 
 
 def __getattr__(name: str) -> Any:
@@ -34,5 +36,15 @@ def __getattr__(name: str) -> Any:
             "SmtArmMockServer": SmtArmMockServer,
         }
         return exports[name]
+
+    if name == "AllocationSimulator":
+        from .allocation_mock import AllocationSimulator
+
+        return AllocationSimulator
+
+    if name == "AgvSimulator":
+        from .agv_mock import AgvSimulator
+
+        return AgvSimulator
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

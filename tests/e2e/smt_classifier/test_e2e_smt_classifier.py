@@ -8,7 +8,8 @@ SMT 粗分机 E2E 测试套件
     uv run pytest tests/e2e/smt_classifier/test_e2e_smt_classifier.py -v
 
     # 仅运行特定测试
-    uv run pytest tests/e2e/smt_classifier/test_e2e_smt_classifier.py::TestSmtClassifierE2EFlows::test_full_ok_flow -v
+    uv run pytest tests/e2e/smt_classifier/test_e2e_smt_classifier.py::
+      TestSmtClassifierE2EFlows::test_full_ok_flow -v
 
     # 带详细日志
     uv run pytest tests/e2e/smt_classifier/test_e2e_smt_classifier.py -v --log-cli-level=INFO
@@ -21,7 +22,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from src.workline_plugins.smt_classifier.plugin import (
@@ -36,6 +36,8 @@ from src.workline_runtime.types import PluginResult
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,6 @@ class TestSmtClassifierE2EBase:
     @pytest.fixture(autouse=True)
     async def setup(self, clean_mock_state: None) -> None:
         """每个测试前的设置"""
-        pass
 
     async def trigger_pipeline_scan(
         self,
@@ -56,9 +57,9 @@ class TestSmtClassifierE2EBase:
         barcode: str,
         result: str = "OK",
     ) -> dict[str, Any]:
-        """触发流水线扫码事件"""
+        """触发 ARM01 扫码事件"""
         response = await client.post(
-            "/api/v1/pipeline/scan",
+            "/debug/scan-completed",
             json={"barcode": barcode, "result": result},
         )
         response.raise_for_status()
@@ -70,12 +71,12 @@ class TestSmtClassifierE2EBase:
         barcode: str,
         result: str = "OK",
     ) -> dict[str, Any]:
-        """触发流水线检测事件"""
+        """触发 ARM01 检测事件"""
         response = await client.post(
-            "/api/v1/pipeline/detect",
+            "/debug/inspection-completed",
             json={
-                "barcode": barcode,
                 "result": result,
+                "barcode": barcode,
                 "dimensions": {"length": 100.0, "width": 50.0, "height": 15.0},
             },
         )
@@ -88,10 +89,14 @@ class TestSmtClassifierE2EBase:
         barcode: str,
         result: str = "OK",
     ) -> dict[str, Any]:
-        """触发流水线测厚事件"""
+        """兼容旧测试命名，复用检测完成接口"""
         response = await client.post(
-            "/api/v1/pipeline/thickness",
-            json={"barcode": barcode, "result": result, "thickness_mm": 15.5},
+            "/debug/inspection-completed",
+            json={
+                "barcode": barcode,
+                "result": result,
+                "reel_thickness": "15.5",
+            },
         )
         response.raise_for_status()
         return response.json()
@@ -128,7 +133,7 @@ class TestSmtClassifierE2EBase:
 
     async def get_pipeline_status(self, client: httpx.AsyncClient) -> dict[str, Any]:
         """获取流水线状态"""
-        response = await client.get("/api/v1/pipeline/status")
+        response = await client.get("/api/v1/device/status")
         response.raise_for_status()
         return response.json()
 
@@ -596,7 +601,7 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
         data = response.json()
         assert data["service"] == "SMT 粗分机流水线 Mock 服务"
         assert data["status"] == "running"
-        assert data["device_id"] == "PIPELINE01"
+        assert data["device_code"] == "PIPELINE01"
 
     @pytest.mark.asyncio
     async def test_arm01_mock_health_check(
@@ -609,7 +614,7 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
         data = response.json()
         assert "进料机械臂" in data["device_name"]
         assert data["status"] == "running"
-        assert data["device_id"] == "ARM01"
+        assert data["device_code"] == "ARM01"
 
     @pytest.mark.asyncio
     async def test_arm02_mock_health_check(
@@ -622,24 +627,24 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
         data = response.json()
         assert "出料机械臂" in data["device_name"]
         assert data["status"] == "running"
-        assert data["device_id"] == "ARM02"
+        assert data["device_code"] == "ARM02"
 
     @pytest.mark.asyncio
     async def test_pipeline_scan_event(
         self,
-        pipeline_client: httpx.AsyncClient,
+        arm01_client: httpx.AsyncClient,
     ) -> None:
-        """测试流水线扫码事件触发"""
+        """测试 ARM01 扫码事件触发"""
         result = await self.trigger_pipeline_scan(
-            pipeline_client,
+            arm01_client,
             barcode="E2E-SCAN-001",
             result="OK",
         )
 
-        assert result["event_type"] == "SCAN_OK"
-        assert result["barcode"] == "E2E-SCAN-001"
+        assert result["task_type"] == "SCAN_COMPLETED"
         assert result["result"] == "OK"
-        assert result["device_code"] == "PIPELINE01"
+        assert result["reported_event_type"] == "SCAN_COMPLETED"
+        assert result["source"]["location_id"] == "STATION_INPUT1"
 
     @pytest.mark.asyncio
     async def test_arm_manual_execution(
@@ -648,30 +653,31 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
     ) -> None:
         """测试机械臂手动执行"""
         response = await arm01_client.post(
-            "/api/v1/arm/execute",
+            "/debug/execute",
             json={
-                "task_type": "PICK_FROM_POLE",
-                "source_loc": "POLE_A",
-                "target_loc": "CONVEYOR_IN",
+                "task_type": "PICK_AND_PUT",
+                "source_type": "INPUT_PLATFORM",
+                "target_type": "PIPELINE_PLATFORM",
                 "barcode": "E2E-ARM-001",
                 "execution_time": 0.1,  # 快速执行
             },
         )
         assert response.status_code == 200
         result = response.json()
-        assert result["task_type"] == "PICK_FROM_POLE"
+        assert result["task_type"] == "PICK_AND_PUT"
         assert result["result"] == "SUCCESS"
-        assert result["barcode"] == "E2E-ARM-001"
+        assert result["source"]["location_id"] == "STATION_INPUT1"
+        assert result["target"]["location_id"] == "STATION_PIPELINE1_INPUT1"
 
     @pytest.mark.asyncio
     async def test_arm_device_status(self, arm01_client: httpx.AsyncClient) -> None:
         """测试机械臂设备状态查询"""
         result = await self.get_arm_status(arm01_client)
 
-        assert result["device_id"] == "ARM01"
+        assert result["device_code"] == "ARM01"
         assert result["status"] in ["IDLE", "RUNNING"]
-        assert result["is_online"] is True
-        assert "execution_count" in result
+        assert result["error_code"] == "NONE"
+        assert "timestamp" in result
 
     @pytest.mark.asyncio
     async def test_arm_command_ack(self, arm01_client: httpx.AsyncClient) -> None:
@@ -680,10 +686,10 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
 
         payload = {
             "command_code": f"E2E-CMD-{int(time.time())}",
-            "task_type": "PICK_FROM_POLE",
+            "task_type": "PICK_AND_PUT",
             "priority": 1,
             "timeout": 30,
-            "params": {"source_loc": "POLE_A", "target_loc": "CONVEYOR_IN"},
+            "params": {"source_type": "INPUT_PLATFORM", "target_type": "PIPELINE_PLATFORM"},
             "timestamp": int(time.time()),
         }
 

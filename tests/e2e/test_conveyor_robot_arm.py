@@ -159,20 +159,21 @@ async def trigger_camera_sensor(barcode: str, location: str) -> dict:
         return response.json()
 
 
-async def get_latest_event(db: AsyncSession):
-    """获取最新的事件记录"""
+async def get_latest_inbox_event(db: AsyncSession):
+    """获取最新的设备事件 Inbox 记录"""
     result = await db.execute(
         text(
             """
             SELECT
-                del.id,
-                del.device_id,
+                wi.id,
+                wi.device_id,
                 d.device_code,
-                del.event_type,
-                del.event_data
-            FROM wes_biz.device_event_logs del
-            JOIN wes_biz.devices d ON d.id = del.device_id
-            ORDER BY del.id DESC
+                wi.payload_json ->> 'event_type' AS event_type,
+                wi.payload_json AS payload_json
+            FROM wes_biz.workline_inbox wi
+            JOIN wes_biz.devices d ON d.id = wi.device_id
+            WHERE wi.kind = 'DEVICE_EVENT'
+            ORDER BY wi.id DESC
             LIMIT 1
             """
         )
@@ -284,13 +285,13 @@ async def test_full_conveyor_workflow(db):
     print(f"✅ 传感器已触发: event_id={sensor_response['event_id']}, barcode={TEST_BARCODE}")
 
     # Step 3: 等待事件记录
-    print("\n[Step 3] 等待事件记录...")
+    print("\n[Step 3] 等待设备事件进入 Inbox...")
     await asyncio.sleep(0.5)
-    event = await get_latest_event(db)
+    event = await get_latest_inbox_event(db)
     assert event is not None
     assert event["device_code"] == "CAMERA-CONVEYOR-01"
     assert event["event_type"] == "MATERIAL_ARRIVED"
-    print(f"✅ 事件已记录: event_id={event['id']}")
+    print(f"✅ 事件已入 Inbox: inbox_id={event['id']}")
 
     # Step 4: 等待 Celery 任务创建指令
     print("\n[Step 4] 等待 Celery 任务创建指令...")
