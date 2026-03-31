@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # ==================== 应用配置 ====================
 
     APP_DEBUG: bool = False
-    APP_HOST: str = "0.0.0.0"
+    APP_HOST: str = "0.0.0.0"  # nosec B104 - service must bind all interfaces in container/server deployments
     APP_PORT: int = 8000
 
     # ==================== 日志配置 ====================

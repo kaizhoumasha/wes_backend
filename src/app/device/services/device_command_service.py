@@ -39,8 +39,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     """
 
     def __init__(self) -> None:
-        """初始化服务
-        """
+        """初始化服务"""
         super().__init__(
             device_command_repository,
             enable_cache=True,

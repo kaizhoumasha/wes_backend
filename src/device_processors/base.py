@@ -115,9 +115,7 @@ class DeviceProcessor(ABC):
         """
 
     @abstractmethod
-    async def build_command(
-        self, action_params: dict[str, Any], correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict[str, Any], correlation_id: str | None = None) -> CommandRequest:
         """
         构建指令请求 (Act - 执行)
 
@@ -252,9 +250,7 @@ class BaseDeviceProcessor(DeviceProcessor):
         logger.warning(f"{self.get_processor_name()} 未实现 decide_action 方法")
         return None
 
-    async def build_command(
-        self, action_params: dict[str, Any], correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict[str, Any], correlation_id: str | None = None) -> CommandRequest:
         """
         默认指令构建实现
 

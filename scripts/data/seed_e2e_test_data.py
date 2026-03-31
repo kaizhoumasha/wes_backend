@@ -107,10 +107,12 @@ async def seed_devices(db: AsyncSession) -> None:
 
     # 获取作业线（取最新的）
     workline_result = await db.execute(
-        select(WorkLine).where(
+        select(WorkLine)
+        .where(
             WorkLine.line_code == "WL-CONVEYOR-01",
             WorkLine.is_deleted == False,  # noqa: E712, type: ignore
-        ).order_by(desc(WorkLine.id))  # type: ignore[arg-type]
+        )
+        .order_by(desc(WorkLine.id))  # type: ignore[arg-type]
     )
     workline = workline_result.scalar_one_or_none()
     if not workline:

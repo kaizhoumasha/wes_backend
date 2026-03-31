@@ -319,7 +319,9 @@ async def sync_builtin_role_permissions(
     permissions: list[Permission] = list((await db.execute(select(Permission))).scalars().all())
     existing_links: set[tuple[int, int]] = {
         (int(role_id), int(permission_id))
-        for role_id, permission_id in (await db.execute(select(role_permission.c.role_id, role_permission.c.permission_id))).all()
+        for role_id, permission_id in (
+            await db.execute(select(role_permission.c.role_id, role_permission.c.permission_id))
+        ).all()
     }
     role_by_name = {role.name: role for role in roles}
 

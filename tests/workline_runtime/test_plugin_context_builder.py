@@ -107,9 +107,7 @@ class TestPluginContextBuilder:
         # config 应该从 workline.config 提取
         assert ctx.config == {"scan_timeout": 30, "retry_count": 3}
 
-    def test_build_with_empty_workline_config(
-        self, builder, mock_session, mock_devices_by_role, mock_services
-    ):
+    def test_build_with_empty_workline_config(self, builder, mock_session, mock_devices_by_role, mock_services):
         """测试 WorkLine config 为空时使用空字典"""
         workline = MagicMock()
         workline.config = None
@@ -220,9 +218,7 @@ class TestPluginContextBuilder:
         # binding_config 应该默认为空字典
         assert ctx.binding_config == {}
 
-    def test_build_with_custom_logger(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
-    ):
+    def test_build_with_custom_logger(self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services):
         """测试使用自定义 logger"""
         custom_logger = logging.getLogger("custom_plugin_logger")
 
@@ -237,9 +233,7 @@ class TestPluginContextBuilder:
 
         assert ctx.logger == custom_logger
 
-    def test_build_with_custom_clock(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
-    ):
+    def test_build_with_custom_clock(self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services):
         """测试使用自定义 clock"""
         fixed_time = datetime(2026, 1, 1, 12, 0, 0)
 

@@ -38,7 +38,9 @@ async def test_user_service_assign_roles_uses_role_service(monkeypatch: pytest.M
     service.repo.get_by_id = AsyncMock(side_effect=AssertionError("assign_roles 应预加载 roles"))  # type: ignore[method-assign]
     service.invalidate_cache = AsyncMock()
     service._invalidate_permissions_for_user = AsyncMock()  # type: ignore[method-assign]
-    monkeypatch.setattr(user_service_module, "set_attribute", lambda instance, key, value: setattr(instance, key, value))
+    monkeypatch.setattr(
+        user_service_module, "set_attribute", lambda instance, key, value: setattr(instance, key, value)
+    )
 
     role_service_mock = SimpleNamespace(get_active_roles_by_ids=AsyncMock(return_value=roles))
     role_service_module = importlib.import_module("src.app.admin.services.role_service")

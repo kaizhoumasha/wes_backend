@@ -6,9 +6,12 @@
 """
 
 import asyncio
+import socket
 
 import pytest
+from asyncpg.exceptions import InvalidPasswordError
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.app.demo.models.demo_product import DemoProduct
@@ -26,6 +29,12 @@ async def test_partial_unique_index():
     qualified_table = f"{schema_name}.{table_name}" if schema_name else table_name
 
     try:
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except (InvalidPasswordError, OperationalError, OSError, socket.gaierror) as exc:
+            pytest.skip(f"postgres unavailable for partial unique index integration test: {exc}")
+
         async with engine.begin() as conn:
             print("\n" + "=" * 80)
             print("🧪 测试部分唯一索引功能")
@@ -38,18 +47,18 @@ async def test_partial_unique_index():
             # 清理测试数据
             print("\n📋 步骤1: 清理现有测试数据")
             delete_sql = f"DELETE FROM {qualified_table} WHERE name IN ('apple', 'banana', 'orange')"  # noqa: S608
-            await conn.execute(
-                text(delete_sql)
-            )
+            await conn.execute(text(delete_sql))
 
             # 场景1: 创建第一个记录
             print("\n✅ 场景1: 创建 name='apple' 的记录")
             result = await conn.execute(
-                text("""
+                text(
+                    """
                     INSERT INTO {qualified_table} (name, price, stock, created_at, updated_at, created_by, updated_by)
                     VALUES ('apple', 10.0, 100, NOW(), NOW(), 1, 1)
                     RETURNING id, name, is_deleted
-                """.replace("{qualified_table}", qualified_table))
+                """.replace("{qualified_table}", qualified_table)
+                )
             )
             record = result.fetchone()
             assert record is not None, "插入应该返回一条记录"
@@ -61,10 +70,12 @@ async def test_partial_unique_index():
             try:
                 async with conn.begin_nested():
                     await conn.execute(
-                        text("""
+                        text(
+                            """
                             INSERT INTO {qualified_table} (name, price, stock, created_at, updated_at, created_by, updated_by)
                             VALUES ('apple', 15.0, 200, NOW(), NOW(), 1, 1)
-                        """.replace("{qualified_table}", qualified_table))
+                        """.replace("{qualified_table}", qualified_table)
+                        )
                     )
                 print("   ❌ 测试失败：应该抛出唯一约束异常")
             except Exception as e:
@@ -76,11 +87,13 @@ async def test_partial_unique_index():
             # 场景3: 软删除第一个记录
             print(f"\n🗑️  场景3: 软删除 ID={first_id} 的记录")
             await conn.execute(
-                text("""
+                text(
+                    """
                     UPDATE {qualified_table}
                     SET is_deleted = TRUE, deleted_at = NOW()
                     WHERE id = :record_id
-                """.replace("{qualified_table}", qualified_table)),
+                """.replace("{qualified_table}", qualified_table)
+                ),
                 {"record_id": first_id},
             )
             print("   软删除成功")
@@ -88,11 +101,13 @@ async def test_partial_unique_index():
             # 场景4: 再次创建同名记录（应该成功）
             print("\n✅ 场景4: 再次创建 name='apple' 的记录（旧记录已删除）")
             result = await conn.execute(
-                text("""
+                text(
+                    """
                     INSERT INTO {qualified_table} (name, price, stock, created_at, updated_at, created_by, updated_by)
                     VALUES ('apple', 20.0, 300, NOW(), NOW(), 1, 1)
                     RETURNING id, name, is_deleted
-                """.replace("{qualified_table}", qualified_table))
+                """.replace("{qualified_table}", qualified_table)
+                )
             )
             record = result.fetchone()
             assert record is not None, "插入应该返回一条记录"
@@ -102,12 +117,14 @@ async def test_partial_unique_index():
             # 场景5: 验证数据库状态
             print("\n📊 场景5: 验证数据库状态")
             result = await conn.execute(
-                text("""
+                text(
+                    """
                     SELECT id, name, is_deleted, deleted_at
                     FROM {qualified_table}
                     WHERE name IN ('apple', 'banana', 'orange')
                     ORDER BY id
-                """.replace("{qualified_table}", qualified_table))
+                """.replace("{qualified_table}", qualified_table)
+                )
             )
             print("   当前数据库中的记录:")
             for row in result:
@@ -137,11 +154,13 @@ async def test_partial_unique_index():
             # 场景7: 再次软删除第二个记录
             print(f"\n🗑️  场景7: 软删除 ID={second_id} 的记录（验证多次删除不会冲突）")
             await conn.execute(
-                text("""
+                text(
+                    """
                     UPDATE {qualified_table}
                     SET is_deleted = TRUE, deleted_at = NOW()
                     WHERE id = :record_id
-                """.replace("{qualified_table}", qualified_table)),
+                """.replace("{qualified_table}", qualified_table)
+                ),
                 {"record_id": second_id},
             )
             print("   软删除成功")
@@ -149,12 +168,14 @@ async def test_partial_unique_index():
             # 最终状态
             print("\n📊 最终数据库状态:")
             result = await conn.execute(
-                text("""
+                text(
+                    """
                     SELECT id, name, is_deleted
                     FROM {qualified_table}
                     WHERE name = 'apple'
                     ORDER BY id
-                """.replace("{qualified_table}", qualified_table))
+                """.replace("{qualified_table}", qualified_table)
+                )
             )
             print("   'apple' 记录历史:")
             for row in result:

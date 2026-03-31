@@ -29,10 +29,8 @@ class LockAcquireError(Exception):
     """锁获取失败异常"""
 
 
-
 class LockReleaseError(Exception):
     """锁释放失败异常"""
-
 
 
 @dataclass
@@ -124,9 +122,7 @@ class RedisDistributedLock:
         try:
             for _ in range(self.max_retries):
                 try:
-                    acquired = await self.redis_client.set(
-                        key, token, nx=True, ex=ttl_seconds
-                    )
+                    acquired = await self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
                     if acquired:
                         break
                 except (ConnectionError, OSError) as e:
@@ -147,9 +143,7 @@ class RedisDistributedLock:
             # 启动自动续期任务
             if self.auto_renewal and not used_pg_fallback:
                 self._renewal_active = True
-                self._renewal_task = asyncio.create_task(
-                    self._auto_renew(key, token, ttl_seconds)
-                )
+                self._renewal_task = asyncio.create_task(self._auto_renew(key, token, ttl_seconds))
 
             try:
                 yield

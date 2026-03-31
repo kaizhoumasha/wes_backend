@@ -60,10 +60,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         """根据消息类型查询"""
         columns = cast("Any", WorklineInbox).__table__.c
         result = await db.execute(
-            select(WorklineInbox)
-            .where(columns.kind == kind)
-            .order_by(columns.received_at.desc())
-            .limit(limit)
+            select(WorklineInbox).where(columns.kind == kind).order_by(columns.received_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
 

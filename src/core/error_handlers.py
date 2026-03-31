@@ -64,8 +64,10 @@ def error_response(
 
     # 自动添加 request_id 到 detail
     final_detail: dict[str, Any] = (
-        dict(cast("dict[str, Any]", detail)) if isinstance(detail, dict) else {"info": detail}
-    ) if detail is not None else {}
+        (dict(cast("dict[str, Any]", detail)) if isinstance(detail, dict) else {"info": detail})
+        if detail is not None
+        else {}
+    )
 
     # 尝试获取 request_id
     try:

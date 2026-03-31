@@ -57,6 +57,10 @@ class TestSmtClassifierIntegration:
     @pytest.mark.asyncio
     async def test_full_ok_flow_integration(self, plugin, mock_context, mock_inbox):
         """测试完整的 OK 流程集成"""
+        mock_input_arm = MagicMock()
+        mock_input_arm.id = 1
+        mock_context.get_device_by_role = MagicMock(return_value=mock_input_arm)
+
         # Step 1: 扫码 OK 事件
         mock_context.session.status = "NEW"
         mock_inbox.payload_json = {
@@ -71,10 +75,11 @@ class TestSmtClassifierIntegration:
         # 验证结果 - 插件返回业务事件类型 scan_ok
         assert result is not None
         assert result.transition == "scan_ok"
-        # SCAN_OK 阶段不生成命令，等待检测
-        assert result.commands == []
-        # SCAN_OK 阶段不设置 wait，等待外部检测回调
-        assert result.wait is None
+        assert len(result.commands) == 1
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].target_device_id == mock_input_arm.id
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.context_patch.get("stage") == "WAITING_INSPECTION"
 
         # Step 2: 验证状态机迁移

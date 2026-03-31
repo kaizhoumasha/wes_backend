@@ -389,7 +389,9 @@ class TestInboxConsumer:
 
         with (
             patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock()),
-            patch("src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()
+            ),
         ):
             await _apply_orchestrator_effects(
                 mock_db,
@@ -442,7 +444,9 @@ class TestInboxConsumer:
 
         with (
             patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock()),
-            patch("src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()
+            ),
         ):
             await _apply_orchestrator_effects(
                 mock_db,
@@ -496,7 +500,10 @@ class TestInboxConsumer:
         captured_timelines: list[Any] = []
 
         with (
-            patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t))),
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t)),
+            ),
             patch(
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
                 side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
@@ -527,7 +534,10 @@ class TestInboxConsumer:
 
     @pytest.mark.asyncio
     async def test_apply_orchestrator_effects_creates_external_http_outbox(self, mock_db):
-        """Plugin decisions 中的 EXTERNAL_HTTP 请求应落成 Outbox，并让 Session 进入 WAITING_EXTERNAL。"""
+        """Plugin decisions 中的 EXTERNAL_HTTP 请求应落成 Outbox。
+
+        并让 Session 进入 WAITING_EXTERNAL。
+        """
         from src.app.workline.models.outbox import DispatchType, TargetType
         from src.app.workline.models.timeline import TimelineActionType
         from src.celery_app.tasks.workline import _apply_orchestrator_effects
@@ -576,7 +586,10 @@ class TestInboxConsumer:
         mock_db.add = MagicMock(side_effect=capture_add)
 
         with (
-            patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t))),
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t)),
+            ),
             patch(
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
                 side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
@@ -762,7 +775,9 @@ class TestLoadRelatedEntities:
             MockSessionRepo.return_value = mock_session_repo_instance
 
             mock_workline_repo_instance = AsyncMock()
-            mock_workline_repo_instance.get_by_id = AsyncMock(side_effect=lambda _db, workline_id: mock_workline if workline_id == 1 else None)
+            mock_workline_repo_instance.get_by_id = AsyncMock(
+                side_effect=lambda _db, workline_id: mock_workline if workline_id == 1 else None
+            )
             MockWorklineRepo.return_value = mock_workline_repo_instance
 
             mock_device_repo_instance = AsyncMock()

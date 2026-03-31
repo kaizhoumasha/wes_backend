@@ -55,7 +55,7 @@ def _normalize_default_result_payload(payload: JsonDict) -> JsonDict:
 
     finish_time = payload.get("finish_time")
     if not isinstance(finish_time, int):
-        raise ValueError("finish_time must be an integer")
+        raise TypeError("finish_time must be an integer")
 
     data = _ensure_dict(payload.get("data"))
     error_detail = _ensure_dict(payload.get("error_detail"))

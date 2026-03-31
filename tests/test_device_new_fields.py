@@ -26,7 +26,6 @@ async def test_device_new_fields_create_read(db_session):
         device_name="测试设备 01",
         device_type=DeviceType.INDUSTRIAL_PC.value,
         work_line_id=None,
-
         # 新字段（架构 8.2 节）
         device_role="SCANNER",
         role_index=1,
@@ -47,9 +46,7 @@ async def test_device_new_fields_create_read(db_session):
 
     # 读取：查询新字段
     print("\n2. 读取设备新字段...")
-    result = await db_session.execute(
-        select(Device).where(Device.device_code == "TEST-DEVICE-01")
-    )
+    result = await db_session.execute(select(Device).where(Device.device_code == "TEST-DEVICE-01"))
     fetched_device = result.scalar_one_or_none()
 
     assert fetched_device is not None, "设备应该存在"
@@ -166,9 +163,7 @@ async def test_device_new_fields_delete(db_session):
     await db_session.commit()
 
     # 验证删除
-    result = await db_session.execute(
-        select(Device).where(Device.id == device_id)
-    )
+    result = await db_session.execute(select(Device).where(Device.id == device_id))
     deleted_device = result.scalar_one_or_none()
 
     assert deleted_device is None, "设备应该已删除"

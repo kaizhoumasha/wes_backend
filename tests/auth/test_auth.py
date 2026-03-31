@@ -334,6 +334,7 @@ class TestAuthIntegration:
 @pytest.fixture
 async def client(db_session: AsyncSession):
     """创建测试客户端"""
+
     async def override_get_db():
         yield db_session
 

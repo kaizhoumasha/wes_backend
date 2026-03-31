@@ -41,8 +41,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             .where(
                 columns.status == OutboxStatus.NEW,
                 # next_retry_at 为空或已过重试时间
-                (columns.next_retry_at.is_(None))
-                | (columns.next_retry_at <= now),
+                (columns.next_retry_at.is_(None)) | (columns.next_retry_at <= now),
             )
             .order_by(columns.created_at.asc())
             .limit(limit)
@@ -69,9 +68,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         columns = cast("Any", WorklineOutbox).__table__.c
 
         # 先检查当前状态
-        result = await db.execute(
-            select(WorklineOutbox).where(columns.id == outbox_id).with_for_update()
-        )
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
         outbox = result.scalar_one_or_none()
 
         if not outbox:
@@ -100,11 +97,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         Returns:
             更新后的消息
         """
-        result = await db.execute(
-            select(WorklineOutbox).where(
-                cast("Any", WorklineOutbox).__table__.c.id == outbox_id
-            )
-        )
+        result = await db.execute(select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id))
         outbox = result.scalar_one_or_none()
 
         if not outbox:
@@ -135,11 +128,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         """
         from datetime import timedelta
 
-        result = await db.execute(
-            select(WorklineOutbox).where(
-                cast("Any", WorklineOutbox).__table__.c.id == outbox_id
-            )
-        )
+        result = await db.execute(select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id))
         outbox = result.scalar_one_or_none()
 
         if not outbox:

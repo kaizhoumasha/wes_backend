@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.workline_plugins.smt_classifier.contract import (
         BARCODE_LIST_KEY,
-        COMMAND_FIELD_RULES,
         COMMAND_CODE_ALIASES,
+        COMMAND_FIELD_RULES,
         CONTRACT_VERSION,
         DEVICE_CODE_ALIASES,
         EVENT_FIELD_ALIASES,
@@ -61,8 +61,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BARCODE_LIST_KEY",
-    "COMMAND_FIELD_RULES",
     "COMMAND_CODE_ALIASES",
+    "COMMAND_FIELD_RULES",
     "CONTRACT_VERSION",
     "DEVICE_CODE_ALIASES",
     "EVENT_FIELD_ALIASES",

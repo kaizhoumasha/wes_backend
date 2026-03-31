@@ -42,12 +42,15 @@ class AuditLogBase(BaseMixin):
     # 🔥 使用 VARCHAR + CHECK 约束
     status: OperaStatus = Field(
         default=OperaStatus.SUCCESS,
-        sa_type=cast("Any", SQLAEnum(
-            OperaStatus,
-            native_enum=False,
-            create_constraint=True,
-            length=50,
-        )),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                OperaStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
         description="操作状态",
     )
 

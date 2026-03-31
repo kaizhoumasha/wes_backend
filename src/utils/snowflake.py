@@ -142,7 +142,9 @@ class SnowflakeIDGenerator:
 
         # 验证参数
         if not (0 <= self.datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
-            raise ValueError(f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，当前值: {self.datacenter_id}")
+            raise ValueError(
+                f"datacenter_id 必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间，当前值: {self.datacenter_id}"
+            )
         if not (0 <= self.worker_id <= SnowflakeConfig.MAX_WORKER_ID):
             raise ValueError(f"worker_id 必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间，当前值: {self.worker_id}")
 

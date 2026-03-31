@@ -25,9 +25,12 @@ class TestAuthServiceSessionCharacterization:
             def scan_iter(self, *, match: str):
                 return scan_iter(match=match)
 
-        with patch("src.app.auth.services.auth_service.is_redis_available", return_value=True), patch(
-            "src.app.auth.services.auth_service.get_redis",
-            return_value=MockRedis(),
+        with (
+            patch("src.app.auth.services.auth_service.is_redis_available", return_value=True),
+            patch(
+                "src.app.auth.services.auth_service.get_redis",
+                return_value=MockRedis(),
+            ),
         ):
             result = await AuthService.get_active_sessions(current_user_id)
 

@@ -28,9 +28,7 @@ class NullPlugin:
 
     plugin_key = "null"
 
-    async def on_device_event(
-        self, ctx: "PluginContext", inbox: "WorklineInbox"
-    ) -> PluginResult:
+    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """设备事件处理 - 记录日志，不修改 Session
 
         Args:
@@ -43,9 +41,7 @@ class NullPlugin:
         ctx.logger.info(f"NullPlugin received device event: {inbox.id}")
         return PluginResult()
 
-    async def on_command_result(
-        self, ctx: "PluginContext", inbox: "WorklineInbox"
-    ) -> PluginResult:
+    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """命令结果处理 - 记录日志
 
         Args:
@@ -58,9 +54,7 @@ class NullPlugin:
         ctx.logger.info(f"NullPlugin received command result: {inbox.id}")
         return PluginResult()
 
-    async def on_timeout(
-        self, ctx: "PluginContext", inbox: "WorklineInbox"
-    ) -> PluginResult:
+    async def on_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """超时处理 - 记录日志
 
         Args:
@@ -73,9 +67,7 @@ class NullPlugin:
         ctx.logger.warning(f"NullPlugin received timeout: {inbox.id}")
         return PluginResult()
 
-    async def on_external_http(
-        self, ctx: "PluginContext", inbox: "WorklineInbox"
-    ) -> PluginResult:
+    async def on_external_http(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """外部 HTTP 回调处理 - 记录日志
 
         Args:
@@ -88,9 +80,7 @@ class NullPlugin:
         ctx.logger.info(f"NullPlugin received external HTTP: {inbox.id}")
         return PluginResult()
 
-    async def on_manual_operation(
-        self, ctx: "PluginContext", inbox: "WorklineInbox"
-    ) -> PluginResult:
+    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """人工操作处理 - 记录日志
 
         Args:

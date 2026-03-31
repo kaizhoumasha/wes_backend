@@ -52,6 +52,7 @@ class TestGetRequestIp:
         ip = get_request_ip(request)
         assert ip == "Unknown Host"
 
+
 # ==================== get_location_online 测试 ====================
 
 
@@ -90,6 +91,7 @@ class TestGetLocationOnline:
 
             result = await get_location_online("8.8.8.8", "test-agent")
             assert result is None
+
 
 # ==================== get_location_offline 测试 ====================
 

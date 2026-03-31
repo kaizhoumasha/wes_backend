@@ -405,9 +405,7 @@ class TestDispatchByType:
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             result = await dispatch_outbox._dispatch_single(mock_db, outbox)
 

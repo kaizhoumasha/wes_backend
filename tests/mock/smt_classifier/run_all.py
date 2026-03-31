@@ -155,8 +155,12 @@ def start_all_services() -> None:
     logger.info("=" * 60)
     logger.info("SMT 粗分机工作线 Mock 服务启动器")
     logger.info("=" * 60)
-    logger.info(f"WES 事件回调地址: {os.getenv('WES_EVENT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/event')}")
-    logger.info(f"WES 结果回调地址: {os.getenv('WES_RESULT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/result')}")
+    logger.info(
+        f"WES 事件回调地址: {os.getenv('WES_EVENT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/event')}"
+    )
+    logger.info(
+        f"WES 结果回调地址: {os.getenv('WES_RESULT_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/result')}"
+    )
     logger.info(
         f"WES 外部回调地址: {os.getenv('WES_EXTERNAL_CALLBACK_URL', 'http://localhost:8001/api/v1/callback/external')}"
     )
@@ -244,9 +248,7 @@ def main() -> None:
             for process in _processes:
                 if not process.is_alive():
                     if process.exitcode != 0:
-                        logger.error(
-                            f"进程 {process.name} 意外退出，退出码: {process.exitcode}"
-                        )
+                        logger.error(f"进程 {process.name} 意外退出，退出码: {process.exitcode}")
                     else:
                         logger.info(f"进程 {process.name} 正常退出")
 

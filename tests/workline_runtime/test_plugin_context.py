@@ -55,9 +55,7 @@ class TestPluginContextCreation:
         """创建模拟的服务容器"""
         return MagicMock()
 
-    def test_create_plugin_context(
-        self, mock_workline, mock_session, mock_device, mock_services
-    ):
+    def test_create_plugin_context(self, mock_workline, mock_session, mock_device, mock_services):
         """测试创建插件上下文"""
         devices_by_role = {"SCANNER": [mock_device]}
 
@@ -123,9 +121,7 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("CONVEYOR")
         assert found is None
 
-    def test_get_device_by_role_index_out_of_range(
-        self, mock_workline, mock_session, mock_services
-    ):
+    def test_get_device_by_role_index_out_of_range(self, mock_workline, mock_session, mock_services):
         """测试按角色获取设备 - 索引越界"""
         device = MagicMock(id=1, device_role="SCANNER")
         devices_by_role = {"SCANNER": [device]}
@@ -146,9 +142,7 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("SCANNER", index=5)
         assert found is None
 
-    def test_logger_is_logging_logger(
-        self, mock_workline, mock_session, mock_services
-    ):
+    def test_logger_is_logging_logger(self, mock_workline, mock_session, mock_services):
         """测试 logger 是 logging.Logger 类型"""
         logger = logging.getLogger("test_plugin")
         ctx = PluginContext(
@@ -165,9 +159,7 @@ class TestPluginContextCreation:
 
         assert isinstance(ctx.logger, logging.Logger)
 
-    def test_clock_returns_datetime(
-        self, mock_workline, mock_session, mock_services
-    ):
+    def test_clock_returns_datetime(self, mock_workline, mock_session, mock_services):
         """测试 clock 返回 datetime"""
         fixed_time = datetime(2026, 1, 1, 12, 0, 0)
         ctx = PluginContext(
@@ -192,8 +184,8 @@ class TestPluginContextCreation:
         # 但 Config.arbitrary_types_allowed = True 应该允许
         ctx = PluginContext(
             workline=mock_workline,  # MagicMock
-            session=mock_session,    # MagicMock
-            devices_by_role={},      # dict[str, list[MagicMock]]
+            session=mock_session,  # MagicMock
+            devices_by_role={},  # dict[str, list[MagicMock]]
             correlation_id="corr-123",
             config={},
             binding_config={},

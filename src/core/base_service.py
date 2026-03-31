@@ -187,6 +187,9 @@ class BaseService[M, R]:
 
     def _deserialize_item_from_cache(self, item: Any) -> Any:
         """从缓存恢复条目。存在 response_schema 时优先恢复为该 schema。"""
+        if item is None:
+            return None
+
         response_model = self._get_response_model()
         if response_model is not None:
             return self.to_response(item, response_model)

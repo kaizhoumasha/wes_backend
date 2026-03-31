@@ -150,7 +150,7 @@ class RedisCache:
         """
         min_expire = max(1, base_expire - variance)
         max_expire = max(min_expire, base_expire + variance)
-        return random.randint(min_expire, max_expire)
+        return random.randint(min_expire, max_expire)  # nosec B311 - cache TTL jitter is not security-sensitive
 
     async def _check_health(self) -> bool:
         """

@@ -110,9 +110,7 @@ class AtomicWriter:
         Returns:
             下一个 seq_no 值
         """
-        result = await db.execute(
-            text("SELECT nextval('wes_biz.workline_timeline_seq_no_seq')")
-        )
+        result = await db.execute(text("SELECT nextval('wes_biz.workline_timeline_seq_no_seq')"))
         seq_no = result.scalar()
         if isinstance(seq_no, bool) or not isinstance(seq_no, int):
             raise TypeError("Failed to fetch next timeline sequence number")

@@ -425,7 +425,9 @@ class TestDatabaseExceptions:
             raise IntegrityError(
                 "INSERT statement",
                 {},
-                Exception('duplicate key value violates unique constraint "uq_user_username" Key (username)=(admin) already exists'),
+                Exception(
+                    'duplicate key value violates unique constraint "uq_user_username" Key (username)=(admin) already exists'
+                ),
             )
 
         response = client.get("/test/integrity-error")

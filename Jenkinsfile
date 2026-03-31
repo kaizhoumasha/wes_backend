@@ -189,6 +189,7 @@ pipeline {
                                 set -e
                                 mkdir -p reports/coverage
                                 docker run --rm \
+                                    --env-file "$WORKSPACE/.env.test" \
                                     -v "$WORKSPACE/reports:/artifacts/reports" \
                                     ${CI_IMAGE} \
                                     sh -c '
@@ -231,6 +232,7 @@ pipeline {
                             sh '''
                                 set -e
                                 docker run --rm \
+                                    --env-file "$WORKSPACE/.env.test" \
                                     ${CI_IMAGE} \
                                     sh -c 'pytest tests/api/test_signature.py -v --tb=short'
                             '''
