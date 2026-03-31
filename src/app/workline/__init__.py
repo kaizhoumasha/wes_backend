@@ -17,7 +17,7 @@ def __getattr__(name: str) -> Any:
 
     from .v1 import router as workline_router
 
-    router_v1 = APIRouter(prefix="/v1")
+    router_v1 = APIRouter(prefix="/v1/workline")
     router_v1.include_router(workline_router)
     globals()["router_v1"] = router_v1
     return router_v1

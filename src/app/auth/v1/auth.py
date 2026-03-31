@@ -36,7 +36,7 @@ from src.core.response.response_util import response_builder
 from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep
 
-router = APIRouter(prefix="/auth", tags=["认证"])
+router = APIRouter(prefix="", tags=["认证"])
 response_builder_any = cast("Any", response_builder)
 
 

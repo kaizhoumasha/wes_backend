@@ -17,19 +17,30 @@ WORKDIR /app
 # ⚠️ 注意：应与 .env 中的 DATETIME_TIMEZONE 保持一致
 # 构建时指定：docker build --build-arg CONTAINER_TIMEZONE=Asia/Shanghai ...
 ARG CONTAINER_TIMEZONE=Asia/Shanghai
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_INDEX_URL=${PYPI_MIRROR} \
+    UV_DEFAULT_INDEX=${PYPI_MIRROR} \
+    DEBIAN_FRONTEND=noninteractive \
     # 优化 Python 编译
     PYTHON_O=1 \
     # 设置时区（从构建参数传入）
     TZ=${CONTAINER_TIMEZONE}
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+    -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+    -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+    /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     # 时区数据（支持 TZ 环境变量）
     tzdata \
     # 编译依赖
@@ -43,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 
 # ============================================
 # Stage 2: Builder - 依赖安装
@@ -53,11 +64,10 @@ FROM base AS builder
 # 安装 uv (更快的 Python 包管理器)
 RUN pip install --no-cache-dir uv
 
-# 创建虚拟环境并安装依赖
+# 创建虚拟环境并基于锁文件安装依赖
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    # 安装生产依赖
-    uv pip install --no-cache -e '.[dev]'
+    uv sync --frozen --all-extras --all-groups --no-install-project --active
 
 # ============================================
 # Stage 3: Development - 开发环境

@@ -87,7 +87,7 @@ def register_custom_route(
             return cast(
                 "ResponseSchemaModel[dict[str, Any]]",
                 response_builder_any.success(
-                data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"
+                    data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"
                 ),
             )
         except Exception as e:
@@ -236,7 +236,7 @@ api_app_api = BaseAPI(
     create_schema=APIApplicationCreate,
     update_schema=APIApplicationUpdate,
     response_schema=APIApplicationResponse,
-    prefix="/api-auth/applications",
+    prefix="/applications",
     tags=["API 认证管理"],
     enable_permission=True,
     gen_create=False,

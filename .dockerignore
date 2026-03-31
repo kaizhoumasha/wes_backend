@@ -123,8 +123,8 @@ postgresql/
 pytest.ini
 .setup.py
 
-# 锁文件 (uv 会自动生成)
-uv.lock
+# 锁文件
+!uv.lock
 
 # Node.js (如果有前端资源)
 node_modules/
