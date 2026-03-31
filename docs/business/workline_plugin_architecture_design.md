@@ -8,14 +8,14 @@
 > **目标**: 将当前“按设备类型分发”的实现，演进为“按作业线插件编排”的可实施架构
 
 > **相关文档**:
-> - 软件需求规格说明书: `@docs/SRS.md`
-> - 第三方设备接入白皮书: `@docs/third_party_integration_whitepaper.md`
-> - 运行时语义 SSOT: `@docs/workline_business_data_event_flow_spec.md`
+> - 软件需求规格说明书: `@docs/architecture/SRS.md`
+> - 第三方设备接入白皮书: `@docs/integration/third_party_integration_whitepaper.md`
+> - 运行时语义 SSOT: `@docs/business/workline_business_data_event_flow_spec.md`
 
 > **口径修订（2026-03-25）**:
 > 本文档保留作业线插件化、Inbox/Outbox、编排分层等架构设计内容；
 > 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、`session_id`、
-> 工作线边界、设备拓扑来源等运行时语义时，以 `docs/workline_business_data_event_flow_spec.md` 为准。
+> 工作线边界、设备拓扑来源等运行时语义时，以 `docs/business/workline_business_data_event_flow_spec.md` 为准。
 
 ---
 
@@ -1973,7 +1973,7 @@ scripts/
 > | 阶段 | 状态 | 完成度 | 验证报告 |
 > |------|------|--------|----------|
 > | Phase 0: 建立运行契约 | ✅ 已完成 | 100% | - |
-> | Phase 1: 打通统一入口和主链路 | ✅ 已完成 | 100% | [详见实现总结](../../claudedocs/phase1_callback_inbox_implementation.md) |
+> | Phase 1: 打通统一入口和主链路 | ✅ 已完成 | 100% | 已合并到代码 |
 > | Phase 2: 引入统一编排器 | ✅ 已完成 | 100% | [设计文档](~/.gstack/projects/workline-smt_coarse_ceparator/kaizhou-workline-smt_coarse_ceparator-design-phase2-orchestrator-20260324-101742.md) |
 > | Phase 3: 引入插件和 Outbox | ⚠️ 模型就绪 | 20% | - |
 > | Phase 4: 补齐决策证据 | ❌ 未开始 | 0% | - |

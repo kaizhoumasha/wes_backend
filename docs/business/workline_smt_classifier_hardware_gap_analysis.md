@@ -707,7 +707,7 @@ plugin 生成的 vendor payload 必须是设备实际收到的 payload。
 
 本次分析还发现一个仓库内部问题：
 
-- `docs/workline_smt_classifier_runtime_flow.md` 的旧版本曾把某些 OK 流程描述成“扫码 OK 后不下命令、等待检测事件”
+- `docs/business/workline_smt_classifier_runtime_flow.md` 的旧版本曾把某些 OK 流程描述成”扫码 OK 后不下命令、等待检测事件”
 - 但当前插件代码已经在 `scan_ok` 分支直接生成 `PICK_AND_PUT` 命令，把物料从输入位搬到流水线进料位
 
 当前代码基线应以 [plugin.py](/Users/kaizhou/SynologyDrive/works/wes_backend/src/workline_plugins/smt_classifier/plugin.py#L576) 为准。
@@ -768,7 +768,7 @@ plugin 生成的 vendor payload 必须是设备实际收到的 payload。
 |------|------|------|----------|----------|
 | P2-1 | 对齐状态查询与取消命令协议 | 补齐真实硬件联调时所需的外围接口口径 | mock 服务、相关 docs | 健康检查、取消命令、辅助接口都与最终协议口径一致 |
 | P2-2 | 扩展多工位/双侧单元模型 | 为后续 `PIPELINE02 / ARM03 / ARM04` 等场景准备 | 设备配置、plugin 拓扑解析、位置映射 | 多工位和双侧场景不再依赖硬编码位置命名 |
-| P2-3 | 契约变更文档化机制 | plugin contract 变更时有固定升级说明和回写流程 | `docs/workline_smt_classifier_runtime_flow.md`、本文件、相关设计文档 | 每次 contract 变更都能明确记录变更点、迁移方式、验收结果 |
+| P2-3 | 契约变更文档化机制 | plugin contract 变更时有固定升级说明和回写流程 | `docs/business/workline_smt_classifier_runtime_flow.md`、本文件、相关设计文档 | 每次 contract 变更都能明确记录变更点、迁移方式、验收结果 |
 
 ### 11.5 测试清单
 

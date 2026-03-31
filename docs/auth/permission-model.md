@@ -26,7 +26,7 @@ Permission 模型是系统 RBAC（基于角色的访问控制）的核心组件�
 ### 模块位置
 
 ```
-src/app/admin/models/permission.py
+src/app/admin/models/perm.py
 ```
 
 ### 核心特性

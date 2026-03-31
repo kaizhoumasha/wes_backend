@@ -33,8 +33,10 @@ class WarehouseBase(BaseMixin):
     code: str
     location: str | None = None
 
-class Warehouse(WarehouseBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=True):
-    """仓库数据库表模型"""
+class Warehouse(WarehouseBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+    """仓库数据库表模型
+    ⚠️ 注意：EnterpriseMixin 包含 AuditMixin + OptimisticLockMixin，应放在最前面
+    """
     __tablename__ = "warehouses"
     capacity: int | None = None
 

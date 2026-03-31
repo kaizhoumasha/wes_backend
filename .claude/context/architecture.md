@@ -36,7 +36,8 @@ class UserBase(BaseMixin):
     email: str
 
 # 2. 定义数据库表模型（User - 继承 UserBase + Mixins）
-class User(UserBase, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, table=True):
+# ⚠️ 注意：EnterpriseMixin 包含 AuditMixin + OptimisticLockMixin，应放在最前面
+class User(UserBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
     __tablename__ = "users"
     hashed_password: str
 

@@ -20,8 +20,8 @@
 
 以下文档如与本文不一致，以本文为准：
 
-- `docs/workline_plugin_architecture_design.md`
-- `docs/wms_rcs_interface_requirements.md`
+- `docs/business/workline_plugin_architecture_design.md`
+- `docs/business/wms_rcs_interface_requirements.md`
 - `docs/hardware/workline_topology_overview.md`
 
 ---

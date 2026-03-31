@@ -1,7 +1,7 @@
 # FXR-WES 项目文件索引
 
-**最后更新**: 2026年3月23日
-**同步状态**: ✅ 已同步（v0.1.0.0 - 初始生产版本）
+**最后更新**: 2026年3月31日
+**同步状态**: ✅ 已同步（v0.1.1.0 - 文档清理 + 模块补全）
 
 ---
 
@@ -9,6 +9,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-03-31 | v0.1.1.0 | 文档清理：删除 36 个过程文档，补全 callback/device 模块，修复 Mixin 继承示例 |
 | 2026-03-23 | v0.1.0.0 | 初始生产版本：完整 3 层架构、JWT 认证、RBAC 权限、设备管理、作业线模块、254 个测试通过 |
 | 2026-03-17 | v2.3 | Workline Phase 1 完成：Inbox/Outbox 模型、Repository、Service、Callback 集成、幂等性控制 |
 | 2026-03-02 | v2.2 | 摄像头 Mock 服务新增传感器模拟 API（手动/自动触发、状态查询、事件历史） |
@@ -337,11 +338,37 @@
 - **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
 
 **相关文档**：
-- 运行时语义 SSOT：`docs/workline_business_data_event_flow_spec.md` v0.1
-- 架构设计：`docs/workline_plugin_architecture_design.md` v3.2
-- SMT 粗分机完整数据流：`docs/workline_smt_classifier_runtime_flow.md`
-- SMT 粗分机硬件偏差分析：`docs/workline_smt_classifier_hardware_gap_analysis.md`
-- Phase 1 实现总结：`claudedocs/phase1_callback_inbox_implementation.md`
+- 运行时语义 SSOT：`docs/business/workline_business_data_event_flow_spec.md` v0.1
+- 架构设计：`docs/business/workline_plugin_architecture_design.md` v3.2
+- SMT 粗分机完整数据流：`docs/business/workline_smt_classifier_runtime_flow.md`
+- SMT 粗分机硬件偏差分析：`docs/business/workline_smt_classifier_hardware_gap_analysis.md`
+
+#### 🔔 回调模块 (src/app/callback/)
+
+外部系统回调处理
+
+| 目录 | 文件 | 用途 | 分类 |
+|------|------|------|------|
+| `models/` | `callback_log.py` | 回调日志模型 | 🔧 架构核心 |
+| | `event.py` | 回调事件模型 | 🔧 架构核心 |
+| `repositories/` | `callback_log_repository.py` | 回调日志仓库 | 🔧 架构核心 |
+| `services/` | `callback_service.py` | 回调处理服务 | 🔧 架构核心 |
+| `v1/` | `callback.py` | 回调 API 路由 | 🔧 架构核心 |
+
+#### 📡 设备模块 (src/app/device/)
+
+设备（摄像头、机械臂等）管理
+
+| 目录 | 文件 | 用途 | 分类 |
+|------|------|------|------|
+| `models/` | `device.py` | 设备模型 | 🔧 架构核心 |
+| | `command.py` | 设备指令模型 | 🔧 架构核心 |
+| `repositories/` | `device_repository.py` | 设备仓库 | 🔧 架构核心 |
+| | `command_repository.py` | 指令仓库 | 🔧 架构核心 |
+| `services/` | `device_service.py` | 设备服务 | 🔧 架构核心 |
+| | `command_service.py` | 指令服务 | 🔧 架构核心 |
+| `v1/` | `device.py` | 设备路由 | 🔧 架构核心 |
+| | `command.py` | 指令路由 | 🔧 架构核心 |
 
 ---
 
