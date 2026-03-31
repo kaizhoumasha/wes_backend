@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+from src.app.admin.models import MenuTreeResponse
+from src.app.admin.models.menu import Menu
+from src.app.admin.models.role import Role
 from src.app.admin.models.menu import MenuTreeResponseSimple
 from src.app.admin.services.menu_service import MenuService
 
@@ -55,3 +58,16 @@ def test_build_tree_keeps_orphan_node_visible_as_root() -> None:
 
     assert len(tree) == 1
     assert tree[0].id == 9
+
+
+def test_to_dict_uses_schema_serialization_to_keep_roles_for_tree_schema() -> None:
+    service = MenuService()
+    menu = Menu(id=1, name="menu:1", title="Root", path="/root")
+    object.__setattr__(menu, "roles", [Role(id=7, name="admin", description="管理员")])
+
+    result = service._to_dict(menu, MenuTreeResponse)
+
+    assert len(result["roles"]) == 1
+    assert result["roles"][0]["id"] == 7
+    assert result["roles"][0]["name"] == "admin"
+    assert result["children"] == []

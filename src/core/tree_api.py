@@ -121,6 +121,20 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             items = await self.service.get_ancestors(db, node_id, include_self)
             return response_builder_any.success(data=items)
 
+        @self.router.get(
+            "/children/{node_id}",
+            response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
+            dependencies=view_dependencies,
+        )
+        async def get_children(  # pyright: ignore[reportUnusedFunction]
+            db: AsyncSessionDep,
+            node_id: Annotated[int, Path(description="节点ID")],
+        ) -> dict[str, Any]:
+            """获取子级节点"""
+            response_builder_any = self._response_builder()
+            items = await self.service.get_children(db, node_id)
+            return response_builder_any.success(data=items)
+
         @self.router.put(
             "/move",
             response_model=ResponseSchemaModel[self.tree_node_response_schema],

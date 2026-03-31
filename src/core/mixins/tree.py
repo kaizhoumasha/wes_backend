@@ -18,6 +18,7 @@ class TreeMixin(BaseMixin):
     - tree_path: 节点路径(如 /1/5/12/)
     - level: 节点层级
     - sort_order: 同级排序
+    - has_children: 是否有子节点(预计算,用于前端展开标识)
 
     使用示例:
         class Category(TreeMixin, DataTableMixin, table=True):
@@ -28,7 +29,6 @@ class TreeMixin(BaseMixin):
 
     parent_id: int | None = Field(
         default=None,
-        index=True,
         sa_column_kwargs={"comment": "父节点ID"},
     )
     tree_path: str = Field(
@@ -43,4 +43,8 @@ class TreeMixin(BaseMixin):
     sort_order: int = Field(
         default=0,
         sa_column_kwargs={"comment": "排序号"},
+    )
+    has_children: bool = Field(
+        default=False,
+        sa_column_kwargs={"comment": "是否有子节点"},
     )

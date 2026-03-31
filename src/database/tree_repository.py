@@ -79,6 +79,36 @@ class TreeRepository[T](BaseRepository[T]):
             priority=-10,
         )
 
+        # 注册 has_children 维护 Hook
+        self._register_has_children_hooks()
+
+    def _register_has_children_hooks(self) -> None:
+        """注册 has_children 自动维护 Hook"""
+        # 检查模型是否有 has_children 字段
+        if not hasattr(self.model, "has_children"):
+            return
+
+        # 创建子节点后：更新父节点的 has_children = True
+        self.add_hook(
+            HookType.AFTER_CREATE,
+            self._update_parent_has_children_hook(),
+            priority=5,
+        )
+
+        # 删除子节点后：更新父节点的 has_children
+        self.add_hook(
+            HookType.AFTER_DELETE,
+            self._cleanup_parent_has_children_hook(),
+            priority=5,
+        )
+
+        # 移动节点后：更新原父节点和新父节点的 has_children
+        self.add_hook(
+            HookType.AFTER_UPDATE,
+            self._move_node_has_children_hook(),
+            priority=5,
+        )
+
     def _create_tree_path_hook(self) -> HookFunc:
         """创建 tree_path 自动计算 Hook（AFTER_CREATE）"""
 
@@ -193,6 +223,114 @@ class TreeRepository[T](BaseRepository[T]):
                 descendant_node.level += level_delta
 
         return hook
+
+    def _update_parent_has_children_hook(self) -> HookFunc:
+        """创建子节点后，更新父节点的 has_children = True（AFTER_CREATE）"""
+
+        async def hook(ctx: HookContext) -> None:
+            db = ctx.params.get("session") or ctx.session
+            instance = cast("TreeNodeLike | None", ctx.params.get("instance"))
+
+            if not instance or not db:
+                return
+
+            parent_id = getattr(instance, "parent_id", None)
+            if parent_id is None:
+                return
+
+            # 更新父节点的 has_children = True
+            parent = await db.execute(
+                select(self.model).where(self.model.id == parent_id)  # type: ignore[attr-defined]
+            )
+            parent = parent.scalar_one_or_none()
+            if parent:
+                parent.has_children = True  # type: ignore[attr-defined]
+                _ = await db.flush()
+
+        return hook
+
+    def _cleanup_parent_has_children_hook(self) -> HookFunc:
+        """删除子节点后，检查并更新父节点的 has_children（AFTER_DELETE）"""
+
+        async def hook(ctx: HookContext) -> None:
+            db = ctx.params.get("session") or ctx.session
+            instance = ctx.params.get("instance")
+
+            if not instance or not db:
+                return
+
+            parent_id = getattr(instance, "parent_id", None)
+            if parent_id is None:
+                return
+
+            # 检查父节点是否还有其他子节点
+            parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
+            result = await db.execute(
+                select(self.model).where(parent_id_attr == parent_id).limit(1)  # type: ignore[attr-defined]
+            )
+            remaining_child = result.scalar_one_or_none()
+
+            # 如果没有剩余子节点，更新父节点的 has_children = False
+            if not remaining_child:
+                parent = await db.execute(
+                    select(self.model).where(self.model.id == parent_id)  # type: ignore[attr-defined]
+                )
+                parent = parent.scalar_one_or_none()
+                if parent:
+                    parent.has_children = False  # type: ignore[attr-defined]
+                    _ = await db.flush()
+
+        return hook
+
+    def _move_node_has_children_hook(self) -> HookFunc:
+        """移动节点后，更新原父节点和新父节点的 has_children（AFTER_UPDATE）"""
+
+        async def hook(ctx: HookContext) -> None:
+            db = ctx.params.get("session") or ctx.session
+            data = ctx.params.get("data", {})
+            instance = cast("TreeNodeLike | None", ctx.params.get("instance"))
+
+            if not instance or not db:
+                return
+
+            # 只处理 parent_id 变更的情况
+            if "parent_id" not in data:
+                return
+
+            new_parent_id = data["parent_id"]
+            old_parent_id = instance.parent_id
+
+            # 更新原父节点的 has_children
+            if old_parent_id is not None:
+                await self._check_and_update_has_children(db, old_parent_id)
+
+            # 更新新父节点的 has_children = True
+            if new_parent_id is not None:
+                parent = await db.execute(
+                    select(self.model).where(self.model.id == new_parent_id)  # type: ignore[attr-defined]
+                )
+                parent = parent.scalar_one_or_none()
+                if parent:
+                    parent.has_children = True  # type: ignore[attr-defined]
+                    _ = await db.flush()
+
+        return hook
+
+    async def _check_and_update_has_children(self, db: AsyncSession, parent_id: int) -> None:
+        """检查并更新父节点的 has_children 状态"""
+        parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
+        result = await db.execute(
+            select(self.model).where(parent_id_attr == parent_id).limit(1)  # type: ignore[attr-defined]
+        )
+        remaining_child = result.scalar_one_or_none()
+
+        parent = await db.execute(
+            select(self.model).where(self.model.id == parent_id)  # type: ignore[attr-defined]
+        )
+        parent = parent.scalar_one_or_none()
+        if parent:
+            parent.has_children = remaining_child is not None  # type: ignore[attr-defined]
+            _ = await db.flush()
 
     async def get_children(
         self,

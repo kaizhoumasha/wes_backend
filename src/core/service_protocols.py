@@ -85,6 +85,12 @@ class TreeServiceProtocol(CrudServiceProtocol, Protocol):
         include_self: bool = False,
     ) -> list[Any]: ...
 
+    async def get_children(
+        self,
+        db: AsyncSession,
+        node_id: int,
+    ) -> list[Any]: ...
+
     async def move_node(
         self,
         db: AsyncSession,

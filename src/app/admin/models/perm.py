@@ -38,7 +38,7 @@ async def create_user(data: UserCreate):
 
 from typing import ClassVar, Literal, cast
 
-from pydantic import computed_field, field_validator, model_validator
+from pydantic import field_validator, model_validator
 from sqlalchemy import Index
 from sqlalchemy.orm import relationship
 from sqlmodel import Field
@@ -173,23 +173,11 @@ class PermissionResponse(PermissionBase):
     id: int
     version: int
 
-    @computed_field
-    @property
-    def full_name(self) -> str:
-        """生成完整的权限标识（包含类型前缀）"""
-        return f"[{self.type.upper()}] {self.name}"
-
 
 class PermissionResponseSimple(PermissionBase):
     """API 权限响应 Schema（简化版，用于列表展示）"""
 
     id: int
-
-    @computed_field
-    @property
-    def display_name(self) -> str:
-        """生成显示名称（使用 description，其次使用 name）"""
-        return self.description or self.name
 
 
 class PermissionTree(PermissionBase):
@@ -220,18 +208,6 @@ class PermissionTree(PermissionBase):
         if not nodes:
             return current_depth
         return max(cls._calculate_max_depth(node.children, current_depth + 1) for node in nodes)
-
-    @computed_field
-    @property
-    def is_leaf(self) -> bool:
-        """是否为叶子节点（无子权限）"""
-        return len(self.children) == 0
-
-    @computed_field
-    @property
-    def has_children(self) -> bool:
-        """是否有子权限"""
-        return len(self.children) > 0
 
 
 # ==================== Relationships ====================

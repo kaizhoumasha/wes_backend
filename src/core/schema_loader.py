@@ -235,8 +235,18 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
     data: dict[str, Any] = {}
     insp = sa_inspect(obj)
     relationships = get_relationship_fields(schema)
+    mapped_fields = set(insp.mapper.attrs.keys())
 
     for field_name, field_info in schema.model_fields.items():
+        if field_name not in mapped_fields:
+            annotation = field_info.annotation
+            origin = get_origin(annotation)
+            if origin is list:
+                data[field_name] = []
+            else:
+                data[field_name] = None
+            continue
+
         if field_name in insp.unloaded:
             annotation = field_info.annotation
             origin = get_origin(annotation)

@@ -129,10 +129,11 @@ class TreeServiceMixin[M]:
         node = await self.repo.get_by_id(db, node_id)
         if not node:
             return []
-        children = await self.repo.get_children(db, node.parent_id)  # type: ignore[attr-defined]
+        # 获取父节点的直接子节点 = 同级节点
+        siblings = await self.repo.get_children(db, node.parent_id)  # type: ignore[attr-defined]
         if not include_self:
-            children = self._exclude_node(children, node_id)
-        return self._serialize_items(children)
+            siblings = self._exclude_node(siblings, node_id)
+        return self._serialize_items(siblings)
 
     async def get_ancestors(
         self,
@@ -144,6 +145,14 @@ class TreeServiceMixin[M]:
         if not include_self:
             ancestors = self._exclude_node(ancestors, node_id)
         return self._serialize_items(ancestors)
+
+    async def get_children(
+        self,
+        db: AsyncSession,
+        node_id: int,
+    ) -> list[dict[str, Any]]:
+        children = await self.repo.get_children(db, node_id)
+        return self._serialize_items(children)
 
     async def move_node(
         self,

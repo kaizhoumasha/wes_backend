@@ -27,6 +27,8 @@ pipeline {
         // 健康检查配置
         HEALTH_CHECK_URL = 'http://localhost:8001/api/health'
         HEALTH_CHECK_RETRIES = '5'
+        // CI 镜像构建目标
+        CI_BUILD_TARGET = 'testing'
     }
 
     // 构建选项
@@ -80,20 +82,28 @@ pipeline {
                         extensions: extensions
                     ])
 
-                    sh 'git rev-parse --short HEAD'
+                    String shortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
+                    echo "🐳 CI 镜像标签: ${env.CI_IMAGE}"
                 }
             }
         }
 
         // ==============================================
-        // 准备阶段：安装依赖
+        // 准备阶段：构建 CI 镜像
         // ==============================================
-        stage('Prepare') {
+        stage('Build CI Image') {
             steps {
                 script {
-                    echo '📦 安装开发依赖...'
-                    sh 'uv sync --frozen'
-                    echo '✅ 依赖安装完成'
+                    echo '🐳 构建 CI 测试镜像...'
+                    sh '''
+                        set -e
+                        docker build \
+                            --target ${CI_BUILD_TARGET} \
+                            -t ${CI_IMAGE} \
+                            .
+                    '''
+                    echo '✅ CI 测试镜像构建完成'
                 }
             }
         }
@@ -108,7 +118,12 @@ pipeline {
                     steps {
                         script {
                             echo '🔍 检查代码格式 (Ruff Format)...'
-                            sh 'uv run ruff format --check .'
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    ${CI_IMAGE} \
+                                    sh -lc 'ruff format --check .'
+                            '''
                             echo '✅ 代码格式检查通过'
                         }
                     }
@@ -119,8 +134,13 @@ pipeline {
                     steps {
                         script {
                             echo '🔍 检查代码质量 (Ruff Lint)...'
-                            sh 'uv run ruff check . --output-format=github || true'
-                            echo '✅ 代码质量检查完成'
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    ${CI_IMAGE} \
+                                    sh -lc 'ruff check .'
+                            '''
+                            echo '✅ 代码质量检查通过'
                         }
                     }
                 }
@@ -131,8 +151,16 @@ pipeline {
                         script {
                             echo '🔍 安全检查 (Bandit)...'
                             sh '''
-                                uv run bandit -r src/ -f json -o bandit-report.json || true
-                                uv run bandit -r src/ -f screen
+                                set -e
+                                mkdir -p reports
+                                docker run --rm \
+                                    -v "$WORKSPACE/reports:/artifacts/reports" \
+                                    ${CI_IMAGE} \
+                                    sh -lc '
+                                        mkdir -p /artifacts/reports && \
+                                        bandit -r src/ -f json -o /artifacts/reports/bandit-report.json && \
+                                        bandit -r src/ -f screen
+                                    '
                             '''
                             echo '✅ 安全检查完成'
                         }
@@ -140,7 +168,7 @@ pipeline {
                     post {
                         always {
                             // 归档安全报告
-                            archiveArtifacts artifacts: 'bandit-report.json', allowEmptyArchive: true
+                            archiveArtifacts artifacts: 'reports/bandit-report.json', allowEmptyArchive: true
                         }
                     }
                 }
@@ -158,12 +186,20 @@ pipeline {
                         script {
                             echo '🧪 运行单元测试...'
                             sh '''
-                                uv run pytest tests/ -v --tb=short \
-                                    --cov=src \
-                                    --cov-report=term-missing \
-                                    --cov-report=html:reports/coverage \
-                                    --cov-report=xml:reports/coverage.xml \
-                                    --junitxml=reports/junit.xml
+                                set -e
+                                mkdir -p reports/coverage
+                                docker run --rm \
+                                    -v "$WORKSPACE/reports:/artifacts/reports" \
+                                    ${CI_IMAGE} \
+                                    sh -lc '
+                                        mkdir -p /artifacts/reports/coverage && \
+                                        pytest tests/ -v --tb=short \
+                                            --cov=src \
+                                            --cov-report=term-missing \
+                                            --cov-report=html:/artifacts/reports/coverage \
+                                            --cov-report=xml:/artifacts/reports/coverage.xml \
+                                            --junitxml=/artifacts/reports/junit.xml
+                                    '
                             '''
                             echo '✅ 单元测试通过'
                         }
@@ -192,7 +228,12 @@ pipeline {
                     steps {
                         script {
                             echo '🔐 测试 API 签名认证...'
-                            sh 'uv run pytest tests/api/test_signature.py -v --tb=short'
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    ${CI_IMAGE} \
+                                    sh -lc 'pytest tests/api/test_signature.py -v --tb=short'
+                            '''
                             echo '✅ API 签名测试通过'
                         }
                     }
@@ -329,6 +370,13 @@ DOCKER_EOF
     // ==============================================
     post {
         always {
+            script {
+                if (env.CI_IMAGE?.trim()) {
+                    sh '''
+                        docker image rm -f ${CI_IMAGE} >/dev/null 2>&1 || true
+                    '''
+                }
+            }
             // 清理工作空间
             cleanWs()
         }
