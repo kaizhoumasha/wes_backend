@@ -75,7 +75,8 @@ async def check_redis_health() -> dict[str, Any]:
         db_size = await cast("Any", redis_client).dbsize()
 
         return {
-            "status": "connected",
+            "status": "healthy",
+            "connection_status": "connected",
             "response_time_ms": round(response_time, 2),
             "db_size": db_size,
             "used_memory": info.get("used_memory_human", "N/A"),

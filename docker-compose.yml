@@ -4,12 +4,14 @@
 # 用途: 通过 profiles 和环境变量控制部署的服务
 #
 # 使用方法:
-#   开发环境:   docker-compose --profile dev up -d
-#   测试环境:   docker-compose --profile test up -d
+#   开发环境:   docker compose --profile dev up -d
+#   测试环境:   docker compose --profile test up -d
 #   生产环境:   docker-compose --profile prod up -d
 #   仅 Celery:  docker-compose --profile celery up -d
 #   仅 API:     docker-compose --profile api up -d
 #   基础设施:  docker-compose --profile infra up -d
+#   前端联调:   docker compose -f docker-compose.yml -f docker-compose.frontend.yml --profile dev up -d
+#   前端测试:   docker compose -f docker-compose.yml -f docker-compose.frontend.yml --profile test up -d
 #
 # 环境配置:
 #   开发: 使用 .env 或 .env.dev
@@ -30,7 +32,7 @@ services:
     container_name: wes_api_${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
     ports:
-      - "${APP_PORT:-8001}:8001"
+      - "${APP_HOST_PORT:-8001}:8001"
     env_file:
       - .env
     environment:
@@ -63,7 +65,7 @@ services:
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/performance/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -205,7 +207,11 @@ services:
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f celery beat || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "tr '\\000' ' ' </proc/1/cmdline | grep -q 'celery.*beat' || exit 1",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -284,7 +290,7 @@ services:
       - celery
 
   # ============================================
-  # Nginx 反向代理 (仅生产环境)
+  # Nginx 反向代理
   # ============================================
   nginx:
     image: nginx:1.27-alpine
@@ -302,7 +308,12 @@ services:
       # 日志
       - ./logs/nginx:/var/log/nginx
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+      # 开发/测试模式下依赖前端服务
+      frontend:
+        condition: service_healthy
+        required: false
     networks:
       - wesp9-network
     deploy:
@@ -318,6 +329,8 @@ services:
     profiles:
       - prod
       - api
+      - dev
+      - test
 
   # ============================================
   # Pytest - 自动化测试
@@ -404,7 +417,7 @@ services:
       # 性能优化
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - ./docker_data/postgres_${ENV:-prod}:/var/lib/postgresql/data
       # PostgreSQL 配置
@@ -448,7 +461,7 @@ services:
     container_name: wes_redis_${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - ./docker_data/redis_${ENV:-prod}:/data
       # Redis 配置

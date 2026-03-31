@@ -160,6 +160,18 @@ docker-compose --profile dev up -d
 - ✅ Flower 监控（http://localhost:5555）
 - ✅ 单实例部署
 
+### 开发环境（前后端同源联调）
+
+```bash
+docker compose --env-file .env.dev -f docker-compose.yml -f docker-compose.frontend.yml --profile dev up -d
+```
+
+**特性**：
+- ✅ `nginx` 统一代理前端和后端，浏览器入口为 `http://localhost/`
+- ✅ 前端源码来自 `FRONTEND_ROOT`，默认 `../wes_frontend`
+- ✅ 前端容器支持 Vite 热更新
+- ✅ `node_modules` 与 pnpm store 使用独立 volume，避免宿主与容器依赖互相污染
+
 ### 测试环境
 
 ```bash
@@ -170,6 +182,17 @@ docker-compose --profile test up -d pytest
 - ✅ 自动化测试（Pytest）
 - ✅ 性能测试（Locust）
 - ✅ 独立测试数据库
+
+### 测试环境（前后端同源联调）
+
+```bash
+docker compose --env-file .env.test -f docker-compose.yml -f docker-compose.frontend.yml --profile test up -d
+```
+
+**特性**：
+- ✅ 浏览器入口为 `http://localhost:8080/`
+- ✅ `nginx` 与 `frontend/api` 拓扑和开发环境保持一致
+- ✅ 前端容器继续使用相对 `/api`，通过代理验证同源链路
 
 ### 生产环境（完整）
 

@@ -1,0 +1,58 @@
+services:
+  frontend:
+    image: node:22-bookworm-slim
+    container_name: wes_frontend_${ENV:-dev}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    working_dir: /app
+    command: ["sh", "/usr/local/bin/frontend-dev-entrypoint.sh"]
+    environment:
+      FRONTEND_APP_DIR: /app
+      FRONTEND_PORT: ${FRONTEND_PORT:-5173}
+      PNPM_HOME: /pnpm
+      PNPM_STORE_DIR: /pnpm/store
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "300"
+      HUSKY: "0"
+      VITE_API_BASE_URL: ""
+      VITE_API_PROXY_TARGET: http://api:8001
+      VITE_SSE_URL: /api/v1/events/stream
+      VITE_APP_TITLE: ${FRONTEND_APP_TITLE:-P9 WES}
+      VITE_APP_DEV: "true"
+    volumes:
+      - ${FRONTEND_ROOT:-../wes_frontend}:/app:rw
+      - ./scripts/frontend-dev-entrypoint.sh:/usr/local/bin/frontend-dev-entrypoint.sh:ro
+      - frontend_node_modules:/app/node_modules
+      - frontend_pnpm_store:/pnpm/store
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.FRONTEND_PORT || '5173')).then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - wesp9-network
+    profiles:
+      - dev
+      - test
+
+  nginx:
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    profiles:
+      - dev
+      - test
+
+volumes:
+  frontend_node_modules:
+    name: wes_frontend_node_modules_${ENV:-dev}
+  frontend_pnpm_store:
+    name: wes_frontend_pnpm_store_${ENV:-dev}
