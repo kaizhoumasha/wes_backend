@@ -45,6 +45,8 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         // 超时配置
         timeout(time: 30, unit: 'MINUTES')
+        // 使用显式 checkout，按 GitLab webhook 提供的分支检出代码
+        skipDefaultCheckout(true)
         // 禁用并发构建
         disableConcurrentBuilds()
         // 时间戳
@@ -54,6 +56,47 @@ pipeline {
     }
 
     stages {
+        // ==============================================
+        // 检出阶段：按 GitLab 事件检出源码
+        // ==============================================
+        stage('Checkout Source') {
+            steps {
+                script {
+                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: 'develop'
+                    String targetBranch = env.gitlabTargetBranch ?: ''
+                    boolean isMergeRequest = env.GITLAB_OBJECT_KIND == 'merge_request'
+
+                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.GITLAB_OBJECT_KIND ?: 'manual'}"
+
+                    def extensions = [[$class: 'CleanBeforeCheckout']]
+                    if (isMergeRequest && targetBranch) {
+                        extensions << [
+                            $class: 'PreBuildMerge',
+                            options: [
+                                fastForwardMode: 'FF',
+                                mergeRemote: 'origin',
+                                mergeTarget: targetBranch
+                            ]
+                        ]
+                    }
+
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "origin/${sourceBranch}"]],
+                        userRemoteConfigs: [[
+                            name: 'origin',
+                            url: 'http://192.168.0.220:9080/wes/wes_backend.git',
+                            credentialsId: 'gitlab-http-creds',
+                            refspec: '+refs/heads/*:refs/remotes/origin/*'
+                        ]],
+                        extensions: extensions
+                    ])
+
+                    sh 'git rev-parse --short HEAD'
+                }
+            }
+        }
+
         // ==============================================
         // 准备阶段：安装依赖
         // ==============================================
@@ -325,8 +368,8 @@ DOCKER_EOF
 //
 // 必需的配置:
 //   1. Jenkins Node (192.168.0.221) 已配置并在线
-//   2. Node 标签: test-node（请根据实际标签修改）
-//   3. GitLab 凭据已配置（ID: gitlab-credentials）
+//   2. Node 标签: WES
+//   3. GitLab HTTP 凭据已配置（ID: gitlab-http-creds）
 //   4. GitLab Connection 已配置（Name: gitlab）
 //
 // 必需的服务（在 Jenkins Node 上）:
