@@ -29,16 +29,6 @@ pipeline {
         HEALTH_CHECK_RETRIES = '5'
     }
 
-    // 触发器配置
-    triggers {
-        // GitLab Webhook 触发（推荐）
-        gitlab(
-            triggerOnPush: true,
-            triggerOnMergeRequest: true,
-            branchFilterType: 'All'
-        )
-    }
-
     // 构建选项
     options {
         // 保留最近 10 次构建
@@ -51,8 +41,6 @@ pipeline {
         disableConcurrentBuilds()
         // 时间戳
         timestamps()
-        // GitLab 连接
-        gitLabConnection('gitlab')
     }
 
     stages {
@@ -346,13 +334,9 @@ DOCKER_EOF
         }
         success {
             echo '✅ Pipeline 执行成功'
-            // GitLab 状态更新
-            updateGitlabCommitStatus name: 'build', state: 'success'
         }
         failure {
             echo '❌ Pipeline 执行失败'
-            // GitLab 状态更新
-            updateGitlabCommitStatus name: 'build', state: 'failed'
         }
     }
 }
@@ -370,7 +354,6 @@ DOCKER_EOF
 //   1. Jenkins Node (192.168.0.221) 已配置并在线
 //   2. Node 标签: WES
 //   3. GitLab HTTP 凭据已配置（ID: gitlab-http-creds）
-//   4. GitLab Connection 已配置（Name: gitlab）
 //
 // 必需的服务（在 Jenkins Node 上）:
 //   - PostgreSQL (Docker 容器)
