@@ -122,7 +122,7 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -lc 'ruff format --check .'
+                                    sh -c 'ruff format --check .'
                             '''
                             echo '✅ 代码格式检查通过'
                         }
@@ -138,7 +138,7 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -lc 'ruff check .'
+                                    sh -c 'ruff check .'
                             '''
                             echo '✅ 代码质量检查通过'
                         }
@@ -156,7 +156,7 @@ pipeline {
                                 docker run --rm \
                                     -v "$WORKSPACE/reports:/artifacts/reports" \
                                     ${CI_IMAGE} \
-                                    sh -lc '
+                                    sh -c '
                                         mkdir -p /artifacts/reports && \
                                         bandit -r src/ -f json -o /artifacts/reports/bandit-report.json && \
                                         bandit -r src/ -f screen
@@ -191,7 +191,7 @@ pipeline {
                                 docker run --rm \
                                     -v "$WORKSPACE/reports:/artifacts/reports" \
                                     ${CI_IMAGE} \
-                                    sh -lc '
+                                    sh -c '
                                         mkdir -p /artifacts/reports/coverage && \
                                         pytest tests/ -v --tb=short \
                                             --cov=src \
@@ -232,7 +232,7 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -lc 'pytest tests/api/test_signature.py -v --tb=short'
+                                    sh -c 'pytest tests/api/test_signature.py -v --tb=short'
                             '''
                             echo '✅ API 签名测试通过'
                         }
