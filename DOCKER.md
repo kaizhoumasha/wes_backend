@@ -244,7 +244,7 @@ wes_backend/
 | `BUILD_TARGET` | `development` | `testing` | `production` | Docker 构建阶段 |
 | `APP_DEBUG` | `true` | `false` | `false` | DEBUG 模式 |
 | `API_REPLICAS` | `1` | `1` | `3` | API 实例数 |
-| `CELERY_WORKER_REPLICAS` | `1` | `0` | `4` | Celery Worker 实例数 |
+| `CELERY_WORKER_REPLICAS` | `1` | `1` | `4` | Celery Worker 实例数 |
 | `LOG_LEVEL` | `DEBUG` | `INFO` | `INFO` | 日志级别 |
 | `SOURCE_MOUNT` | `./src` | (空) | (空) | 源码挂载（热重载） |
 | `LOG_JSON_OUTPUT` | `false` | `false` | `true` | JSON 格式日志 |
