@@ -210,14 +210,24 @@ pipeline {
                             // 发布测试报告
                             junit 'reports/junit.xml'
                             // 发布覆盖率报告
-                            publishHTML([
-                                allowMissing: false,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'reports/coverage',
-                                reportFiles: 'index.html',
-                                reportName: 'Coverage Report'
-                            ])
+                            script {
+                                if (fileExists('reports/coverage/index.html')) {
+                                    try {
+                                        publishHTML([
+                                            allowMissing: false,
+                                            alwaysLinkToLastBuild: true,
+                                            keepAll: true,
+                                            reportDir: 'reports/coverage',
+                                            reportFiles: 'index.html',
+                                            reportName: 'Coverage Report'
+                                        ])
+                                    } catch (Throwable error) {
+                                        echo "⚠️ 跳过 HTML 覆盖率发布: ${error.getMessage()}"
+                                    }
+                                } else {
+                                    echo '⚠️ 未找到 HTML 覆盖率报告，跳过 publishHTML'
+                                }
+                            }
                             // 归档报告
                             archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
                         }
@@ -400,8 +410,10 @@ DOCKER_EOF
 // 必需的 Jenkins 插件:
 //   - GitLab Plugin
 //   - JUnit Plugin
-//   - HTML Publisher Plugin
 //   - Git Plugin
+//
+// 可选插件:
+//   - HTML Publisher Plugin（用于 Jenkins 页面展示覆盖率 HTML 报告）
 //
 // 必需的配置:
 //   1. Jenkins Node (192.168.0.221) 已配置并在线
