@@ -54,9 +54,16 @@ pipeline {
                 script {
                     String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: 'develop'
                     String targetBranch = env.gitlabTargetBranch ?: ''
-                    boolean isMergeRequest = env.GITLAB_OBJECT_KIND == 'merge_request'
+                    String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
+                    boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
+                    boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
 
-                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.GITLAB_OBJECT_KIND ?: 'manual'}"
+                    env.CI_SOURCE_BRANCH = sourceBranch
+                    env.CI_TARGET_BRANCH = targetBranch
+                    env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
+                    env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
+
+                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
 
                     def extensions = [[$class: 'CleanBeforeCheckout']]
                     if (isMergeRequest && targetBranch) {
@@ -258,7 +265,11 @@ pipeline {
         // ==============================================
         stage('Deploy to Testing') {
             when {
-                branch 'develop'
+                expression {
+                    env.CI_SOURCE_BRANCH == 'develop' &&
+                    env.CI_TARGET_BRANCH == 'develop' &&
+                    env.CI_IS_MERGE_REQUEST != 'true'
+                }
             }
             steps {
                 script {
