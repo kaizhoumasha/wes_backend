@@ -30,6 +30,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_INDEX_URL=${PYPI_MIRROR} \
     PYTHONPATH=/app \
     UV_DEFAULT_INDEX=${PYPI_MIRROR} \
+    UV_HTTP_TIMEOUT=120 \
     DEBIAN_FRONTEND=noninteractive \
     # 优化 Python 编译
     PYTHON_O=1 \
