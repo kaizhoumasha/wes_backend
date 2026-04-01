@@ -269,7 +269,6 @@ pipeline {
             when {
                 expression {
                     env.CI_SOURCE_BRANCH == 'develop' &&
-                    env.CI_TARGET_BRANCH == 'develop' &&
                     env.CI_IS_MERGE_REQUEST != 'true'
                 }
             }
