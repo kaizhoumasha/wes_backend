@@ -352,7 +352,8 @@ DOCKER_EOF
                         HEALTH_CHECK_PASSED=false
 
                         while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                            if curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_CHECK_URL} | grep -q "200"; then
+                            if docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} exec -T api \
+                                curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_CHECK_URL} | grep -q "200"; then
                                 echo -e "${GREEN}✅ 健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
                                 HEALTH_CHECK_PASSED=true
                                 break
