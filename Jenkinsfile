@@ -25,7 +25,7 @@ pipeline {
         DEPLOY_COMPOSE_FILE = 'docker-compose.yml'
         DEPLOY_PROFILE = 'test'
         // 健康检查配置
-        HEALTH_CHECK_URL = 'http://localhost:8001/api/health'
+        HEALTH_CHECK_URL = 'http://localhost:8001/api/v1/performance/health'
         HEALTH_CHECK_RETRIES = '5'
         // CI 镜像构建目标
         CI_BUILD_TARGET = 'testing'
@@ -36,7 +36,7 @@ pipeline {
         // 保留最近 10 次构建
         buildDiscarder(logRotator(numToKeepStr: '10'))
         // 超时配置
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
         // 使用显式 checkout，按 GitLab webhook 提供的分支检出代码
         skipDefaultCheckout(true)
         // 禁用并发构建
@@ -266,6 +266,9 @@ pipeline {
 
                         echo -e "${GREEN}📂 切换到项目目录...${NC}"
                         cd ${DEPLOY_PATH}
+
+                        echo -e "${GREEN}📝 同步部署环境文件...${NC}"
+                        cp -f ${DEPLOY_ENV_FILE} .env
 
                         echo -e "${GREEN}📥 更新代码...${NC}"
                         PREVIOUS_COMMIT=$(git rev-parse HEAD)
