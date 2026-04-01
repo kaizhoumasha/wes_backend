@@ -89,7 +89,9 @@ pipeline {
                         extensions: extensions
                     ])
 
-                    String shortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    String shortCommit = fullCommit.take(7)
+                    env.CI_COMMIT_SHA = fullCommit
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
                     echo "🐳 CI 镜像标签: ${env.CI_IMAGE}"
                 }
@@ -291,13 +293,17 @@ pipeline {
                         echo -e "${GREEN}📝 同步部署环境文件...${NC}"
                         cp -f ${DEPLOY_ENV_FILE} .env
 
+                        TEST_INFRA_SERVICES="db redis"
+                        TEST_APP_SERVICES="api celery_worker"
+
                         echo -e "${GREEN}📥 更新代码...${NC}"
                         PREVIOUS_COMMIT=$(git rev-parse HEAD)
                         echo "📌 当前提交: $PREVIOUS_COMMIT"
+                        echo "📌 目标提交: ${CI_COMMIT_SHA}"
 
                         # 拉取最新代码
                         git fetch origin
-                        git checkout ${GIT_COMMIT}
+                        git checkout --detach ${CI_COMMIT_SHA}
 
                         echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
 
@@ -316,24 +322,19 @@ DOCKER_EOF
                             echo -e "${YELLOW}⏭️  Docker 镜像加速器已配置，跳过${NC}"
                         fi
 
-                        echo -e "${GREEN}🐳 构建 Docker 镜像...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build --no-cache || {
-                            echo -e "${RED}❌ Docker 镜像构建失败${NC}"
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
+                        echo -e "${GREEN}🗄️  确保测试基础设施在线...${NC}"
+                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || {
+                            echo -e "${RED}❌ 测试基础设施启动失败${NC}"
                             exit 1
                         }
 
-                        echo -e "${GREEN}🔄 停止旧容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down || true
-
-                        echo -e "${GREEN}⚙️  启动新容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d || {
+                        echo -e "${GREEN}⚙️  启动测试应用服务...${NC}"
+                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || {
                             echo -e "${RED}❌ 容器启动失败${NC}"
                             echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
+                            git checkout --detach $PREVIOUS_COMMIT
+                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || true
+                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || true
                             exit 1
                         }
 
@@ -364,13 +365,12 @@ DOCKER_EOF
 
                         if [ "$HEALTH_CHECK_PASSED" = false ]; then
                             echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} logs --tail=100 api
+                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} logs --tail=100 api celery_worker
 
                             echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
+                            git checkout --detach $PREVIOUS_COMMIT
+                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || true
+                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || true
                             exit 1
                         fi
 
