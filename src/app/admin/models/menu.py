@@ -46,7 +46,7 @@ class Menu(MenuBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=Tru
             postgresql_where="NOT is_deleted",
         ),
         # 子节点查询组合索引
-        Index("idx_menus_parent_sort", "parent_id", "sort_order"),
+        Index("ix_menus_parent_sort", "parent_id", "sort_order"),
     )
 
     # 关联关系在 src/app/admin/models/__init__.py 中统一绑定

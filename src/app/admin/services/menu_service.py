@@ -1,7 +1,7 @@
 """菜单 Service"""
 
 from collections.abc import Sequence
-from typing import Any, Protocol, cast
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,11 +20,7 @@ class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
     """菜单 Service（支持树形结构和 CRUD）"""
 
     def __init__(self, repo: MenuRepository = menu_repository):
-        # 初始化 TreeServiceMixin（设置 self.repo）
-        cast("Any", TreeServiceMixin.__init__)(self, repo)
-        # 初始化 BaseService（启用缓存）
-        cast("Any", BaseService.__init__)(self, repo, enable_cache=True)
-        self.repo = repo
+        super().__init__(repo, enable_cache=True)
 
     async def get_user_menu_tree(self, db: AsyncSession, user_id: int) -> list[MenuTreeResponseSimple]:
         """获取用户可访问的菜单树

@@ -232,6 +232,8 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
     Example:
         user_read = model_to_schema(user, UserResponse)
     """
+    from src.core.logger import logger
+
     data: dict[str, Any] = {}
     insp = sa_inspect(obj)
     relationships = get_relationship_fields(schema)
@@ -250,6 +252,7 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
         if field_name in insp.unloaded:
             annotation = field_info.annotation
             origin = get_origin(annotation)
+            logger.debug(f"Field {field_name} is unloaded, setting default (list or None)")
             if origin is list:
                 data[field_name] = []
             else:
@@ -262,6 +265,7 @@ def model_to_schema(obj: Any, schema: type[BaseModel]) -> BaseModel:
             elif isinstance(value, list):
                 nested_schema = relationships.get(field_name)
                 if nested_schema:
+                    logger.debug(f"Converting nested list field {field_name} to {nested_schema}")
                     items = cast("list[Any]", value)
                     data[field_name] = [model_to_schema(item, nested_schema).__dict__ for item in items]
                 else:

@@ -215,7 +215,9 @@ class BaseService[M, R]:
         """
         self._repo_base.add_hook(hook_type, func, priority, condition, error_handler)
 
-    async def invalidate_cache(self, cache: object, id: int | None = None, invalidate_list: bool = False) -> None:
+    async def invalidate_cache(
+        self, cache: object, id: int | None = None, invalidate_list: bool = False, invalidate_tree: bool = False
+    ) -> None:
         """
         失效缓存
 
@@ -223,6 +225,7 @@ class BaseService[M, R]:
             cache: 缓存实例
             id: 记录 ID (None 表示失效所有)
             invalidate_list: 是否失效列表缓存
+            invalidate_tree: 是否失效树形缓存
         """
         if not self.enable_cache or not cache:
             return
@@ -240,6 +243,10 @@ class BaseService[M, R]:
             if invalidate_list:
                 _ = await cache.delete_pattern(f"{self.list_cache_prefix}:*")
                 logger.debug(f"列表缓存失效: {self.list_cache_prefix}")
+
+            if invalidate_tree:
+                _ = await cache.delete_pattern(f"{self.cache_prefix}:tree:*")
+                logger.debug(f"树形缓存失效: {self.cache_prefix}:tree:*")
         except ImportError:
             pass
 
