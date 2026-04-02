@@ -4,15 +4,30 @@ from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Body, Path, Query
+from pydantic import BaseModel, Field
 
 from src.core.base_api import BaseAPI
 from src.core.response.response_schema import ResponseSchemaModel
 from src.core.service_protocols import TreeServiceProtocol
-from src.database.dependencies import AsyncSessionDep
+from src.database.dependencies import AsyncSessionDep, CacheDep
 
 ModelType = TypeVar("ModelType")
 CreateModelType = TypeVar("CreateModelType")
 UpdateModelType = TypeVar("UpdateModelType")
+
+
+class SortItem(BaseModel):
+    """批量排序项"""
+
+    id: int = Field(description="节点ID")
+    parent_id: int | None = Field(None, description="父节点ID")
+    sort_order: int = Field(0, description="排序值")
+
+
+class BatchSortRequest(BaseModel):
+    """批量排序请求"""
+
+    items: list[SortItem] = Field(description="排序项列表")
 
 
 class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
@@ -83,12 +98,30 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         )
         async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
+            cache: CacheDep,
             root_id: Annotated[int | None, Query(description="根节点ID")] = None,
-            max_depth: Annotated[int, Query(description="最大深度,-1表示不限制")] = -1,
+            tree_depth: Annotated[
+                int,
+                Query(
+                    description="树深度：-1=完整树(节点少时用), 0=仅顶层(懒加载，节点多时用)",
+                    ge=-1,
+                    le=0,
+                ),
+            ] = 0,
+            max_depth: Annotated[
+                int,
+                Query(
+                    description="关联数据加载深度",
+                    ge=0,
+                    le=3,
+                ),
+            ] = 1,
         ) -> dict[str, Any]:
-            """获取树形结构"""
+            """获取树形结构（默认懒加载模式）"""
             response_builder_any = self._response_builder()
-            items = await self.service.get_tree(db, root_id, max_depth, schema=self.tree_response_schema)
+            items = await self.service.get_tree(
+                db, root_id, max_depth, tree_depth, schema=self.tree_response_schema, cache=cache
+            )
             return response_builder_any.success(data=items)
 
         @self.router.get(
@@ -142,13 +175,32 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         )
         async def move_node(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
+            cache: CacheDep,
             node_id: Annotated[int, Body(description="要移动的节点ID")],
             new_parent_id: Annotated[int | None, Body(description="新的父节点ID")],
         ) -> dict[str, Any]:
             """移动节点"""
             response_builder_any = self._response_builder()
-            result = await self.service.move_node(db, node_id, new_parent_id)
+            result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
             return response_builder_any.success(data=result)
+
+        @self.router.put(
+            "/batch-sort",
+            response_model=ResponseSchemaModel[None],
+            dependencies=update_dependencies,
+        )
+        async def batch_sort(  # pyright: ignore[reportUnusedFunction]
+            db: AsyncSessionDep,
+            cache: CacheDep,
+            request: BatchSortRequest,
+        ) -> dict[str, Any]:
+            """批量排序节点
+
+            适用于拖拽排序场景，一次请求更新多个节点的 parent_id 和 sort_order
+            """
+            items = [item.model_dump() for item in request.items]
+            await self.service.batch_sort(db, items, cache=cache)
+            return self._response_builder().success(data=None)
 
 
 __all__ = ["TreeAPI"]

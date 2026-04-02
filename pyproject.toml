@@ -391,6 +391,7 @@ reportUnusedVariable = "hint"
 reportUnusedImport = "hint"
 reportUnusedClass = "hint"
 reportUnusedFunction = "hint"
+reportAttributeAccessIssue = "hint"  # Mixin 模式固有限制
 
 # Pydantic 特殊支持
 reportCallInDefaultInitializer = "hint"

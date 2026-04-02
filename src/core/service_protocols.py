@@ -67,8 +67,10 @@ class TreeServiceProtocol(CrudServiceProtocol, Protocol):
         self,
         db: AsyncSession,
         root_id: int | None = None,
-        max_depth: int = -1,
+        max_depth: int = 1,
+        tree_depth: int = 0,
         schema: type[Any] | None = None,
+        cache: object | None = None,
     ) -> list[Any]: ...
 
     async def get_siblings(
@@ -96,7 +98,15 @@ class TreeServiceProtocol(CrudServiceProtocol, Protocol):
         db: AsyncSession,
         node_id: int,
         new_parent_id: int | None,
+        cache: object | None = None,
     ) -> Any: ...
+
+    async def batch_sort(
+        self,
+        db: AsyncSession,
+        items: list[dict[str, Any]],
+        cache: object | None = None,
+    ) -> None: ...
 
 
 __all__ = ["CrudServiceProtocol", "TreeServiceProtocol"]
