@@ -30,7 +30,7 @@ pipeline {
         FRONTEND_DEPLOY_BRANCH = 'develop'
         // 健康检查配置
         HEALTH_CHECK_URL = 'http://localhost:8001/api/v1/performance/health'
-        HEALTH_CHECK_RETRIES = '5'
+        HEALTH_CHECK_RETRIES = '30'
         // CI 镜像构建目标
         CI_BUILD_TARGET = 'testing'
     }
