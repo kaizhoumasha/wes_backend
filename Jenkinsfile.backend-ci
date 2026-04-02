@@ -233,15 +233,12 @@ pipeline {
             }
         }
 
-        stage('Trigger Test Deploy') {
-            when {
-                expression {
-                    env.CI_SOURCE_BRANCH == 'develop' &&
-                    env.CI_EVENT_TYPE == 'PUSH'
-                }
-            }
-            steps {
-                script {
+    }
+
+    post {
+        success {
+            script {
+                if (env.CI_SOURCE_BRANCH == 'develop' && env.CI_EVENT_TYPE == 'PUSH') {
                     echo "🚀 Trigger Test Deploy: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}, backend_tag=${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"
                     build job: 'wes_test_deploy',
                         wait: false,
@@ -250,12 +247,11 @@ pipeline {
                             string(name: 'FRONTEND_IMAGE_TAG', value: 'develop'),
                             string(name: 'SOURCE_BRANCH', value: env.CI_SOURCE_BRANCH)
                         ]
+                } else {
+                    echo "ℹ️ Skip Test Deploy trigger: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}"
                 }
             }
         }
-    }
-
-    post {
         always {
             sh '''
                 docker image rm -f "${CI_IMAGE}" >/dev/null 2>&1 || true
