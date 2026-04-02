@@ -69,7 +69,7 @@ RUN pip install --no-cache-dir uv
 # 创建虚拟环境并基于锁文件安装依赖
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    uv sync --frozen --all-extras --all-groups --no-install-project --active
+    uv sync --frozen --extra dev --group ci --no-install-project --active
 
 # ============================================
 # Stage 3: Development - 开发环境
