@@ -82,7 +82,10 @@ class MenuRepository(TreeRepository[Menu]):
                 if not _is_deleted(menu) and menu_id is not None:
                     menu_map[menu_id] = menu
 
-        return list(menu_map.values())
+        menus = list(menu_map.values())
+        # 按 sort_order 排序
+        menus.sort(key=lambda x: x.sort_order)
+        return menus
 
 
 menu_repository = MenuRepository()
