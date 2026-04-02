@@ -1,6 +1,6 @@
 """树形数据 Repository（物化路径模式）"""
 
-from typing import Protocol, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -222,6 +222,11 @@ class TreeRepository[T](BaseRepository[T]):
                 descendant_node.tree_path = descendant_node.tree_path.replace(old_tree_path, new_tree_path)
                 descendant_node.level += level_delta
 
+            # 🔥 新增：失效所有后代节点的缓存
+            # 将后代 ID 列表存入 Hook context，供 AFTER_UPDATE Hook 使用
+            if descendants and hasattr(ctx, "results"):
+                ctx.results["moved_descendant_ids"] = [d.id for d in descendants if hasattr(d, "id")]
+
         return hook
 
     def _update_parent_has_children_hook(self) -> HookFunc:
@@ -263,11 +268,13 @@ class TreeRepository[T](BaseRepository[T]):
             if parent_id is None:
                 return
 
-            # 检查父节点是否还有其他子节点
+            # 检查父节点是否还有其他非软删除子节点
             parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
-            result = await db.execute(
-                select(self.model).where(parent_id_attr == parent_id).limit(1)  # type: ignore[attr-defined]
-            )
+            stmt = select(self.model).where(parent_id_attr == parent_id)  # type: ignore[attr-defined]
+            is_deleted_attr = getattr(self.model, "is_deleted", None)
+            if is_deleted_attr is not None:
+                stmt = stmt.where(is_deleted_attr == False)  # noqa: E712
+            result = await db.execute(stmt.limit(1))
             remaining_child = result.scalar_one_or_none()
 
             # 如果没有剩余子节点，更新父节点的 has_children = False
@@ -298,9 +305,15 @@ class TreeRepository[T](BaseRepository[T]):
                 return
 
             new_parent_id = data["parent_id"]
-            old_parent_id = instance.parent_id
+            # AFTER_UPDATE 时 instance 已经被 db.refresh()，parent_id 是新值
+            # 必须从 _audit_old_values 中获取变更前的原始 parent_id
+            old_values = ctx.params.get("_audit_old_values", {})
+            old_parent_id = old_values.get("parent_id")
 
-            # 更新原父节点的 has_children
+            if new_parent_id == old_parent_id:
+                return
+
+            # 更新原父节点的 has_children（可能从有子节点变为无子节点）
             if old_parent_id is not None:
                 await self._check_and_update_has_children(db, old_parent_id)
 
@@ -317,11 +330,14 @@ class TreeRepository[T](BaseRepository[T]):
         return hook
 
     async def _check_and_update_has_children(self, db: AsyncSession, parent_id: int) -> None:
-        """检查并更新父节点的 has_children 状态"""
+        """检查并更新父节点的 has_children 状态（只计算未软删除的子节点）"""
         parent_id_attr = self.model.parent_id  # type: ignore[attr-defined]
-        result = await db.execute(
-            select(self.model).where(parent_id_attr == parent_id).limit(1)  # type: ignore[attr-defined]
-        )
+        stmt = select(self.model).where(parent_id_attr == parent_id)  # type: ignore[attr-defined]
+        is_deleted_attr = getattr(self.model, "is_deleted", None)
+        if is_deleted_attr is not None:
+            stmt = stmt.where(is_deleted_attr == False)  # noqa: E712
+        stmt = stmt.limit(1)
+        result = await db.execute(stmt)
         remaining_child = result.scalar_one_or_none()
 
         parent = await db.execute(
@@ -337,6 +353,8 @@ class TreeRepository[T](BaseRepository[T]):
         db: AsyncSession,
         parent_id: int | None,
         include_inactive: bool = False,
+        schema: type | None = None,
+        relation_max_depth: int = 1,
     ) -> list[T]:
         """获取直接子节点"""
         # 使用 getattr 避免泛型类型的属性访问错误
@@ -351,7 +369,12 @@ class TreeRepository[T](BaseRepository[T]):
 
         sort_order_attr = self.model.sort_order  # type: ignore[attr-defined]
         _, children = await self.get_list(
-            db, limit=1000, where_clauses_raw=where_clauses, order_by_raw=[sort_order_attr]
+            db,
+            limit=1000,
+            where_clauses_raw=where_clauses,
+            order_by_raw=[sort_order_attr],
+            schema=schema,
+            max_depth=relation_max_depth,
         )
         return children
 
@@ -404,7 +427,13 @@ class TreeRepository[T](BaseRepository[T]):
 
         return items
 
-    async def get_ancestors(self, db: AsyncSession, node_id: int) -> list[T]:
+    async def get_ancestors(
+        self,
+        db: AsyncSession,
+        node_id: int,
+        schema: type | None = None,
+        relation_max_depth: int = 1,
+    ) -> list[T]:
         """获取祖先路径"""
         node = await self.get_by_id(db, node_id)
         tree_path = getattr(node, "tree_path", None) if node else None
@@ -420,7 +449,13 @@ class TreeRepository[T](BaseRepository[T]):
             .where(self.model.id.in_(ancestor_ids))  # type: ignore[attr-defined]
             .order_by(self.model.level)  # type: ignore[attr-defined]
         )
-        return list(result.scalars().all())
+        items = list(result.scalars().all())
+
+        # 如果提供了 schema，自动加载关联数据
+        if schema and items:
+            items = await self._load_relations_for_items(db, items, schema, relation_max_depth)
+
+        return items
 
     async def move_node(
         self,
@@ -439,16 +474,130 @@ class TreeRepository[T](BaseRepository[T]):
 
         return await self.update(db, node_id, {"parent_id": new_parent_id})
 
-    async def get_depth(self, db: AsyncSession, node_id: int) -> int:
-        """获取节点深度"""
-        node = await self.get_by_id(db, node_id)
-        level = getattr(node, "level", 1) if node else 1
-        return level - 1
+    async def batch_sort(
+        self,
+        db: AsyncSession,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """批量更新节点的 parent_id 和 sort_order
 
-    async def is_leaf(self, db: AsyncSession, node_id: int) -> bool:
-        """判断是否叶子节点"""
-        children = await self.get_children(db, node_id)
-        return len(children) == 0
+        Args:
+            db: 数据库会话
+            items: 排序项列表 [{"id": 1, "parent_id": null, "sort_order": 0}, ...]
+
+        Raises:
+            ValueError: 节点不存在或形成循环依赖
+        """
+        if not items:
+            return
+
+        node_ids = [item["id"] for item in items]
+
+        result = await db.execute(
+            select(self.model).where(self.model.id.in_(node_ids))  # type: ignore[attr-defined]
+        )
+        nodes = {node.id: node for node in result.scalars().all()}
+
+        missing_ids = set(node_ids) - set(nodes.keys())
+        if missing_ids:
+            raise ValueError(f"节点不存在: {missing_ids}")
+
+        # 在任何变更前捕获原始状态，避免第二阶段读到已修改的值
+        original: dict[int, dict[str, Any]] = {
+            nid: {
+                "parent_id": getattr(node, "parent_id", None),
+                "level": getattr(node, "level", 1),
+                "tree_path": getattr(node, "tree_path", f"/{nid}/"),
+            }
+            for nid, node in nodes.items()
+        }
+
+        # 循环检测 + 预取后代（合并两次查询为一次）
+        # changed_nodes[node_id] = (new_parent_id, descendants_list)
+        changed_nodes: dict[int, tuple[int | None, list[Any]]] = {}
+        for item in items:
+            node_id = item["id"]
+            new_parent_id = item.get("parent_id")
+            if new_parent_id != original[node_id]["parent_id"]:
+                descendants = await self.get_descendants(db, node_id)
+                if new_parent_id is not None:
+                    descendant_ids = {d.id for d in descendants}  # type: ignore[attr-defined]
+                    if new_parent_id in descendant_ids:
+                        raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
+                changed_nodes[node_id] = (new_parent_id, descendants)
+
+        # 第一阶段：更新当前节点的 sort_order / parent_id / tree_path / level
+        for item in items:
+            node_id = item["id"]
+            new_parent_id = item.get("parent_id")
+            node = nodes[node_id]
+
+            node.sort_order = item.get("sort_order", 0)  # type: ignore[attr-defined]
+
+            if node_id not in changed_nodes:
+                continue
+
+            if new_parent_id is None:
+                node.tree_path = f"/{node_id}/"  # type: ignore[attr-defined]
+                node.level = 1  # type: ignore[attr-defined]
+            else:
+                parent_node = nodes.get(new_parent_id)
+                if parent_node is None:
+                    parent_result = await db.execute(
+                        select(self.model).where(self.model.id == new_parent_id)  # type: ignore[attr-defined]
+                    )
+                    parent_node = parent_result.scalar_one_or_none()
+                if parent_node is not None:
+                    node.tree_path = f"{parent_node.tree_path}{node_id}/"  # type: ignore[attr-defined]
+                    node.level = parent_node.level + 1  # type: ignore[attr-defined]
+
+            node.parent_id = new_parent_id  # type: ignore[attr-defined]
+            if hasattr(node, "version"):
+                node.version += 1  # type: ignore[attr-defined]
+
+        # 第二阶段：更新所有后代的 tree_path / level（使用变更前的原始路径做替换）
+        for node_id, (_, descendants) in changed_nodes.items():
+            node = nodes[node_id]
+            old_tree_path = original[node_id]["tree_path"]
+            new_tree_path = getattr(node, "tree_path", old_tree_path)
+            level_delta = getattr(node, "level", 1) - original[node_id]["level"]
+
+            for descendant in descendants:
+                descendant_node = cast("TreeNodeLike", descendant)
+                descendant_node.tree_path = descendant_node.tree_path.replace(old_tree_path, new_tree_path)
+                descendant_node.level += level_delta
+                if hasattr(descendant, "version"):
+                    descendant.version += 1  # type: ignore[attr-defined]
+
+        await db.flush()
+
+        # 第三阶段：batch_sort 绕过了 Hook 系统，手动维护 has_children
+        # TODO: 考虑重构为"批量更新后触发 AFTER_UPDATE Hook"，避免手动维护
+        # 只有模型具有 has_children 字段时才执行
+        if changed_nodes and hasattr(self.model, "has_children"):
+            # 收集所有受影响的父节点 ID
+            old_parent_ids = {
+                original[nid]["parent_id"]
+                for nid in changed_nodes
+                if original[nid]["parent_id"] is not None
+            }
+            new_parent_ids = {new_pid for new_pid, _ in changed_nodes.values() if new_pid is not None}
+
+            # 原父节点：重新检查是否还有非软删除子节点
+            for pid in old_parent_ids:
+                await self._check_and_update_has_children(db, pid)
+
+            # 新父节点：直接标记为有子节点
+            all_new_parent_ids = new_parent_ids - old_parent_ids  # 避免重复处理
+            for pid in all_new_parent_ids:
+                parent_result = await db.execute(
+                    select(self.model).where(self.model.id == pid)  # type: ignore[attr-defined]
+                )
+                parent_obj = parent_result.scalar_one_or_none()
+                if parent_obj:
+                    parent_obj.has_children = True  # type: ignore[attr-defined]
+
+            await db.flush()
 
 
 __all__ = ["TreeRepository"]
