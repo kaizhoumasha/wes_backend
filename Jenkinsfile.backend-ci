@@ -82,6 +82,8 @@ pipeline {
                 sh '''
                     set -e
                     docker build \
+                        --provenance=false \
+                        --sbom=false \
                         --target "${CI_BUILD_TARGET}" \
                         -t "${CI_IMAGE}" \
                         .
@@ -200,6 +202,8 @@ pipeline {
                 sh '''
                     set -e
                     docker build \
+                        --provenance=false \
+                        --sbom=false \
                         --target "${RUNTIME_BUILD_TARGET}" \
                         -t "${RUNTIME_IMAGE_LOCAL}" \
                         .
