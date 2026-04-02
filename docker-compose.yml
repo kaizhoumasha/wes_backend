@@ -310,10 +310,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      # 开发/测试模式下依赖前端服务
-      frontend:
-        condition: service_healthy
-        required: false
     networks:
       - wesp9-network
     deploy:

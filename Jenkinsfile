@@ -21,9 +21,13 @@ pipeline {
         DATETIME_TIMEZONE = 'Asia/Shanghai'
         // 部署配置（本地部署，因为在 Node 上执行）
         DEPLOY_PATH = '/opt/wes_backend'
+        FRONTEND_DEPLOY_PATH = '/opt/wes_frontend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.yml'
+        DEPLOY_FRONTEND_COMPOSE_FILE = 'docker-compose.frontend.yml'
         DEPLOY_PROFILE = 'test'
+        FRONTEND_REPO_URL = 'http://192.168.0.220:9080/wes/wes_frontend.git'
+        FRONTEND_DEPLOY_BRANCH = 'develop'
         // 健康检查配置
         HEALTH_CHECK_URL = 'http://localhost:8001/api/v1/performance/health'
         HEALTH_CHECK_RETRIES = '5'
@@ -276,114 +280,190 @@ pipeline {
                 script {
                     echo "🚀 开始部署到测试环境..."
 
-                    sh '''
-                        set -e
-                        set -o pipefail
+                    withCredentials([usernamePassword(credentialsId: 'gitlab-http-creds', usernameVariable: 'GITLAB_USER', passwordVariable: 'GITLAB_TOKEN')]) {
+                        sh '''
+                            set -e
+                            set -o pipefail
 
-                        # 颜色输出
-                        RED='\\033[0;31m'
-                        GREEN='\\033[0;32m'
-                        YELLOW='\\033[1;33m'
-                        NC='\\033[0m'
+                            # 颜色输出
+                            RED='\\033[0;31m'
+                            GREEN='\\033[0;32m'
+                            YELLOW='\\033[1;33m'
+                            NC='\\033[0m'
 
-                        echo -e "${GREEN}📂 切换到项目目录...${NC}"
-                        cd ${DEPLOY_PATH}
+                            TEST_INFRA_SERVICES="db redis"
+                            TEST_APP_SERVICES="frontend api celery_worker nginx"
 
-                        echo -e "${GREEN}📝 同步部署环境文件...${NC}"
-                        cp -f ${DEPLOY_ENV_FILE} .env
+                            rollback_deploy() {
+                                echo -e "${YELLOW}🔄 回滚后端到: $PREVIOUS_BACKEND_COMMIT${NC}"
+                                git -C "${DEPLOY_PATH}" checkout --detach "$PREVIOUS_BACKEND_COMMIT" || true
 
-                        TEST_INFRA_SERVICES="db redis"
-                        TEST_APP_SERVICES="api celery_worker"
+                                if [ -n "${PREVIOUS_FRONTEND_COMMIT:-}" ]; then
+                                    echo -e "${YELLOW}🔄 回滚前端到: $PREVIOUS_FRONTEND_COMMIT${NC}"
+                                    git -C "${FRONTEND_DEPLOY_PATH}" checkout --detach "$PREVIOUS_FRONTEND_COMMIT" || true
+                                fi
 
-                        echo -e "${GREEN}📥 更新代码...${NC}"
-                        PREVIOUS_COMMIT=$(git rev-parse HEAD)
-                        echo "📌 当前提交: $PREVIOUS_COMMIT"
-                        echo "📌 目标提交: ${CI_COMMIT_SHA}"
+                                docker compose \
+                                    -f "${DEPLOY_COMPOSE_FILE}" \
+                                    -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                    --env-file "${DEPLOY_ENV_FILE}" \
+                                    --profile infra up -d ${TEST_INFRA_SERVICES} || true
 
-                        # 拉取最新代码
-                        git fetch origin
-                        git checkout --detach ${CI_COMMIT_SHA}
+                                docker compose \
+                                    -f "${DEPLOY_COMPOSE_FILE}" \
+                                    -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                    --env-file "${DEPLOY_ENV_FILE}" \
+                                    up -d --build --force-recreate ${TEST_APP_SERVICES} || true
+                            }
 
-                        echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
+                            echo -e "${GREEN}📂 切换到后端项目目录...${NC}"
+                            cd "${DEPLOY_PATH}"
 
-                        echo -e "${GREEN}🔧 配置 Docker 镜像加速器...${NC}"
-                        if [ ! -f /etc/docker/daemon.json ] || ! grep -q "docker.happyjack.cn" /etc/docker/daemon.json; then
-                            sudo mkdir -p /etc/docker
-                            sudo tee /etc/docker/daemon.json > /dev/null << 'DOCKER_EOF'
+                            echo -e "${GREEN}📝 同步部署环境文件...${NC}"
+                            cp -f "${DEPLOY_ENV_FILE}" .env
+
+                            echo -e "${GREEN}📥 更新后端代码...${NC}"
+                            PREVIOUS_BACKEND_COMMIT=$(git rev-parse HEAD)
+                            echo "📌 后端当前提交: $PREVIOUS_BACKEND_COMMIT"
+                            echo "📌 后端目标提交: ${CI_COMMIT_SHA}"
+                            git fetch origin
+                            git checkout --detach "${CI_COMMIT_SHA}"
+                            echo -e "${GREEN}📌 后端新提交: $(git log -1 --oneline)${NC}"
+
+                            echo -e "${GREEN}📥 同步前端代码...${NC}"
+                            mkdir -p "$(dirname "${FRONTEND_DEPLOY_PATH}")"
+                            GIT_AUTH_HEADER=$(printf '%s:%s' "$GITLAB_USER" "$GITLAB_TOKEN" | base64 -w0)
+
+                            if [ ! -d "${FRONTEND_DEPLOY_PATH}/.git" ]; then
+                                echo -e "${YELLOW}📦 前端仓库不存在，开始克隆...${NC}"
+                                rm -rf "${FRONTEND_DEPLOY_PATH}"
+                                git -c http.extraHeader="Authorization: Basic ${GIT_AUTH_HEADER}" \
+                                    clone "${FRONTEND_REPO_URL}" "${FRONTEND_DEPLOY_PATH}"
+                                PREVIOUS_FRONTEND_COMMIT=""
+                            else
+                                PREVIOUS_FRONTEND_COMMIT=$(git -C "${FRONTEND_DEPLOY_PATH}" rev-parse HEAD)
+                                git -C "${FRONTEND_DEPLOY_PATH}" remote set-url origin "${FRONTEND_REPO_URL}"
+                            fi
+
+                            FRONTEND_TARGET_BRANCH="${FRONTEND_DEPLOY_BRANCH}"
+                            if git -C "${FRONTEND_DEPLOY_PATH}" -c http.extraHeader="Authorization: Basic ${GIT_AUTH_HEADER}" \
+                                ls-remote --exit-code --heads origin "${CI_SOURCE_BRANCH}" >/dev/null 2>&1; then
+                                FRONTEND_TARGET_BRANCH="${CI_SOURCE_BRANCH}"
+                            fi
+
+                            git -C "${FRONTEND_DEPLOY_PATH}" -c http.extraHeader="Authorization: Basic ${GIT_AUTH_HEADER}" fetch origin
+                            git -C "${FRONTEND_DEPLOY_PATH}" checkout --detach "origin/${FRONTEND_TARGET_BRANCH}"
+                            echo "📌 前端目标分支: ${FRONTEND_TARGET_BRANCH}"
+                            echo -e "${GREEN}📌 前端新提交: $(git -C "${FRONTEND_DEPLOY_PATH}" log -1 --oneline)${NC}"
+
+                            if [ ! -f "${FRONTEND_DEPLOY_PATH}/package.json" ]; then
+                                echo -e "${RED}❌ 前端源码目录异常: ${FRONTEND_DEPLOY_PATH}${NC}"
+                                rollback_deploy
+                                exit 1
+                            fi
+
+                            echo -e "${GREEN}🔧 配置 Docker 镜像加速器...${NC}"
+                            if [ ! -f /etc/docker/daemon.json ] || ! grep -q "docker.happyjack.cn" /etc/docker/daemon.json; then
+                                sudo mkdir -p /etc/docker
+                                sudo tee /etc/docker/daemon.json > /dev/null << 'DOCKER_EOF'
 {
   "registry-mirrors": ["https://docker.happyjack.cn"]
 }
 DOCKER_EOF
-                            sudo systemctl restart docker
-                            sleep 5
-                            echo -e "${GREEN}✅ Docker 镜像加速器配置完成${NC}"
-                        else
-                            echo -e "${YELLOW}⏭️  Docker 镜像加速器已配置，跳过${NC}"
-                        fi
-
-                        echo -e "${GREEN}🗄️  确保测试基础设施在线...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || {
-                            echo -e "${RED}❌ 测试基础设施启动失败${NC}"
-                            exit 1
-                        }
-
-                        echo -e "${GREEN}⚙️  启动测试应用服务...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || {
-                            echo -e "${RED}❌ 容器启动失败${NC}"
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout --detach $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || true
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || true
-                            exit 1
-                        }
-
-                        echo -e "${GREEN}⏳ 等待容器启动...${NC}"
-                        sleep 15
-
-                        echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} exec -T api alembic upgrade head || {
-                            echo -e "${YELLOW}⚠️  数据库迁移失败或已跳过${NC}"
-                        }
-
-                        echo -e "${GREEN}🏥 健康检查...${NC}"
-                        RETRY_COUNT=0
-                        MAX_RETRIES=${HEALTH_CHECK_RETRIES}
-                        HEALTH_CHECK_PASSED=false
-
-                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                            if docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} exec -T api \
-                                curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_CHECK_URL} | grep -q "200"; then
-                                echo -e "${GREEN}✅ 健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
-                                HEALTH_CHECK_PASSED=true
-                                break
-                            else
-                                RETRY_COUNT=$((RETRY_COUNT + 1))
-                                echo -e "${YELLOW}⏳ 健康检查失败，等待重试... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
+                                sudo systemctl restart docker
                                 sleep 5
+                                echo -e "${GREEN}✅ Docker 镜像加速器配置完成${NC}"
+                            else
+                                echo -e "${YELLOW}⏭️  Docker 镜像加速器已配置，跳过${NC}"
                             fi
-                        done
 
-                        if [ "$HEALTH_CHECK_PASSED" = false ]; then
-                            echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} logs --tail=100 api celery_worker
+                            echo -e "${GREEN}🗄️  确保测试基础设施在线...${NC}"
+                            docker compose \
+                                -f "${DEPLOY_COMPOSE_FILE}" \
+                                -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                --env-file "${DEPLOY_ENV_FILE}" \
+                                --profile infra up -d ${TEST_INFRA_SERVICES} || {
+                                echo -e "${RED}❌ 测试基础设施启动失败${NC}"
+                                rollback_deploy
+                                exit 1
+                            }
 
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout --detach $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile infra up -d ${TEST_INFRA_SERVICES} || true
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} up -d --build --force-recreate ${TEST_APP_SERVICES} || true
-                            exit 1
-                        fi
+                            echo -e "${GREEN}⚙️  启动测试应用服务...${NC}"
+                            docker compose \
+                                -f "${DEPLOY_COMPOSE_FILE}" \
+                                -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                --env-file "${DEPLOY_ENV_FILE}" \
+                                up -d --build --force-recreate ${TEST_APP_SERVICES} || {
+                                echo -e "${RED}❌ 容器启动失败${NC}"
+                                rollback_deploy
+                                exit 1
+                            }
 
-                        echo -e "${GREEN}🧹 清理未使用的 Docker 资源...${NC}"
-                        docker system prune -f --volumes || true
+                            echo -e "${GREEN}⏳ 等待容器启动...${NC}"
+                            sleep 15
 
-                        echo -e "${GREEN}✅ 测试环境部署完成${NC}"
-                        echo -e "${GREEN}📊 容器状态：${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} ps
+                            echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
+                            docker compose \
+                                -f "${DEPLOY_COMPOSE_FILE}" \
+                                -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                --env-file "${DEPLOY_ENV_FILE}" \
+                                exec -T api alembic upgrade head || {
+                                echo -e "${YELLOW}⚠️  数据库迁移失败或已跳过${NC}"
+                            }
 
-                        echo -e "${GREEN}📈 资源使用情况：${NC}"
-                        docker stats --no-stream --format "table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}"
-                    '''
+                            NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
+                            NGINX_PORT=${NGINX_PORT:-80}
+                            NGINX_BASE_URL="http://localhost:${NGINX_PORT}"
+
+                            echo -e "${GREEN}🏥 健康检查...${NC}"
+                            RETRY_COUNT=0
+                            MAX_RETRIES=${HEALTH_CHECK_RETRIES}
+                            HEALTH_CHECK_PASSED=false
+
+                            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                                if docker compose \
+                                    -f "${DEPLOY_COMPOSE_FILE}" \
+                                    -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                    --env-file "${DEPLOY_ENV_FILE}" \
+                                    exec -T api curl -f -s -o /dev/null -w "%{http_code}" "${HEALTH_CHECK_URL}" | grep -q "200" \
+                                    && curl -f -s -o /dev/null -w "%{http_code}" "${NGINX_BASE_URL}/health" | grep -q "200" \
+                                    && curl -f -s -o /dev/null -w "%{http_code}" "${NGINX_BASE_URL}/" | grep -q "200"; then
+                                    echo -e "${GREEN}✅ 前后端链路健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
+                                    HEALTH_CHECK_PASSED=true
+                                    break
+                                else
+                                    RETRY_COUNT=$((RETRY_COUNT + 1))
+                                    echo -e "${YELLOW}⏳ 链路健康检查失败，等待重试... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
+                                    sleep 5
+                                fi
+                            done
+
+                            if [ "$HEALTH_CHECK_PASSED" = false ]; then
+                                echo -e "${RED}❌ 链路健康检查失败，开始回滚...${NC}"
+                                docker compose \
+                                    -f "${DEPLOY_COMPOSE_FILE}" \
+                                    -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                    --env-file "${DEPLOY_ENV_FILE}" \
+                                    logs --tail=120 frontend nginx api celery_worker
+                                rollback_deploy
+                                exit 1
+                            fi
+
+                            echo -e "${GREEN}🧹 清理未使用的 Docker 资源...${NC}"
+                            docker system prune -f --volumes || true
+
+                            echo -e "${GREEN}✅ 测试环境部署完成${NC}"
+                            echo -e "${GREEN}📊 容器状态：${NC}"
+                            docker compose \
+                                -f "${DEPLOY_COMPOSE_FILE}" \
+                                -f "${DEPLOY_FRONTEND_COMPOSE_FILE}" \
+                                --env-file "${DEPLOY_ENV_FILE}" \
+                                --profile "${DEPLOY_PROFILE}" ps
+
+                            echo -e "${GREEN}📈 资源使用情况：${NC}"
+                            docker stats --no-stream --format "table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}"
+                        '''
+                    }
 
                     echo '✅ 部署成功'
                 }
