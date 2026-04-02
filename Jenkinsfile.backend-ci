@@ -250,6 +250,7 @@ pipeline {
                 } else {
                     echo "ℹ️ Skip Test Deploy trigger: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}"
                 }
+                echo '✅ Backend CI Pipeline 执行成功'
             }
         }
         always {
@@ -260,9 +261,6 @@ pipeline {
                 docker image rm -f "${RUNTIME_IMAGE_BRANCH}" >/dev/null 2>&1 || true
             '''
             cleanWs()
-        }
-        success {
-            echo '✅ Backend CI Pipeline 执行成功'
         }
         failure {
             echo '❌ Backend CI Pipeline 执行失败'
