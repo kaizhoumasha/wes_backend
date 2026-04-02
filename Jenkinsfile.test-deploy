@@ -18,6 +18,7 @@ pipeline {
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
         HEALTH_CHECK_URL = 'http://127.0.0.1:8001/api/v1/performance/health'
         HEALTH_CHECK_RETRIES = '36'
+        IMAGE_PULL_RETRIES = '24'
     }
 
     options {
@@ -98,6 +99,29 @@ pipeline {
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
                             up -d db redis
+
+                        wait_for_image() {
+                            image_ref="$1"
+                            retries="$2"
+                            attempt=1
+
+                            while [ "$attempt" -le "$retries" ]; do
+                                if docker pull "$image_ref" >/dev/null 2>&1; then
+                                    echo "✅ 镜像已就绪: $image_ref"
+                                    return 0
+                                fi
+
+                                echo "⏳ 等待镜像入库: $image_ref (${attempt}/${retries})"
+                                attempt=$((attempt + 1))
+                                sleep 5
+                            done
+
+                            echo "❌ 镜像未就绪: $image_ref"
+                            return 1
+                        }
+
+                        wait_for_image "${BACKEND_IMAGE}" "${IMAGE_PULL_RETRIES}"
+                        wait_for_image "${FRONTEND_IMAGE}" "${IMAGE_PULL_RETRIES}"
 
                         echo "🐳 拉取应用镜像..."
                         docker compose \
