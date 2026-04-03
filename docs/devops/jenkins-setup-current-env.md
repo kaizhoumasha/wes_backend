@@ -13,7 +13,7 @@
 
 ### 步骤 1：访问 Jenkins
 
-1. 浏览器访问：`http://192.168.0.220:8080`（或 Jenkins 实际端口）
+1. 浏览器访问：`http://192.168.0.220:9081`
 2. 使用 LDAP 账号登录：
    - 用户名：`zhoukai`
    - 密码：`Ctt123456`
@@ -145,7 +145,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 
 **方式 1：GitLab Webhook（推荐）**
 - ✅ **Build when a change is pushed to GitLab**
-- GitLab webhook URL: `http://192.168.0.220:8080/project/wes-backend`
+- GitLab webhook URL: `http://192.168.0.220:9081/project/wes-backend`
 - 记录这个 URL，稍后在 GitLab 中配置
 
 **方式 2：Poll SCM（备选）**
@@ -174,7 +174,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 3. 左侧菜单 → **Settings → Webhooks**
 4. 配置 Webhook：
    ```
-   URL: http://192.168.0.220:8080/project/wes-backend
+   URL: http://192.168.0.220:9081/project/wes-backend
    Secret token: (留空或设置一个密钥)
    Trigger:
      ✅ Push events
@@ -257,236 +257,47 @@ docker ps
 docker-compose --version
 ```
 
-### 步骤 8：调整 Jenkinsfile（使用 Node 节点）
+### 步骤 8：确认 Jenkinsfile 与当前链路一致
 
-由于您已经配置了 Jenkins Node（192.168.0.221），需要调整 Jenkinsfile 以在 Node 上执行构建和测试。
+仓库当前使用的是根目录下的 `Jenkinsfile`，不要再维护或引用历史示例 `Jenkinsfile.node`。
 
-创建 `Jenkinsfile.node` 文件：
+当前 Pipeline 关键点：
 
-```groovy
-pipeline {
-    agent {
-        label 'test-node'  // 使用您的 Node 标签
-    }
+- `develop`：
+  - 构建 CI 镜像
+  - 执行质量检查与测试
+  - 构建并推送 `${registry}/wes/wes_backend:develop`
+  - 同时推送 immutable tag
+  - 自动部署 testing
+- `main`：
+  - 构建 CI 镜像
+  - 执行质量检查与测试
+  - 构建并推送 `${registry}/wes/wes_backend:prod`
+  - 同时推送 immutable tag
+  - 自动部署 production
+- 其他分支：
+  - 仅执行 CI，不推镜像、不自动部署
 
-    environment {
-        PYTHON_VERSION = '3.13'
-        DATETIME_TIMEZONE = 'Asia/Shanghai'
-        DEPLOY_HOST = '192.168.0.221'
-        DEPLOY_USER = 'root'
-        DEPLOY_PATH = '/opt/wes_backend'
-        DEPLOY_ENV_FILE = '.env.test'
-        DEPLOY_COMPOSE_FILE = 'docker-compose.yml'
-        DEPLOY_PROFILE = 'test'
-        HEALTH_CHECK_URL = 'http://localhost:8001/api/health'
-        HEALTH_CHECK_RETRIES = '5'
-    }
+部署行为约束：
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()
-        timestamps()
-    }
+- 仅滚动后端应用服务
+- 不在热修时升级 `db` / `redis` / `nginx`
+- 使用 `docker compose -f docker-compose.deploy.yml ... up -d --no-build --no-deps`
+- 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/performance/health`
+- 健康检查失败时回滚到上一个 backend 镜像
 
-    stages {
-        stage('Prepare') {
-            steps {
-                script {
-                    echo '📦 安装开发依赖...'
-                    sh 'uv sync --frozen'
-                    echo '✅ 依赖安装完成'
-                }
-            }
-        }
+建议核对项：
 
-        stage('Quality Checks') {
-            parallel {
-                stage('Format Check') {
-                    steps {
-                        script {
-                            echo '🔍 检查代码格式 (Ruff Format)...'
-                            sh 'uv run ruff format --check .'
-                            echo '✅ 代码格式检查通过'
-                        }
-                    }
-                }
-
-                stage('Lint Check') {
-                    steps {
-                        script {
-                            echo '🔍 检查代码质量 (Ruff Lint)...'
-                            sh 'uv run ruff check . --output-format=github || true'
-                            echo '✅ 代码质量检查完成'
-                        }
-                    }
-                }
-
-                stage('Security Check') {
-                    steps {
-                        script {
-                            echo '🔍 安全检查 (Bandit)...'
-                            sh '''
-                                uv run bandit -r src/ -f json -o bandit-report.json || true
-                                uv run bandit -r src/ -f screen
-                            '''
-                            echo '✅ 安全检查完成'
-                        }
-                    }
-                    post {
-                        always {
-                            archiveArtifacts artifacts: 'bandit-report.json', allowEmptyArchive: true
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Tests') {
-            parallel {
-                stage('Unit Tests') {
-                    steps {
-                        script {
-                            echo '🧪 运行单元测试...'
-                            sh '''
-                                uv run pytest tests/ -v --tb=short \
-                                    --cov=src \
-                                    --cov-report=term-missing \
-                                    --cov-report=html:reports/coverage \
-                                    --cov-report=xml:reports/coverage.xml \
-                                    --junitxml=reports/junit.xml
-                            '''
-                            echo '✅ 单元测试通过'
-                        }
-                    }
-                    post {
-                        always {
-                            junit 'reports/junit.xml'
-                            publishHTML([
-                                allowMissing: false,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'reports/coverage',
-                                reportFiles: 'index.html',
-                                reportName: 'Coverage Report'
-                            ])
-                            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
-                        }
-                    }
-                }
-
-                stage('API Signature Tests') {
-                    steps {
-                        script {
-                            echo '🔐 测试 API 签名认证...'
-                            sh 'uv run pytest tests/api/test_signature.py -v --tb=short'
-                            echo '✅ API 签名测试通过'
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Deploy to Testing') {
-            when {
-                branch 'develop'
-            }
-            steps {
-                script {
-                    echo "🚀 开始部署到测试环境 (${DEPLOY_HOST})..."
-
-                    sh '''
-                        set -e
-                        set -o pipefail
-
-                        # 颜色输出
-                        RED='\\033[0;31m'
-                        GREEN='\\033[0;32m'
-                        YELLOW='\\033[1;33m'
-                        NC='\\033[0m'
-
-                        echo -e "${GREEN}📂 切换到项目目录...${NC}"
-                        cd ${DEPLOY_PATH}
-
-                        echo -e "${GREEN}📥 更新代码...${NC}"
-                        PREVIOUS_COMMIT=$(git rev-parse HEAD)
-                        echo "📌 当前提交: $PREVIOUS_COMMIT"
-
-                        git fetch origin
-                        git checkout ${GIT_COMMIT}
-
-                        echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
-
-                        echo -e "${GREEN}🐳 构建 Docker 镜像...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build --no-cache
-
-                        echo -e "${GREEN}🔄 停止旧容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down || true
-
-                        echo -e "${GREEN}⚙️  启动新容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
-
-                        echo -e "${GREEN}⏳ 等待容器启动...${NC}"
-                        sleep 15
-
-                        echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} exec -T api alembic upgrade head || true
-
-                        echo -e "${GREEN}🏥 健康检查...${NC}"
-                        RETRY_COUNT=0
-                        MAX_RETRIES=${HEALTH_CHECK_RETRIES}
-                        HEALTH_CHECK_PASSED=false
-
-                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                            if curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_CHECK_URL} | grep -q "200"; then
-                                echo -e "${GREEN}✅ 健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
-                                HEALTH_CHECK_PASSED=true
-                                break
-                            else
-                                RETRY_COUNT=$((RETRY_COUNT + 1))
-                                echo -e "${YELLOW}⏳ 健康检查失败，等待重试... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
-                                sleep 5
-                            fi
-                        done
-
-                        if [ "$HEALTH_CHECK_PASSED" = false ]; then
-                            echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} logs --tail=100 api
-
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
-                            exit 1
-                        fi
-
-                        echo -e "${GREEN}🧹 清理未使用的 Docker 资源...${NC}"
-                        docker system prune -f --volumes || true
-
-                        echo -e "${GREEN}✅ 测试环境部署完成${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} ps
-                    '''
-
-                    echo '✅ 部署成功'
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            cleanWs()
-        }
-        success {
-            echo '✅ Pipeline 执行成功'
-        }
-        failure {
-            echo '❌ Pipeline 执行失败'
-        }
-    }
-}
+```bash
+rg -n "REGISTRY_HOST|IMAGE_NAMESPACE|DEPLOY_SERVICES|DEPLOY_REQUIRED_CONTAINERS" Jenkinsfile
 ```
+
+确认 Jenkins 中 Pipeline 配置：
+
+- **Definition**: Pipeline script from SCM
+- **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
+- **Script Path**: `Jenkinsfile`
+- **Build when a change is pushed to GitLab**: 已勾选
 
 ### 步骤 9：提交 Jenkinsfile 到 GitLab
 
@@ -509,10 +320,13 @@ git push gitlab develop
 
 检查以下阶段是否成功：
 
-- ✅ **Prepare**：依赖安装
+- ✅ **Checkout Source**：源码检出与分支识别
+- ✅ **Build CI Image**：CI 测试镜像构建
 - ✅ **Quality Checks**：格式检查、代码质量、安全检查
 - ✅ **Tests**：单元测试、API 签名测试
-- ✅ **Deploy to Testing**：部署到测试环境
+- ✅ **Build Runtime Image**：develop/main 运行时镜像构建
+- ✅ **Publish Runtime Image**：develop/main 镜像推送
+- ✅ **Deploy Runtime**：develop/main 自动部署
 
 #### 10.3 查看报告
 
@@ -524,7 +338,7 @@ git push gitlab develop
 
 ```bash
 # 在任意机器上测试
-curl http://192.168.0.221:8001/api/health
+curl http://192.168.0.221:8001/api/v1/performance/health
 
 # 预期响应
 {"status": "healthy"}
@@ -553,24 +367,7 @@ curl http://192.168.0.221:8001/api/health
 3. 如果离线，点击节点 → **Launch agent**
 4. 查看节点日志排查问题
 
-### 问题 3：SSH 连接失败
-
-**症状**：部署阶段失败，提示 `Permission denied`
-
-**解决**：
-
-```bash
-# 在 Jenkins 容器中测试
-docker exec -it jenkins bash
-ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
-
-# 如果失败，检查：
-# 1. 公钥是否正确添加到 192.168.0.221
-# 2. 私钥权限是否正确（600）
-# 3. authorized_keys 权限是否正确（600）
-```
-
-### 问题 4：Docker 构建失败
+### 问题 3：Docker 构建失败
 
 **症状**：`docker: command not found` 或权限错误
 
@@ -585,7 +382,7 @@ docker ps
 sudo usermod -aG docker jenkins
 ```
 
-### 问题 5：健康检查失败
+### 问题 4：健康检查失败
 
 **症状**：部署后健康检查超时
 
@@ -594,21 +391,21 @@ sudo usermod -aG docker jenkins
 ```bash
 # 在 192.168.0.221 上检查
 cd /opt/wes_backend
-docker-compose -f docker-compose.yml --env-file .env.test --profile test ps
-docker-compose -f docker-compose.yml --env-file .env.test --profile test logs api
+docker compose -f docker-compose.deploy.yml --env-file .env.test ps
+docker compose -f docker-compose.deploy.yml --env-file .env.test logs api
 
 # 检查端口是否监听
 netstat -tuln | grep 8001
 
 # 手动测试健康检查
-curl http://localhost:8001/api/health
+docker exec wes_api_test curl -f http://127.0.0.1:8001/api/v1/performance/health
 ```
 
 ## 📊 验证清单
 
 完成以下检查确保配置成功：
 
-- [ ] Jenkins 可以访问（http://192.168.0.220:8080）
+- [ ] Jenkins 可以访问（http://192.168.0.220:9081）
 - [ ] LDAP 登录成功（zhoukai/Ctt123456）
 - [ ] Jenkins Node (192.168.0.221) 状态在线
 - [ ] GitLab 凭据已配置

@@ -22,7 +22,7 @@
 
 ```bash
 # 访问 Jenkins
-http://192.168.0.220:8080
+http://192.168.0.220:9081
 
 # 进入 Manage Jenkins → Manage Nodes and Clouds
 # 记录 192.168.0.221 节点的 Labels
@@ -58,16 +58,18 @@ git push gitlab develop
 代码推送 → GitLab Webhook → Jenkins
     ↓
 在 Node (192.168.0.221) 上执行
-    ├─ Prepare: 安装依赖
-    ├─ Quality Checks: 代码检查（并行）
-    ├─ Tests: 单元测试（并行）
-    └─ Deploy: 部署到测试环境
-        ├─ 构建 Docker 镜像
-        ├─ 停止旧容器
-        ├─ 启动新容器
+    ├─ Checkout Source
+    ├─ Build CI Image
+    ├─ Quality Checks（并行）
+    ├─ Tests（并行）
+    ├─ Build Runtime Image（develop/main）
+    ├─ Publish Runtime Image（develop/main）
+    └─ Deploy Runtime（develop/main）
+        ├─ 仅滚动后端应用服务
+        ├─ 不升级 db/redis/nginx
         ├─ 数据库迁移
-        ├─ 健康检查
-        └─ 失败时自动回滚
+        ├─ API 健康检查
+        └─ 失败时回滚到上一个镜像
 ```
 
 ## 📖 详细文档
@@ -95,7 +97,7 @@ Jenkins → wes-backend → Test Result
 Jenkins → wes-backend → Coverage Report
 
 # 测试健康检查
-curl http://192.168.0.221:8001/api/health
+curl http://192.168.0.221:8001/api/v1/performance/health
 ```
 
 ## 📞 需要帮助？

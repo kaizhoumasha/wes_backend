@@ -4,7 +4,7 @@
 
 ### 1. 访问 Jenkins
 
-- [ ] 浏览器访问：`http://192.168.0.220:8080`
+- [ ] 浏览器访问：`http://192.168.0.220:9081`
 - [ ] 使用 LDAP 登录：`zhoukai / Ctt123456`
 
 ### 2. 验证 Jenkins Node
@@ -53,7 +53,7 @@
 #### Build Triggers
 
 - [ ] **Build when a change is pushed to GitLab**
-- [ ] 记录 Webhook URL：`http://192.168.0.220:8080/project/wes-backend`
+- [ ] 记录 Webhook URL：`http://192.168.0.220:9081/project/wes-backend`
 
 #### Pipeline
 
@@ -62,7 +62,7 @@
 - [ ] **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
 - [ ] **Credentials**: `gitlab-credentials`
 - [ ] **Branch**: `*/develop`
-- [ ] **Script Path**: `Jenkinsfile.node`
+- [ ] **Script Path**: `Jenkinsfile`
 
 ### 6. 配置 GitLab Webhook
 
@@ -71,7 +71,7 @@
 - [ ] **Settings → Webhooks**
 - [ ] 配置：
   ```
-  URL: http://192.168.0.220:8080/project/wes-backend
+  URL: http://192.168.0.220:9081/project/wes-backend
   Trigger: Push events, Merge request events
   SSL verification: 取消勾选（HTTP）
   ```
@@ -142,12 +142,8 @@ docker ps
 # 在本地开发机器上
 cd /Users/kaizhou/SynologyDrive/works/wes_backend
 
-# 复制 Jenkinsfile.node 为 Jenkinsfile
-cp Jenkinsfile.node Jenkinsfile
-
-# 修改 agent 标签（根据实际的 Node 标签）
+# 如有需要，按实际 Node 标签调整 Jenkinsfile 中的 agent label
 vim Jenkinsfile
-# 将 label 'test-node' 改为实际的标签
 
 # 提交到 GitLab
 git add Jenkinsfile
@@ -155,7 +151,7 @@ git commit -m "chore(ci): 添加 Jenkins Pipeline 配置"
 git push gitlab develop
 ```
 
-- [ ] Jenkinsfile 已复制
+- [ ] Jenkinsfile 已核对
 - [ ] agent 标签已修改
 - [ ] 已提交到 GitLab
 
@@ -164,16 +160,19 @@ git push gitlab develop
 - [ ] Jenkins → **wes-backend** → **Build Now**
 - [ ] 查看构建日志
 - [ ] 验证各阶段：
-  - [ ] Prepare（依赖安装）
+  - [ ] Checkout Source
+  - [ ] Build CI Image
   - [ ] Quality Checks（代码检查）
   - [ ] Tests（单元测试）
-  - [ ] Deploy to Testing（部署）
+  - [ ] Build Runtime Image（develop/main）
+  - [ ] Publish Runtime Image（develop/main）
+  - [ ] Deploy Runtime（develop/main）
 
 ### 10. 验证部署
 
 ```bash
 # 测试健康检查
-curl http://192.168.0.221:8001/api/health
+curl http://192.168.0.221:8001/api/v1/performance/health
 
 # 预期响应
 {"status": "healthy"}
@@ -233,7 +232,7 @@ ps aux | grep jenkins
 - Jenkins 日志：Jenkins → Manage Jenkins → System Log
 
 **解决**：
-- 确认 URL 正确：`http://192.168.0.220:8080/project/wes-backend`
+- 确认 URL 正确：`http://192.168.0.220:9081/project/wes-backend`
 - 确认 Jenkins 可以从 GitLab 访问
 
 ### Q3: 构建失败 - uv 命令未找到
@@ -285,11 +284,12 @@ sudo usermod -aG docker jenkins
 1. **开发人员推送代码** → GitLab
 2. **GitLab 触发 Webhook** → Jenkins
 3. **Jenkins 在 Node 上执行**：
-   - 安装依赖
+   - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
-   - 部署到测试环境
-4. **自动回滚**（如果失败）
+   - develop/main 构建并推送运行时镜像
+   - develop/main 自动部署后端运行时服务
+4. **自动回滚**（如果运行时健康检查失败）
 5. **通知结果**（可选配置）
 
 ## 📞 需要帮助？
