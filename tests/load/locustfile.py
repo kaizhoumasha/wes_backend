@@ -41,7 +41,7 @@ class APIUser(HttpUser):
     def on_start(self):
         """用户启动时的初始化操作"""
         # 先访问健康检查，确保服务可用
-        self.client.get("/api/v1/performance/health")
+        self.client.get("/api/v1/admin/performance/health")
 
     @task(5)
     def get_user_list(self):
@@ -78,7 +78,7 @@ class APIUser(HttpUser):
         """
         # 如果没有可用的用户 ID，跳过测试
         if not EXISTING_USER_IDS:
-            self.client.get("/api/v1/performance/health", name="跳过详情查询（无可用ID）")
+            self.client.get("/api/v1/admin/performance/health", name="跳过详情查询（无可用ID）")
             return
 
         # 随机获取用户 ID（偏向前面的 ID，模拟热点数据）
@@ -177,7 +177,7 @@ class APIUser(HttpUser):
                     response.failure(f"HTTP {response.status_code}")
         else:
             # 没有可用的用户 ID，跳过
-            self.client.get("/api/v1/performance/health", name="跳过更新操作（无可用ID）")
+            self.client.get("/api/v1/admin/performance/health", name="跳过更新操作（无可用ID）")
 
     @task(1)
     def get_performance_metrics(self):
@@ -241,12 +241,12 @@ class ReadUser(HttpUser):
             self.client.get(f"/api/v1/users/{user_id}")
         else:
             # 没有可用的用户 ID，访问健康检查
-            self.client.get("/api/v1/performance/health")
+            self.client.get("/api/v1/admin/performance/health")
 
     @task(1)
     def get_health(self):
         """健康检查"""
-        self.client.get("/api/v1/performance/health")
+        self.client.get("/api/v1/admin/performance/health")
 
 
 class WriteUser(HttpUser):
@@ -290,7 +290,7 @@ class WriteUser(HttpUser):
             self.client.put(f"/api/v1/users/{user_id}", json=update_data)
         else:
             # 没有可用的用户 ID，访问健康检查
-            self.client.get("/api/v1/performance/health")
+            self.client.get("/api/v1/admin/performance/health")
 
 
 # 测试事件处理

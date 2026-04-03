@@ -287,7 +287,7 @@ docker-compose --version
 - 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
-- 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/performance/health`
+- 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/admin/performance/health`
 - 同时检查 nginx `/health` 和首页
 
 建议核对项：
@@ -344,7 +344,7 @@ git push gitlab develop
 
 ```bash
 # 在任意机器上测试
-curl http://192.168.0.221:8001/api/v1/performance/health
+curl http://192.168.0.221:8001/api/v1/admin/performance/health
 
 # 预期响应
 {"status": "healthy"}
@@ -404,7 +404,7 @@ docker compose -f docker-compose.deploy.yml --env-file .env.test logs api
 netstat -tuln | grep 8001
 
 # 手动测试健康检查
-docker exec wes_api_test curl -f http://127.0.0.1:8001/api/v1/performance/health
+docker exec wes_api_test curl -f http://127.0.0.1:8001/api/v1/admin/performance/health
 ```
 
 ## 📊 验证清单

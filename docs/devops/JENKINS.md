@@ -113,7 +113,7 @@ Jenkins → wes_backend-ci → Coverage Report
 Jenkins → wes_test_deploy → 构建号 → Console Output
 
 # 测试健康检查
-curl http://192.168.0.221:8001/api/v1/performance/health
+curl http://192.168.0.221:8001/api/v1/admin/performance/health
 ```
 
 ## 📞 需要帮助？
