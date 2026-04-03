@@ -111,7 +111,6 @@ desktop.ini
 
 # 项目特定
 migrations/versions/*.pyc
-scripts/
 locustfiles/
 nginx/
 redis/

@@ -287,6 +287,9 @@ docker-compose --version
 - 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
+- API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
+- 部署成功前会执行 `python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend`
+- 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
 - 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/admin/performance/health`
 - 同时检查 nginx `/health` 和首页
 
@@ -294,7 +297,7 @@ docker-compose --version
 
 ```bash
 rg -n "IMAGE_REPO|Trigger Test Deploy|Push Runtime Image" Jenkinsfile.backend-ci
-rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES" Jenkinsfile.test-deploy
+rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
 ```
 
 确认 Jenkins 中 Pipeline 配置：

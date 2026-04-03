@@ -178,6 +178,27 @@ pipeline {
                             exit 1
                         fi
 
+                        echo "🧭 同步 TEST 环境菜单..."
+                        docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            exec -T api \
+                            python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend
+
+                        MENU_COUNT=$(docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            exec -T db \
+                            sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from wes_sys.menus"')
+                        MENU_COUNT=$(echo "${MENU_COUNT}" | tr -d '[:space:]')
+
+                        if [ -z "${MENU_COUNT}" ] || [ "${MENU_COUNT}" -le 0 ]; then
+                            echo "❌ TEST 环境菜单同步后数量异常: ${MENU_COUNT:-<empty>}"
+                            exit 1
+                        fi
+
+                        echo "✅ TEST 环境菜单数量: ${MENU_COUNT}"
+
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \

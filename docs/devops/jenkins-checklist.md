@@ -175,6 +175,7 @@ git push gitlab develop
 - [ ] Jenkins → **wes_test_deploy** → 查看是否被 `wes_backend-ci` 自动触发
 - [ ] 查看部署日志
 - [ ] 验证 TEST 环境健康检查
+- [ ] 验证日志中出现“同步 TEST 环境菜单”且 `TEST 环境菜单数量` 大于 0
 
 ### 11. 验证部署
 
@@ -184,10 +185,15 @@ curl http://192.168.0.221:8001/api/v1/admin/performance/health
 
 # 预期响应
 {"status": "healthy"}
+
+# 可选：确认 TEST 数据库菜单已同步
+ssh root@192.168.0.221 \
+  "docker exec wes_postgres_test psql -U wes_user -d wes_db_test -tAc 'select count(*) from wes_sys.menus'"
 ```
 
 - [ ] 健康检查通过
 - [ ] 应用正常运行
+- [ ] TEST 环境菜单数量大于 0
 
 ## 🔧 关键配置点
 
