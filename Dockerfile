@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # ============================================
 # 多阶段构建 Dockerfile - P9 WES Backend
 # ============================================
@@ -30,6 +32,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_INDEX_URL=${PYPI_MIRROR} \
     PYTHONPATH=/app \
     UV_DEFAULT_INDEX=${PYPI_MIRROR} \
+    UV_CACHE_DIR=/root/.cache/uv \
     UV_HTTP_TIMEOUT=120 \
     DEBIAN_FRONTEND=noninteractive \
     # 优化 Python 编译
@@ -67,7 +70,8 @@ FROM base AS builder
 RUN pip install --no-cache-dir uv
 
 # 创建虚拟环境并基于锁文件安装依赖
-RUN uv venv /opt/venv && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
     uv sync --frozen --all-extras --all-groups --no-install-project --active
 

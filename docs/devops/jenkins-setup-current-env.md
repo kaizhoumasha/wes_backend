@@ -71,7 +71,7 @@ docker exec -it jenkins bash
 ls -la ~/.ssh/
 
 # 如果没有，生成新密钥
-ssh-keygen -t rsa -b 4096 -C "jenkins@wes-backend" -f ~/.ssh/jenkins_rsa -N ""
+ssh-keygen -t rsa -b 4096 -C "jenkins@wes_backend-ci" -f ~/.ssh/jenkins_rsa -N ""
 
 # 查看公钥
 cat ~/.ssh/jenkins_rsa.pub
@@ -124,7 +124,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 #### 5.1 创建项目
 
 1. Jenkins 首页 → **New Item**
-2. 输入项目名称：`wes-backend`
+2. 输入项目名称：`wes_backend-ci`
 3. 选择 **Pipeline**
 4. 点击 **OK**
 
@@ -145,7 +145,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 
 **方式 1：GitLab Webhook（推荐）**
 - ✅ **Build when a change is pushed to GitLab**
-- GitLab webhook URL: `http://192.168.0.220:9081/project/wes-backend`
+- GitLab webhook URL: `http://192.168.0.220:9081/project/wes_backend-ci`
 - 记录这个 URL，稍后在 GitLab 中配置
 
 **方式 2：Poll SCM（备选）**
@@ -159,7 +159,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
   - **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
   - **Credentials**: 选择 `gitlab-credentials`
   - **Branches to build**: `*/develop`（或 `*/main`）
-- **Script Path**: `Jenkinsfile`
+- **Script Path**: `Jenkinsfile.backend-ci`
 
 #### 5.3 保存配置
 
@@ -174,7 +174,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 3. 左侧菜单 → **Settings → Webhooks**
 4. 配置 Webhook：
    ```
-   URL: http://192.168.0.220:9081/project/wes-backend
+   URL: http://192.168.0.220:9081/project/wes_backend-ci
    Secret token: (留空或设置一个密钥)
    Trigger:
      ✅ Push events
@@ -259,52 +259,54 @@ docker-compose --version
 
 ### 步骤 8：确认 Jenkinsfile 与当前链路一致
 
-仓库当前使用的是根目录下的 `Jenkinsfile`，不要再维护或引用历史示例 `Jenkinsfile.node`。
+仓库当前现役链路是三段式：
+
+- `wes_backend-ci` → `Jenkinsfile.backend-ci`
+- `wes_frontend-ci` → 前端独立流水线
+- `wes_test_deploy` → `Jenkinsfile.test-deploy`
+
+旧 `wes_backend` 单体 Pipeline 已退役并从 Jenkins 删除，不要再维护或引用它。
 
 当前 Pipeline 关键点：
 
 - `develop`：
   - 构建 CI 镜像
   - 执行质量检查与测试
-  - 构建并推送 `${registry}/wes/wes_backend:develop`
-  - 同时推送 immutable tag
-  - 自动部署 testing
-- `main`：
-  - 构建 CI 镜像
-  - 执行质量检查与测试
-  - 构建并推送 `${registry}/wes/wes_backend:prod`
-  - 同时推送 immutable tag
-  - 自动部署 production
-- 其他分支：
-  - 仅执行 CI，不推镜像、不自动部署
+  - 构建并推送 backend immutable tag 和分支 tag
+  - 自动触发 `wes_test_deploy`
+- `main` / 其他分支：
+  - `wes_backend-ci` 仍执行 CI
+  - 非 MR 时推送对应 runtime 镜像
+  - 不自动触发 TEST 部署
 
 部署行为约束：
 
-- 仅滚动后端应用服务
-- 不在热修时升级 `db` / `redis` / `nginx`
-- 使用 `docker compose -f docker-compose.deploy.yml ... up -d --no-build --no-deps`
+- `wes_test_deploy` 负责 TEST 环境部署
+- 先拉取 backend/frontend immutable 镜像
+- 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
 - 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/performance/health`
-- 健康检查失败时回滚到上一个 backend 镜像
+- 同时检查 nginx `/health` 和首页
 
 建议核对项：
 
 ```bash
-rg -n "REGISTRY_HOST|IMAGE_NAMESPACE|DEPLOY_SERVICES|DEPLOY_REQUIRED_CONTAINERS" Jenkinsfile
+rg -n "IMAGE_REPO|Trigger Test Deploy|Push Runtime Image" Jenkinsfile.backend-ci
+rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES" Jenkinsfile.test-deploy
 ```
 
 确认 Jenkins 中 Pipeline 配置：
 
 - **Definition**: Pipeline script from SCM
 - **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
-- **Script Path**: `Jenkinsfile`
+- **Script Path**: `Jenkinsfile.backend-ci`
 - **Build when a change is pushed to GitLab**: 已勾选
 
-### 步骤 9：提交 Jenkinsfile 到 GitLab
+### 步骤 9：提交现役 Jenkins Pipeline 到 GitLab
 
 ```bash
-# 提交 Jenkinsfile
-git add Jenkinsfile
-git commit -m "chore(ci): 添加 Jenkins Pipeline 配置"
+# 提交现役 Pipeline
+git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
+git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
 git push gitlab develop
 ```
 
@@ -312,7 +314,7 @@ git push gitlab develop
 
 #### 10.1 手动触发构建
 
-1. Jenkins → **wes-backend** 项目
+1. Jenkins → **wes_backend-ci** 项目
 2. 点击 **Build Now**
 3. 查看构建日志：点击构建号 → **Console Output**
 
@@ -324,15 +326,16 @@ git push gitlab develop
 - ✅ **Build CI Image**：CI 测试镜像构建
 - ✅ **Quality Checks**：格式检查、代码质量、安全检查
 - ✅ **Tests**：单元测试、API 签名测试
-- ✅ **Build Runtime Image**：develop/main 运行时镜像构建
-- ✅ **Publish Runtime Image**：develop/main 镜像推送
-- ✅ **Deploy Runtime**：develop/main 自动部署
+- ✅ **Build Runtime Image**：运行时镜像构建
+- ✅ **Push Runtime Image**：非 MR 镜像推送
+- ✅ **Trigger Test Deploy**：develop push 自动触发 TEST 部署
 
 #### 10.3 查看报告
 
-- **测试报告**：Jenkins → wes-backend → **Test Result**
-- **覆盖率报告**：Jenkins → wes-backend → **Coverage Report**
-- **安全报告**：Jenkins → wes-backend → **Artifacts** → bandit-report.json
+- **测试报告**：Jenkins → wes_backend-ci → **Test Result**
+- **覆盖率报告**：Jenkins → wes_backend-ci → **Coverage Report**
+- **安全报告**：Jenkins → wes_backend-ci → **Artifacts** → bandit-report.json
+- **TEST 部署日志**：Jenkins → wes_test_deploy → **Console Output**
 
 ### 步骤 11：验证部署
 

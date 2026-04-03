@@ -40,7 +40,7 @@
 ### 4. 创建 Pipeline 项目
 
 - [ ] Jenkins 首页 → **New Item**
-- [ ] 项目名称：`wes-backend`
+- [ ] 项目名称：`wes_backend-ci`
 - [ ] 类型：**Pipeline**
 - [ ] 点击 **OK**
 
@@ -53,7 +53,7 @@
 #### Build Triggers
 
 - [ ] **Build when a change is pushed to GitLab**
-- [ ] 记录 Webhook URL：`http://192.168.0.220:9081/project/wes-backend`
+- [ ] 记录 Webhook URL：`http://192.168.0.220:9081/project/wes_backend-ci`
 
 #### Pipeline
 
@@ -62,7 +62,7 @@
 - [ ] **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
 - [ ] **Credentials**: `gitlab-credentials`
 - [ ] **Branch**: `*/develop`
-- [ ] **Script Path**: `Jenkinsfile`
+- [ ] **Script Path**: `Jenkinsfile.backend-ci`
 
 ### 6. 配置 GitLab Webhook
 
@@ -71,7 +71,7 @@
 - [ ] **Settings → Webhooks**
 - [ ] 配置：
   ```
-  URL: http://192.168.0.220:9081/project/wes-backend
+  URL: http://192.168.0.220:9081/project/wes_backend-ci
   Trigger: Push events, Merge request events
   SSL verification: 取消勾选（HTTP）
   ```
@@ -136,39 +136,47 @@ docker ps
 - [ ] Docker 已安装
 - [ ] Docker Compose 已安装
 
-### 8. 提交 Jenkinsfile
+### 8. 提交现役 Pipeline
 
 ```bash
 # 在本地开发机器上
 cd /Users/kaizhou/SynologyDrive/works/wes_backend
 
-# 如有需要，按实际 Node 标签调整 Jenkinsfile 中的 agent label
-vim Jenkinsfile
+# 如有需要，按实际 Node 标签调整 Pipeline 中的 agent label
+vim Jenkinsfile.backend-ci
+vim Jenkinsfile.test-deploy
 
 # 提交到 GitLab
-git add Jenkinsfile
-git commit -m "chore(ci): 添加 Jenkins Pipeline 配置"
+git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
+git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
 git push gitlab develop
 ```
 
-- [ ] Jenkinsfile 已核对
+- [ ] Jenkinsfile.backend-ci 已核对
+- [ ] Jenkinsfile.test-deploy 已核对
 - [ ] agent 标签已修改
 - [ ] 已提交到 GitLab
 
-### 9. 测试 Pipeline
+### 9. 测试后端 CI Pipeline
 
-- [ ] Jenkins → **wes-backend** → **Build Now**
+- [ ] Jenkins → **wes_backend-ci** → **Build Now**
 - [ ] 查看构建日志
 - [ ] 验证各阶段：
   - [ ] Checkout Source
   - [ ] Build CI Image
   - [ ] Quality Checks（代码检查）
   - [ ] Tests（单元测试）
-  - [ ] Build Runtime Image（develop/main）
-  - [ ] Publish Runtime Image（develop/main）
-  - [ ] Deploy Runtime（develop/main）
+  - [ ] Build Runtime Image
+  - [ ] Push Runtime Image（非 MR）
+  - [ ] Trigger Test Deploy（仅 develop push）
 
-### 10. 验证部署
+### 10. 测试 TEST 部署 Pipeline
+
+- [ ] Jenkins → **wes_test_deploy** → 查看是否被 `wes_backend-ci` 自动触发
+- [ ] 查看部署日志
+- [ ] 验证 TEST 环境健康检查
+
+### 11. 验证部署
 
 ```bash
 # 测试健康检查
@@ -232,7 +240,7 @@ ps aux | grep jenkins
 - Jenkins 日志：Jenkins → Manage Jenkins → System Log
 
 **解决**：
-- 确认 URL 正确：`http://192.168.0.220:9081/project/wes-backend`
+- 确认 URL 正确：`http://192.168.0.220:9081/project/wes_backend-ci`
 - 确认 Jenkins 可以从 GitLab 访问
 
 ### Q3: 构建失败 - uv 命令未找到

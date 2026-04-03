@@ -8,6 +8,8 @@ pipeline {
         IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend'
         CI_BUILD_TARGET = 'testing'
         RUNTIME_BUILD_TARGET = 'production'
+        DOCKER_BUILDKIT = '1'
+        BUILDX_BUILDER = 'wes-backend-ci-builder'
     }
 
     options {
@@ -81,12 +83,37 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    docker build \
-                        --provenance=false \
-                        --sbom=false \
-                        --target "${CI_BUILD_TARGET}" \
-                        -t "${CI_IMAGE}" \
-                        .
+                    CACHE_DIR="${HOME}/.cache/buildx/wes_backend-ci"
+                    CACHE_TMP="${CACHE_DIR}.tmp"
+                    mkdir -p "${CACHE_DIR}"
+
+                    if docker buildx version >/dev/null 2>&1; then
+                        docker buildx create --name "${BUILDX_BUILDER}" --driver docker-container --use >/dev/null 2>&1 || \
+                            docker buildx use "${BUILDX_BUILDER}"
+
+                        rm -rf "${CACHE_TMP}"
+                        docker buildx build \
+                            --load \
+                            --provenance=false \
+                            --sbom=false \
+                            --cache-from "type=local,src=${CACHE_DIR}" \
+                            --cache-to "type=local,dest=${CACHE_TMP},mode=max" \
+                            --target "${CI_BUILD_TARGET}" \
+                            -t "${CI_IMAGE}" \
+                            .
+
+                        rm -rf "${CACHE_DIR}.old"
+                        mv "${CACHE_DIR}" "${CACHE_DIR}.old" 2>/dev/null || true
+                        mv "${CACHE_TMP}" "${CACHE_DIR}"
+                        rm -rf "${CACHE_DIR}.old"
+                    else
+                        docker build \
+                            --provenance=false \
+                            --sbom=false \
+                            --target "${CI_BUILD_TARGET}" \
+                            -t "${CI_IMAGE}" \
+                            .
+                    fi
                 '''
             }
         }
@@ -201,12 +228,37 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    docker build \
-                        --provenance=false \
-                        --sbom=false \
-                        --target "${RUNTIME_BUILD_TARGET}" \
-                        -t "${RUNTIME_IMAGE_LOCAL}" \
-                        .
+                    CACHE_DIR="${HOME}/.cache/buildx/wes_backend-ci"
+                    CACHE_TMP="${CACHE_DIR}.tmp"
+                    mkdir -p "${CACHE_DIR}"
+
+                    if docker buildx version >/dev/null 2>&1; then
+                        docker buildx create --name "${BUILDX_BUILDER}" --driver docker-container --use >/dev/null 2>&1 || \
+                            docker buildx use "${BUILDX_BUILDER}"
+
+                        rm -rf "${CACHE_TMP}"
+                        docker buildx build \
+                            --load \
+                            --provenance=false \
+                            --sbom=false \
+                            --cache-from "type=local,src=${CACHE_DIR}" \
+                            --cache-to "type=local,dest=${CACHE_TMP},mode=max" \
+                            --target "${RUNTIME_BUILD_TARGET}" \
+                            -t "${RUNTIME_IMAGE_LOCAL}" \
+                            .
+
+                        rm -rf "${CACHE_DIR}.old"
+                        mv "${CACHE_DIR}" "${CACHE_DIR}.old" 2>/dev/null || true
+                        mv "${CACHE_TMP}" "${CACHE_DIR}"
+                        rm -rf "${CACHE_DIR}.old"
+                    else
+                        docker build \
+                            --provenance=false \
+                            --sbom=false \
+                            --target "${RUNTIME_BUILD_TARGET}" \
+                            -t "${RUNTIME_IMAGE_LOCAL}" \
+                            .
+                    fi
                 '''
             }
         }
