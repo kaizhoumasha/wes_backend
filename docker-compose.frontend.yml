@@ -5,6 +5,8 @@ services:
     restart: ${RESTART_POLICY:-unless-stopped}
     working_dir: /app
     command: ["sh", "/usr/local/bin/frontend-dev-entrypoint.sh"]
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
     env_file:
       - ${FRONTEND_ENV_FILE:-.env.frontend.dev}
     environment:
