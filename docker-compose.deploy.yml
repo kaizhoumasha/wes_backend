@@ -1,0 +1,150 @@
+services:
+  api:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    container_name: wes_api_${ENV:-prod}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${APP_HOST_PORT:-8001}:8001"
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8001
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/performance/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - wesp9-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+
+  celery_worker:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    command: >
+      sh -c '
+      if [ "${ENV:-prod}" = "dev" ]; then
+        exec sh /app/src/celery_app/dev_worker_autoreload.sh;
+      else
+        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device;
+      fi
+      '
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A src.celery_app.app inspect ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wesp9-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+
+  celery_beat:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    container_name: wes_celery_beat_${ENV:-prod}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    command: celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "tr '\\000' ' ' </proc/1/cmdline | grep -q 'celery.*beat' || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wesp9-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+
+  flower:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    container_name: wes_flower_${ENV:-prod}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    command: >
+      celery -A src.celery_app.app flower
+      --port=5555
+      --broker=redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - wesp9-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+
+networks:
+  wesp9-network:
+    name: wesp9-${ENV:-prod}-network
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: wes_br_${ENV:-prod}

@@ -5,19 +5,12 @@ services:
     restart: ${RESTART_POLICY:-unless-stopped}
     working_dir: /app
     command: ["sh", "/usr/local/bin/frontend-dev-entrypoint.sh"]
+    env_file:
+      - ${FRONTEND_ENV_FILE:-.env.frontend.dev}
     environment:
       FRONTEND_APP_DIR: /app
-      FRONTEND_PORT: ${FRONTEND_PORT:-5173}
       PNPM_HOME: /pnpm
       PNPM_STORE_DIR: /pnpm/store
-      CHOKIDAR_USEPOLLING: "true"
-      CHOKIDAR_INTERVAL: "300"
-      HUSKY: "0"
-      VITE_API_BASE_URL: ""
-      VITE_API_PROXY_TARGET: http://api:8001
-      VITE_SSE_URL: /api/v1/events/stream
-      VITE_APP_TITLE: ${FRONTEND_APP_TITLE:-P9 WES}
-      VITE_APP_DEV: "true"
     volumes:
       - ${FRONTEND_ROOT:-../wes_frontend}:/app:rw
       - ./scripts/frontend-dev-entrypoint.sh:/usr/local/bin/frontend-dev-entrypoint.sh:ro
@@ -37,6 +30,9 @@ services:
       start_period: 20s
     networks:
       - wesp9-network
+    dns:
+      - 8.8.8.8
+      - 114.114.114.114
     profiles:
       - dev
       - test

@@ -9,6 +9,8 @@ LOCKFILE="$APP_DIR/pnpm-lock.yaml"
 PACKAGE_JSON="$APP_DIR/package.json"
 STAMP_FILE="$APP_DIR/node_modules/.pnpm-lock.sha256"
 
+export NPM_CONFIG_REGISTRY="${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}"
+
 if [ ! -f "$PACKAGE_JSON" ] || [ ! -f "$LOCKFILE" ]; then
   echo "frontend source is not mounted correctly: expected $PACKAGE_JSON and $LOCKFILE" >&2
   exit 1

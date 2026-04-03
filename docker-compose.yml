@@ -34,7 +34,7 @@ services:
     ports:
       - "${APP_HOST_PORT:-8001}:8001"
     env_file:
-      - .env
+      - ${BACKEND_ENV_FILE:-.env}
     environment:
       # 应用配置
       APP_HOST: 0.0.0.0
@@ -116,7 +116,7 @@ services:
       fi
       '
     env_file:
-      - .env
+      - ${BACKEND_ENV_FILE:-.env}
     environment:
       # 数据库配置
       POSTGRES_HOST: db
@@ -187,7 +187,7 @@ services:
     restart: ${RESTART_POLICY:-unless-stopped}
     command: celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}
     env_file:
-      - .env
+      - ${BACKEND_ENV_FILE:-.env}
     environment:
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
@@ -254,7 +254,7 @@ services:
       --broker=redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
     env_file:
-      - .env
+      - ${BACKEND_ENV_FILE:-.env}
     environment:
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
@@ -310,10 +310,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      # 开发/测试模式下依赖前端服务
-      frontend:
-        condition: service_healthy
-        required: false
     networks:
       - wesp9-network
     deploy:

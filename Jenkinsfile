@@ -19,16 +19,16 @@ pipeline {
         PYTHON_VERSION = '3.13'
         // 时区配置
         DATETIME_TIMEZONE = 'Asia/Shanghai'
-        // 部署配置（本地部署，因为在 Node 上执行）
+        // 部署配置（在 Jenkins Node 上执行拉镜像部署）
         DEPLOY_PATH = '/opt/wes_backend'
-        DEPLOY_ENV_FILE = '.env.test'
-        DEPLOY_COMPOSE_FILE = 'docker-compose.yml'
-        DEPLOY_PROFILE = 'test'
-        // 健康检查配置
-        HEALTH_CHECK_URL = 'http://localhost:8001/api/health'
+        DEPLOY_COMPOSE_FILE = 'docker-compose.deploy.yml'
         HEALTH_CHECK_RETRIES = '5'
-        // CI 镜像构建目标
+        // 镜像配置
         CI_BUILD_TARGET = 'testing'
+        RUNTIME_BUILD_TARGET = 'production'
+        REGISTRY_HOST = '192.168.0.220:5050'
+        IMAGE_NAMESPACE = 'wes/wes_backend'
+        REGISTRY_CREDENTIALS_ID = 'gitlab-registry-creds'
     }
 
     // 构建选项
@@ -52,7 +52,7 @@ pipeline {
         stage('Checkout Source') {
             steps {
                 script {
-                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: 'develop'
+                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: env.BRANCH_NAME ?: 'develop'
                     String targetBranch = env.gitlabTargetBranch ?: ''
                     boolean isMergeRequest = env.GITLAB_OBJECT_KIND == 'merge_request'
 
@@ -83,8 +83,52 @@ pipeline {
                     ])
 
                     String shortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    env.SOURCE_BRANCH = sourceBranch
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.IMAGE_REPOSITORY = "${env.REGISTRY_HOST}/${env.IMAGE_NAMESPACE}"
+                    env.IMMUTABLE_IMAGE_TAG = "${sourceBranch}-${env.BUILD_NUMBER}-${shortCommit}".replaceAll(/[^A-Za-z0-9_.-]/, '-')
+                    env.PUBLISH_IMAGE = 'false'
+                    env.DEPLOY_ENABLED = 'false'
+                    env.CHANNEL_IMAGE_TAG = ''
+                    env.DEPLOY_NAME = ''
+                    env.DEPLOY_ENV_FILE = ''
+                    env.DEPLOY_SERVICES = ''
+                    env.DEPLOY_CONTAINER_NAME = ''
+                    env.DEPLOY_REQUIRED_CONTAINERS = ''
+                    env.RUNTIME_IMAGE = ''
+                    env.CHANNEL_IMAGE = ''
+
+                    switch (sourceBranch) {
+                        case 'develop':
+                            env.PUBLISH_IMAGE = 'true'
+                            env.DEPLOY_ENABLED = 'true'
+                            env.CHANNEL_IMAGE_TAG = 'develop'
+                            env.DEPLOY_NAME = 'testing'
+                            env.DEPLOY_ENV_FILE = '.env.test'
+                            env.DEPLOY_SERVICES = 'api celery_worker'
+                            env.DEPLOY_CONTAINER_NAME = 'wes_api_test'
+                            env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_test wes_redis_test'
+                            break
+                        case 'main':
+                            env.PUBLISH_IMAGE = 'true'
+                            env.DEPLOY_ENABLED = 'true'
+                            env.CHANNEL_IMAGE_TAG = 'prod'
+                            env.DEPLOY_NAME = 'production'
+                            env.DEPLOY_ENV_FILE = '.env.prod'
+                            env.DEPLOY_SERVICES = 'api celery_worker celery_beat flower'
+                            env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
+                            env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
+                            break
+                    }
+
+                    if (env.PUBLISH_IMAGE == 'true') {
+                        env.RUNTIME_IMAGE = "${env.IMAGE_REPOSITORY}:${env.IMMUTABLE_IMAGE_TAG}"
+                        env.CHANNEL_IMAGE = "${env.IMAGE_REPOSITORY}:${env.CHANNEL_IMAGE_TAG}"
+                    }
+
                     echo "🐳 CI 镜像标签: ${env.CI_IMAGE}"
+                    echo "📦 发布策略: publish=${env.PUBLISH_IMAGE}, branch=${env.SOURCE_BRANCH}, immutable=${env.RUNTIME_IMAGE ?: '-'}, channel=${env.CHANNEL_IMAGE ?: '-'}"
+                    echo "🚀 部署策略: enabled=${env.DEPLOY_ENABLED}, target=${env.DEPLOY_NAME ?: '-'}, services=${env.DEPLOY_SERVICES ?: '-'}"
                 }
             }
         }
@@ -242,122 +286,185 @@ pipeline {
         }
 
         // ==============================================
-        // 部署阶段：部署到测试环境（本地部署）
+        // 构建运行时镜像：仅正式分支执行
         // ==============================================
-        stage('Deploy to Testing') {
+        stage('Build Runtime Image') {
             when {
-                branch 'develop'
+                expression {
+                    env.PUBLISH_IMAGE == 'true'
+                }
             }
             steps {
                 script {
-                    echo "🚀 开始部署到测试环境..."
-
+                    echo "🐳 构建运行时镜像: ${env.RUNTIME_IMAGE}"
                     sh '''
                         set -e
-                        set -o pipefail
+                        docker build \
+                            --target ${RUNTIME_BUILD_TARGET} \
+                            -t ${RUNTIME_IMAGE} \
+                            -t ${CHANNEL_IMAGE} \
+                            .
+                    '''
+                    echo '✅ 运行时镜像构建完成'
+                }
+            }
+        }
 
-                        # 颜色输出
-                        RED='\\033[0;31m'
-                        GREEN='\\033[0;32m'
-                        YELLOW='\\033[1;33m'
-                        NC='\\033[0m'
+        // ==============================================
+        // 推送运行时镜像：仅 develop/main 执行
+        // ==============================================
+        stage('Publish Runtime Image') {
+            when {
+                expression {
+                    env.PUBLISH_IMAGE == 'true'
+                }
+            }
+            steps {
+                script {
+                    echo "📤 推送镜像到仓库: ${env.RUNTIME_IMAGE} / ${env.CHANNEL_IMAGE}"
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${env.REGISTRY_CREDENTIALS_ID}",
+                            usernameVariable: 'REGISTRY_USERNAME',
+                            passwordVariable: 'REGISTRY_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+                            trap 'docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true' EXIT
+                            echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
+                            docker push ${RUNTIME_IMAGE}
+                            docker push ${CHANNEL_IMAGE}
+                        '''
+                    }
+                    echo '✅ 镜像推送完成'
+                }
+            }
+        }
 
-                        echo -e "${GREEN}📂 切换到项目目录...${NC}"
-                        cd ${DEPLOY_PATH}
+        // ==============================================
+        // 部署阶段：仅正式分支执行拉镜像自动部署
+        // ==============================================
+        stage('Deploy Runtime') {
+            when {
+                expression {
+                    env.DEPLOY_ENABLED == 'true'
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 开始部署到${env.DEPLOY_NAME}: ${env.RUNTIME_IMAGE}"
 
-                        echo -e "${GREEN}📥 更新代码...${NC}"
-                        PREVIOUS_COMMIT=$(git rev-parse HEAD)
-                        echo "📌 当前提交: $PREVIOUS_COMMIT"
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${env.REGISTRY_CREDENTIALS_ID}",
+                            usernameVariable: 'REGISTRY_USERNAME',
+                            passwordVariable: 'REGISTRY_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+                            set -o pipefail
 
-                        # 拉取最新代码
-                        git fetch origin
-                        git checkout ${GIT_COMMIT}
+                            RED='\\033[0;31m'
+                            GREEN='\\033[0;32m'
+                            YELLOW='\\033[1;33m'
+                            NC='\\033[0m'
 
-                        echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
+                            echo -e "${GREEN}📂 切换到项目目录...${NC}"
+                            cd ${DEPLOY_PATH}
 
-                        echo -e "${GREEN}🔧 配置 Docker 镜像加速器...${NC}"
-                        if [ ! -f /etc/docker/daemon.json ] || ! grep -q "docker.happyjack.cn" /etc/docker/daemon.json; then
-                            sudo mkdir -p /etc/docker
-                            sudo tee /etc/docker/daemon.json > /dev/null << 'DOCKER_EOF'
-{
-  "registry-mirrors": ["https://docker.happyjack.cn"]
-}
-DOCKER_EOF
-                            sudo systemctl restart docker
-                            sleep 5
-                            echo -e "${GREEN}✅ Docker 镜像加速器配置完成${NC}"
-                        else
-                            echo -e "${YELLOW}⏭️  Docker 镜像加速器已配置，跳过${NC}"
-                        fi
+                            echo -e "${GREEN}📥 更新部署清单...${NC}"
+                            PREVIOUS_COMMIT=$(git rev-parse HEAD)
+                            PREVIOUS_IMAGE=$(docker inspect -f '{{.Config.Image}}' ${DEPLOY_CONTAINER_NAME} 2>/dev/null || true)
+                            echo "📌 当前提交: $PREVIOUS_COMMIT"
+                            echo "📦 当前镜像: ${PREVIOUS_IMAGE:-<none>}"
 
-                        echo -e "${GREEN}🐳 构建 Docker 镜像...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build --no-cache || {
-                            echo -e "${RED}❌ Docker 镜像构建失败${NC}"
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            exit 1
-                        }
+                            git fetch origin
+                            git checkout ${GIT_COMMIT}
+                            echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
 
-                        echo -e "${GREEN}🔄 停止旧容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down || true
+                            export BACKEND_ENV_FILE=${DEPLOY_ENV_FILE}
+                            export BACKEND_IMAGE=${RUNTIME_IMAGE}
+                            COMPOSE_CMD="docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
+                            HEALTH_ENDPOINT='http://127.0.0.1:8001/api/v1/performance/health'
 
-                        echo -e "${GREEN}⚙️  启动新容器...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d || {
-                            echo -e "${RED}❌ 容器启动失败${NC}"
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
-                            exit 1
-                        }
+                            trap 'docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true' EXIT
+                            echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
 
-                        echo -e "${GREEN}⏳ 等待容器启动...${NC}"
-                        sleep 15
+                            echo -e "${GREEN}🧱 检查基础设施容器状态...${NC}"
+                            for required_container in ${DEPLOY_REQUIRED_CONTAINERS}; do
+                                if ! docker inspect "$required_container" >/dev/null 2>&1; then
+                                    echo -e "${RED}❌ 缺少基础设施容器: $required_container${NC}"
+                                    echo -e "${YELLOW}ℹ️  热修部署不会自动创建或升级基础设施，请先单独初始化 infra${NC}"
+                                    exit 1
+                                fi
 
-                        echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} exec -T api alembic upgrade head || {
-                            echo -e "${YELLOW}⚠️  数据库迁移失败或已跳过${NC}"
-                        }
+                                if [ "$(docker inspect -f '{{.State.Running}}' "$required_container")" != "true" ]; then
+                                    echo -e "${RED}❌ 基础设施容器未运行: $required_container${NC}"
+                                    exit 1
+                                fi
 
-                        echo -e "${GREEN}🏥 健康检查...${NC}"
-                        RETRY_COUNT=0
-                        MAX_RETRIES=${HEALTH_CHECK_RETRIES}
-                        HEALTH_CHECK_PASSED=false
+                                container_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$required_container")
+                                if [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]; then
+                                    echo -e "${RED}❌ 基础设施容器不健康: $required_container ($container_health)${NC}"
+                                    exit 1
+                                fi
+                            done
 
-                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                            if curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_CHECK_URL} | grep -q "200"; then
-                                echo -e "${GREEN}✅ 健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
-                                HEALTH_CHECK_PASSED=true
-                                break
-                            else
+                            echo -e "${GREEN}📥 拉取目标镜像...${NC}"
+                            docker pull ${BACKEND_IMAGE}
+
+                            echo -e "${GREEN}⚙️  启动新容器...${NC}"
+                            $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES} || {
+                                echo -e "${RED}❌ 容器启动失败${NC}"
+                                exit 1
+                            }
+
+                            echo -e "${GREEN}⏳ 等待容器启动...${NC}"
+                            sleep 15
+
+                            echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
+                            $COMPOSE_CMD exec -T api alembic upgrade head
+
+                            echo -e "${GREEN}🏥 健康检查...${NC}"
+                            RETRY_COUNT=0
+                            MAX_RETRIES=${HEALTH_CHECK_RETRIES}
+                            HEALTH_CHECK_PASSED=false
+
+                            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                                if docker exec ${DEPLOY_CONTAINER_NAME} curl -f -s -o /dev/null -w "%{http_code}" ${HEALTH_ENDPOINT} | grep -q "200"; then
+                                    echo -e "${GREEN}✅ 健康检查通过 (尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES)${NC}"
+                                    HEALTH_CHECK_PASSED=true
+                                    break
+                                fi
+
                                 RETRY_COUNT=$((RETRY_COUNT + 1))
                                 echo -e "${YELLOW}⏳ 健康检查失败，等待重试... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
                                 sleep 5
+                            done
+
+                            if [ "$HEALTH_CHECK_PASSED" = false ]; then
+                                echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
+                                $COMPOSE_CMD logs --tail=100 api
+
+                                if [ -n "$PREVIOUS_IMAGE" ]; then
+                                    echo -e "${YELLOW}🔄 回滚镜像: $PREVIOUS_IMAGE${NC}"
+                                    export BACKEND_IMAGE="$PREVIOUS_IMAGE"
+                                    docker pull ${BACKEND_IMAGE} || true
+                                    $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}
+                                else
+                                    echo -e "${YELLOW}⚠️  未找到可回滚镜像，跳过回滚${NC}"
+                                fi
+
+                                git checkout $PREVIOUS_COMMIT || true
+                                exit 1
                             fi
-                        done
 
-                        if [ "$HEALTH_CHECK_PASSED" = false ]; then
-                            echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} logs --tail=100 api
-
-                            echo -e "${YELLOW}🔄 回滚到上一个提交: $PREVIOUS_COMMIT${NC}"
-                            git checkout $PREVIOUS_COMMIT
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} build
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} down
-                            docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} up -d
-                            exit 1
-                        fi
-
-                        echo -e "${GREEN}🧹 清理未使用的 Docker 资源...${NC}"
-                        docker system prune -f --volumes || true
-
-                        echo -e "${GREEN}✅ 测试环境部署完成${NC}"
-                        echo -e "${GREEN}📊 容器状态：${NC}"
-                        docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE} --profile ${DEPLOY_PROFILE} ps
-
-                        echo -e "${GREEN}📈 资源使用情况：${NC}"
-                        docker stats --no-stream --format "table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}"
-                    '''
+                            echo -e "${GREEN}✅ ${DEPLOY_NAME} 部署完成${NC}"
+                            $COMPOSE_CMD ps
+                        '''
+                    }
 
                     echo '✅ 部署成功'
                 }
@@ -402,6 +509,7 @@ DOCKER_EOF
 //   1. Jenkins Node (192.168.0.221) 已配置并在线
 //   2. Node 标签: WES
 //   3. GitLab HTTP 凭据已配置（ID: gitlab-http-creds）
+//   4. Docker Registry 凭据已配置（ID: gitlab-registry-creds）
 //
 // 必需的服务（在 Jenkins Node 上）:
 //   - PostgreSQL (Docker 容器)
@@ -414,16 +522,14 @@ DOCKER_EOF
 //
 // 部署流程:
 //   1. GitLab 推送代码触发 Webhook
-//   2. Jenkins 在 Node (192.168.0.221) 上执行构建
-//   3. 安装依赖
-//   4. 并行执行代码检查和测试
-//   5. 在本地（Node）部署到测试环境
-//   6. 拉取最新代码
-//   7. 构建 Docker 镜像
-//   8. 停止旧容器，启动新容器
-//   9. 运行数据库迁移
-//   10. 健康检查（5 次重试）
-//   11. 失败时自动回滚到上一个版本
+//   2. Jenkins 在 Node (192.168.0.221) 上构建 CI 测试镜像
+//   3. 并行执行代码检查和测试
+//   4. develop 分支推送 immutable + develop 镜像并自动部署 testing
+//   5. main 分支推送 immutable + prod 镜像并自动部署 production
+//   6. 部署机更新部署清单后拉取镜像并以 --no-build 方式启动服务
+//   7. 运行数据库迁移
+//   8. 健康检查（5 次重试）
+//   9. 失败时自动回滚到上一个镜像版本
 //
 // 优势:
 //   - 无需 SSH 连接（直接在 Node 上执行）
