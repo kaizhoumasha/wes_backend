@@ -21,11 +21,13 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
+from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
 from src.workline_runtime.transition_validator import TransitionValidator
 from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
+from src.workline_plugins.contracts import resolve_contract_version
 
 logger = logging.getLogger(__name__)
 JsonDict = dict[str, Any]
@@ -216,6 +218,27 @@ class OrchestratorService:
             correlation_id=correlation_id,
             logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
         )
+
+        # 2.5. 校验契约版本兼容性
+        session_contract = getattr(session, "contract_version", None)
+        plugin_contract = getattr(plugin, "contract_version", None) or resolve_contract_version(
+            getattr(workline, "plugin_key", None)
+        )
+        if (
+            isinstance(session_contract, str)
+            and session_contract
+            and isinstance(plugin_contract, str)
+            and plugin_contract
+            and session_contract != plugin_contract
+        ):
+            return OrchestratorResult(
+                success=False,
+                failure=FailureIntent(
+                    domain=FailureDomain.SOFTWARE.value,
+                    code="CONTRACT_MISMATCH",
+                    message=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
+                ),
+            )
 
         # 3. 调用插件
         try:

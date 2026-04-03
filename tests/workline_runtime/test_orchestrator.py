@@ -511,3 +511,121 @@ class TestOrchestratorServiceEdgeCases:
         }
 
         assert orchestrator._resolve_inbox_type(inbox) == "DEVICE_EVENT"
+
+
+class TestContractVersionMismatch:
+    """契约版本不兼容检测测试"""
+
+    @pytest.fixture
+    def orchestrator(self):
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        return OrchestratorService()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_contract_mismatch_returns_failure(self, orchestrator):
+        """契约版本不匹配时返回 CONTRACT_MISMATCH 失败"""
+
+        # 创建一个 Mock 插件类，带有 contract_version = "2.0"
+        class MockPlugin:
+            contract_version = "2.0"
+
+            async def on_device_event(self, ctx, inbox):
+                return PluginResult()
+
+        mock_session = MagicMock()
+        mock_session.id = 12345
+        mock_session.status = "RUNNING"
+        mock_session.context = {}
+        mock_session.contract_version = "1.0"
+
+        mock_workline = MagicMock()
+        mock_workline.plugin_key = "mock_plugin"
+        mock_workline.plugin_class = MockPlugin  # 使用 Mock 插件
+
+        mock_inbox = MagicMock()
+        mock_inbox.id = 100
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
+
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=mock_inbox,
+            devices_by_role={},
+            services=MagicMock(),
+            correlation_id="test-correlation-id",
+        )
+
+        assert result.success is False
+        assert result.failure is not None
+        assert result.failure.code == "CONTRACT_MISMATCH"
+        assert "1.0" in result.failure.message
+        assert "2.0" in result.failure.message
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_contract_match_proceeds_normally(self, orchestrator):
+        """契约版本匹配时正常继续处理"""
+
+        class MockPlugin:
+            contract_version = "1.0"
+
+            async def on_device_event(self, ctx, inbox):
+                return PluginResult()
+
+        mock_session = MagicMock()
+        mock_session.id = 12345
+        mock_session.status = "RUNNING"
+        mock_session.context = {}
+        mock_session.contract_version = "1.0"
+
+        mock_workline = MagicMock()
+        mock_workline.plugin_key = "mock_plugin"
+        mock_workline.plugin_class = MockPlugin
+
+        mock_inbox = MagicMock()
+        mock_inbox.id = 100
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
+
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=mock_inbox,
+            devices_by_role={},
+            services=MagicMock(),
+            correlation_id="test-correlation-id",
+        )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_no_session_contract_proceeds(self, orchestrator):
+        """旧 Session 无 contract_version 字段时跳过检测（向后兼容）"""
+        mock_session = MagicMock()
+        mock_session.id = 12345
+        mock_session.status = "RUNNING"
+        mock_session.context = {}
+        # 旧 Session 没有 contract_version 字段
+        del mock_session.contract_version
+
+        mock_workline = MagicMock()
+        mock_workline.plugin_key = "smt_classifier"
+        mock_workline.plugin_class = None
+
+        mock_inbox = MagicMock()
+        mock_inbox.id = 100
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
+
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=mock_inbox,
+            devices_by_role={},
+            services=MagicMock(),
+            correlation_id="test-correlation-id",
+        )
+
+        # 应该正常继续处理，不触发契约检测
+        assert result.success is True
