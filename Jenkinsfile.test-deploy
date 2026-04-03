@@ -16,7 +16,7 @@ pipeline {
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
-        HEALTH_CHECK_URL = 'http://127.0.0.1:8001/api/v1/performance/health'
+        HEALTH_CHECK_URL = 'http://127.0.0.1:8001/api/v1/admin/performance/health'
         HEALTH_CHECK_RETRIES = '36'
         IMAGE_PULL_RETRIES = '24'
     }
