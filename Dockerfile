@@ -71,7 +71,8 @@ RUN pip install --no-cache-dir uv
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    uv sync --frozen --all-extras --all-groups --no-install-project --active
+    # CI 镜像仅安装测试与质量检查必需依赖，避免把 basedpyright/nodejs-wheel-binaries 拉进来
+    uv sync --frozen --extra dev --group ci --no-install-project --active
 
 # ============================================
 # Stage 3: Development - 开发环境
