@@ -98,8 +98,6 @@ pipeline {
                             --driver-opt "env.https_proxy=${BUILD_PROXY}" \
                             --driver-opt "env.HTTP_PROXY=${BUILD_PROXY}" \
                             --driver-opt "env.HTTPS_PROXY=${BUILD_PROXY}" \
-                            --driver-opt "env.no_proxy=${BUILD_NO_PROXY}" \
-                            --driver-opt "env.NO_PROXY=${BUILD_NO_PROXY}" \
                             --use >/dev/null
 
                         rm -rf "${CACHE_TMP}"
@@ -264,8 +262,6 @@ pipeline {
                             --driver-opt "env.https_proxy=${BUILD_PROXY}" \
                             --driver-opt "env.HTTP_PROXY=${BUILD_PROXY}" \
                             --driver-opt "env.HTTPS_PROXY=${BUILD_PROXY}" \
-                            --driver-opt "env.no_proxy=${BUILD_NO_PROXY}" \
-                            --driver-opt "env.NO_PROXY=${BUILD_NO_PROXY}" \
                             --use >/dev/null
 
                         rm -rf "${CACHE_TMP}"
