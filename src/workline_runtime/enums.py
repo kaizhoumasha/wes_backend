@@ -186,9 +186,29 @@ class DecisionType(str, Enum):
     FAILURE_CLASSIFICATION = "FAILURE_CLASSIFICATION"
 
 
+class FailureCode:
+    """
+    失败码常量
+
+    定义标准化的失败码，用于 FailureIntent.code 字段。
+
+    属性:
+        CONTRACT_MISMATCH: 契约版本不匹配
+        DEVICE_TIMEOUT: 设备响应超时
+        DEVICE_NOT_FOUND: 设备不存在
+        BARCODE_NG: 条码校验失败
+    """
+
+    CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
+    DEVICE_TIMEOUT = "DEVICE_TIMEOUT"
+    DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND"
+    BARCODE_NG = "BARCODE_NG"
+
+
 # 导出所有枚举类，便于 from src.workline_runtime.enums import *
 __all__ = [
     "DecisionType",
+    "FailureCode",
     "FailureDomain",
     "ManualOperationType",
     "OutboxDispatchType",

@@ -21,7 +21,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
-from src.workline_runtime.enums import FailureDomain
+from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
@@ -35,6 +35,11 @@ JsonDict = dict[str, Any]
 
 def _ensure_dict(value: Any) -> JsonDict:
     return cast("JsonDict", value) if isinstance(value, dict) else {}
+
+
+def _ensure_non_empty_str(value: Any) -> str | None:
+    """Return value if it's a non-empty string, otherwise None."""
+    return value if isinstance(value, str) and value else None
 
 
 @dataclass
@@ -219,23 +224,20 @@ class OrchestratorService:
             logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
         )
 
-        # 2.5. 校验契约版本兼容性
-        session_contract = getattr(session, "contract_version", None)
-        plugin_contract = getattr(plugin, "contract_version", None) or resolve_contract_version(
-            getattr(workline, "plugin_key", None)
+        # 2.5. 契约版本不兼容检测
+        # 防止插件升级导致历史 Session 被错误处理，旧 Session 无版本字段时向后兼容
+        session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
+        plugin_contract = _ensure_non_empty_str(
+            getattr(plugin, "contract_version", None) or resolve_contract_version(
+                getattr(workline, "plugin_key", None)
+            )
         )
-        if (
-            isinstance(session_contract, str)
-            and session_contract
-            and isinstance(plugin_contract, str)
-            and plugin_contract
-            and session_contract != plugin_contract
-        ):
+        if session_contract and plugin_contract and session_contract != plugin_contract:
             return OrchestratorResult(
                 success=False,
                 failure=FailureIntent(
                     domain=FailureDomain.SOFTWARE.value,
-                    code="CONTRACT_MISMATCH",
+                    code=FailureCode.CONTRACT_MISMATCH,
                     message=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
                 ),
             )
