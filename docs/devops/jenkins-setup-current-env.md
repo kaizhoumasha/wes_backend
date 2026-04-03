@@ -285,6 +285,7 @@ docker-compose --version
 
 - `wes_test_deploy` 负责 TEST 环境部署
 - 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
+- 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
 - 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/performance/health`
 - 同时检查 nginx `/health` 和首页

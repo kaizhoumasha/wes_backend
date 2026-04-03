@@ -93,9 +93,10 @@ pipeline {
 
                         cd "${DEPLOY_PATH}"
 
-                        echo "📥 同步部署仓库到提交 ${CI_COMMIT_SHA}"
+                        echo "📥 强制同步部署仓库到提交 ${CI_COMMIT_SHA}"
                         git fetch origin
-                        git checkout --detach "${CI_COMMIT_SHA}"
+                        git reset --hard "${CI_COMMIT_SHA}"
+                        git clean -fd
                         cp -f "${DEPLOY_ENV_FILE}" .env
 
                         export REGISTRY_URL="${REGISTRY_URL}"

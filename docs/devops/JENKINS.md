@@ -93,7 +93,7 @@ git push gitlab develop
 ## ⚠️ 注意事项
 
 1. **Node 标签**：确保 `Jenkinsfile.backend-ci` 和 `Jenkinsfile.test-deploy` 中的 `label` 与实际的 Node 标签一致
-2. **部署目录**：确保 `/opt/wes_backend` 已初始化
+2. **部署目录**：确保 `/opt/wes_backend` 已初始化；`wes_test_deploy` 会在部署前强制对齐到目标 commit
 3. **环境文件**：确保 `.env.test` 已配置；CI 测试会显式覆盖为非调试日志级别
 4. **Docker 权限**：确保 Jenkins 用户有 Docker 权限
 
