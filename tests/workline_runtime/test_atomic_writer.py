@@ -19,8 +19,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.workline.models.inbox import InboxStatus
+from src.app.workline.models.session import SessionStatus
 from src.workline_runtime.atomic_writer import AtomicWriter, atomic_writer
-from src.workline_runtime.enums import InboxStatus, SessionStatus, TimelineStage
+from src.workline_runtime.enums import TimelineStage
 
 
 class MockSession:

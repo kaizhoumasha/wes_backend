@@ -1,10 +1,18 @@
 """
-作业线运行时统一枚举定义
+作业线运行时契约层枚举定义
 
-本模块定义作业线插件化编排系统的所有枚举类型，确保：
+本模块定义作业线插件化编排系统的运行时契约枚举类型，确保：
 - 枚举值的唯一性和一致性
 - 业务语义的清晰表达
 - 与架构设计文档的严格对应
+
+注意：SessionStatus / InboxStatus 是实体层枚举，定义在：
+- src/app/workline/models/session.py（SessionStatus）
+- src/app/workline/models/inbox.py（InboxStatus）
+
+本模块只保留运行时契约层枚举（插件面向的编排契约）：
+FailureDomain, TimelineStage, OutboxStatus, OutboxDispatchType,
+ManualOperationType, DecisionType
 
 参考文档：
 - docs/workline_plugin_architecture_design.md 第 6 章（运行时契约）
@@ -18,35 +26,6 @@
 """
 
 from enum import Enum
-
-
-class SessionStatus(str, Enum):
-    """
-    作业线会话状态枚举
-
-    定义 WorklineSession 的所有可能状态（架构 8.3 节）。
-
-    状态迁移由插件定义的显式状态机管理，禁止隐式状态跳转。
-
-    属性:
-        NEW: 新创建的会话，尚未开始处理
-        RUNNING: 正在执行业务逻辑
-        WAITING_DEVICE_RESULT: 等待设备执行结果
-        WAITING_EXTERNAL: 等待外部系统响应
-        MANUAL_HOLD: 等待人工介入
-        COMPLETED: 业务成功完成
-        FAILED: 业务失败（可恢复或不可恢复）
-        CANCELLED: 会话被取消
-    """
-
-    NEW = "NEW"
-    RUNNING = "RUNNING"
-    WAITING_DEVICE_RESULT = "WAITING_DEVICE_RESULT"
-    WAITING_EXTERNAL = "WAITING_EXTERNAL"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
 
 
 class FailureDomain(str, Enum):
@@ -117,27 +96,6 @@ class TimelineStage(str, Enum):
     COMPENSATION = "COMPENSATION"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
-
-
-class InboxStatus(str, Enum):
-    """
-    收件箱状态枚举
-
-    定义 WorklineInbox 的处理状态（架构 8.7 节）。
-
-    状态迁移保证幂等性和并发安全。
-
-    属性:
-        NEW: 新创建的 Inbox 记录，等待处理
-        PROCESSING: 正在处理（已锁定，防止并发处理）
-        PROCESSED: 处理成功
-        FAILED: 处理失败（可重试）
-    """
-
-    NEW = "NEW"
-    PROCESSING = "PROCESSING"
-    PROCESSED = "PROCESSED"
-    FAILED = "FAILED"
 
 
 class OutboxStatus(str, Enum):
@@ -232,10 +190,8 @@ class DecisionType(str, Enum):
 __all__ = [
     "DecisionType",
     "FailureDomain",
-    "InboxStatus",
     "ManualOperationType",
     "OutboxDispatchType",
     "OutboxStatus",
-    "SessionStatus",
     "TimelineStage",
 ]

@@ -24,8 +24,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.workline.models.inbox import InboxStatus
 from src.utils.timezone import timezone
-from src.workline_runtime.enums import InboxStatus
 
 
 class AtomicWriter:

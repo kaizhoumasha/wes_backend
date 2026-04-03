@@ -21,15 +21,15 @@ WES 作业线运行时模块
 - YAGNI: 仅实现当前业务明确需要的能力
 """
 
+from src.app.workline.models.inbox import InboxStatus
+from src.app.workline.models.session import SessionStatus
 from src.workline_runtime.atomic_writer import AtomicWriter, atomic_writer
 from src.workline_runtime.enums import (
     DecisionType,
     FailureDomain,
-    InboxStatus,
     ManualOperationType,
     OutboxDispatchType,
     OutboxStatus,
-    SessionStatus,
     TimelineStage,
 )
 from src.workline_runtime.lock import (
