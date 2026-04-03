@@ -189,6 +189,7 @@ class TestRelationMetadata:
         foreign_key = RelationMetadata.find_foreign_key_for_table(Parent, "test_child")
         assert foreign_key is None
 
+
 class TestEdgeCases:
     """测试边界情况"""
 

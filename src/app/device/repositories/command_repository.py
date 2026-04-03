@@ -99,11 +99,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
             相关指令列表
         """
         columns = cast("Any", DeviceCommand).__table__.c
-        statement = (
-            select(DeviceCommand)
-            .where(columns.correlation_id == correlation_id)
-            .order_by(columns.created_at)
-        )
+        statement = select(DeviceCommand).where(columns.correlation_id == correlation_id).order_by(columns.created_at)
 
         result = await db.execute(statement)
         return list(result.scalars().all())

@@ -565,7 +565,7 @@ async def _post_json_with_retry(
                 raise RuntimeError(f"HTTP {response.status_code}")
             response_payload = response.json()
             if not isinstance(response_payload, dict):
-                raise RuntimeError("response body must be an object")
+                raise TypeError("response body must be an object")
             return cast("JsonDict", response_payload)
         except Exception as exc:
             last_error = exc
@@ -761,12 +761,15 @@ class SmtClassifierPlugin:
             nested_key="url",
             env_key="WES_EXTERNAL_CALLBACK_URL",
         )
-        callback_type = _resolve_env_or_config(
-            ctx,
-            config_key="external_callback_type",
-            nested_key=None,
-            env_key="SMT_CLASSIFIER_AGV_CALLBACK_TYPE",
-        ) or _DEFAULT_AGV_CALLBACK_TYPE
+        callback_type = (
+            _resolve_env_or_config(
+                ctx,
+                config_key="external_callback_type",
+                nested_key=None,
+                env_key="SMT_CLASSIFIER_AGV_CALLBACK_TYPE",
+            )
+            or _DEFAULT_AGV_CALLBACK_TYPE
+        )
 
         from src.utils.timezone import timezone
 
@@ -1231,7 +1234,7 @@ class SmtClassifierPlugin:
                 source_location=source_location,
             )
         except Exception as exc:
-            ctx.logger.error(f"Bin allocation request failed: {exc}")
+            ctx.logger.exception("Bin allocation request failed")
             return PluginResult(
                 transition="command_failed",
                 context_patch={
@@ -1290,7 +1293,9 @@ class SmtClassifierPlugin:
             raw_agv_request = _ensure_dict(allocation_data.get("agv_request"))
             agv_request_code = _ensure_str(raw_agv_request.get("request_code"))
             raw_agv_request_count = session_context.get("agv_request_count", 0)
-            agv_request_count = raw_agv_request_count if isinstance(raw_agv_request_count, int) and raw_agv_request_count >= 0 else 0
+            agv_request_count = (
+                raw_agv_request_count if isinstance(raw_agv_request_count, int) and raw_agv_request_count >= 0 else 0
+            )
             if not agv_request_code:
                 agv_request_code, agv_request_count = _next_request_code(
                     ctx,
@@ -1493,7 +1498,9 @@ class SmtClassifierPlugin:
         agv_result = _ensure_str(callback_data.get("result"), "FAILED").upper()
         callback_data_payload = _ensure_dict(callback_data.get("data"))
         command_id = _ensure_str(callback_data.get("command_code") or callback_data.get("command_id"))
-        source_location = _ensure_str(callback_data_payload.get("to_location")) or _current_source_location(session_context)
+        source_location = _ensure_str(callback_data_payload.get("to_location")) or _current_source_location(
+            session_context
+        )
 
         if agv_result != SmtClassifierResultType.SUCCESS.value:
             error_message = _ensure_str(
@@ -1558,7 +1565,9 @@ class SmtClassifierPlugin:
                 ),
             )
 
-        target_bin, missing_fields = _normalize_target_bin(session_context, _ensure_dict(allocation_data.get("target_bin")))
+        target_bin, missing_fields = _normalize_target_bin(
+            session_context, _ensure_dict(allocation_data.get("target_bin"))
+        )
         if target_bin is None:
             return PluginResult(
                 transition="command_failed",

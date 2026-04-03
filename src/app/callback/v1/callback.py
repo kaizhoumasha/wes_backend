@@ -128,7 +128,7 @@ async def _record_callback_audit_log(
 async def _read_request_json(request: Request) -> JsonDict:
     payload = await request.json()
     if not isinstance(payload, dict):
-        raise ValueError("request body must be an object")
+        raise TypeError("request body must be an object")
     return cast("JsonDict", payload)
 
 
@@ -350,7 +350,7 @@ async def _is_workline_command_callback(
     dependencies=[Depends(RequireAPIPermission("api:callback:result"))],
     description="设备完成指令后，调用此接口回传执行结果",
 )
-async def callback_result(
+async def callback_result(  # noqa: PLR0912
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -425,9 +425,7 @@ async def callback_result(
 
         callback = CommandCallbackResult(**normalized_payload)
         inherited_correlation_id = (
-            existing_command.correlation_id
-            if isinstance(existing_command.correlation_id, str)
-            else None
+            existing_command.correlation_id if isinstance(existing_command.correlation_id, str) else None
         )
         raw_command_params = getattr(existing_command, "params", None)
         command_params = _ensure_dict(raw_command_params)

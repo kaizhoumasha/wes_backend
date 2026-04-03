@@ -254,9 +254,7 @@ class PipelineSimulator:
             started_at = datetime.now()
             await asyncio.sleep(execution_time)
             result = "FAILED" if simulate_failure else "SUCCESS"
-            error_detail = (
-                {"error_code": "2002", "error_message": "流水线传输失败"} if simulate_failure else None
-            )
+            error_detail = {"error_code": "2002", "error_message": "流水线传输失败"} if simulate_failure else None
             if report_result:
                 try:
                     await self._callback_result_to_wes(

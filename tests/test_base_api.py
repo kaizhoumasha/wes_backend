@@ -180,8 +180,7 @@ def test_base_api_assigns_stable_operation_ids() -> None:
     assert _get_route_operation_id(api, "/dummy-items/trash", "GET") == "dummy_items_trash"
     assert _get_route_operation_id(api, "/dummy-items/trash/restore", "POST") == "dummy_items_batch_restore"
     assert (
-        _get_route_operation_id(api, "/dummy-items/trash/permanent", "DELETE")
-        == "dummy_items_batch_permanent_delete"
+        _get_route_operation_id(api, "/dummy-items/trash/permanent", "DELETE") == "dummy_items_batch_permanent_delete"
     )
     assert _get_route_operation_id(api, "/dummy-items/{id}/restore", "POST") == "dummy_items_restore"
 
@@ -200,7 +199,4 @@ def test_generate_route_operation_id_produces_compact_path_based_ids() -> None:
     schema = app.openapi()
 
     assert schema["paths"]["/api/v1/auth/login"]["post"]["operationId"] == "auth_login_post"
-    assert (
-        schema["paths"]["/api/v1/users/{id}/assign-roles"]["put"]["operationId"]
-        == "users_by_id_assign_roles_put"
-    )
+    assert schema["paths"]["/api/v1/users/{id}/assign-roles"]["put"]["operationId"] == "users_by_id_assign_roles_put"

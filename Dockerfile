@@ -28,7 +28,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
     PIP_INDEX_URL=${PYPI_MIRROR} \
+    PYTHONPATH=/app \
     UV_DEFAULT_INDEX=${PYPI_MIRROR} \
+    UV_HTTP_TIMEOUT=120 \
     DEBIAN_FRONTEND=noninteractive \
     # 优化 Python 编译
     PYTHON_O=1 \
@@ -115,6 +117,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # 复制项目文件
 COPY . .
 
+# CI 与部署入口脚本
+RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
+
 # 创建测试目录
 RUN mkdir -p /app/reports/coverage /app/reports/test
 
@@ -141,6 +146,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # 复制项目文件
 COPY . .
 
+# 镜像内入口脚本
+RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
+
 # 创建日志目录
 RUN mkdir -p /app/logs && \
     chown -R wesuser:wesuser /app
@@ -153,7 +161,7 @@ EXPOSE 8001
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/api/health || exit 1
+    CMD curl -f http://localhost:8001/api/v1/performance/health || exit 1
 
 # 生产环境启动命令 (多 worker)
 CMD ["uvicorn", "main:app", \

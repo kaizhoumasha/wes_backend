@@ -96,7 +96,7 @@ class UserSimpleResponse(UserBase):
     is_superuser: bool
     is_multi_login: bool
     created_at: datetime
-    created_by: int
+    created_by: int | None = None
     updated_at: datetime | None = None  # 最后更新时间
     updated_by: int | None = None  # 最后更新用户 ID
     deleted_by: int | None = None  # 软删除用户 ID

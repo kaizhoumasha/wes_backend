@@ -50,14 +50,10 @@ class TestVerifyUserCharacterization:
         """测试：verify_user 调用 UserRepository.get_by_username_with_roles"""
         # Arrange
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=valid_user)
 
-            with patch(
-                "src.app.auth.services.auth_service.verify_password", return_value=True
-            ):
+            with patch("src.app.auth.services.auth_service.verify_password", return_value=True):
                 # Act
                 result = await AuthService.verify_user(mock_db, "testuser", "correct_password")
 
@@ -70,9 +66,7 @@ class TestVerifyUserCharacterization:
         """测试：用户不存在时抛出 InvalidCredentialsException"""
         # Arrange
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=None)
 
             # Act & Assert
@@ -86,9 +80,7 @@ class TestVerifyUserCharacterization:
         """测试：已删除用户抛出 AuthException"""
         # Arrange
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=deleted_user)
 
             # Act & Assert
@@ -102,15 +94,11 @@ class TestVerifyUserCharacterization:
         """测试：密码错误时抛出 InvalidCredentialsException"""
         # Arrange
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=valid_user)
 
             # 模拟密码验证失败
-            with patch(
-                "src.app.auth.services.auth_service.verify_password", return_value=False
-            ):
+            with patch("src.app.auth.services.auth_service.verify_password", return_value=False):
                 # Act & Assert
                 with pytest.raises(InvalidCredentialsException) as exc_info:
                     await AuthService.verify_user(mock_db, "testuser", "wrong_password")
@@ -126,14 +114,10 @@ class TestVerifyUserCharacterization:
         valid_user.roles = [role]
 
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=valid_user)
 
-            with patch(
-                "src.app.auth.services.auth_service.verify_password", return_value=True
-            ):
+            with patch("src.app.auth.services.auth_service.verify_password", return_value=True):
                 # Act
                 result = await AuthService.verify_user(mock_db, "testuser", "correct_password")
 
@@ -147,14 +131,10 @@ class TestVerifyUserCharacterization:
         """测试：verify_user 不直接调用 db.execute"""
         # Arrange
         mock_db = AsyncMock()
-        with patch(
-            "src.app.auth.services.auth_service.user_repository"
-        ) as mock_repo:
+        with patch("src.app.auth.services.auth_service.user_repository") as mock_repo:
             mock_repo.get_by_username_with_roles = AsyncMock(return_value=valid_user)
 
-            with patch(
-                "src.app.auth.services.auth_service.verify_password", return_value=True
-            ):
+            with patch("src.app.auth.services.auth_service.verify_password", return_value=True):
                 # Act
                 await AuthService.verify_user(mock_db, "testuser", "password")
 

@@ -191,9 +191,7 @@ class TestTimeoutScanner:
         mock_session_repo.get_timed_out_sessions.return_value = [session]
 
         # 模拟 Inbox 创建失败
-        mock_inbox_service.create_timeout_inbox.side_effect = ValueError(
-            "Inbox creation failed"
-        )
+        mock_inbox_service.create_timeout_inbox.side_effect = ValueError("Inbox creation failed")
 
         with (
             patch(

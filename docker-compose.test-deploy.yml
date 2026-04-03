@@ -1,0 +1,165 @@
+services:
+  api:
+    image: ${BACKEND_IMAGE:-wes-backend:local}
+    container_name: wes_api_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    entrypoint: ["/app/docker/test/api.entrypoint.sh"]
+    ports:
+      - "${APP_HOST_PORT:-8002}:8001"
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8001
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
+    volumes:
+      - ./logs:/app/logs:z
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/performance/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - wesp9-network
+
+  celery_worker:
+    image: ${BACKEND_IMAGE:-wes-backend:local}
+    container_name: wes_backend_test-celery_worker-1
+    restart: ${RESTART_POLICY:-unless-stopped}
+    entrypoint: ["/app/docker/test/celery.entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
+    volumes:
+      - ./logs:/app/logs:z
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A src.celery_app.app inspect ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - wesp9-network
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-wes-frontend:local}
+    container_name: wes_frontend_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    expose:
+      - "5173"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:5173/",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - wesp9-network
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: wes_nginx_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${NGINX_HTTP_PORT:-8080}:80"
+      - "${NGINX_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ${NGINX_SSL_DIR:-./nginx/ssl}:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx:z
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - wesp9-network
+
+  db:
+    image: timescale/timescaledb:latest-pg17
+    container_name: wes_postgres_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - ./docker_data/postgres_${ENV:-test}:/var/lib/postgresql/data
+      - ${POSTGRES_CONFIG_FILE:-./postgresql/postgresql.conf}:/etc/postgresql/postgresql.conf:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    command: ${POSTGRES_COMMAND:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wesp9-network
+
+  redis:
+    image: redis:8-alpine
+    container_name: wes_redis_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    volumes:
+      - ./docker_data/redis_${ENV:-test}:/data
+      - ${REDIS_CONFIG_FILE:-./redis/redis.conf}:/usr/local/etc/redis/redis.conf:ro
+    command: ${REDIS_COMMAND:-redis-server /usr/local/etc/redis/redis.conf} --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wesp9-network
+
+networks:
+  wesp9-network:
+    name: ${COMPOSE_PROJECT_NAME:-wes_backend_test}-network
+    driver: bridge

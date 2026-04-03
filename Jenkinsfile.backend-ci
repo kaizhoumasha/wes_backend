@@ -1,0 +1,275 @@
+pipeline {
+    agent {
+        label 'WES'
+    }
+
+    environment {
+        REGISTRY_URL = '192.168.0.220:5050'
+        IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend'
+        CI_BUILD_TARGET = 'testing'
+        RUNTIME_BUILD_TARGET = 'production'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                script {
+                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: 'develop'
+                    String targetBranch = env.gitlabTargetBranch ?: ''
+                    String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
+                    boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
+                    boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
+
+                    env.CI_SOURCE_BRANCH = sourceBranch
+                    env.CI_TARGET_BRANCH = targetBranch
+                    env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
+                    env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
+
+                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
+
+                    def extensions = [[$class: 'CleanBeforeCheckout']]
+                    if (isMergeRequest && targetBranch) {
+                        extensions << [
+                            $class: 'PreBuildMerge',
+                            options: [
+                                fastForwardMode: 'FF',
+                                mergeRemote: 'origin',
+                                mergeTarget: targetBranch
+                            ]
+                        ]
+                    }
+
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "origin/${sourceBranch}"]],
+                        userRemoteConfigs: [[
+                            name: 'origin',
+                            url: 'http://192.168.0.220:9080/wes/wes_backend.git',
+                            credentialsId: 'gitlab-http-creds',
+                            refspec: '+refs/heads/*:refs/remotes/origin/*'
+                        ]],
+                        extensions: extensions
+                    ])
+
+                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    String shortCommit = fullCommit.take(7)
+                    String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
+
+                    env.CI_COMMIT_SHA = fullCommit
+                    env.CI_SHORT_COMMIT = shortCommit
+                    env.CI_BRANCH_TAG = branchTag
+                    env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.RUNTIME_IMAGE_LOCAL = "wes-backend-runtime:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.RUNTIME_IMAGE_COMMIT = "${env.IMAGE_REPO}:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.RUNTIME_IMAGE_BRANCH = "${env.IMAGE_REPO}:${branchTag}"
+
+                    echo "🐳 CI 测试镜像: ${env.CI_IMAGE}"
+                    echo "🐳 Runtime 镜像: ${env.RUNTIME_IMAGE_COMMIT}"
+                }
+            }
+        }
+
+        stage('Build CI Image') {
+            steps {
+                sh '''
+                    set -e
+                    docker build \
+                        --provenance=false \
+                        --sbom=false \
+                        --target "${CI_BUILD_TARGET}" \
+                        -t "${CI_IMAGE}" \
+                        .
+                '''
+            }
+        }
+
+        stage('Quality Checks') {
+            parallel {
+                stage('Format Check') {
+                    steps {
+                        sh '''
+                            set -e
+                            docker run --rm "${CI_IMAGE}" sh -c 'ruff format --check .'
+                        '''
+                    }
+                }
+
+                stage('Lint Check') {
+                    steps {
+                        sh '''
+                            set -e
+                            docker run --rm "${CI_IMAGE}" sh -c 'ruff check .'
+                        '''
+                    }
+                }
+
+                stage('Security Check') {
+                    steps {
+                        sh '''
+                            set -e
+                            mkdir -p reports
+                            docker run --rm \
+                                -v "$WORKSPACE/reports:/artifacts/reports" \
+                                "${CI_IMAGE}" \
+                                sh -c '
+                                    mkdir -p /artifacts/reports &&
+                                    bandit -r src/ -f json -o /artifacts/reports/bandit-report.json &&
+                                    bandit -r src/ -f screen
+                                '
+                        '''
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/bandit-report.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Tests') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        sh '''
+                            set -e
+                            mkdir -p reports/coverage
+                            docker run --rm \
+                                --env-file "$WORKSPACE/.env.test" \
+                                -v "$WORKSPACE/reports:/artifacts/reports" \
+                                "${CI_IMAGE}" \
+                                sh -c '
+                                    mkdir -p /artifacts/reports/coverage &&
+                                    pytest tests/ -v --tb=short \
+                                        --cov=src \
+                                        --cov-report=term-missing \
+                                        --cov-report=html:/artifacts/reports/coverage \
+                                        --cov-report=xml:/artifacts/reports/coverage.xml \
+                                        --junitxml=/artifacts/reports/junit.xml
+                                '
+                        '''
+                    }
+                    post {
+                        always {
+                            junit 'reports/junit.xml'
+                            script {
+                                if (fileExists('reports/coverage/index.html')) {
+                                    try {
+                                        publishHTML([
+                                            allowMissing: false,
+                                            alwaysLinkToLastBuild: true,
+                                            keepAll: true,
+                                            reportDir: 'reports/coverage',
+                                            reportFiles: 'index.html',
+                                            reportName: 'Coverage Report'
+                                        ])
+                                    } catch (Throwable error) {
+                                        echo "⚠️ 跳过 HTML 覆盖率发布: ${error.getMessage()}"
+                                    }
+                                } else {
+                                    echo '⚠️ 未找到 HTML 覆盖率报告，跳过 publishHTML'
+                                }
+                            }
+                            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('API Signature Tests') {
+                    steps {
+                        sh '''
+                            set -e
+                            docker run --rm \
+                                --env-file "$WORKSPACE/.env.test" \
+                                "${CI_IMAGE}" \
+                                sh -c 'pytest tests/api/test_signature.py -v --tb=short'
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build Runtime Image') {
+            steps {
+                sh '''
+                    set -e
+                    docker build \
+                        --provenance=false \
+                        --sbom=false \
+                        --target "${RUNTIME_BUILD_TARGET}" \
+                        -t "${RUNTIME_IMAGE_LOCAL}" \
+                        .
+                '''
+            }
+        }
+
+        stage('Push Runtime Image') {
+            when {
+                expression {
+                    env.CI_IS_MERGE_REQUEST != 'true'
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'gitlab-http-creds', usernameVariable: 'GITLAB_USER', passwordVariable: 'GITLAB_TOKEN')]) {
+                    sh '''
+                        set -e
+                        export REGISTRY_URL="${REGISTRY_URL}"
+                        sh ./docker/test/registry-login.sh
+
+                        docker tag "${RUNTIME_IMAGE_LOCAL}" "${RUNTIME_IMAGE_COMMIT}"
+                        docker tag "${RUNTIME_IMAGE_LOCAL}" "${RUNTIME_IMAGE_BRANCH}"
+                        docker push "${RUNTIME_IMAGE_COMMIT}"
+                        docker push "${RUNTIME_IMAGE_BRANCH}"
+                    '''
+                }
+            }
+        }
+
+        stage('Trigger Test Deploy') {
+            when {
+                expression {
+                    env.CI_SOURCE_BRANCH == 'develop' &&
+                    env.CI_EVENT_TYPE == 'PUSH'
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 Trigger Test Deploy: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}, backend_tag=${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"
+                    build job: 'wes_test_deploy',
+                        wait: false,
+                        parameters: [
+                            string(name: 'BACKEND_IMAGE_TAG', value: "${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"),
+                            string(name: 'FRONTEND_IMAGE_TAG', value: 'develop'),
+                            string(name: 'SOURCE_BRANCH', value: env.CI_SOURCE_BRANCH)
+                        ]
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+                docker image rm -f "${CI_IMAGE}" >/dev/null 2>&1 || true
+                docker image rm -f "${RUNTIME_IMAGE_LOCAL}" >/dev/null 2>&1 || true
+                docker image rm -f "${RUNTIME_IMAGE_COMMIT}" >/dev/null 2>&1 || true
+                docker image rm -f "${RUNTIME_IMAGE_BRANCH}" >/dev/null 2>&1 || true
+            '''
+            cleanWs()
+        }
+        success {
+            echo '✅ Backend CI Pipeline 执行成功'
+        }
+        failure {
+            echo '❌ Backend CI Pipeline 执行失败'
+        }
+    }
+}

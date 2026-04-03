@@ -106,7 +106,7 @@ class AllocationSimulator:
                     "target_bin": self._build_target_bin(request, business_count),
                 },
             )
-        elif self.mode == "agv_required":
+        elif self.mode == "agv_required" or business_count == 1:
             allocation_status = "AGV_REQUIRED"
             response = AllocationResponse(
                 code=200,
@@ -117,26 +117,15 @@ class AllocationSimulator:
                 },
             )
         else:
-            if business_count == 1:
-                allocation_status = "AGV_REQUIRED"
-                response = AllocationResponse(
-                    code=200,
-                    message="AGV_REQUIRED",
-                    data={
-                        "allocation_status": allocation_status,
-                        "agv_request": self._build_agv_request(request, business_count),
-                    },
-                )
-            else:
-                allocation_status = "ALLOCATED"
-                response = AllocationResponse(
-                    code=200,
-                    message="ALLOCATED",
-                    data={
-                        "allocation_status": allocation_status,
-                        "target_bin": self._build_target_bin(request, business_count),
-                    },
-                )
+            allocation_status = "ALLOCATED"
+            response = AllocationResponse(
+                code=200,
+                message="ALLOCATED",
+                data={
+                    "allocation_status": allocation_status,
+                    "target_bin": self._build_target_bin(request, business_count),
+                },
+            )
 
         self.records.append(
             AllocationRecord(

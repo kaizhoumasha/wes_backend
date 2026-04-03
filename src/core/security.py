@@ -64,8 +64,8 @@ class TokenType(str, Enum):
 
 
 # Redis Key 前缀
-ACCESS_TOKEN_PREFIX = "auth:access_token"  # noqa: S105
-REFRESH_TOKEN_PREFIX = "auth:refresh_token"  # noqa: S105
+ACCESS_TOKEN_PREFIX = "auth:access_token"  # noqa: S105  # nosec B105
+REFRESH_TOKEN_PREFIX = "auth:refresh_token"  # noqa: S105  # nosec B105
 USER_SESSION_PREFIX = "auth:user_session"
 BLACKLIST_PREFIX = "auth:blacklist"
 MULTI_LOGIN_SET_PREFIX = "auth:multiple_login"
@@ -871,9 +871,7 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
             raise InvalidTokenException("Token 已被撤销")
 
         # 验证 token 是否存在
-        stored_token = _decode_redis_text(
-            await redis_client.get(_make_access_token_key(user_id, token_payload.jti))
-        )
+        stored_token = _decode_redis_text(await redis_client.get(_make_access_token_key(user_id, token_payload.jti)))
         if not stored_token or stored_token != token:
             raise InvalidTokenException("Token 已失效")
 

@@ -121,9 +121,7 @@ class TestPluginResult:
 
     def test_create_result_with_context_patch(self):
         """测试创建带上下文更新的结果"""
-        result = PluginResult(
-            context_patch={"scan_result": "OK", "barcode": "ABC123"}
-        )
+        result = PluginResult(context_patch={"scan_result": "OK", "barcode": "ABC123"})
         assert result.context_patch["scan_result"] == "OK"
         assert result.context_patch["barcode"] == "ABC123"
 
@@ -190,9 +188,7 @@ class TestPluginResult:
             transition="detect_ok",
             context_patch={"detect_value": 0.95},
             decisions=[{"decision_type": "QUALITY_CHECK", "result": "PASS"}],
-            commands=[
-                CommandIntent(target_device_id=1, action="MOVE_FORWARD")
-            ],
+            commands=[CommandIntent(target_device_id=1, action="MOVE_FORWARD")],
             complete=True,
         )
         assert result.transition == "detect_ok"

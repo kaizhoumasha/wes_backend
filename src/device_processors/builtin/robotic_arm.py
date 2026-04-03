@@ -142,9 +142,7 @@ class RoboticArmProcessor(BaseDeviceProcessor):
         logger.warning(f"机械臂未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(
-        self, action_params: dict[str, Any], correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict[str, Any], correlation_id: str | None = None) -> CommandRequest:
         """
         构建机械臂指令请求
 

@@ -27,7 +27,9 @@ class RelationCRUD:
     @staticmethod
     def _item_id(item_data: dict[str, Any] | object) -> int | None:
         raw_id = (
-            cast("dict[str, Any]", item_data).get("id") if isinstance(item_data, dict) else getattr(item_data, "id", None)
+            cast("dict[str, Any]", item_data).get("id")
+            if isinstance(item_data, dict)
+            else getattr(item_data, "id", None)
         )
         return raw_id if isinstance(raw_id, int) else None
 

@@ -231,9 +231,7 @@ def _normalize_vendor_command_payload(
 
     payload = dict(_payload_dict(parameters))
     payload_command_code = (
-        _string_value(payload.get("command_code"))
-        or _string_value(payload.get("command_id"))
-        or default_command_code
+        _string_value(payload.get("command_code")) or _string_value(payload.get("command_id")) or default_command_code
     )
     payload["command_code"] = payload_command_code
     payload["task_type"] = _string_value(payload.get("task_type"), action)
@@ -288,7 +286,7 @@ async def _add_timeline(db: Any, timeline: Any) -> None:
     db.add(timeline)
 
 
-async def _apply_orchestrator_effects(
+async def _apply_orchestrator_effects(  # noqa: PLR0912
     db: Any,
     *,
     session: Any,

@@ -8,21 +8,19 @@
 // ==============================================
 
 pipeline {
-    // 在 Jenkins Node 上执行（192.168.0.221）
     agent {
-        label 'WES'  // 请根据实际的 Node 标签修改
+        label 'WES'
     }
 
-    // 环境变量
     environment {
-        // Python 版本
         PYTHON_VERSION = '3.13'
-        // 时区配置
         DATETIME_TIMEZONE = 'Asia/Shanghai'
+
         // 部署配置（在 Jenkins Node 上执行拉镜像部署）
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_COMPOSE_FILE = 'docker-compose.deploy.yml'
         HEALTH_CHECK_RETRIES = '5'
+
         // 镜像配置
         CI_BUILD_TARGET = 'testing'
         RUNTIME_BUILD_TARGET = 'production'
@@ -31,32 +29,30 @@ pipeline {
         REGISTRY_CREDENTIALS_ID = 'gitlab-registry-creds'
     }
 
-    // 构建选项
     options {
-        // 保留最近 10 次构建
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // 超时配置
-        timeout(time: 30, unit: 'MINUTES')
-        // 使用显式 checkout，按 GitLab webhook 提供的分支检出代码
+        timeout(time: 60, unit: 'MINUTES')
         skipDefaultCheckout(true)
-        // 禁用并发构建
         disableConcurrentBuilds()
-        // 时间戳
         timestamps()
     }
 
     stages {
-        // ==============================================
-        // 检出阶段：按 GitLab 事件检出源码
-        // ==============================================
         stage('Checkout Source') {
             steps {
                 script {
                     String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: env.BRANCH_NAME ?: 'develop'
                     String targetBranch = env.gitlabTargetBranch ?: ''
-                    boolean isMergeRequest = env.GITLAB_OBJECT_KIND == 'merge_request'
+                    String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
+                    boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
+                    boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
 
-                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.GITLAB_OBJECT_KIND ?: 'manual'}"
+                    env.CI_SOURCE_BRANCH = sourceBranch
+                    env.CI_TARGET_BRANCH = targetBranch
+                    env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
+                    env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
+
+                    echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
 
                     def extensions = [[$class: 'CleanBeforeCheckout']]
                     if (isMergeRequest && targetBranch) {
@@ -82,8 +78,11 @@ pipeline {
                         extensions: extensions
                     ])
 
-                    String shortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    String shortCommit = fullCommit.take(7)
+
                     env.SOURCE_BRANCH = sourceBranch
+                    env.CI_COMMIT_SHA = fullCommit
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
                     env.IMAGE_REPOSITORY = "${env.REGISTRY_HOST}/${env.IMAGE_NAMESPACE}"
                     env.IMMUTABLE_IMAGE_TAG = "${sourceBranch}-${env.BUILD_NUMBER}-${shortCommit}".replaceAll(/[^A-Za-z0-9_.-]/, '-')
@@ -98,27 +97,29 @@ pipeline {
                     env.RUNTIME_IMAGE = ''
                     env.CHANNEL_IMAGE = ''
 
-                    switch (sourceBranch) {
-                        case 'develop':
-                            env.PUBLISH_IMAGE = 'true'
-                            env.DEPLOY_ENABLED = 'true'
-                            env.CHANNEL_IMAGE_TAG = 'develop'
-                            env.DEPLOY_NAME = 'testing'
-                            env.DEPLOY_ENV_FILE = '.env.test'
-                            env.DEPLOY_SERVICES = 'api celery_worker'
-                            env.DEPLOY_CONTAINER_NAME = 'wes_api_test'
-                            env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_test wes_redis_test'
-                            break
-                        case 'main':
-                            env.PUBLISH_IMAGE = 'true'
-                            env.DEPLOY_ENABLED = 'true'
-                            env.CHANNEL_IMAGE_TAG = 'prod'
-                            env.DEPLOY_NAME = 'production'
-                            env.DEPLOY_ENV_FILE = '.env.prod'
-                            env.DEPLOY_SERVICES = 'api celery_worker celery_beat flower'
-                            env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
-                            env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
-                            break
+                    if (!isMergeRequest) {
+                        switch (sourceBranch) {
+                            case 'develop':
+                                env.PUBLISH_IMAGE = 'true'
+                                env.DEPLOY_ENABLED = 'true'
+                                env.CHANNEL_IMAGE_TAG = 'develop'
+                                env.DEPLOY_NAME = 'testing'
+                                env.DEPLOY_ENV_FILE = '.env.test'
+                                env.DEPLOY_SERVICES = 'api celery_worker'
+                                env.DEPLOY_CONTAINER_NAME = 'wes_api_test'
+                                env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_test wes_redis_test'
+                                break
+                            case 'main':
+                                env.PUBLISH_IMAGE = 'true'
+                                env.DEPLOY_ENABLED = 'true'
+                                env.CHANNEL_IMAGE_TAG = 'prod'
+                                env.DEPLOY_NAME = 'production'
+                                env.DEPLOY_ENV_FILE = '.env.prod'
+                                env.DEPLOY_SERVICES = 'api celery_worker celery_beat flower'
+                                env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
+                                env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
+                                break
+                        }
                     }
 
                     if (env.PUBLISH_IMAGE == 'true') {
@@ -133,9 +134,6 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 准备阶段：构建 CI 镜像
-        // ==============================================
         stage('Build CI Image') {
             steps {
                 script {
@@ -152,12 +150,8 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 质量阶段：代码检查（并行执行）
-        // ==============================================
         stage('Quality Checks') {
             parallel {
-                // 代码格式检查
                 stage('Format Check') {
                     steps {
                         script {
@@ -166,14 +160,13 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -lc 'ruff format --check .'
+                                    sh -c 'ruff format --check .'
                             '''
                             echo '✅ 代码格式检查通过'
                         }
                     }
                 }
 
-                // 代码质量检查
                 stage('Lint Check') {
                     steps {
                         script {
@@ -182,14 +175,13 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -lc 'ruff check .'
+                                    sh -c 'ruff check .'
                             '''
                             echo '✅ 代码质量检查通过'
                         }
                     }
                 }
 
-                // 安全检查
                 stage('Security Check') {
                     steps {
                         script {
@@ -200,7 +192,7 @@ pipeline {
                                 docker run --rm \
                                     -v "$WORKSPACE/reports:/artifacts/reports" \
                                     ${CI_IMAGE} \
-                                    sh -lc '
+                                    sh -c '
                                         mkdir -p /artifacts/reports && \
                                         bandit -r src/ -f json -o /artifacts/reports/bandit-report.json && \
                                         bandit -r src/ -f screen
@@ -211,7 +203,6 @@ pipeline {
                     }
                     post {
                         always {
-                            // 归档安全报告
                             archiveArtifacts artifacts: 'reports/bandit-report.json', allowEmptyArchive: true
                         }
                     }
@@ -219,12 +210,8 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 测试阶段：单元测试（并行执行）
-        // ==============================================
         stage('Tests') {
             parallel {
-                // 单元测试
                 stage('Unit Tests') {
                     steps {
                         script {
@@ -233,9 +220,10 @@ pipeline {
                                 set -e
                                 mkdir -p reports/coverage
                                 docker run --rm \
+                                    --env-file "$WORKSPACE/.env.test" \
                                     -v "$WORKSPACE/reports:/artifacts/reports" \
                                     ${CI_IMAGE} \
-                                    sh -lc '
+                                    sh -c '
                                         mkdir -p /artifacts/reports/coverage && \
                                         pytest tests/ -v --tb=short \
                                             --cov=src \
@@ -250,24 +238,30 @@ pipeline {
                     }
                     post {
                         always {
-                            // 发布测试报告
                             junit 'reports/junit.xml'
-                            // 发布覆盖率报告
-                            publishHTML([
-                                allowMissing: false,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'reports/coverage',
-                                reportFiles: 'index.html',
-                                reportName: 'Coverage Report'
-                            ])
-                            // 归档报告
+                            script {
+                                if (fileExists('reports/coverage/index.html')) {
+                                    try {
+                                        publishHTML([
+                                            allowMissing: false,
+                                            alwaysLinkToLastBuild: true,
+                                            keepAll: true,
+                                            reportDir: 'reports/coverage',
+                                            reportFiles: 'index.html',
+                                            reportName: 'Coverage Report'
+                                        ])
+                                    } catch (Throwable error) {
+                                        echo "⚠️ 跳过 HTML 覆盖率发布: ${error.getMessage()}"
+                                    }
+                                } else {
+                                    echo '⚠️ 未找到 HTML 覆盖率报告，跳过 publishHTML'
+                                }
+                            }
                             archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
                         }
                     }
                 }
 
-                // API 签名测试
                 stage('API Signature Tests') {
                     steps {
                         script {
@@ -275,8 +269,9 @@ pipeline {
                             sh '''
                                 set -e
                                 docker run --rm \
+                                    --env-file "$WORKSPACE/.env.test" \
                                     ${CI_IMAGE} \
-                                    sh -lc 'pytest tests/api/test_signature.py -v --tb=short'
+                                    sh -c 'pytest tests/api/test_signature.py -v --tb=short'
                             '''
                             echo '✅ API 签名测试通过'
                         }
@@ -285,9 +280,6 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 构建运行时镜像：仅正式分支执行
-        // ==============================================
         stage('Build Runtime Image') {
             when {
                 expression {
@@ -310,9 +302,6 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 推送运行时镜像：仅 develop/main 执行
-        // ==============================================
         stage('Publish Runtime Image') {
             when {
                 expression {
@@ -342,9 +331,6 @@ pipeline {
             }
         }
 
-        // ==============================================
-        // 部署阶段：仅正式分支执行拉镜像自动部署
-        // ==============================================
         stage('Deploy Runtime') {
             when {
                 expression {
@@ -381,7 +367,7 @@ pipeline {
                             echo "📦 当前镜像: ${PREVIOUS_IMAGE:-<none>}"
 
                             git fetch origin
-                            git checkout ${GIT_COMMIT}
+                            git checkout --detach ${CI_COMMIT_SHA}
                             echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
 
                             export BACKEND_ENV_FILE=${DEPLOY_ENV_FILE}
@@ -457,7 +443,7 @@ pipeline {
                                     echo -e "${YELLOW}⚠️  未找到可回滚镜像，跳过回滚${NC}"
                                 fi
 
-                                git checkout $PREVIOUS_COMMIT || true
+                                git checkout ${PREVIOUS_COMMIT} || true
                                 exit 1
                             fi
 
@@ -472,9 +458,6 @@ pipeline {
         }
     }
 
-    // ==============================================
-    // 后置处理
-    // ==============================================
     post {
         always {
             script {
@@ -484,7 +467,6 @@ pipeline {
                     '''
                 }
             }
-            // 清理工作空间
             cleanWs()
         }
         success {
@@ -502,8 +484,10 @@ pipeline {
 // 必需的 Jenkins 插件:
 //   - GitLab Plugin
 //   - JUnit Plugin
-//   - HTML Publisher Plugin
 //   - Git Plugin
+//
+// 可选插件:
+//   - HTML Publisher Plugin（用于 Jenkins 页面展示覆盖率 HTML 报告）
 //
 // 必需的配置:
 //   1. Jenkins Node (192.168.0.221) 已配置并在线
@@ -511,35 +495,12 @@ pipeline {
 //   3. GitLab HTTP 凭据已配置（ID: gitlab-http-creds）
 //   4. Docker Registry 凭据已配置（ID: gitlab-registry-creds）
 //
-// 必需的服务（在 Jenkins Node 上）:
-//   - PostgreSQL (Docker 容器)
-//   - Redis (Docker 容器)
-//   - Docker 和 Docker Compose
-//
-// 触发方式:
-//   1. GitLab Webhook（推荐）
-//   2. 手动触发: Jenkins → wes-backend → Build Now
-//
 // 部署流程:
 //   1. GitLab 推送代码触发 Webhook
 //   2. Jenkins 在 Node (192.168.0.221) 上构建 CI 测试镜像
 //   3. 并行执行代码检查和测试
 //   4. develop 分支推送 immutable + develop 镜像并自动部署 testing
 //   5. main 分支推送 immutable + prod 镜像并自动部署 production
-//   6. 部署机更新部署清单后拉取镜像并以 --no-build 方式启动服务
+//   6. 部署机拉取镜像并以 --no-build/--no-deps 方式滚动后端应用服务
 //   7. 运行数据库迁移
-//   8. 健康检查（5 次重试）
-//   9. 失败时自动回滚到上一个镜像版本
-//
-// 优势:
-//   - 无需 SSH 连接（直接在 Node 上执行）
-//   - 更快的部署速度
-//   - 更简单的配置
-//   - 更好的日志输出
-//
-// 注意事项:
-//   - 确保 Jenkins Node 标签正确（agent { label 'test-node' }）
-//   - 确保 Node 上已安装 uv、Docker、Docker Compose
-//   - 确保 /opt/wes_backend 目录已初始化
-//   - 确保 .env.test 文件已配置
-//   - 生产环境部署需要单独配置
+//   8. 健康检查失败时自动回滚到上一个镜像版本

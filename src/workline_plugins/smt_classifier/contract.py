@@ -255,7 +255,7 @@ def normalize_result_payload(payload: JsonDict) -> JsonDict:
 
     finish_time = payload.get("finish_time")
     if not isinstance(finish_time, int):
-        raise ValueError("finish_time must be an integer")
+        raise TypeError("finish_time must be an integer")
 
     raw_data = payload.get("data")
     data = ensure_dict(raw_data, "data") if raw_data is not None else {}
@@ -320,8 +320,8 @@ def infer_step_from_command(command_type: str, context: JsonDict) -> SmtClassifi
 
 __all__ = [
     "BARCODE_LIST_KEY",
-    "COMMAND_FIELD_RULES",
     "COMMAND_CODE_ALIASES",
+    "COMMAND_FIELD_RULES",
     "CONTRACT_VERSION",
     "DEVICE_CODE_ALIASES",
     "EVENT_FIELD_ALIASES",

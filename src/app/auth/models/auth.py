@@ -30,7 +30,7 @@ class LoginRequest(BaseMixin):
         json_schema_extra={
             "example": {
                 "username": "admin",
-                "password": "admin123",
+                "password": "admin123",  # nosec B105 - schema example only
             }
         }
     )

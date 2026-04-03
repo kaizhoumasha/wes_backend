@@ -84,7 +84,9 @@ class FakeRepo:
         self.get_by_id_calls += 1
         return self.by_id_result
 
-    async def get_list(self, db: object, limit: int, offset: int, filters: Any, sort: Any, **kwargs: Any) -> tuple[int, list[FakeModel]]:
+    async def get_list(
+        self, db: object, limit: int, offset: int, filters: Any, sort: Any, **kwargs: Any
+    ) -> tuple[int, list[FakeModel]]:
         self.get_list_calls += 1
         return self.list_result
 

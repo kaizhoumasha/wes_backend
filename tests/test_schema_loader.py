@@ -12,13 +12,14 @@
 from typing import Any, cast
 
 import pytest_asyncio
+from pydantic import Field
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from src.app.admin.models.perm import Permission, PermissionTree
-from src.app.admin.models.role import Role
-from src.app.admin.models.user import User, UserResponse
+from src.app.admin.models.role import Role, RoleResponse
+from src.app.admin.models.user import User, UserResponse, UserSimpleResponse
 from src.core.mixins import DataTableMixin
 from src.core.schema_loader import apply_schema_loads, get_all_with_schema, get_with_schema
 from src.database.sqlite_schema import configure_sqlite_schemas
@@ -46,6 +47,13 @@ def _permissions(role: Any) -> list[Any]:
 
 def _children(node: Any) -> list[Any]:
     return cast("list[Any]", getattr(node, "children", []))
+
+
+class UserNestedRoleResponse(UserSimpleResponse):
+    """测试专用 schema：显式要求加载 Role -> Permission 嵌套关系。"""
+
+    roles: list[RoleResponse] = Field(default_factory=list)
+
 
 # ==================== Fixtures ====================
 
@@ -281,7 +289,7 @@ class TestApplySchemaLoads:
         """测试加载用户及其角色和权限（嵌套关系）"""
         # 构建查询
         query = select(User).where(_where_clause(User.username == "admin"))
-        query = apply_schema_loads(query, User, UserResponse, max_depth=3)
+        query = apply_schema_loads(query, User, UserNestedRoleResponse, max_depth=3)
 
         # 执行查询
         result = await db_session.execute(query)
@@ -356,7 +364,7 @@ class TestGetWithSchema:
         user = await get_with_schema(
             db_session,
             User,
-            UserResponse,
+            UserNestedRoleResponse,
             _where_clause(User.username == "admin"),
             max_depth=3,
         )
@@ -533,7 +541,7 @@ class TestPerformance:
         users = await get_all_with_schema(
             db_session,
             User,
-            UserResponse,
+            UserNestedRoleResponse,
             max_depth=3,
         )
 
@@ -558,7 +566,7 @@ class TestIntegration:
         user = await get_with_schema(
             db_session,
             User,
-            UserResponse,
+            UserNestedRoleResponse,
             _where_clause(User.username == "admin"),
             max_depth=3,
         )

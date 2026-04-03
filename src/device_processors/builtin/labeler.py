@@ -149,9 +149,7 @@ class LabelerProcessor(BaseDeviceProcessor):
         logger.warning(f"贴标机未处理的事件类型: {event_type}")
         return None
 
-    async def build_command(
-        self, action_params: dict[str, Any], correlation_id: str | None = None
-    ) -> CommandRequest:
+    async def build_command(self, action_params: dict[str, Any], correlation_id: str | None = None) -> CommandRequest:
         """
         构建贴标机指令请求
 

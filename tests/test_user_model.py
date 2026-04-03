@@ -79,6 +79,30 @@ def test_user_response_accepts_roles_without_permissions() -> None:
     assert [role.name for role in response.roles] == ["管理员", "审计员"]
 
 
+def test_user_response_allows_nullable_audit_fields() -> None:
+    user = SimpleNamespace(
+        id=1,
+        username="admin",
+        email="admin@example.com",
+        full_name="Admin",
+        version=0,
+        is_superuser=True,
+        is_multi_login=True,
+        created_at="2026-03-23T08:00:00Z",
+        created_by=None,
+        updated_at=None,
+        updated_by=None,
+        deleted_by=None,
+        deleted_at=None,
+        roles=[],
+    )
+
+    response = UserResponse.model_validate(user)
+
+    assert response.created_by is None
+    assert response.updated_by is None
+
+
 @pytest.mark.asyncio
 async def test_user_unique_indexes_block_active_duplicates(db_session) -> None:
     db_session.add(

@@ -244,9 +244,7 @@ class TestCrudOperations:
         await self.repo.create(db_session, {"code": "TEST003", "name": "super-admin"})
         await db_session.commit()
 
-        filters = FilterGroup(
-            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="admin%")]
-        )
+        filters = FilterGroup(conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="admin%")])
 
         total, items = await self.repo.get_list(db_session, filters=filters)
 
@@ -261,9 +259,7 @@ class TestCrudOperations:
         await self.repo.create(db_session, {"code": "TEST003", "name": "admin-user"})
         await db_session.commit()
 
-        filters = FilterGroup(
-            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="%admin")]
-        )
+        filters = FilterGroup(conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value="%admin")])
 
         total, items = await self.repo.get_list(db_session, filters=filters)
 
@@ -278,9 +274,7 @@ class TestCrudOperations:
         await self.repo.create(db_session, {"code": "TEST003", "name": "foo100%bar"})
         await db_session.commit()
 
-        filters = FilterGroup(
-            conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value=r"%100\%%")]
-        )
+        filters = FilterGroup(conditions=[FilterCondition(field="name", op=FilterOperator.ILIKE, value=r"%100\%%")])
 
         total, items = await self.repo.get_list(db_session, filters=filters)
 

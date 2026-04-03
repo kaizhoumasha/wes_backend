@@ -157,11 +157,7 @@ class InteractiveModuleGenerator:
 
         answers = inquirer.prompt(choices)
 
-        selected = [
-            mixin["name"]
-            for mixin in optional_mixins
-            if mixin["value"] in answers["mixins"]
-        ]
+        selected = [mixin["name"] for mixin in optional_mixins if mixin["value"] in answers["mixins"]]
 
         return base_mixins + selected
 

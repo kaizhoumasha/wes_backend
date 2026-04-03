@@ -238,7 +238,8 @@ async def get_command_from_db(db: AsyncSession, command_code: str):
 async def get_device_status_from_db(db: AsyncSession, device_code: str):
     """从数据库获取设备状态（设备模型没有 status 字段，仅检查是否存在）"""
     result = await db.execute(
-        text("SELECT device_code, is_active FROM wes_biz.devices WHERE device_code = :device_code"), {"device_code": device_code}
+        text("SELECT device_code, is_active FROM wes_biz.devices WHERE device_code = :device_code"),
+        {"device_code": device_code},
     )
     row = result.first()
     if row:
@@ -386,9 +387,7 @@ async def test_sensor_auto_trigger(db):
         # 获取最新指令
         command = await get_latest_command(db)
         # 避免重复添加
-        if command and not any(
-            cmd["command_code"] == command["command_code"] for cmd in commands
-        ):
+        if command and not any(cmd["command_code"] == command["command_code"] for cmd in commands):
             commands.append(command)
             print(f"✅ 指令 {i + 1}/3 已创建: {command['command_code']}")
 
@@ -396,9 +395,7 @@ async def test_sensor_auto_trigger(db):
     while len(commands) < 3:
         await asyncio.sleep(5)
         command = await get_latest_command(db)
-        if command and not any(
-            cmd["command_code"] == command["command_code"] for cmd in commands
-        ):
+        if command and not any(cmd["command_code"] == command["command_code"] for cmd in commands):
             commands.append(command)
             print(f"✅ 指令 {len(commands)}/3 已创建: {command['command_code']}")
 

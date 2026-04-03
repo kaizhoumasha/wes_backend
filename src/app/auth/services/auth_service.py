@@ -52,7 +52,8 @@ class AuthService:
     """认证服务类"""
 
     # TODO(auth-cookie-migration):
-    # 1. 将 access token 迁移到 HttpOnly Cookie，并在 require_auth/get_current_user 中优先读取 Cookie
+    # 1. 将 access token 迁移到 HttpOnly Cookie，并在
+    #    require_auth/get_current_user 中优先读取 Cookie
     # 2. Bearer 认证保留为迁移期兼容兜底，待前端完全切换后再移除
     # 3. 若前后端跨站部署且需要 SameSite=None，补充显式 CSRF 防护契约
     # 4. 前端完成切流后，停止在登录/刷新响应中返回 access token 明文

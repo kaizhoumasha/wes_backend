@@ -440,7 +440,9 @@ class TestSmtClassifierPluginCommandResult:
         assert result.context_patch["target_bin"]["bin_id"] == "BIN_001"
 
     @pytest.mark.asyncio
-    async def test_input_pick_place_result_with_embedded_inspection_ok(self, plugin, mock_context_with_devices, mock_inbox):
+    async def test_input_pick_place_result_with_embedded_inspection_ok(
+        self, plugin, mock_context_with_devices, mock_inbox
+    ):
         """输入机械臂结果若带检测数据，应直接推进到流水线命令。"""
         input_arm = MagicMock(
             id=10,

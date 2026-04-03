@@ -1914,6 +1914,13 @@ dev = [
 ]
 
 [package.dev-dependencies]
+ci = [
+    { name = "aiosqlite" },
+    { name = "bandit" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-html" },
+]
 dev = [
     { name = "aiosqlite" },
     { name = "bandit" },
@@ -1961,6 +1968,13 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
+ci = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "bandit", specifier = ">=1.9.3" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-html", specifier = ">=4.2.0" },
+]
 dev = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "bandit", specifier = ">=1.9.3" },

@@ -210,7 +210,9 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
     simulator = agv_mock.AgvSimulator(mode="success")
     captured: dict[str, object] = {}
 
-    async def fake_post_signed_json(url: str, payload: dict[str, object], timeout_seconds: float = 10.0) -> dict[str, object]:
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
         captured["url"] = url
         captured["payload"] = payload
         captured["timeout_seconds"] = timeout_seconds

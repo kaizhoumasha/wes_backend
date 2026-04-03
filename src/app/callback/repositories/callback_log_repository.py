@@ -34,10 +34,7 @@ class CallbackLogRepository(BaseRepository[CallbackLog]):
         """根据设备 ID 查询最近的回调日志"""
         columns = cast("Any", CallbackLog).__table__.c
         result = await db.execute(
-            select(CallbackLog)
-            .where(columns.device_id == device_id)
-            .order_by(columns.created_at.desc())
-            .limit(limit)
+            select(CallbackLog).where(columns.device_id == device_id).order_by(columns.created_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
 
