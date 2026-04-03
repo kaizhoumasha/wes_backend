@@ -9,9 +9,8 @@ pipeline {
         CI_BUILD_TARGET = 'testing'
         RUNTIME_BUILD_TARGET = 'production'
         DOCKER_BUILDKIT = '1'
-        BUILDX_BUILDER = 'wes-backend-ci-builder'
-        BUILD_PROXY = 'http://192.168.0.225:7890'
-        BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.0.220,192.168.0.221,192.168.0.225'
+        BUILD_PROXY = 'http://192.168.30.111:7890'
+        BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.0.220,192.168.0.221,192.168.30.111'
     }
 
     options {
@@ -85,56 +84,22 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    CACHE_DIR="${HOME}/.cache/buildx/wes_backend-ci"
-                    CACHE_TMP="${CACHE_DIR}.tmp"
-                    mkdir -p "${CACHE_DIR}"
+                    PROXY_BUILD_ARGS=""
 
-                    if docker buildx version >/dev/null 2>&1; then
-                        docker buildx rm "${BUILDX_BUILDER}" >/dev/null 2>&1 || true
-                        docker buildx create \
-                            --name "${BUILDX_BUILDER}" \
-                            --driver docker-container \
-                            --driver-opt "env.http_proxy=${BUILD_PROXY}" \
-                            --driver-opt "env.https_proxy=${BUILD_PROXY}" \
-                            --driver-opt "env.HTTP_PROXY=${BUILD_PROXY}" \
-                            --driver-opt "env.HTTPS_PROXY=${BUILD_PROXY}" \
-                            --use >/dev/null
-
-                        rm -rf "${CACHE_TMP}"
-                        docker buildx build \
-                            --load \
-                            --provenance=false \
-                            --sbom=false \
-                            --cache-from "type=local,src=${CACHE_DIR}" \
-                            --cache-to "type=local,dest=${CACHE_TMP},mode=max" \
-                            --build-arg "HTTP_PROXY=${BUILD_PROXY}" \
-                            --build-arg "HTTPS_PROXY=${BUILD_PROXY}" \
-                            --build-arg "http_proxy=${BUILD_PROXY}" \
-                            --build-arg "https_proxy=${BUILD_PROXY}" \
-                            --build-arg "NO_PROXY=${BUILD_NO_PROXY}" \
-                            --build-arg "no_proxy=${BUILD_NO_PROXY}" \
-                            --target "${CI_BUILD_TARGET}" \
-                            -t "${CI_IMAGE}" \
-                            .
-
-                        rm -rf "${CACHE_DIR}.old"
-                        mv "${CACHE_DIR}" "${CACHE_DIR}.old" 2>/dev/null || true
-                        mv "${CACHE_TMP}" "${CACHE_DIR}"
-                        rm -rf "${CACHE_DIR}.old"
+                    if curl -fsSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+                        echo "🌐 Build proxy available: ${BUILD_PROXY}"
+                        PROXY_BUILD_ARGS="--build-arg HTTP_PROXY=${BUILD_PROXY} --build-arg HTTPS_PROXY=${BUILD_PROXY} --build-arg http_proxy=${BUILD_PROXY} --build-arg https_proxy=${BUILD_PROXY} --build-arg NO_PROXY=${BUILD_NO_PROXY} --build-arg no_proxy=${BUILD_NO_PROXY}"
                     else
-                        docker build \
-                            --provenance=false \
-                            --sbom=false \
-                            --build-arg "HTTP_PROXY=${BUILD_PROXY}" \
-                            --build-arg "HTTPS_PROXY=${BUILD_PROXY}" \
-                            --build-arg "http_proxy=${BUILD_PROXY}" \
-                            --build-arg "https_proxy=${BUILD_PROXY}" \
-                            --build-arg "NO_PROXY=${BUILD_NO_PROXY}" \
-                            --build-arg "no_proxy=${BUILD_NO_PROXY}" \
-                            --target "${CI_BUILD_TARGET}" \
-                            -t "${CI_IMAGE}" \
-                            .
+                        echo "⚠️ Build proxy unavailable, continuing without proxy"
                     fi
+
+                    docker build \
+                        --provenance=false \
+                        --sbom=false \
+                        ${PROXY_BUILD_ARGS} \
+                        --target "${CI_BUILD_TARGET}" \
+                        -t "${CI_IMAGE}" \
+                        .
                 '''
             }
         }
@@ -249,56 +214,22 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    CACHE_DIR="${HOME}/.cache/buildx/wes_backend-ci"
-                    CACHE_TMP="${CACHE_DIR}.tmp"
-                    mkdir -p "${CACHE_DIR}"
+                    PROXY_BUILD_ARGS=""
 
-                    if docker buildx version >/dev/null 2>&1; then
-                        docker buildx rm "${BUILDX_BUILDER}" >/dev/null 2>&1 || true
-                        docker buildx create \
-                            --name "${BUILDX_BUILDER}" \
-                            --driver docker-container \
-                            --driver-opt "env.http_proxy=${BUILD_PROXY}" \
-                            --driver-opt "env.https_proxy=${BUILD_PROXY}" \
-                            --driver-opt "env.HTTP_PROXY=${BUILD_PROXY}" \
-                            --driver-opt "env.HTTPS_PROXY=${BUILD_PROXY}" \
-                            --use >/dev/null
-
-                        rm -rf "${CACHE_TMP}"
-                        docker buildx build \
-                            --load \
-                            --provenance=false \
-                            --sbom=false \
-                            --cache-from "type=local,src=${CACHE_DIR}" \
-                            --cache-to "type=local,dest=${CACHE_TMP},mode=max" \
-                            --build-arg "HTTP_PROXY=${BUILD_PROXY}" \
-                            --build-arg "HTTPS_PROXY=${BUILD_PROXY}" \
-                            --build-arg "http_proxy=${BUILD_PROXY}" \
-                            --build-arg "https_proxy=${BUILD_PROXY}" \
-                            --build-arg "NO_PROXY=${BUILD_NO_PROXY}" \
-                            --build-arg "no_proxy=${BUILD_NO_PROXY}" \
-                            --target "${RUNTIME_BUILD_TARGET}" \
-                            -t "${RUNTIME_IMAGE_LOCAL}" \
-                            .
-
-                        rm -rf "${CACHE_DIR}.old"
-                        mv "${CACHE_DIR}" "${CACHE_DIR}.old" 2>/dev/null || true
-                        mv "${CACHE_TMP}" "${CACHE_DIR}"
-                        rm -rf "${CACHE_DIR}.old"
+                    if curl -fsSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+                        echo "🌐 Build proxy available: ${BUILD_PROXY}"
+                        PROXY_BUILD_ARGS="--build-arg HTTP_PROXY=${BUILD_PROXY} --build-arg HTTPS_PROXY=${BUILD_PROXY} --build-arg http_proxy=${BUILD_PROXY} --build-arg https_proxy=${BUILD_PROXY} --build-arg NO_PROXY=${BUILD_NO_PROXY} --build-arg no_proxy=${BUILD_NO_PROXY}"
                     else
-                        docker build \
-                            --provenance=false \
-                            --sbom=false \
-                            --build-arg "HTTP_PROXY=${BUILD_PROXY}" \
-                            --build-arg "HTTPS_PROXY=${BUILD_PROXY}" \
-                            --build-arg "http_proxy=${BUILD_PROXY}" \
-                            --build-arg "https_proxy=${BUILD_PROXY}" \
-                            --build-arg "NO_PROXY=${BUILD_NO_PROXY}" \
-                            --build-arg "no_proxy=${BUILD_NO_PROXY}" \
-                            --target "${RUNTIME_BUILD_TARGET}" \
-                            -t "${RUNTIME_IMAGE_LOCAL}" \
-                            .
+                        echo "⚠️ Build proxy unavailable, continuing without proxy"
                     fi
+
+                    docker build \
+                        --provenance=false \
+                        --sbom=false \
+                        ${PROXY_BUILD_ARGS} \
+                        --target "${RUNTIME_BUILD_TARGET}" \
+                        -t "${RUNTIME_IMAGE_LOCAL}" \
+                        .
                 '''
             }
         }
