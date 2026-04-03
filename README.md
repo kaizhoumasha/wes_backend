@@ -79,3 +79,4 @@ Notes:
 - `bootstrap_admin` is idempotent. If a superuser already exists, it skips creation.
 - Production should enable snowflake IDs in `.env.prod` with `USE_SNOWFLAKE_ID=true`.
 - Keep real bootstrap credentials outside git-managed files and inject them from the deployment environment.
+- Full production release steps: `docs/devops/prod-release-deploy.md`

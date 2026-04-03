@@ -207,6 +207,12 @@ docker-compose --profile prod up -d
 - ✅ 日志轮转
 - ✅ 健康检查
 
+如果需要走正式发布镜像链路，而不是在生产机本地构建镜像，请参考：
+
+- `docs/devops/prod-release-deploy.md`
+
+该 Runbook 基于 `docker-compose.yml + docker-compose.deploy.yml` 组合执行，适用于手动拉取或离线导入 CI 产物镜像后发布。
+
 ### 分离部署（推荐）
 
 **场景**：将 Celery 和 FastAPI 部署到不同服务器

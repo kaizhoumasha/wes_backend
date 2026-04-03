@@ -72,6 +72,7 @@
 | `CLAUDE.md` | Claude Code 开发指南（架构、规范、最佳实践） | 📖 必读文档 |
 | `DOCKER.md` | Docker 使用说明 | 📚 参考资料 |
 | `Jenkinsfile` | Jenkins CI/CD 配置 | 📚参考资料 |
+| `docs/devops/prod-release-deploy.md` | 生产环境手动发布与回滚 Runbook | 📖 必读文档 |
 
 #### 🚀 应用入口
 

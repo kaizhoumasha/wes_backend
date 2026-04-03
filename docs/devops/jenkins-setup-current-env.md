@@ -297,6 +297,7 @@ PROD 边界说明：
 
 - 当前 Jenkins 只负责 CI 与 TEST 自动部署，不直接连接生产环境
 - 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
+- 生产发布说明文档：`docs/devops/prod-release-deploy.md`
 - 推荐顺序：
   1. `./scripts/migrate.sh upgrade`
   2. `bash scripts/data/sync_permissions.sh`
