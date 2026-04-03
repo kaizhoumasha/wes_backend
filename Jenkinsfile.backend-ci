@@ -86,7 +86,7 @@ pipeline {
                     set -e
                     PROXY_BUILD_ARGS=""
 
-                    if curl -fsSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+                    if curl -sSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
                         echo "🌐 Build proxy available: ${BUILD_PROXY}"
                         PROXY_BUILD_ARGS="--build-arg HTTP_PROXY=${BUILD_PROXY} --build-arg HTTPS_PROXY=${BUILD_PROXY} --build-arg http_proxy=${BUILD_PROXY} --build-arg https_proxy=${BUILD_PROXY} --build-arg NO_PROXY=${BUILD_NO_PROXY} --build-arg no_proxy=${BUILD_NO_PROXY}"
                     else
@@ -216,7 +216,7 @@ pipeline {
                     set -e
                     PROXY_BUILD_ARGS=""
 
-                    if curl -fsSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+                    if curl -sSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
                         echo "🌐 Build proxy available: ${BUILD_PROXY}"
                         PROXY_BUILD_ARGS="--build-arg HTTP_PROXY=${BUILD_PROXY} --build-arg HTTPS_PROXY=${BUILD_PROXY} --build-arg http_proxy=${BUILD_PROXY} --build-arg https_proxy=${BUILD_PROXY} --build-arg NO_PROXY=${BUILD_NO_PROXY} --build-arg no_proxy=${BUILD_NO_PROXY}"
                     else
