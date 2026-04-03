@@ -1,11 +1,8 @@
 """
 SMT 粗分机状态机定义
 
-这里同时维护两套契约：
-1. `SmtClassifierStateMachine` / `SmtClassifierStatus`
-   保留既有公开 API，供历史调用方与旧测试使用。
-2. `SmtClassifierStageMachine` / `SmtClassifierStageStatus`
-   供新的 workline runtime 校验插件内部 stage 迁移。
+`SmtClassifierStageMachine` / `SmtClassifierStageStatus`
+供 workline runtime 校验插件内部 stage 迁移。
 """
 
 from enum import Enum
@@ -39,109 +36,6 @@ class _BaseTransitionsMachine:
 
     def get_valid_transitions(self) -> list[str]:
         return self.machine.get_triggers(self.model.state)
-
-
-class SmtClassifierStatus(str, Enum):
-    """历史 SMT 状态机枚举，保留公开导出契约。"""
-
-    NEW = "NEW"
-    RUNNING = "RUNNING"
-    WAITING_SCAN_RESULT = "WAITING_SCAN_RESULT"
-    WAITING_DETECT_RESULT = "WAITING_DETECT_RESULT"
-    WAITING_MOVE_RESULT = "WAITING_MOVE_RESULT"
-    WAITING_PUT_RESULT = "WAITING_PUT_RESULT"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-
-
-STATES: list[str] = [status.value for status in SmtClassifierStatus]
-
-TRANSITIONS: list[dict[str, Any]] = [
-    {"trigger": "start", "source": SmtClassifierStatus.NEW.value, "dest": SmtClassifierStatus.RUNNING.value},
-    {
-        "trigger": "wait_scan",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.WAITING_SCAN_RESULT.value,
-    },
-    {
-        "trigger": "wait_detect",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.WAITING_DETECT_RESULT.value,
-    },
-    {
-        "trigger": "wait_move",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.WAITING_MOVE_RESULT.value,
-    },
-    {
-        "trigger": "wait_put",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.WAITING_PUT_RESULT.value,
-    },
-    {
-        "trigger": "scan_ok",
-        "source": SmtClassifierStatus.WAITING_SCAN_RESULT.value,
-        "dest": SmtClassifierStatus.RUNNING.value,
-    },
-    {
-        "trigger": "scan_ng",
-        "source": SmtClassifierStatus.WAITING_SCAN_RESULT.value,
-        "dest": SmtClassifierStatus.FAILED.value,
-    },
-    {
-        "trigger": "detect_ok",
-        "source": SmtClassifierStatus.WAITING_DETECT_RESULT.value,
-        "dest": SmtClassifierStatus.RUNNING.value,
-    },
-    {
-        "trigger": "detect_ng",
-        "source": SmtClassifierStatus.WAITING_DETECT_RESULT.value,
-        "dest": SmtClassifierStatus.RUNNING.value,
-    },
-    {
-        "trigger": "move_ok",
-        "source": SmtClassifierStatus.WAITING_MOVE_RESULT.value,
-        "dest": SmtClassifierStatus.RUNNING.value,
-    },
-    {
-        "trigger": "put_ok",
-        "source": SmtClassifierStatus.WAITING_PUT_RESULT.value,
-        "dest": SmtClassifierStatus.COMPLETED.value,
-    },
-    {"trigger": "retry", "source": SmtClassifierStatus.MANUAL_HOLD.value, "dest": SmtClassifierStatus.RUNNING.value},
-    {
-        "trigger": "cancel",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.CANCELLED.value,
-    },
-    {
-        "trigger": "complete",
-        "source": SmtClassifierStatus.RUNNING.value,
-        "dest": SmtClassifierStatus.COMPLETED.value,
-    },
-    {"trigger": "failed", "source": "*", "dest": SmtClassifierStatus.FAILED.value},
-    {"trigger": "fail", "source": "*", "dest": SmtClassifierStatus.FAILED.value},
-    {"trigger": "estop", "source": "*", "dest": SmtClassifierStatus.MANUAL_HOLD.value},
-]
-
-
-class SmtClassifierStateMachine(_BaseTransitionsMachine):
-    """历史 SMT 状态机实现。"""
-
-    def __init__(self, model: Any):
-        super().__init__(model, states=STATES, transitions=TRANSITIONS)
-
-
-def get_valid_transitions(current_state: str) -> list[str]:
-    """获取历史状态机在指定状态下的可用迁移。"""
-
-    class _TempModel:
-        def __init__(self, state: str):
-            self.state = state
-
-    return SmtClassifierStateMachine(_TempModel(current_state)).get_valid_transitions()
 
 
 class SmtClassifierStageStatus(str, Enum):
@@ -241,12 +135,7 @@ def get_valid_stage_transitions(current_stage: str) -> list[str]:
 __all__ = [
     "STAGE_STATES",
     "STAGE_TRANSITIONS",
-    "STATES",
-    "TRANSITIONS",
     "SmtClassifierStageMachine",
     "SmtClassifierStageStatus",
-    "SmtClassifierStateMachine",
-    "SmtClassifierStatus",
     "get_valid_stage_transitions",
-    "get_valid_transitions",
 ]

@@ -49,14 +49,11 @@ if TYPE_CHECKING:
         smt_classifier_plugin,
     )
     from src.workline_plugins.smt_classifier.state_machine import (
-        STATES,
-        TRANSITIONS,
+        STAGE_STATES,
+        STAGE_TRANSITIONS,
         SmtClassifierStageMachine,
         SmtClassifierStageStatus,
-        SmtClassifierStateMachine,
-        SmtClassifierStatus,
         get_valid_stage_transitions,
-        get_valid_transitions,
     )
 
 __all__ = [
@@ -67,9 +64,9 @@ __all__ = [
     "DEVICE_CODE_ALIASES",
     "EVENT_FIELD_ALIASES",
     "RESULT_FIELD_ALIASES",
-    "STATES",
+    "STAGE_STATES",
+    "STAGE_TRANSITIONS",
     "STEP_CODE_KEY",
-    "TRANSITIONS",
     "CommandResult",
     "CommandResultData",
     "DeviceRoleRequirement",
@@ -86,15 +83,12 @@ __all__ = [
     "SmtClassifierStage",
     "SmtClassifierStageMachine",
     "SmtClassifierStageStatus",
-    "SmtClassifierStateMachine",
-    "SmtClassifierStatus",
     "SmtClassifierStepCode",
     "TaskType",
     "ensure_dict",
     "generate_move_forward_command",
     "generate_pick_and_put_command",
     "get_valid_stage_transitions",
-    "get_valid_transitions",
     "infer_step_from_command",
     "infer_step_from_event",
     "normalize_event_payload",
@@ -123,7 +117,8 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
     "LocationInfo": ("src.workline_plugins.smt_classifier.event_handlers", "LocationInfo"),
     "LocationType": ("src.workline_plugins.smt_classifier.event_handlers", "LocationType"),
     "RESULT_FIELD_ALIASES": ("src.workline_plugins.smt_classifier.contract", "RESULT_FIELD_ALIASES"),
-    "STATES": ("src.workline_plugins.smt_classifier.state_machine", "STATES"),
+    "STAGE_STATES": ("src.workline_plugins.smt_classifier.state_machine", "STAGE_STATES"),
+    "STAGE_TRANSITIONS": ("src.workline_plugins.smt_classifier.state_machine", "STAGE_TRANSITIONS"),
     "STEP_CODE_KEY": ("src.workline_plugins.smt_classifier.contract", "STEP_CODE_KEY"),
     "SmtClassifierCommandType": ("src.workline_plugins.smt_classifier.contract", "SmtClassifierCommandType"),
     "SmtClassifierDeviceRole": ("src.workline_plugins.smt_classifier.plugin", "SmtClassifierDeviceRole"),
@@ -143,13 +138,7 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
         "SmtClassifierStageStatus",
     ),
     "SmtClassifierStage": ("src.workline_plugins.smt_classifier.plugin", "SmtClassifierStage"),
-    "SmtClassifierStateMachine": (
-        "src.workline_plugins.smt_classifier.state_machine",
-        "SmtClassifierStateMachine",
-    ),
-    "SmtClassifierStatus": ("src.workline_plugins.smt_classifier.state_machine", "SmtClassifierStatus"),
     "SmtClassifierStepCode": ("src.workline_plugins.smt_classifier.contract", "SmtClassifierStepCode"),
-    "TRANSITIONS": ("src.workline_plugins.smt_classifier.state_machine", "TRANSITIONS"),
     "TaskType": ("src.workline_plugins.smt_classifier.event_handlers", "TaskType"),
     "ensure_dict": ("src.workline_plugins.smt_classifier.contract", "ensure_dict"),
     "generate_move_forward_command": (
@@ -159,10 +148,6 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
     "generate_pick_and_put_command": (
         "src.workline_plugins.smt_classifier.event_handlers",
         "generate_pick_and_put_command",
-    ),
-    "get_valid_transitions": (
-        "src.workline_plugins.smt_classifier.state_machine",
-        "get_valid_transitions",
     ),
     "get_valid_stage_transitions": (
         "src.workline_plugins.smt_classifier.state_machine",

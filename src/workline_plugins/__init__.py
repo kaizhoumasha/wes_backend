@@ -28,8 +28,6 @@ if TYPE_CHECKING:
     from src.workline_plugins.smt_classifier.state_machine import (
         SmtClassifierStageMachine,
         SmtClassifierStageStatus,
-        SmtClassifierStateMachine,
-        SmtClassifierStatus,
     )
 
 __all__ = [
@@ -44,8 +42,6 @@ __all__ = [
     "SmtClassifierStage",
     "SmtClassifierStageMachine",
     "SmtClassifierStageStatus",
-    "SmtClassifierStateMachine",
-    "SmtClassifierStatus",
     "WorklinePluginDefinition",
     "generate_move_forward_command",
     "generate_pick_and_put_command",
@@ -89,14 +85,6 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
         "SmtClassifierStageStatus",
     ),
     "SmtClassifierStage": ("src.workline_plugins.smt_classifier.plugin", "SmtClassifierStage"),
-    "SmtClassifierStateMachine": (
-        "src.workline_plugins.smt_classifier.state_machine",
-        "SmtClassifierStateMachine",
-    ),
-    "SmtClassifierStatus": (
-        "src.workline_plugins.smt_classifier.state_machine",
-        "SmtClassifierStatus",
-    ),
     "WORKLINE_PLUGIN_REGISTRY": (
         "src.workline_plugin_registry",
         "WORKLINE_PLUGIN_REGISTRY",

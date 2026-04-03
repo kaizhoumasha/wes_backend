@@ -1,23 +1,36 @@
 """
-SMT 粗分机状态机单元测试
+SmtClassifierStageMachine 单元测试
 
-测试所有状态迁移：
-- 有效迁移被接受
-- 无效迁移被拒绝
-- 边界情况处理
+覆盖所有合法状态迁移、非法迁移拒绝、通配符迁移、
+以及完整工作流路径（OK / NG / ERROR）。
 
-设计参考: 设计文档 phase2-orchestrator
+状态图：
+  IDLE ──scan_ok──► WAITING_INSPECTION ──inspection_ok──► WAITING_CONVEYOR
+    │                    │                                      │
+    │ scan_ng             │ inspection_ng                        │ conveyor_complete
+    ▼                    ▼                                      ▼
+  WAITING_PICK_PLACE ◄──                             WAITING_OUTPUT ──output_handled──► COMPLETED
+    │                                                      ▲
+    │ ng_handled / pick_place_ok           │ agv_requested → WAITING_AGV_DELIVERY
+    ▼                                     │                 │ agv_completed ──────────────────────►┘
+    ▼
+  COMPLETED
+  任意状态 ──command_failed/timeout/estop──► ERROR
+  任意状态 ──manual_hold/manual_resume──► 自身（保持）
+  任意状态 ──manual_cancel──► COMPLETED
+  任意状态 ──wcs_task_complete──► 自身（保持）
+  任意状态 ──wcs_task_failed──► ERROR
 """
 
 import pytest
 from transitions import MachineError
 
 from src.workline_plugins.smt_classifier.state_machine import (
-    STATES,
-    TRANSITIONS,
-    SmtClassifierStateMachine,
-    SmtClassifierStatus,
-    get_valid_transitions,
+    STAGE_STATES,
+    STAGE_TRANSITIONS,
+    SmtClassifierStageMachine,
+    SmtClassifierStageStatus,
+    get_valid_stage_transitions,
 )
 
 
@@ -28,497 +41,420 @@ class ModelWithState:
         self.state = state
 
 
-class TestSmtClassifierStatus:
-    """SmtClassifierStatus 枚举测试"""
-
-    def test_status_values(self):
-        """测试状态枚举值"""
-        assert SmtClassifierStatus.NEW == "NEW"
-        assert SmtClassifierStatus.RUNNING == "RUNNING"
-        assert SmtClassifierStatus.WAITING_SCAN_RESULT == "WAITING_SCAN_RESULT"
-        assert SmtClassifierStatus.WAITING_DETECT_RESULT == "WAITING_DETECT_RESULT"
-        assert SmtClassifierStatus.WAITING_MOVE_RESULT == "WAITING_MOVE_RESULT"
-        assert SmtClassifierStatus.WAITING_PUT_RESULT == "WAITING_PUT_RESULT"
-        assert SmtClassifierStatus.MANUAL_HOLD == "MANUAL_HOLD"
-        assert SmtClassifierStatus.COMPLETED == "COMPLETED"
-        assert SmtClassifierStatus.FAILED == "FAILED"
-        assert SmtClassifierStatus.CANCELLED == "CANCELLED"
-
-    def test_status_count(self):
-        """测试状态数量"""
-        assert len(SmtClassifierStatus) == 10
-
-    def test_status_is_string(self):
-        """测试状态是字符串枚举"""
-        assert isinstance(SmtClassifierStatus.NEW.value, str)
-        assert SmtClassifierStatus.RUNNING.value == "RUNNING"
-
-
-class TestStatesAndTransitions:
-    """状态和迁移定义测试"""
-
-    def test_states_count(self):
-        """测试状态列表数量"""
-        assert len(STATES) == 10
-
-    def test_states_match_enum(self):
-        """测试状态列表与枚举匹配"""
-        enum_values = [s.value for s in SmtClassifierStatus]
-        assert set(STATES) == set(enum_values)
-
-    def test_transitions_exist(self):
-        """测试迁移定义存在"""
-        assert len(TRANSITIONS) > 0
-
-    def test_transitions_have_required_keys(self):
-        """测试迁移定义包含必需字段"""
-        required_keys = {"trigger", "source", "dest"}
-        for transition in TRANSITIONS:
-            assert required_keys <= set(transition.keys())
-
-
-class TestStateMachineNewState:
-    """NEW 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 NEW 状态的状态机"""
-        model = ModelWithState("NEW")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_start(self, state_machine):
-        """测试 NEW -> RUNNING 迁移"""
-        assert state_machine.may_trigger("start") is True
-        assert state_machine.trigger("start") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_fail(self, state_machine):
-        """测试 NEW -> FAILED 迁移（任意状态可失败）"""
-        assert state_machine.may_trigger("fail") is True
-        assert state_machine.trigger("fail") is True
-        assert state_machine.model.state == "FAILED"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 NEW -> MANUAL_HOLD 迁移（任意状态可急停）"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-    def test_invalid_transition_wait_scan(self, state_machine):
-        """测试无效迁移 wait_scan"""
-        assert state_machine.may_trigger("wait_scan") is False
-
-    def test_get_valid_transitions(self, state_machine):
-        """测试获取有效迁移列表"""
-        transitions = state_machine.get_valid_transitions()
-        assert "start" in transitions
-        assert "fail" in transitions
-        assert "estop" in transitions
-        assert "scan_ok" not in transitions
-
-
-class TestStateMachineRunningState:
-    """RUNNING 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 RUNNING 状态的状态机"""
-        model = ModelWithState("RUNNING")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_wait_scan(self, state_machine):
-        """测试 RUNNING -> WAITING_SCAN_RESULT 迁移"""
-        assert state_machine.may_trigger("wait_scan") is True
-        assert state_machine.trigger("wait_scan") is True
-        assert state_machine.model.state == "WAITING_SCAN_RESULT"
-
-    def test_valid_transition_wait_detect(self, state_machine):
-        """测试 RUNNING -> WAITING_DETECT_RESULT 迁移"""
-        assert state_machine.may_trigger("wait_detect") is True
-        assert state_machine.trigger("wait_detect") is True
-        assert state_machine.model.state == "WAITING_DETECT_RESULT"
-
-    def test_valid_transition_wait_move(self, state_machine):
-        """测试 RUNNING -> WAITING_MOVE_RESULT 迁移"""
-        assert state_machine.may_trigger("wait_move") is True
-        assert state_machine.trigger("wait_move") is True
-        assert state_machine.model.state == "WAITING_MOVE_RESULT"
-
-    def test_valid_transition_wait_put(self, state_machine):
-        """测试 RUNNING -> WAITING_PUT_RESULT 迁移"""
-        assert state_machine.may_trigger("wait_put") is True
-        assert state_machine.trigger("wait_put") is True
-        assert state_machine.model.state == "WAITING_PUT_RESULT"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 RUNNING -> MANUAL_HOLD 迁移"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_valid_transition_fail(self, state_machine):
-        """测试 RUNNING -> FAILED 迁移"""
-        assert state_machine.may_trigger("fail") is True
-        assert state_machine.trigger("fail") is True
-        assert state_machine.model.state == "FAILED"
-
-    def test_valid_transition_cancel(self, state_machine):
-        """测试 RUNNING -> CANCELLED 迁移"""
-        assert state_machine.may_trigger("cancel") is True
-        assert state_machine.trigger("cancel") is True
-        assert state_machine.model.state == "CANCELLED"
-
-    def test_invalid_transition_start(self, state_machine):
-        """测试无效迁移 start（已经在 RUNNING）"""
-        assert state_machine.may_trigger("start") is False
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok（需要先进入等待状态）"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-
-class TestStateMachineWaitingScanResult:
-    """WAITING_SCAN_RESULT 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 WAITING_SCAN_RESULT 状态的状态机"""
-        model = ModelWithState("WAITING_SCAN_RESULT")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_scan_ok(self, state_machine):
-        """测试 WAITING_SCAN_RESULT -> RUNNING 迁移"""
-        assert state_machine.may_trigger("scan_ok") is True
-        assert state_machine.trigger("scan_ok") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_scan_ng(self, state_machine):
-        """测试 WAITING_SCAN_RESULT -> FAILED 迁移"""
-        assert state_machine.may_trigger("scan_ng") is True
-        assert state_machine.trigger("scan_ng") is True
-        assert state_machine.model.state == "FAILED"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 WAITING_SCAN_RESULT -> MANUAL_HOLD 迁移"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_invalid_transition_start(self, state_machine):
-        """测试无效迁移 start"""
-        assert state_machine.may_trigger("start") is False
-
-    def test_invalid_transition_detect_ok(self, state_machine):
-        """测试无效迁移 detect_ok"""
-        assert state_machine.may_trigger("detect_ok") is False
-
-
-class TestStateMachineWaitingDetectResult:
-    """WAITING_DETECT_RESULT 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 WAITING_DETECT_RESULT 状态的状态机"""
-        model = ModelWithState("WAITING_DETECT_RESULT")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_detect_ok(self, state_machine):
-        """测试 WAITING_DETECT_RESULT -> RUNNING 迁移（OK）"""
-        assert state_machine.may_trigger("detect_ok") is True
-        assert state_machine.trigger("detect_ok") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_detect_ng(self, state_machine):
-        """测试 WAITING_DETECT_RESULT -> RUNNING 迁移（NG，特殊处理后继续）"""
-        assert state_machine.may_trigger("detect_ng") is True
-        assert state_machine.trigger("detect_ng") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 WAITING_DETECT_RESULT -> MANUAL_HOLD 迁移"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-
-class TestStateMachineWaitingMoveResult:
-    """WAITING_MOVE_RESULT 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 WAITING_MOVE_RESULT 状态的状态机"""
-        model = ModelWithState("WAITING_MOVE_RESULT")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_move_ok(self, state_machine):
-        """测试 WAITING_MOVE_RESULT -> RUNNING 迁移"""
-        assert state_machine.may_trigger("move_ok") is True
-        assert state_machine.trigger("move_ok") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 WAITING_MOVE_RESULT -> MANUAL_HOLD 迁移"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-
-class TestStateMachineWaitingPutResult:
-    """WAITING_PUT_RESULT 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 WAITING_PUT_RESULT 状态的状态机"""
-        model = ModelWithState("WAITING_PUT_RESULT")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_put_ok(self, state_machine):
-        """测试 WAITING_PUT_RESULT -> COMPLETED 迁移"""
-        assert state_machine.may_trigger("put_ok") is True
-        assert state_machine.trigger("put_ok") is True
-        assert state_machine.model.state == "COMPLETED"
-
-    def test_valid_transition_estop(self, state_machine):
-        """测试 WAITING_PUT_RESULT -> MANUAL_HOLD 迁移"""
-        assert state_machine.may_trigger("estop") is True
-        assert state_machine.trigger("estop") is True
-        assert state_machine.model.state == "MANUAL_HOLD"
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-
-class TestStateMachineManualHold:
-    """MANUAL_HOLD 状态的迁移测试"""
-
-    @pytest.fixture
-    def state_machine(self):
-        """创建 MANUAL_HOLD 状态的状态机"""
-        model = ModelWithState("MANUAL_HOLD")
-        return SmtClassifierStateMachine(model)
-
-    def test_valid_transition_retry(self, state_machine):
-        """测试 MANUAL_HOLD -> RUNNING 迁移"""
-        assert state_machine.may_trigger("retry") is True
-        assert state_machine.trigger("retry") is True
-        assert state_machine.model.state == "RUNNING"
-
-    def test_valid_transition_fail(self, state_machine):
-        """测试 MANUAL_HOLD -> FAILED 迁移"""
-        assert state_machine.may_trigger("fail") is True
-        assert state_machine.trigger("fail") is True
-        assert state_machine.model.state == "FAILED"
-
-    def test_invalid_transition_start(self, state_machine):
-        """测试无效迁移 start"""
-        assert state_machine.may_trigger("start") is False
-
-    def test_invalid_transition_scan_ok(self, state_machine):
-        """测试无效迁移 scan_ok"""
-        assert state_machine.may_trigger("scan_ok") is False
-
-
-class TestStateMachineTerminalStates:
-    """终态测试（COMPLETED, FAILED, CANCELLED）"""
-
-    def test_completed_no_valid_transitions(self):
-        """测试 COMPLETED 状态无有效迁移"""
-        model = ModelWithState("COMPLETED")
-        sm = SmtClassifierStateMachine(model)
-
-        # 只有 fail 和 estop 可用（来自通配符规则）
-        valid_transitions = sm.get_valid_transitions()
-        # COMPLETED 不应该有常规迁移，但通配符迁移仍然有效
-        assert "fail" in valid_transitions
-        assert "estop" in valid_transitions
-        # 业务迁移不应该存在
-        assert "start" not in valid_transitions
-        assert "scan_ok" not in valid_transitions
-
-    def test_failed_state_can_still_estop(self):
-        """测试 FAILED 状态仍可触发 fail（幂等）"""
-        model = ModelWithState("FAILED")
-        sm = SmtClassifierStateMachine(model)
-
-        # fail 迁移在 FAILED 状态仍然有效（通配符）
-        assert sm.may_trigger("fail") is True
-        assert sm.trigger("fail") is True
-        assert sm.model.state == "FAILED"
-
-    def test_cancelled_state_can_fail(self):
-        """测试 CANCELLED 状态可触发 fail"""
-        model = ModelWithState("CANCELLED")
-        sm = SmtClassifierStateMachine(model)
-
-        assert sm.may_trigger("fail") is True
-        assert sm.trigger("fail") is True
-        assert sm.model.state == "FAILED"
-
-
-class TestStateMachineWorkflow:
-    """完整工作流测试"""
-
-    def test_happy_path_scan_detect_put(self):
-        """测试正常流程：扫码 -> 检测 -> 放置"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        # 启动
-        assert sm.trigger("start") is True
-        assert model.state == "RUNNING"
-
-        # 扫码
-        assert sm.trigger("wait_scan") is True
-        assert model.state == "WAITING_SCAN_RESULT"
-        assert sm.trigger("scan_ok") is True
-        assert model.state == "RUNNING"
-
-        # 检测
-        assert sm.trigger("wait_detect") is True
-        assert model.state == "WAITING_DETECT_RESULT"
-        assert sm.trigger("detect_ok") is True
-        assert model.state == "RUNNING"
-
-        # 放置
-        assert sm.trigger("wait_put") is True
-        assert model.state == "WAITING_PUT_RESULT"
-        assert sm.trigger("put_ok") is True
-        assert model.state == "COMPLETED"
-
-    def test_scan_ng_flow(self):
-        """测试扫码失败流程"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        sm.trigger("start")
-        sm.trigger("wait_scan")
-        assert sm.trigger("scan_ng") is True
-        assert model.state == "FAILED"
-
-    def test_detect_ng_continue_flow(self):
-        """测试检测 NG 后继续流程"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        sm.trigger("start")
-        sm.trigger("wait_detect")
-        # NG 也返回 RUNNING（特殊处理）
-        assert sm.trigger("detect_ng") is True
-        assert model.state == "RUNNING"
-
-    def test_estop_and_retry_flow(self):
-        """测试急停和重试流程"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        sm.trigger("start")
-        sm.trigger("wait_scan")
-
-        # 急停
-        assert sm.trigger("estop") is True
-        assert model.state == "MANUAL_HOLD"
-
-        # 重试
-        assert sm.trigger("retry") is True
-        assert model.state == "RUNNING"
-
-    def test_cancel_flow(self):
-        """测试取消流程"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        sm.trigger("start")
-        assert sm.trigger("cancel") is True
-        assert model.state == "CANCELLED"
-
-
-class TestGetValidTransitionsFunction:
-    """get_valid_transitions 工具函数测试"""
-
-    def test_new_state_transitions(self):
-        """测试 NEW 状态的有效迁移"""
-        transitions = get_valid_transitions("NEW")
-        assert "start" in transitions
-        assert "fail" in transitions
-        assert "estop" in transitions
-
-    def test_running_state_transitions(self):
-        """测试 RUNNING 状态的有效迁移"""
-        transitions = get_valid_transitions("RUNNING")
-        assert "wait_scan" in transitions
-        assert "wait_detect" in transitions
-        assert "wait_move" in transitions
-        assert "wait_put" in transitions
-        assert "estop" in transitions
-        assert "fail" in transitions
-        assert "cancel" in transitions
-
-    def test_waiting_scan_state_transitions(self):
-        """测试 WAITING_SCAN_RESULT 状态的有效迁移"""
-        transitions = get_valid_transitions("WAITING_SCAN_RESULT")
-        assert "scan_ok" in transitions
-        assert "scan_ng" in transitions
-        assert "estop" in transitions
-        assert "fail" in transitions
-
-    def test_manual_hold_state_transitions(self):
-        """测试 MANUAL_HOLD 状态的有效迁移"""
-        transitions = get_valid_transitions("MANUAL_HOLD")
-        assert "retry" in transitions
-        assert "fail" in transitions
-        assert "estop" in transitions
-
-
-class TestStateMachineException:
-    """状态机异常测试"""
-
-    def test_trigger_invalid_transition_raises_exception(self):
-        """测试触发无效迁移抛出异常"""
-        model = ModelWithState("NEW")
-        sm = SmtClassifierStateMachine(model)
-
-        # 使用 MachineError 检查无效迁移
+def make_machine(state: str) -> SmtClassifierStageMachine:
+    return SmtClassifierStageMachine(ModelWithState(state))
+
+
+S = SmtClassifierStageStatus
+
+
+# ---------------------------------------------------------------------------
+# 基础结构测试
+# ---------------------------------------------------------------------------
+
+
+class TestStageMachineStructure:
+    def test_stage_states_contains_all_expected(self):
+        expected = {s.value for s in SmtClassifierStageStatus}
+        assert set(STAGE_STATES) == expected
+
+    def test_stage_transitions_is_non_empty(self):
+        assert len(STAGE_TRANSITIONS) > 0
+
+    def test_all_triggers_have_source_and_dest(self):
+        for t in STAGE_TRANSITIONS:
+            assert "trigger" in t
+            assert "source" in t
+            assert "dest" in t
+
+
+# ---------------------------------------------------------------------------
+# IDLE 状态迁移
+# ---------------------------------------------------------------------------
+
+
+class TestIdleTransitions:
+    def test_idle_scan_ok_goes_to_waiting_inspection(self):
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ok")
+        assert m.model.state == S.WAITING_INSPECTION.value
+
+    def test_idle_scan_ng_goes_to_waiting_pick_place(self):
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ng")
+        assert m.model.state == S.WAITING_PICK_PLACE.value
+
+    def test_idle_command_failed_goes_to_error(self):
+        m = make_machine(S.IDLE.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_idle_estop_goes_to_error(self):
+        m = make_machine(S.IDLE.value)
+        m.trigger("estop")
+        assert m.model.state == S.ERROR.value
+
+    def test_idle_timeout_goes_to_error(self):
+        m = make_machine(S.IDLE.value)
+        m.trigger("timeout")
+        assert m.model.state == S.ERROR.value
+
+    def test_idle_invalid_inspection_ok_raises(self):
+        m = make_machine(S.IDLE.value)
         with pytest.raises(MachineError):
-            sm.trigger("scan_ok")
+            m.trigger("inspection_ok")
 
-    def test_trigger_multiple_invalid_raises_exception(self):
-        """测试多次触发无效迁移"""
-        model = ModelWithState("COMPLETED")
-        sm = SmtClassifierStateMachine(model)
-
-        # COMPLETED 状态不应该有常规业务迁移
+    def test_idle_invalid_output_handled_raises(self):
+        m = make_machine(S.IDLE.value)
         with pytest.raises(MachineError):
-            sm.trigger("start")
+            m.trigger("output_handled")
 
 
-class TestStateMachineWildcardTransitions:
-    """通配符迁移测试"""
+# ---------------------------------------------------------------------------
+# WAITING_INSPECTION 状态迁移
+# ---------------------------------------------------------------------------
 
-    def test_fail_from_any_state(self):
-        """测试从任意状态可以 fail"""
-        for state in STATES:
-            model = ModelWithState(state)
-            sm = SmtClassifierStateMachine(model)
-            assert sm.may_trigger("fail") is True, f"fail should be valid from {state}"
 
-    def test_estop_from_any_state(self):
-        """测试从任意状态可以 estop"""
-        for state in STATES:
-            model = ModelWithState(state)
-            sm = SmtClassifierStateMachine(model)
-            # 注意：MANUAL_HOLD 状态本身不能再次 estop
-            if state != "MANUAL_HOLD":
-                assert sm.may_trigger("estop") is True, f"estop should be valid from {state}"
+class TestWaitingInspectionTransitions:
+    def test_inspection_ok_goes_to_waiting_conveyor(self):
+        m = make_machine(S.WAITING_INSPECTION.value)
+        m.trigger("inspection_ok")
+        assert m.model.state == S.WAITING_CONVEYOR.value
+
+    def test_inspection_ng_goes_to_waiting_pick_place(self):
+        m = make_machine(S.WAITING_INSPECTION.value)
+        m.trigger("inspection_ng")
+        assert m.model.state == S.WAITING_PICK_PLACE.value
+
+    def test_command_failed_goes_to_error(self):
+        m = make_machine(S.WAITING_INSPECTION.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_invalid_scan_ok_raises(self):
+        m = make_machine(S.WAITING_INSPECTION.value)
+        with pytest.raises(MachineError):
+            m.trigger("scan_ok")
+
+    def test_invalid_output_handled_raises(self):
+        m = make_machine(S.WAITING_INSPECTION.value)
+        with pytest.raises(MachineError):
+            m.trigger("output_handled")
+
+
+# ---------------------------------------------------------------------------
+# WAITING_CONVEYOR 状态迁移
+# ---------------------------------------------------------------------------
+
+
+class TestWaitingConveyorTransitions:
+    def test_conveyor_complete_goes_to_waiting_output(self):
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        m.trigger("conveyor_complete")
+        assert m.model.state == S.WAITING_OUTPUT.value
+
+    def test_agv_requested_goes_to_waiting_agv_delivery(self):
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        m.trigger("agv_requested")
+        assert m.model.state == S.WAITING_AGV_DELIVERY.value
+
+    def test_command_failed_goes_to_error(self):
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_invalid_scan_ok_raises(self):
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        with pytest.raises(MachineError):
+            m.trigger("scan_ok")
+
+    def test_invalid_ng_handled_raises(self):
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        with pytest.raises(MachineError):
+            m.trigger("ng_handled")
+
+
+# ---------------------------------------------------------------------------
+# WAITING_AGV_DELIVERY 状态迁移
+# ---------------------------------------------------------------------------
+
+
+class TestWaitingAgvDeliveryTransitions:
+    def test_agv_completed_goes_to_waiting_output(self):
+        m = make_machine(S.WAITING_AGV_DELIVERY.value)
+        m.trigger("agv_completed")
+        assert m.model.state == S.WAITING_OUTPUT.value
+
+    def test_command_failed_goes_to_error(self):
+        m = make_machine(S.WAITING_AGV_DELIVERY.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_invalid_conveyor_complete_raises(self):
+        m = make_machine(S.WAITING_AGV_DELIVERY.value)
+        with pytest.raises(MachineError):
+            m.trigger("conveyor_complete")
+
+    def test_invalid_output_handled_raises(self):
+        m = make_machine(S.WAITING_AGV_DELIVERY.value)
+        with pytest.raises(MachineError):
+            m.trigger("output_handled")
+
+
+# ---------------------------------------------------------------------------
+# WAITING_PICK_PLACE 状态迁移
+# ---------------------------------------------------------------------------
+
+
+class TestWaitingPickPlaceTransitions:
+    def test_pick_place_ok_goes_to_waiting_inspection(self):
+        m = make_machine(S.WAITING_PICK_PLACE.value)
+        m.trigger("pick_place_ok")
+        assert m.model.state == S.WAITING_INSPECTION.value
+
+    def test_ng_handled_goes_to_completed(self):
+        m = make_machine(S.WAITING_PICK_PLACE.value)
+        m.trigger("ng_handled")
+        assert m.model.state == S.COMPLETED.value
+
+    def test_command_failed_goes_to_error(self):
+        m = make_machine(S.WAITING_PICK_PLACE.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_invalid_scan_ok_raises(self):
+        m = make_machine(S.WAITING_PICK_PLACE.value)
+        with pytest.raises(MachineError):
+            m.trigger("scan_ok")
+
+    def test_invalid_output_handled_raises(self):
+        m = make_machine(S.WAITING_PICK_PLACE.value)
+        with pytest.raises(MachineError):
+            m.trigger("output_handled")
+
+
+# ---------------------------------------------------------------------------
+# WAITING_OUTPUT 状态迁移
+# ---------------------------------------------------------------------------
+
+
+class TestWaitingOutputTransitions:
+    def test_output_handled_goes_to_completed(self):
+        m = make_machine(S.WAITING_OUTPUT.value)
+        m.trigger("output_handled")
+        assert m.model.state == S.COMPLETED.value
+
+    def test_command_failed_goes_to_error(self):
+        m = make_machine(S.WAITING_OUTPUT.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    def test_invalid_scan_ok_raises(self):
+        m = make_machine(S.WAITING_OUTPUT.value)
+        with pytest.raises(MachineError):
+            m.trigger("scan_ok")
+
+    def test_invalid_ng_handled_raises(self):
+        m = make_machine(S.WAITING_OUTPUT.value)
+        with pytest.raises(MachineError):
+            m.trigger("ng_handled")
+
+
+# ---------------------------------------------------------------------------
+# 通配符迁移（从每个非终态测试）
+# ---------------------------------------------------------------------------
+
+
+ACTIVE_STATES = [
+    S.IDLE,
+    S.WAITING_INSPECTION,
+    S.WAITING_CONVEYOR,
+    S.WAITING_AGV_DELIVERY,
+    S.WAITING_PICK_PLACE,
+    S.WAITING_OUTPUT,
+]
+
+
+class TestWildcardTransitions:
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_command_failed_always_goes_to_error(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("command_failed")
+        assert m.model.state == S.ERROR.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_timeout_always_goes_to_error(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("timeout")
+        assert m.model.state == S.ERROR.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_estop_always_goes_to_error(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("estop")
+        assert m.model.state == S.ERROR.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_manual_hold_keeps_same_state(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("manual_hold")
+        assert m.model.state == state.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_manual_resume_keeps_same_state(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("manual_resume")
+        assert m.model.state == state.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_manual_cancel_goes_to_completed(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("manual_cancel")
+        assert m.model.state == S.COMPLETED.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_wcs_task_complete_keeps_same_state(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("wcs_task_complete")
+        assert m.model.state == state.value
+
+    @pytest.mark.parametrize("state", ACTIVE_STATES)
+    def test_wcs_task_failed_goes_to_error(self, state: SmtClassifierStageStatus):
+        m = make_machine(state.value)
+        m.trigger("wcs_task_failed")
+        assert m.model.state == S.ERROR.value
+
+
+# ---------------------------------------------------------------------------
+# ERROR 状态：无恢复迁移
+# ---------------------------------------------------------------------------
+
+
+class TestErrorStateIsFinal:
+    def test_error_no_recovery_via_scan_ok(self):
+        m = make_machine(S.ERROR.value)
+        with pytest.raises(MachineError):
+            m.trigger("scan_ok")
+
+    def test_error_no_recovery_via_inspection_ok(self):
+        m = make_machine(S.ERROR.value)
+        with pytest.raises(MachineError):
+            m.trigger("inspection_ok")
+
+    def test_error_manual_cancel_goes_to_completed(self):
+        """manual_cancel 是通配符，ERROR 状态下也可触发（关闭作业）"""
+        m = make_machine(S.ERROR.value)
+        m.trigger("manual_cancel")
+        assert m.model.state == S.COMPLETED.value
+
+
+# ---------------------------------------------------------------------------
+# 完整工作流路径测试
+# ---------------------------------------------------------------------------
+
+
+class TestCompleteWorkflows:
+    def test_ok_path_idle_to_completed_via_conveyor(self):
+        """OK 路径: IDLE→WAITING_INSPECTION→WAITING_CONVEYOR→WAITING_OUTPUT→COMPLETED"""
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ok")
+        assert m.model.state == S.WAITING_INSPECTION.value
+        m.trigger("inspection_ok")
+        assert m.model.state == S.WAITING_CONVEYOR.value
+        m.trigger("conveyor_complete")
+        assert m.model.state == S.WAITING_OUTPUT.value
+        m.trigger("output_handled")
+        assert m.model.state == S.COMPLETED.value
+
+    def test_ok_path_idle_to_completed_via_agv(self):
+        """AGV 路径: IDLE→WAITING_INSPECTION→WAITING_CONVEYOR→WAITING_AGV_DELIVERY→…→COMPLETED"""
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ok")
+        m.trigger("inspection_ok")
+        m.trigger("agv_requested")
+        assert m.model.state == S.WAITING_AGV_DELIVERY.value
+        m.trigger("agv_completed")
+        assert m.model.state == S.WAITING_OUTPUT.value
+        m.trigger("output_handled")
+        assert m.model.state == S.COMPLETED.value
+
+    def test_ng_path_scan_ng_then_ng_handled(self):
+        """NG 路径: IDLE→WAITING_PICK_PLACE→COMPLETED (ng_handled)"""
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ng")
+        assert m.model.state == S.WAITING_PICK_PLACE.value
+        m.trigger("ng_handled")
+        assert m.model.state == S.COMPLETED.value
+
+    def test_ng_path_inspection_ng_then_pick_place_retry(self):
+        """NG 再检路径: IDLE→WAITING_INSPECTION→WAITING_PICK_PLACE→WAITING_INSPECTION"""
+        m = make_machine(S.IDLE.value)
+        m.trigger("scan_ok")
+        m.trigger("inspection_ng")
+        assert m.model.state == S.WAITING_PICK_PLACE.value
+        m.trigger("pick_place_ok")
+        assert m.model.state == S.WAITING_INSPECTION.value
+
+    def test_error_path_any_state_to_error_no_recovery(self):
+        """错误路径: 任意状态→ERROR，ERROR 后无法正常继续"""
+        m = make_machine(S.WAITING_INSPECTION.value)
+        m.trigger("estop")
+        assert m.model.state == S.ERROR.value
+        # ERROR 状态下正常业务触发器全部失败
+        with pytest.raises(MachineError):
+            m.trigger("inspection_ok")
+
+    def test_manual_cancel_mid_workflow(self):
+        """中途人工取消：WAITING_CONVEYOR→manual_cancel→COMPLETED"""
+        m = make_machine(S.WAITING_CONVEYOR.value)
+        m.trigger("manual_cancel")
+        assert m.model.state == S.COMPLETED.value
+
+
+# ---------------------------------------------------------------------------
+# may_trigger 测试
+# ---------------------------------------------------------------------------
+
+
+class TestMayTrigger:
+    def test_may_trigger_valid_returns_true(self):
+        m = make_machine(S.IDLE.value)
+        assert m.may_trigger("scan_ok") is True
+
+    def test_may_trigger_invalid_returns_false(self):
+        m = make_machine(S.IDLE.value)
+        assert m.may_trigger("output_handled") is False
+
+    def test_may_trigger_none_returns_true(self):
+        m = make_machine(S.IDLE.value)
+        assert m.may_trigger(None) is True  # type: ignore[arg-type]
+
+    def test_may_trigger_empty_string_returns_true(self):
+        m = make_machine(S.IDLE.value)
+        assert m.may_trigger("") is True
+
+
+# ---------------------------------------------------------------------------
+# get_valid_stage_transitions 辅助函数
+# ---------------------------------------------------------------------------
+
+
+class TestGetValidStageTransitions:
+    def test_idle_has_expected_triggers(self):
+        triggers = get_valid_stage_transitions(S.IDLE.value)
+        assert "scan_ok" in triggers
+        assert "scan_ng" in triggers
+        assert "command_failed" in triggers
+        assert "estop" in triggers
+        assert "manual_cancel" in triggers
+
+    def test_waiting_inspection_has_expected_triggers(self):
+        triggers = get_valid_stage_transitions(S.WAITING_INSPECTION.value)
+        assert "inspection_ok" in triggers
+        assert "inspection_ng" in triggers
+        assert "command_failed" in triggers
+
+    def test_waiting_output_has_expected_triggers(self):
+        triggers = get_valid_stage_transitions(S.WAITING_OUTPUT.value)
+        assert "output_handled" in triggers
+        assert "command_failed" in triggers
