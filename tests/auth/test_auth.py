@@ -262,7 +262,7 @@ class TestRBAC:
     async def test_user_without_permission(self, auth_client: AsyncClient):
         """测试：无权限用户访问受保护资源"""
         # 假设有一个需要 "user:delete" 权限的端点
-        response = await auth_client.delete("/api/v1/users/1")
+        response = await auth_client.delete("/api/v1/admin/users/1")
 
         # 应该返回 403 Forbidden
         assert response.status_code == status.HTTP_403_FORBIDDEN
@@ -291,7 +291,7 @@ class TestRBAC:
 
         # 使用超级用户令牌访问
         response = await client.delete(
-            "/api/v1/users/1",
+            "/api/v1/admin/users/1",
             headers={"Authorization": f"Bearer {token}"},
         )
 

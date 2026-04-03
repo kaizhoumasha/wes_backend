@@ -60,10 +60,20 @@ pipeline {
 
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                     String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
+                    String channelTag = branchTag
+
+                    switch (sourceBranch) {
+                        case 'develop':
+                            channelTag = 'develop'
+                            break
+                        case 'main':
+                            channelTag = 'prod'
+                            break
+                    }
 
                     env.CI_COMMIT_SHA = fullCommit
                     env.CI_BRANCH_TAG = branchTag
-                    env.DEPLOY_BACKEND_TAG = params.BACKEND_IMAGE_TAG?.trim() ? params.BACKEND_IMAGE_TAG.trim() : branchTag
+                    env.DEPLOY_BACKEND_TAG = params.BACKEND_IMAGE_TAG?.trim() ? params.BACKEND_IMAGE_TAG.trim() : channelTag
                     env.DEPLOY_FRONTEND_TAG = params.FRONTEND_IMAGE_TAG?.trim() ? params.FRONTEND_IMAGE_TAG.trim() : 'develop'
                     env.DEPLOY_BACKEND_IMAGE = "${env.BACKEND_IMAGE_REPO}:${env.DEPLOY_BACKEND_TAG}"
                     env.DEPLOY_FRONTEND_IMAGE = "${env.FRONTEND_IMAGE_REPO}:${env.DEPLOY_FRONTEND_TAG}"

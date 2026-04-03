@@ -272,17 +272,19 @@ docker-compose --version
 - `develop`：
   - 构建 CI 镜像
   - 执行质量检查与测试
-  - 构建并推送 backend immutable tag 和分支 tag
+  - 构建并推送 backend immutable tag 与 `develop` channel tag
   - 自动触发 `wes_test_deploy`
 - `main` / 其他分支：
   - `wes_backend-ci` 仍执行 CI
-  - 非 MR 时推送对应 runtime 镜像
+  - 非 MR 时推送 backend immutable tag 与 channel tag
+    - `main` → `prod`
+    - 其他分支 → 分支同名 tag
   - 不自动触发 TEST 部署
 
 部署行为约束：
 
 - `wes_test_deploy` 负责 TEST 环境部署
-- 先拉取 backend/frontend immutable 镜像
+- 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
 - 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/performance/health`
 - 同时检查 nginx `/health` 和首页

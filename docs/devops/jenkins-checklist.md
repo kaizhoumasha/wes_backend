@@ -295,9 +295,9 @@ sudo usermod -aG docker jenkins
    - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
-   - develop/main 构建并推送运行时镜像
-   - develop/main 自动部署后端运行时服务
-4. **自动回滚**（如果运行时健康检查失败）
+   - 非 MR 推送 backend immutable tag 和 channel tag
+   - 仅 develop 自动触发 TEST 部署
+4. **TEST 部署健康检查**
 5. **通知结果**（可选配置）
 
 ## 📞 需要帮助？

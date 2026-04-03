@@ -65,17 +65,29 @@ pipeline {
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                     String shortCommit = fullCommit.take(7)
                     String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
+                    String channelTag = branchTag
+
+                    switch (sourceBranch) {
+                        case 'develop':
+                            channelTag = 'develop'
+                            break
+                        case 'main':
+                            channelTag = 'prod'
+                            break
+                    }
 
                     env.CI_COMMIT_SHA = fullCommit
                     env.CI_SHORT_COMMIT = shortCommit
                     env.CI_BRANCH_TAG = branchTag
+                    env.CI_CHANNEL_TAG = channelTag
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
                     env.RUNTIME_IMAGE_LOCAL = "wes-backend-runtime:${env.BUILD_NUMBER}-${shortCommit}"
                     env.RUNTIME_IMAGE_COMMIT = "${env.IMAGE_REPO}:${env.BUILD_NUMBER}-${shortCommit}"
-                    env.RUNTIME_IMAGE_BRANCH = "${env.IMAGE_REPO}:${branchTag}"
+                    env.RUNTIME_IMAGE_CHANNEL = "${env.IMAGE_REPO}:${channelTag}"
 
                     echo "🐳 CI 测试镜像: ${env.CI_IMAGE}"
                     echo "🐳 Runtime 镜像: ${env.RUNTIME_IMAGE_COMMIT}"
+                    echo "🐳 Runtime 渠道镜像: ${env.RUNTIME_IMAGE_CHANNEL}"
                 }
             }
         }
@@ -157,11 +169,14 @@ pipeline {
                             mkdir -p reports/coverage
                             docker run --rm \
                                 --env-file "$WORKSPACE/.env.test" \
+                                -e APP_DEBUG=false \
+                                -e LOG_LEVEL=INFO \
+                                -e CELERY_LOG_LEVEL=INFO \
                                 -v "$WORKSPACE/reports:/artifacts/reports" \
                                 "${CI_IMAGE}" \
                                 sh -c '
                                     mkdir -p /artifacts/reports/coverage &&
-                                    pytest tests/ -v --tb=short \
+                                    pytest tests/ --capture=fd -v --tb=short \
                                         --cov=src \
                                         --cov-report=term-missing \
                                         --cov-report=html:/artifacts/reports/coverage \
@@ -202,8 +217,11 @@ pipeline {
                             set -e
                             docker run --rm \
                                 --env-file "$WORKSPACE/.env.test" \
+                                -e APP_DEBUG=false \
+                                -e LOG_LEVEL=INFO \
+                                -e CELERY_LOG_LEVEL=INFO \
                                 "${CI_IMAGE}" \
-                                sh -c 'pytest tests/api/test_signature.py -v --tb=short'
+                                sh -c 'pytest tests/api/test_signature.py --capture=fd -v --tb=short'
                         '''
                     }
                 }
@@ -248,9 +266,9 @@ pipeline {
                         sh ./docker/test/registry-login.sh
 
                         docker tag "${RUNTIME_IMAGE_LOCAL}" "${RUNTIME_IMAGE_COMMIT}"
-                        docker tag "${RUNTIME_IMAGE_LOCAL}" "${RUNTIME_IMAGE_BRANCH}"
+                        docker tag "${RUNTIME_IMAGE_LOCAL}" "${RUNTIME_IMAGE_CHANNEL}"
                         docker push "${RUNTIME_IMAGE_COMMIT}"
-                        docker push "${RUNTIME_IMAGE_BRANCH}"
+                        docker push "${RUNTIME_IMAGE_CHANNEL}"
                     '''
                 }
             }
@@ -265,11 +283,11 @@ pipeline {
             }
             steps {
                 script {
-                    echo "🚀 Trigger Test Deploy: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}, backend_tag=${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"
+                    echo "🚀 Trigger Test Deploy: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}, backend_tag=${env.CI_CHANNEL_TAG}"
                     build job: 'wes_test_deploy',
                         wait: false,
                         parameters: [
-                            string(name: 'BACKEND_IMAGE_TAG', value: "${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"),
+                            string(name: 'BACKEND_IMAGE_TAG', value: env.CI_CHANNEL_TAG),
                             string(name: 'FRONTEND_IMAGE_TAG', value: 'develop'),
                             string(name: 'SOURCE_BRANCH', value: env.CI_SOURCE_BRANCH)
                         ]
@@ -284,7 +302,7 @@ pipeline {
                 docker image rm -f "${CI_IMAGE}" >/dev/null 2>&1 || true
                 docker image rm -f "${RUNTIME_IMAGE_LOCAL}" >/dev/null 2>&1 || true
                 docker image rm -f "${RUNTIME_IMAGE_COMMIT}" >/dev/null 2>&1 || true
-                docker image rm -f "${RUNTIME_IMAGE_BRANCH}" >/dev/null 2>&1 || true
+                docker image rm -f "${RUNTIME_IMAGE_CHANNEL}" >/dev/null 2>&1 || true
             '''
             cleanWs()
         }

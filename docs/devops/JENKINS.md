@@ -76,11 +76,11 @@ git push gitlab develop
     ├─ Quality Checks（并行）
     ├─ Tests（并行）
     ├─ Build Runtime Image
-    ├─ Push Runtime Image（非 MR）
+    ├─ Push Runtime Image（非 MR，推送 immutable + channel tag）
     └─ Trigger Test Deploy（仅 develop push）
          ↓
       `wes_test_deploy`
-        ├─ 拉取 immutable backend/frontend 镜像
+        ├─ 拉取 backend `develop` / frontend `develop` 镜像
         ├─ 重建 TEST 应用服务
         └─ 健康检查
 ```
@@ -94,7 +94,7 @@ git push gitlab develop
 
 1. **Node 标签**：确保 `Jenkinsfile.backend-ci` 和 `Jenkinsfile.test-deploy` 中的 `label` 与实际的 Node 标签一致
 2. **部署目录**：确保 `/opt/wes_backend` 已初始化
-3. **环境文件**：确保 `.env.test` 已配置
+3. **环境文件**：确保 `.env.test` 已配置；CI 测试会显式覆盖为非调试日志级别
 4. **Docker 权限**：确保 Jenkins 用户有 Docker 权限
 
 ## 🔧 常用命令

@@ -41,6 +41,7 @@ async def test_get_menus_by_user_superuser_query_not_where_false() -> None:
 @dataclass
 class _MenuStub:
     id: int
+    sort_order: int = 0
     is_deleted: bool = False
 
 
@@ -49,16 +50,16 @@ async def test_get_menus_by_user_regular_user_deduplicates_unhashable_menu_objec
     repo = MenuRepository()
     db = AsyncMock()
 
-    shared_menu = _MenuStub(id=101, is_deleted=False)
-    unique_menu = _MenuStub(id=202, is_deleted=False)
-    deleted_menu = _MenuStub(id=303, is_deleted=True)
+    shared_menu = _MenuStub(id=101, sort_order=10, is_deleted=False)
+    unique_menu = _MenuStub(id=202, sort_order=20, is_deleted=False)
+    deleted_menu = _MenuStub(id=303, sort_order=30, is_deleted=True)
 
     user = SimpleNamespace(
         is_superuser=False,
         roles=[
             SimpleNamespace(is_deleted=False, menus=[shared_menu, unique_menu, deleted_menu]),
             SimpleNamespace(is_deleted=False, menus=[shared_menu]),
-            SimpleNamespace(is_deleted=True, menus=[_MenuStub(id=404, is_deleted=False)]),
+            SimpleNamespace(is_deleted=True, menus=[_MenuStub(id=404, sort_order=40, is_deleted=False)]),
         ],
     )
 
