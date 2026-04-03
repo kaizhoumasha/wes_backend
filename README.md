@@ -48,3 +48,34 @@ P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框�
 
 ## Configuration
 Configuration is managed via `.env` file. See `.env.example` for reference.
+
+## Production Bootstrap
+
+Production should not use `scripts/data/seed_initial_data.py`. That script is for dev/test/demo data and contains default accounts such as `admin/admin123`.
+
+Use separate env files for backend and frontend:
+
+- Backend: `.env.prod`
+- Frontend: `.env.frontend.prod`
+
+This separation is expected and does not affect deployment. The backend bootstrap flow only depends on backend env and an optional frontend source path for menu sync.
+
+Recommended first-time production initialization order:
+
+```bash
+./scripts/migrate.sh upgrade
+bash scripts/data/sync_permissions.sh
+bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
+
+export BOOTSTRAP_ADMIN_USERNAME=admin
+export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
+export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
+export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
+bash scripts/data/bootstrap_admin.sh
+```
+
+Notes:
+
+- `bootstrap_admin` is idempotent. If a superuser already exists, it skips creation.
+- Production should enable snowflake IDs in `.env.prod` with `USE_SNOWFLAKE_ID=true`.
+- Keep real bootstrap credentials outside git-managed files and inject them from the deployment environment.

@@ -14,6 +14,7 @@
 - 扩展用户特定的业务查询方法
 """
 
+from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import User
@@ -117,6 +118,21 @@ class UserRepository(BaseRepository[User]):
             where_clauses_raw=[User.is_deleted == False],  # noqa: E712
         )
         return users
+
+    async def get_first_superuser(self, db: AsyncSession) -> User | None:
+        """
+        获取任意一个现存超级管理员
+
+        生产 bootstrap 场景只需要确认系统中是否已经存在超级管理员，
+        不应重复创建默认管理员账号。
+        """
+        _, users = await self.get_list(
+            db,
+            limit=1,
+            where_clauses_raw=[User.is_superuser == True],  # noqa: E712
+            order_by_raw=[desc(User.id)],
+        )
+        return users[0] if users else None
 
     async def count_active(self, db: AsyncSession) -> int:
         """

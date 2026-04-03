@@ -120,6 +120,30 @@ uv run python scripts/data/sync_menus.py
 
 如果前端目录不可用，则会回退到脚本内置的默认菜单数据。
 
+## 生产环境初始化顺序
+
+生产环境不要执行 `scripts/data/seed_initial_data.py`。该脚本用于开发、测试、演示初始化，包含默认账号口令，不适合作为生产部署步骤。
+
+推荐生产初始化顺序：
+
+```bash
+./scripts/migrate.sh upgrade
+bash scripts/data/sync_permissions.sh
+bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
+
+export BOOTSTRAP_ADMIN_USERNAME=admin
+export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
+export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
+export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
+bash scripts/data/bootstrap_admin.sh
+```
+
+说明：
+
+- 菜单同步依赖前端 `src/router/index.ts`，因此生产手动部署时仍需提供前端源码目录或等效构建上下文。
+- 前后端分离维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法，互不冲突。
+- `bootstrap_admin` 只会在系统中还没有超级管理员时创建首个管理员，后续重复执行会安全跳过。
+
 ## 已修复的问题
 
 这套机制同时解决了旧方案中的几个问题：

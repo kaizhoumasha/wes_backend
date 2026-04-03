@@ -41,6 +41,11 @@ http://192.168.0.220:9081
 
 - `wes_backend`：旧单体 Pipeline，已从 Jenkins 清理，不再维护
 
+部署边界：
+
+- TEST：由 Jenkins 自动部署，默认跟随 `develop` channel 镜像
+- PROD：不依赖 Jenkins 直连生产环境，按手动部署 runbook 执行迁移、权限同步、菜单同步和首个管理员 bootstrap
+
 ### 3. 修改现役 Pipeline 脚本
 
 ```bash
@@ -85,6 +90,27 @@ git push gitlab develop
         ├─ 从 `/opt/wes_frontend/src/router/index.ts` 同步菜单到 `wes_sys.menus`
         └─ 健康检查
 ```
+
+生产环境建议顺序：
+
+```bash
+./scripts/migrate.sh upgrade
+bash scripts/data/sync_permissions.sh
+bash scripts/data/sync_menus.sh --frontend-path /opt/wes_frontend
+
+export BOOTSTRAP_ADMIN_USERNAME=admin
+export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
+export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
+export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
+bash scripts/data/bootstrap_admin.sh
+```
+
+其中：
+
+- `scripts/data/seed_initial_data.py` 仅用于 dev/test/demo，不用于生产
+- `.env.prod` 与 `.env.frontend.prod` 分离维护即可，不要求合并
+- 生产建议开启 `USE_SNOWFLAKE_ID=true`
+- `bootstrap_admin.sh` 依赖上述 `BOOTSTRAP_ADMIN_*` 环境变量，建议由部署环境注入真实值
 
 ## 📖 详细文档
 

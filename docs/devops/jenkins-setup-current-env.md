@@ -293,6 +293,23 @@ docker-compose --version
 - 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/admin/performance/health`
 - 同时检查 nginx `/health` 和首页
 
+PROD 边界说明：
+
+- 当前 Jenkins 只负责 CI 与 TEST 自动部署，不直接连接生产环境
+- 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
+- 推荐顺序：
+  1. `./scripts/migrate.sh upgrade`
+  2. `bash scripts/data/sync_permissions.sh`
+  3. `bash scripts/data/sync_menus.sh --frontend-path /opt/wes_frontend`
+  4. `export BOOTSTRAP_ADMIN_USERNAME=admin`
+  5. `export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'`
+  6. `export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'`
+  7. `export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'`
+  8. `bash scripts/data/bootstrap_admin.sh`
+- 前后端分别维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法
+- 生产建议在 `.env.prod` 中启用 `USE_SNOWFLAKE_ID=true`
+- `bootstrap_admin.sh` 只会在系统中还没有超级管理员时创建首个管理员
+
 建议核对项：
 
 ```bash

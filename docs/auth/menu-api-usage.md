@@ -299,6 +299,8 @@ export async function createRouter() {
 
 ## 测试命令
 
+以下示例使用的是开发/测试初始化数据中的默认账号，仅适用于本地或测试环境；生产环境请使用手动 bootstrap 后的管理员账号。
+
 ```bash
 # 1. 登录获取 token
 TOKEN=$(curl -X POST 'http://localhost:8001/api/v1/auth/login' \
