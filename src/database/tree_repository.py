@@ -577,9 +577,7 @@ class TreeRepository[T](BaseRepository[T]):
         if changed_nodes and hasattr(self.model, "has_children"):
             # 收集所有受影响的父节点 ID
             old_parent_ids = {
-                original[nid]["parent_id"]
-                for nid in changed_nodes
-                if original[nid]["parent_id"] is not None
+                original[nid]["parent_id"] for nid in changed_nodes if original[nid]["parent_id"] is not None
             }
             new_parent_ids = {new_pid for new_pid, _ in changed_nodes.values() if new_pid is not None}
 

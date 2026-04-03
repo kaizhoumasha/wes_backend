@@ -76,6 +76,7 @@ class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
 
         return tree
 
+
 menu_service = MenuService(menu_repository)
 
 __all__ = ["MenuService", "menu_service"]

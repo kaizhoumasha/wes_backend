@@ -1,9 +1,8 @@
 from types import SimpleNamespace
 
 from src.app.admin.models import MenuTreeResponse
-from src.app.admin.models.menu import Menu
+from src.app.admin.models.menu import Menu, MenuTreeResponseSimple
 from src.app.admin.models.role import Role
-from src.app.admin.models.menu import MenuTreeResponseSimple
 from src.app.admin.services.menu_service import MenuService
 
 

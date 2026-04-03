@@ -143,9 +143,7 @@ class TreeServiceMixin[M]:
             顶层节点列表，每个节点包含 has_children 标志
         """
         # 获取顶层节点（直接子节点）
-        children = await self.repo.get_children(
-            db, root_id, schema=schema, relation_max_depth=max_depth
-        )  # type: ignore[attr-defined]
+        children = await self.repo.get_children(db, root_id, schema=schema, relation_max_depth=max_depth)  # type: ignore[attr-defined]
 
         # 复用 _serialize_items 序列化
         result = self._serialize_items(children, schema)
@@ -171,10 +169,6 @@ class TreeServiceMixin[M]:
         Returns:
             字典形式的数据
         """
-        # 优化：如果 item 已经是 Pydantic 模型，直接返回 dict
-        if isinstance(item, BaseModel):
-            return cast("dict[str, Any]", item.model_dump(mode="json"))
-
         if schema:
             try:
                 to_response = getattr(self, "to_response", None)
@@ -194,6 +188,10 @@ class TreeServiceMixin[M]:
             except (AttributeError, TypeError, ValueError) as e:
                 # 只捕获预期的异常，避免隐藏真实错误
                 logger.debug(f"Schema serialization failed for {item.__class__.__name__}: {e}")
+
+        # 优化：仅在未指定 schema 时，Pydantic 模型直接返回 dict
+        if isinstance(item, BaseModel):
+            return cast("dict[str, Any]", item.model_dump(mode="json"))
 
         # 回退到默认的列序列化
         mapper = cast("Any", inspect(item.__class__))
@@ -231,9 +229,7 @@ class TreeServiceMixin[M]:
         if not node:
             return []
         # 获取父节点的直接子节点 = 同级节点
-        siblings = await self.repo.get_children(
-            db, node.parent_id, schema=schema, relation_max_depth=1
-        )  # type: ignore[attr-defined]
+        siblings = await self.repo.get_children(db, node.parent_id, schema=schema, relation_max_depth=1)  # type: ignore[attr-defined]
         if not include_self:
             siblings = self._exclude_node(siblings, node_id)
         return self._serialize_items(siblings, schema)
@@ -245,9 +241,7 @@ class TreeServiceMixin[M]:
         include_self: bool = False,
     ) -> list[dict[str, Any]]:
         schema = self._get_response_schema()
-        ancestors = await self.repo.get_ancestors(
-            db, node_id, schema=schema, relation_max_depth=1
-        )
+        ancestors = await self.repo.get_ancestors(db, node_id, schema=schema, relation_max_depth=1)
         if not include_self:
             ancestors = self._exclude_node(ancestors, node_id)
         return self._serialize_items(ancestors, schema)
@@ -258,9 +252,7 @@ class TreeServiceMixin[M]:
         node_id: int,
     ) -> list[dict[str, Any]]:
         schema = self._get_response_schema()
-        children = await self.repo.get_children(
-            db, node_id, schema=schema, relation_max_depth=1
-        )
+        children = await self.repo.get_children(db, node_id, schema=schema, relation_max_depth=1)
         return self._serialize_items(children, schema)
 
     async def move_node(
@@ -332,9 +324,8 @@ class TreeServiceMixin[M]:
         result = await super().update(db, id, data, cache)  # type: ignore[misc]
 
         # 如果修改了 parent_id 或 sort_order，额外失效树形缓存
-        if cache and hasattr(self, "invalidate_cache") and result:
-            if "parent_id" in data or "sort_order" in data:
-                await self.invalidate_cache(cache, invalidate_tree=True)
+        if cache and hasattr(self, "invalidate_cache") and result and ("parent_id" in data or "sort_order" in data):
+            await self.invalidate_cache(cache, invalidate_tree=True)
 
         return result
 
