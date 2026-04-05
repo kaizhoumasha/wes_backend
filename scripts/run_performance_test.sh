@@ -53,14 +53,22 @@ reset_test_data() {
 health_check() {
     print_info "执行健康检查..."
     response=$(curl -s http://localhost:8001/api/v1/performance/health)
-    echo "$response" | python3 -m json.tool
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq .
+    else
+        echo "$response" | python3 -m json.tool
+    fi
 }
 
 # 获取性能指标
 get_metrics() {
     print_info "获取性能指标..."
     response=$(curl -s http://localhost:8001/api/v1/performance/metrics)
-    echo "$response" | python3 -m json.tool
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq .
+    else
+        echo "$response" | python3 -m json.tool
+    fi
 }
 
 # 运行 Locust 测试
@@ -126,6 +134,12 @@ run_apache_bench() {
 run_concurrent_test() {
     print_info "运行并发请求测试..."
 
+    # 检测是否在 UV 环境中
+    _python_cmd="python3"
+    if command -v uv &> /dev/null && [ -f "pyproject.toml" ]; then
+        _python_cmd="uv run python"
+    fi
+
     # 创建测试脚本
     cat > /tmp/concurrent_test.py << 'EOF'
 import asyncio
@@ -174,7 +188,7 @@ if __name__ == "__main__":
     asyncio.run(test_concurrent_requests())
 EOF
 
-    python3 /tmp/concurrent_test.py
+    $_python_cmd /tmp/concurrent_test.py
     rm /tmp/concurrent_test.py
 }
 
