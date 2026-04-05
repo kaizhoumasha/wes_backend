@@ -1,7 +1,7 @@
 """
 SMT 简化插件集成测试
 
-验证 SimplifiedSmtPlugin 与 SmtClassifierPlugin 功能等价性。
+验证 SimplifiedSmtPlugin 功能正确性。
 """
 
 from unittest.mock import AsyncMock, MagicMock
