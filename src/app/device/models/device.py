@@ -13,7 +13,6 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Index, Relationship
 
@@ -23,22 +22,6 @@ from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 # ==================== 枚举定义 ====================
-
-
-class DeviceType(str, Enum):
-    """设备类型枚举 (SRS 3.3.0 节)"""
-
-    PDA = "PDA"  # PDA
-    INDUSTRIAL_PC = "INDUSTRIAL_PC"  # 工业电脑
-    PRINTER = "PRINTER"  # 打印机
-    COMPUTER = "COMPUTER"  # 电脑
-    LCR_TESTER = "LCR_TESTER"  # LCR测试仪
-    ROBOTIC_ARM = "ROBOTIC_ARM"  # 机械臂
-    VISION_CAMERA = "VISION_CAMERA"  # 视觉相机
-    CONVEYOR = "CONVEYOR"  # 输送线
-    LABELER = "LABELER"  # 贴标机
-    XRAY = "XRAY"  # X-Ray
-    SCANNER = "SCANNER"  # 扫码器
 
 
 class DeviceProtocol(str, Enum):
@@ -75,20 +58,6 @@ class DeviceBase(BaseMixin):
     )
     device_name: str = Field(min_length=1, max_length=100, description="设备名称")
 
-    # 🔥 使用 VARCHAR + CHECK 约束
-    device_type: DeviceType = Field(
-        sa_type=cast(
-            "Any",
-            SQLAEnum(
-                DeviceType,
-                native_enum=False,
-                create_constraint=True,
-                length=50,
-            ),
-        ),
-        description="设备类型",
-    )
-
     work_line_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.work_lines.id",
@@ -120,27 +89,6 @@ class DeviceBase(BaseMixin):
         default=None,
         max_length=50,
         description="厂商类型（ECS, KEYENCE, FANUC...）",
-    )
-    plugin_key: str | None = Field(
-        default=None,
-        max_length=100,
-        index=True,
-        description="设备绑定的工作线插件标识",
-    )
-    contract_profile: str | None = Field(
-        default=None,
-        max_length=100,
-        description="设备绑定的协议 profile",
-    )
-    contract_version: str | None = Field(
-        default=None,
-        max_length=50,
-        description="设备绑定的协议版本",
-    )
-    capabilities: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSON),
-        description="能力列表（业务能力，如 [SCAN, PICK, PUT]）",
     )
 
     # ===== 通信配置（白皮书 2.1-2.3 节）=====
@@ -186,11 +134,6 @@ class DeviceBase(BaseMixin):
     error_code: str | None = Field(default=None, max_length=50, description="错误代码（status=ERROR 时）")
 
     # ===== 能力配置（白皮书 5.1 节）=====
-    supported_commands: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSON),
-        description="支持的指令类型（PICK/PUT/SCAN/ROTATE/PROCESS）",
-    )
     max_concurrent_tasks: int = Field(default=1, ge=1, le=10, description="最大并发任务数")
 
     # ===== 幂等性配置（白皮书 4.1 节）=====
@@ -218,19 +161,18 @@ class Device(
     设备是作业线上的具体设备实例，用于执行具体的作业任务。
 
     字段说明:
-    - 基本信息: device_code, device_name, device_type, work_line_id
+    - 基本信息: device_code, device_name, work_line_id
     - 角色和拓扑: device_role, role_index, upstream_device_id（架构 8.2 节）
-    - 厂商和能力: vendor_type, capabilities（架构 8.2 节）
+    - 厂商: vendor_type
     - 通信配置: host, port, protocol, auth_token, timeout（白皮书 2.1-2.3 节）
     - 设备状态: device_status, current_command_id, last_heartbeat_at, error_code（白皮书 5.2 节）
-    - 能力配置: supported_commands, max_concurrent_tasks（白皮书 5.1 节）
+    - 能力配置: max_concurrent_tasks（白皮书 5.1 节）
     - 幂等性配置: idempotency_ttl（白皮书 4.1 节）
 
     架构设计参考:
     - device_role: 业务角色（SCANNER, ROBOT_ARM, XRAY），用于插件按角色选设备
     - role_index: 同角色多设备序号（如 ROBOT_ARM_1, ROBOT_ARM_2）
     - upstream_device_id: 线性拓扑（符合 KISS 原则）
-    - capabilities: 业务能力列表，区别于 device_type（设备类型）
 
     注意:
     - WES 回调端点固定在路由中: /api/v1/callback/result, /api/v1/callback/event
@@ -295,6 +237,5 @@ __all__ = [
     "DeviceProtocol",
     "DeviceResponse",
     "DeviceStatus",
-    "DeviceType",
     "DeviceUpdate",
 ]

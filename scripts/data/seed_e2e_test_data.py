@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.admin.models.perm import Permission
 from src.app.api_auth.models.api_application import APIApplication, AppStatus, AppType, ValidityPeriod
-from src.app.device.models.device import Device, DeviceProtocol, DeviceStatus, DeviceType
+from src.app.device.models.device import Device, DeviceProtocol, DeviceStatus
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.encryption import encryption_service
 from src.database.hooks import HookType
@@ -133,7 +133,6 @@ async def seed_devices(db: AsyncSession) -> None:
             {
                 "device_code": "ARM01",
                 "device_name": "进料机械臂",
-                "device_type": DeviceType.ROBOTIC_ARM,
                 "work_line_id": workline.id,
                 "description": "SMT 粗分机进料机械臂，执行扫码、检测、取放料 (Mock port 8006)",
                 "is_active": True,
@@ -141,7 +140,6 @@ async def seed_devices(db: AsyncSession) -> None:
                 "role_index": 1,
                 "upstream_device_id": None,  # 第一个设备，无上游
                 "vendor_type": "MOCK",
-                "capabilities": ["SCAN", "DETECT", "THICKNESS", "PICK", "PUT"],
                 "host": "127.0.0.1",
                 "port": 8006,
                 "protocol": DeviceProtocol.HTTP,
@@ -171,7 +169,6 @@ async def seed_devices(db: AsyncSession) -> None:
             {
                 "device_code": "PIPELINE01",
                 "device_name": "粗分机流水线",
-                "device_type": DeviceType.CONVEYOR,
                 "work_line_id": workline.id,
                 "description": "SMT 粗分机流水线，传输物料并检测 (Mock port 8005)",
                 "is_active": True,
@@ -179,13 +176,11 @@ async def seed_devices(db: AsyncSession) -> None:
                 "role_index": 1,
                 "upstream_device_id": arm01.id if arm01 else None,  # 上游是进料臂
                 "vendor_type": "MOCK",
-                "capabilities": ["MOVE_FORWARD", "SCAN", "DETECT", "THICKNESS"],
                 "host": "127.0.0.1",
                 "port": 8005,
                 "protocol": DeviceProtocol.HTTP,
                 "timeout": 10000,
                 "device_status": DeviceStatus.IDLE,
-                "supported_commands": ["MOVE_FORWARD"],
                 "max_concurrent_tasks": 1,
                 "idempotency_ttl": 3600,
                 "sort_order": 2,
@@ -208,7 +203,6 @@ async def seed_devices(db: AsyncSession) -> None:
             {
                 "device_code": "ARM02",
                 "device_name": "出料机械臂",
-                "device_type": DeviceType.ROBOTIC_ARM,
                 "work_line_id": workline.id,
                 "description": "SMT 粗分机出料机械臂，从流水线取料放入料箱 (Mock port 8007)",
                 "is_active": True,
@@ -216,13 +210,11 @@ async def seed_devices(db: AsyncSession) -> None:
                 "role_index": 1,
                 "upstream_device_id": pipeline.id if pipeline else None,  # 上游是流水线
                 "vendor_type": "MOCK",
-                "capabilities": ["PICK", "PUT"],
                 "host": "127.0.0.1",
                 "port": 8007,
                 "protocol": DeviceProtocol.HTTP,
                 "timeout": 10000,
                 "device_status": DeviceStatus.IDLE,
-                "supported_commands": ["PICK_AND_PUT"],
                 "max_concurrent_tasks": 1,
                 "idempotency_ttl": 3600,
                 "sort_order": 3,

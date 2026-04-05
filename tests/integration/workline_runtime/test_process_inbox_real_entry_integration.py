@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from src.app.device.models.device import Device, DeviceType
+from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxStatus, WorklineInbox
 from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine
@@ -37,7 +37,6 @@ async def test_process_inbox_batch_entry_marks_message_processed(
         device = Device(
             device_code=device_code,
             device_name=f"{test_prefix}-scanner",
-            device_type=DeviceType.SCANNER,
             work_line_id=line.id,
             device_role="SCANNER",
             host="127.0.0.1",

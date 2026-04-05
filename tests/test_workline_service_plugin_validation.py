@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.app.device.models.device import Device, DeviceType
+from src.app.device.models.device import Device
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
@@ -27,7 +27,6 @@ def make_device(
     work_line_id: int,
     device_code: str,
     device_name: str,
-    device_type: DeviceType,
     device_role: str,
 ) -> Device:
     """创建测试设备。"""
@@ -35,7 +34,6 @@ def make_device(
     return Device(
         device_code=device_code,
         device_name=device_name,
-        device_type=device_type,
         work_line_id=work_line_id,
         device_role=device_role,
     )
@@ -69,7 +67,6 @@ async def test_workline_service_rejects_plugin_when_required_devices_missing(db_
             work_line_id=workline.id,
             device_code="ARM01",
             device_name="进料机械臂",
-            device_type=DeviceType.ROBOTIC_ARM,
             device_role=SmtClassifierDeviceRole.INPUT_ARM.value,
         )
     )
@@ -106,21 +103,18 @@ async def test_workline_service_accepts_plugin_when_required_devices_present(db_
                 work_line_id=workline.id,
                 device_code="ARM01",
                 device_name="进料机械臂",
-                device_type=DeviceType.ROBOTIC_ARM,
                 device_role=SmtClassifierDeviceRole.INPUT_ARM.value,
             ),
             make_device(
                 work_line_id=workline.id,
                 device_code="ARM02",
                 device_name="出料机械臂",
-                device_type=DeviceType.ROBOTIC_ARM,
                 device_role=SmtClassifierDeviceRole.OUTPUT_ARM.value,
             ),
             make_device(
                 work_line_id=workline.id,
                 device_code="PIPELINE01",
                 device_name="流水线",
-                device_type=DeviceType.CONVEYOR,
                 device_role=SmtClassifierDeviceRole.CONVEYOR.value,
             ),
         ]

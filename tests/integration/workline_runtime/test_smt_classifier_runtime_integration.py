@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from src.app.device.models.command import DeviceCommand
-from src.app.device.models.device import Device, DeviceType
+from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxStatus, WorklineInbox
 from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.session import WorklineSession
@@ -38,7 +38,6 @@ async def test_smt_classifier_scan_ng_then_command_result_completes_session(
         input_arm = Device(
             device_code=f"{test_prefix}_INPUT_ARM",
             device_name="进料机械臂",
-            device_type=DeviceType.ROBOTIC_ARM,
             work_line_id=workline.id,
             device_role="INPUT_ARM",
             role_index=1,
@@ -49,7 +48,6 @@ async def test_smt_classifier_scan_ng_then_command_result_completes_session(
         conveyor = Device(
             device_code=f"{test_prefix}_CONVEYOR",
             device_name="流水线",
-            device_type=DeviceType.CONVEYOR,
             work_line_id=workline.id,
             device_role="CONVEYOR",
             role_index=1,
@@ -61,7 +59,6 @@ async def test_smt_classifier_scan_ng_then_command_result_completes_session(
         output_arm = Device(
             device_code=f"{test_prefix}_OUTPUT_ARM",
             device_name="出料机械臂",
-            device_type=DeviceType.ROBOTIC_ARM,
             work_line_id=workline.id,
             device_role="OUTPUT_ARM",
             role_index=1,

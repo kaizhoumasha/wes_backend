@@ -20,7 +20,6 @@ from .device import (
     DeviceProtocol,
     DeviceResponse,
     DeviceStatus,
-    DeviceType,
     DeviceUpdate,
 )
 
@@ -41,7 +40,6 @@ __all__ = [
     "DeviceProtocol",
     "DeviceResponse",
     "DeviceStatus",
-    "DeviceType",
     "DeviceUpdate",
     "TaskType",
 ]
