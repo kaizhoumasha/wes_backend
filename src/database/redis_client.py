@@ -35,7 +35,16 @@ class RedisManager:
 
         如果 Redis 连接失败，只记录警告，不阻断应用启动。
         应用将以降级模式运行（直接查询数据库）。
+        支持幂等调用：已连接时跳过。
         """
+        # 已连接则跳过
+        if self.is_available and self.redis_client:
+            try:
+                await cast("Any", self.redis_client).ping()
+                return
+            except Exception:
+                self.is_available = False
+
         try:
             connection_pool_cls = cast("Any", ConnectionPool)
             self.connection_pool = cast(
