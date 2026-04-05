@@ -2,95 +2,110 @@
 NullPlugin - Phase 2 默认插件
 
 空实现插件，用于测试编排流程和验证基础设施。
-所有方法返回空的 PluginResult，不修改 Session。
+基于装饰器驱动模式实现。
 
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import logging
 from typing import TYPE_CHECKING
 
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event, on_timeout
 from src.workline_runtime.types import PluginResult
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
 
+logger = logging.getLogger(__name__)
 
-class NullPlugin:
+
+class NullPlugin(WorklinePlugin):
     """Null 插件 - 空实现
 
     用于测试编排流程，验证基础设施。
-    所有方法返回空的 PluginResult，不修改 Session。
-
-    Attributes:
-        plugin_key: 插件标识符
+    所有处理器返回空的 PluginResult，不修改 Session。
     """
 
     plugin_key = "null"
+    contract_version = "1.0"
 
-    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """设备事件处理 - 记录日志，不修改 Session
+    # ========== 事件处理 ==========
 
-        Args:
-            ctx: 插件上下文
-            inbox: Inbox 实体
-
-        Returns:
-            空的 PluginResult
-        """
-        ctx.logger.info(f"NullPlugin received device event: {inbox.id}")
+    @on_event("SCAN_COMPLETED")
+    async def handle_scan_completed(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """扫码完成事件"""
+        ctx.logger.info(f"NullPlugin received SCAN_COMPLETED: {inbox.id}")
         return PluginResult()
 
-    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """命令结果处理 - 记录日志
-
-        Args:
-            ctx: 插件上下文
-            inbox: Inbox 实体
-
-        Returns:
-            空的 PluginResult
-        """
-        ctx.logger.info(f"NullPlugin received command result: {inbox.id}")
+    @on_event("INSPECTION_COMPLETED")
+    async def handle_inspection_completed(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """检测完成事件"""
+        ctx.logger.info(f"NullPlugin received INSPECTION_COMPLETED: {inbox.id}")
         return PluginResult()
 
-    async def on_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """超时处理 - 记录日志
+    @on_event("MATERIAL_ARRIVED")
+    async def handle_material_arrived(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """物料到达事件"""
+        ctx.logger.info(f"NullPlugin received MATERIAL_ARRIVED: {inbox.id}")
+        return PluginResult()
 
-        Args:
-            ctx: 插件上下文
-            inbox: Inbox 实体
+    @on_event("ESTOP_PRESSED")
+    async def handle_estop_pressed(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """急停事件"""
+        ctx.logger.warning(f"NullPlugin received ESTOP_PRESSED: {inbox.id}")
+        return PluginResult()
 
-        Returns:
-            空的 PluginResult
-        """
+    # ========== 命令结果处理 ==========
+
+    @on_command("PICK_AND_PUT", result="SUCCESS")
+    async def handle_pick_success(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """抓取放置成功"""
+        ctx.logger.info(f"NullPlugin received PICK_AND_PUT SUCCESS: {inbox.id}")
+        return PluginResult()
+
+    @on_command("PICK_AND_PUT", result="FAILED")
+    async def handle_pick_failed(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """抓取放置失败"""
+        ctx.logger.warning(f"NullPlugin received PICK_AND_PUT FAILED: {inbox.id}")
+        return PluginResult()
+
+    @on_command("MOVE_FORWARD", result="SUCCESS")
+    async def handle_move_success(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """流水线移动成功"""
+        ctx.logger.info(f"NullPlugin received MOVE_FORWARD SUCCESS: {inbox.id}")
+        return PluginResult()
+
+    @on_command("OUTPUT", result="SUCCESS")
+    async def handle_output_success(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """出料成功"""
+        ctx.logger.info(f"NullPlugin received OUTPUT SUCCESS: {inbox.id}")
+        return PluginResult()
+
+    # ========== 超时处理 ==========
+
+    @on_timeout()
+    async def handle_timeout(
+        self, ctx: "PluginContext", inbox: "WorklineInbox"
+    ) -> PluginResult:
+        """超时处理"""
         ctx.logger.warning(f"NullPlugin received timeout: {inbox.id}")
-        return PluginResult()
-
-    async def on_external_http(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """外部 HTTP 回调处理 - 记录日志
-
-        Args:
-            ctx: 插件上下文
-            inbox: Inbox 实体
-
-        Returns:
-            空的 PluginResult
-        """
-        ctx.logger.info(f"NullPlugin received external HTTP: {inbox.id}")
-        return PluginResult()
-
-    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """人工操作处理 - 记录日志
-
-        Args:
-            ctx: 插件上下文
-            inbox: Inbox 实体
-
-        Returns:
-            空的 PluginResult
-        """
-        ctx.logger.info(f"NullPlugin received manual operation: {inbox.id}")
         return PluginResult()
 
 
