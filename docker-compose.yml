@@ -600,6 +600,164 @@ services:
       - test
       - e2e
 
+  # ============================================
+  # SMT 粗分机 Mock 服务 - 流水线
+  # ============================================
+  mock_smt_pipeline:
+    build:
+      context: .
+      dockerfile: tests/mock/Dockerfile
+    image: wes-mock:smt-pipeline
+    container_name: wes_mock_smt_pipeline_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${MOCK_SMT_PIPELINE_PORT:-8005}:8005"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      smt_classifier.pipeline_mock:app
+      --host 0.0.0.0
+      --port 8005
+      --log-level info
+      --reload
+    volumes:
+      - ./tests/mock:/app/tests/mock:rw
+    environment:
+      DEVICE_CODE: PIPELINE01
+      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
+      WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
+      API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
+      API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/api/v1/device/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wesp9-network
+    deploy:
+      resources:
+        limits:
+          cpus: ${MOCK_CPU_LIMIT:-0.25}
+          memory: ${MOCK_MEMORY_LIMIT:-128M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    profiles:
+      - test
+      - e2e
+      - smt
+
+  # ============================================
+  # SMT 粗分机 Mock 服务 - 进料机械臂 (ARM01)
+  # ============================================
+  mock_smt_arm01:
+    build:
+      context: .
+      dockerfile: tests/mock/Dockerfile
+    image: wes-mock:smt-arm
+    container_name: wes_mock_smt_arm01_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${MOCK_SMT_ARM01_PORT:-8006}:8006"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      smt_classifier.arm_mock:app
+      --host 0.0.0.0
+      --port 8006
+      --log-level info
+      --reload
+    volumes:
+      - ./tests/mock:/app/tests/mock:rw
+    environment:
+      DEVICE_CODE: ARM01
+      DEVICE_PORT: "8006"
+      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
+      WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
+      API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
+      API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/api/v1/device/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wesp9-network
+    deploy:
+      resources:
+        limits:
+          cpus: ${MOCK_CPU_LIMIT:-0.25}
+          memory: ${MOCK_MEMORY_LIMIT:-128M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    profiles:
+      - test
+      - e2e
+      - smt
+
+  # ============================================
+  # SMT 粗分机 Mock 服务 - 出料机械臂 (ARM02)
+  # ============================================
+  mock_smt_arm02:
+    build:
+      context: .
+      dockerfile: tests/mock/Dockerfile
+    image: wes-mock:smt-arm
+    container_name: wes_mock_smt_arm02_${ENV:-test}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${MOCK_SMT_ARM02_PORT:-8007}:8007"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      smt_classifier.arm_mock:app
+      --host 0.0.0.0
+      --port 8007
+      --log-level info
+      --reload
+    volumes:
+      - ./tests/mock:/app/tests/mock:rw
+    environment:
+      DEVICE_CODE: ARM02
+      DEVICE_PORT: "8007"
+      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
+      WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
+      API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
+      API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/api/v1/device/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wesp9-network
+    deploy:
+      resources:
+        limits:
+          cpus: ${MOCK_CPU_LIMIT:-0.25}
+          memory: ${MOCK_MEMORY_LIMIT:-128M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    profiles:
+      - test
+      - e2e
+      - smt
+
 # ============================================
 # 网络配置
 # ============================================

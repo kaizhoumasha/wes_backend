@@ -2,12 +2,105 @@
 
 用于 E2E 测试的模拟设备服务。
 
+## 快速启动（本地开发）
+
+```bash
+# 1. 确保 WES 服务运行
+docker compose --env-file .env.dev --profile dev up -d
+
+# 2. 启动 Mock 服务（自动检测 WES）
+./tests/mock/smt_classifier/start_local.sh
+```
+
+启动的服务：
+- PIPELINE01 (8005) - 流水线
+- ARM01 (8006) - 进料机械臂
+- ARM02 (8007) - 出料机械臂
+
 ## 服务列表
 
 | 服务 | 端口 | 描述 |
 |------|------|------|
 | 摄像头 Mock | 8003 | 模拟流水线识别点摄像头（含传感器模拟） |
 | 机械臂 Mock | 8004 | 模拟搬运机械臂设备（含调试接口） |
+| SMT 流水线 Mock | 8005 | 模拟 SMT 粗分机流水线 |
+| SMT 进料臂 Mock (ARM01) | 8006 | 模拟进料机械臂（扫码、检测、搬运、NG 放置） |
+| SMT 出料臂 Mock (ARM02) | 8007 | 模拟出料机械臂（从流水线到 BIN） |
+
+## SMT 粗分机 Mock 服务
+
+### ARM01 - 进料机械臂
+
+支持的任务类型：
+- `PICK_AND_PUT` - 抓取放置
+- `PICK_NG` - NG 放置
+
+支持的位置类型：
+- 源：`INPUT_PLATFORM`, `PIPELINE_PLATFORM`
+- 目标：`PIPELINE_PLATFORM`, `NG_PLATFORM`
+
+调试接口：
+- `POST /debug/scan-completed` - 模拟扫码完成事件
+- `POST /debug/inspection-completed` - 模拟检测完成事件
+- `POST /debug/execute` - 手动执行命令
+- `GET /debug/executions` - 获取执行历史
+
+简化调用示例：
+```bash
+# 执行默认搬运（INPUT_PLATFORM → PIPELINE_PLATFORM）
+curl -X POST http://localhost:8006/debug/execute -H 'Content-Type: application/json' -d '{}'
+
+# 仅指定条码
+curl -X POST http://localhost:8006/debug/execute -H 'Content-Type: application/json' -d '{"barcode": "TEST-001"}'
+
+# 模拟扫码完成（最小化）
+curl -X POST http://localhost:8006/debug/scan-completed -H 'Content-Type: application/json' -d '{"barcode": "TEST-001"}'
+
+# 模拟扫码 NG
+curl -X POST http://localhost:8006/debug/scan-completed -H 'Content-Type: application/json' -d '{"barcode": "TEST-NG", "result": "NG"}'
+
+# 模拟检测完成（最小化，OK 结果）
+curl -X POST http://localhost:8006/debug/inspection-completed -H 'Content-Type: application/json' -d '{}'
+
+# 模拟检测 NG
+curl -X POST http://localhost:8006/debug/inspection-completed -H 'Content-Type: application/json' -d '{"result": "NG"}'
+
+# NG 放置流程
+curl -X POST http://localhost:8006/debug/execute -H 'Content-Type: application/json' -d '{"target_type": "NG_PLATFORM"}'
+```
+
+### ARM02 - 出料机械臂
+
+支持的任务类型：
+- `PICK_AND_PUT` - 抓取放置
+- `OUTPUT` - 出料到 BIN
+
+支持的位置类型：
+- 源：`PIPELINE_PLATFORM`
+- 目标：`BIN`
+
+简化调用示例：
+```bash
+# 执行默认出料（PIPELINE_PLATFORM → BIN）
+curl -X POST http://localhost:8007/debug/execute -H 'Content-Type: application/json' -d '{}'
+
+# 执行 OUTPUT 任务
+curl -X POST http://localhost:8007/debug/execute -H 'Content-Type: application/json' -d '{"task_type": "OUTPUT"}'
+```
+
+### PIPELINE01 - 流水线
+
+支持的任务类型：
+- `MOVE_FORWARD` - 向前传输
+
+简化调用示例：
+```bash
+# 执行默认传输
+curl -X POST http://localhost:8005/debug/execute -H 'Content-Type: application/json' -d '{}'
+
+# 模拟传输失败
+curl -X POST http://localhost:8005/debug/execute -H 'Content-Type: application/json' -d '{"simulate_failure": true}'
+```
 
 ## Docker 使用
 
