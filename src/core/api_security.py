@@ -123,6 +123,16 @@ DependsAPIAuth = Annotated[APIAppContext | None, Depends(verify_api_auth)]
 async def require_api_auth(
     app_ctx: DependsAPIAuth,
 ) -> APIAppContext:
+    from src.core.conf import settings
+
+    if settings.SKIP_API_AUTH:
+        return APIAppContext(
+            app_id="dev_skip",
+            app_name="dev_skip",
+            app_type="dev",
+            permissions={"*"},
+        )
+
     if app_ctx is None:
         raise AuthException("需要 API 认证")
     return app_ctx
@@ -147,6 +157,8 @@ class RequireAPIPermission:
 
     def __call__(self, app_ctx: RequireAPIAuth) -> None:  # type: ignore[misc]
         """FastAPI 依赖函数"""
+        if "*" in app_ctx.permissions:
+            return
         if self.permission_name not in app_ctx.permissions:
             raise PermissionException(f"需要权限: {self.permission_name}")
 
