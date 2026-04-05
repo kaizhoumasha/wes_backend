@@ -28,6 +28,29 @@ When a learning is promoted to a skill, add these fields:
 
 ---
 
+## [LRN-20260405-001] config
+
+**Logged**: 2026-04-05T21:45:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: config
+
+### Summary
+项目测试需要手动设置 PYTHONPATH=. 才能运行，应该在 pyproject.toml 中配置
+
+### Details
+每次运行 pytest 时都需要手动设置 PYTHONPATH=. 环境变量，否则会出现模块导入错误。这是因为项目使用了 src/ 作为源码目录结构。
+
+### Suggested Action
+在 pyproject.toml 的 [tool.pytest.ini_options] 中添加 pythonpath = ["."]
+
+### Resolution
+- **Resolved**: 2026-04-05T21:45:00+08:00
+- **Commit**: 6a987f8
+- **Notes**: 在 pyproject.toml 中添加了 pythonpath 配置
+
+---
+
 ## [LRN-20260307-001] best_practice
 
 **Logged**: 2026-03-07T01:10:00+08:00
