@@ -34,7 +34,7 @@ class ScanEventPayload(BaseModel):
     device_code: str
     barcode: str
     location_id: str = Field(alias="location")  # 支持字段别名
-    scan_result: str = "OK"  # 扫码结果（OK/NG）
+    scan_result: str = Field(default="OK", alias="result")  # 支持 result 别名
 
 
 class PickPlaceResultPayload(BaseModel):
@@ -345,7 +345,7 @@ class SimplifiedSmtPlugin(WorklinePlugin):
                 command_type="PICK_NG",
                 parameters={"barcode": barcode, "location_id": location_id},
             )
-            .context({"scan_result": "NG", "barcode": barcode})
+            .context({"scan_result": "NG", "barcode": barcode, "step_code": SmtClassifierState.WAITING_PICK_PLACE})
             .build()
         )
 
