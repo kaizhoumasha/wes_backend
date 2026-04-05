@@ -625,9 +625,8 @@ class ArmSimulator:
             "reel_thickness": request.reel_thickness,
             **self._build_barcode_fields(barcode_seed),
         }
-        # callback API 当前仍使用白皮书枚举，故这里沿用 PROCESS_COMPLETED，
-        # 并在 payload 中保留 inspection_result 以便开发时辨识。
-        await self._post_event_to_wes("PROCESS_COMPLETED", event_data)
+        # 使用 INSPECTION_COMPLETED 事件类型（simplified_smt_plugin 期望）
+        await self._post_event_to_wes("INSPECTION_COMPLETED", event_data)
         now = datetime.now()
         record = ExecutionRecord(
             execution_id=f"EVT-INSPECT-{current_millis()}",
@@ -637,7 +636,7 @@ class ArmSimulator:
             target={},
             result=request.result,
             message="检测事件已上报",
-            reported_event_type="PROCESS_COMPLETED",
+            reported_event_type="INSPECTION_COMPLETED",
             started_at=now,
             finished_at=now,
             duration_ms=0,
@@ -879,7 +878,7 @@ async def debug_scan_completed(request: ScanCompletedDebugRequest) -> ExecutionR
     "/debug/inspection-completed",
     response_model=ExecutionRecord,
     summary="模拟检测完成事件",
-    description="触发检测完成事件，会上报 PROCESS_COMPLETED 到 WES。仅 ARM01 支持。",
+    description="触发检测完成事件，会上报 INSPECTION_COMPLETED 到 WES。仅 ARM01 支持。",
     openapi_extra={
         "requestBody": {
             "content": {
