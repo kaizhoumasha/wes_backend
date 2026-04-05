@@ -36,6 +36,7 @@ class ScanEventPayload(BaseModel):
     device_code: str
     barcode: str
     location_id: str = Field(alias="location")  # 支持字段别名
+    scan_result: str = "OK"  # 扫码结果（OK/NG）
 
 
 class PickPlaceResultPayload(BaseModel):
@@ -44,6 +45,7 @@ class PickPlaceResultPayload(BaseModel):
     command_code: str
     result: str  # "SUCCESS" or "FAILED"
     error_code: str | None = None
+    device_code: str | None = None  # 设备编码
 
 
 class InspectionEventPayload(BaseModel):
