@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from uvicorn import Config, Server
 
@@ -93,7 +93,7 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "device_role": "INPUT_ARM",
         "port": 8006,
         "description": "负责扫码、检测/测厚、输入侧搬运与 NG 放置",
-        "task_types": ["PICK_AND_PUT"],
+        "task_types": ["PICK_AND_PUT", "PICK_NG"],
         "locations": {
             "INPUT_PLATFORM": [DeviceLocation(location_id="STATION_INPUT1", location_type="INPUT_PLATFORM")],
             "PIPELINE_PLATFORM": [
@@ -113,7 +113,7 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "device_role": "OUTPUT_ARM",
         "port": 8007,
         "description": "负责从流水线出料位搬运到料箱",
-        "task_types": ["PICK_AND_PUT"],
+        "task_types": ["PICK_AND_PUT", "OUTPUT"],
         "locations": {
             "PIPELINE_PLATFORM": [
                 DeviceLocation(location_id="STATION_PIPELINE1_OUTPUT1", location_type="PIPELINE_PLATFORM")
@@ -189,17 +189,44 @@ class ArmRootResponse(BaseModel):
 
 
 class ManualExecuteRequest(BaseModel):
-    task_type: str = "PICK_AND_PUT"
-    source_type: str | None = None
-    target_type: str | None = None
-    source_location_id: str | None = None
-    target_location_id: str | None = None
-    command_code: str | None = None
-    barcode: str | None = None
+    """手动执行命令请求（调试接口）
+
+    默认值根据设备角色自动选择：
+    - ARM01 (进料臂): INPUT_PLATFORM → PIPELINE_PLATFORM
+    - ARM02 (出料臂): PIPELINE_PLATFORM → BIN
+
+    示例（最小化请求）:
+        {}  # 使用全部默认值，执行默认路径
+
+    示例（仅指定条码）:
+        {"barcode": "TEST-001"}
+
+    示例（NG 流程）:
+        {"target_type": "NG_PLATFORM"}  # ARM01 放置到 NG 位
+    """
+
+    task_type: str | None = None  # 默认使用设备第一个支持的任务类型
+    source_type: str | None = None  # 默认使用设备 default_source_type
+    target_type: str | None = None  # 默认使用设备 default_target_type
+    source_location_id: str | None = None  # 精确指定源位置 ID
+    target_location_id: str | None = None  # 精确指定目标位置 ID
+    command_code: str | None = None  # 默认自动生成
+    barcode: str | None = None  # 默认自动生成
     simulate_failure: bool = False
-    execution_time: float = EXECUTION_TIME
+    execution_time: float = 0.5  # 缩短默认执行时间，方便调试
     reason: str | None = None
-    report_result: bool = False
+    report_result: bool = False  # 默认不上报结果，避免干扰测试
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {},  # 最小化：使用全部默认值
+                {"barcode": "TEST-001"},  # 仅指定条码
+                {"task_type": "PICK_NG", "target_type": "NG_PLATFORM"},  # NG 流程
+                {"simulate_failure": True, "execution_time": 0.1},  # 模拟失败
+            ]
+        }
+    }
 
 
 class AutoExecuteConfig(BaseModel):
@@ -231,20 +258,63 @@ class AutoExecuteStopResponse(BaseModel):
 
 
 class ScanCompletedDebugRequest(BaseModel):
+    """扫码完成事件模拟（调试接口）
+
+    用于模拟扫码枪完成扫码后上报事件到 WES。
+
+    示例（最小化）:
+        {"barcode": "TEST-001"}
+
+    示例（NG 结果）:
+        {"barcode": "TEST-NG-001", "result": "NG"}
+    """
+
     barcode: str
     result: Literal["OK", "NG"] = "OK"
-    location_id: str = "STATION_INPUT1"
+    location_id: str = "STATION_INPUT1"  # 默认进料平台位置
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"barcode": "TEST-001"},
+                {"barcode": "TEST-NG-001", "result": "NG"},
+                {"barcode": "CUSTOM-001", "result": "OK", "location_id": "STATION_INPUT1"},
+            ]
+        }
+    }
 
 
 class InspectionCompletedDebugRequest(BaseModel):
+    """检测完成事件模拟（调试接口）
+
+    用于模拟检测设备完成检测后上报事件到 WES。
+    仅 ARM01（进料臂）支持此接口。
+
+    示例（最小化，OK 结果）:
+        {}  # 使用全部默认值
+
+    示例（NG 结果）:
+        {"result": "NG"}
+    """
+
     result: Literal["OK", "NG"] = "OK"
-    location_id: str = "STATION_PIPELINE1_INPUT1"
-    barcode: str | None = None
+    location_id: str = "STATION_PIPELINE1_INPUT1"  # 默认流水线进料位
+    barcode: str | None = None  # 默认自动生成
     reel_diameter: str = "15inch"
     reel_thickness: str = "20"
     dimensions: JsonDict = Field(
         default_factory=lambda: {"length": 100.0, "width": 50.0, "height": 15.0},
     )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {},  # 最小化：OK 结果
+                {"result": "NG"},  # NG 结果
+                {"result": "OK", "barcode": "TEST-001", "reel_diameter": "13inch"},
+            ]
+        }
+    }
 
 
 DEVICE_STATUS: DeviceRuntimeStatus = {
@@ -747,7 +817,26 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
     return DeviceCommandAck(code=200, message="Cancelled")
 
 
-@app.post("/debug/execute", response_model=ExecutionRecord)
+@app.post(
+    "/debug/execute",
+    response_model=ExecutionRecord,
+    summary="手动执行命令",
+    description="执行机械臂命令。不指定参数时使用设备默认值：ARM01 默认从 INPUT_PLATFORM 搬到 PIPELINE_PLATFORM。",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "minimal": {"summary": "最小化请求", "value": {}},
+                        "with_barcode": {"summary": "指定条码", "value": {"barcode": "TEST-001"}},
+                        "ng_flow": {"summary": "NG 流程", "value": {"task_type": "PICK_NG", "target_type": "NG_PLATFORM"}},
+                        "failure": {"summary": "模拟失败", "value": {"simulate_failure": True, "execution_time": 0.1}},
+                    }
+                }
+            }
+        }
+    },
+)
 async def execute_arm_command(request: ManualExecuteRequest) -> ExecutionRecord:
     return await arm_simulator.execute_command(
         task_type=request.task_type,
@@ -764,12 +853,46 @@ async def execute_arm_command(request: ManualExecuteRequest) -> ExecutionRecord:
     )
 
 
-@app.post("/debug/scan-completed", response_model=ExecutionRecord)
+@app.post(
+    "/debug/scan-completed",
+    response_model=ExecutionRecord,
+    summary="模拟扫码完成事件",
+    description="触发扫码完成事件，会上报 SCAN_COMPLETED 到 WES。",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "ok": {"summary": "OK 结果", "value": {"barcode": "TEST-001"}},
+                        "ng": {"summary": "NG 结果", "value": {"barcode": "TEST-NG-001", "result": "NG"}},
+                    }
+                }
+            }
+        }
+    },
+)
 async def debug_scan_completed(request: ScanCompletedDebugRequest) -> ExecutionRecord:
     return await arm_simulator.emit_scan_completed(request)
 
 
-@app.post("/debug/inspection-completed", response_model=ExecutionRecord)
+@app.post(
+    "/debug/inspection-completed",
+    response_model=ExecutionRecord,
+    summary="模拟检测完成事件",
+    description="触发检测完成事件，会上报 PROCESS_COMPLETED 到 WES。仅 ARM01 支持。",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "ok": {"summary": "OK 结果", "value": {}},
+                        "ng": {"summary": "NG 结果", "value": {"result": "NG"}},
+                    }
+                }
+            }
+        }
+    },
+)
 async def debug_inspection_completed(request: InspectionCompletedDebugRequest) -> ExecutionRecord:
     return await arm_simulator.emit_inspection_completed(request)
 

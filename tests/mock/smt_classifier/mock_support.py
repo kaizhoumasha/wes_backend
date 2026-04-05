@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 JsonDict = dict[str, Any]
 DeviceStatusLiteral = Literal["IDLE", "RUNNING", "ERROR", "OFFLINE"]
 
+# 默认使用 localhost:8001（本地开发）
+# Docker 环境通过环境变量覆盖为 host.docker.internal:xxxx
 API_APP_ID = os.getenv("API_APP_ID", "app_Gqnvr3dpjGwlrjtO")
 API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao")
 WES_EVENT_CALLBACK_URL = os.getenv("WES_EVENT_CALLBACK_URL", "http://localhost:8001/api/v1/callback/event")
