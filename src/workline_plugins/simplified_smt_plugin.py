@@ -1,15 +1,13 @@
 """
 SMT 粗分机简化插件 - 使用装饰器框架
 
-演示如何使用装饰器驱动的声明式模式重写 SmtClassifierPlugin。
+基于装饰器驱动的声明式模式实现的 SMT 粗分机插件。
 
-功能等价性：
+功能：
 - 扫码识别（OK/NG 判定）
 - 机械臂抓取放置
 - 流水线传输
 - NG 分流
-
-代码减少：1915 行 → ~400 行（79% 减少）
 """
 
 from __future__ import annotations
@@ -36,6 +34,7 @@ class ScanEventPayload(BaseModel):
     device_code: str
     barcode: str
     location_id: str = Field(alias="location")  # 支持字段别名
+    scan_result: str = Field(default="OK", alias="result")  # 支持 result 别名
 
 
 class PickPlaceResultPayload(BaseModel):
@@ -44,6 +43,7 @@ class PickPlaceResultPayload(BaseModel):
     command_code: str
     result: str  # "SUCCESS" or "FAILED"
     error_code: str | None = None
+    device_code: str | None = None  # 设备编码
 
 
 class InspectionEventPayload(BaseModel):
@@ -83,9 +83,7 @@ class SimplifiedSmtPlugin(WorklinePlugin):
     """
     SMT 粗分机简化插件
 
-    功能等价于 SmtClassifierPlugin，但代码减少 79%。
-
-    业务流程：
+    基于 @step 装饰器实现状态迁移，业务流程：
     1. 扫码完成 → 验证条码 → 机械臂抓取到检测位
     2. 检测完成 → OK:流水线传输 / NG:NG缓存位
     3. 机械臂完成 → 流水线传输或NG处理完成
@@ -347,7 +345,7 @@ class SimplifiedSmtPlugin(WorklinePlugin):
                 command_type="PICK_NG",
                 parameters={"barcode": barcode, "location_id": location_id},
             )
-            .context({"scan_result": "NG", "barcode": barcode})
+            .context({"scan_result": "NG", "barcode": barcode, "step_code": SmtClassifierState.WAITING_PICK_PLACE})
             .build()
         )
 

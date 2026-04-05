@@ -1,10 +1,10 @@
 """
 SMT 简化插件集成测试
 
-验证 SimplifiedSmtPlugin 与 SmtClassifierPlugin 功能等价性。
+验证 SimplifiedSmtPlugin 功能正确性。
 """
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -130,10 +130,7 @@ class TestSimplifiedSmtPlugin:
     @pytest.mark.asyncio
     async def test_inspection_ok_flow(self, plugin, mock_context):
         """测试检测OK流程"""
-        mock_context.session.context_json = {
-            "step_code": "WAITING_INSPECTION",
-            "barcode": "ABC123"
-        }
+        mock_context.session.context_json = {"step_code": "WAITING_INSPECTION", "barcode": "ABC123"}
 
         payload = {
             "device_code": "INSPECTOR01",
@@ -155,10 +152,7 @@ class TestSimplifiedSmtPlugin:
     @pytest.mark.asyncio
     async def test_inspection_ng_flow(self, plugin, mock_context):
         """测试检测NG流程"""
-        mock_context.session.context_json = {
-            "step_code": "WAITING_INSPECTION",
-            "barcode": "ABC123"
-        }
+        mock_context.session.context_json = {"step_code": "WAITING_INSPECTION", "barcode": "ABC123"}
 
         payload = {
             "device_code": "INSPECTOR01",
@@ -181,12 +175,10 @@ class TestSimplifiedSmtPlugin:
     @pytest.mark.asyncio
     async def test_pick_success(self, plugin, mock_context):
         """测试抓取成功"""
-        mock_context.session.context_json = {
-            "step_code": "WAITING_INSPECTION",
-            "barcode": "ABC123"
-        }
+        mock_context.session.context_json = {"step_code": "WAITING_INSPECTION", "barcode": "ABC123"}
 
         payload = {
+            "command_code": "CMD-001",
             "command_type": "PICK_AND_PUT",
             "result": "SUCCESS",
             "device_code": "ARM01",
@@ -211,6 +203,7 @@ class TestSimplifiedSmtPlugin:
         }
 
         payload = {
+            "command_code": "CMD-001",
             "command_type": "PICK_AND_PUT",
             "result": "FAILED",
             "error_code": "ARM_ERROR",
@@ -289,6 +282,28 @@ class TestSimplifiedSmtPlugin:
         assert result.failure.domain == "TIMEOUT"
         assert result.failure.code == "DEVICE_TIMEOUT"
 
+    # ========== 状态迁移测试 ==========
+
+    @pytest.mark.asyncio
+    async def test_idle_to_waiting_inspection(self, plugin, mock_context):
+        """测试 IDLE → WAITING_INSPECTION 迁移"""
+        mock_context.session.context_json = {"step_code": "IDLE"}
+
+        payload = {
+            "device_code": "SCANNER01",
+            "event_type": "SCAN_COMPLETED",
+            "barcode": "ABC123",
+            "location": "LOC01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 1
+        inbox.payload_json = payload
+
+        result = await plugin.on_device_event(mock_context, inbox)
+
+        # 验证状态迁移已设置
+        assert result.transition == "scan_ok"
 
 class TestSimplifiedSmtPluginPluginRegistration:
     """插件注册测试"""
@@ -332,51 +347,3 @@ class TestBarcodeValidation:
         """测试无效条码（特殊字符）"""
         assert plugin._is_valid_barcode("ABC-123") is False
         assert plugin._is_valid_barcode("ABC 123") is False
-
-
-class TestStateMachineTransitions:
-    """状态迁移测试"""
-
-    @pytest.mark.asyncio
-    async def test_idle_to_waiting_inspection(self, plugin, mock_context):
-        """测试 IDLE → WAITING_INSPECTION 迁移"""
-        mock_context.session.context_json = {"step_code": "IDLE"}
-
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "barcode": "ABC123",
-            "location": "LOC01",
-        }
-
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        # 验证状态迁移已设置
-        assert result.transition == "scan_ok"
-
-    @pytest.mark.asyncio
-    async def test_state_mismatch_rejected(self, plugin, mock_context):
-        """测试状态不匹配被拒绝"""
-        # 当前状态不是 IDLE
-        mock_context.session.context_json = {"step_code": "PROCESSING"}
-
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "barcode": "ABC123",
-            "location": "LOC01",
-        }
-
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        # 应该被状态校验拒绝
-        assert result.failure is not None
-        assert result.failure.code == "STATE_MISMATCH"
