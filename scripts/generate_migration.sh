@@ -18,7 +18,14 @@ if [ -z "$1" ]; then
 fi
 
 echo -e "${GREEN}正在生成迁移: $1${NC}"
-alembic revision --autogenerate -m "$1"
+
+# 检测是否在 UV 环境中（复用变量）
+_alembic_cmd="alembic"
+if command -v uv &> /dev/null && [ -f "pyproject.toml" ]; then
+    echo -e "${GREEN}使用 UV 运行 Alembic${NC}"
+    _alembic_cmd="uv run alembic"
+fi
+$_alembic_cmd revision --autogenerate -m "$1"
 
 # 获取最新的迁移文件
 LATEST_MIGRATION=$(ls -t migrations/versions/*.py | head -1)
@@ -55,7 +62,12 @@ if grep -q "sa.Enum.*name=" "$LATEST_MIGRATION"; then
     echo "正在自动处理 ENUM 类型的 schema 和 DROP TYPE 语句..."
 
     # 使用 Python 脚本处理 ENUM 类型的 schema 和 DROP TYPE 语句
-    python3 << PYTHON_SCRIPT
+    # 复用 UV 环境检测
+    _python_cmd="python3"
+    if [ "$_alembic_cmd" = "uv run alembic" ]; then
+        _python_cmd="uv run python3"
+    fi
+    $_python_cmd << PYTHON_SCRIPT
 import re
 
 with open('$LATEST_MIGRATION', 'r') as f:

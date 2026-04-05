@@ -9,6 +9,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# 检测是否在 UV 环境中
+_alembic_cmd="alembic"
+if command -v uv &> /dev/null && [ -f "pyproject.toml" ]; then
+    _alembic_cmd="uv run alembic"
+fi
+
 show_help() {
     cat << EOF
 数据库迁移管理脚本
@@ -48,13 +54,13 @@ case "${1:-}" in
             exit 1
         fi
         echo "正在创建迁移: $2"
-        alembic revision --autogenerate -m "$2"
+        $_alembic_cmd revision --autogenerate -m "$2"
         ;;
     
     upgrade)
         REVISION="${2:-head}"
         echo "正在升级数据库到: $REVISION"
-        alembic upgrade "$REVISION"
+        $_alembic_cmd upgrade "$REVISION"
         echo "✓ 数据库升级完成"
         ;;
     
@@ -69,7 +75,7 @@ case "${1:-}" in
         read -p "确认继续? (y/N) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            alembic downgrade "$2"
+            $_alembic_cmd downgrade "$2"
             echo "✓ 数据库回滚完成"
         else
             echo "已取消"
@@ -78,17 +84,17 @@ case "${1:-}" in
     
     current)
         echo "当前数据库版本:"
-        alembic current
+        $_alembic_cmd current
         ;;
     
     history)
         echo "迁移历史:"
-        alembic history --verbose
+        $_alembic_cmd history --verbose
         ;;
     
     heads)
         echo "当前 head 版本:"
-        alembic heads
+        $_alembic_cmd heads
         ;;
     
     show)
@@ -97,7 +103,7 @@ case "${1:-}" in
             echo "用法: $0 show <revision>"
             exit 1
         fi
-        alembic show "$2"
+        $_alembic_cmd show "$2"
         ;;
     
     stamp)
@@ -110,7 +116,7 @@ case "${1:-}" in
         read -p "确认继续? (y/N) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            alembic stamp "$2"
+            $_alembic_cmd stamp "$2"
             echo "✓ 数据库版本已标记"
         else
             echo "已取消"
@@ -119,8 +125,8 @@ case "${1:-}" in
     
     check)
         echo "检查待应用的迁移..."
-        CURRENT=$(alembic current 2>/dev/null | grep -oP '(?<=\(head\) )[a-f0-9]+' || echo "")
-        HEAD=$(alembic heads 2>/dev/null | grep -oP '^[a-f0-9]+' || echo "")
+        CURRENT=$($_alembic_cmd current 2>/dev/null | grep -oP '(?<=\(head\) )[a-f0-9]+' || echo "")
+        HEAD=$($_alembic_cmd heads 2>/dev/null | grep -oP '^[a-f0-9]+' || echo "")
         
         if [ -z "$CURRENT" ]; then
             echo "⚠ 数据库未初始化，需要运行迁移"
