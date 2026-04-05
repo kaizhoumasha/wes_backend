@@ -41,6 +41,14 @@ WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
         state_machine_module="src.workline_plugins.smt_classifier.state_machine",
         state_machine_class_name="SmtClassifierStageMachine",
     ),
+    "simplified_smt": WorklinePluginDefinition(
+        plugin_key="simplified_smt",
+        plugin_module="src.workline_plugins.simplified_smt_plugin",
+        plugin_class_name="SimplifiedSmtPlugin",
+        contract_module=None,  # 简化插件使用共享 contract
+        state_machine_module=None,  # 简化插件使用 @step 装饰器
+        state_machine_class_name=None,
+    ),
 }
 
 
