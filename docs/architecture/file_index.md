@@ -343,6 +343,36 @@
 - SMT 粗分机完整数据流：`docs/business/workline_smt_classifier_runtime_flow.md`
 - SMT 粗分机硬件偏差分析：`docs/business/workline_smt_classifier_hardware_gap_analysis.md`
 
+#### 🔧 作业线运行时 (src/workline_runtime/)
+
+插件化编排核心框架，提供装饰器驱动的声明式插件开发
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架） | 🔧 架构核心 |
+| `payloads.py` | 共享 Payload 定义（Pydantic 模型） | 🔄 常用功能 |
+| `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
+| `plugin_context.py` | 插件上下文（依赖注入） | 🔧 架构核心 |
+| `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
+| `orchestrator.py` | 编排器服务（锁、事务、派发） | 🔧 架构核心 |
+| `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
+| `state_machine.py` | 状态机基类（SmtClassifierStageMachine 等） | 🔧 架构核心 |
+
+**插件开发文档**：
+- **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
+- **性能对比报告**：`docs/plugin_performance_comparison.md` 📚 参考资料
+- **系统 vs 插件能力**：`docs/system_vs_plugin_capabilities.md` 📚 参考资料
+- **工作线流程图**：`docs/workline_flow_diagram.md` 📚 参考资料
+- **Transition 流程详解**：`docs/transition_flow_guide.md` 📚 参考资料
+- **快速验证指南**：`docs/plugin_validation_quickstart.md` 📚 参考资料
+
+**核心特性**：
+- **装饰器驱动**：`@on_event()`, `@on_command()`, `@step()` 自动路由
+- **Pydantic 自动验证**：Payload 自动解析和类型安全
+- **状态机集成**：声明式状态迁移，自动校验
+- **链式响应构建**：`PluginResultBuilder` 简化结果构建
+- **代码减少 70%**：1915 行 → ~500 行（SmtClassifierPlugin 示例）
+
 #### 🔔 回调模块 (src/app/callback/)
 
 外部系统回调处理

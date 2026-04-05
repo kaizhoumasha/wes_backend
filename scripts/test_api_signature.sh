@@ -55,7 +55,12 @@ RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
 
 echo "HTTP Status: $HTTP_CODE"
 echo "Response:"
-echo "$RESPONSE_BODY" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE_BODY"
+# 优先使用 jq，回退到 python json.tool
+if command -v jq &> /dev/null; then
+    echo "$RESPONSE_BODY" | jq . 2>/dev/null || echo "$RESPONSE_BODY"
+else
+    echo "$RESPONSE_BODY" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE_BODY"
+fi
 echo ""
 
 if [ "$HTTP_CODE" = "200" ]; then

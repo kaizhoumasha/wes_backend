@@ -1,0 +1,149 @@
+"""
+插件验证测试运行脚本
+
+演示如何使用设备模拟器和测试数据生成器进行插件验证。
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from tests.mock.device_simulator import DeviceSimulator, SimulationScenario
+from tests.mock.test_data_generator import (
+    TestDataGenerator,
+    TestDataScenario,
+    generate_batch_scan_events,
+)
+
+
+async def main():
+    """主函数"""
+    print("=" * 80)
+    print("插件验证测试")
+    print("=" * 80)
+
+    # 配置
+    base_url = "http://localhost:8000"  # 替换为实际的 API 地址
+    api_key = None  # 如需要认证，填入 API Key
+
+    # WorkLine ID（需要先运行迁移脚本创建）
+    traditional_workline_id = 1  # 传统插件 WorkLine ID
+    simplified_workline_id = 2  # 简化插件 WorkLine ID
+
+    # 创建设备模拟器
+    print("\n1. 创建设备模拟器...")
+    simulator = DeviceSimulator(base_url=base_url, api_key=api_key)
+
+    try:
+        # ========== 测试场景 1: 正常扫码OK流程 ==========
+        print("\n" + "=" * 80)
+        print("测试场景 S001: 正常扫码OK流程")
+        print("=" * 80)
+
+        print("\n[传统插件]")
+        traditional_result = await simulator.simulate_full_workflow(
+            traditional_workline_id, SimulationScenario.NORMAL_OK
+        )
+        print(f"结果: {traditional_result['status']}")
+
+        print("\n[简化插件]")
+        simplified_result = await simulator.simulate_full_workflow(
+            simplified_workline_id, SimulationScenario.NORMAL_OK
+        )
+        print(f"结果: {simplified_result['status']}")
+
+        # ========== 测试场景 2: 扫码NG流程 ==========
+        print("\n" + "=" * 80)
+        print("测试场景 S002: 正常扫码NG流程")
+        print("=" * 80)
+
+        print("\n[传统插件]")
+        traditional_result = await simulator.simulate_full_workflow(
+            traditional_workline_id, SimulationScenario.NORMAL_NG
+        )
+        print(f"结果: {traditional_result['status']}")
+
+        print("\n[简化插件]")
+        simplified_result = await simulator.simulate_full_workflow(
+            simplified_workline_id, SimulationScenario.NORMAL_NG
+        )
+        print(f"结果: {simplified_result['status']}")
+
+        # ========== 测试场景 3: 检测NG流程 ==========
+        print("\n" + "=" * 80)
+        print("测试场景 S003: 检测NG流程")
+        print("=" * 80)
+
+        print("\n[传统插件]")
+        traditional_result = await simulator.simulate_full_workflow(
+            traditional_workline_id, SimulationScenario.INSPECTION_NG
+        )
+        print(f"结果: {traditional_result['status']}")
+
+        print("\n[简化插件]")
+        simplified_result = await simulator.simulate_full_workflow(
+            simplified_workline_id, SimulationScenario.INSPECTION_NG
+        )
+        print(f"结果: {simplified_result['status']}")
+
+        # ========== 测试场景 4: 条码无效 ==========
+        print("\n" + "=" * 80)
+        print("测试场景 S004: 条码无效（太短）")
+        print("=" * 80)
+
+        print("\n[传统插件]")
+        traditional_result = await simulator.simulate_full_workflow(
+            traditional_workline_id, SimulationScenario.BARCODE_INVALID
+        )
+        print(f"结果: {traditional_result['status']}")
+
+        print("\n[简化插件]")
+        simplified_result = await simulator.simulate_full_workflow(
+            simplified_workline_id, SimulationScenario.BARCODE_INVALID
+        )
+        print(f"结果: {simplified_result['status']}")
+
+        # ========== 批量测试 ==========
+        print("\n" + "=" * 80)
+        print("批量测试: 10次随机场景")
+        print("=" * 80)
+
+        batch_result = await simulator.run_batch_test(
+            traditional_workline_id=traditional_workline_id,
+            simplified_workline_id=simplified_workline_id,
+            scenario=SimulationScenario.RANDOM,
+            count=10,
+        )
+
+        print(f"\n传统插件成功: {sum(1 for r in batch_result['traditional'] if r['status'] == 'completed')}/10")
+        print(f"简化插件成功: {sum(1 for r in batch_result['simplified'] if r['status'] == 'completed')}/10")
+
+        print("\n" + "=" * 80)
+        print("测试完成！")
+        print("=" * 80)
+
+    finally:
+        # 关闭模拟器
+        await simulator.close()
+
+
+if __name__ == "__main__":
+    print("""
+插件验证测试运行器
+
+使用前准备：
+1. 运行数据库迁移：migrations/plugin_validation/001_add_test_worklines.py
+2. 记录创建的 WorkLine ID
+3. 更新脚本中的 traditional_workline_id 和 simplified_workline_id
+4. 确保 API 服务正在运行
+
+运行方式：
+    python tests/plugin_validation/run_validation_test.py
+    """)
+
+    input("\n按 Enter 键开始测试...")
+    asyncio.run(main())

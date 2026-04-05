@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 from uvicorn import Config, Server
 
@@ -103,15 +103,36 @@ class PipelineRootResponse(BaseModel):
 
 
 class ManualExecuteRequest(BaseModel):
+    """手动执行命令请求（调试接口）
+
+    流水线仅支持 MOVE_FORWARD 任务，将物料从进料位传输到出料位。
+
+    示例（最小化）:
+        {}  # 使用全部默认值，执行传输
+
+    示例（模拟失败）:
+        {"simulate_failure": true}
+    """
+
     task_type: str = "MOVE_FORWARD"
     source_type: str | None = "PIPELINE_PLATFORM"
     target_type: str | None = "PIPELINE_PLATFORM"
-    source_location_id: str | None = None
-    target_location_id: str | None = None
+    source_location_id: str | None = None  # 默认 STATION_PIPELINE1_INPUT1
+    target_location_id: str | None = None  # 默认 STATION_PIPELINE1_OUTPUT1
     command_code: str | None = None
     simulate_failure: bool = False
-    execution_time: float = EXECUTION_TIME
+    execution_time: float = 0.3  # 缩短默认执行时间，方便调试
     report_result: bool = False
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {},  # 最小化：使用全部默认值
+                {"simulate_failure": True},  # 模拟失败
+                {"execution_time": 0.1},  # 快速执行
+            ]
+        }
+    }
 
 
 class AutoExecuteConfig(BaseModel):
@@ -453,7 +474,25 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
     return DeviceCommandAck(code=200, message="Cancelled")
 
 
-@app.post("/debug/execute", response_model=ExecutionRecord)
+@app.post(
+    "/debug/execute",
+    response_model=ExecutionRecord,
+    summary="手动执行流水线传输",
+    description="执行流水线 MOVE_FORWARD 命令，从进料位传输到出料位。",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "minimal": {"summary": "最小化请求", "value": {}},
+                        "failure": {"summary": "模拟失败", "value": {"simulate_failure": True}},
+                        "fast": {"summary": "快速执行", "value": {"execution_time": 0.1}},
+                    }
+                }
+            }
+        }
+    },
+)
 async def debug_execute(request: ManualExecuteRequest) -> ExecutionRecord:
     return await pipeline_simulator.execute_command(
         task_type=request.task_type,

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     DATETIME_TIMEZONE: str = "Asia/Shanghai"
     API_PATH: str = "/api"
 
+    # ==================== 安全配置 ====================
+
+    SKIP_API_AUTH: bool = False
+
     @computed_field
     @property
     def DOCS_URL(self) -> str:

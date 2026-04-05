@@ -4,6 +4,7 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
+import asyncio
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
@@ -33,53 +34,41 @@ celery_app = Celery(
 # ============================================
 
 
-@worker_init.connect
-def on_worker_init(*args: Any, **kwargs: Any) -> None:
-    """
-    Worker 主进程启动时初始化数据库连接
-    """
-    import asyncio
-
+async def _init_worker_infra() -> None:
+    """统一初始化 Worker 基础设施（DB + Redis）"""
     from src.database.db import init_db
+    from src.database.redis_client import redis_manager
+
+    await init_db()
+    logger.info("✓ Worker 数据库连接已初始化")
 
     try:
-        # 获取当前事件循环（或创建新的）
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # 在事件循环中运行异步初始化
-        loop.run_until_complete(init_db())
-        logger.info("Celery Worker 主进程数据库连接已初始化")
+        await redis_manager.init_redis()
     except Exception as e:
-        logger.error(f"Celery Worker 主进程数据库初始化失败: {e}")
+        logger.warning(f"Worker Redis 初始化失败（降级模式）: {e}")
+
+
+def _run_sync_init() -> None:
+    """同步包装器，在信号处理器中运行异步初始化"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_init_worker_infra())
+    except Exception as e:
+        logger.error(f"Worker 基础设施初始化失败: {e}")
         raise
+
+
+@worker_init.connect
+def on_worker_init(*args: Any, **kwargs: Any) -> None:
+    """Worker 主进程启动时初始化基础设施"""
+    _run_sync_init()
 
 
 @worker_process_init.connect
 def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
-    """
-    Worker 子进程启动时初始化数据库连接
-
-    每个fork出的子进程都需要独立初始化数据库连接
-    """
-    import asyncio
-
-    from src.database.db import init_db
-
-    try:
-        # 子进程需要创建新的事件循环
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        # 在事件循环中运行异步初始化
-        loop.run_until_complete(init_db())
-        logger.info("Celery Worker 子进程数据库连接已初始化")
-    except Exception as e:
-        logger.error(f"Celery Worker 子进程数据库初始化失败: {e}")
-        raise
+    """Worker 子进程启动时初始化基础设施（fork 后独立初始化）"""
+    _run_sync_init()
 
 
 # ============================================

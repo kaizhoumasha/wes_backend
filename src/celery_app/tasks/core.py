@@ -13,7 +13,7 @@ from loguru import logger
 from sqlalchemy import text
 
 from src.celery_app.app import celery_app
-from src.database.db import AsyncSessionLocal
+from src.database import db as db_module
 from src.database.redis_client import get_redis, is_redis_available
 from src.utils.timezone import timezone
 
@@ -34,15 +34,34 @@ class HealthCheckResult(TypedDict, total=False):
     error: str
 
 
+def _lazy_init_db() -> None:
+    """在 Celery Worker 子进程中懒初始化数据库连接"""
+    from src.database.db import init_db
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(init_db())
+        logger.info("✓ ForkPoolWorker 懒初始化数据库连接成功")
+    except Exception as e:
+        logger.warning(f"ForkPoolWorker 数据库懒初始化失败: {e}")
+
+
 def _run_async[T](coro: Awaitable[T]) -> T:
     """
     在 Celery 同步任务中运行异步函数
 
-    检查数据库是否已初始化，防止在未初始化时使用
+    自动处理数据库初始化：在 ForkPoolWorker 子进程中首次调用时懒初始化。
     """
-    # 检查数据库是否已初始化
-    if AsyncSessionLocal is None:
-        raise RuntimeError("数据库未初始化，请先调用 init_db()")
+    # 懒初始化：确保 DB 在 Celery Worker 子进程中可用
+    if db_module.AsyncSessionLocal is None:
+        _lazy_init_db()
 
     try:
         loop = asyncio.get_event_loop()
@@ -55,6 +74,21 @@ def _run_async[T](coro: Awaitable[T]) -> T:
 # ============================================
 # 健康检查任务
 # ============================================
+
+
+def _update_health_cache(result: HealthCheckResult) -> None:
+    """更新 API 层的健康状态缓存"""
+    try:
+        from src.core.health import system_health
+
+        checks = result.get("checks", {})
+        system_health.update(
+            db_ok=checks.get("database", {}).get("status") == "connected",
+            redis_ok=checks.get("redis", {}).get("status") == "connected",
+            celery_ok=result.get("status") != "error",
+        )
+    except Exception as e:
+        logger.warning(f"更新健康缓存失败: {e}")
 
 
 @celery_app.task(name="src.celery_app.tasks.core.health_check")
@@ -83,11 +117,19 @@ def health_check() -> HealthCheckResult:
         }
 
         # 数据库健康检查
+        # 在子进程中 db_module.AsyncSessionLocal 可能为 None（fork 后全局状态丢失）
+        # 先尝试同步初始化
+        if db_module.AsyncSessionLocal is None:
+            try:
+                _lazy_init_db()
+            except Exception as e:
+                logger.warning(f"健康检查: 数据库懒初始化失败: {e}")
+
         async def check_db() -> CheckResult:
-            if AsyncSessionLocal is None:
+            if db_module.AsyncSessionLocal is None:
                 return {"status": "uninitialized", "error": "数据库未初始化"}
 
-            async with AsyncSessionLocal() as db:
+            async with db_module.AsyncSessionLocal() as db:
                 _ = await db.execute(text("SELECT 1"))
                 return {"status": "connected"}
 
@@ -104,6 +146,15 @@ def health_check() -> HealthCheckResult:
 
         # Redis 健康检查
         try:
+            if not is_redis_available():
+                # 尝试重连
+                try:
+                    from src.database.redis_client import redis_manager
+
+                    _run_async(redis_manager.init_redis())
+                except Exception as e:
+                    logger.warning(f"Redis 重连失败: {e}")
+
             if is_redis_available():
                 redis_client = cast("Any", get_redis())
                 if redis_client:
@@ -122,6 +173,9 @@ def health_check() -> HealthCheckResult:
         except Exception as e:
             result["checks"]["redis"] = {"status": "error", "error": str(e)}
             result["status"] = "degraded"
+
+        # 更新 API 层健康缓存
+        _update_health_cache(result)
 
         logger.info(f"健康检查完成: {result['status']}")
         return result
@@ -215,11 +269,11 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
             from src.app.sys.models.audit_log import OperaStatus
             from src.app.sys.services.audit_service import audit_log_service
 
-            if AsyncSessionLocal is None:
+            if db_module.AsyncSessionLocal is None:
                 logger.error("数据库未初始化，无法记录通知")
                 return
 
-            async with AsyncSessionLocal() as db:
+            async with db_module.AsyncSessionLocal() as db:
                 # 映射通知类型到操作状态 (OperaStatus 只有 SUCCESS/FAIL)
                 status = (
                     OperaStatus.SUCCESS if notification_type in ("info", "warning", "success") else OperaStatus.FAIL

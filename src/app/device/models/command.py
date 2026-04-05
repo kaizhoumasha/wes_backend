@@ -39,6 +39,15 @@ class TaskType(str, Enum):
     PROCESS = "PROCESS"  # 加工/检测
     # 组合任务
     PICK_AND_PLACE = "PICK_AND_PLACE"  # 抓取并放置
+    PICK_AND_PUT = "PICK_AND_PUT"  # 抓取并放置（同 PICK_AND_PLACE）
+    # 流水线/输送设备
+    MOVE_FORWARD = "MOVE_FORWARD"  # 向前输送
+    MOVE_BACKWARD = "MOVE_BACKWARD"  # 向后输送
+    STOP = "STOP"  # 停止输送
+    # 出料操作
+    OUTPUT = "OUTPUT"  # 出料/输出
+    # 异常处理
+    PICK_NG = "PICK_NG"  # NG品抓取/分流
 
 
 class CommandStatus(str, Enum):

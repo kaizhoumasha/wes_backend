@@ -29,7 +29,7 @@ from src.app.workline.models.inbox import SourceSystem
 from src.app.workline.services import inbox_service, workline_service
 from src.core.api_security import RequireAPIPermission
 from src.core.response import response_builder
-from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
+from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
 from src.workline_plugins.contracts import (
@@ -137,6 +137,59 @@ async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
 
     await db.commit()
     _enqueue_workline_processing()
+
+
+def _check_system_ready() -> JsonDict | None:
+    """系统就绪检查 — Fast Fail
+
+    主动探测关键基础设施（Redis + Celery Worker），不依赖跨进程缓存。
+    检测失败时返回 503，让客户端立即感知。
+    """
+    import asyncio
+
+    from src.core.health import system_health
+
+    if system_health.is_ready and not system_health.is_stale:
+        return None
+
+    db_ok = True
+    redis_ok = False
+    celery_ok = False
+
+    try:
+        from src.database.redis_client import get_redis
+
+        redis_client = get_redis()
+        if redis_client:
+            loop = asyncio.get_event_loop()
+            pong = loop.run_until_complete(cast("Any", redis_client).ping())
+            redis_ok = bool(pong)
+    except Exception as e:
+        logger.debug(f"Redis 健康检查失败: {e}")
+
+    try:
+        from src.celery_app.app import celery_app
+
+        cast("Any", celery_app).conf.update(worker_ping_timeout=1.0)
+        inspect = cast("Any", celery_app).control.inspect()
+        stats = inspect.ping()
+        celery_ok = bool(stats)
+    except Exception as e:
+        logger.debug(f"Celery 健康检查失败: {e}")
+
+    system_health.update(db_ok=db_ok, redis_ok=redis_ok, celery_ok=celery_ok)
+
+    if not celery_ok:
+        return response_builder.fail(
+            code=ServerErrorCode.SERVICE_UNAVAILABLE,
+            message="系统服务暂时不可用，请稍后重试",
+            data={
+                "ack": False,
+                "db": db_ok,
+                "celery": celery_ok,
+            },
+        )
+    return None
 
 
 async def _resolve_device_context(
@@ -354,6 +407,11 @@ async def callback_result(  # noqa: PLR0912
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
+    # Fast Fail: 系统不就绪时立即返回 503
+    health_error = _check_system_ready()
+    if health_error:
+        return health_error
+
     start_time = time.time()
     request_id = get_request_id()
     callback_data: JsonDict = {}
@@ -579,6 +637,11 @@ async def callback_event(
 ) -> JsonDict:
     start_time = time.time()
     request_id = get_request_id()
+
+    # Fast Fail: 系统不就绪时立即返回 503
+    health_error = _check_system_ready()
+    if health_error:
+        return health_error
     event_data: JsonDict = {}
     is_duplicate = False
 

@@ -33,6 +33,11 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         await init_db()
         await init_redis()
 
+        # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
+        from src.core.health import system_health
+
+        system_health.update(db_ok=True, redis_ok=True, celery_ok=True)
+
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except Exception as e:

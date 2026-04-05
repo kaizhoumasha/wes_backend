@@ -9,7 +9,6 @@
 import asyncio
 import uuid
 from collections.abc import Awaitable
-from contextlib import suppress
 from datetime import timedelta
 from enum import Enum
 from typing import Any, TypedDict, cast
@@ -765,8 +764,12 @@ class WorklineTask(Task):
     def cleanup(self) -> None:
         """清理资源"""
         if self._db:
-            with suppress(Exception):
-                asyncio.get_event_loop().run_until_complete(self._db.close())
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._db.close())
+                loop.close()
+            except Exception:
+                pass
             self._db = None
 
     def on_failure(
