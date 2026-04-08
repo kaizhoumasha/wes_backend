@@ -33,13 +33,11 @@ import inspect
 import logging
 import typing
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 from src.workline_runtime.types import (
     CommandIntent,
@@ -58,18 +56,15 @@ logger = logging.getLogger(__name__)
 # ==================== 类型别名 ====================
 
 # 插件处理方法签名类型
-if TYPE_CHECKING:
-    from collections.abc import Callable as AbcCallable
+# 使用字符串注解避免前向引用问题
+AsyncEventHandler = Callable[..., Any]
+"""插件事件处理方法类型"""
 
-    # 使用字符串注解避免前向引用问题
-    AsyncEventHandler = AbcCallable[..., Any]
-    """插件事件处理方法类型"""
+AsyncCommandHandler = Callable[..., Any]
+"""插件命令处理方法类型"""
 
-    AsyncCommandHandler = AbcCallable[..., Any]
-    """插件命令处理方法类型"""
-
-    AsyncTimeoutHandler = AbcCallable[..., Any]
-    """插件超时处理方法类型"""
+AsyncTimeoutHandler = Callable[..., Any]
+"""插件超时处理方法类型"""
 
 
 # ==================== Payload 基类 ====================
@@ -91,7 +86,7 @@ class CommandResultPayload(BaseModel):
 # ==================== 装饰器 ====================
 
 
-def on_event(event_type: str) -> Callable:
+def on_event(event_type: str) -> Callable[..., Any]:
     """
     标记方法处理特定事件类型
 
@@ -104,14 +99,14 @@ def on_event(event_type: str) -> Callable:
             ...
     """
 
-    def decorator(method: Callable) -> Callable:
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._event_type = event_type  # type: ignore[attr-defined]
         return method
 
     return decorator
 
 
-def on_command(command_type: str, result: str | None = None) -> Callable:
+def on_command(command_type: str, result: str | None = None) -> Callable[..., Any]:
     """
     标记方法处理特定命令结果
 
@@ -125,7 +120,7 @@ def on_command(command_type: str, result: str | None = None) -> Callable:
             ...
     """
 
-    def decorator(method: Callable) -> Callable:
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._command_type = command_type  # type: ignore[attr-defined]
         method._command_result = result  # type: ignore[attr-defined]
         return method
@@ -133,7 +128,7 @@ def on_command(command_type: str, result: str | None = None) -> Callable:
     return decorator
 
 
-def on_timeout() -> Callable:
+def on_timeout() -> Callable[..., Any]:
     """
     标记方法处理超时事件
 
@@ -143,14 +138,14 @@ def on_timeout() -> Callable:
             ...
     """
 
-    def decorator(method: Callable) -> Callable:
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._is_timeout_handler = True  # type: ignore[attr-defined]
         return method
 
     return decorator
 
 
-def step(expected: str | None = None, target: str | None = None) -> Callable:
+def step(expected: str | None = None, target: str | None = None) -> Callable[..., Any]:
     """
     声明状态迁移
 
@@ -164,7 +159,7 @@ def step(expected: str | None = None, target: str | None = None) -> Callable:
             ...
     """
 
-    def decorator(method: Callable) -> Callable:
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._expected_step = expected  # type: ignore[attr-defined]
         method._target_step = target  # type: ignore[attr-defined]
         return method
@@ -296,11 +291,11 @@ class PluginResultBuilder:
         """构建结果"""
         result = PluginResult()
         result.transition = self._transition
-        result.commands = self._commands if self._commands else None
+        result.commands = self._commands
         result.wait = self._wait
         result.failure = self._failure
         result.complete = self._complete
-        result.context_patch = self._context_patch if self._context_patch else None
+        result.context_patch = self._context_patch
         return result
 
 
@@ -329,11 +324,11 @@ class WorklinePlugin:
 
     def __init_subclass__(cls) -> None:
         """子类初始化时建立路由表"""
-        cls._event_handlers: dict[str, Callable] = {}
-        cls._command_handlers: dict[tuple[str, str | None], Callable] = {}
-        cls._timeout_handler: Callable | None = None
+        cls._event_handlers: dict[str, Callable[..., Any]] = {}
+        cls._command_handlers: dict[tuple[str, str | None], Callable[..., Any]] = {}
+        cls._timeout_handler: Callable[..., Any] | None = None
 
-        for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):  # noqa: B007
+        for _, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if hasattr(method, "_event_type"):
                 cls._event_handlers[method._event_type] = method  # type: ignore[attr-defined]
             if hasattr(method, "_command_type"):
@@ -397,7 +392,7 @@ class WorklinePlugin:
 
     async def _invoke_handler(
         self,
-        handler: Callable,
+        handler: Callable[..., Any],
         ctx: PluginContext,
         inbox: WorklineInbox,
         payload: dict[str, Any],
@@ -422,7 +417,7 @@ class WorklinePlugin:
         params = list(sig.parameters.values())
 
         # 参数注入：self, ctx, payload/event
-        args = [self, ctx]
+        args: list[Any] = [self, ctx]
 
         if len(params) >= 3:
             param_type = params[2].annotation
@@ -441,8 +436,8 @@ class WorklinePlugin:
             if param_type and inspect.isclass(param_type) and issubclass(param_type, BaseModel):
                 # Pydantic 自动解析
                 # 合并 payload 顶层字段 + data 子对象，支持嵌套 payload 结构
-                merged_payload = dict(payload)
-                data = payload.get("data")
+                merged_payload: dict[str, Any] = dict(payload)
+                data: dict[str, Any] | None = payload.get("data")
                 if isinstance(data, dict):
                     merged_payload.update(data)
                 try:
@@ -469,8 +464,6 @@ class WorklinePlugin:
         target_step = getattr(handler, "_target_step", None)
         if target_step:
             # 自动添加 step_code 到 context_patch
-            if result.context_patch is None:
-                result.context_patch = {}
             result.context_patch["step_code"] = target_step
             # 如果没有显式设置 transition，则用 target_step 作为 transition
             if not result.transition:
