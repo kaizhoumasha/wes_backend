@@ -30,7 +30,6 @@
 from __future__ import annotations
 
 import inspect
-import logging
 import typing
 import uuid
 from collections.abc import Callable
@@ -49,8 +48,6 @@ from src.workline_runtime.types import (
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 # ==================== 类型别名 ====================

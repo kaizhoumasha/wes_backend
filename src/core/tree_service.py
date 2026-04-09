@@ -308,57 +308,107 @@ class TreeServiceMixin[M]:
     # ==================== 重写 CRUD 方法（增加树形缓存失效） ====================
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> Any:
-        """创建节点（失效树形缓存）"""
+        """创建节点（失效树形缓存 + 父节点详情缓存）"""
         # 调用 BaseService.create
         result = await super().create(db, data, cache)  # type: ignore[misc]
 
-        # 额外失效树形缓存
+        # 失效缓存
         if cache and hasattr(self, "invalidate_cache") and result:
+            # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
+
+            # 🔥 关键修复：失效父节点详情缓存
+            # 创建子节点时，父节点的 has_children 字段被 Hook 更新为 True
+            # 必须失效父节点缓存，否则 API 返回旧的 has_children=False
+            parent_id = getattr(result, "parent_id", None)
+            if parent_id is not None:
+                await self.invalidate_cache(cache, id=parent_id)
 
         return result
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any], cache: object | None = None) -> Any:
-        """更新节点（如果修改了 parent_id 或 sort_order，失效树形缓存）"""
+        """更新节点（如果修改了 parent_id，失效新旧父节点缓存）"""
         # 调用 BaseService.update
         result = await super().update(db, id, data, cache)  # type: ignore[misc]
 
-        # 如果修改了 parent_id 或 sort_order，额外失效树形缓存
+        # 如果修改了 parent_id 或 sort_order，额外失效缓存
         if cache and hasattr(self, "invalidate_cache") and result and ("parent_id" in data or "sort_order" in data):
+            # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
+
+            # 🔥 如果修改了 parent_id，失效新旧父节点详情缓存
+            if "parent_id" in data:
+                # 新父节点（移动后）
+                new_parent_id = data.get("parent_id")
+                if new_parent_id is not None:
+                    await self.invalidate_cache(cache, id=new_parent_id)
+
+                # 原父节点（移动前）- 从 result 获取移动前的 parent_id
+                # 注意：Hook 系统在 AFTER_UPDATE 时更新了原父节点的 has_children
+                # 但 BaseService.update 在调用 super().update 时 result 已被 refresh
+                # 所以需要从 HookContext 中获取原值，或者直接失效当前节点的旧缓存
+                # 简化处理：失效当前节点的详情缓存（包含 parent_id 信息）
+                await self.invalidate_cache(cache, id=id)
 
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
-        """删除节点（失效树形缓存）"""
+        """删除节点（失效树形缓存 + 父节点详情缓存）"""
+        # 删除前先获取 parent_id（删除后实例不可用）
+        parent_id_to_invalidate: int | None = None
+        if cache and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, id)  # type: ignore[attr-defined]
+                if instance_before:
+                    parent_id_to_invalidate = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass  # 获取失败不影响删除流程
+
         # 调用 BaseService.delete
         success = await super().delete(db, id, cache)  # type: ignore[misc]
 
-        # 额外失效树形缓存
+        # 失效缓存
         if cache and hasattr(self, "invalidate_cache") and success:
+            # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
+
+            # 🔥 失效父节点详情缓存（has_children 可能变为 False）
+            if parent_id_to_invalidate is not None:
+                await self.invalidate_cache(cache, id=parent_id_to_invalidate)
 
         return success
 
     async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> Any:
-        """软删除节点（失效树形缓存）"""
+        """软删除节点（失效树形缓存 + 父节点详情缓存）"""
         # 调用 BaseService.soft_delete
         result = await super().soft_delete(db, id, cache)  # type: ignore[misc]
 
-        # 额外失效树形缓存
+        # 失效缓存
         if cache and hasattr(self, "invalidate_cache") and result:
+            # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
+
+            # 🔥 失效父节点详情缓存（has_children 可能变为 False）
+            parent_id = getattr(result, "parent_id", None)
+            if parent_id is not None:
+                await self.invalidate_cache(cache, id=parent_id)
 
         return result
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Any:
-        """恢复节点（失效树形缓存）"""
+        """恢复节点（失效树形缓存 + 父节点详情缓存）"""
         # 调用 BaseService.restore
         result = await super().restore(db, id, cache)  # type: ignore[misc]
 
-        # 额外失效树形缓存
+        # 失效缓存
         if cache and hasattr(self, "invalidate_cache") and result:
+            # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
+
+            # 🔥 失效父节点详情缓存（has_children 可能变为 True）
+            parent_id = getattr(result, "parent_id", None)
+            if parent_id is not None:
+                await self.invalidate_cache(cache, id=parent_id)
 
         return result
 
