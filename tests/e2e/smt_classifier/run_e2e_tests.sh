@@ -67,7 +67,7 @@ done
 # 检查 WES 服务是否运行
 check_wes_running() {
     echo -e "${BLUE}检查 WES 服务状态...${NC}"
-    if curl -s http://localhost:8001/health > /dev/null 2>&1; then
+    if curl -s http://localhost:8001/api/v1/admin/performance/health > /dev/null 2>&1; then
         echo -e "${GREEN}✓ WES 服务已启动${NC}"
         return 0
     else

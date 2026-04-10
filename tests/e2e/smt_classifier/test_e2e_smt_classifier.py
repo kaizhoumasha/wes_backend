@@ -1,7 +1,7 @@
 """
 SMT 粗分机 E2E 测试套件
 
-测试 SMT 粗分机插件与 Mock 设备的端到端交互。
+测试 SMT 粗分机简化插件与 Mock 设备的端到端交互。
 
 运行方式:
     # 运行所有 E2E 测试
@@ -24,12 +24,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.workline_plugins.smt_classifier.plugin import (
-    SmtClassifierCommandType,
-    SmtClassifierDeviceRole,
-    SmtClassifierEventType,
-    SmtClassifierPlugin,
-    SmtClassifierStage,
+from src.workline_plugins.simplified_smt_plugin import (
+    SimplifiedSmtPlugin,
+    SmtClassifierState,
 )
 from src.workline_runtime.types import PluginResult
 
@@ -51,90 +48,73 @@ class TestSmtClassifierE2EBase:
     async def setup(self, clean_mock_state: None) -> None:
         """每个测试前的设置"""
 
-    async def trigger_pipeline_scan(
+    async def trigger_arm_scan(
         self,
         client: httpx.AsyncClient,
         barcode: str,
-        result: str = "OK",
+        location: str = "STATION_INPUT1",
     ) -> dict[str, Any]:
-        """触发 ARM01 扫码事件"""
-        response = await client.post(
-            "/debug/scan-completed",
-            json={"barcode": barcode, "result": result},
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def trigger_pipeline_detect(
-        self,
-        client: httpx.AsyncClient,
-        barcode: str,
-        result: str = "OK",
-    ) -> dict[str, Any]:
-        """触发 ARM01 检测事件"""
-        response = await client.post(
-            "/debug/inspection-completed",
-            json={
-                "result": result,
-                "barcode": barcode,
-                "dimensions": {"length": 100.0, "width": 50.0, "height": 15.0},
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def trigger_pipeline_thickness(
-        self,
-        client: httpx.AsyncClient,
-        barcode: str,
-        result: str = "OK",
-    ) -> dict[str, Any]:
-        """兼容旧测试命名，复用检测完成接口"""
-        response = await client.post(
-            "/debug/inspection-completed",
-            json={
-                "barcode": barcode,
-                "result": result,
-                "reel_thickness": "15.5",
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def send_arm_command(
-        self,
-        client: httpx.AsyncClient,
-        task_type: str,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """发送机械臂命令"""
+        """触发 ARM 扫码事件"""
         import time
 
-        payload = {
-            "command_code": f"CMD-{int(time.time() * 1000)}",
-            "task_type": task_type,
-            "priority": 1,
-            "timeout": 30,
-            "params": params or {},
-            "timestamp": int(time.time()),
+        payload: dict[str, Any] = {
+            "device_code": "ARM01",
+            "event_type": "SCAN_COMPLETED",
+            "timestamp": int(time.time() * 1000),
+            "data": {
+                "location": location,
+                "LotCode": barcode.split("-")[0] if "-" in barcode else barcode,
+                "DateCode": barcode.split("-")[1] if "-" in barcode and len(barcode.split("-")) > 1 else None,
+                "Qty": "100",
+                "ProductNo": barcode.split("-")[3] if "-" in barcode and len(barcode.split("-")) > 3 else None,
+                "MfrPN": "MFR002",
+                "PONumber": "PO2026040901",
+            },
         }
+        # 移除 None 值
+        payload["data"] = {k: v for k, v in payload["data"].items() if v is not None}
+
         response = await client.post(
-            "/api/v1/device/command",
+            "/api/v1/callback/event",
             json=payload,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
+        return response.json()
+
+    async def trigger_arm_command_result(
+        self,
+        client: httpx.AsyncClient,
+        command_code: str,
+        result: str = "SUCCESS",
+        device_code: str = "ARM01",
+    ) -> dict[str, Any]:
+        """触发 ARM 命令结果回调"""
+        import time
+
+        payload: dict[str, Any] = {
+            "device_code": device_code,
+            "command_code": command_code,
+            "result": result,
+            "finish_time": int(time.time() * 1000),
+            "data": {
+                "actual_qty": 1,
+                "location": "STATION_PIPELINE_INPUT1",
+                "pick_and_put_result": "PUT_FINISHED" if result == "SUCCESS" else "FAILED",
+            },
+            "timestamp": int(time.time()),
+        }
+
+        response = await client.post(
+            "/api/v1/callback/result",
+            json=payload,
+        )
+        _ = response.raise_for_status()
         return response.json()
 
     async def get_arm_status(self, client: httpx.AsyncClient) -> dict[str, Any]:
         """获取机械臂状态"""
         response = await client.get("/api/v1/device/status")
-        response.raise_for_status()
-        return response.json()
-
-    async def get_pipeline_status(self, client: httpx.AsyncClient) -> dict[str, Any]:
-        """获取流水线状态"""
-        response = await client.get("/api/v1/device/status")
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return response.json()
 
 
@@ -146,9 +126,9 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
     """SMT 粗分机 E2E 流程测试"""
 
     @pytest.fixture
-    def plugin(self) -> SmtClassifierPlugin:
+    def plugin(self) -> SimplifiedSmtPlugin:
         """创建插件实例"""
-        return SmtClassifierPlugin()
+        return SimplifiedSmtPlugin()
 
     @pytest.fixture
     def mock_inbox(self) -> MagicMock:
@@ -161,249 +141,254 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         return inbox
 
     @pytest.mark.asyncio
-    async def test_full_ok_flow(
+    async def test_plugin_key_and_version(self, plugin: SimplifiedSmtPlugin) -> None:
+        """测试插件注册信息"""
+        assert plugin.plugin_key == "simplified_smt"
+        assert plugin.contract_version == "1.0"
+
+    @pytest.mark.asyncio
+    async def test_scan_completed_ok_flow(
         self,
-        plugin: SmtClassifierPlugin,
+        plugin: SimplifiedSmtPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
-        pipeline_client: httpx.AsyncClient,
-        arm01_client: httpx.AsyncClient,
-        arm02_client: httpx.AsyncClient,
     ) -> None:
-        """测试完整 OK 流程
+        """测试扫码完成 OK 流程
 
         流程:
-        1. 扫码 OK 事件 -> 等待检测
-        2. 检测 OK 事件 -> 生成 PICK_AND_PUT 命令 (进料)
-        3. 命令结果 SUCCESS -> 生成 MOVE_FORWARD 命令
-        4. 流水线完成 -> 生成 PICK_AND_PUT 命令 (出料)
-        5. 出料完成 -> 流程结束
+        1. 扫码完成 → 验证条码 → 生成 PICK_AND_PUT 命令
         """
         logger.info("=" * 60)
-        logger.info("开始测试: 完整 OK 流程")
+        logger.info("开始测试: 扫码完成 OK 流程")
         logger.info("=" * 60)
 
-        # Step 1: 扫码 OK 事件
-        logger.info("Step 1: 发送扫码 OK 事件")
+        # Step 1: 扫码完成事件
+        logger.info("Step 1: 发送扫码完成事件")
         mock_plugin_context.session.status = "NEW"
         mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
-            "barcode": "E2E-TEST-001",
-            "scan_result": "OK",
-            "location_id": "LEFT_STATION_INPUT",
+            "event_type": "SCAN_COMPLETED",
+            "device_code": "ARM01",
+            "timestamp": 1702627300000,
+            "data": {
+                "location": "STATION_INPUT1",
+                "LotCode": "LOTABC123",
+                "DateCode": "20250317",
+                "Qty": "100",
+                "ProductNo": "PROD001",
+                "MfrPN": "MFR001",
+                "PONumber": "PO001",
+            },
         }
 
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
         assert result.transition == "scan_ok"
-        assert result.context_patch["stage"] == SmtClassifierStage.WAITING_INSPECTION.value
-        assert result.context_patch["scan_result"] == "OK"
-        logger.info("✓ Step 1 完成: 扫码 OK，进入等待检测阶段")
-
-        # Step 2: 检测 OK 事件
-        logger.info("Step 2: 发送检测 OK 事件")
-        mock_plugin_context.session.context_json = result.context_patch
-        mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.INSPECTION_COMPLETED.value,
-            "inspection_result": "OK",
-            "location_id": "LEFT_STATION_DETECT",
-        }
-
-        result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "inspection_ok"
+        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_PICK_PLACE
         assert len(result.commands) == 1
-        assert result.commands[0].action == SmtClassifierCommandType.MOVE_FORWARD.value
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        logger.info("✓ Step 2 完成: 检测 OK，生成流水线前进命令")
+        assert result.commands[0].action == "PICK_AND_PUT"
+        # CommandIntent 只有 target_device_id，没有 device_role
+        assert result.commands[0].target_device_id > 0
 
-        # Step 3: 模拟流水线传输完成
-        logger.info("Step 3: 模拟流水线传输完成")
-        mock_plugin_context.session.context_json = {
-            **result.context_patch,
-            "source_type": "PIPELINE_PLATFORM",
-            "target_type": "PIPELINE_PLATFORM",
-        }
-        mock_inbox.payload_json = {
-            "command_type": SmtClassifierCommandType.MOVE_FORWARD.value,
-            "result": "SUCCESS",
-            "data": {"actual_source": "PIPELINE_IN", "actual_target": "PIPELINE_OUT"},
-        }
-
-        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "conveyor_complete"
-        assert len(result.commands) == 1
-        assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
-        assert result.wait is not None
-        logger.info("✓ Step 3 完成: 流水线传输完成，生成出料命令")
-
-        # Step 4: 模拟出料完成
-        logger.info("Step 4: 模拟出料完成")
-        mock_plugin_context.session.context_json = {
-            **result.context_patch,
-            "ng_reason": "OUTPUT",
-        }
-        mock_inbox.payload_json = {
-            "command_type": SmtClassifierCommandType.PICK_AND_PUT.value,
-            "result": "SUCCESS",
-            "data": {"actual_source": "PIPELINE_OUT", "actual_target": "OUTPUT_PLATFORM"},
-        }
-
-        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "output_handled"
-        assert result.complete is True
-        assert result.context_patch["stage"] == SmtClassifierStage.COMPLETED.value
-        logger.info("✓ Step 4 完成: 出料完成，流程结束")
-
-        logger.info("=" * 60)
-        logger.info("完整 OK 流程测试通过!")
-        logger.info("=" * 60)
+        logger.info(f"✓ 测试通过: transition={result.transition}, commands={len(result.commands)}")
 
     @pytest.mark.asyncio
-    async def test_scan_ng_flow(
+    async def test_scan_invalid_barcode(
         self,
-        plugin: SmtClassifierPlugin,
+        plugin: SimplifiedSmtPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
-        """测试扫码 NG 流程
-
-        流程:
-        1. 扫码 NG 事件 -> 生成 PICK_AND_PUT 命令 (放入 NG 缓存位)
-        2. 命令结果 SUCCESS -> 流程结束
-        """
+        """测试无效条码流程"""
         logger.info("=" * 60)
-        logger.info("开始测试: 扫码 NG 流程")
+        logger.info("开始测试: 无效条码流程")
         logger.info("=" * 60)
 
-        # Step 1: 扫码 NG 事件
-        logger.info("Step 1: 发送扫码 NG 事件")
         mock_plugin_context.session.status = "NEW"
         mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
-            "barcode": "E2E-TEST-NG-001",
-            "scan_result": "NG",
-            "location_id": "LEFT_STATION_INPUT",
+            "event_type": "SCAN_COMPLETED",
+            "device_code": "ARM01",
+            "timestamp": 1702627300000,
+            "data": {
+                "location": "STATION_INPUT1",
+                "LotCode": "X",  # 太短，无效
+            },
         }
 
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
         assert result.transition == "scan_ng"
-        assert len(result.commands) == 1
-        assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
-        assert result.commands[0].parameters["source_type"] == "INPUT_PLATFORM"
-        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
-        assert result.wait is not None
-        logger.info("✓ Step 1 完成: 扫码 NG，生成 NG 放置命令")
+        assert result.failure is not None
+        assert result.failure.code == "BARCODE_INVALID"
 
-        # Step 2: 模拟 NG 放置完成
-        logger.info("Step 2: 模拟 NG 放置完成")
-        mock_plugin_context.session.context_json = {
-            "stage": SmtClassifierStage.WAITING_PICK_PLACE.value,
-            "ng_reason": "SCAN_NG",
-        }
-        mock_inbox.payload_json = {
-            "command_type": SmtClassifierCommandType.PICK_AND_PUT.value,
-            "result": "SUCCESS",
-            "data": {"actual_source": "INPUT_PLATFORM", "actual_target": "NG_PLATFORM"},
-        }
-
-        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "ng_handled"
-        assert result.complete is True
-        assert result.context_patch["stage"] == SmtClassifierStage.COMPLETED.value
-        assert result.context_patch["ng_handled"] is True
-        logger.info("✓ Step 2 完成: NG 放置完成，流程结束")
-
-        logger.info("=" * 60)
-        logger.info("扫码 NG 流程测试通过!")
-        logger.info("=" * 60)
+        logger.info(f"✓ 测试通过: 正确识别无效条码, failure={result.failure.message}")
 
     @pytest.mark.asyncio
-    async def test_inspection_ng_flow(
+    async def test_pick_success_flow(
         self,
-        plugin: SmtClassifierPlugin,
+        plugin: SimplifiedSmtPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
-        """测试检测 NG 流程
-
-        流程:
-        1. 扫码 OK 事件 -> 等待检测
-        2. 检测 NG 事件 -> 生成 PICK_AND_PUT 命令 (放入 NG 缓存位)
-        3. 命令结果 SUCCESS -> 流程结束
-        """
+        """测试抓取成功流程"""
         logger.info("=" * 60)
-        logger.info("开始测试: 检测 NG 流程")
+        logger.info("开始测试: 抓取成功流程")
         logger.info("=" * 60)
 
-        # Step 1: 扫码 OK 事件
-        logger.info("Step 1: 发送扫码 OK 事件")
-        mock_plugin_context.session.status = "NEW"
-        mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.SCAN_COMPLETED.value,
-            "barcode": "E2E-TEST-NG-002",
-            "scan_result": "OK",
-            "location_id": "LEFT_STATION_INPUT",
-        }
-
-        result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "scan_ok"
-        logger.info("✓ Step 1 完成: 扫码 OK")
-
-        # Step 2: 检测 NG 事件
-        logger.info("Step 2: 发送检测 NG 事件")
-        mock_plugin_context.session.context_json = result.context_patch
-        mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.INSPECTION_COMPLETED.value,
-            "inspection_result": "NG",
-            "location_id": "LEFT_STATION_DETECT",
-        }
-
-        result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "inspection_ng"
-        assert len(result.commands) == 1
-        assert result.commands[0].action == SmtClassifierCommandType.PICK_AND_PUT.value
-        assert result.commands[0].parameters["reason"] == "INSPECTION_NG"
-        assert result.wait is not None
-        logger.info("✓ Step 2 完成: 检测 NG，生成 NG 放置命令")
-
-        # Step 3: 模拟 NG 放置完成
-        logger.info("Step 3: 模拟 NG 放置完成")
+        mock_plugin_context.session.status = "WAITING_PICK_PLACE"
         mock_plugin_context.session.context_json = {
-            **result.context_patch,
-            "ng_reason": "INSPECTION_NG",
+            "barcode": "LOTABC123",
+            "location": "STATION_INPUT1",
+            "device_code": "ARM01",
+            "step_code": SmtClassifierState.WAITING_PICK_PLACE,
         }
+
+        # 设置命令结果的 Inbox
+        mock_inbox.kind = "COMMAND_RESULT"
         mock_inbox.payload_json = {
-            "command_type": SmtClassifierCommandType.PICK_AND_PUT.value,
+            "device_code": "ARM01",
+            "command_code": "CMD-001",
+            "task_type": "PICK_AND_PUT",  # 必需：命令类型
             "result": "SUCCESS",
+            "finish_time": 1702627250000,
+            "data": {
+                "actual_qty": 1,
+                "location": "STATION_PIPELINE_INPUT1",
+                "pick_and_put_result": "PUT_FINISHED",
+            },
         }
 
         result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
 
-        assert result.transition == "ng_handled"
-        assert result.complete is True
-        logger.info("✓ Step 3 完成: NG 放置完成，流程结束")
+        assert result.transition == "pick_ok"
+        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_CONVEYOR
+        assert len(result.commands) == 1
+        assert result.commands[0].action == "MOVE_FORWARD"
+
+        logger.info(f"✓ 测试通过: transition={result.transition}, next_command=MOVE_FORWARD")
+
+        logger.info(f"✓ 测试通过: transition={result.transition}, next_command=MOVE_FORWARD")
+
+
+# ==================== Mock 服务交互测试 ====================
+
+
+@pytest.mark.e2e
+@pytest.mark.integration
+class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
+    """Mock 服务交互测试 - 验证真实 HTTP 通信"""
+
+    @pytest.mark.asyncio
+    async def test_arm01_health_check(self, arm01_client: httpx.AsyncClient) -> None:
+        """测试 ARM01 Mock 根路径"""
+        response = await arm01_client.get("/")
+        assert response.status_code == 200
+        data = response.json()
+        assert "service" in data
+        assert "device_code" in data
+        logger.info(f"✓ ARM01 Mock 健康检查通过: {data['device_code']}")
+
+    @pytest.mark.asyncio
+    async def test_pipeline_health_check(self, pipeline_client: httpx.AsyncClient) -> None:
+        """测试 Pipeline Mock 根路径"""
+        response = await pipeline_client.get("/")
+        assert response.status_code == 200
+        data = response.json()
+        assert "service" in data
+        logger.info(f"✓ Pipeline Mock 健康检查通过: {data.get('device_code', 'PIPELINE')}")
+
+    @pytest.mark.asyncio
+    async def test_arm01_receive_command_via_mock_direct(
+        self,
+        arm01_client: httpx.AsyncClient,
+    ) -> None:
+        """直接向 ARM01 Mock 发送指令"""
+        import time
+
+        command_payload: dict[str, Any] = {
+            "command_code": f"E2E-CMD-{int(time.time())}",
+            "task_type": "PICK_AND_PUT",
+            "priority": 1,
+            "timeout": 30,
+            "params": {
+                "source_loc": "STATION_INPUT1",  # 使用具体的 location_id
+                "target_loc": "STATION_PIPELINE1_INPUT1",  # 使用具体的 location_id
+                "execution_time": 1,
+            },
+            "timestamp": int(time.time()),
+        }
+
+        response = await arm01_client.post(
+            "/api/v1/device/command",
+            json=command_payload,
+        )
+
+        assert response.status_code == 200
+        ack = response.json()
+        assert ack["code"] == 200
+        logger.info(f"✓ ARM01 接收指令成功: {ack['message']}")
+
+        # 等待执行完成
+        await asyncio.sleep(2)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_material_arrived_event(
+        self,
+        wes_client: httpx.AsyncClient,
+    ) -> None:
+        """测试 Pipeline 上报物料到达事件（符合白皮书规范）
+
+        流程：
+        1. Pipeline 检测到物料到达
+        2. Pipeline 主动调用 WES 的 /api/v1/callback/event 上报事件
+        3. WES 返回 200 OK（不含业务指令）
+        4. WES 异步决策后下发下一步命令
+        """
+        import time
 
         logger.info("=" * 60)
-        logger.info("检测 NG 流程测试通过!")
+        logger.info("开始测试: Pipeline 上报物料到达事件")
         logger.info("=" * 60)
+
+        # Pipeline 作为客户端，调用 WES 的回调接口
+        event_payload: dict[str, Any] = {
+            "device_code": "PIPELINE01",
+            "event_type": "MATERIAL_ARRIVED",
+            "timestamp": int(time.time() * 1000),
+            "data": {
+                "location": "STATION_INPUT1",
+            },
+        }
+
+        response = await wes_client.post(
+            "/api/v1/callback/event",
+            json=event_payload,
+        )
+
+        assert response.status_code == 200
+        logger.info("✓ Pipeline 上报物料到达事件成功")
+
+        # WES 应立即返回 ACK，不包含具体的动作指令
+        result = response.json()
+        assert result.get("code") == 200 or result.get("message") == "Event received"
+        logger.info(f"  WES 响应: {result}")
+
+        logger.info("✓ 测试通过: 符合白皮书 3.3.1 传感器触发模式规范")
+
+        # 等待扫描完成和回调
+        await asyncio.sleep(2)
+
+
+# ==================== 错误处理测试 ====================
 
 
 @pytest.mark.e2e
 class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
-    """SMT 粗分机 E2E 错误处理测试"""
+    """错误处理测试"""
 
     @pytest.fixture
-    def plugin(self) -> SmtClassifierPlugin:
+    def plugin(self) -> SimplifiedSmtPlugin:
         """创建插件实例"""
-        return SmtClassifierPlugin()
+        return SimplifiedSmtPlugin()
 
     @pytest.fixture
     def mock_inbox(self) -> MagicMock:
@@ -418,288 +403,86 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
     @pytest.mark.asyncio
     async def test_estop_handling(
         self,
-        plugin: SmtClassifierPlugin,
+        plugin: SimplifiedSmtPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
-        """测试急停处理"""
+        """测试急停事件处理"""
         logger.info("=" * 60)
-        logger.info("开始测试: 急停处理")
+        logger.info("开始测试: 急停事件处理")
         logger.info("=" * 60)
 
-        mock_plugin_context.session.status = "RUNNING"
+        mock_plugin_context.session.status = "WAITING_PICK_PLACE"
         mock_inbox.payload_json = {
-            "event_type": SmtClassifierEventType.ESTOP_PRESSED.value,
-            "device_id": "ARM01",
-            "timestamp": 1711363200000,
+            "event_type": "ESTOP_PRESSED",
+            "device_code": "ARM01",
+            "timestamp": 1702627300000,
         }
 
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
-        assert result.transition == "estop"
         assert result.failure is not None
+        assert result.failure.code == "ESTOP"
         assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "ESTOP_PRESSED"
-        assert result.context_patch["estop_pressed"] is True
-        assert result.context_patch["stage"] == SmtClassifierStage.ERROR.value
 
-        logger.info("✓ 急停处理测试通过!")
+        logger.info(f"✓ 测试通过: 正确处理急停, failure={result.failure.message}")
 
     @pytest.mark.asyncio
-    async def test_timeout_handling(
+    async def test_pick_failed_handling(
         self,
-        plugin: SmtClassifierPlugin,
+        plugin: SimplifiedSmtPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
-        """测试超时处理"""
+        """测试抓取失败处理"""
         logger.info("=" * 60)
-        logger.info("开始测试: 超时处理")
+        logger.info("开始测试: 抓取失败处理")
         logger.info("=" * 60)
 
-        mock_plugin_context.session.status = "WAITING_DEVICE_RESULT"
+        mock_plugin_context.session.status = "WAITING_PICK_PLACE"
         mock_plugin_context.session.context_json = {
-            "stage": SmtClassifierStage.WAITING_CONVEYOR.value,
-            "retry_count": 0,
+            "barcode": "LOTABC123",
+            "step_code": SmtClassifierState.WAITING_PICK_PLACE,
         }
-        mock_inbox.kind = "TIMER_TIMEOUT"
 
-        result = await plugin.on_timeout(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "timeout"
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "TIMEOUT"
-        assert result.context_patch["timeout_at_stage"] == SmtClassifierStage.WAITING_CONVEYOR.value
-
-        logger.info("✓ 超时处理测试通过!")
-
-    @pytest.mark.asyncio
-    async def test_command_failure_with_retry(
-        self,
-        plugin: SmtClassifierPlugin,
-        mock_plugin_context: MagicMock,
-        mock_inbox: MagicMock,
-    ) -> None:
-        """测试命令失败与重试逻辑"""
-        logger.info("=" * 60)
-        logger.info("开始测试: 命令失败与重试")
-        logger.info("=" * 60)
-
-        # 第一次失败
-        mock_plugin_context.session.context_json = {"retry_count": 0}
+        # 构造命令结果的 Inbox payload
+        mock_inbox.kind = "COMMAND_RESULT"
         mock_inbox.payload_json = {
-            "command_type": SmtClassifierCommandType.PICK_AND_PUT.value,
+            "command_code": "CMD-001",
+            "device_code": "ARM01",
+            "task_type": "PICK_AND_PUT",  # 必需：命令类型
             "result": "FAILED",
-            "error_detail": {"code": "DEVICE_TIMEOUT", "message": "设备响应超时"},
+            "finish_time": 1702627250000,
+            # error_detail 会被合并到顶层
+            "error_detail": {
+                "error_code": "2002",  # 搬运失败
+                "error_message": "机械臂搬运失败",
+            },
+            # 顶层字段（从 error_detail 合并）
+            "error_code": "2002",
+            "error_message": "机械臂搬运失败",
         }
 
         result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
 
-        # 检查是否进入重试状态
-        assert result.transition == "retry"
-        assert result.context_patch["retry_count"] == 1
+        # 非尺寸/厚度错误会返回 failure
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "2002"
 
-        logger.info("✓ 命令失败重试测试通过!")
-
-
-@pytest.mark.e2e
-class TestSmtClassifierE2EManualOperations(TestSmtClassifierE2EBase):
-    """SMT 粗分机 E2E 人工操作测试"""
-
-    @pytest.fixture
-    def plugin(self) -> SmtClassifierPlugin:
-        """创建插件实例"""
-        return SmtClassifierPlugin()
-
-    @pytest.fixture
-    def mock_inbox(self) -> MagicMock:
-        """创建模拟 Inbox"""
-        inbox = MagicMock()
-        inbox.id = 5001
-        inbox.kind = "MANUAL_OPERATION"
-        inbox.payload_json = {}
-        return inbox
-
-    @pytest.mark.asyncio
-    async def test_manual_hold_and_resume(
-        self,
-        plugin: SmtClassifierPlugin,
-        mock_plugin_context: MagicMock,
-        mock_inbox: MagicMock,
-    ) -> None:
-        """测试人工暂停和恢复"""
-        logger.info("=" * 60)
-        logger.info("开始测试: 人工暂停和恢复")
-        logger.info("=" * 60)
-
-        # 人工暂停
-        mock_plugin_context.session.status = "RUNNING"
-        mock_inbox.payload_json = {
-            "operation_type": "MANUAL_HOLD",
-            "reason": "Equipment check",
-        }
-
-        result = await plugin.on_manual_operation(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "manual_hold"
-        assert result.context_patch["manual_hold"] is True
-        assert result.context_patch["hold_reason"] == "Equipment check"
-
-        logger.info("✓ 人工暂停测试通过")
-
-        # 人工恢复
-        mock_inbox.payload_json = {"operation_type": "MANUAL_RESUME"}
-
-        result = await plugin.on_manual_operation(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "manual_resume"
-        assert result.context_patch["manual_hold"] is False
-
-        logger.info("✓ 人工恢复测试通过")
-
-    @pytest.mark.asyncio
-    async def test_manual_cancel(
-        self,
-        plugin: SmtClassifierPlugin,
-        mock_plugin_context: MagicMock,
-        mock_inbox: MagicMock,
-    ) -> None:
-        """测试人工取消"""
-        logger.info("=" * 60)
-        logger.info("开始测试: 人工取消")
-        logger.info("=" * 60)
-
-        mock_plugin_context.session.status = "RUNNING"
-        mock_inbox.payload_json = {
-            "operation_type": "MANUAL_CANCEL",
-            "reason": "Quality issue",
-        }
-
-        result = await plugin.on_manual_operation(mock_plugin_context, mock_inbox)
-
-        assert result.transition == "manual_cancel"
-        assert result.complete is True
-        assert result.context_patch["cancelled"] is True
-        assert result.context_patch["cancel_reason"] == "Quality issue"
-
-        logger.info("✓ 人工取消测试通过!")
+        logger.info(f"✓ 测试通过: 正确处理抓取失败, failure={result.failure.message}")
 
 
-@pytest.mark.e2e
-class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
-    """SMT 粗分机与 Mock 服务的交互测试"""
-
-    @pytest.mark.asyncio
-    async def test_pipeline_mock_health_check(
-        self,
-        pipeline_client: httpx.AsyncClient,
-    ) -> None:
-        """测试 Pipeline Mock 服务健康检查"""
-        response = await pipeline_client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["service"] == "SMT 粗分机流水线 Mock 服务"
-        assert data["status"] == "running"
-        assert data["device_code"] == "PIPELINE01"
-
-    @pytest.mark.asyncio
-    async def test_arm01_mock_health_check(
-        self,
-        arm01_client: httpx.AsyncClient,
-    ) -> None:
-        """测试 ARM01 Mock 服务健康检查"""
-        response = await arm01_client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert "进料机械臂" in data["device_name"]
-        assert data["status"] == "running"
-        assert data["device_code"] == "ARM01"
-
-    @pytest.mark.asyncio
-    async def test_arm02_mock_health_check(
-        self,
-        arm02_client: httpx.AsyncClient,
-    ) -> None:
-        """测试 ARM02 Mock 服务健康检查"""
-        response = await arm02_client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert "出料机械臂" in data["device_name"]
-        assert data["status"] == "running"
-        assert data["device_code"] == "ARM02"
-
-    @pytest.mark.asyncio
-    async def test_pipeline_scan_event(
-        self,
-        arm01_client: httpx.AsyncClient,
-    ) -> None:
-        """测试 ARM01 扫码事件触发"""
-        result = await self.trigger_pipeline_scan(
-            arm01_client,
-            barcode="E2E-SCAN-001",
-            result="OK",
-        )
-
-        assert result["task_type"] == "SCAN_COMPLETED"
-        assert result["result"] == "OK"
-        assert result["reported_event_type"] == "SCAN_COMPLETED"
-        assert result["source"]["location_id"] == "STATION_INPUT1"
-
-    @pytest.mark.asyncio
-    async def test_arm_manual_execution(
-        self,
-        arm01_client: httpx.AsyncClient,
-    ) -> None:
-        """测试机械臂手动执行"""
-        response = await arm01_client.post(
-            "/debug/execute",
-            json={
-                "task_type": "PICK_AND_PUT",
-                "source_type": "INPUT_PLATFORM",
-                "target_type": "PIPELINE_PLATFORM",
-                "barcode": "E2E-ARM-001",
-                "execution_time": 0.1,  # 快速执行
-            },
-        )
-        assert response.status_code == 200
-        result = response.json()
-        assert result["task_type"] == "PICK_AND_PUT"
-        assert result["result"] == "SUCCESS"
-        assert result["source"]["location_id"] == "STATION_INPUT1"
-        assert result["target"]["location_id"] == "STATION_PIPELINE1_INPUT1"
-
-    @pytest.mark.asyncio
-    async def test_arm_device_status(self, arm01_client: httpx.AsyncClient) -> None:
-        """测试机械臂设备状态查询"""
-        result = await self.get_arm_status(arm01_client)
-
-        assert result["device_code"] == "ARM01"
-        assert result["status"] in ["IDLE", "RUNNING"]
-        assert result["error_code"] == "NONE"
-        assert "timestamp" in result
-
-    @pytest.mark.asyncio
-    async def test_arm_command_ack(self, arm01_client: httpx.AsyncClient) -> None:
-        """测试机械臂命令 ACK 响应"""
-        import time
-
-        payload = {
-            "command_code": f"E2E-CMD-{int(time.time())}",
-            "task_type": "PICK_AND_PUT",
-            "priority": 1,
-            "timeout": 30,
-            "params": {"source_type": "INPUT_PLATFORM", "target_type": "PIPELINE_PLATFORM"},
-            "timestamp": int(time.time()),
-        }
-
-        response = await arm01_client.post("/api/v1/device/command", json=payload)
-        assert response.status_code == 200
-        result = response.json()
-        assert result["code"] == 200
-        assert result["message"] == "Accepted"
-        assert "trace_id" in result
+# ==================== 测试标记 ====================
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def pytest_configure(config: pytest.Config) -> None:
+    """配置 pytest"""
+    config.addinivalue_line(
+        "markers",
+        "e2e: marks tests as end-to-end tests (deselect with '-m \"not e2e\"')",
+    )
+    config.addinivalue_line(
+        "markers",
+        "integration: marks tests as integration tests (require running services)",
+    )

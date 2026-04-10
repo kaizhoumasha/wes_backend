@@ -2,6 +2,27 @@
 
 SMT 粗分机插件的端到端测试，验证插件与 Mock 设备的完整交互流程。
 
+## 测试覆盖范围
+
+### 当前测试类型
+
+| 测试类 | 文件 | 说明 | 链路 |
+|--------|------|------|------|
+| `TestSmtClassifierE2EFlows` | `test_e2e_smt_classifier.py` | 插件逻辑单元测试 | 插件内部 |
+| `TestSmtClassifierE2EMockInteractions` | `test_e2e_smt_classifier.py` | Mock 服务交互测试 | 测试代码 ↔ Mock |
+| `TestSmtClassifierE2EErrorHandling` | `test_e2e_smt_classifier.py` | 错误处理测试 | 插件内部 |
+| `TestSMTClassifierFullE2E` | `test_full_e2e_chain.py` | **完整端到端集成** | **WES ↔ Mock ↔ WES** |
+
+### ⚠️ 重要说明
+
+- `test_e2e_smt_classifier.py` 中的测试**直接调用 Mock 服务**，不经过 WES Backend
+- 要测试完整的端到端链路（包括插件编排、命令生成），请使用 `test_full_e2e_chain.py`
+- 完整端到端测试需要启动 **WES Backend + Celery Worker + Mock 服务**
+
+### 完整端到端测试指南
+
+📖 详细说明请查看: [FULL_E2E_GUIDE.md](./FULL_E2E_GUIDE.md)
+
 ## 架构
 
 ```
@@ -41,17 +62,11 @@ SMT 粗分机插件的端到端测试，验证插件与 Mock 设备的完整交�
 ### 1. 一键运行（推荐）
 
 ```bash
-# 完整流程：设置环境 + 初始化数据 + 运行测试
-./tests/e2e/smt_classifier/run_e2e_tests.sh --full
-
-# 仅运行测试（假设已设置环境和数据）
+# 快速测试（仅插件逻辑和 Mock 交互，不启动 WES）
 ./tests/e2e/smt_classifier/run_e2e_tests.sh
 
-# 运行特定测试
-./tests/e2e/smt_classifier/run_e2e_tests.sh -k test_full_ok_flow
-
-# 详细输出
-./tests/e2e/smt_classifier/run_e2e_tests.sh -v
+# 完整端到端测试（需要 WES + Celery + Mock）
+./tests/e2e/smt_classifier/run_e2e_tests.sh --full
 ```
 
 ### 2. 手动步骤
@@ -191,7 +206,7 @@ uv run python scripts/data/seed_e2e_test_data.py
 
 ```bash
 # 检查 WES 服务是否运行
-curl http://localhost:8001/health
+curl http://localhost:8001/api/v1/admin/performance/health
 
 # 检查环境变量是否正确加载
 echo $API_APP_ID
@@ -204,11 +219,13 @@ echo $WES_EVENT_CALLBACK_URL
 tests/e2e/smt_classifier/
 ├── __init__.py                 # 包初始化
 ├── conftest.py                 # Pytest Fixtures 和配置
-├── test_e2e_smt_classifier.py  # E2E 测试用例
+├── test_e2e_smt_classifier.py  # 插件逻辑 + Mock 交互测试
+├── test_full_e2e_chain.py      # 完整端到端集成测试 (WES ↔ Mock)
 ├── setup_e2e_app.py            # 环境设置脚本
 ├── run_e2e_tests.sh            # 测试运行脚本
 ├── .env.e2e                    # 环境变量文件（自动生成）
-└── README.md                   # 本文件
+├── README.md                   # 本文件
+└── FULL_E2E_GUIDE.md           # 完整端到端测试详细指南
 ```
 
 ## 技术细节
@@ -230,4 +247,20 @@ macOS 上必须使用 `spawn` 方式启动多进程，因为:
 ### 会话级 Fixture
 
 - `mock_services`: 会话级别，只启动一次所有 Mock 服务
+  - **智能检测**：自动检测服务是否已运行，避免重复启动
+  - **优雅管理**：只停止自己启动的服务，外部管理的服务不会被停止
 - `clean_mock_state`: 函数级别，每个测试前重置 Mock 状态
+
+### 手动启动 Mock 服务（可选）
+
+如果希望手动管理 Mock 服务，可以提前启动：
+
+```bash
+# 启动所有 Mock 服务
+python tests/mock/smt_classifier/run_all.py
+
+# 在另一个终端运行测试
+uv run pytest tests/e2e/smt_classifier/ -v
+```
+
+测试框架会自动检测已运行的服务并复用，测试结束后不会停止手动启动的服务。

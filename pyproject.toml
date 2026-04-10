@@ -332,6 +332,7 @@ norecursedirs = [
 markers = [
     "live: requires running external services or seeded live environment",
     "e2e: end-to-end multi-service workflow tests",
+    "integration: integration tests requiring multiple components",
     "manual: requires explicit operator interaction or interactive terminal",
 ]
 

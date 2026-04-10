@@ -24,11 +24,14 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+
+if TYPE_CHECKING:
+    import asyncpg
 import pytest_asyncio
 
 # 添加项目根目录到 sys.path
@@ -55,6 +58,13 @@ logger = logging.getLogger(__name__)
 # 配置
 WES_BASE_URL = os.getenv("WES_BASE_URL", "http://localhost:8001")
 MOCK_STARTUP_TIMEOUT = int(os.getenv("MOCK_STARTUP_TIMEOUT", "30"))
+
+# Mock 服务健康检查 URL（避免重复定义）
+MOCK_HEALTH_URLS = [
+    ("Pipeline Mock", "http://127.0.0.1:8005/"),
+    ("Arm Mock (ARM01)", "http://127.0.0.1:8006/"),
+    ("Arm Mock (ARM02)", "http://127.0.0.1:8007/"),
+]
 
 
 # ==================== Mock 服务进程管理 ====================
@@ -93,6 +103,12 @@ class MockServiceManager:
         logger.info("=" * 60)
         logger.info("启动 SMT 粗分机 Mock 服务")
         logger.info("=" * 60)
+
+        # 先检查服务是否已经运行
+        if await self._check_services_running():
+            logger.info("✓ 检测到 Mock 服务已启动，跳过启动流程")
+            self._is_running = True
+            return
 
         # 从 .env.e2e 加载环境变量
         self._env_vars = self._load_env_from_file()
@@ -147,6 +163,14 @@ class MockServiceManager:
         if not self._is_running:
             return
 
+        # 检查是否是我们启动的服务
+        if not self._processes:
+            # 服务不是我们启动的，不停止
+            logger.info("=" * 60)
+            logger.info("Mock 服务由外部管理，不停止服务")
+            logger.info("=" * 60)
+            return
+
         logger.info("=" * 60)
         logger.info("正在停止所有 Mock 服务...")
         logger.info("-" * 60)
@@ -173,17 +197,29 @@ class MockServiceManager:
         logger.info("所有 Mock 服务已停止")
         logger.info("=" * 60)
 
+    async def _check_services_running(self) -> bool:
+        """检查 Mock 服务是否已经在运行"""
+        all_running = True
+        for name, url in MOCK_HEALTH_URLS:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        logger.info(f"✓ {name} 已运行")
+                    else:
+                        all_running = False
+                        break
+            except Exception:
+                all_running = False
+                break
+
+        return all_running
+
     async def _wait_for_healthy(self) -> None:
         """等待所有服务健康检查通过"""
-        health_urls = [
-            ("Pipeline Mock", "http://127.0.0.1:8005/"),
-            ("Arm Mock (ARM01)", "http://127.0.0.1:8006/"),
-            ("Arm Mock (ARM02)", "http://127.0.0.1:8007/"),
-        ]
-
         deadline = time.time() + MOCK_STARTUP_TIMEOUT
 
-        for name, url in health_urls:
+        for name, url in MOCK_HEALTH_URLS:
             while time.time() < deadline:
                 try:
                     async with httpx.AsyncClient(timeout=2.0) as client:
@@ -271,44 +307,131 @@ async def clean_mock_state() -> AsyncGenerator[None]:
     yield
 
 
-@pytest.fixture(scope="function")
-def wes_client() -> httpx.AsyncClient:
+@pytest_asyncio.fixture(scope="function", loop_scope="function")
+async def wes_client() -> AsyncGenerator[httpx.AsyncClient]:
     """WES API 客户端 Fixture"""
-    return httpx.AsyncClient(
+    async with httpx.AsyncClient(
         base_url=WES_BASE_URL,
         timeout=30.0,
         headers={"Content-Type": "application/json"},
-    )
+    ) as client:
+        yield client
 
 
-@pytest.fixture(scope="function")
-def pipeline_client() -> httpx.AsyncClient:
+@pytest_asyncio.fixture(scope="function", loop_scope="function")
+async def pipeline_client() -> AsyncGenerator[httpx.AsyncClient]:
     """Pipeline Mock 客户端 Fixture"""
-    return httpx.AsyncClient(
+    async with httpx.AsyncClient(
         base_url="http://127.0.0.1:8005",
         timeout=10.0,
         headers={"Content-Type": "application/json"},
-    )
+    ) as client:
+        yield client
 
 
-@pytest.fixture(scope="function")
-def arm01_client() -> httpx.AsyncClient:
+@pytest_asyncio.fixture(scope="function", loop_scope="function")
+async def arm01_client() -> AsyncGenerator[httpx.AsyncClient]:
     """ARM01 Mock 客户端 Fixture"""
-    return httpx.AsyncClient(
+    async with httpx.AsyncClient(
         base_url="http://127.0.0.1:8006",
         timeout=10.0,
         headers={"Content-Type": "application/json"},
-    )
+    ) as client:
+        yield client
 
 
-@pytest.fixture(scope="function")
-def arm02_client() -> httpx.AsyncClient:
+@pytest_asyncio.fixture(scope="function", loop_scope="function")
+async def arm02_client() -> AsyncGenerator[httpx.AsyncClient]:
     """ARM02 Mock 客户端 Fixture"""
-    return httpx.AsyncClient(
+    async with httpx.AsyncClient(
         base_url="http://127.0.0.1:8007",
         timeout=10.0,
         headers={"Content-Type": "application/json"},
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture(scope="function", loop_scope="function")
+async def db_conn() -> AsyncGenerator[asyncpg.Connection]:
+    """数据库连接 Fixture"""
+    import asyncpg
+    import dotenv
+
+    dotenv.load_dotenv()
+
+    conn = await asyncpg.connect(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        user=os.getenv("POSTGRES_USER", "wes_user"),
+        password=os.getenv("POSTGRES_PASSWORD", ""),
+        database=os.getenv("POSTGRES_DB", "wes_db"),
     )
+    yield conn
+    await conn.close()
+
+
+async def wait_for_session_completed(
+    conn: asyncpg.Connection,
+    timeout_seconds: int = 30,
+    poll_interval: float = 0.5,
+) -> dict[str, Any]:
+    """轮询等待会话完成
+
+    Args:
+        conn: 数据库连接
+        timeout_seconds: 超时秒数
+        poll_interval: 轮询间隔（秒）
+
+    Returns:
+        最新会话记录
+
+    Raises:
+        TimeoutError: 超时未完成
+    """
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        session = await conn.fetchrow(
+            """
+            SELECT id, status, step_code, failure_domain, failure_code
+            FROM wes_biz.workline_sessions
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+
+        if session and session["status"] == "COMPLETED":
+            return dict(session)
+
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(f"会话在 {timeout_seconds} 秒内未完成")
+
+
+async def get_session_commands(
+    conn: asyncpg.Connection,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """获取会话的所有命令记录
+
+    Args:
+        conn: 数据库连接
+        session_id: 会话ID
+
+    Returns:
+        命令记录列表
+    """
+    commands = await conn.fetch(
+        """
+        SELECT dc.id, dc.command_code, dc.task_type, d.device_code, dc.status, dc.result
+        FROM wes_biz.device_commands dc
+        JOIN wes_biz.devices d ON dc.device_id = d.id
+        WHERE dc.session_id = $1
+        ORDER BY dc.id
+        """,
+        session_id,
+    )
+    return [dict(cmd) for cmd in commands]
 
 
 # ==================== Mock 设备 Fixtures ====================
