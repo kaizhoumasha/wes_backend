@@ -33,8 +33,8 @@ def build_request():
 
 def create_result_payload() -> dict:
     return {
-        "command_id": "CMD-20250317-001",
-        "device_id": "ARM_01",
+        "command_code": "CMD-20250317-001",
+        "device_code": "ARM_01",
         "result": "SUCCESS",
         "finish_time": 1702627250000,
         "data": {"task_type": "PICK_AND_PUT"},
@@ -43,7 +43,7 @@ def create_result_payload() -> dict:
 
 def create_event_payload() -> dict:
     return {
-        "device_id": "ARM_01",
+        "device_code": "ARM_01",
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1702627300000,
         "data": {
@@ -57,7 +57,7 @@ def create_external_payload() -> dict:
     return {
         "callback_type": "AGV_TASK_RESULT",
         "correlation_id": "corr-agv-001",
-        "command_id": "AGV-REQ-001",
+        "command_code": "AGV-REQ-001",
         "result": "SUCCESS",
         "data": {"to_location": "STATION_OUTPUT1"},
     }

@@ -121,7 +121,7 @@ def make_inbox(
 
 def make_workline(
     workline_id: int = 1,
-    plugin_key: str = "test_plugin",
+    plugin_key: str | None = "test_plugin",
 ) -> MagicMock:
     """创建模拟 WorkLine"""
     workline = MagicMock()
@@ -469,6 +469,61 @@ class TestSessionResolver:
         # business_key 应该生成一个唯一的值
         assert session.business_key is not None
         assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_uses_lot_code_as_business_key(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """测试 DEVICE_EVENT 在无 barcode 时使用 LotCode 作为 business_key。"""
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            payload_json={
+                "data": {
+                    "LotCode": "LOTABC123",
+                    "DateCode": "20260409",
+                }
+            },
+        )
+        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.business_key == "LOTABC123"
+        assert ("business_key", 1, "LOTABC123") in mock_session_repo.find_calls
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_falls_back_to_lot_code_as_business_key(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """测试 DEVICE_EVENT 在无二维码时回退到 LotCode。"""
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            payload_json={"data": {"LotCode": "LOTABC123", "DateCode": "20260409"}},
+        )
+        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.business_key == "LOTABC123"
+        assert ("business_key", 1, "LOTABC123") in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_command_result_finds_session_by_awaiting_command_id(

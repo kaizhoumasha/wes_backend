@@ -326,6 +326,38 @@ class TestOutboxDispatcher:
         assert payload["params"] == {}
         assert isinstance(payload["timestamp"], int)
 
+    def test_normalize_vendor_command_payload_does_not_accept_legacy_command_id(self):
+        """测试设备派发归一化不再接受 legacy command_id。"""
+        from src.celery_app.tasks.workline import _normalize_vendor_command_payload
+
+        payload = _normalize_vendor_command_payload(
+            {"command_id": "CMD-LEGACY-001", "task_type": "PICK_AND_PUT"},
+            action="PICK_AND_PUT",
+            default_command_code="CMD-NEW-001",
+        )
+
+        assert payload["command_code"] == "CMD-NEW-001"
+
+    def test_sync_session_contract_snapshot_writes_missing_contract_version(self):
+        """测试 session 缺失 contract_version 时会补齐插件版本快照。"""
+        from src.celery_app.tasks.workline import _sync_session_contract_snapshot
+
+        session = SimpleNamespace(plugin_key="simplified_smt", contract_version=None, step_code=None)
+        workline = SimpleNamespace(plugin_key="simplified_smt")
+
+        with patch(
+            "src.celery_app.tasks.workline.get_plugin_contract_version",
+            return_value="1.0",
+        ):
+            _sync_session_contract_snapshot(
+                session,
+                workline=workline,
+                context={"step_code": "WAITING_PICK_PLACE"},
+            )
+
+        assert session.contract_version == "1.0"
+        assert session.step_code == "WAITING_PICK_PLACE"
+
     @pytest.mark.asyncio
     async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
         """测试跳过正在派发中的消息（并发安全）"""

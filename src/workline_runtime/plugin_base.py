@@ -44,6 +44,7 @@ from src.workline_runtime.types import (
     PluginResult,
     WaitIntent,
 )
+from src.workline_runtime.utils import ensure_dict
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -373,8 +374,9 @@ class WorklinePlugin:
 
     async def on_timeout(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         """超时处理 - 调用标记的方法或返回默认"""
-        if self._timeout_handler:
-            return await self._invoke_handler(self._timeout_handler, ctx, inbox, inbox.payload_json or {})
+        handler = type(self)._timeout_handler
+        if handler:
+            return await self._invoke_handler(handler, ctx, inbox, inbox.payload_json or {})
         return PluginResult()
 
     async def on_external_http(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
@@ -432,11 +434,10 @@ class WorklinePlugin:
                     param_type = handler.__globals__.get(param_type, param_type)
             if param_type and inspect.isclass(param_type) and issubclass(param_type, BaseModel):
                 # Pydantic 自动解析
-                # 合并 payload 顶层字段 + data 子对象，支持嵌套 payload 结构
+                # 合并 payload 顶层字段 + data 子对象 + error_detail 子对象，支持嵌套 payload 结构
                 merged_payload: dict[str, Any] = dict(payload)
-                data: dict[str, Any] | None = payload.get("data")
-                if isinstance(data, dict):
-                    merged_payload.update(data)
+                for nested_key in ("data", "error_detail"):
+                    merged_payload.update(ensure_dict(payload.get(nested_key)))
                 try:
                     parsed = param_type.model_validate(merged_payload)
                     args.append(parsed)

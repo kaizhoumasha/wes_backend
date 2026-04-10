@@ -14,7 +14,7 @@ Session 归属解析器
 """
 
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,18 +26,48 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.utils.timezone import timezone
-from src.workline_plugins.contracts import resolve_contract_version
+from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_runtime.utils import ensure_dict
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.workline import WorkLine
 
+_SESSION_ID_KINDS = {
+    InboxKind.TIMER_TIMEOUT,
+    InboxKind.MANUAL_HOLD,
+    InboxKind.MANUAL_RESUME,
+    InboxKind.MANUAL_CANCEL,
+    InboxKind.REPLAY_REQUEST,
+}
+_SIX_IN_ONE_KEY_ALIASES = ("LotCode", "DateCode", "ProductNo", "MfrPN", "PONumber", "Qty")
 
-JsonDict = dict[str, Any]
+
+def _resolve_first_str(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
+    for alias in aliases:
+        value = payload.get(alias)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
-def _ensure_dict(value: Any) -> JsonDict:
-    return cast("JsonDict", value) if isinstance(value, dict) else {}
+def _resolve_business_key(payload_json: dict[str, Any]) -> str:
+    """从事件 payload 提取业务主键，缺失时生成兜底值。"""
+    business_key = payload_json.get("business_key")
+    if isinstance(business_key, str) and business_key:
+        return business_key
+
+    data = ensure_dict(payload_json.get("data"))
+
+    barcode = data.get("barcode")
+    if isinstance(barcode, str) and barcode:
+        return barcode
+
+    six_in_one_key = _resolve_first_str(data, _SIX_IN_ONE_KEY_ALIASES)
+    if six_in_one_key:
+        return six_in_one_key
+
+    return f"auto_{uuid.uuid4().hex[:12]}"
 
 
 class SessionResolver:
@@ -94,11 +124,7 @@ class SessionResolver:
             return await self._resolve_command_result(db, inbox)
         if kind == InboxKind.EXTERNAL_HTTP:
             return await self._resolve_external_http(db, inbox)
-        if (
-            kind == InboxKind.TIMER_TIMEOUT
-            or kind in (InboxKind.MANUAL_HOLD, InboxKind.MANUAL_RESUME, InboxKind.MANUAL_CANCEL)
-            or kind == InboxKind.REPLAY_REQUEST
-        ):
+        if kind in _SESSION_ID_KINDS:
             return await self._resolve_by_session_id(db, inbox)
         raise ValueError(f"Unsupported InboxKind: {kind}")
 
@@ -120,19 +146,8 @@ class SessionResolver:
         Returns:
             解析或创建的 Session
         """
-        payload_json = _ensure_dict(inbox.payload_json)
-        business_key = payload_json.get("business_key")
-
-        # 如果没有 business_key，尝试从 data.barcode 提取
-        if not isinstance(business_key, str) or not business_key:
-            data = _ensure_dict(payload_json.get("data"))
-            barcode = data.get("barcode")
-            if isinstance(barcode, str) and barcode:
-                business_key = barcode
-
-        # 如果仍然没有 business_key，生成一个唯一的
-        if not isinstance(business_key, str) or not business_key:
-            business_key = f"auto_{uuid.uuid4().hex[:12]}"
+        payload_json = ensure_dict(inbox.payload_json)
+        business_key = _resolve_business_key(payload_json)
 
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int):
@@ -156,7 +171,6 @@ class SessionResolver:
             "session_code": session_code,
             "workline_id": workline_id,
             "plugin_key": getattr(workline, "plugin_key", None),
-            "contract_version": resolve_contract_version(getattr(workline, "plugin_key", None)),
             "business_key": business_key,
             "status": SessionStatus.NEW,
             "correlation_id": getattr(inbox, "correlation_id", None) or f"corr_{uuid.uuid4().hex}",
@@ -167,6 +181,10 @@ class SessionResolver:
             },
             "started_at": now,
         }
+
+        contract_version = get_plugin_contract_version(getattr(workline, "plugin_key", None))
+        if contract_version:
+            session_data["contract_version"] = contract_version
 
         new_session = await self.session_repo.create(db, session_data)
         if new_session is None:
@@ -180,7 +198,7 @@ class SessionResolver:
         inbox: "WorklineInbox",
     ) -> WorklineSession:
         """处理 COMMAND_RESULT 类型的 Session 解析。"""
-        payload_json = _ensure_dict(inbox.payload_json)
+        payload_json = ensure_dict(inbox.payload_json)
         command_code = payload_json.get("command_code")
         if not isinstance(command_code, str) or not command_code:
             raise ValueError("command_code is required for COMMAND_RESULT")

@@ -572,7 +572,7 @@ class TestInboxConsumer:
                     "decision_type": "EXTERNAL_HTTP_REQUEST",
                     "dispatch_key": "external-http:AGV-REQ-001",
                     "target_code": "http://agv.mock/api/v1/device/command",
-                    "payload": {"command_id": "AGV-REQ-001"},
+                    "payload": {"command_code": "AGV-REQ-001"},
                     "source_system": "AGV",
                 }
             ],

@@ -20,8 +20,10 @@ from loguru import logger
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
 from src.celery_app.app import celery_app
-from src.workline_plugins.contracts import STEP_CODE_FIELD, resolve_contract_version
+from src.utils.timezone import timezone
+from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
+from src.workline_runtime.utils import JsonDict
 
 # ============================================
 # 类型定义
@@ -63,8 +65,10 @@ class LoadedEntities(TypedDict):
     services: Any | None
 
 
-JsonDict = dict[str, Any]
 _EXTERNAL_HTTP_DECISION_TYPE = "EXTERNAL_HTTP_REQUEST"
+_DEFAULT_COMMAND_PRIORITY = 5
+_DEFAULT_COMMAND_TIMEOUT_MS = 300000
+_OUTBOX_META_FIELDS = ("command_code", "task_type", "priority", "timeout", "timestamp")
 
 
 # ============================================
@@ -161,11 +165,11 @@ def _sync_session_contract_snapshot(session: Any, *, workline: Any, context: dic
 
     contract_version = getattr(session, "contract_version", None)
     if not isinstance(contract_version, str) or not contract_version:
-        candidate = resolve_contract_version(plugin_key)
-        if isinstance(candidate, str) and candidate:
-            session.contract_version = candidate
+        contract_version = get_plugin_contract_version(plugin_key)
+        if isinstance(contract_version, str) and contract_version:
+            session.contract_version = contract_version
 
-    step_code = context.get(STEP_CODE_FIELD)
+    step_code = context.get("step_code")
     if isinstance(step_code, str) and step_code:
         session.step_code = step_code
 
@@ -209,8 +213,6 @@ def _map_command_task_type(action: str) -> str:
 
 
 def _build_command_code(task_type: str) -> str:
-    from src.utils.timezone import timezone
-
     date_str = timezone.now_for_db().strftime("%Y%m%d")
     return f"CMD-{date_str}-{task_type}-{uuid.uuid4().hex[:8].upper()}"
 
@@ -226,19 +228,14 @@ def _normalize_vendor_command_payload(
     目标是保留 vendor payload 语义，只补齐派发必须字段。
     """
 
-    from src.utils.timezone import timezone
-
     payload = dict(_payload_dict(parameters))
-    payload_command_code = (
-        _string_value(payload.get("command_code")) or _string_value(payload.get("command_id")) or default_command_code
-    )
-    payload["command_code"] = payload_command_code
+    payload["command_code"] = _string_value(payload.get("command_code")) or default_command_code
     payload["task_type"] = _string_value(payload.get("task_type"), action)
 
     if not isinstance(payload.get("priority"), int):
-        payload["priority"] = 5
+        payload["priority"] = _DEFAULT_COMMAND_PRIORITY
     if not isinstance(payload.get("timeout"), int):
-        payload["timeout"] = 300000
+        payload["timeout"] = _DEFAULT_COMMAND_TIMEOUT_MS
     if not isinstance(payload.get("timestamp"), int):
         payload["timestamp"] = int(timezone.now_utc().timestamp() * 1000)
 
@@ -248,13 +245,7 @@ def _normalize_vendor_command_payload(
 def _build_outbox_payload(command: Any) -> dict[str, Any]:
     command_params = _payload_dict(getattr(command, "params", None))
     if command_params:
-        payload = dict(command_params)
-        command_code = _string_value(getattr(command, "command_code", None))
-        if command_code and not _string_value(payload.get("command_code")):
-            payload["command_code"] = command_code
-        return payload
-
-    from src.utils.timezone import timezone
+        return dict(command_params)
 
     command_task_type = getattr(command, "task_type", None)
     if isinstance(command_task_type, Enum):
@@ -410,6 +401,10 @@ async def _apply_orchestrator_effects(  # noqa: PLR0912
             action=command_intent.action,
             default_command_code=generated_command_code,
         )
+        logger.info(
+            f"[Orchestrator] Command parameters: command_intent.parameters={command_intent.parameters}, "
+            f"vendor_payload={vendor_payload}"
+        )
         resolved_command_code = _string_value(vendor_payload.get("command_code"), generated_command_code)
         vendor_task_type = _string_value(vendor_payload.get("task_type"), command_intent.action)
         priority_value = vendor_payload.get("priority")
@@ -427,7 +422,7 @@ async def _apply_orchestrator_effects(  # noqa: PLR0912
             "workline_id": session.workline_id,
             "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
             "contract_version": getattr(session, "contract_version", None),
-            "step_code": session_ctx.get(STEP_CODE_FIELD),
+            "step_code": session_ctx.get("step_code"),
         }
         command = await command_repo.create(db, command_data)
         if command is None:

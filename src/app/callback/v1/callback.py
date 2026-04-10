@@ -13,8 +13,10 @@
 
 import time
 import uuid
+import warnings
 from typing import Any, cast
 
+from celery.exceptions import DuplicateNodenameWarning
 from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
 from pydantic import ValidationError
@@ -32,32 +34,54 @@ from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
-from src.workline_plugins.contracts import (
-    normalize_callback_event_payload,
-    normalize_callback_result_payload,
-    resolve_contract_version,
-)
+from src.utils.timezone import timezone
+from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_runtime.utils import JsonDict, ensure_dict, resolve_first_str
 
 router = APIRouter()
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-JsonDict = dict[str, Any]
+
+
+# 字段别名常量
+_CORRELATION_ID_ALIASES = ("correlation_id",)
+_DEVICE_CODE_ALIASES = ("device_code",)
+_COMMAND_CODE_ALIASES = ("command_code",)
 
 
 def _is_duplicate_inbox_error(error: ValueError) -> bool:
     return _DUPLICATE_ERROR_MARKER in str(error)
 
 
-def _ensure_dict(value: Any) -> JsonDict:
-    return cast("JsonDict", value) if isinstance(value, dict) else {}
+def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
+    value = resolve_first_str(payload, aliases)
+    return value or None
 
 
-def _resolve_first_str(payload: JsonDict, aliases: tuple[str, ...]) -> str:
-    for alias in aliases:
-        value = payload.get(alias)
-        if isinstance(value, str) and value:
-            return value
-    return ""
+def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: str) -> str:
+    value = resolve_first_str(payload, aliases)
+    if value:
+        return value
+    raise ValueError(f"{field_name} is required")
+
+
+def _resolve_command_type(
+    callback_result_data: JsonDict,
+    command_params: JsonDict,
+    existing_command: object,
+) -> str | None:
+    candidates = [
+        callback_result_data.get("command_type"),
+        command_params.get("action"),
+        command_params.get("task_type"),
+    ]
+    existing_task_type = getattr(existing_command, "task_type", None)
+    candidates.append(getattr(existing_task_type, "value", existing_task_type))
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
 
 
 def _enqueue_workline_processing() -> None:
@@ -172,7 +196,9 @@ def _check_system_ready() -> JsonDict | None:
 
         cast("Any", celery_app).conf.update(worker_ping_timeout=1.0)
         inspect = cast("Any", celery_app).control.inspect()
-        stats = inspect.ping()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DuplicateNodenameWarning)
+            stats = inspect.ping()
         celery_ok = bool(stats)
     except Exception as e:
         logger.debug(f"Celery 健康检查失败: {e}")
@@ -212,19 +238,14 @@ async def _resolve_device_context(
 
     contract_version = getattr(device, "contract_version", None)
     if not isinstance(contract_version, str) or not contract_version:
-        contract_version = resolve_contract_version(plugin_key)
+        contract_version = get_plugin_contract_version(plugin_key)
 
     return device, workline, plugin_key, contract_version
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
-    callback_type = _resolve_first_str(payload, ("callback_type",))
-    if not callback_type:
-        raise ValueError("callback_type is required")
-
-    correlation_id = _resolve_first_str(payload, ("correlation_id",))
-    if not correlation_id:
-        raise ValueError("correlation_id is required")
+    callback_type = _require_first_str(payload, ("callback_type",), "callback_type")
+    correlation_id = _require_first_str(payload, _CORRELATION_ID_ALIASES, "correlation_id")
 
     return {
         "callback_type": callback_type,
@@ -315,10 +336,10 @@ async def _handle_result_validation_failure(
         db,
         request,
         callback_type="result",
-        device_id=_resolve_first_str(callback_data, ("device_code", "device_id")) or "UNKNOWN",
+        device_id=resolve_first_str(callback_data, _DEVICE_CODE_ALIASES) or "UNKNOWN",
         request_body=callback_data,
         request_id=request_id,
-        correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+        correlation_id=_resolve_optional_str(callback_data, _CORRELATION_ID_ALIASES),
         response_status=400,
         response_time_ms=response_time_ms,
         success=False,
@@ -342,10 +363,10 @@ async def _handle_event_validation_failure(
         db,
         request,
         callback_type="event",
-        device_id=_resolve_first_str(event_data, ("device_code", "device_id")) or "UNKNOWN",
+        device_id=resolve_first_str(event_data, _DEVICE_CODE_ALIASES) or "UNKNOWN",
         request_body=event_data,
         request_id=request_id,
-        correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
+        correlation_id=_resolve_optional_str(event_data, _CORRELATION_ID_ALIASES),
         response_status=400,
         response_time_ms=response_time_ms,
         success=False,
@@ -369,10 +390,10 @@ async def _handle_external_validation_failure(
         db,
         request,
         callback_type="external",
-        device_id=_resolve_first_str(callback_data, ("callback_type", "source_system")) or "UNKNOWN",
+        device_id=resolve_first_str(callback_data, ("callback_type", "source_system")) or "UNKNOWN",
         request_body=callback_data,
         request_id=request_id,
-        correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+        correlation_id=_resolve_optional_str(callback_data, _CORRELATION_ID_ALIASES),
         response_status=400,
         response_time_ms=response_time_ms,
         success=False,
@@ -403,7 +424,7 @@ async def _is_workline_command_callback(
     dependencies=[Depends(RequireAPIPermission("api:callback:result"))],
     description="设备完成指令后，调用此接口回传执行结果",
 )
-async def callback_result(  # noqa: PLR0912
+async def callback_result(
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -430,9 +451,8 @@ async def callback_result(  # noqa: PLR0912
         )
 
     try:
-        fallback_payload, _ = normalize_callback_result_payload(plugin_key=None, payload=callback_data)
-        device_code = cast("str", fallback_payload["device_code"])
-        command_code = cast("str", fallback_payload["command_code"])
+        device_code = _require_first_str(callback_data, _DEVICE_CODE_ALIASES, "device_code")
+        command_code = _require_first_str(callback_data, _COMMAND_CODE_ALIASES, "command_code")
     except ValueError as exc:
         logger.error(f"指令结果回调最小包络校验失败: {exc}")
         return await _handle_result_validation_failure(
@@ -456,7 +476,7 @@ async def callback_result(  # noqa: PLR0912
                 device_id=device_code,
                 request_body=callback_data,
                 request_id=request_id,
-                correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+                correlation_id=_resolve_optional_str(callback_data, _CORRELATION_ID_ALIASES),
                 response_status=404,
                 response_time_ms=int((time.time() - start_time) * 1000),
                 success=False,
@@ -466,42 +486,23 @@ async def callback_result(  # noqa: PLR0912
             )
             return _build_not_found_fail(message)
 
-        _, _, plugin_key, resolved_contract_version = await _resolve_device_context(db, device_code)
+        _, _, _plugin_key, resolved_contract_version = await _resolve_device_context(db, device_code)
         command_plugin_key = getattr(existing_command, "plugin_key", None)
         if isinstance(command_plugin_key, str) and command_plugin_key:
-            plugin_key = command_plugin_key
+            _plugin_key = command_plugin_key
         command_contract_version = getattr(existing_command, "contract_version", None)
         if isinstance(command_contract_version, str) and command_contract_version:
             resolved_contract_version = command_contract_version
 
-        normalized_payload, plugin_contract_version = normalize_callback_result_payload(
-            plugin_key=plugin_key,
-            payload=callback_data,
-        )
-        if plugin_contract_version:
-            resolved_contract_version = plugin_contract_version
-
-        callback = CommandCallbackResult(**normalized_payload)
+        # 直接用原始 payload 验证（Pydantic 自动处理别名）
+        callback = CommandCallbackResult.model_validate(callback_data)
         inherited_correlation_id = (
             existing_command.correlation_id if isinstance(existing_command.correlation_id, str) else None
         )
         raw_command_params = getattr(existing_command, "params", None)
-        command_params = _ensure_dict(raw_command_params)
-        callback_result_data = _ensure_dict(callback.data)
-        command_type = cast("str | None", callback_result_data.get("command_type"))
-        if not command_type:
-            derived_action = command_params.get("action")
-            if isinstance(derived_action, str) and derived_action:
-                command_type = derived_action
-        if not command_type:
-            derived_task_type = command_params.get("task_type")
-            if isinstance(derived_task_type, str) and derived_task_type:
-                command_type = derived_task_type
-        if not command_type:
-            existing_task_type = getattr(existing_command, "task_type", None)
-            existing_task_type_value = getattr(existing_task_type, "value", existing_task_type)
-            if isinstance(existing_task_type_value, str) and existing_task_type_value:
-                command_type = existing_task_type_value
+        command_params = ensure_dict(raw_command_params)
+        callback_result_data = ensure_dict(callback.data)
+        command_type = _resolve_command_type(callback_result_data, command_params, existing_command)
 
         is_workline_callback = await _is_workline_command_callback(
             db,
@@ -605,7 +606,7 @@ async def callback_result(  # noqa: PLR0912
                 device_id=device_code,
                 request_body=callback_data,
                 request_id=request_id,
-                correlation_id=_resolve_first_str(callback_data, ("correlation_id",)) or None,
+                correlation_id=_resolve_optional_str(callback_data, _CORRELATION_ID_ALIASES),
                 response_status=500,
                 response_time_ms=response_time_ms,
                 error_message=str(exc),
@@ -658,8 +659,7 @@ async def callback_event(
         )
 
     try:
-        minimal_payload, _, _ = normalize_callback_event_payload(plugin_key=None, payload=event_data)
-        device_code = cast("str", minimal_payload["device_code"])
+        device_code = _require_first_str(event_data, _DEVICE_CODE_ALIASES, "device_code")
     except ValueError as exc:
         logger.error(f"设备事件最小包络校验失败: {exc}")
         return await _handle_event_validation_failure(
@@ -673,7 +673,7 @@ async def callback_event(
     logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
 
     try:
-        device, _, plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
+        device, _, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
         if device is None:
             message = f"未找到设备: {device_code}"
             await _log_callback_outcome(
@@ -683,7 +683,7 @@ async def callback_event(
                 device_id=device_code,
                 request_body=event_data,
                 request_id=request_id,
-                correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
+                correlation_id=_resolve_optional_str(event_data, _CORRELATION_ID_ALIASES),
                 response_status=404,
                 response_time_ms=int((time.time() - start_time) * 1000),
                 success=False,
@@ -693,25 +693,14 @@ async def callback_event(
             )
             return _build_not_found_fail(message)
 
-        normalized_payload, _plugin_contract_version, _inferred_step_code = normalize_callback_event_payload(
-            plugin_key=plugin_key,
-            payload=event_data,
-        )
-
-        from src.utils.timezone import timezone
-
-        normalized_event_request = CallbackEventRequest(
-            device_code=cast("str", normalized_payload["device_code"]),
-            event_type=cast("str", normalized_payload["event_type"]),
-            timestamp=cast("int | None", normalized_payload.get("timestamp")),
-            data=cast("dict[str, Any] | None", normalized_payload.get("data")),
-        )
+        # 直接用原始 payload 验证（Pydantic 自动处理别名）
+        normalized_event_request = CallbackEventRequest.model_validate(event_data)
         event_timestamp = normalized_event_request.timestamp
         if event_timestamp is None:
             event_timestamp = int(timezone.now_utc().timestamp() * 1000)
 
         is_workline_event = _has_workline_binding(getattr(device, "work_line_id", None))
-        event_correlation_id = _resolve_first_str(event_data, ("correlation_id",)) or None
+        event_correlation_id = _resolve_optional_str(event_data, _CORRELATION_ID_ALIASES)
         if is_workline_event and event_correlation_id is None:
             event_correlation_id = f"corr_{uuid.uuid4().hex}"
 
@@ -796,7 +785,7 @@ async def callback_event(
                 device_id=device_code,
                 request_body=event_data,
                 request_id=request_id,
-                correlation_id=_resolve_first_str(event_data, ("correlation_id",)) or None,
+                correlation_id=_resolve_optional_str(event_data, _CORRELATION_ID_ALIASES),
                 response_status=500,
                 response_time_ms=response_time_ms,
                 error_message=str(exc),

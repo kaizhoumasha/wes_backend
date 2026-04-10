@@ -19,7 +19,7 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
@@ -27,14 +27,19 @@ from src.workline_runtime.null_plugin import NullPlugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
 from src.workline_runtime.transition_validator import TransitionValidator
 from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
-from src.workline_plugins.contracts import resolve_contract_version
+from src.workline_runtime.utils import ensure_dict
 
 logger = logging.getLogger(__name__)
-JsonDict = dict[str, Any]
 
-
-def _ensure_dict(value: Any) -> JsonDict:
-    return cast("JsonDict", value) if isinstance(value, dict) else {}
+_INBOX_KIND_TO_PLUGIN_TYPE = {
+    "COMMAND_RESULT": "COMMAND_RESULT",
+    "DEVICE_EVENT": "DEVICE_EVENT",
+    "EXTERNAL_HTTP": "EXTERNAL_HTTP",
+    "TIMER_TIMEOUT": "TIMEOUT",
+    "MANUAL_HOLD": "MANUAL_OPERATION",
+    "MANUAL_RESUME": "MANUAL_OPERATION",
+    "MANUAL_CANCEL": "MANUAL_OPERATION",
+}
 
 
 def _ensure_non_empty_str(value: Any) -> str | None:
@@ -114,7 +119,7 @@ class OrchestratorService:
         """
 
         if state_machine_class is not None:
-            stage = _ensure_dict(getattr(session, "context_json", None)).get("stage")
+            stage = ensure_dict(getattr(session, "context_json", None)).get("stage")
             if isinstance(stage, str) and stage:
                 return stage
             return "IDLE"
@@ -227,11 +232,7 @@ class OrchestratorService:
         # 2.5. 契约版本不兼容检测
         # 防止插件升级导致历史 Session 被错误处理，旧 Session 无版本字段时向后兼容
         session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
-        plugin_contract = _ensure_non_empty_str(
-            getattr(plugin, "contract_version", None) or resolve_contract_version(
-                getattr(workline, "plugin_key", None)
-            )
-        )
+        plugin_contract = _ensure_non_empty_str(getattr(plugin, "contract_version", None))
         if session_contract and plugin_contract and session_contract != plugin_contract:
             return OrchestratorResult(
                 success=False,
@@ -298,7 +299,7 @@ class OrchestratorService:
 
     def _resolve_inbox_type(self, inbox: Any) -> str:
         """根据真实 Inbox 模型字段推导插件分发类型。"""
-        payload = getattr(inbox, "payload_json", {}) or {}
+        payload = ensure_dict(getattr(inbox, "payload_json", None))
         explicit_type = payload.get("message_type")
         if isinstance(explicit_type, str):
             return explicit_type
@@ -306,16 +307,9 @@ class OrchestratorService:
         inbox_kind = getattr(inbox, "kind", None)
         if inbox_kind is not None:
             kind_value = getattr(inbox_kind, "value", inbox_kind)
-            if kind_value == "COMMAND_RESULT":
-                return "COMMAND_RESULT"
-            if kind_value == "DEVICE_EVENT":
-                return "DEVICE_EVENT"
-            if kind_value == "EXTERNAL_HTTP":
-                return "EXTERNAL_HTTP"
-            if kind_value == "TIMER_TIMEOUT":
-                return "TIMEOUT"
-            if kind_value in {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}:
-                return "MANUAL_OPERATION"
+            plugin_type = _INBOX_KIND_TO_PLUGIN_TYPE.get(kind_value)
+            if plugin_type:
+                return plugin_type
 
         return "DEVICE_EVENT"
 

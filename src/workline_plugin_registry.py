@@ -52,6 +52,25 @@ def get_workline_plugin_definition(plugin_key: str | None) -> WorklinePluginDefi
     return WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
 
 
+def get_plugin_contract_version(plugin_key: str | None) -> str | None:
+    """
+    从插件类获取 contract_version。
+
+    Args:
+        plugin_key: 插件标识
+
+    Returns:
+        str | None: contract_version 字符串，如果不存在则返回 None
+    """
+    if not plugin_key:
+        return None
+    plugin_def = get_workline_plugin_definition(plugin_key)
+    if not plugin_def:
+        return None
+    contract_version = getattr(plugin_def.plugin_class, "contract_version", None)
+    return contract_version if isinstance(contract_version, str) and contract_version else None
+
+
 def validate_workline_plugin_assignment(
     plugin_key: str,
     workline: Any,
@@ -73,6 +92,7 @@ def validate_workline_plugin_assignment(
 __all__ = [
     "WORKLINE_PLUGIN_REGISTRY",
     "WorklinePluginDefinition",
+    "get_plugin_contract_version",
     "get_workline_plugin_definition",
     "validate_workline_plugin_assignment",
 ]
