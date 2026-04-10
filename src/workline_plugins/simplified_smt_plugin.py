@@ -235,7 +235,7 @@ class SimplifiedSmtPlugin(WorklinePlugin):
                     "source_type": "INPUT_PLATFORM",
                     "target_type": "PIPELINE_PLATFORM",
                     "source_loc": location,
-                    "target_loc": "STATION_PIPELINE_INPUT1",
+                    "target_loc": "STATION_PIPELINE1_INPUT1",
                 },
             )
             .context(

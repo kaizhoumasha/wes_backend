@@ -71,7 +71,7 @@ class TestSimplifiedSmtPlugin:
         assert result.commands[0].parameters["source_type"] == "INPUT_PLATFORM"
         assert result.commands[0].parameters["target_type"] == "PIPELINE_PLATFORM"
         assert result.commands[0].parameters["source_loc"] == "LOC01"
-        assert result.commands[0].parameters["target_loc"] == "STATION_PIPELINE_INPUT1"
+        assert result.commands[0].parameters["target_loc"] == "STATION_PIPELINE1_INPUT1"
         assert result.context_patch["barcode"] == "LOTABC123"  # first_barcode 优先使用 LotCode
         assert "barcodes" in result.context_patch  # 包含所有条码列表
         assert len(result.context_patch["barcodes"]) == 6  # 完整的 6 个条码

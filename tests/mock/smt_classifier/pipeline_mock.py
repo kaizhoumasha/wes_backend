@@ -164,6 +164,7 @@ DEVICE_STATUS = {
 class PipelineSimulator:
     def __init__(self, device_code: str = DEVICE_INFO["device_code"]):
         self.device_code = device_code
+        self.device_name = DEVICE_INFO["device_name"]
         self._counter = 0
         self._execution_count = 0
         self._success_count = 0
