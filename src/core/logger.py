@@ -42,6 +42,11 @@ DEBUG_LOGGER_LEVELS = {
     "sqlalchemy.engine": logging.INFO,
     "sqlalchemy.pool": logging.WARNING,
     "httpx": logging.INFO,
+    # Celery 内部模块：pidbox/kombu 大量 DEBUG 日志来自 Flower 心跳，抑制到 WARNING
+    "celery.worker.pidbox": logging.WARNING,
+    "celery.worker.consumer": logging.WARNING,
+    "kombu": logging.WARNING,
+    "amqp": logging.WARNING,
 }
 DEFAULT_LOGGER_LEVELS = {
     "uvicorn": logging.INFO,
@@ -50,6 +55,11 @@ DEFAULT_LOGGER_LEVELS = {
     "sqlalchemy": logging.WARNING,
     "sqlalchemy.pool": logging.WARNING,
     "httpx": logging.WARNING,
+    # Celery 内部模块：pidbox/kombu 大量 DEBUG 日志来自 Flower 心跳，抑制到 WARNING
+    "celery.worker.pidbox": logging.WARNING,
+    "celery.worker.consumer": logging.WARNING,
+    "kombu": logging.WARNING,
+    "amqp": logging.WARNING,
 }
 
 # 日志目录

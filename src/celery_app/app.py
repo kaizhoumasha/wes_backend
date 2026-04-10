@@ -8,10 +8,10 @@ import asyncio
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
-from celery.signals import worker_init, worker_process_init  # pyright: ignore[reportMissingTypeStubs]
+from celery.signals import beat_init, worker_init, worker_process_init  # pyright: ignore[reportMissingTypeStubs]
 
 from src.core.conf import settings
-from src.core.logger import logger
+from src.core.logger import logger, setup_logger
 
 from . import config
 
@@ -61,14 +61,26 @@ def _run_sync_init() -> None:
 
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
-    """Worker 主进程启动时初始化基础设施"""
+    """Worker 主进程启动时初始化日志和基础设施"""
+    setup_logger()  # 初始化 loguru + 抑制 pidbox/kombu/amqp 噪音
     _run_sync_init()
 
 
 @worker_process_init.connect
 def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
     """Worker 子进程启动时初始化基础设施（fork 后独立初始化）"""
+    # 子进程 fork 后 _initialized 标志被继承为 True，需要重置以重新配置日志
+    import src.core.logger as _logger_module
+
+    _logger_module._initialized = False
+    setup_logger()
     _run_sync_init()
+
+
+@beat_init.connect
+def on_beat_init(*args: Any, **kwargs: Any) -> None:
+    """Beat 启动时初始化日志"""
+    setup_logger()
 
 
 # ============================================
@@ -113,6 +125,7 @@ cast("Any", celery_app.conf).update(
     worker_max_tasks_per_child=1000,  # 每个 Worker 处理的最大任务数
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
+    worker_hijack_root_logger=False,  # 不劫持根 logger，避免与项目日志配置冲突
     # ================================
     # Beat 调度器配置 (定时任务)
     # ================================

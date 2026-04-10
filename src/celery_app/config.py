@@ -22,14 +22,14 @@ beat_schedule: dict[str, dict[str, str | float]] = {
     # ============================================
     "process-inbox-batch": {
         "task": "src.celery_app.tasks.workline.process_inbox_batch",
-        "schedule": 5.0,  # 每5秒处理一次
+        "schedule": 1.0,  # 每1秒处理一次（降低事件响应延迟）
     },
     # ============================================
     # Outbox 消息派发任务 - 定期将命令下发给设备
     # ============================================
     "dispatch-outbox-batch": {
         "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
-        "schedule": 5.0,  # 每5秒派发一次
+        "schedule": 1.0,  # 每1秒派发一次（降低命令下发延迟）
     },
     # ============================================
     # 超时 Session 扫描任务

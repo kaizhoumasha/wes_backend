@@ -961,7 +961,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
     Returns:
         处理结果统计
     """
-    logger.info(f"开始处理 Inbox 消息, limit={limit}")
+    logger.debug(f"开始处理 Inbox 消息, limit={limit}")
 
     async def _process() -> ProcessResult:
         async with self.db as db:
@@ -974,7 +974,10 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
             result,
             int(getattr(self.request, "retries", 0) or 0),
         )
-        logger.info(f"Inbox 处理完成: {result}")
+        if result.get("processed", 0) > 0:
+            logger.info(f"Inbox 处理完成: {result}")
+        else:
+            logger.debug(f"Inbox 处理完成: {result}")
         return result
     except Exception as e:
         logger.error(f"Inbox 处理失败: {e}")
@@ -1202,7 +1205,7 @@ def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult
     Returns:
         派发结果统计
     """
-    logger.info(f"开始派发 Outbox 消息, limit={limit}")
+    logger.debug(f"开始派发 Outbox 消息, limit={limit}")
 
     async def _dispatch() -> DispatchResult:
         async with self.db as db:
@@ -1210,7 +1213,10 @@ def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult
 
     try:
         result = _run_async(_dispatch())
-        logger.info(f"Outbox 派发完成: {result}")
+        if result.get("dispatched", 0) > 0:
+            logger.info(f"Outbox 派发完成: {result}")
+        else:
+            logger.debug(f"Outbox 派发完成: {result}")
         return result
     except Exception as e:
         logger.error(f"Outbox 派发失败: {e}")
