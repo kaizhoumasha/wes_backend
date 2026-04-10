@@ -62,7 +62,7 @@ DEVICE_STATUS = {
 
 class ExecutionRecord(BaseModel):
     execution_id: str
-    command_id: str
+    command_code: str
     task_type: str
     result: str
     callback_url: str
@@ -72,7 +72,7 @@ class ExecutionRecord(BaseModel):
 
 
 class AgvDebugExecuteRequest(BaseModel):
-    command_id: str = "AGV-DEBUG-001"
+    command_code: str = "AGV-DEBUG-001"
     task_type: str = "MOVE_RACK"
     callback_url: str = WES_EXTERNAL_CALLBACK_URL
     callback_type: str = "AGV_TASK_RESULT"
@@ -110,7 +110,7 @@ class AgvSimulator:
 
         record = ExecutionRecord(
             execution_id=f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{len(self.executions) + 1:03d}",
-            command_id=payload.command_code,
+            command_code=payload.command_code,
             task_type=payload.task_type,
             result="PENDING",
             callback_url=callback_url,
@@ -128,7 +128,7 @@ class AgvSimulator:
             callback_url=callback_url,
             callback_type=callback_type,
             correlation_id=correlation_id,
-            command_id=payload.command_code,
+            command_code=payload.command_code,
             result=result,
             params=payload.params or {},
         )
@@ -142,14 +142,14 @@ class AgvSimulator:
         callback_url: str,
         callback_type: str,
         correlation_id: str,
-        command_id: str,
+        command_code: str,
         result: str,
         params: JsonDict,
     ) -> None:
         payload: JsonDict = {
             "callback_type": callback_type,
             "correlation_id": correlation_id,
-            "command_code": command_id,
+            "command_code": command_code,
             "result": result,
             "finish_time": current_millis(),
             "data": {
@@ -238,7 +238,7 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
 @app.post("/debug/execute", response_model=ExecutionRecord)
 async def debug_execute(request: AgvDebugExecuteRequest) -> ExecutionRecord:
     payload = AgvCommandPayload(
-        command_code=request.command_id,
+        command_code=request.command_code,
         task_type=request.task_type,
         priority=5,
         timeout=300000,

@@ -140,7 +140,7 @@ class EventRecord(BaseModel):
     """事件记录"""
 
     event_id: str
-    device_id: str
+    device_code: str
     event_type: str
     barcode: str | None = None
     location: str | None = None
@@ -150,7 +150,7 @@ class EventRecord(BaseModel):
 
 # Mock 设备信息
 DEVICE_INFO = {
-    "device_id": "CAMERA-CONVEYOR-01",
+    "device_code": "CAMERA-CONVEYOR-01",
     "device_name": "流水线识别点摄像头",
     "device_type": "CAMERA",
     "status": "IDLE",
@@ -169,8 +169,8 @@ class SensorSimulator:
     模拟摄像头传感器检测物料到达并上报事件到 WES
     """
 
-    def __init__(self, device_id: str = "CAMERA-CONVEYOR-01"):
-        self.device_id = device_id
+    def __init__(self, device_code: str = "CAMERA-CONVEYOR-01"):
+        self.device_code = device_code
         self._counter = 0
         self._trigger_count = 0
         self._events: list[EventRecord] = []
@@ -292,9 +292,8 @@ class SensorSimulator:
             event_id = f"EVT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._trigger_count:03d}"
 
             # 构建事件数据（白皮书 3.2.2）
-            # 注意：WES 回调接口期望 device_code 字段，不是 device_id
             event_data = {
-                "device_code": self.device_id,
+                "device_code": self.device_code,
                 "event_type": "MATERIAL_ARRIVED",
                 "timestamp": int(datetime.now().timestamp() * 1000),
                 "data": {
@@ -309,7 +308,7 @@ class SensorSimulator:
             # 记录事件
             event_record = EventRecord(
                 event_id=event_id,
-                device_id=self.device_id,
+                device_code=self.device_code,
                 event_type="MATERIAL_ARRIVED",
                 barcode=barcode,
                 location=location,
@@ -450,7 +449,7 @@ class SensorSimulator:
 
 
 # 全局传感器模拟器实例
-sensor_simulator = SensorSimulator(device_id=DEVICE_INFO["device_id"])
+sensor_simulator = SensorSimulator(device_code=DEVICE_INFO["device_code"])
 
 
 # ============================================
@@ -472,7 +471,7 @@ async def get_status():
     返回摄像头当前状态（白皮书 3.1 节）
     """
     return {
-        "device_id": DEVICE_INFO["device_id"],
+        "device_code": DEVICE_INFO["device_code"],
         "device_name": DEVICE_INFO["device_name"],
         "device_type": DEVICE_INFO["device_type"],
         "status": DEVICE_INFO["status"],
@@ -590,7 +589,7 @@ async def root():
         "service": "摄像头 Mock 服务",
         "version": "2.0.0",
         "status": "running",
-        "device_id": DEVICE_INFO["device_id"],
+        "device_code": DEVICE_INFO["device_code"],
         "sensor": {
             "is_auto_triggering": sensor_simulator._is_auto_triggering,
             "trigger_count": sensor_simulator._trigger_count,

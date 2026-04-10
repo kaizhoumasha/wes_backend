@@ -101,9 +101,14 @@ class DeviceSimulator:
             "event_type": "SCAN_COMPLETED",
             "timestamp": int(time.time() * 1000),
             "data": {
-                "barcode": barcode,
                 "location": location,
-                "scan_result": self._get_scan_result(barcode),
+                # 使用完整的 SixInOne 字段（对齐硬件约定）
+                "LotCode": barcode,  # 批次码
+                "DateCode": "20260409",  # 日期码
+                "Qty": "100",  # 数量
+                "ProductNo": "PN001",  # 产品PN码
+                "MfrPN": "MFR002",  # 制造商PN码
+                "PONumber": "PO2026040901",  # 订单码
             },
         }
 
@@ -160,8 +165,13 @@ class DeviceSimulator:
             "event_type": "SCAN_COMPLETED",  # 简化插件使用统一事件类型
             "timestamp": int(time.time() * 1000),
             "data": {
-                "barcode": barcode,
                 "location": "LOC01",  # 检测位置
+                "LotCode": barcode,
+                "DateCode": "20260409",
+                "Qty": "100",
+                "ProductNo": "PN001",
+                "MfrPN": "MFR002",
+                "PONumber": "PO2026040901",
                 "inspection_result": inspection_result,
                 "reel_diameter": round(random.uniform(200, 220), 2),
             },
@@ -392,7 +402,7 @@ async def create_simulator(
 
 __all__ = [
     "DeviceSimulator",
-    "SimulationScenario",
     "SimulationConfig",
+    "SimulationScenario",
     "create_simulator",
 ]

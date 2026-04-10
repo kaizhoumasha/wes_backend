@@ -192,7 +192,7 @@ class RobotStatusResponse(BaseModel):
 
 # Mock 设备信息
 DEVICE_INFO = {
-    "device_id": "ROBOT-ARM-01",
+    "device_code": "ROBOT-ARM-01",
     "device_name": "搬运机械臂",
     "device_type": "ROBOTIC_ARM",
     "status": "IDLE",
@@ -211,8 +211,8 @@ class RobotSimulator:
     模拟机械臂执行搬运指令并回调结果到 WES
     """
 
-    def __init__(self, device_id: str = "ROBOT-ARM-01"):
-        self.device_id = device_id
+    def __init__(self, device_code: str = "ROBOT-ARM-01"):
+        self.device_code = device_code
         self._counter = 0
         self._execution_count = 0
         self._success_count = 0
@@ -248,10 +248,9 @@ class RobotSimulator:
         """
         try:
             # 构建回调数据
-            # 注意：WES 回调接口期望 device_code 字段，不是 device_id
             callback_data = {
                 "command_code": command_code,
-                "device_code": self.device_id,
+                "device_code": self.device_code,
                 "result": result,
                 "finish_time": int(datetime.now().timestamp() * 1000),
             }
@@ -585,10 +584,9 @@ class RobotSimulator:
             # 回调到 WES
             try:
                 # 构建回调数据
-                # 注意：WES 回调接口期望 device_code 字段，不是 device_id
                 callback_data = {
                     "command_code": payload.command_code,
-                    "device_code": self.device_id,
+                    "device_code": self.device_code,
                     "result": result,
                     "finish_time": int(datetime.now().timestamp() * 1000),
                     "data": {
@@ -641,7 +639,7 @@ class RobotSimulator:
 
 
 # 全局模拟器实例
-robot_simulator = RobotSimulator(device_id=DEVICE_INFO["device_id"])
+robot_simulator = RobotSimulator(device_code=DEVICE_INFO["device_code"])
 
 
 # ============================================
@@ -739,7 +737,7 @@ async def get_status():
     设备状态查询接口（白皮书 3.1 节）
     """
     return {
-        "device_id": DEVICE_INFO["device_id"],
+        "device_code": DEVICE_INFO["device_code"],
         "device_name": DEVICE_INFO["device_name"],
         "device_type": DEVICE_INFO["device_type"],
         "status": DEVICE_INFO["status"],
@@ -882,7 +880,7 @@ async def root():
         "service": "机械臂 Mock 服务",
         "version": "2.0.0",
         "status": "running",
-        "device_id": DEVICE_INFO["device_id"],
+        "device_code": DEVICE_INFO["device_code"],
         "robot": {
             "is_auto_executing": robot_simulator._is_auto_executing,
             "execution_count": robot_simulator._execution_count,

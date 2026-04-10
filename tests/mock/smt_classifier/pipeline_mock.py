@@ -240,7 +240,21 @@ class PipelineSimulator:
         }
         if error_detail is not None:
             payload["error_detail"] = error_detail
-        logger.info(f"回调结果到 WES: device={self.device_code}, command={command_code}, result={result}")
+
+        # ========== 业务流程日志：回调结果到 WES ==========
+        logger.info(
+            f"\n{'=' * 60}\n"
+            f"[{self.device_name}] 回调结果到 WES\n"
+            f"{'=' * 60}\n"
+            f"  命令编号: {command_code}\n"
+            f"  设备编号: {self.device_code}\n"
+            f"  执行结果: {result}\n"
+            f"  源位置: {source.location_id}\n"
+            f"  目标位置: {target.location_id}\n"
+            f"  回调地址: {WES_RESULT_CALLBACK_URL}\n"
+            f"{'=' * 60}"
+        )
+
         return await post_signed_json(WES_RESULT_CALLBACK_URL, payload)
 
     async def execute_command(
@@ -272,10 +286,29 @@ class PipelineSimulator:
         )
         resolved_command_code = command_code or self._generate_command_code()
         async with self._lock:
+            # ========== 业务流程日志：开始执行 ==========
+            logger.info(
+                f"[{self.device_name}] 开始执行: {resolved_command_code}\n"
+                f"  任务类型: {task_type}\n"
+                f"  源位置: {source.location_id} ({source.location_type})\n"
+                f"  目标位置: {target.location_id} ({target.location_type})\n"
+                f"  执行时间: {execution_time}s"
+            )
+
             started_at = datetime.now()
+            logger.info(f"[{self.device_name}] 执行中...")
             await asyncio.sleep(execution_time)
+
             result = "FAILED" if simulate_failure else "SUCCESS"
             error_detail = {"error_code": "2002", "error_message": "流水线传输失败"} if simulate_failure else None
+
+            # ========== 业务流程日志：执行完成 ==========
+            logger.info(
+                f"[{self.device_name}] 执行完成: {resolved_command_code}\n"
+                f"  结果: {result}\n"
+                f"  耗时: {execution_time}s"
+            )
+
             if report_result:
                 try:
                     await self._callback_result_to_wes(
@@ -427,14 +460,34 @@ async def get_status() -> DeviceStatusResponse:
 @app.post("/api/v1/device/command", response_model=DeviceCommandAck)
 async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     global current_command, current_command_task
-    logger.info(f"[{DEVICE_INFO['device_name']}] 收到指令: {payload.command_code}, task_type={payload.task_type}")
+
+    # ========== 业务流程日志：收到命令 ==========
+    logger.info(
+        f"\n{'=' * 60}\n"
+        f"[{DEVICE_INFO['device_name']}] 收到 WES 命令\n"
+        f"{'=' * 60}\n"
+        f"  命令编号: {payload.command_code}\n"
+        f"  任务类型: {payload.task_type}\n"
+        f"  优先级: {payload.priority}\n"
+        f"  超时: {payload.timeout}ms\n"
+        f"  参数: {payload.params}\n"
+        f"{'=' * 60}"
+    )
+
     if DEVICE_STATUS["status"] == "RUNNING":
+        logger.warning(f"[{DEVICE_INFO['device_name']}] 设备忙，拒绝命令")
         raise HTTPException(status_code=503, detail="Device Busy")
     if payload.task_type != "MOVE_FORWARD":
+        logger.error(f"[{DEVICE_INFO['device_name']}] 不支持的任务类型: {payload.task_type}")
         raise HTTPException(status_code=400, detail="流水线仅支持 MOVE_FORWARD")
+
     DEVICE_STATUS["status"] = "RUNNING"
     DEVICE_STATUS["error_code"] = "NONE"
     current_command = cast("JsonDict", payload.model_dump())
+
+    # ========== 业务流程日志：开始执行 ==========
+    logger.info(f"[{DEVICE_INFO['device_name']}] 开始异步执行命令...")
+
     current_command_task = asyncio.create_task(_execute_wes_command_with_cleanup(payload))
     return DeviceCommandAck(code=200, message="Accepted", trace_id=f"{DEVICE_CODE}-LOG-{payload.command_code}")
 

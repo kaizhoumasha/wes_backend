@@ -20,6 +20,7 @@ import asyncio
 import logging
 import os
 import sys
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
@@ -83,6 +84,7 @@ class DeviceRuntimeStatus(TypedDict):
     status: Literal["IDLE", "RUNNING", "ERROR", "OFFLINE"]
     is_online: bool
     error_code: str
+    current_command_code: str | None
 
 
 DEVICE_CONFIGS: dict[str, DeviceConfig] = {
@@ -322,10 +324,15 @@ DEVICE_STATUS: DeviceRuntimeStatus = {
     "status": "IDLE",
     "is_online": True,
     "error_code": "NONE",
+    "current_command_code": None,
 }
 
 
 class ArmSimulator:
+    """Mock 机械臂模拟器"""
+
+    MAX_EXECUTION_RECORDS = 1000  # 最多保留1000条执行记录
+
     def __init__(self, device_config: DeviceConfig):
         self.device_config = device_config
         self.device_code = device_config["device_code"]
@@ -334,7 +341,7 @@ class ArmSimulator:
         self._execution_count = 0
         self._success_count = 0
         self._failure_count = 0
-        self._executions: list[ExecutionRecord] = []
+        self._executions: deque[ExecutionRecord] = deque(maxlen=self.MAX_EXECUTION_RECORDS)
         self._is_auto_executing = False
         self._auto_task: asyncio.Task[None] | None = None
         self._auto_stop_event = asyncio.Event()
@@ -422,8 +429,25 @@ class ArmSimulator:
         return source, target
 
     def _build_barcode_fields(self, barcode_seed: str | None) -> JsonDict:
+        """
+        构建 SixInOne 条码字段（对齐硬件约定）
+
+        Args:
+            barcode_seed: 条码种子（用于生成 LotCode）
+
+        Returns:
+            SixInOne 字段字典
+        """
         base = barcode_seed or self._generate_barcode_seed()
-        return {f"barcode{i}": f"{base}-{i}" for i in range(1, 7)}
+        # 使用完整的 SixInOne 字段名（无连字符等特殊字符）
+        return {
+            "LotCode": base,  # 批次码
+            "DateCode": "20260409",  # 日期码
+            "Qty": "100",  # 数量
+            "ProductNo": "PN001",  # 产品PN码
+            "MfrPN": "MFR002",  # 制造商PN码
+            "PONumber": "PO2026040901",  # 订单码
+        }
 
     def _build_result_data(
         self,
@@ -471,7 +495,21 @@ class ArmSimulator:
             payload["data"] = data
         if error_detail is not None:
             payload["error_detail"] = error_detail
-        logger.info(f"回调结果到 WES: device={self.device_code}, command={command_code}, result={result}")
+
+        # ========== 业务流程日志：回调结果到 WES ==========
+        logger.info(
+            f"\n{'=' * 60}\n"
+            f"[{self.device_name}] 回调结果到 WES\n"
+            f"{'=' * 60}\n"
+            f"  命令编号: {command_code}\n"
+            f"  设备编号: {self.device_code}\n"
+            f"  执行结果: {result}\n"
+            f"  错误码: {error_detail.get('error_code', 'N/A') if error_detail else 'N/A'}\n"
+            f"  错误信息: {error_detail.get('error_message', 'N/A') if error_detail else 'N/A'}\n"
+            f"  回调地址: {WES_RESULT_CALLBACK_URL}\n"
+            f"{'=' * 60}"
+        )
+
         return await post_signed_json(WES_RESULT_CALLBACK_URL, payload)
 
     async def _post_event_to_wes(self, event_type: str, data: JsonDict | None) -> JsonDict:
@@ -481,7 +519,19 @@ class ArmSimulator:
             "timestamp": current_millis(),
             "data": data or {},
         }
-        logger.info(f"上报事件到 WES: device={self.device_code}, event_type={event_type}")
+
+        # ========== 业务流程日志：上报事件到 WES ==========
+        logger.info(
+            f"\n{'=' * 60}\n"
+            f"[{self.device_name}] 上报事件到 WES\n"
+            f"{'=' * 60}\n"
+            f"  设备编号: {self.device_code}\n"
+            f"  事件类型: {event_type}\n"
+            f"  事件数据: {data}\n"
+            f"  回调地址: {WES_EVENT_CALLBACK_URL}\n"
+            f"{'=' * 60}"
+        )
+
         return await post_signed_json(WES_EVENT_CALLBACK_URL, payload)
 
     async def execute_command(
@@ -496,6 +546,7 @@ class ArmSimulator:
         execution_time: float = EXECUTION_TIME,
         command_code: str | None = None,
         reason: str | None = None,
+        error_code: str | None = None,
         report_result: bool = True,
     ) -> ExecutionRecord:
         async with self._lock:
@@ -521,16 +572,63 @@ class ArmSimulator:
                 field_name="目标",
             )
             resolved_command_code = command_code or self._generate_command_code()
+
+            # 详细日志：开始执行
+            logger.info(
+                f"[{self.device_name}] 开始执行: {resolved_command_code}\n"
+                f"  任务类型: {resolved_task_type}\n"
+                f"  源位置: {source.location_id} ({source.location_type})\n"
+                f"  目标位置: {target.location_id} ({target.location_type})\n"
+                f"  执行时间: {execution_time}s\n"
+                f"  条码: {barcode or '无'}"
+            )
+
             started_at = datetime.now()
+            DEVICE_STATUS["status"] = "RUNNING"
+            DEVICE_STATUS["current_command_code"] = resolved_command_code
+
+            # 模拟执行过程
+            logger.info(f"[{self.device_name}] 执行中...")
             await asyncio.sleep(execution_time)
 
-            result = "FAILED" if simulate_failure else "SUCCESS"
-            error_detail = (
-                {"error_code": "2002", "error_message": reason or "搬运失败"}
-                if simulate_failure
-                else {"error_code": "0", "error_message": ""}
+            # 错误码映射（硬件约定）
+            error_messages = {
+                "1001": "料盘尺寸检测异常",
+                "1002": "料盘厚度检测异常",
+                "2001": "扫码异常",
+                "2002": "搬运失败",
+                "2003": "料箱已满",
+            }
+
+            # 确定错误码和结果
+            if error_code:
+                # 使用指定的错误码
+                result = "FAILED"
+                error_message = error_messages.get(error_code, reason or "未知错误")
+                error_detail = {"error_code": error_code, "error_message": error_message}
+                move_result = "PUT_FAILED"
+                logger.warning(
+                    f"[{self.device_name}] 模拟错误: 错误码={error_code}, 错误信息={error_message}"
+                )
+            elif simulate_failure:
+                # 默认失败
+                result = "FAILED"
+                error_detail = {"error_code": "2002", "error_message": reason or "搬运失败"}
+                move_result = "PUT_FAILED"
+            else:
+                # 成功
+                result = "SUCCESS"
+                error_detail = {"error_code": "0", "error_message": ""}
+                move_result = "PUT_FINISHED"
+
+            # 详细日志：执行完成
+            logger.info(
+                f"[{self.device_name}] 执行完成: {resolved_command_code}\n"
+                f"  结果: {result}\n"
+                f"  错误码: {error_detail['error_code']}\n"
+                f"  耗时: {execution_time}s"
             )
-            move_result = "PUT_FAILED" if simulate_failure else "PUT_FINISHED"
+
             callback_data = self._build_result_data(
                 source=source,
                 target=target,
@@ -550,6 +648,16 @@ class ArmSimulator:
 
             finished_at = datetime.now()
             duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+
+            # 更新设备状态
+            DEVICE_STATUS["status"] = "IDLE"
+            DEVICE_STATUS["current_command_code"] = None
+            if result == "SUCCESS":
+                self._success_count += 1
+            else:
+                self._failure_count += 1
+                DEVICE_STATUS["error_code"] = cast("Literal['NONE']", "2002")
+
             execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
                 execution_id=execution_id,
@@ -565,27 +673,47 @@ class ArmSimulator:
             )
             self._executions.append(record)
             self._execution_count += 1
-            if result == "SUCCESS":
-                self._success_count += 1
-            else:
-                self._failure_count += 1
-                DEVICE_STATUS["error_code"] = cast("Literal['NONE']", "2002")
             return record
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         params = payload.params or {}
         source, target = self._resolve_command_locations_from_params(params)
+
+        # 智能错误模拟：根据条码模式自动触发错误
+        barcode = cast("str | None", params.get("barcode"))
+        smart_error_code = None
+
+        if barcode:
+            # 条码包含 "SIZENG" → 尺寸检测异常（错误码 1001）
+            if "SIZENG" in barcode.upper():
+                smart_error_code = "1001"
+                logger.info(
+                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（错误码 1001）"
+                )
+            # 条码包含 "THICKNESSNG" → 厚度检测异常（错误码 1002）
+            elif "THICKNESSNG" in barcode.upper():
+                smart_error_code = "1002"
+                logger.info(
+                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（错误码 1002）"
+                )
+
+        # 从 params 中提取错误码（优先级高于智能模拟）
+        error_code = params.get("error_code") or smart_error_code
+        if error_code:
+            logger.info(f"[{self.device_name}] 模拟错误码: {error_code}")
+
         return await self.execute_command(
             task_type=payload.task_type,
             source_type=source.location_type,
             target_type=target.location_type,
             source_location_id=source.location_id,
             target_location_id=target.location_id,
-            barcode=cast("str | None", params.get("barcode")),
+            barcode=barcode,
             simulate_failure=bool(params.get("simulate_failure", False)),
             execution_time=float(params.get("execution_time", EXECUTION_TIME)),
             command_code=payload.command_code,
             reason=cast("str | None", params.get("reason")),
+            error_code=cast("str | None", error_code),
             report_result=True,
         )
 
@@ -593,7 +721,7 @@ class ArmSimulator:
         if self.device_config["device_role"] != "INPUT_ARM":
             raise HTTPException(status_code=400, detail="当前设备不支持扫码事件模拟")
         barcodes = self._build_barcode_fields(request.barcode)
-        event_data = {"location": request.location_id, "barcode": request.barcode, "result": request.result, **barcodes}
+        event_data = {"location": request.location_id, "result": request.result, **barcodes}
         await self._post_event_to_wes("SCAN_COMPLETED", event_data)
         now = datetime.now()
         record = ExecutionRecord(
@@ -763,11 +891,25 @@ async def get_device_status() -> DeviceStatusResponse:
 @app.post("/api/v1/device/command", response_model=DeviceCommandAck)
 async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     global current_command, current_command_task
-    logger.info(f"[{CURRENT_DEVICE['device_name']}] 收到指令: {payload.command_code}, task_type={payload.task_type}")
+
+    # ========== 业务流程日志：收到命令 ==========
+    logger.info(
+        f"\n{'=' * 60}\n"
+        f"[{CURRENT_DEVICE['device_name']}] 收到 WES 命令\n"
+        f"{'=' * 60}\n"
+        f"  命令编号: {payload.command_code}\n"
+        f"  任务类型: {payload.task_type}\n"
+        f"  优先级: {payload.priority}\n"
+        f"  超时: {payload.timeout}ms\n"
+        f"  参数: {payload.params}\n"
+        f"{'=' * 60}"
+    )
 
     if DEVICE_STATUS["status"] == "RUNNING":
+        logger.warning(f"[{CURRENT_DEVICE['device_name']}] 设备忙，拒绝命令")
         raise HTTPException(status_code=503, detail="Device Busy")
     if not arm_simulator._validate_task_type(payload.task_type):
+        logger.error(f"[{CURRENT_DEVICE['device_name']}] 不支持的任务类型: {payload.task_type}")
         raise HTTPException(
             status_code=400,
             detail=f"不支持的任务类型: {payload.task_type}，支持的任务类型: {CURRENT_DEVICE['task_types']}",
@@ -777,6 +919,10 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     DEVICE_STATUS["error_code"] = "NONE"
     current_command = cast("JsonDict", payload.model_dump())
     trace_id = f"{DEVICE_CODE}-LOG-{payload.command_code.split('-')[-1]}"
+
+    # ========== 业务流程日志：开始执行 ==========
+    logger.info(f"[{CURRENT_DEVICE['device_name']}] 开始异步执行命令...")
+
     current_command_task = asyncio.create_task(_execute_wes_command_with_cleanup(payload))
     return DeviceCommandAck(code=200, message="Accepted", trace_id=trace_id)
 
@@ -862,8 +1008,8 @@ async def execute_arm_command(request: ManualExecuteRequest) -> ExecutionRecord:
             "content": {
                 "application/json": {
                     "examples": {
-                        "ok": {"summary": "OK 结果", "value": {"barcode": "TEST-001"}},
-                        "ng": {"summary": "NG 结果", "value": {"barcode": "TEST-NG-001", "result": "NG"}},
+                        "ok": {"summary": "OK 结果", "value": {"barcode": "LOTABC123"}},
+                        "ng": {"summary": "NG 结果", "value": {"barcode": "LOTSIZENG", "result": "NG"}},
                     }
                 }
             }
