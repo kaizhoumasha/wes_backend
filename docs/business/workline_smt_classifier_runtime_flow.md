@@ -100,7 +100,7 @@
 | 字段 | 含义 |
 |------|------|
 | `session_code` | 业务会话编号 |
-| `business_key` | 业务主键，设备事件通常取 `data.barcode` |
+| `business_key` | 业务主键，设备事件通常优先取 `data.LotCode`，缺失时再回退到其他 Six-In-One 字段 |
 | `status` | `NEW / RUNNING / WAITING_* / COMPLETED / FAILED / CANCELLED` |
 | `context_json` | 插件上下文快照 |
 | `current_wait_type` | 当前等待类型 |
@@ -189,12 +189,13 @@
 规则：
 
 1. 优先取 `payload_json.business_key`
-2. 没有则尝试 `payload_json.data.barcode`
-3. 还没有则生成 `auto_<uuid>`
-4. 按 `workline_id + business_key` 查找打开中的 session
-5. 找不到就创建新 session
+2. 没有则尝试 `payload_json.data.LotCode`
+3. `LotCode` 缺失时，再按 `DateCode / ProductNo / MfrPN / PONumber / Qty` 顺序回退
+4. 还没有则生成 `auto_<uuid>`
+5. 按 `workline_id + business_key` 查找打开中的 session
+6. 找不到就创建新 session
 
-因此，扫码事件通常会因为携带条码而自动以条码作为 `business_key`。
+因此，扫码事件通常会因为携带 `LotCode` 而自动以 `LotCode` 作为 `business_key`。
 
 ### 3.2 COMMAND_RESULT
 
@@ -258,7 +259,7 @@ sequenceDiagram
 | `CONVEYOR` | `PIPELINE01` | 流水线 |
 | `OUTPUT_ARM` | `ARM02` | 出料机械臂 |
 
-假设本次物料条码为 `SMT-PKG-20260327-001`。
+假设本次物料主批次码（`LotCode`）为 `SMTLOT20260327001`。
 
 ### 5.2 Step 1: INPUT_ARM 上报扫码 NG
 
@@ -277,7 +278,12 @@ sequenceDiagram
   "event_type": "SCAN_COMPLETED",
   "timestamp": 1710000000000,
   "data": {
-    "barcode": "SMT-PKG-20260327-001",
+    "LotCode": "SMTLOT20260327001",
+    "DateCode": "20260327",
+    "Qty": "100",
+    "ProductNo": "PN001",
+    "MfrPN": "MFR002",
+    "PONumber": "PO20260327001",
     "location": "SCAN",
     "result": "NG"
   }
@@ -299,7 +305,7 @@ sequenceDiagram
 | `session_id` | 初始为空 |
 | `payload_json.message_type` | `DEVICE_EVENT` |
 | `payload_json.event_type` | `SCAN_COMPLETED` |
-| `payload_json.data.barcode` | `SMT-PKG-20260327-001` |
+| `payload_json.data.LotCode` | `SMTLOT20260327001` |
 | `payload_json.data.result` | `NG` |
 
 随后：
@@ -320,9 +326,9 @@ sequenceDiagram
 
 ### 5.5 Step 4: SessionResolver 创建 Session
 
-由于这是 `DEVICE_EVENT` 且 `data.barcode` 存在：
+由于这是 `DEVICE_EVENT` 且 `data.LotCode` 存在：
 
-- `business_key = "SMT-PKG-20260327-001"`
+- `business_key = "SMTLOT20260327001"`
 - 当前 workline 若无同业务键 open session，则创建新 session
 
 典型新 `WorklineSession`：
@@ -332,7 +338,7 @@ sequenceDiagram
 | `session_code` | `SES_<uuid>` |
 | `workline_id` | 当前工作线 ID |
 | `plugin_key` | `smt_classifier` |
-| `business_key` | `SMT-PKG-20260327-001` |
+| `business_key` | `SMTLOT20260327001` |
 | `status` | `NEW` |
 | `correlation_id` | 若 Inbox 无值则自动生成 `corr_<uuid>` |
 | `context_json.device_id` | `ARM01` 对应设备 ID |
@@ -354,8 +360,8 @@ sequenceDiagram
   "transition": "scan_ng",
   "context_patch": {
     "stage": "WAITING_PICK_PLACE",
-    "barcode": "SMT-PKG-20260327-001",
-    "last_barcode": "SMT-PKG-20260327-001",
+    "barcode": "SMTLOT20260327001",
+    "last_barcode": "SMTLOT20260327001",
     "scan_result": "NG",
     "location_id": "SCAN",
     "context_schema_version": "1.0",
@@ -390,7 +396,7 @@ sequenceDiagram
 |------|----------|
 | `status` | `WAITING_DEVICE_RESULT` |
 | `context_json.stage` | `WAITING_PICK_PLACE` |
-| `context_json.barcode` | `SMT-PKG-20260327-001` |
+| `context_json.barcode` | `SMTLOT20260327001` |
 | `context_json.ng_reason` | `SCAN_NG` |
 | `current_wait_type` | `COMMAND_RESULT` |
 | `current_wait_token` | `ng_pick_place_<session_id>` |
@@ -568,7 +574,12 @@ ARM mock 设备行为：
   "event_type": "SCAN_COMPLETED",
   "timestamp": 1710000100000,
   "data": {
-    "barcode": "SMT-PKG-20260327-002",
+    "LotCode": "SMTLOT20260327002",
+    "DateCode": "20260327",
+    "Qty": "100",
+    "ProductNo": "PN001",
+    "MfrPN": "MFR002",
+    "PONumber": "PO20260327002",
     "location": "SCAN",
     "result": "OK"
   }
@@ -582,8 +593,8 @@ ARM mock 设备行为：
   "transition": "scan_ok",
   "context_patch": {
     "stage": "WAITING_INSPECTION",
-    "barcode": "SMT-PKG-20260327-002",
-    "last_barcode": "SMT-PKG-20260327-002",
+    "barcode": "SMTLOT20260327002",
+    "last_barcode": "SMTLOT20260327002",
     "scan_result": "OK",
     "location_id": "SCAN",
     "context_schema_version": "1.0"
@@ -603,7 +614,7 @@ ARM mock 设备行为：
   "event_type": "INSPECTION_COMPLETED",
   "timestamp": 1710000102000,
   "data": {
-    "barcode": "SMT-PKG-20260327-002",
+    "LotCode": "SMTLOT20260327002",
     "location": "DETECT",
     "result": "OK"
   }

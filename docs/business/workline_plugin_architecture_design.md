@@ -344,14 +344,14 @@ class WorklineInbox(BaseModel):
 
 #### 6.2.2 business_key 生成原则
 
-`business_key` 不是固定只用 `barcode`，而是：
+`business_key` 不是固定只用某一个扫码字段，而是：
 
 * 必须由插件根据作业线业务定义。
 * 对同一作业线内一次物理流程必须稳定。
 * 可以是：
-  * `barcode`
+  * `LotCode`
   * `tray_code`
-  * `barcode + route_step`
+  * `LotCode + route_step`
   * `order_no + station_no`
 
 插件需提供 `BusinessKeyResolver` 实现：
@@ -641,7 +641,7 @@ Timeout 由专门扫描任务负责产生：
 
 * 提供领域能力，不感知 FastAPI / Celery
 * 例如：
-  * 条码校验
+  * 扫码主标识 / Six-In-One 校验
   * 分箱算法
   * AGV 调度申请
   * WMS / RCS 接口适配
@@ -757,8 +757,8 @@ class PackingZonePlugin:
 # 在插件中根据业务逻辑选择下游设备
 class ConveyorPlugin:
     async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        # 根据条码前缀决定走哪个分支
-        if ctx.session.barcode.startswith("A"):
+        # 根据业务主键前缀决定走哪个分支
+        if ctx.session.business_key.startswith("A"):
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=1)  # A线
         else:
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=2)  # B线
@@ -802,7 +802,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `plugin_key`
 * `run_mode`
 * `business_key`
-* `barcode`
+* `primary_identifier`
 * `status`
 * `context_json`
 * `context_schema_version`
@@ -1531,9 +1531,9 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 #### 11.1.1 主成功路径
 
 1. `SCANNER` 上报扫码结果，接入层写 `WorklineInbox(DEVICE_EVENT)`。
-2. `packing_zone` 插件判定该事件为起始事件，并生成 `business_key=barcode`。
+2. `packing_zone` 插件判定该事件为起始事件，并生成 `business_key=LotCode`（或该插件定义的主业务键）。
 3. 编排器创建 `WorklineSession`，记录 `Timeline(stage=INGEST)`。
-4. 插件完成条码校验，写入 `DecisionLog(decision_type=BARCODE_VALIDATION)`。
+4. 插件完成扫码主标识校验，写入 `DecisionLog(decision_type=BARCODE_VALIDATION)`。
 5. 插件调用分箱领域服务计算目标库位。
 6. 若已找到可用库位：
    * 写 `DecisionLog(decision_type=BIN_ALLOCATION, decision_result=ALLOCATED)`
@@ -1660,7 +1660,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 
 必须支持以下查询：
 
-* 按 `barcode`
+* 按 `business_key`
 * 按 `session_code`
 * 按 `command_code`
 * 按 `device_code`
@@ -1674,7 +1674,7 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 * `session_id`
 * `workline_id`
 * `correlation_id`
-* `barcode`
+* `business_key`
 
 ### 13.3 TimescaleDB 使用建议
 
@@ -1847,7 +1847,7 @@ workline_failure_total = Counter(
 1. **概览看板**：Session 吞吐量、成功率、P95/P99 耗时
 2. **排障看板**：故障分布（按 domain/code）、Timeline 详情
 3. **性能看板**：Inbox/Outbox 深度、处理延迟、外部调用延迟
-4. **业务看板**：各作业线独立指标、按 barcode 查询链路
+4. **业务看板**：各作业线独立指标、按 business_key 查询链路
 
 ---
 
@@ -2345,7 +2345,7 @@ scripts/
 
 | 阶段 | 验收标准 |
 |------|----------|
-| Phase 1 | 能通过 barcode 查询完整链路（Session → Timeline → Command） |
+| Phase 1 | 能通过 business_key 查询完整链路（Session → Timeline → Command） |
 | Phase 2 | 并发 100 Session 无数据丢失，超时事件正确触发 |
 | Phase 3 | 第一个插件上线运行，业务闭环无异常 |
 | Phase 4 | 能在 1 分钟内定位故障根因（domain + code） |

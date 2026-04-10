@@ -150,8 +150,13 @@ OK 主链路调整为：
 {
   "request_code": "ALLOC-20260329-0001",
   "workline_code": "WL-CONVEYOR-01",
-  "business_key": "PKG1_20260329_OK_03",
-  "barcode": "PKG1_20260329_OK_03",
+  "business_key": "SMTLOT20260329003",
+  "LotCode": "SMTLOT20260329003",
+  "DateCode": "20260329",
+  "Qty": "100",
+  "ProductNo": "PN001",
+  "MfrPN": "MFR002",
+  "PONumber": "PO20260329003",
   "reel_diameter": "15inch",
   "reel_thickness": "20",
   "inspection_result": "OK",
@@ -214,7 +219,7 @@ OK 主链路调整为：
 
 ```json
 {
-  "command_id": "AGV-20260329-0001",
+  "command_code": "AGV-20260329-0001",
   "task_type": "MOVE_RACK",
   "priority": 5,
   "timeout": 300000,
@@ -244,8 +249,8 @@ OK 主链路调整为：
 
 ```json
 {
-  "command_id": "AGV-20260329-0001",
-  "device_id": "AGV_01",
+  "command_code": "AGV-20260329-0001",
+  "device_code": "AGV_01",
   "result": "SUCCESS",
   "finish_time": 1774788342950,
   "data": {
@@ -329,7 +334,7 @@ OK 主链路调整为：
 以下请求必须具备全局唯一请求号，且重试时复用原值：
 
 - `allocation request_code`
-- `agv command_id`
+- `agv command_code`
 - `arm02 command_code`
 
 禁止出现以下情况：

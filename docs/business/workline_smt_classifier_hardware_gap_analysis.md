@@ -64,8 +64,8 @@
 
 命令体核心字段为：
 
-- `device_id`
-- `command_id`
+- `device_code`
+- `command_code`
 - `timestamp`
 - `task_type`
 - `priority`
@@ -99,10 +99,8 @@
 这是直接协议不兼容：
 
 - 路径不一致
-- `command_id` 被替换成了 `command_code`
-- `device_id` 不在 body 中
-- 缺失 `timestamp`
 - `source/target` 结构被简化成了 `params`
+- 缺失 `timestamp`
 
 ### 影响
 
@@ -117,8 +115,8 @@
 
 ```json
 {
-  "device_id": "ARM01",
-  "command_id": "CMD-20260327-0001",
+  "device_code": "ARM01",
+  "command_code": "CMD-20260327-0001",
   "timestamp": "1710000000000",
   "task_type": "PICK_AND_PUT",
   "priority": 1,
@@ -264,10 +262,10 @@ CONVEYOR:
 
 扫码完成事件示例中，上报内容为：
 
-- `device_id`
+- `device_code`
 - `event_type = SCAN_COMPLETED`
 - `data.location`
-- `data.barcode1 ~ data.barcode6`
+- `data.LotCode / DateCode / Qty / ProductNo / MfrPN / PONumber`
 
 硬件文档附录流程写法是：
 
@@ -284,39 +282,32 @@ CONVEYOR:
 当前插件在 `SCAN_COMPLETED` 事件里直接读取：
 
 - `data.result` 或 `scan_result`
-- `data.barcode` 或 `barcode`
+- `data.LotCode`，缺失时再回退其他 Six-In-One 字段
 
 对应代码： [plugin.py](/Users/kaizhou/SynologyDrive/works/wes_backend/src/workline_plugins/smt_classifier/plugin.py#L542)
 
 ### 偏差结论
 
-当前插件假设“设备已经告诉我 OK/NG”，而真实硬件文档更像是“设备只上报扫码信息，WES 自己判断 OK/NG”。
-
-同时当前插件只支持单个条码字段：
-
-- `barcode`
-
-而真实硬件协议支持：
-
-- `barcode1 ~ barcode6`
+当前插件已改为基于 Six-In-One 字段恢复业务主键，不再依赖单独 `barcode` 字段；
+但“设备只上报扫码信息，WES 自己判断 OK/NG”这一职责边界仍需在插件/适配层保持清晰。
 
 ### 影响
 
 若接真实硬件：
 
 - 插件可能拿不到 `scan_result`
-- 插件也拿不到单字段 `barcode`
-- 多条码物料信息会丢失
+- 若 Six-In-One 字段缺失，则无法恢复业务主键
+- 当前仍未处理二维码聚合字段（按当前联调约定，这一项暂不需要）
 
 ### 建议
 
 需要在 `callback_event()` 或更早的适配层中做协议归一：
 
-- `barcode1~barcode6 -> barcode_list`
+- 基于 `LotCode / DateCode / Qty / ProductNo / MfrPN / PONumber` 归一业务字段
 - 在 WES 内部做扫码判定
 - 再把统一后的内部 `DEVICE_EVENT Inbox` 交给插件
 
-换句话说，真实硬件事件不能直接作为当前插件输入。
+换句话说，真实硬件事件应先按当前 Six-In-One 契约归一后再交给插件。
 
 ## 4.5 检测/测厚流程建模不兼容
 
@@ -379,8 +370,8 @@ CONVEYOR:
 
 结果回调体使用：
 
-- `command_id`
-- `device_id`
+- `command_code`
+- `device_code`
 - `error_detail.error_code`
 - `error_detail.error_message`
 
@@ -400,7 +391,8 @@ CONVEYOR:
 
 ### 偏差结论
 
-即使真实硬件回调成功进入接口层，当前错误处理链路仍可能提取不到错误码和错误消息。
+`command_code / device_code` 的主键命名已按当前联调口径收敛；
+剩余差异主要在 `error_detail` 的子字段命名。
 
 ### 影响
 
@@ -414,8 +406,6 @@ CONVEYOR:
 
 在 `callback_result()` 入口增加协议归一化：
 
-- `command_id -> command_code`
-- `device_id -> device_code`
 - `error_detail.error_code -> error_detail.code`
 - `error_detail.error_message -> error_detail.message`
 
@@ -517,7 +507,7 @@ CONVEYOR:
 ### 真实硬件要求
 
 - `POST /api/v1/command/cancel`
-- 请求体为 `{ "command_id": "..." }`
+- 请求体为 `{ "command_code": "..." }`
 
 ### 当前 mock
 
@@ -589,7 +579,7 @@ CONVEYOR:
 1. 建立真实硬件命令适配层
 2. 建立真实硬件事件/回调适配层
 3. 修正 `task_type` 对外发送值
-4. 修正 `command_id/device_id` 与 `command_code/device_code` 的对外映射
+4. 对齐 `error_detail` 等剩余子字段映射
 5. 修正检测/测厚结果来源建模
 
 ## 7.2 P1: 联调前应修

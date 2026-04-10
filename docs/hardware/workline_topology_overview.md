@@ -131,8 +131,8 @@ sequenceDiagram
         Note right of ARM01: 阶段1: 扫码与检测
         ARM01->>ARM01: 抓取物料
         ARM01->>ARM01: 执行扫码
-        ARM01-->>WES: 📤 事件: SCAN_COMPLETED<br/>{barcode, location}
-        WES->>WES: 条码校验 → OK
+        ARM01-->>WES: 📤 事件: SCAN_COMPLETED<br/>{LotCode, DateCode, ..., location}
+        WES->>WES: Six-In-One 校验 → OK
         WES-->>ARM01: 📥 命令: PICK_AND_PUT<br/>source=INPUT, target=PIPELINE_INPUT
         ARM01->>ARM01: 放置到流水线进料位
         ARM01->>ARM01: 执行尺寸检测+测厚
@@ -163,14 +163,14 @@ sequenceDiagram
 | 交互类型 | 方向 | 触发方 | 数据内容 | 接口 |
 |---------|------|--------|---------|------|
 | **事件上报** | 设备 → WES | 设备主动 | 扫码完成、急停等 | `POST /callback/event` |
-| **结果回传** | 设备 → WES | 命令执行后 | 成功/失败、条码、尺寸 | `POST /callback/result` |
+| **结果回传** | 设备 → WES | 命令执行后 | 成功/失败、Six-In-One、尺寸 | `POST /callback/result` |
 | **命令下发** | WES → 设备 | WES 主动 | 抓取、放置、移动 | `POST /api/v1/command` |
 
 #### 1.2.3 设备能力与交互对照表
 
 | 设备 | 能力 | 主动上报事件 | 接收命令 |
 |------|------|------------|---------|
-| **ARM01/03**<br/>(进料机械臂) | SCAN, SIZE_DETECT,<br/>THICKNESS_DETECT,<br/>PICK, PUT | `SCAN_COMPLETED`<br/>检测结果(条码/尺寸/厚度) | `PICK_AND_PUT`<br/>(抓取+放置) |
+| **ARM01/03**<br/>(进料机械臂) | SCAN, SIZE_DETECT,<br/>THICKNESS_DETECT,<br/>PICK, PUT | `SCAN_COMPLETED`<br/>检测结果(Six-In-One/尺寸/厚度) | `PICK_AND_PUT`<br/>(抓取+放置) |
 | **PIPELINE01/02**<br/>(流水线) | MOVE_FORWARD,<br/>MOVE_BACKWARD | 命令执行结果 | `MOVE_FORWARD`<br/>`MOVE_BACKWARD` |
 | **ARM02/04**<br/>(出料机械臂) | PICK, PUT | 命令执行结果 | `PICK_AND_PUT`<br/>(抓取+放置) |
 
@@ -180,9 +180,9 @@ sequenceDiagram
 
 | 步骤 | 交互类型 | 消息 | 发送方 | 接收方 |
 |------|---------|------|--------|--------|
-| 1 | 事件上报 | `SCAN_COMPLETED{barcode}` | ARM01 | WES |
+| 1 | 事件上报 | `SCAN_COMPLETED{LotCode, DateCode, ...}` | ARM01 | WES |
 | 2 | 命令下发 | `PICK_AND_PUT{INPUT→PIPELINE_INPUT}` | WES | ARM01 |
-| 3 | 结果回传 | `COMMAND_RESULT{barcode, diameter, thickness}` | ARM01 | WES |
+| 3 | 结果回传 | `COMMAND_RESULT{LotCode, diameter, thickness}` | ARM01 | WES |
 | 4 | 命令下发 | `MOVE_FORWARD{INPUT→OUTPUT}` | WES | PIPELINE01 |
 | 5 | 结果回传 | `COMMAND_RESULT{SUCCESS}` | PIPELINE01 | WES |
 | 6 | 命令下发 | `PICK_AND_PUT{PIPELINE_OUTPUT→BIN}` | WES | ARM02 |
@@ -192,7 +192,7 @@ sequenceDiagram
 
 | 步骤 | 交互类型 | 消息 | 发送方 | 接收方 |
 |------|---------|------|--------|--------|
-| 1 | 事件上报 | `SCAN_COMPLETED{barcode=null}` | ARM01 | WES |
+| 1 | 事件上报 | `SCAN_COMPLETED{LotCode 缺失}` | ARM01 | WES |
 | 2 | 命令下发 | `PICK_AND_PUT{INPUT→NG_PLATFORM}` | WES | ARM01 |
 | 3 | 结果回传 | `COMMAND_RESULT{SUCCESS}` | ARM01 | WES |
 
@@ -298,12 +298,12 @@ class SmtClassifierLocationType(str, Enum):
 # SCAN_COMPLETED 事件 payload
 class ScanCompletedEvent(BaseModel):
     location: str                    # 位置ID
-    barcode1: str | None = None      # 条码1
-    barcode2: str | None = None      # 条码2
-    barcode3: str | None = None      # 条码3
-    barcode4: str | None = None      # 条码4
-    barcode5: str | None = None      # 条码5
-    barcode6: str | None = None      # 条码6
+    LotCode: str | None = None       # 批次码
+    DateCode: str | None = None      # 日期码
+    Qty: str | None = None           # 数量
+    ProductNo: str | None = None     # 产品PN码
+    MfrPN: str | None = None         # 制造商PN码
+    PONumber: str | None = None      # 订单码
 
 # ESTOP_PRESSED 事件 payload
 class EstopPressedEvent(BaseModel):
@@ -323,7 +323,7 @@ class EstopPressedEvent(BaseModel):
 
 ```python
 class PickAndPutCommand(BaseModel):
-    device_id: str                    # 设备ID
+    device_code: str                  # 设备编码
     command_code: str                 # 命令编码
     timestamp: str                    # 时间戳
     task_type: str = “PICK_AND_PUT”   # 任务类型
@@ -507,7 +507,7 @@ sequenceDiagram
     participant Outbox as WorklineOutbox
 
     Note over Device,Outbox: 阶段1: 扫码事件
-    Device->>API: POST /callback/event<br/>{event_type: SCAN_COMPLETED, barcode1: “PKG001”}
+    Device->>API: POST /callback/event<br/>{device_code: "ARM01", event_type: SCAN_COMPLETED, LotCode: "SMTLOT20260327001"}
     API->>API: 幂等校验、原始日志落库
     API->>Inbox: 写入 WorklineInbox(kind=DEVICE_EVENT)
     API-->>Device: 200 OK (立即ACK)
@@ -515,13 +515,13 @@ sequenceDiagram
     Orch->>Inbox: 消费 Inbox
     Orch->>Session: 创建 Session(status=NEW)
     Orch->>Plugin: on_device_event(inbound)
-    Plugin->>Plugin: 条码校验 → OK
+    Plugin->>Plugin: Six-In-One 校验 → OK
     Plugin-->>Orch: PluginResult(transition=start, commands=[PICK_AND_PUT])
     Orch->>Session: 状态迁移 NEW → RUNNING → WAITING_SCAN_RESULT
     Orch->>Outbox: 写入 Outbox(dispatch_type=DEVICE_COMMAND)
 
     Note over Device,Outbox: 阶段2: 扫码结果回调
-    Device->>API: POST /callback/result<br/>{command_code, result: SUCCESS, barcode1, reel_diameter}
+    Device->>API: POST /callback/result<br/>{command_code, device_code, result: SUCCESS, LotCode, reel_diameter}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
@@ -560,14 +560,14 @@ sequenceDiagram
     participant Session as WorklineSession
     participant Outbox as WorklineOutbox
 
-    Device->>API: POST /callback/event<br/>{event_type: SCAN_COMPLETED, barcode1: null}
+    Device->>API: POST /callback/event<br/>{device_code: "ARM01", event_type: SCAN_COMPLETED}
     API->>Inbox: 写入 WorklineInbox(kind=DEVICE_EVENT)
     API-->>Device: 200 OK
 
     Orch->>Inbox: 消费 Inbox
     Orch->>Session: 创建 Session(status=NEW)
     Orch->>Plugin: on_device_event(inbound)
-    Plugin->>Plugin: 条码校验 → NG (barcode=null)
+    Plugin->>Plugin: Six-In-One 校验 → NG (LotCode 缺失)
     Plugin-->>Orch: PluginResult(transition=scan_ng, commands=[PICK_AND_PUT to NG])
     Orch->>Session: 状态迁移 NEW → RUNNING → FAILED
     Orch->>Outbox: 写入 Outbox(target=NG_PLATFORM)
@@ -593,7 +593,7 @@ sequenceDiagram
 
     Note over Device,Outbox: 扫码OK，物料已到流水线进料位
 
-    Device->>API: POST /callback/result<br/>{result: FAILED, error_code: “1001”}
+    Device->>API: POST /callback/result<br/>{command_code, device_code, result: FAILED, error_detail.code: "1001"}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
 
     Orch->>Session: 恢复 Session(status=WAITING_DETECT_RESULT)
@@ -604,7 +604,7 @@ sequenceDiagram
     Orch->>Session: 记录 ng_reason=”SIZE_NG”
     Orch->>Outbox: 写入 Outbox(target=NG_PLATFORM)
 
-    Device->>API: POST /callback/result<br/>{result: SUCCESS}
+    Device->>API: POST /callback/result<br/>{command_code, device_code, result: SUCCESS}
     Orch->>Session: 恢复 Session
     Orch->>Plugin: on_command_result(inbound)
     Plugin-->>Orch: PluginResult(transition=fail)
@@ -731,8 +731,8 @@ sequenceDiagram
 │   │     PIPELINE01, ARM01, ARM02 │  │     PIPELINE02, ARM03, ARM04 │         │
 │   │   ─────────────────────────  │  │   ─────────────────────────  │         │
 │   │   Sessions:                  │  │   Sessions:                  │         │
-│   │     Session#1 (barcode:A)    │  │     Session#3 (barcode:C)    │         │
-│   │     Session#2 (barcode:B)    │  │     Session#4 (barcode:D)    │         │
+│   │     Session#1 (LotCode:A)    │  │     Session#3 (LotCode:C)    │         │
+│   │     Session#2 (LotCode:B)    │  │     Session#4 (LotCode:D)    │         │
 │   │     ...                      │  │     ...                      │         │
 │   └─────────────────────────────┘  └─────────────────────────────┘         │
 │                                                                              │
@@ -821,8 +821,8 @@ class SmtClassifierPlugin:
 
 | 场景 | 前置条件 | 测试步骤 | 预期结果 |
 |------|---------|---------|---------|
-| **扫码OK → 出料** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (barcode 有效)<br>2. 发送 PICK_AND_PUT 到流水线进料位<br>3. 收到检测结果 OK<br>4. 发送 MOVE_FORWARD<br>5. 发送 PICK_AND_PUT 到料箱 | Session COMPLETED |
-| **扫码NG** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (barcode=null)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SCAN_NG |
+| **扫码OK → 出料** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (LotCode 有效)<br>2. 发送 PICK_AND_PUT 到流水线进料位<br>3. 收到检测结果 OK<br>4. 发送 MOVE_FORWARD<br>5. 发送 PICK_AND_PUT 到料箱 | Session COMPLETED |
+| **扫码NG** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (LotCode 缺失)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SCAN_NG |
 | **检测NG (尺寸)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=1001)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SIZE_NG |
 | **检测NG (厚度)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=1002)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=THICKNESS_NG |
 | **急停恢复** | Session RUNNING | 1. 收到 ESTOP_PRESSED<br>2. Session → MANUAL_HOLD<br>3. 人工操作 RETRY_LAST_COMMAND<br>4. Session → RUNNING | Session 继续执行 |
@@ -835,7 +835,7 @@ class SmtClassifierPlugin:
 | 边界条件 | 测试用例 | 预期处理 |
 |---------|---------|---------|
 | 重复扫码 | 同一条码在短时间内多次扫描 | 幂等处理，返回已有 Session |
-| 条码为空字符串 | barcode="" | 视为 NG，触发 NG 流程 |
+| LotCode 缺失 | `LotCode` 为空或不存在 | 视为 NG，触发 NG 流程 |
 | 检测值为 null | diameter=null / thickness=null | 使用默认值或记录警告 |
 | 并发命令 | 同一设备同时收到多个命令 | 排队处理，拒绝重复命令 |
 | Session 不存在 | 收到命令结果但无对应 Session | 创建日志记录，忽略或创建新 Session |
@@ -857,7 +857,7 @@ from typing import Literal
 
 class DeviceEventCallback(BaseModel):
     """设备事件回调请求"""
-    device_id: str = Field(..., description="设备ID")
+    device_code: str = Field(..., description="设备编码")
     event_type: Literal["SCAN_COMPLETED", "ESTOP_PRESSED"] = Field(..., description="事件类型")
     timestamp: int = Field(..., description="事件时间戳(ms)")
     event_id: str = Field(..., description="事件唯一ID，用于幂等处理")
@@ -879,7 +879,7 @@ class CallbackResponse(BaseModel):
 
 | 字段 | 校验规则 | 错误响应 |
 |------|---------|---------|
-| `device_id` | 必须为已注册设备 | 400, "Unknown device" |
+| `device_code` | 必须为已注册设备编码 | 400, "Unknown device" |
 | `event_id` | 5分钟内不能重复 | 200, "Duplicate event" (幂等返回) |
 | `timestamp` | 不能超过当前时间 ±5分钟 | 400, "Invalid timestamp" |
 | `event_type` | 必须为枚举值 | 400, "Invalid event_type" |
@@ -894,7 +894,7 @@ class CallbackResponse(BaseModel):
 class CommandResultCallback(BaseModel):
     """命令结果回调请求"""
     command_code: str = Field(..., description="命令编码（控制流主键）")
-    device_id: str = Field(..., description="设备ID")
+    device_code: str = Field(..., description="设备编码")
     result: Literal["SUCCESS", "FAILED"] = Field(..., description="执行结果")
     finish_time: int = Field(..., description="完成时间戳(ms)")
     message: str | None = Field(None, description="附加信息")
@@ -925,10 +925,11 @@ async def handle_event_callback(event: DeviceEventCallback) -> CallbackResponse:
     # 2. 写入幂等标记
     await redis.setex(cache_key, IDEMPOTENT_WINDOW, "1")
 
-    # 3. 写入 Inbox
+    # 3. 解析设备并写入 Inbox
+    resolved_device = await device_service.get_by_code(event.device_code)
     await inbox_service.create(inbox=WorklineInbox(
         kind=InboxKind.DEVICE_EVENT,
-        device_id=event.device_id,
+        device_id=resolved_device.id,
         payload=event.model_dump(),
         raw_data=event.model_dump_json(),
     ))
@@ -1081,7 +1082,7 @@ flowchart LR
 #### 2.3.2 扫码流程
 
 ```text
-移动到扫码工位 -> SCAN_COMPLETED -> WES 获取 barcode -> 继续分流/转运
+移动到扫码工位 -> SCAN_COMPLETED -> WES 获取 LotCode / Six-In-One -> 继续分流/转运
 ```
 
 #### 2.3.3 出线流程

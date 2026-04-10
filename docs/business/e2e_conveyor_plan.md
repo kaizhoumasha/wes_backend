@@ -136,7 +136,12 @@ curl -X POST http://localhost:8001/api/v1/callback/event \
     "timestamp": 1709097600000,
     "data": {
       "location": "CONVEYOR-STATION-01",
-      "barcode": "PKG20250228001"
+      "LotCode": "SMTLOT20250228001",
+      "DateCode": "20250228",
+      "Qty": "100",
+      "ProductNo": "PN001",
+      "MfrPN": "MFR002",
+      "PONumber": "PO20250228001"
     }
   }'
 ```
@@ -175,7 +180,7 @@ ORDER BY wi.id DESC;
 ### 4.3 指令记录（内部 `device_id`，联表看 `device_code`）
 
 ```sql
-SELECT dc.command_id, dc.device_id, d.device_code, dc.task_type, dc.status, dc.sent_at, dc.ack_received_at, dc.completed_at
+SELECT dc.command_code, dc.device_id, d.device_code, dc.task_type, dc.status, dc.sent_at, dc.ack_received_at, dc.completed_at
 FROM wes_biz.device_commands dc
 JOIN wes_biz.devices d ON d.id = dc.device_id
 ORDER BY dc.id DESC;
