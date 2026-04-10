@@ -30,7 +30,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from tests.mock.smt_classifier.mock_support import (  # noqa: E402
+from tests.mock.smt_classifier.mock_support import (
     WES_RESULT_CALLBACK_URL,
     CancelRequest,
     DeviceCommandAck,
@@ -304,9 +304,7 @@ class PipelineSimulator:
 
             # ========== 业务流程日志：执行完成 ==========
             logger.info(
-                f"[{self.device_name}] 执行完成: {resolved_command_code}\n"
-                f"  结果: {result}\n"
-                f"  耗时: {execution_time}s"
+                f"[{self.device_name}] 执行完成: {resolved_command_code}\n  结果: {result}\n  耗时: {execution_time}s"
             )
 
             if report_result:

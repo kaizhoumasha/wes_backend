@@ -10,12 +10,12 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.app.device.models.command import (  # noqa: E402
+from src.app.device.models.command import (
     CommandCallbackResult,
     CommandResult,
     CommandStatus,
 )
-from src.app.device.services.device_command_service import (  # noqa: E402
+from src.app.device.services.device_command_service import (
     DeviceCommandService,
 )
 

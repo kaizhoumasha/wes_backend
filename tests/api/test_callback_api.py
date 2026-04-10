@@ -95,7 +95,9 @@ class TestCallbackResultAPI:
             return {"celery@worker": {"ok": "pong"}}
 
         fake_inspect.ping = MagicMock(side_effect=_ping_with_warning)
-        fake_celery_app = SimpleNamespace(conf=MagicMock(), control=MagicMock(inspect=MagicMock(return_value=fake_inspect)))
+        fake_celery_app = SimpleNamespace(
+            conf=MagicMock(), control=MagicMock(inspect=MagicMock(return_value=fake_inspect))
+        )
 
         with (
             patch("src.core.health.system_health", fake_system_health),

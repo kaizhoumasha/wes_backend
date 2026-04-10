@@ -33,7 +33,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from tests.mock.smt_classifier.mock_support import (  # noqa: E402
+from tests.mock.smt_classifier.mock_support import (
     WES_EVENT_CALLBACK_URL,
     WES_RESULT_CALLBACK_URL,
     CancelRequest,
@@ -607,9 +607,7 @@ class ArmSimulator:
                 error_message = error_messages.get(error_code, reason or "未知错误")
                 error_detail = {"error_code": error_code, "error_message": error_message}
                 move_result = "PUT_FAILED"
-                logger.warning(
-                    f"[{self.device_name}] 模拟错误: 错误码={error_code}, 错误信息={error_message}"
-                )
+                logger.warning(f"[{self.device_name}] 模拟错误: 错误码={error_code}, 错误信息={error_message}")
             elif simulate_failure:
                 # 默认失败
                 result = "FAILED"
@@ -687,15 +685,11 @@ class ArmSimulator:
             # 条码包含 "SIZENG" → 尺寸检测异常（错误码 1001）
             if "SIZENG" in barcode.upper():
                 smart_error_code = "1001"
-                logger.info(
-                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（错误码 1001）"
-                )
+                logger.info(f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（错误码 1001）")
             # 条码包含 "THICKNESSNG" → 厚度检测异常（错误码 1002）
             elif "THICKNESSNG" in barcode.upper():
                 smart_error_code = "1002"
-                logger.info(
-                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（错误码 1002）"
-                )
+                logger.info(f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（错误码 1002）")
 
         # 从 params 中提取错误码（优先级高于智能模拟）
         error_code = params.get("error_code") or smart_error_code
@@ -974,7 +968,10 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
                     "examples": {
                         "minimal": {"summary": "最小化请求", "value": {}},
                         "with_barcode": {"summary": "指定条码", "value": {"barcode": "TEST-001"}},
-                        "ng_flow": {"summary": "NG 流程", "value": {"task_type": "PICK_NG", "target_type": "NG_PLATFORM"}},
+                        "ng_flow": {
+                            "summary": "NG 流程",
+                            "value": {"task_type": "PICK_NG", "target_type": "NG_PLATFORM"},
+                        },
                         "failure": {"summary": "模拟失败", "value": {"simulate_failure": True, "execution_time": 0.1}},
                     }
                 }

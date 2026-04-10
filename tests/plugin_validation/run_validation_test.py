@@ -8,7 +8,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
+# 添加项目根目录到 Python 径
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -51,9 +51,7 @@ async def main():
         print(f"结果: {traditional_result['status']}")
 
         print("\n[简化插件]")
-        simplified_result = await simulator.simulate_full_workflow(
-            simplified_workline_id, SimulationScenario.NORMAL_OK
-        )
+        simplified_result = await simulator.simulate_full_workflow(simplified_workline_id, SimulationScenario.NORMAL_OK)
         print(f"结果: {simplified_result['status']}")
 
         # ========== 测试场景 2: 扫码NG流程 ==========
@@ -68,9 +66,7 @@ async def main():
         print(f"结果: {traditional_result['status']}")
 
         print("\n[简化插件]")
-        simplified_result = await simulator.simulate_full_workflow(
-            simplified_workline_id, SimulationScenario.NORMAL_NG
-        )
+        simplified_result = await simulator.simulate_full_workflow(simplified_workline_id, SimulationScenario.NORMAL_NG)
         print(f"结果: {simplified_result['status']}")
 
         # ========== 测试场景 3: 检测NG流程 ==========

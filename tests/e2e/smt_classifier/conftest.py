@@ -51,7 +51,7 @@ if _e2e_env_file.exists():
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-from tests.mock.smt_classifier.run_all import MOCK_SERVICES, run_server  # noqa: E402
+from tests.mock.smt_classifier.run_all import MOCK_SERVICES, run_server
 
 logger = logging.getLogger(__name__)
 

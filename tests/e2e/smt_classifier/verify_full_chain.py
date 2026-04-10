@@ -183,7 +183,9 @@ class ChainVerifier:
         logger.info("")
         logger.info("方法 1: 查询数据库")
         logger.info("  docker exec wes_postgres_dev psql -U wes_user -d wes_db -c \\")
-        logger.info("    \"SELECT id, command_code, task_type, status FROM wes_biz.device_commands ORDER BY id DESC LIMIT 3;\"")
+        logger.info(
+            '    "SELECT id, command_code, task_type, status FROM wes_biz.device_commands ORDER BY id DESC LIMIT 3;"'
+        )
         logger.info("")
         logger.info("方法 2: 检查 Mock 日志")
         logger.info("  应该看到 ARM01/PIPELINE01/ARM02 依次执行命令")
@@ -197,9 +199,10 @@ async def run_all_tests() -> None:
     """运行所有验证测试"""
     verifier = ChainVerifier()
 
-    logger.info("\n" + "=" * 60)
+    separator = "=" * 60
+    logger.info(f"\n{separator}")
     logger.info("SMT 粗分机完整链路验证")
-    logger.info("=" * 60 + "\n")
+    logger.info(f"{separator}\n")
 
     # 检查服务状态
     results = await verifier.check_all_services()
@@ -219,9 +222,10 @@ async def run_all_tests() -> None:
         logger.info("  python tests/mock/smt_classifier/run_all.py")
         return
 
-    logger.info("\n" + "=" * 60)
+    separator = "=" * 60
+    logger.info(f"\n{separator}")
     logger.info("验证完成")
-    logger.info("=" * 60)
+    logger.info(separator)
     logger.info("\n预期看到的日志：")
     logger.info("  Mock: 收到指令 → 执行 → 回调")
     logger.info("  WES: 收到事件 → Celery 处理 → 插件执行 → 生成命令")

@@ -36,9 +36,18 @@ class TestNullPlugin:
 
     @pytest.fixture
     def mock_inbox(self):
-        """创建模拟的 Inbox"""
+        """创建模拟的 Inbox（事件类型：SCAN_COMPLETED，用于路由到 info 日志）"""
         inbox = MagicMock()
         inbox.id = 123
+        inbox.payload_json = {"event_type": "SCAN_COMPLETED"}
+        return inbox
+
+    @pytest.fixture
+    def mock_command_inbox(self):
+        """创建模拟的命令 Inbox（PICK_AND_PUT SUCCESS）"""
+        inbox = MagicMock()
+        inbox.id = 123
+        inbox.payload_json = {"command_type": "PICK_AND_PUT", "result": "SUCCESS"}
         return inbox
 
     @pytest.mark.asyncio
@@ -64,16 +73,16 @@ class TestNullPlugin:
         assert "123" in call_args
 
     @pytest.mark.asyncio
-    async def test_on_command_result_returns_empty_result(self, plugin, mock_context, mock_inbox):
+    async def test_on_command_result_returns_empty_result(self, plugin, mock_context, mock_command_inbox):
         """测试命令结果处理返回空结果"""
-        result = await plugin.on_command_result(mock_context, mock_inbox)
+        result = await plugin.on_command_result(mock_context, mock_command_inbox)
         assert isinstance(result, PluginResult)
         assert result.transition is None
 
     @pytest.mark.asyncio
-    async def test_on_command_result_logs_event(self, plugin, mock_context, mock_inbox):
+    async def test_on_command_result_logs_event(self, plugin, mock_context, mock_command_inbox):
         """测试命令结果处理记录日志"""
-        await plugin.on_command_result(mock_context, mock_inbox)
+        await plugin.on_command_result(mock_context, mock_command_inbox)
         mock_context.logger.info.assert_called_once()
 
     @pytest.mark.asyncio
@@ -149,40 +158,45 @@ class TestNullPluginIntegration:
     async def test_all_methods_log_correctly(self):
         """测试所有方法正确记录日志"""
         plugin = NullPlugin()
-        inbox = MagicMock(id=42)
+        # 带有 event_type 的 inbox 可以路由到具体 handler，触发 info 日志
+        event_inbox = MagicMock(id=42)
+        event_inbox.payload_json = {"event_type": "SCAN_COMPLETED"}
+        # 带有 command_type 的 inbox 路由到命令 handler
+        command_inbox = MagicMock(id=42)
+        command_inbox.payload_json = {"command_type": "PICK_AND_PUT", "result": "SUCCESS"}
 
         # 测试 on_device_event 记录 info 日志
         context = MagicMock()
         context.logger = MagicMock()
-        await plugin.on_device_event(context, inbox)
+        await plugin.on_device_event(context, event_inbox)
         context.logger.info.assert_called_once()
         assert "42" in context.logger.info.call_args[0][0]
 
         # 测试 on_command_result 记录 info 日志
         context = MagicMock()
         context.logger = MagicMock()
-        await plugin.on_command_result(context, inbox)
+        await plugin.on_command_result(context, command_inbox)
         context.logger.info.assert_called_once()
         assert "42" in context.logger.info.call_args[0][0]
 
         # 测试 on_timeout 记录 warning 日志
         context = MagicMock()
         context.logger = MagicMock()
-        await plugin.on_timeout(context, inbox)
+        await plugin.on_timeout(context, event_inbox)
         context.logger.warning.assert_called_once()
         assert "42" in context.logger.warning.call_args[0][0]
 
         # 测试 on_external_http 记录 info 日志
         context = MagicMock()
         context.logger = MagicMock()
-        await plugin.on_external_http(context, inbox)
+        await plugin.on_external_http(context, event_inbox)
         context.logger.info.assert_called_once()
         assert "42" in context.logger.info.call_args[0][0]
 
         # 测试 on_manual_operation 记录 info 日志
         context = MagicMock()
         context.logger = MagicMock()
-        await plugin.on_manual_operation(context, inbox)
+        await plugin.on_manual_operation(context, event_inbox)
         context.logger.info.assert_called_once()
         assert "42" in context.logger.info.call_args[0][0]
 

@@ -73,11 +73,19 @@ WORKLINE_ID = 30  # 测试用的 workline ID
 def run_db_query(query: str) -> list:
     """通过 docker exec 运行数据库查询"""
     cmd = [
-        "docker", "exec", "wes_postgres_dev",
-        "psql", "-U", "wes_user", "-d", "wes_db",
-        "-t", "-c", query.replace("\n", " "),
+        "docker",
+        "exec",
+        "wes_postgres_dev",
+        "psql",
+        "-U",
+        "wes_user",
+        "-d",
+        "wes_db",
+        "-t",
+        "-c",
+        query.replace("\n", " "),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         print(f"DB query error: {result.stderr}")
         return []
@@ -88,9 +96,7 @@ def run_db_query(query: str) -> list:
 
 def get_max_session_id() -> int:
     """获取当前最大的 session ID"""
-    result = run_db_query(
-        f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};"
-    )
+    result = run_db_query(f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};")
     try:
         return int(result[0]) if result and result[0] else 0
     except (ValueError, IndexError):
@@ -99,9 +105,7 @@ def get_max_session_id() -> int:
 
 def get_inbox_events(since_session_id: int) -> list[str]:
     """获取指定 session 之后的 inbox 事件类型"""
-    max_id_result = run_db_query(
-        f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};"
-    )
+    max_id_result = run_db_query(f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};")
     try:
         max_session_id = int(max_id_result[0]) if max_id_result and max_id_result[0] else 0
     except (ValueError, IndexError):
@@ -123,9 +127,7 @@ def get_inbox_events(since_session_id: int) -> list[str]:
 
 def get_outbox_commands(since_session_id: int) -> list[str]:
     """获取指定 session 之后的 outbox 命令类型"""
-    max_id_result = run_db_query(
-        f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};"
-    )
+    max_id_result = run_db_query(f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};")
     try:
         max_session_id = int(max_id_result[0]) if max_id_result and max_id_result[0] else 0
     except (ValueError, IndexError):
@@ -267,7 +269,7 @@ class TestSimplifiedSmtPluginOKFlow:
         session = get_session_status(max_id)
         assert session is not None, "Session not found"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED, got: {session}"
-        assert session["step_code"] == "COMPLETED", f"Session step_code should be COMPLETED"
+        assert session["step_code"] == "COMPLETED", "Session step_code should be COMPLETED"
 
 
 @pytest.mark.integration
@@ -333,4 +335,3 @@ class TestSimplifiedSmtPluginFailureHandling:
     def test_pick_failure_handling(self):
         """测试超时场景（简化验证）"""
         # 超时测试需要特殊设置，跳过
-        pass

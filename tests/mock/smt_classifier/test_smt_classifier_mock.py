@@ -25,7 +25,7 @@ def test_pipeline_module_importable_with_pipeline_device_code() -> None:
     env["PYTHONPATH"] = "."
     env["DEVICE_CODE"] = "PIPELINE01"
 
-    result = subprocess.run(  # noqa: S603 - controlled test subprocess for import isolation
+    result = subprocess.run(
         [sys.executable, "-c", "import importlib; importlib.import_module('tests.mock.smt_classifier.pipeline_mock')"],
         cwd=".",
         env=env,

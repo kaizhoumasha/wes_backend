@@ -130,7 +130,7 @@ class UserRepository(BaseRepository[User]):
             db,
             limit=1,
             where_clauses_raw=[User.is_superuser == True],  # noqa: E712
-            order_by_raw=[desc(User.id)],
+            order_by_raw=[desc(User.id)],  # type: ignore[arg-type]
         )
         return users[0] if users else None
 

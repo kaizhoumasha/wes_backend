@@ -150,9 +150,7 @@ class TestDataGenerator:
             case _:
                 return "X"
 
-    def generate_scan_event(
-        self, scenario: TestDataScenario = TestDataScenario.VALID_BARCODE_OK
-    ) -> ScanEventData:
+    def generate_scan_event(self, scenario: TestDataScenario = TestDataScenario.VALID_BARCODE_OK) -> ScanEventData:
         """
         生成扫码事件数据
 

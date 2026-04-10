@@ -39,7 +39,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # 加载环境变量（需要在设置 sys.path 后导入）
-from dotenv import load_dotenv  # noqa: E402
+from dotenv import load_dotenv
 
 load_dotenv(project_root / ".env")
 

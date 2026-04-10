@@ -300,9 +300,7 @@ class DeviceSimulator:
             else:
                 inspection_result = self._get_inspection_result()
 
-            inspection_result = await self.send_inspection_event(
-                workline_id, barcode, inspection_result
-            )
+            inspection_result = await self.send_inspection_event(workline_id, barcode, inspection_result)
             results.append({"step": "inspection", "result": inspection_result})
 
             # 4. 模拟命令执行（流水线或NG缓存）
@@ -361,19 +359,13 @@ class DeviceSimulator:
         simplified_results = []
 
         for i in range(count):
-            print(f"Running test {i+1}/{count}...")
+            print(f"Running test {i + 1}/{count}...")
 
             # 并行运行两个插件
-            traditional_task = self.simulate_full_workflow(
-                traditional_workline_id, scenario
-            )
-            simplified_task = self.simulate_full_workflow(
-                simplified_workline_id, scenario
-            )
+            traditional_task = self.simulate_full_workflow(traditional_workline_id, scenario)
+            simplified_task = self.simulate_full_workflow(simplified_workline_id, scenario)
 
-            trad_result, simp_result = await asyncio.gather(
-                traditional_task, simplified_task
-            )
+            trad_result, simp_result = await asyncio.gather(traditional_task, simplified_task)
 
             traditional_results.append(trad_result)
             simplified_results.append(simp_result)

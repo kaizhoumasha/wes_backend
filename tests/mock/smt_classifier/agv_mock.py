@@ -30,7 +30,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from tests.mock.smt_classifier.mock_support import (  # noqa: E402
+from tests.mock.smt_classifier.mock_support import (
     WES_EXTERNAL_CALLBACK_URL,
     CancelRequest,
     DeviceCommandAck,

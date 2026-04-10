@@ -216,7 +216,7 @@ def celery_worker_process(integration_guard: None) -> Iterator[dict[str, str]]:
             hostname,
         ]
 
-        process = subprocess.Popen(  # noqa: S603 - fixed internal test command, no user input
+        process = subprocess.Popen(
             command,
             cwd=repo_root,
             env=env,
