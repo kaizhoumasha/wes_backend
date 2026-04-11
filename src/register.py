@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import HTMLResponse, ORJSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.core.logger import logger
@@ -137,7 +137,9 @@ def register_app() -> FastAPI:
         docs_url=None,  # 设置为 None，使用自定义路由
         redoc_url=settings.REDOC_URL,
         openapi_url=settings.OPENAPI_URL,
-        default_response_class=ORJSONResponse,
+        # 移除 default_response_class=ORJSONResponse
+        # FastAPI 0.135+ 推荐直接返回 Pydantic 模型，由 Pydantic 在 Rust 层面序列化
+        # 性能优于 ORJSONResponse
         lifespan=register_init,
         generate_unique_id_function=generate_route_operation_id,
         # 全局依赖：自动为所有路由注入 BackgroundTasks 到上下文
