@@ -17,8 +17,8 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import ORJSONResponse
-from pydantic import ValidationError
+from fastapi.responses import Response
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import DatabaseError, DBAPIError, IntegrityError, SQLAlchemyError
 
 from src.core.exceptions import (
@@ -36,14 +36,32 @@ from src.utils.timezone import timezone
 # ==================== 错误响应模型 ====================
 
 
+class ErrorResponse(BaseModel):
+    """标准化错误响应模型
+
+    使用 Pydantic 模型可利用 Rust 级别序列化，性能优于直接使用 JSONResponse。
+    参考: https://fastapi.tiangolo.com/advanced/response-directly/#performance-considerations
+    """
+
+    code: str
+    message: str
+    timestamp: str
+    detail: dict[str, Any] | None = None
+    request_id: str | None = None
+
+    model_config = {"frozen": True}
+
+
 def error_response(
     code: str,
     message: str,
     detail: Any = None,
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
-) -> ORJSONResponse:
+) -> Response:
     """
     构建标准化的错误响应
+
+    使用 Pydantic 模型序列化，利用 Rust 级别的高效序列化。
 
     Args:
         code: 错误代码（数字码格式，如 "2010"）
@@ -52,46 +70,46 @@ def error_response(
         status_code: HTTP 状态码
 
     Returns:
-        标准化的错误响应 ORJSONResponse
+        Response with serialized JSON
     """
-    from fastapi.responses import ORJSONResponse
-
-    response: dict[str, Any] = {
-        "code": code,
-        "message": message,
-        "timestamp": timezone.now_utc().isoformat().replace("+00:00", "Z"),
-    }
-
-    # 自动添加 request_id 到 detail
-    final_detail: dict[str, Any] = (
-        (dict(cast("dict[str, Any]", detail)) if isinstance(detail, dict) else {"info": detail})
-        if detail is not None
-        else {}
-    )
-
     # 尝试获取 request_id
+    request_id: str | None = None
     try:
         from src.core.context import RequestContext
 
-        request_id = RequestContext.get_request_id()
-        if request_id and request_id != "SYSTEM":
-            final_detail["request_id"] = request_id
+        req_id = RequestContext.get_request_id()
+        if req_id and req_id != "SYSTEM":
+            request_id = req_id
     except (ImportError, RuntimeError):
         pass
 
-    if final_detail:
-        response["detail"] = final_detail
+    # 构建详细信息
+    final_detail: dict[str, Any] | None = None
+    if detail is not None:
+        final_detail = dict(cast("dict[str, Any]", detail)) if isinstance(detail, dict) else {"info": detail}
 
-    return ORJSONResponse(
+    # 使用 Pydantic 模型构建响应
+    error_data = ErrorResponse(
+        code=code,
+        message=message,
+        timestamp=timezone.now_utc().isoformat().replace("+00:00", "Z"),
+        detail=final_detail,
+        request_id=request_id,
+    )
+
+    # 使用 model_dump_json() 获取 Pydantic 序列化的 JSON
+    # 这比 jsonable_encoder + JSONResponse 更高效
+    return Response(
+        content=error_data.model_dump_json(),
         status_code=status_code,
-        content=response,
+        media_type="application/json",
     )
 
 
 # ==================== 自定义异常处理 ====================
 
 
-async def app_exception_handler(request: Request, exc: AppException) -> ORJSONResponse:
+async def app_exception_handler(request: Request, exc: AppException) -> Response:
     """
     处理所有自定义应用异常
 
@@ -122,7 +140,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> ORJSONRe
     )
 
 
-async def auth_exception_handler(request: Request, exc: AuthException) -> ORJSONResponse:
+async def auth_exception_handler(request: Request, exc: AuthException) -> Response:
     """处理认证异常"""
     logger.warning(
         f"AuthException: {exc.code} - {exc.message}",
@@ -140,7 +158,7 @@ async def auth_exception_handler(request: Request, exc: AuthException) -> ORJSON
     )
 
 
-async def permission_exception_handler(request: Request, exc: PermissionException) -> ORJSONResponse:
+async def permission_exception_handler(request: Request, exc: PermissionException) -> Response:
     """处理权限异常"""
     logger.warning(
         f"PermissionException: {exc.code} - {exc.message}",
@@ -158,7 +176,7 @@ async def permission_exception_handler(request: Request, exc: PermissionExceptio
     )
 
 
-async def not_found_exception_handler(request: Request, exc: NotFoundException) -> ORJSONResponse:
+async def not_found_exception_handler(request: Request, exc: NotFoundException) -> Response:
     """处理资源未找到异常"""
     logger.info(
         f"NotFoundException: {exc.message}",
@@ -177,7 +195,7 @@ async def not_found_exception_handler(request: Request, exc: NotFoundException) 
     )
 
 
-async def conflict_exception_handler(request: Request, exc: ConflictException) -> ORJSONResponse:
+async def conflict_exception_handler(request: Request, exc: ConflictException) -> Response:
     """处理资源冲突异常"""
     logger.warning(
         f"ConflictException: {exc.code} - {exc.message}",
@@ -196,7 +214,7 @@ async def conflict_exception_handler(request: Request, exc: ConflictException) -
     )
 
 
-async def validation_exception_handler(request: Request, exc: ValidationException) -> ORJSONResponse:
+async def validation_exception_handler(request: Request, exc: ValidationException) -> Response:
     """处理数据验证异常"""
     logger.warning(
         f"ValidationException: {exc.code} - {exc.message}",
@@ -215,7 +233,7 @@ async def validation_exception_handler(request: Request, exc: ValidationExceptio
     )
 
 
-async def rate_limit_exception_handler(request: Request, exc: RateLimitException) -> ORJSONResponse:
+async def rate_limit_exception_handler(request: Request, exc: RateLimitException) -> Response:
     """处理请求频率限制异常"""
     logger.warning(
         f"RateLimitException: {exc.code} - {exc.message}",
@@ -236,7 +254,7 @@ async def rate_limit_exception_handler(request: Request, exc: RateLimitException
 # ==================== FastAPI 内置异常处理 ====================
 
 
-async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> ORJSONResponse:
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> Response:
     """
     处理请求参数验证异常
 
@@ -276,7 +294,7 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
     )
 
 
-async def pydantic_validation_exception_handler(request: Request, exc: ValidationError) -> ORJSONResponse:
+async def pydantic_validation_exception_handler(request: Request, exc: ValidationError) -> Response:
     """处理 Pydantic 验证异常"""
     errors: list[dict[str, str]] = []
     for error in exc.errors():
@@ -364,7 +382,7 @@ def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str, dict[str, Any
     )
 
 
-def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str) -> ORJSONResponse:
+def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str) -> Response:
     """处理数据完整性约束冲突"""
     code, message, detail_dict = _parse_integrity_error(exc)
 
@@ -381,7 +399,7 @@ def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str
     )
 
 
-def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> ORJSONResponse:
+def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> Response:
     """处理数据库 API 错误"""
     return error_response(
         code="5011",
@@ -390,7 +408,7 @@ def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> ORJ
     )
 
 
-def _handle_database_error(_request: Request, _exc: DatabaseError, detail: str) -> ORJSONResponse:
+def _handle_database_error(_request: Request, _exc: DatabaseError, detail: str) -> Response:
     """处理通用数据库错误"""
     return error_response(
         code="5010",
@@ -408,7 +426,7 @@ SQLALCHEMY_EXCEPTION_HANDLERS: dict[type[SQLAlchemyError], Any] = {
 }
 
 
-async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> ORJSONResponse:
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> Response:
     """
     处理 SQLAlchemy 异常（使用注册表模式）
 
@@ -448,7 +466,7 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
 # ==================== 通用异常处理 ====================
 
 
-async def general_exception_handler(request: Request, exc: Exception) -> ORJSONResponse:
+async def general_exception_handler(request: Request, exc: Exception) -> Response:
     """
     处理所有未捕获的异常
 

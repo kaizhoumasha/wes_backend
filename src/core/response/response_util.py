@@ -11,7 +11,8 @@
 
 from typing import Any
 
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import Response
+from pydantic import BaseModel
 
 from src.utils.timezone import timezone
 
@@ -19,6 +20,24 @@ from .response_code import DEFAULT_SUCCESS, ResponseCode
 from .response_schema import (
     BatchOperationResult,
 )
+
+# ==================== 成功响应模型 ====================
+
+
+class SuccessResponse(BaseModel):
+    """
+    标准化成功响应模型
+
+    使用 Pydantic 模型可利用 Rust 级别序列化，性能优于直接使用 JSONResponse。
+    """
+
+    code: str
+    message: str
+    timestamp: str
+    data: Any | None = None
+
+    model_config = {"frozen": True}
+
 
 # ==================== 响应构建器 ====================
 
@@ -150,12 +169,12 @@ class ResponseBuilder:
 
     def fast_success(
         self, data: Any = None, code: ResponseCode = DEFAULT_SUCCESS, message: str | None = None
-    ) -> ORJSONResponse:
+    ) -> Response:
         """
         快速成功响应（性能优化）
 
-        此方法直接返回ORJSONResponse，跳过Pydantic验证，在处理大量数据时有性能提升。
-        注意：使用此方法时，路由不能指定response_model参数。
+        使用 Pydantic 模型序列化，利用 Rust 级别的高效序列化。
+        注意：使用此方法时，路由不能指定 response_model 参数。
 
         Args:
             data: 响应数据
@@ -163,7 +182,7 @@ class ResponseBuilder:
             message: 响应消息
 
         Returns:
-            ORJSONResponse对象
+            Response 对象
 
         Example:
             ```python
@@ -175,9 +194,21 @@ class ResponseBuilder:
             ```
         """
         msg = message if message is not None else code.message
-        response_dict = self._build_response_dict(code=code.code, message=msg, data=data)
+        timestamp = timezone.now_utc().isoformat().replace("+00:00", "Z")
 
-        return ORJSONResponse(status_code=code.status, content=response_dict)
+        # 使用 Pydantic 模型构建响应
+        response_data = SuccessResponse(
+            code=code.code,
+            message=msg,
+            timestamp=timestamp,
+            data=data,
+        )
+
+        return Response(
+            content=response_data.model_dump_json(),
+            status_code=code.status,
+            media_type="application/json",
+        )
 
 
 # ==================== 全局实例 ====================

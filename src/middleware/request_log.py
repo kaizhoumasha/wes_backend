@@ -9,12 +9,12 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 import starlette_context
-from fastapi.responses import ORJSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from src.core.conf import settings
+from src.core.error_handlers import error_response
 from src.core.logger import logger
 from src.utils.request_parse import parse_ip_info, parse_user_agent_info
 
@@ -119,17 +119,13 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                 else:
                     logger.error(f"{method} {path} - {type(e).__name__}: {e!s} ({time_str})")
 
-                # 返回符合统一错误格式的响应
-                from src.utils.timezone import timezone
-
-                return ORJSONResponse(
-                    status_code=500,
-                    content={
-                        "code": "INTERNAL_ERROR",
-                        "message": "服务器内部错误",
-                        "detail": {"request_id": request_id},
-                        "timestamp": timezone.now_utc().isoformat().replace("+00:00", "Z"),
-                    },
+                # 返回符合统一错误格式的响应（使用 Pydantic 序列化）
+                return error_response(
+                    code="5000",
+                    message="服务器内部错误",
+                    detail={"request_id": request_id}
+                    if not settings.APP_DEBUG
+                    else {"request_id": request_id, "error": str(e)},
                 )
 
 
