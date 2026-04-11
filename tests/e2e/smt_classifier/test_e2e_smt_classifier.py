@@ -63,7 +63,7 @@ class TestSmtClassifierE2EBase:
             "timestamp": int(time.time() * 1000),
             "data": {
                 "location": location,
-                "LotCode": barcode.split("-")[0] if "-" in barcode else barcode,
+                "LotCode": barcode.split("-", maxsplit=1)[0] if "-" in barcode else barcode,
                 "DateCode": barcode.split("-")[1] if "-" in barcode and len(barcode.split("-")) > 1 else None,
                 "Qty": "100",
                 "ProductNo": barcode.split("-")[3] if "-" in barcode and len(barcode.split("-")) > 3 else None,
