@@ -1,23 +1,23 @@
 """
-SMT 简化插件集成测试
+SMT 分类插件集成测试
 
-验证 SimplifiedSmtPlugin 功能正确性。
+验证 SmtClassifierPlugin 功能正确性。
 """
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.workline_plugins.simplified_smt_plugin import SimplifiedSmtPlugin, simplified_smt_plugin
+from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
 
 
-class TestSimplifiedSmtPlugin:
-    """SMT 简化插件集成测试"""
+class TestSmtClassifierPlugin:
+    """SMT 分类插件集成测试"""
 
     @pytest.fixture
     def plugin(self):
         """插件实例"""
-        return SimplifiedSmtPlugin()
+        return SmtClassifierPlugin()
 
     @pytest.fixture
     def mock_context(self):
@@ -308,21 +308,21 @@ class TestSimplifiedSmtPlugin:
         assert result.context_patch.get("step_code") == "WAITING_PICK_PLACE"
 
 
-class TestSimplifiedSmtPluginPluginRegistration:
+class TestSmtClassifierPluginPluginRegistration:
     """插件注册测试"""
 
     def test_plugin_key(self):
         """验证 plugin_key"""
-        assert SimplifiedSmtPlugin.plugin_key == "simplified_smt"
+        assert SmtClassifierPlugin.plugin_key == "smt_classifier"
 
     def test_contract_version(self):
         """验证 contract_version"""
-        assert SimplifiedSmtPlugin.contract_version == "1.0"
+        assert SmtClassifierPlugin.contract_version == "1.0.0"
 
     def test_plugin_instance(self):
         """验证插件实例可创建"""
-        assert simplified_smt_plugin is not None
-        assert isinstance(simplified_smt_plugin, SimplifiedSmtPlugin)
+        assert smt_classifier_plugin is not None
+        assert isinstance(smt_classifier_plugin, SmtClassifierPlugin)
 
 
 class TestBarcodeValidation:
@@ -330,7 +330,7 @@ class TestBarcodeValidation:
 
     @pytest.fixture
     def plugin(self):
-        return SimplifiedSmtPlugin()
+        return SmtClassifierPlugin()
 
     def test_valid_barcode_alphanumeric(self, plugin):
         """测试有效条码（字母数字）"""

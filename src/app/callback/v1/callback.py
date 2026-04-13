@@ -424,7 +424,7 @@ async def _is_workline_command_callback(
     dependencies=[Depends(RequireAPIPermission("api:callback:result"))],
     description="设备完成指令后，调用此接口回传执行结果",
 )
-async def callback_result(
+async def callback_result(  # noqa: PLR0911, PLR0912
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -464,6 +464,39 @@ async def callback_result(
         )
 
     logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
+
+    # Fast Fail: 立即验证设备和工作线状态
+    device, workline, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
+    if device is None:
+        return _build_not_found_fail(f"未找到设备: {device_code}")
+
+    # 验证设备在线状态
+    device_status = getattr(device, "device_status", None)
+    if device_status != "ONLINE":
+        logger.warning(f"设备 {device_code} 不在线，当前状态: {device_status}")
+        return JsonDict(
+            code=503,
+            message=f"设备 {device_code} 不在线，状态: {device_status}",
+            request_id=request_id,
+        )
+
+    # 验证工作线存在
+    if workline is None:
+        return JsonDict(
+            code=404,
+            message=f"设备 {device_code} 未关联工作线",
+            request_id=request_id,
+        )
+
+    # 验证工作线启用状态
+    is_active = getattr(workline, "is_active", True)
+    if not is_active:
+        logger.warning(f"工作线 {workline.id} 未启用")
+        return JsonDict(
+            code=403,
+            message=f"工作线 {workline.id} 未启用",
+            request_id=request_id,
+        )
 
     try:
         existing_command = await device_command_service.get_command_by_code(db, command_code)
@@ -559,7 +592,6 @@ async def callback_result(
             )
 
         response_time_ms = int((time.time() - start_time) * 1000)
-        _ = inherited_correlation_id
         await _log_callback_outcome(
             db,
             request,
@@ -575,7 +607,7 @@ async def callback_result(
             audit_title="设备回调结果",
             error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
         )
-        return response_builder.success(data={"ack": True})
+        return response_builder.success(data={"ack": True, "correlation_id": inherited_correlation_id})
 
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
@@ -632,7 +664,7 @@ async def callback_result(
     dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
     description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )
-async def callback_event(
+async def callback_event(  # noqa: PLR0911
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -672,27 +704,40 @@ async def callback_event(
 
     logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
 
-    try:
-        device, _, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
-        if device is None:
-            message = f"未找到设备: {device_code}"
-            await _log_callback_outcome(
-                db,
-                request,
-                callback_type="event",
-                device_id=device_code,
-                request_body=event_data,
-                request_id=request_id,
-                correlation_id=_resolve_optional_str(event_data, _CORRELATION_ID_ALIASES),
-                response_status=404,
-                response_time_ms=int((time.time() - start_time) * 1000),
-                success=False,
-                record_audit=True,
-                audit_title="设备事件上报",
-                error_message=message,
-            )
-            return _build_not_found_fail(message)
+    # Fast Fail: 立即验证设备和工作线状态
+    device, workline, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
+    if device is None:
+        return _build_not_found_fail(f"未找到设备: {device_code}")
 
+    # 验证设备在线状态
+    device_status = getattr(device, "device_status", None)
+    if device_status != "ONLINE":
+        logger.warning(f"设备 {device_code} 不在线，当前状态: {device_status}")
+        return JsonDict(
+            code=503,
+            message=f"设备 {device_code} 不在线，状态: {device_status}",
+            request_id=request_id,
+        )
+
+    # 验证工作线存在
+    if workline is None:
+        return JsonDict(
+            code=404,
+            message=f"设备 {device_code} 未关联工作线",
+            request_id=request_id,
+        )
+
+    # 验证工作线启用状态
+    is_active = getattr(workline, "is_active", True)
+    if not is_active:
+        logger.warning(f"工作线 {workline.id} 未启用")
+        return JsonDict(
+            code=403,
+            message=f"工作线 {workline.id} 未启用",
+            request_id=request_id,
+        )
+
+    try:
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
         event_timestamp = normalized_event_request.timestamp
@@ -753,6 +798,7 @@ async def callback_event(
             data={
                 "status": "duplicate" if is_duplicate else "submitted",
                 "device_code": normalized_event_request.device_code,
+                "correlation_id": event_correlation_id,
             },
         )
 

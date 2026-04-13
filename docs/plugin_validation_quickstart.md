@@ -29,7 +29,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db
 
 # 切换到简化插件
 UPDATE wes_biz.work_lines
-SET plugin_key = 'simplified_smt'
+SET plugin_key = 'smt_classifier'
 WHERE id = 30;
 
 # 验证切换成功
@@ -42,7 +42,7 @@ WHERE id = 30;
 ```
  id |      line_name      |   plugin_key    | is_active
 ----+---------------------+-----------------+-----------
- 30 | 测试流水线作业线    | simplified_smt  | t
+ 30 | 测试流水线作业线    | smt_classifier  | t
 ```
 
 ### 步骤2: 发送测试事件
@@ -239,7 +239,7 @@ docker logs wes_backend-celery_worker-1 --tail 50
 **解决**:
 ```bash
 # 检查插件注册表
-grep -r "simplified_smt" src/workline_plugin_registry.py
+grep -r "smt_classifier" src/workline_plugin_registry.py
 
 # 如果没有，添加插件定义
 # 参考 src/workline_plugin_registry.py

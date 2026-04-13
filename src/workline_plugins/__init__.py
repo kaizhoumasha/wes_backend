@@ -9,23 +9,23 @@ if TYPE_CHECKING:
         WorklinePluginDefinition,
         get_workline_plugin_definition,
     )
-    from src.workline_plugins.simplified_smt_plugin import (
-        SimplifiedSmtPlugin,
-        simplified_smt_plugin,
+    from src.workline_plugins.smt_classifier import (
+        SmtClassifierPlugin,
+        smt_classifier_plugin,
     )
 
 __all__ = [
     "WORKLINE_PLUGIN_REGISTRY",
-    "SimplifiedSmtPlugin",
+    "SmtClassifierPlugin",
     "WorklinePluginDefinition",
     "get_workline_plugin_definition",
-    "simplified_smt_plugin",
+    "smt_classifier_plugin",
 ]
 
 _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
-    "SimplifiedSmtPlugin": (
-        "src.workline_plugins.simplified_smt_plugin",
-        "SimplifiedSmtPlugin",
+    "SmtClassifierPlugin": (
+        "src.workline_plugins.smt_classifier",
+        "SmtClassifierPlugin",
     ),
     "WORKLINE_PLUGIN_REGISTRY": (
         "src.workline_plugin_registry",
@@ -39,9 +39,9 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
         "src.workline_plugin_registry",
         "get_workline_plugin_definition",
     ),
-    "simplified_smt_plugin": (
-        "src.workline_plugins.simplified_smt_plugin",
-        "simplified_smt_plugin",
+    "smt_classifier_plugin": (
+        "src.workline_plugins.smt_classifier",
+        "smt_classifier_plugin",
     ),
 }
 

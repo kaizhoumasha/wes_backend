@@ -94,6 +94,34 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_session_by_business_key(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        business_key: str,
+    ) -> WorklineSession | None:
+        """根据业务键查询最新的会话（无论状态）
+
+        用于处理事件在 session 完成后立即到达的情况。
+
+        Args:
+            db: 数据库会话
+            workline_id: 作业线 ID
+            business_key: 业务键
+
+        Returns:
+            最新的会话（如果有）
+        """
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession).where(
+                columns.workline_id == workline_id,
+                columns.business_key == business_key,
+                columns.is_deleted.is_(False),
+            ).order_by(columns.id.desc()).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_correlation_id(
         self,
         db: AsyncSession,

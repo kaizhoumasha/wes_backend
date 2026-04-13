@@ -821,6 +821,32 @@ class ProcessInboxMessages:
                     result["skipped"] += 1
                     continue
 
+                # ========== 前置验证：检查必填字段 ==========
+                payload = getattr(inbox, "payload_json", None) or {}
+                event_type = payload.get("event_type")
+                data_field = payload.get("data", {}) or {}
+
+                # SCAN_COMPLETED 事件必须包含条码信息（6 合一：LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）
+                if event_type == "SCAN_COMPLETED":
+                    barcodes = [
+                        data_field.get("LotCode"),
+                        data_field.get("DateCode"),
+                        data_field.get("PONumber"),
+                        data_field.get("MfrPN"),
+                        data_field.get("ProductNo"),
+                        data_field.get("Qty"),
+                        payload.get("LotCode"),
+                        payload.get("DateCode"),
+                        payload.get("barcode"),
+                    ]
+                    if not any(barcodes):
+                        error_msg = "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
+                        logger.warning(f"Inbox {inbox_pk} {error_msg}")
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg)
+                        result["failed"] += 1
+                        result["processed"] += 1
+                        continue
+
                 # 加载关联实体
                 entities = await _load_related_entities(db, inbox)
 
@@ -841,6 +867,25 @@ class ProcessInboxMessages:
                     workline = entities["workline"]
                     if session is None or workline is None:
                         raise ValueError("Inbox processing missing session/workline context")
+
+                    # FAST FAIL: 如果 success=True 但没有任何产出，记录警告
+                    has_output = (
+                        orch_result.commands is not None
+                        or orch_result.decisions is not None
+                        or orch_result.transition is not None
+                    )
+                    if not has_output:
+                        logger.warning(
+                            f"Inbox {inbox_pk} 成功但无产出: transition={orch_result.transition}, "
+                            f"commands={orch_result.commands}, decisions={orch_result.decisions}"
+                        )
+                        # 标记为失败，让硬件商重试
+                        _ = await inbox_service.mark_as_failed(
+                            db, inbox_pk, "Processing succeeded but no commands generated"
+                        )
+                        result["failed"] += 1
+                        result["processed"] += 1
+                        continue
 
                     await _apply_orchestrator_effects(
                         db,

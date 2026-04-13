@@ -444,14 +444,14 @@ class TestCallbackEventAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="simplified_smt",  # 使用有效的插件
+                        plugin_key="smt_classifier",  # 使用有效的插件
                         contract_version="1.0",
                     )
                 ),
             ),
             patch(
                 "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="simplified_smt")),
+                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",

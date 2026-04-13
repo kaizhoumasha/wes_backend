@@ -8,7 +8,7 @@ from src.app.device.models.device import Device
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
-from src.workline_plugins.simplified_smt_plugin import SimplifiedSmtPlugin
+from src.workline_plugins.smt_classifier import SmtClassifierPlugin
 
 
 def make_workline() -> WorkLine:
@@ -45,10 +45,10 @@ def test_workline_model_resolves_runtime_plugin_classes() -> None:
         line_code="WL-SMT-002",
         line_name="粗分机#2",
         line_type=LineType.AUTO,
-        plugin_key="simplified_smt",
+        plugin_key="smt_classifier",
     )
 
-    assert workline.plugin_class is SimplifiedSmtPlugin
+    assert workline.plugin_class is SmtClassifierPlugin
     # 简化插件使用 @step 装饰器，无独立状态机类
     assert workline.state_machine_class is None
 
@@ -94,12 +94,12 @@ async def test_workline_service_accepts_simplified_plugin(db_session) -> None:
         result = await service.update(
             db_session,
             workline.id,  # type: ignore[arg-type]
-            {"plugin_key": "simplified_smt", "version": workline.version},
+            {"plugin_key": "smt_classifier", "version": workline.version},
         )
 
     assert result is not None
-    assert result.plugin_key == "simplified_smt"
-    assert result.plugin_class is SimplifiedSmtPlugin
+    assert result.plugin_key == "smt_classifier"
+    assert result.plugin_class is SmtClassifierPlugin
 
 
 @pytest.mark.asyncio
@@ -117,12 +117,12 @@ async def test_workline_service_create_allows_plugin_before_devices_are_bound(db
                 "line_code": "WL-SMT-003",
                 "line_name": "粗分机#3",
                 "line_type": LineType.AUTO,
-                "plugin_key": "simplified_smt",
+                "plugin_key": "smt_classifier",
             },
         )
 
     assert result is not None
-    assert result.plugin_key == "simplified_smt"
+    assert result.plugin_key == "smt_classifier"
 
 
 @pytest.mark.asyncio

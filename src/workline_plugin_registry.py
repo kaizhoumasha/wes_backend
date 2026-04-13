@@ -33,12 +33,12 @@ class WorklinePluginDefinition:
 
 
 WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
-    "simplified_smt": WorklinePluginDefinition(
-        plugin_key="simplified_smt",
-        plugin_module="src.workline_plugins.simplified_smt_plugin",
-        plugin_class_name="SimplifiedSmtPlugin",
-        contract_module=None,  # 简化插件使用共享 contract
-        state_machine_module=None,  # 简化插件使用 @step 装饰器
+    "smt_classifier": WorklinePluginDefinition(
+        plugin_key="smt_classifier",
+        plugin_module="src.workline_plugins.smt_classifier",
+        plugin_class_name="SmtClassifierPlugin",
+        contract_module=None,
+        state_machine_module=None,
         state_machine_class_name=None,
     ),
 }

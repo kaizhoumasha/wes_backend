@@ -13,6 +13,8 @@ Session 归属解析器
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import hashlib
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -43,12 +45,34 @@ _SESSION_ID_KINDS = {
 _SIX_IN_ONE_KEY_ALIASES = ("LotCode", "DateCode", "ProductNo", "MfrPN", "PONumber", "Qty")
 
 
-def _resolve_first_str(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
-    for alias in aliases:
-        value = payload.get(alias)
+def _generate_six_in_one_business_key(data: dict[str, Any]) -> str | None:
+    """
+    从 Six-In-One 数据生成唯一业务键。
+
+    使用所有非空字段生成 hash，确保相同数据组合生成相同 key，
+    不同组合生成不同 key。
+
+    Args:
+        data: 业务数据字典
+
+    Returns:
+        16位唯一业务键，失败返回 None
+    """
+    # 收集所有非空字段，保持固定顺序
+    fields = []
+    for alias in _SIX_IN_ONE_KEY_ALIASES:
+        value = data.get(alias)
         if isinstance(value, str) and value:
-            return value
-    return None
+            fields.append(value)
+
+    if not fields:
+        return None
+
+    # 生成确定性的 JSON 字符串
+    json_str = json.dumps(fields, ensure_ascii=False)
+
+    # 生成 16 位 hash
+    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
 
 
 def _resolve_business_key(payload_json: dict[str, Any]) -> str:
@@ -59,11 +83,13 @@ def _resolve_business_key(payload_json: dict[str, Any]) -> str:
 
     data = ensure_dict(payload_json.get("data"))
 
+    # 优先使用 barcode 字段
     barcode = data.get("barcode")
     if isinstance(barcode, str) and barcode:
         return barcode
 
-    six_in_one_key = _resolve_first_str(data, _SIX_IN_ONE_KEY_ALIASES)
+    # 使用完整的 Six-In-One 组合生成唯一业务键
+    six_in_one_key = _generate_six_in_one_business_key(data)
     if six_in_one_key:
         return six_in_one_key
 
@@ -153,7 +179,7 @@ class SessionResolver:
         if not isinstance(workline_id, int):
             raise TypeError("workline.id is required for DEVICE_EVENT")
 
-        # 尝试查找已存在的 Session
+        # 1. 优先查找未结束的 Session
         existing_session = await self.session_repo.get_open_session_by_business_key(
             db=db,
             workline_id=workline_id,
@@ -162,6 +188,34 @@ class SessionResolver:
 
         if existing_session:
             return existing_session
+
+        # 2. 如果没有未结束的 Session，尝试通过 correlation_id 查找
+        correlation_id = getattr(inbox, "correlation_id", None)
+        if correlation_id:
+            session_by_corr = await self.session_repo.get_by_correlation_id(
+                db=db,
+                correlation_id=correlation_id,
+            )
+            if session_by_corr:
+                inbox.session_id = session_by_corr.id
+                return session_by_corr
+
+        # 3. 如果还是没有，查找最新的 Session（处理事件在 session 完成后立即到达的情况）
+        latest_session = await self.session_repo.get_latest_session_by_business_key(
+            db=db,
+            workline_id=workline_id,
+            business_key=business_key,
+        )
+
+        if latest_session:
+            # 如果最新的 session 刚完成不久（5秒内），继续使用它
+            now = timezone.now_for_db()
+            if latest_session.ended_at:
+                elapsed = (now - latest_session.ended_at).total_seconds()
+                if elapsed < 5:
+                    inbox.session_id = latest_session.id
+                    inbox.correlation_id = latest_session.correlation_id
+                    return latest_session
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"

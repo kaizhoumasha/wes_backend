@@ -1363,3 +1363,71 @@ E2E 测试认证配置：
 - **Notes**: 已实现 setup_e2e_app.py 生成 .env.e2e，seed_e2e_test_data.py 创建 API 应用
 
 ---
+
+## [LRN-20260411-001] insight
+
+**Logged**: 2026-04-11T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: insight
+**Area**: backend
+
+### Summary
+SMT 粗分机完整业务流程（INSPECTION_COMPLETED 是 Mock 专用）
+
+### Details
+查阅硬件文档 `docs/hardware/SMT粗分机接口调用说明书20260321-v1.md` 后，记录完整正常业务流程：
+
+```
+┌─────────┐     SCAN_COMPLETED      ┌─────────┐
+│  ARM01  │ ─────────────────────▶  │  WES   │
+│ (扫码)  │ ◀─────────────────────  │        │
+└─────────┘     PICK_AND_PUT        └─────────┘
+                   (检验OK)
+
+┌─────────┐     result(callback)    ┌─────────┐
+│  ARM01  │ ─────────────────────▶  │  WES   │
+│ (检测)  │ ◀─────────────────────  │ 判定+   │ 尺寸/厚度检测
+└─────────┘     PICK_AND_PUT        │ 派发   │ reel_diameter/reel_thickness
+                                 └─────────┘
+
+┌──────────┐    result(callback)   ┌─────────┐
+│ PIPELINE │ ◀─────────────────    │  WES   │
+│  01      │ ───────────────────▶   │        │
+└──────────┘    MOVE_FORWARD       └─────────┘
+
+┌─────────┐     result(callback)   ┌─────────┐
+│  ARM02  │ ◀─────────────────     │  WES   │
+│ (出料)  │ ───────────────────▶   │ 分配+   │ 料箱分配/AGV呼叫
+└─────────┘    PICK_AND_PUT        └─────────┘
+```
+
+**完整步骤**：
+1. **ARM01 扫码** → 上报 `SCAN_COMPLETED` → `/api/v1/callback/event`
+2. **WES 校验** → 检验 OK，下发 `PICK_AND_PUT` 指令给 ARM01
+3. **ARM01 执行+检测** → 放置到流水线进料位，执行尺寸检测+测厚 → 上报 result → `/api/v1/callback/result`
+4. **WES 判定** → 根据 `reel_diameter`, `reel_thickness` 与 WMS 物料信息对比（TODO）
+5. **检测 OK** → 下发 `MOVE_FORWARD` 指令给 PIPELINE01
+6. **PIPELINE01 执行** → 完成后上报 result → `/api/v1/callback/result`
+7. **WES 料箱分配** → 无合适料箱则呼叫 AGV，有料箱时下发 `PICK_AND_PUT` 给 ARM02
+8. **ARM02 出料** → 从流水线出料位抓取放置到料箱 → 上报 result → `/api/v1/callback/result`
+
+**关键发现**：
+- INSPECTION_COMPLETED 不是真实硬件协议事件
+- 检测数据（reel_diameter/reel_thickness）通过 PICK_AND_PUT 命令结果返回
+- WES 需要与 WMS 物料基础信息对比（TODO：暂返回模拟数据）
+
+### Suggested Action
+- 保留 INSPECTION_COMPLETED 处理器用于 E2E 测试
+- 后续实现真实 WMS 物料信息对比逻辑
+
+### Metadata
+- Source: investigation
+- Related Files:
+  - docs/hardware/SMT粗分机接口调用说明书20260321-v1.md
+  - src/workline_plugins/smt_classifier/plugin.py
+- Tags: hardware-contract, smt-classifier, workflow, wms-comparison
+
+### Resolution
+- **Resolved**: 2026-04-11T00:00:00+08:00
+- **Notes**: 完整业务流程已记录

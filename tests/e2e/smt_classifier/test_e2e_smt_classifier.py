@@ -24,8 +24,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.workline_plugins.simplified_smt_plugin import (
-    SimplifiedSmtPlugin,
+from src.workline_plugins.smt_classifier import (
+    SmtClassifierPlugin,
     SmtClassifierState,
 )
 from src.workline_runtime.types import PluginResult
@@ -126,9 +126,9 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
     """SMT 粗分机 E2E 流程测试"""
 
     @pytest.fixture
-    def plugin(self) -> SimplifiedSmtPlugin:
+    def plugin(self) -> SmtClassifierPlugin:
         """创建插件实例"""
-        return SimplifiedSmtPlugin()
+        return SmtClassifierPlugin()
 
     @pytest.fixture
     def mock_inbox(self) -> MagicMock:
@@ -141,15 +141,15 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         return inbox
 
     @pytest.mark.asyncio
-    async def test_plugin_key_and_version(self, plugin: SimplifiedSmtPlugin) -> None:
+    async def test_plugin_key_and_version(self, plugin: SmtClassifierPlugin) -> None:
         """测试插件注册信息"""
-        assert plugin.plugin_key == "simplified_smt"
+        assert plugin.plugin_key == "smt_classifier"
         assert plugin.contract_version == "1.0"
 
     @pytest.mark.asyncio
     async def test_scan_completed_ok_flow(
         self,
-        plugin: SimplifiedSmtPlugin,
+        plugin: SmtClassifierPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
@@ -194,7 +194,7 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
     @pytest.mark.asyncio
     async def test_scan_invalid_barcode(
         self,
-        plugin: SimplifiedSmtPlugin,
+        plugin: SmtClassifierPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
@@ -225,7 +225,7 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
     @pytest.mark.asyncio
     async def test_pick_success_flow(
         self,
-        plugin: SimplifiedSmtPlugin,
+        plugin: SmtClassifierPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
@@ -386,9 +386,9 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
     """错误处理测试"""
 
     @pytest.fixture
-    def plugin(self) -> SimplifiedSmtPlugin:
+    def plugin(self) -> SmtClassifierPlugin:
         """创建插件实例"""
-        return SimplifiedSmtPlugin()
+        return SmtClassifierPlugin()
 
     @pytest.fixture
     def mock_inbox(self) -> MagicMock:
@@ -403,7 +403,7 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
     @pytest.mark.asyncio
     async def test_estop_handling(
         self,
-        plugin: SimplifiedSmtPlugin,
+        plugin: SmtClassifierPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:
@@ -430,7 +430,7 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
     @pytest.mark.asyncio
     async def test_pick_failed_handling(
         self,
-        plugin: SimplifiedSmtPlugin,
+        plugin: SmtClassifierPlugin,
         mock_plugin_context: MagicMock,
         mock_inbox: MagicMock,
     ) -> None:

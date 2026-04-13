@@ -49,6 +49,24 @@ class MockSessionRepository:
                 return session
         return None
 
+    async def get_latest_session_by_business_key(
+        self,
+        db: object,
+        workline_id: int,
+        business_key: str,
+    ) -> object | None:
+        """查找最新的会话（无论状态）"""
+        matching = []
+        for session in self.sessions.values():
+            s = session if isinstance(session, dict) else session.__dict__
+            if s.get("workline_id") == workline_id and s.get("business_key") == business_key:
+                matching.append(session)
+        if matching:
+            # 按 id 降序，返回最新的
+            matching.sort(key=lambda x: x.id if hasattr(x, "id") else 0, reverse=True)
+            return matching[0]
+        return None
+
     async def get_by_session_code(
         self,
         db: object,
@@ -477,7 +495,7 @@ class TestSessionResolver:
         mock_session_repo,
         resolver,
     ):
-        """测试 DEVICE_EVENT 在无 barcode 时使用 LotCode 作为 business_key。"""
+        """测试 DEVICE_EVENT 使用 Six-In-One 组合生成 hash 作为 business_key。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -497,8 +515,15 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        assert session.business_key == "LOTABC123"
-        assert ("business_key", 1, "LOTABC123") in mock_session_repo.find_calls
+        # Six-In-One 组合生成 16 位 hash
+        import json
+        import hashlib
+        fields = ["LOTABC123", "20260409"]
+        json_str = json.dumps(fields, ensure_ascii=False)
+        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+
+        assert session.business_key == expected_hash
+        assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_falls_back_to_lot_code_as_business_key(
@@ -507,7 +532,7 @@ class TestSessionResolver:
         mock_session_repo,
         resolver,
     ):
-        """测试 DEVICE_EVENT 在无二维码时回退到 LotCode。"""
+        """测试 DEVICE_EVENT 使用 Six-In-One 生成 hash。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -522,8 +547,15 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        assert session.business_key == "LOTABC123"
-        assert ("business_key", 1, "LOTABC123") in mock_session_repo.find_calls
+        # Six-In-One 组合生成 16 位 hash
+        import json
+        import hashlib
+        fields = ["LOTABC123", "20260409"]
+        json_str = json.dumps(fields, ensure_ascii=False)
+        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+
+        assert session.business_key == expected_hash
+        assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_command_result_finds_session_by_awaiting_command_id(

@@ -747,7 +747,7 @@ class ArmSimulator:
             "reel_thickness": request.reel_thickness,
             **self._build_barcode_fields(barcode_seed),
         }
-        # 使用 INSPECTION_COMPLETED 事件类型（simplified_smt_plugin 期望）
+        # 使用 INSPECTION_COMPLETED 事件类型（smt_classifier 插件期望）
         await self._post_event_to_wes("INSPECTION_COMPLETED", event_data)
         now = datetime.now()
         record = ExecutionRecord(

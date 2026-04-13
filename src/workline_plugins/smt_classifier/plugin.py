@@ -1,5 +1,5 @@
 """
-SMT 粗分机简化插件 - 使用装饰器框架
+SMT 粗分机插件 - 基于装饰器框架
 
 基于装饰器驱动的声明式模式实现的 SMT 粗分机插件。
 
@@ -7,11 +7,13 @@ SMT 粗分机简化插件 - 使用装饰器框架
 - 扫码识别（OK/NG 判定）
 - 机械臂抓取放置
 - 流水线传输
+- 料箱分配
 - NG 分流
 """
 
 from __future__ import annotations
 
+import random
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -165,19 +167,19 @@ class SmtClassifierState:
     ERROR = "ERROR"
 
 
-class SimplifiedSmtPlugin(WorklinePlugin):
+class SmtClassifierPlugin(WorklinePlugin):
     """
-    SMT 粗分机简化插件
+    SMT 粗分机插件
 
     基于 @step 装饰器实现状态迁移，业务流程：
     1. 扫码完成 → 验证条码 → 机械臂抓取到检测位
     2. 检测完成 → OK:流水线传输 / NG:NG缓存位
     3. 机械臂完成 → 流水线传输或NG处理完成
-    4. 流水线完成 → 最终出料
+    4. 流水线完成 → 料箱分配 → 最终出料
     """
 
-    plugin_key = "simplified_smt"
-    contract_version = "1.0"
+    plugin_key = "smt_classifier"
+    contract_version = "1.0.0"
 
     # ========== 设备角色常量 ==========
 
@@ -305,7 +307,13 @@ class SimplifiedSmtPlugin(WorklinePlugin):
         # 路由2: 出料臂完成 → 结束
         if current_step == SmtClassifierState.WAITING_OUTPUT:
             logger.info(f"Output succeeded: command_code={_result.command_code}")
-            return PluginResultBuilder(ctx).transition("output_ok").complete().build()
+            return (
+                PluginResultBuilder(ctx)
+                .transition("output_ok")
+                .context({"step_code": SmtClassifierState.COMPLETED})
+                .complete()
+                .build()
+            )
 
         # 状态不匹配
         logger.error(f"Unexpected step_code for PICK_AND_PUT SUCCESS: {current_step}")
@@ -390,12 +398,24 @@ class SimplifiedSmtPlugin(WorklinePlugin):
     @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.WAITING_OUTPUT)
     async def handle_conveyor_success(self, ctx: PluginContext, _result: TaskResultPayload):
         """
-        流水线传输成功 → 最终出料
+        流水线传输成功 → 料箱分配 → 最终出料
+
+        业务流程（完整版）：
+        1. 流水线传输完成
+        2. 料箱分配服务（allocation_mock）
+        3. 若需要 AGV，调度 AGV 搬运空料箱（TODO）
+        4. 下发出料命令到 ARM02
+
+        当前实现：随机生成料箱位置，待集成真实分配服务
         """
-        logger.info("Conveyor move succeeded")
+        logger.info("Conveyor move succeeded, starting bin allocation")
 
         barcode = ctx.session.context_json.get("barcode", "")
         reel_diameter = ctx.session.context_json.get("reel_diameter", "")
+
+        # 料箱分配（暂时使用随机料箱，后续集成真实分配服务）
+        bin_location = await self._allocate_bin(barcode)
+        logger.info(f"Bin allocated: {bin_location}")
 
         return (
             PluginResultBuilder(ctx)
@@ -403,9 +423,15 @@ class SimplifiedSmtPlugin(WorklinePlugin):
             .command(
                 device_role=self.OUTPUT_ARM,
                 command_type="PICK_AND_PUT",
-                parameters={"barcode": barcode, "reel_diameter": reel_diameter},
+                parameters={
+                    "barcode": barcode,
+                    "reel_diameter": reel_diameter,
+                    "target_type": "BIN",
+                    "target_loc": bin_location["bin_id"],
+                    "bin_type": bin_location["bin_type"],
+                },
             )
-            .context({"step_code": SmtClassifierState.WAITING_OUTPUT})
+            .context({"step_code": SmtClassifierState.WAITING_OUTPUT, "bin_location": bin_location})
             .build()
         )
 
@@ -459,10 +485,88 @@ class SimplifiedSmtPlugin(WorklinePlugin):
 
         return barcode.isalnum()
 
+    async def _allocate_bin(self, barcode: str) -> dict:
+        """
+        料箱分配（完整流程待实现）
+
+        完整业务流程：
+        1. 调用 /api/v1/bin-allocation/allocate
+        2. 若返回 AGV_REQUIRED，调度 AGV 搬运空料箱（TODO）
+        3. 若返回 ALLOCATED，使用分配的料箱位置
+
+        当前实现：随机生成料箱位置
+        TODO: 集成真实料箱分配服务
+        TODO: 集成 AGV 调度服务
+
+        Args:
+            barcode: 物料条码
+
+        Returns:
+            dict: 料箱位置信息 {bin_id, bin_type, bin_cell_location}
+        """
+        # TODO: 集成真实分配服务
+        # allocation_response = await self._call_allocation_service(barcode)
+        # if allocation_response.allocation_status == "AGV_REQUIRED":
+        #     # TODO: 调度 AGV
+        #     await self._dispatch_agv(allocation_response.target_bin)
+        # return allocation_response.target_bin
+
+        # 临时实现：随机料箱
+        return self._generate_random_bin(barcode)
+
+    def _generate_random_bin(self, barcode: str) -> dict:
+        """
+        生成随机料箱位置（临时实现）
+
+        Args:
+            barcode: 物料条码
+
+        Returns:
+            dict: 料箱位置信息
+        """
+        bin_id = f"BIN_{random.randint(100, 999)}"
+        bin_types = ["三格箱", "五格箱", "九格箱"]
+        bin_type = random.choice(bin_types)
+        cell_location = str(random.randint(1, 9))
+
+        logger.info(f"Generated random bin: barcode={barcode}, bin_id={bin_id}, bin_type={bin_type}")
+
+        return {
+            "bin_id": bin_id,
+            "bin_type": bin_type,
+            "bin_cell_location": cell_location,
+        }
+
+    async def _call_allocation_service(self, barcode: str) -> dict:
+        """
+        调用料箱分配服务（TODO: 实现）
+
+        Args:
+            barcode: 物料条码
+
+        Returns:
+            dict: 分配结果
+        """
+        # TODO: 实现 HTTP 调用到 /api/v1/bin-allocation/allocate
+        raise NotImplementedError("料箱分配服务待集成")
+
+    async def _dispatch_agv(self, target_bin: dict) -> None:
+        """
+        调度 AGV 搬运空料箱（TODO: 实现）
+
+        Args:
+            target_bin: 目标料箱位置
+        """
+        # TODO: 实现 AGV 调度逻辑
+        # 1. 调用 AGV 调度接口
+        # 2. 等待 AGV 任务完成
+        # 3. 继续出料流程
+        raise NotImplementedError("AGV 调度服务待集成")
+
 
 # ==================== 导出插件实例 ====================
 
-simplified_smt_plugin = SimplifiedSmtPlugin()
+smt_classifier_plugin = SmtClassifierPlugin()
 
 
-__all__ = ["SimplifiedSmtPlugin", "simplified_smt_plugin"]
+__all__ = ["SmtClassifierPlugin", "smt_classifier_plugin"]

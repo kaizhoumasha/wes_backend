@@ -103,6 +103,40 @@ def get_max_session_id() -> int:
         return 0
 
 
+def get_latest_completed_session_id() -> int:
+    """获取当前最新的已完成 session ID（避免并发创建新 session 的竞态条件）"""
+    result = run_db_query(
+        f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID} AND status = 'COMPLETED';"
+    )
+    try:
+        return int(result[0]) if result and result[0] else 0
+    except (ValueError, IndexError):
+        return 0
+
+
+def get_session_by_barcode(barcode: str) -> dict | None:
+    """根据 barcode 查询已完成 session"""
+    # 先获取最新的已完成 session ID
+    query = f"""
+        SELECT MAX(id) as id
+        FROM wes_biz.workline_sessions
+        WHERE workline_id = {WORKLINE_ID}
+        AND context_json->>'barcode' = '{barcode}'
+        AND status = 'COMPLETED';
+    """
+    result = run_db_query(query)
+    if not result or not result[0]:
+        return None
+
+    try:
+        session_id = int(result[0])
+    except (ValueError, IndexError):
+        return None
+
+    # 然后查询状态
+    return get_session_status(session_id)
+
+
 def get_inbox_events(since_session_id: int) -> list[str]:
     """获取指定 session 之后的 inbox 事件类型"""
     max_id_result = run_db_query(f"SELECT MAX(id) FROM wes_biz.workline_sessions WHERE workline_id = {WORKLINE_ID};")
@@ -261,15 +295,14 @@ class TestSimplifiedSmtPluginOKFlow:
         assert inspection_result.get("result") == "OK", f"Inspection failed: {inspection_result}"
 
         # 等待完整流程完成（增加等待时间）
-        time.sleep(15)
+        time.sleep(18)
 
         # ========== 数据库验证 ==========
-        # 验证 session 最终状态为 COMPLETED
-        max_id = get_max_session_id()
-        session = get_session_status(max_id)
-        assert session is not None, "Session not found"
+        # 验证 session 最终状态为 COMPLETED（通过 barcode 查询）
+        session = get_session_by_barcode(barcode)
+        assert session is not None, f"Session not found for barcode: {barcode}"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED, got: {session}"
-        assert session["step_code"] == "COMPLETED", "Session step_code should be COMPLETED"
+        assert session["step_code"] == "COMPLETED", f"Session step_code should be COMPLETED, got: {session}"
 
 
 @pytest.mark.integration
@@ -294,9 +327,8 @@ class TestSimplifiedSmtPluginNGFlow:
         time.sleep(12)
 
         # 数据库验证
-        max_id = get_max_session_id()
-        session = get_session_status(max_id)
-        assert session is not None, "Session not found"
+        session = get_session_by_barcode(barcode)
+        assert session is not None, f"Session not found for barcode: {barcode}"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED: {session}"
 
     def test_inspection_ng_flow(self):
@@ -317,9 +349,8 @@ class TestSimplifiedSmtPluginNGFlow:
         time.sleep(12)
 
         # 数据库验证
-        max_id = get_max_session_id()
-        session = get_session_status(max_id)
-        assert session is not None, "Session not found"
+        session = get_session_by_barcode(barcode)
+        assert session is not None, f"Session not found for barcode: {barcode}"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED: {session}"
 
 

@@ -342,8 +342,8 @@ class TestOutboxDispatcher:
         """测试 session 缺失 contract_version 时会补齐插件版本快照。"""
         from src.celery_app.tasks.workline import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="simplified_smt", contract_version=None, step_code=None)
-        workline = SimpleNamespace(plugin_key="simplified_smt")
+        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None, step_code=None)
+        workline = SimpleNamespace(plugin_key="smt_classifier")
 
         with patch(
             "src.celery_app.tasks.workline.get_plugin_contract_version",
