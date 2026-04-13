@@ -10,6 +10,39 @@ from celery.exceptions import DuplicateNodenameWarning
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+@pytest.fixture(autouse=True)
+def mock_fast_fail_check():
+    """自动 mock fast_fail_check 和设备服务，避免在测试中执行真实的基础设施检查。
+
+    注意：由于测试直接调用 callback 函数而非通过 FastAPI，
+    依赖注入可能不会自动触发。
+    """
+    # Mock fast_fail_check 函数本身
+    with patch("src.utils.fast_fail.fast_fail_check", new_callable=AsyncMock) as mock:
+        # 同时 mock 健康检查函数
+        with patch("src.utils.health.check_database_health", new_callable=AsyncMock) as db_mock, \
+             patch("src.utils.health.check_redis_health", new_callable=AsyncMock) as redis_mock, \
+             patch("src.utils.health.check_celery_health", new_callable=AsyncMock) as celery_mock, \
+             patch("src.app.callback.v1.callback.device_service.get_device_by_code") as device_mock:
+            # 返回健康状态
+            db_mock.return_value = {"status": "healthy"}
+            redis_mock.return_value = {"status": "healthy"}
+            celery_mock.return_value = {"status": "healthy"}
+
+            # 返回设备对象（默认在线状态）
+            def device_by_code_side_effect(db, code):
+                return SimpleNamespace(
+                    work_line_id=1,
+                    plugin_key="smt_classifier",
+                    contract_version="1.0",
+                    device_status="ONLINE",  # 确保设备在线
+                )
+            device_mock.side_effect = device_by_code_side_effect
+
+            mock.return_value = None  # 允许请求通过
+            yield mock
+
+
 @pytest.fixture
 def db_session():
     mock = AsyncMock(spec=AsyncSession)
@@ -85,37 +118,6 @@ def create_external_payload(**overrides) -> dict:
 
 
 class TestCallbackResultAPI:
-    def test_check_system_ready_suppresses_duplicate_nodename_warning(self) -> None:
-        fake_system_health = SimpleNamespace(is_ready=False, is_stale=True, update=MagicMock())
-        fake_redis = SimpleNamespace(ping=AsyncMock(return_value=True))
-        fake_inspect = MagicMock()
-
-        def _ping_with_warning():
-            warnings.warn("duplicate worker node", DuplicateNodenameWarning, stacklevel=1)
-            return {"celery@worker": {"ok": "pong"}}
-
-        fake_inspect.ping = MagicMock(side_effect=_ping_with_warning)
-        fake_celery_app = SimpleNamespace(
-            conf=MagicMock(), control=MagicMock(inspect=MagicMock(return_value=fake_inspect))
-        )
-
-        with (
-            patch("src.core.health.system_health", fake_system_health),
-            patch("src.database.redis_client.get_redis", return_value=fake_redis),
-            patch("src.celery_app.app.celery_app", fake_celery_app),
-            warnings.catch_warnings(record=True) as caught_warnings,
-        ):
-            warnings.simplefilter("always")
-
-            from src.app.callback.v1.callback import _check_system_ready
-
-            result = _check_system_ready()
-
-        assert result is None
-        assert not any(isinstance(item.message, DuplicateNodenameWarning) for item in caught_warnings)
-        fake_system_health.update.assert_called_once_with(db_ok=True, redis_ok=True, celery_ok=True)
-        fake_inspect.ping.assert_called_once()
-
     @pytest.mark.asyncio
     async def test_callback_result_success(self, db_session: AsyncSession, build_request) -> None:
         existing_command = SimpleNamespace(

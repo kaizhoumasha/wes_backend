@@ -1431,3 +1431,46 @@ SMT 粗分机完整业务流程（INSPECTION_COMPLETED 是 Mock 专用）
 ### Resolution
 - **Resolved**: 2026-04-11T00:00:00+08:00
 - **Notes**: 完整业务流程已记录
+
+---
+
+## [LRN-20260413-001] best_practice
+
+**Logged**: 2026-04-13T02:54:00Z
+**Priority**: medium
+**Status**: resolved
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+FastAPI 基础设施健康检查应使用 Depends 机制 + DB Session 复用
+
+### Details
+在代码审计中发现 callback API 的 `_check_system_ready()` 存在两个问题：
+1. 只检查 Redis 和 Celery，**未检查 DB**（DB 不可用时 Inbox 无法写入）
+2. 在多个 endpoint 中重复相同的内联检查逻辑
+
+通过使用 FastAPI 的 `Depends` 机制，将健康检查抽离为独立函数：
+- 接受 `db: AsyncSessionDep` 参数，复用 API 传入的 DB 连接
+- 在需要 Fast Fail 的 endpoint 上通过 `dependencies=[Depends(fast_fail_check)]` 启用
+
+### Suggested Action
+在后续开发中，对于需要基础设施健康检查的 API，优先使用此模式：
+```python
+async def fast_fail_check(db: AsyncSessionDep) -> None:
+    # 使用传入的 db session 检查
+    ...
+
+@router.post("/endpoint", dependencies=[Depends(fast_fail_check)])
+async def handler(..., db: AsyncSessionDep):
+    # db 已在 fast_fail_check 中复用
+```
+
+### Metadata
+- Source: code_audit
+- Related Files:
+  - src/utils/fast_fail.py
+  - src/utils/health.py
+  - src/app/callback/v1/callback.py
+- Tags: fastapi, health-check, best-practice
+
