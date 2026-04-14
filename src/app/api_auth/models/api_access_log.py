@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import ClassVar, Literal
 
 from sqlalchemy import Index
@@ -42,3 +43,4 @@ class APIAccessLogUpdate(ModelFactory(APIAccessLogBase).for_update()):
 
 class APIAccessLogResponse(APIAccessLogBase):
     id: int
+    created_at: datetime
