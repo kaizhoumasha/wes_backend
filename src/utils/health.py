@@ -115,7 +115,46 @@ async def check_database_pool_status(db: AsyncSession) -> dict[str, Any] | None:
         return None
 
 
+async def check_celery_health() -> dict[str, Any]:
+    """
+    检查 Celery Worker 可用性
+
+    Returns:
+        包含健康状态的字典
+    """
+    import warnings
+    from typing import cast
+
+    from celery.exceptions import DuplicateNodenameWarning
+
+    try:
+        from src.celery_app.app import celery_app
+
+        cast("Any", celery_app).conf.update(worker_ping_timeout=1.0)
+        inspect = cast("Any", celery_app).control.inspect()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DuplicateNodenameWarning)
+            stats = inspect.ping()
+
+        if stats:
+            return {
+                "status": "healthy",
+                "workers": len(stats),
+            }
+        return {
+            "status": "unhealthy",
+            "error": "No active workers",
+        }
+    except Exception as e:
+        logger.error(f"Celery 健康检查失败: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
 __all__ = [
+    "check_celery_health",
     "check_database_health",
     "check_database_pool_status",
     "check_redis_health",

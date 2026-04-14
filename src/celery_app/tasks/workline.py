@@ -6,24 +6,38 @@
 设计参考: 设计文档 phase2-orchestrator
 """
 
+from __future__ import annotations
+
 import asyncio
 import uuid
-from collections.abc import Awaitable
 from datetime import timedelta
 from enum import Enum
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from celery import Task
-from loguru import logger
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
 from src.celery_app.app import celery_app
+from src.celery_app.constants import (
+    DEFAULT_COMMAND_PRIORITY,
+    DEFAULT_COMMAND_TIMEOUT_MS,
+    EXTERNAL_HTTP_DECISION_TYPE,
+    EXTERNAL_HTTP_INBOX_KIND,
+    INBOX_PROCESS_TIMEOUT_SECONDS,
+)
+from src.core.logger import logger
+from src.utils.device_cache import workline_device_cache
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.utils import JsonDict
+from src.workline_runtime.payloads import SixInOne
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from src.workline_runtime.utils import JsonDict
 
 # ============================================
 # 类型定义
@@ -65,10 +79,7 @@ class LoadedEntities(TypedDict):
     services: Any | None
 
 
-_EXTERNAL_HTTP_DECISION_TYPE = "EXTERNAL_HTTP_REQUEST"
-_DEFAULT_COMMAND_PRIORITY = 5
-_DEFAULT_COMMAND_TIMEOUT_MS = 300000
-_OUTBOX_META_FIELDS = ("command_code", "task_type", "priority", "timeout", "timestamp")
+# 常量已提取到 src.celery_app.constants
 
 
 # ============================================
@@ -94,7 +105,7 @@ def _should_resolve_session(inbox: Any) -> bool:
         return bool(getattr(inbox, "device_id", None) or payload.get("device_code") or payload.get("business_key"))
     if kind == "COMMAND_RESULT":
         return bool(getattr(inbox, "command_id", None) or payload.get("command_code"))
-    if kind == "EXTERNAL_HTTP":
+    if kind == EXTERNAL_HTTP_INBOX_KIND:
         return bool(getattr(inbox, "correlation_id", None))
     if kind in {"TIMER_TIMEOUT", "MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL", "REPLAY_REQUEST"}:
         return isinstance(getattr(inbox, "session_id", None), int)
@@ -233,9 +244,9 @@ def _normalize_vendor_command_payload(
     payload["task_type"] = _string_value(payload.get("task_type"), action)
 
     if not isinstance(payload.get("priority"), int):
-        payload["priority"] = _DEFAULT_COMMAND_PRIORITY
+        payload["priority"] = DEFAULT_COMMAND_PRIORITY
     if not isinstance(payload.get("timeout"), int):
-        payload["timeout"] = _DEFAULT_COMMAND_TIMEOUT_MS
+        payload["timeout"] = DEFAULT_COMMAND_TIMEOUT_MS
     if not isinstance(payload.get("timestamp"), int):
         payload["timestamp"] = int(timezone.now_utc().timestamp() * 1000)
 
@@ -340,7 +351,7 @@ async def _apply_orchestrator_effects(  # noqa: PLR0912
             continue
 
         decision_type = _string_value(decision.get("decision_type"))
-        if decision_type != _EXTERNAL_HTTP_DECISION_TYPE:
+        if decision_type != EXTERNAL_HTTP_DECISION_TYPE:
             continue
 
         dispatch_key = _string_value(decision.get("dispatch_key"))
@@ -581,24 +592,34 @@ async def _load_workline_session(db: Any, inbox: Any, session_repo: Any) -> Any 
     return await session_repo.get_by_id(db, session_id)
 
 
-async def _load_workline_entity(db: Any, inbox: Any, session: Any, workline_repo: Any) -> Any | None:
-    """按 inbox/workline session 归属加载 Workline。"""
+async def _load_workline_entity(db: Any, inbox: Any, session: Any, workline_repo: Any | None = None) -> Any | None:
+    """按 inbox/workline session 归属加载 Workline（带缓存）。"""
+    from src.app.workline.services import workline_service
+    from src.database.redis_cache import get_cache
+
     workline_id = getattr(inbox, "workline_id", None)
     if workline_id:
-        return await workline_repo.get_by_id(db, workline_id)
+        cache = get_cache()
+        return await workline_service.get_by_id(db, cache, workline_id)
 
     session_workline_id = getattr(session, "workline_id", None)
     if session_workline_id:
-        return await workline_repo.get_by_id(db, session_workline_id)
+        cache = get_cache()
+        return await workline_service.get_by_id(db, cache, session_workline_id)
 
     return None
 
 
 async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | None:
-    """按 command_id 或 payload.command_code 加载命令，并回填 inbox.command_id。"""
+    """按 command_id 或 payload.command_code 加载命令（带缓存），并回填 inbox.command_id。"""
+    from src.app.device.services import device_command_service
+    from src.database.redis_cache import get_cache
+
     command_id = getattr(inbox, "command_id", None)
     if command_id:
-        return await command_repo.get_by_id(db, command_id)
+        # 使用 Service 层缓存
+        cache = get_cache()
+        return await device_command_service.get_by_id(db, cache, command_id)
 
     raw_payload = getattr(inbox, "payload_json", None)
     payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
@@ -606,6 +627,7 @@ async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | 
     if not command_code:
         return None
 
+    # command_code 查询仍使用 repo（无对应 Service 方法）
     command = await command_repo.get_by_command_code(db, command_code)
     if command is not None:
         inbox.command_id = command.id
@@ -626,10 +648,14 @@ def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
 
 
 async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | None:
-    """按 device_id 或 payload.device_code 加载设备，并回填 inbox.device_id。"""
+    """按 device_id 或 payload.device_code 加载设备（带缓存），并回填 inbox.device_id。"""
+    from src.app.device.services import device_service
+    from src.database.redis_cache import get_cache
+
     device_id = getattr(inbox, "device_id", None)
     if device_id:
-        return await device_repo.get_by_id(db, device_id)
+        cache = get_cache()
+        return await device_service.get_by_id(db, cache, device_id)
 
     raw_payload = getattr(inbox, "payload_json", None)
     payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
@@ -637,7 +663,8 @@ async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | No
     if not device_code:
         return None
 
-    device = await device_repo.get_by_device_code(db, device_code)
+    # 使用 DeviceService 查询（带缓存）
+    device = await device_service.get_device_by_code(db, device_code)
     if device is not None:
         inbox.device_id = device.id
     return device
@@ -656,13 +683,22 @@ async def _backfill_workline_from_device(db: Any, inbox: Any, device: Any, workl
 
 
 async def _load_devices_by_role(db: Any, workline: Any, device_repo: Any) -> dict[str, list[Any]]:
-    """加载工作线下设备并按角色分组。"""
+    """加载工作线下设备并按角色分组（带缓存）。"""
     workline_pk = _resolve_entity_id(workline)
     if workline is None or workline_pk is None:
         return {}
 
+    # 使用缓存获取设备，避免重复查询
+    devices = await workline_device_cache.get_devices(
+        db,
+        workline_pk,
+        fetch_func=lambda d, wid: device_repo.get_by_work_line_id(d, wid),
+    )
+
+    if not devices:
+        return {}
+
     devices_by_role: dict[str, list[Any]] = {}
-    devices = await device_repo.get_by_work_line_id(db, workline_pk)
     for device in devices:
         role = _resolve_device_role(device)
         if role:
@@ -783,18 +819,52 @@ class WorklineTask(Task):
 
 
 class ProcessInboxMessages:
-    """处理 Inbox 消息的内部类（用于测试）"""
+    """处理 Inbox 消息的内部类（批量处理核心逻辑）
+
+    职责：
+    - 批量获取待处理 Inbox 消息
+    - 并发控制：防止多 worker 重复处理同一消息
+    - 前置验证：检查 SCAN_COMPLETED 事件必填字段
+    - 编排执行：调用 OrchestratorService 处理消息
+    - 结果应用：执行编排产出的命令/决策/状态转换
+    - 状态更新：标记消息为成功/失败/跳过
+
+    调用方式：
+    - 通过 Celery 任务 process_inbox_batch 间接调用
+    - 可直接调用 _process_batch() 进行单元测试
+    """
 
     @staticmethod
     async def _process_batch(db: Any, limit: int = 10) -> ProcessResult:
         """批量处理 Inbox 消息
 
+        处理流程：
+        1. 从数据库获取 status='NEW' 的待处理消息（limit 限制数量）
+        2. 遍历每个消息：
+           a. 尝试加锁标记为 PROCESSING（并发控制）
+           b. 前置验证：SCAN_COMPLETED 事件必须包含条码信息
+           c. 加载关联实体（session/workline/device/devices_by_role）
+           d. 调用 OrchestratorService.process_inbox() 执行编排
+           e. 成功：应用编排结果，更新状态为 PROCESSED
+           f. 失败：更新状态为 FAILED
+        3. 提交数据库事务
+
+        并发控制：
+        - 使用 SELECT ... FOR UPDATE SKIP LOCKED 获取消息
+        - 使用 processor_token 标记处理 worker
+        - 已被锁定的消息会被标记为 SKIPPED
+
         Args:
             db: 数据库会话
-            limit: 批处理数量
+            limit: 批处理数量，默认 10
 
         Returns:
-            处理结果统计
+            处理结果统计 {
+                "processed": 处理总数,
+                "success": 成功数,
+                "failed": 失败数,
+                "skipped": 跳过数（已被其他 worker 锁定）
+            }
         """
         from src.app.workline.services.inbox_service import inbox_service
 
@@ -810,6 +880,7 @@ class ProcessInboxMessages:
 
         for inbox in messages:
             inbox_pk_text = str(getattr(inbox, "id", "unknown"))
+            inbox_pk: int | None = None  # 初始化，避免 basedpyright 警告
             try:
                 inbox_pk = _resolve_required_pk(inbox, "inbox", "id", "inbox_id")
                 # 尝试标记为处理中（并发控制）
@@ -822,24 +893,21 @@ class ProcessInboxMessages:
                     continue
 
                 # ========== 前置验证：检查必填字段 ==========
-                payload = getattr(inbox, "payload_json", None) or {}
+                raw_payload = getattr(inbox, "payload_json", None)
+                payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
                 event_type = payload.get("event_type")
-                data_field = payload.get("data", {}) or {}
+                data_field: dict[str, Any] = payload.get("data") or {}
 
-                # SCAN_COMPLETED 事件必须包含条码信息（6 合一：LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）
+                # SCAN_COMPLETED 事件必须包含条码信息
                 if event_type == "SCAN_COMPLETED":
-                    barcodes = [
-                        data_field.get("LotCode"),
-                        data_field.get("DateCode"),
-                        data_field.get("PONumber"),
-                        data_field.get("MfrPN"),
-                        data_field.get("ProductNo"),
-                        data_field.get("Qty"),
+                    # 从 data 字段和 payload 中收集条码
+                    barcode_values: list[Any] = [data_field.get(f) for f in SixInOne.BARCODE_FIELDS]
+                    barcode_values.extend([
                         payload.get("LotCode"),
                         payload.get("DateCode"),
                         payload.get("barcode"),
-                    ]
-                    if not any(barcodes):
+                    ])
+                    if not any(barcode_values):
                         error_msg = "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
                         logger.warning(f"Inbox {inbox_pk} {error_msg}")
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg)
@@ -850,15 +918,18 @@ class ProcessInboxMessages:
                 # 加载关联实体
                 entities = await _load_related_entities(db, inbox)
 
-                # 调用编排器
+                # 调用编排器（带超时保护）
                 orchestrator = OrchestratorService()
-                orch_result: OrchestratorResult = await orchestrator.process_inbox(
-                    session=entities["session"],
-                    workline=entities["workline"],
-                    inbox=inbox,
-                    devices_by_role=entities["devices_by_role"],
-                    services=entities["services"],
-                    correlation_id=inbox.correlation_id or "",
+                orch_result: OrchestratorResult = await asyncio.wait_for(
+                    orchestrator.process_inbox(
+                        session=entities["session"],
+                        workline=entities["workline"],
+                        inbox=inbox,
+                        devices_by_role=entities["devices_by_role"],
+                        services=entities["services"],
+                        correlation_id=inbox.correlation_id or "",
+                    ),
+                    timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
                 )
 
                 # 根据结果更新状态
@@ -908,6 +979,19 @@ class ProcessInboxMessages:
 
                 result["processed"] += 1
 
+            except TimeoutError:
+                # 处理超时，不阻塞其他消息
+                logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
+                try:
+                    # 使用已解析的 inbox_pk（如果在前面解析成功）
+                    pk_to_mark = locals().get("inbox_pk") or _resolve_entity_id(inbox)
+                    if pk_to_mark is not None:
+                        _ = await inbox_service.mark_as_failed(db, pk_to_mark, f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
+                except Exception as mark_error:
+                    logger.warning(f"Inbox 超时标记失败: {mark_error}")
+                result["failed"] += 1
+                result["processed"] += 1
+
             except Exception as e:
                 logger.exception(f"Inbox {inbox_pk_text} 处理异常")
                 try:
@@ -925,23 +1009,40 @@ class ProcessInboxMessages:
         return result
 
 
-# 创建实例用于测试
-process_inbox_messages = ProcessInboxMessages()
-
-
 class TimeoutScanner:
-    """超时扫描器内部类（用于测试）"""
+    """超时扫描器内部类
+
+    职责：
+    - 扫描超时的 Session（deadline_at < now）
+    - 为超时 Session 创建 timeout 类型的 Inbox 消息
+    - 触发后续编排流程处理超时
+
+    调用方式：
+    - 通过 Celery 任务 scan_timeouts_batch 间接调用
+    - 可直接调用 _scan() 进行单元测试
+    """
 
     @staticmethod
     async def _scan(db: Any, limit: int = 100) -> ScanResult:
         """扫描超时 Session 并创建 Timeout Inbox
 
+        处理流程：
+        1. 查询 deadline_at < NOW() 的超时 Session
+        2. 遍历每个超时会话：
+           a. 创建 type='timeout' 的 Inbox 消息
+           b. 继承原 Session 的 correlation_id
+        3. 提交数据库事务
+
         Args:
             db: 数据库会话
-            limit: 批处理数量
+            limit: 批处理数量，默认 100
 
         Returns:
-            扫描结果统计
+            扫描结果统计 {
+                "scanned": 扫描的 Session 数,
+                "timeouts_created": 创建的超时 Inbox 数,
+                "errors": 错误数
+            }
         """
         from src.app.workline.repositories.session_repository import (
             WorklineSessionRepository,
@@ -986,10 +1087,6 @@ class TimeoutScanner:
         return result
 
 
-# 创建实例用于测试
-scan_timeouts = TimeoutScanner()
-
-
 @celery_app.task(
     name="src.celery_app.tasks.workline.process_inbox_batch",
     base=WorklineTask,
@@ -1000,17 +1097,46 @@ scan_timeouts = TimeoutScanner()
 def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
     """批量处理 Inbox 消息 (Celery 任务入口)
 
+    从数据库获取 status='NEW' 的 Inbox 消息，调用 ProcessInboxMessages._process_batch() 执行处理。
+
+    处理流程（详见 ProcessInboxMessages）：
+    1. 批量获取待处理消息（limit 限制）
+    2. 并发控制：标记为 PROCESSING，防止重复处理
+    3. 前置验证：检查 SCAN_COMPLETED 事件必填字段
+    4. 加载关联实体：session/workline/device/devices_by_role
+    5. 调用 OrchestratorService 执行编排
+    6. 应用编排结果：command/outbox/timeline
+    7. 更新状态：PROCESSED/FAILED
+
+    执行模式：
+    - bind=True：任务方法接收 self（WorklineTask 实例）
+    - max_retries=3：失败后自动重试最多 3 次
+    - default_retry_delay=5：重试间隔 5 秒（指数退避）
+
+    调用链：
+        process_inbox_batch() → ProcessInboxMessages._process_batch()
+
     Args:
+        self: Celery 任务实例（bind=True）
         limit: 批处理数量，默认 10
 
     Returns:
-        处理结果统计
+        处理结果统计 {
+            "processed": 处理总数,
+            "success": 成功数,
+            "failed": 失败数,
+            "skipped": 跳过数
+        }
+
+    触发方式：
+        celery beat 定时调度（默认每 5 秒）
+        手动调用：process_inbox_batch.delay(limit=10)
     """
     logger.debug(f"开始处理 Inbox 消息, limit={limit}")
 
     async def _process() -> ProcessResult:
         async with self.db as db:
-            return await process_inbox_messages._process_batch(db, limit=limit)
+            return await ProcessInboxMessages._process_batch(db, limit=limit)
 
     try:
         result = _run_async(_process())
@@ -1040,17 +1166,48 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
 def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
     """扫描超时 Session (Celery 任务入口)
 
+    扫描 deadline_at < NOW() 的超时 Session，为每个超时 Session 创建 timeout 类型的 Inbox 消息，
+    触发后续编排流程处理超时。
+
+    处理流程（详见 TimeoutScanner）：
+    1. 查询 deadline_at < NOW() 的超时 Session
+    2. 遍历每个超时会话：
+       a. 创建 type='TIMEOUT' 的 Inbox 消息
+       b. 继承原 Session 的 correlation_id
+    3. 提交数据库事务
+
+    执行模式：
+    - bind=True：任务方法接收 self（WorklineTask 实例）
+    - max_retries=3：失败后自动重试最多 3 次
+    - default_retry_delay=60：重试间隔 60 秒（超时场景不频繁）
+
+    调用链：
+        scan_timeouts_batch() → TimeoutScanner._scan()
+
     Args:
+        self: Celery 任务实例（bind=True）
         limit: 批处理数量，默认 100
 
     Returns:
-        扫描结果统计
+        扫描结果统计 {
+            "scanned": 扫描的 Session 数,
+            "timeouts_created": 创建的超时 Inbox 数,
+            "errors": 错误数
+        }
+
+    触发方式：
+        celery beat 定时调度（默认每 30 秒）
+        手动调用：scan_timeouts_batch.delay(limit=100)
+
+    注意：
+        - 使用幂等性键防止重复创建 timeout Inbox
+        - 创建的 Inbox 类型为 InboxKind.TIMER_TIMEOUT
     """
     logger.info(f"开始扫描超时 Session, limit={limit}")
 
     async def _scan() -> ScanResult:
         async with self.db as db:
-            return await scan_timeouts._scan(db, limit=limit)
+            return await TimeoutScanner._scan(db, limit=limit)
 
     try:
         result = _run_async(_scan())
@@ -1230,10 +1387,6 @@ class OutboxDispatcher:
             return False
 
 
-# 创建实例用于测试
-dispatch_outbox = OutboxDispatcher()
-
-
 @celery_app.task(
     name="src.celery_app.tasks.workline.dispatch_outbox_batch",
     base=WorklineTask,
@@ -1244,17 +1397,54 @@ dispatch_outbox = OutboxDispatcher()
 def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult:
     """批量派发 Outbox 消息 (Celery 任务入口)
 
+    从数据库获取 status='PENDING' 的 Outbox 消息，根据 dispatch_type 执行派发：
+    - DEVICE_COMMAND：调用设备 HTTP API
+    - EXTERNAL_HTTP：调用外部系统 HTTP API
+    - INTERNAL_SIGNAL：触发内部 Celery 任务
+
+    处理流程（详见 OutboxDispatcher）：
+    1. 批量获取待派发消息（limit 限制）
+    2. 遍历每个消息：
+       a. 标记为 DISPATCHING（并发控制）
+       b. 根据 dispatch_type 调用对应派发方法
+       c. 成功：标记为 SENT
+       d. 失败：标记为 FAILED（超过最大重试次数）
+    3. 提交数据库事务
+
+    执行模式：
+    - bind=True：任务方法接收 self（WorklineTask 实例）
+    - max_retries=3：失败后自动重试最多 3 次
+    - default_retry_delay=10：重试间隔 10 秒
+
+    调用链：
+        dispatch_outbox_batch() → OutboxDispatcher._dispatch()
+
     Args:
+        self: Celery 任务实例（bind=True）
         limit: 批处理数量，默认 50
 
     Returns:
-        派发结果统计
+        派发结果统计 {
+            "dispatched": 派发总数,
+            "success": 成功数,
+            "failed": 失败数,
+            "skipped": 跳过数
+        }
+
+    触发方式：
+        celery beat 定时调度（默认每 5 秒）
+        手动调用：dispatch_outbox_batch.delay(limit=50)
+
+    派发类型详解：
+        - DEVICE_COMMAND: 向设备下发指令（HTTP POST /api/v1/device/command）
+        - EXTERNAL_HTTP: 调用外部系统 API（HTTP POST dispatch_key）
+        - INTERNAL_SIGNAL: 触发内部任务（celery.send_task）
     """
     logger.debug(f"开始派发 Outbox 消息, limit={limit}")
 
     async def _dispatch() -> DispatchResult:
         async with self.db as db:
-            return await dispatch_outbox._dispatch(db, limit=limit)
+            return await OutboxDispatcher._dispatch(db, limit=limit)
 
     try:
         result = _run_async(_dispatch())
@@ -1274,14 +1464,14 @@ def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult
 # ============================================
 
 __all__ = [
-    "OutboxDispatcher",
-    "ProcessInboxMessages",
-    "TimeoutScanner",
+    # 内部辅助函数
     "_load_related_entities",
-    "dispatch_outbox",
+    # Celery 任务入口（公共 API）
     "dispatch_outbox_batch",
     "process_inbox_batch",
-    "process_inbox_messages",
-    "scan_timeouts",
     "scan_timeouts_batch",
+    # 内部类（已注释：不导出，仅供 Celery 任务内部使用）
+    # "OutboxDispatcher",
+    # "ProcessInboxMessages",
+    # "TimeoutScanner",
 ]

@@ -1,10 +1,13 @@
 """Device Repository 层"""
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import Device
 from src.database.base_repository import BaseRepository
+from src.utils.device_cache import workline_device_cache
 
 
 class DeviceRepository(BaseRepository[Device]):
@@ -41,6 +44,30 @@ class DeviceRepository(BaseRepository[Device]):
             )
         )
         return list(result.scalars().all())
+
+    async def after_device_change(
+        self,
+        db: AsyncSession,
+        old_work_line_id: int | None,
+        new_work_line_id: int | None,
+    ) -> None:
+        """设备变更后失效缓存
+
+        当设备的 work_line_id 变化（绑定、解绑、更新）时调用，
+        失效相关工作线的设备缓存。
+
+        Args:
+            db: 数据库会话
+            old_work_line_id: 变更前的工作线 ID（可 None）
+            new_work_line_id: 变更后的工作线 ID（可 None）
+        """
+        # 失效旧工作线缓存
+        if old_work_line_id is not None:
+            workline_device_cache.invalidate(old_work_line_id)
+
+        # 失效新工作线缓存
+        if new_work_line_id is not None and new_work_line_id != old_work_line_id:
+            workline_device_cache.invalidate(new_work_line_id)
 
 
 # 创建单例

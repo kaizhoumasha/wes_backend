@@ -9,10 +9,10 @@ from collections.abc import Awaitable
 from typing import Any, TypedDict, TypeVar, cast
 
 from celery import current_task  # pyright: ignore[reportMissingTypeStubs]
-from loguru import logger
 from sqlalchemy import text
 
 from src.celery_app.app import celery_app
+from src.core.logger import logger
 from src.database import db as db_module
 from src.database.redis_client import get_redis, is_redis_available
 from src.utils.timezone import timezone
