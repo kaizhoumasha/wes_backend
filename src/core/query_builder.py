@@ -8,11 +8,15 @@ ILIKE 操作符约定：
     使用反斜杠转义特殊字符（%、_、\\），支持字面量搜索
 """
 
+from datetime import date, datetime
 from collections.abc import Callable
+from enum import Enum
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 import sqlalchemy as sa
 
+from src.core.exceptions import InvalidParameterException
 from src.core.logger import logger
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
 
@@ -88,8 +92,9 @@ class QueryBuilder:
 
         field = cast("Any", getattr(self.model, condition.field))
         builder = self._FIELD_OPERATOR_MAP.get(condition.op)
+        value = self._coerce_value_for_field(field, condition)
 
-        return builder(field, condition.value) if builder else None
+        return builder(field, value) if builder else None
 
     def _build_relation_condition(self, condition: FilterCondition) -> FilterClause | None:
         """构建关联条件"""
@@ -118,6 +123,93 @@ class QueryBuilder:
         builder = self._REL_OPERATOR_MAP.get(condition.op)
 
         return builder(rel_attr, rel_field_attr, condition.value) if builder else None
+
+    def _coerce_value_for_field(self, field: Any, condition: FilterCondition) -> Any:
+        if condition.op in {FilterOperator.IS_NULL, FilterOperator.NOT_NULL}:
+            return None
+
+        column = self._resolve_column(field)
+        if column is None:
+            return condition.value
+
+        python_type = self._resolve_python_type(column.type)
+        if python_type is None:
+            return condition.value
+
+        if condition.op == FilterOperator.BETWEEN and isinstance(condition.value, (list, tuple)):
+            return [self._coerce_scalar_value(item, python_type, condition.field) for item in condition.value]
+
+        if condition.op in {FilterOperator.IN, FilterOperator.NIN} and isinstance(condition.value, (list, tuple, set)):
+            return [self._coerce_scalar_value(item, python_type, condition.field) for item in condition.value]
+
+        return self._coerce_scalar_value(condition.value, python_type, condition.field)
+
+    def _resolve_column(self, field: Any) -> Any | None:
+        property_obj = getattr(field, "property", None)
+        columns = getattr(property_obj, "columns", None)
+        if not columns:
+            return None
+        return columns[0]
+
+    def _resolve_python_type(self, column_type: Any) -> type[Any] | None:
+        try:
+            return cast("type[Any] | None", column_type.python_type)
+        except (AttributeError, NotImplementedError):
+            return None
+
+    def _coerce_scalar_value(self, value: Any, python_type: type[Any], field_name: str) -> Any:
+        if value is None or isinstance(value, python_type):
+            return value
+
+        try:
+            if python_type is datetime:
+                return self._parse_datetime(value, field_name)
+            if python_type is date:
+                return self._parse_date(value, field_name)
+            if python_type is bool:
+                return self._parse_bool(value, field_name)
+            if python_type is UUID:
+                return UUID(str(value))
+            if isinstance(python_type, type) and issubclass(python_type, Enum):
+                return python_type(value)
+            if python_type in {int, float, str}:
+                return python_type(value)
+        except (TypeError, ValueError) as exc:
+            raise InvalidParameterException(
+                field=field_name,
+                message=f"字段 '{field_name}' 的筛选值格式无效"
+            ) from exc
+
+        return value
+
+    def _parse_datetime(self, value: Any, field_name: str) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str):
+            raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 需要 datetime 值")
+
+        normalized = value.strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+
+    def _parse_date(self, value: Any, field_name: str) -> date:
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if not isinstance(value, str):
+            raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 需要 date 值")
+        return date.fromisoformat(value.strip())
+
+    def _parse_bool(self, value: Any, field_name: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y"}:
+                return True
+            if normalized in {"false", "0", "no", "n"}:
+                return False
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 需要布尔值")
 
     def build_sort(self, sort_fields: list[SortField]) -> list[sa.ColumnElement[Any]]:
         """构建排序"""
