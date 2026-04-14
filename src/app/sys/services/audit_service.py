@@ -4,6 +4,7 @@
 提供审计日志的创建和查询功能
 """
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,72 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
 
     def __init__(self, repo: BaseRepository[AuditLog] = audit_log_repository):
         cast("Any", BaseService.__init__)(self, repo)
+
+    @staticmethod
+    def _as_non_empty_text(value: Any) -> str | None:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
+
+    def _build_change_summary(
+        self,
+        *,
+        operation: str | None,
+        changes: Mapping[str, Any] | None,
+    ) -> str | None:
+        normalized_operation = (operation or "").strip().lower()
+        labels = {
+            "create": "创建记录",
+            "update": "更新记录",
+            "delete": "删除记录",
+            "read": "读取记录",
+        }
+
+        base_summary = labels.get(normalized_operation)
+        if changes is None:
+            return base_summary
+
+        field_names = [field for field in changes if isinstance(field, str) and field and not field.startswith("_")]
+        if not field_names:
+            return base_summary
+
+        preview = "、".join(field_names[:3])
+        if len(field_names) > 3:
+            preview = f"{preview} 等 {len(field_names)} 个字段"
+
+        if normalized_operation == "update":
+            return f"更新字段：{preview}"
+        if normalized_operation == "create":
+            return f"创建记录，写入字段：{preview}"
+        if normalized_operation == "delete":
+            return f"删除记录，保留快照字段：{preview}"
+        if base_summary:
+            return f"{base_summary}：{preview}"
+        return preview
+
+    def _extract_audit_dimensions(self, args: dict[str, Any] | None) -> dict[str, Any]:
+        if not args:
+            return {
+                "object_type": None,
+                "action": None,
+                "object_id": None,
+                "change_summary": None,
+            }
+
+        changes = args.get("changes")
+        normalized_changes = changes if isinstance(changes, Mapping) else None
+
+        return {
+            "object_type": self._as_non_empty_text(args.get("model")),
+            "action": self._as_non_empty_text(args.get("operation")),
+            "object_id": self._as_non_empty_text(args.get("record_id")),
+            "change_summary": self._build_change_summary(
+                operation=self._as_non_empty_text(args.get("operation")),
+                changes=normalized_changes,
+            ),
+        }
 
     async def create_audit_log(
         self,
@@ -57,6 +124,7 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
         request_info = cast("dict[str, Any]", get_request_info())
         request_id = get_request_id() or "unknown"
         username = get_current_username()
+        audit_dimensions = self._extract_audit_dimensions(args)
 
         # 构建审计日志数据
         audit_data: dict[str, Any] = {
@@ -79,6 +147,7 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
             "msg": msg,
             "cost_time": cost_time,
             "opera_time": timezone.now(),
+            **audit_dimensions,
         }
 
         try:

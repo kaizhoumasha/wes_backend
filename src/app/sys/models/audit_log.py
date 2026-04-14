@@ -4,6 +4,8 @@ from typing import Any, ClassVar, Literal, cast
 
 import sqlalchemy as sa
 from sqlalchemy import Enum as SQLAEnum
+from sqlalchemy import Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
@@ -37,7 +39,7 @@ class AuditLogBase(BaseMixin):
     os: str | None = Field(default=None, max_length=64)
     browser: str | None = Field(default=None, max_length=64)
     device: str | None = Field(default=None, max_length=64)
-    args: dict[str, Any] | None = Field(default=None, sa_type=sa.JSON)
+    args: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
 
     # 🔥 使用 VARCHAR + CHECK 约束
     status: OperaStatus = Field(
@@ -56,6 +58,10 @@ class AuditLogBase(BaseMixin):
 
     code: str = Field(max_length=20)
     msg: str | None = Field(default=None, sa_type=sa.Text)
+    object_type: str | None = Field(default=None, max_length=100, description="审计对象类型")
+    action: str | None = Field(default=None, max_length=50, description="审计动作")
+    object_id: str | None = Field(default=None, max_length=64, description="审计对象标识")
+    change_summary: str | None = Field(default=None, max_length=255, description="变更摘要")
     cost_time: float = Field(ge=0)  # 添加非负数验证
     opera_time: datetime = Field(
         default_factory=timezone.now,
@@ -72,6 +78,12 @@ class AuditLog(AuditLogBase, DataTableMixin, table=True):  # type: ignore[misc]
     __tablename__: ClassVar[Literal["audit_logs"]] = "audit_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
 
     __schema__ = SchemaType.SYS.value
+
+    __table_args__ = (
+        Index("ix_audit_log_object_type_opera_time", "object_type", "opera_time"),
+        Index("ix_audit_log_action_opera_time", "action", "opera_time"),
+        Index("ix_audit_log_status_opera_time", "status", "opera_time"),
+    )
 
 
 AuditLogCreate = ModelFactory(AuditLogBase).for_create()
