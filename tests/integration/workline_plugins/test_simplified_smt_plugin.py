@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
 
 
@@ -102,11 +103,11 @@ class TestSmtClassifierPlugin:
 
     @pytest.mark.asyncio
     async def test_scan_completed_ng_flow(self, plugin, mock_context):
-        """测试扫码NG流程 - 无效条码（太短）"""
+        """测试扫码NG流程 - 命中业务 NG 规则"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "NG",  # 太短，会被判定为无效
+            "LotCode": "LOTSIZENG",
             "location": "LOC01",
         }
 
@@ -117,11 +118,13 @@ class TestSmtClassifierPlugin:
 
         result = await plugin.on_device_event(mock_context, inbox)
 
-        # NG 条码（太短）会触发 scan_ng transition
         assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "BARCODE_INVALID"
+        assert result.failure is None
+        assert result.commands is not None
+        assert len(result.commands) == 1
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
+        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
 
     @pytest.mark.asyncio
     async def test_scan_invalid_barcode(self, plugin, mock_context):
@@ -143,6 +146,33 @@ class TestSmtClassifierPlugin:
         assert result.failure is not None
         assert result.failure.domain == "DATA"
         assert result.failure.code == "BARCODE_INVALID"
+
+    @pytest.mark.asyncio
+    async def test_pick_success_completes_scan_ng_flow(self, plugin, mock_context):
+        """测试扫码 NG 分流命令成功后直接完成。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_PICK_PLACE",
+            "barcode": "LOTSIZENG",
+            "pick_place_reason": "SCAN_NG",
+        }
+
+        payload = {
+            "command_code": "CMD-001",
+            "command_type": "PICK_AND_PUT",
+            "result": "SUCCESS",
+            "device_code": "ARM01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 3
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "pick_ng"
+        assert result.complete is True
+        assert result.context_patch["step_code"] == "COMPLETED"
+        assert result.context_patch["ng_handled"] is True
 
     @pytest.mark.asyncio
     async def test_scan_completed_rejects_legacy_device_id(self, plugin, mock_context):
@@ -317,7 +347,7 @@ class TestSmtClassifierPluginPluginRegistration:
 
     def test_contract_version(self):
         """验证 contract_version"""
-        assert SmtClassifierPlugin.contract_version == "1.0.0"
+        assert SmtClassifierPlugin.contract_version == "1.0"
 
     def test_plugin_instance(self):
         """验证插件实例可创建"""
@@ -325,30 +355,34 @@ class TestSmtClassifierPluginPluginRegistration:
         assert isinstance(smt_classifier_plugin, SmtClassifierPlugin)
 
 
-class TestBarcodeValidation:
-    """条码验证单元测试"""
+class TestBarcodeDecisionService:
+    """条码业务判定服务测试"""
 
-    @pytest.fixture
-    def plugin(self):
-        return SmtClassifierPlugin()
+    def test_decide_ok_barcode(self):
+        """测试有效条码判定为 OK。"""
+        result = barcode_decision_service.evaluate_scan(
+            lot_code="LOTABC123",
+            date_code="20260409",
+            product_no="PN001",
+        )
 
-    def test_valid_barcode_alphanumeric(self, plugin):
-        """测试有效条码（字母数字）"""
-        assert plugin._is_valid_barcode("ABC123") is True
-        assert plugin._is_valid_barcode("XYZ789") is True
-        assert plugin._is_valid_barcode("LOTABC123") is True  # 无连字符
+        assert result.decision == BarcodeDecisionType.OK
+        assert result.barcode == "LOTABC123"
+        assert result.barcodes == ["LOTABC123", "20260409", "PN001"]
 
-    def test_valid_barcode_minimum_length(self, plugin):
-        """测试有效条码（最小长度）"""
-        assert plugin._is_valid_barcode("ABC") is True  # 刚好3个字符
+    def test_decide_invalid_barcode(self):
+        """测试无效条码判定为 INVALID。"""
+        result = barcode_decision_service.evaluate_scan(lot_code="AB")
 
-    def test_invalid_barcode_too_short(self, plugin):
-        """测试无效条码（太短）"""
-        assert plugin._is_valid_barcode("AB") is False
-        assert plugin._is_valid_barcode("") is False
+        assert result.decision == BarcodeDecisionType.INVALID
+        assert result.reason_code == "BARCODE_INVALID"
 
-    def test_invalid_barcode_special_chars(self, plugin):
-        """测试无效条码（特殊字符）"""
-        assert plugin._is_valid_barcode("ABC-123") is False  # 包含连字符
-        assert plugin._is_valid_barcode("ABC_123") is False  # 包含下划线
-        assert plugin._is_valid_barcode("ABC 123") is False  # 包含空格
+    def test_decide_business_ng_barcode(self):
+        """测试命中业务规则的条码判定为 NG。"""
+        result = barcode_decision_service.evaluate_scan(
+            lot_code="LOTSIZENG",
+            date_code="20260409",
+        )
+
+        assert result.decision == BarcodeDecisionType.NG
+        assert result.reason_code == "SCAN_NG_BY_RULE"

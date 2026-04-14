@@ -3,7 +3,7 @@
 import hashlib
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.inbox import (
@@ -12,6 +12,7 @@ from src.app.workline.models.inbox import (
     WorklineInbox,
 )
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 
 class WorklineInboxRepository(BaseRepository[WorklineInbox]):
@@ -40,11 +41,29 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         db: AsyncSession,
         limit: int = 10,
     ) -> list[WorklineInbox]:
-        """获取待处理的新消息"""
+        """获取待处理的新消息
+
+        包括：
+        - NEW 状态的消息
+        - RETRY 状态且 next_retry_at <= now 的消息（重试到期）
+        """
         columns = cast("Any", WorklineInbox).__table__.c
+        now = timezone.now_for_db()
+
+        # NEW 状态的消息，或 RETRY 状态且重试时间已到的消息
+        retry_ready = and_(
+            columns.status == InboxStatus.RETRY,
+            columns.next_retry_at <= now,
+        )
+
         result = await db.execute(
             select(WorklineInbox)
-            .where(columns.status == InboxStatus.NEW)
+            .where(
+                or_(
+                    columns.status == InboxStatus.NEW,
+                    retry_ready,
+                )
+            )
             .order_by(columns.received_at)
             .limit(limit)
             .with_for_update(skip_locked=True)  # 加锁，避免并发消费

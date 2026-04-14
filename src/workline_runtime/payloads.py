@@ -13,7 +13,45 @@
         ...
 """
 
+from __future__ import annotations
+
+from typing import ClassVar
+
 from pydantic import BaseModel, Field
+
+# ==================== Six-In-One 公共模型 ====================
+
+
+class SixInOne(BaseModel):
+    """六合一码数据 - 硬件商约定
+
+    约定来源：SMT 粗分机接口调用说明书 v2.0 (2026-03-21)
+
+    不变量：
+    - 至少一个字段非空（硬件商保证）
+    - 字段值不含连字符、空格等特殊字符（扫描仪固件限制，isalnum()）
+    - LotCode 是主批次码，其他字段是辅助追溯信息
+
+    Usage:
+        # 获取条码字段列表
+        fields = SixInOne.barcode_fields()
+    """
+
+    # 条码字段列表
+    BARCODE_FIELDS: ClassVar[tuple[str, ...]] = ("LotCode", "DateCode", "Qty", "ProductNo", "MfrPN", "PONumber")
+
+    @classmethod
+    def barcode_fields(cls) -> tuple[str, ...]:
+        """获取条码字段列表"""
+        return cls.BARCODE_FIELDS
+
+    LotCode: str | None = Field(default=None, description="批次码")
+    DateCode: str | None = Field(default=None, description="日期码")
+    Qty: str | None = Field(default=None, description="数量")
+    ProductNo: str | None = Field(default=None, description="产品PN码")
+    MfrPN: str | None = Field(default=None, description="制造商PN码")
+    PONumber: str | None = Field(default=None, description="订单码")
+
 
 # ==================== 基础Payload ====================
 

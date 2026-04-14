@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
+from src.workline_runtime.payloads import SixInOne
 from src.workline_runtime.plugin_base import (
     PluginResultBuilder,
     WorklinePlugin,
@@ -27,25 +29,6 @@ from src.workline_runtime.plugin_base import (
     on_timeout,
     step,
 )
-
-
-class SixInOne(BaseModel):
-    """
-    六合一码数据 - 硬件商约定
-
-    约定来源：SMT 粗分机接口调用说明书 v2.0 (2026-03-21)
-    不变量：
-    - 至少一个字段非空（硬件商保证）
-    - 字段值不含连字符、空格等特殊字符（扫描仪固件限制，isalnum()）
-    - LotCode 是主批次码，其他字段是辅助追溯信息
-    """
-
-    LotCode: str | None = Field(default=None, description="批次码")
-    DateCode: str | None = Field(default=None, description="日期码")
-    Qty: str | None = Field(default=None, description="数量")
-    ProductNo: str | None = Field(default=None, description="产品PN码")
-    MfrPN: str | None = Field(default=None, description="制造商PN码")
-    PONumber: str | None = Field(default=None, description="订单码")
 
 
 class ScanEventData(SixInOne, BaseModel):
@@ -179,7 +162,7 @@ class SmtClassifierPlugin(WorklinePlugin):
     """
 
     plugin_key = "smt_classifier"
-    contract_version = "1.0.0"
+    contract_version = "1.0"
 
     # ========== 设备角色常量 ==========
 
@@ -211,21 +194,60 @@ class SmtClassifierPlugin(WorklinePlugin):
             }
         }
         """
-        barcode = event.first_barcode or ""
         location = event.location or ""
+        barcode_decision = barcode_decision_service.evaluate_scan(
+            barcode=event.barcode,
+            lot_code=event.LotCode,
+            date_code=event.DateCode,
+            po_number=event.PONumber,
+            mfr_pn=event.MfrPN,
+            product_no=event.ProductNo,
+            qty=event.Qty,
+        )
+        barcode = barcode_decision.barcode
 
         logger.info(f"Scan completed: barcode={barcode}, location={location}")
 
-        # 业务规则：验证条码
-        if not self._is_valid_barcode(barcode):
+        if barcode_decision.decision == BarcodeDecisionType.INVALID:
             return (
                 PluginResultBuilder(ctx)
                 .transition("scan_ng")
-                .failure(domain="DATA", code="BARCODE_INVALID", message=f"条码格式错误: {barcode}")
+                .failure(
+                    domain="DATA",
+                    code=barcode_decision.reason_code or "BARCODE_INVALID",
+                    message=barcode_decision.reason_message or f"条码格式错误: {barcode}",
+                )
                 .build()
             )
 
-        # 派发抓取命令：从串杆 → 流水线进料位置
+        if barcode_decision.decision == BarcodeDecisionType.NG:
+            return (
+                PluginResultBuilder(ctx)
+                .transition("scan_ng")
+                .command(
+                    device_role=self.INPUT_ARM,
+                    command_type="PICK_AND_PUT",
+                    parameters={
+                        "barcode": barcode,
+                        "source_type": "INPUT_PLATFORM",
+                        "target_type": "NG_PLATFORM",
+                        "source_loc": location,
+                        "target_loc": "STATION_NG_PLATFORM1",
+                    },
+                )
+                .context(
+                    {
+                        "barcode": barcode,
+                        "barcodes": barcode_decision.barcodes,
+                        "location": location,
+                        "device_code": event.device_code,
+                        "pick_place_reason": "SCAN_NG",
+                        "step_code": SmtClassifierState.WAITING_PICK_PLACE,
+                    }
+                )
+                .build()
+            )
+
         return (
             PluginResultBuilder(ctx)
             .transition("scan_ok")
@@ -243,9 +265,10 @@ class SmtClassifierPlugin(WorklinePlugin):
             .context(
                 {
                     "barcode": barcode,
-                    "barcodes": event.barcodes,  # 所有条码
+                    "barcodes": barcode_decision.barcodes,
                     "location": location,
                     "device_code": event.device_code,
+                    "pick_place_reason": "INPUT",
                     "step_code": SmtClassifierState.WAITING_PICK_PLACE,
                 }
             )
@@ -289,6 +312,16 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         # 路由1: 进料臂完成 → 流水线传输
         if current_step == SmtClassifierState.WAITING_PICK_PLACE:
+            if ctx.session.context_json.get("pick_place_reason") == "SCAN_NG":
+                logger.info(f"NG pick-and-put succeeded: command_code={_result.command_code}")
+                return (
+                    PluginResultBuilder(ctx)
+                    .transition("pick_ng")
+                    .context({"step_code": SmtClassifierState.COMPLETED, "ng_handled": True})
+                    .complete()
+                    .build()
+                )
+
             barcode = ctx.session.context_json.get("barcode", "")
             return (
                 PluginResultBuilder(ctx)
@@ -462,28 +495,6 @@ class SmtClassifierPlugin(WorklinePlugin):
         return PluginResultBuilder(ctx).failure(domain="TIMEOUT", code="DEVICE_TIMEOUT", message="设备响应超时").build()
 
     # ========== 辅助方法 ==========
-
-    def _is_valid_barcode(self, barcode: str) -> bool:
-        """
-        验证条码格式
-
-        规则：
-        1. 长度至少 MIN_BARCODE_LENGTH
-        2. 只包含字母和数字
-
-        Args:
-            barcode: 条码内容
-
-        Returns:
-            bool: 是否有效
-        """
-        if not barcode:
-            return False
-
-        if len(barcode) < self.MIN_BARCODE_LENGTH:
-            return False
-
-        return barcode.isalnum()
 
     async def _allocate_bin(self, barcode: str) -> dict:
         """
