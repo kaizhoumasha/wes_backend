@@ -16,25 +16,24 @@ import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, status
-from loguru import logger
 from pydantic import ValidationError
 
 from src.app.callback.models import CallbackEventRequest
 from src.app.callback.services import callback_log_service
 from src.app.device.models.command import CommandCallbackResult
-from src.app.device.services import device_command_service, device_service
+from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.workline.models.inbox import SourceSystem
-from src.app.workline.services import inbox_service, workline_service
+from src.app.workline.services import inbox_service
 from src.core.api_security import RequireAPIPermission
+from src.core.logger import logger
 from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
 from src.utils.fast_fail import fast_fail_check
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.utils import JsonDict, ensure_dict, resolve_first_str
 
 router = APIRouter()
@@ -160,31 +159,6 @@ async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
 
     await db.commit()
     _enqueue_workline_processing()
-
-
-async def _resolve_device_context(
-    db: AsyncSessionDep,
-    device_code: str,
-) -> tuple[object | None, object | None, str | None, str | None]:
-    device = await device_service.get_device_by_code(db, device_code)
-    if device is None:
-        return None, None, None, None
-
-    workline = None
-    work_line_id = getattr(device, "work_line_id", None)
-    if isinstance(work_line_id, int) and work_line_id > 0:
-        workline = await workline_service.get_by_id(db, cache=None, id=work_line_id)
-
-    plugin_key = getattr(device, "plugin_key", None)
-    if not isinstance(plugin_key, str) or not plugin_key:
-        candidate = getattr(workline, "plugin_key", None)
-        plugin_key = candidate if isinstance(candidate, str) and candidate else None
-
-    contract_version = getattr(device, "contract_version", None)
-    if not isinstance(contract_version, str) or not contract_version:
-        contract_version = get_plugin_contract_version(plugin_key)
-
-    return device, workline, plugin_key, contract_version
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
@@ -371,7 +345,7 @@ async def _is_workline_command_callback(
     ],
     description="设备完成指令后，调用此接口回传执行结果",
 )
-async def callback_result(  # noqa: PLR0911, PLR0912
+async def callback_result(
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -407,38 +381,15 @@ async def callback_result(  # noqa: PLR0911, PLR0912
 
     logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
 
-    # Fast Fail: 立即验证设备和工作线状态
-    device, workline, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
-    if device is None:
-        return _build_not_found_fail(f"未找到设备: {device_code}")
+    # 使用 DeviceContextService 验证设备和工作线上下文
+    ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
+    if ctx_error:
+        return JsonDict(**ctx_error, request_id=request_id)
 
-    # 验证设备在线状态
-    device_status = getattr(device, "device_status", None)
-    if device_status != "ONLINE":
-        logger.warning(f"设备 {device_code} 不在线，当前状态: {device_status}")
-        return JsonDict(
-            code=503,
-            message=f"设备 {device_code} 不在线，状态: {device_status}",
-            request_id=request_id,
-        )
-
-    # 验证工作线存在
-    if workline is None:
-        return JsonDict(
-            code=404,
-            message=f"设备 {device_code} 未关联工作线",
-            request_id=request_id,
-        )
-
-    # 验证工作线启用状态
-    is_active = getattr(workline, "is_active", True)
-    if not is_active:
-        logger.warning(f"工作线 {workline.id} 未启用")
-        return JsonDict(
-            code=403,
-            message=f"工作线 {workline.id} 未启用",
-            request_id=request_id,
-        )
+    # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
+    # 安全保证：上面已检查 ctx_error 并提前返回
+    _plugin_key = ctx_result.plugin_key  # type: ignore[union-attr]
+    _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
 
     try:
         existing_command = await device_command_service.get_command_by_code(db, command_code)
@@ -461,13 +412,13 @@ async def callback_result(  # noqa: PLR0911, PLR0912
             )
             return _build_not_found_fail(message)
 
-        _, _, _plugin_key, resolved_contract_version = await _resolve_device_context(db, device_code)
+        # 从已有 command 获取 plugin_key 和 contract_version（覆盖设备上下文）
         command_plugin_key = getattr(existing_command, "plugin_key", None)
         if isinstance(command_plugin_key, str) and command_plugin_key:
             _plugin_key = command_plugin_key
         command_contract_version = getattr(existing_command, "contract_version", None)
         if isinstance(command_contract_version, str) and command_contract_version:
-            resolved_contract_version = command_contract_version
+            _resolved_contract_version = command_contract_version
 
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         callback = CommandCallbackResult.model_validate(callback_data)
@@ -519,7 +470,7 @@ async def callback_result(  # noqa: PLR0911, PLR0912
                     f"指令结果处理完成: {callback.command_code} -> "
                     f"status={command.status.value}, "
                     f"duration={command.get_duration_ms()}ms, "
-                    f"contract_version={resolved_contract_version}"
+                    f"contract_version={_resolved_contract_version}"
                 )
         else:
             command = await device_command_service.handle_callback_result(db, callback)
@@ -609,7 +560,7 @@ async def callback_result(  # noqa: PLR0911, PLR0912
     ],
     description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )
-async def callback_event(  # noqa: PLR0911
+async def callback_event(
     request: Request,
     db: AsyncSessionDep,
 ) -> JsonDict:
@@ -644,38 +595,14 @@ async def callback_event(  # noqa: PLR0911
 
     logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
 
-    # Fast Fail: 立即验证设备和工作线状态
-    device, workline, _plugin_key, _resolved_contract_version = await _resolve_device_context(db, device_code)
-    if device is None:
-        return _build_not_found_fail(f"未找到设备: {device_code}")
+    # 使用 DeviceContextService 验证设备和工作线上下文
+    ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
+    if ctx_error:
+        return JsonDict(**ctx_error, request_id=request_id)
 
-    # 验证设备在线状态
-    device_status = getattr(device, "device_status", None)
-    if device_status != "ONLINE":
-        logger.warning(f"设备 {device_code} 不在线，当前状态: {device_status}")
-        return JsonDict(
-            code=503,
-            message=f"设备 {device_code} 不在线，状态: {device_status}",
-            request_id=request_id,
-        )
-
-    # 验证工作线存在
-    if workline is None:
-        return JsonDict(
-            code=404,
-            message=f"设备 {device_code} 未关联工作线",
-            request_id=request_id,
-        )
-
-    # 验证工作线启用状态
-    is_active = getattr(workline, "is_active", True)
-    if not is_active:
-        logger.warning(f"工作线 {workline.id} 未启用")
-        return JsonDict(
-            code=403,
-            message=f"工作线 {workline.id} 未启用",
-            request_id=request_id,
-        )
+    # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
+    _plugin_key = ctx_result.plugin_key  # type: ignore[union-attr]
+    _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
 
     try:
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
@@ -684,7 +611,8 @@ async def callback_event(  # noqa: PLR0911
         if event_timestamp is None:
             event_timestamp = int(timezone.now_utc().timestamp() * 1000)
 
-        is_workline_event = _has_workline_binding(getattr(device, "work_line_id", None))
+        # ctx_error 为 None 时，ctx_result 必有值
+        is_workline_event = ctx_result.is_workline_bound  # type: ignore[union-attr]
         event_correlation_id = _resolve_optional_str(event_data, _CORRELATION_ID_ALIASES)
         if is_workline_event and event_correlation_id is None:
             event_correlation_id = f"corr_{uuid.uuid4().hex}"

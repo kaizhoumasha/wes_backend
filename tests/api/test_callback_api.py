@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 @pytest.fixture(autouse=True)
 def mock_fast_fail_check():
-    """自动 mock fast_fail_check 和设备服务，避免在测试中执行真实的基础设施检查。
+    """自动 mock fast_fail_check 和设备上下文服务，避免在测试中执行真实的基础设施检查。
 
     注意：由于测试直接调用 callback 函数而非通过 FastAPI，
     依赖注入可能不会自动触发。
@@ -23,21 +23,39 @@ def mock_fast_fail_check():
         with patch("src.utils.health.check_database_health", new_callable=AsyncMock) as db_mock, \
              patch("src.utils.health.check_redis_health", new_callable=AsyncMock) as redis_mock, \
              patch("src.utils.health.check_celery_health", new_callable=AsyncMock) as celery_mock, \
-             patch("src.app.callback.v1.callback.device_service.get_device_by_code") as device_mock:
+             patch("src.app.callback.v1.callback.device_context_service.resolve") as ctx_mock:
             # 返回健康状态
             db_mock.return_value = {"status": "healthy"}
             redis_mock.return_value = {"status": "healthy"}
             celery_mock.return_value = {"status": "healthy"}
 
-            # 返回设备对象（默认在线状态）
-            def device_by_code_side_effect(db, code):
-                return SimpleNamespace(
-                    work_line_id=1,
-                    plugin_key="smt_classifier",
-                    contract_version="1.0",
-                    device_status="ONLINE",  # 确保设备在线
+            # 返回设备上下文（模拟 DeviceContextService.resolve）
+            def ctx_resolve_side_effect(db, device_code):
+                # 模拟成功返回：返回 (DeviceContextResult, None)
+                return (
+                    SimpleNamespace(
+                        device=SimpleNamespace(
+                            id=1,
+                            code=device_code,
+                            work_line_id=1,
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            device_status="ONLINE",
+                        ),
+                        workline=SimpleNamespace(
+                            id=1,
+                            is_active=True,
+                            plugin_key="smt_classifier",
+                        ),
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                        work_line_id=1,
+                        is_workline_bound=True,
+                    ),
+                    None,  # 无错误
                 )
-            device_mock.side_effect = device_by_code_side_effect
+
+            ctx_mock.side_effect = ctx_resolve_side_effect
 
             mock.return_value = None  # 允许请求通过
             yield mock
@@ -149,8 +167,20 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(plugin_key="smt_classifier", contract_version="1.0", is_active=True),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
@@ -219,8 +249,20 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(plugin_key="smt_classifier", contract_version="1.0", is_active=True),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
@@ -292,8 +334,20 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(plugin_key="smt_classifier", contract_version="1.0", is_active=True),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
@@ -354,8 +408,20 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(plugin_key="smt_classifier", contract_version="1.0", is_active=True),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
@@ -452,8 +518,20 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(plugin_key="smt_classifier", contract_version="1.0", is_active=True),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",

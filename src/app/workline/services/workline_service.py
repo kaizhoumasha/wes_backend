@@ -10,6 +10,7 @@ from src.app.workline.models import WorkLine
 from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
+from src.utils.device_cache import workline_device_cache
 from src.workline_plugin_registry import get_workline_plugin_definition, validate_workline_plugin_assignment
 
 
@@ -47,6 +48,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
         await self._validate_plugin_assignment(db, current=current, data=data)
         return await super().update(db, id, data, cache)
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        """删除工作线后失效设备缓存"""
+        result = await super().delete(db, id, cache)
+        if result:
+            # 失效该工作线的设备缓存
+            workline_device_cache.invalidate(id)
+        return result
 
     async def _validate_plugin_assignment(
         self,

@@ -162,6 +162,34 @@ def test_payload_hash_algorithm():
     assert key.endswith(expected_hash)
 
 
+@pytest.mark.asyncio
+async def test_get_new_messages_only_selects_retry_ready_messages() -> None:
+    repository = WorklineInboxRepository()
+
+    class _FakeResult:
+        def scalars(self) -> "_FakeResult":
+            return self
+
+        def all(self) -> list[object]:
+            return []
+
+    class _FakeDB:
+        statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return _FakeResult()
+
+    db = _FakeDB()
+
+    await repository.get_new_messages(db, limit=10)
+
+    assert db.statement is not None
+    sql = str(db.statement)
+    assert "status = :status_1 OR wes_biz.workline_inbox.status = :status_2 AND" in sql
+    assert "status = :status_1 OR wes_biz.workline_inbox.status = :status_2 OR" not in sql
+
+
 class _FakeInboxRepo:
     def __init__(self, inbox: object | None) -> None:
         self.inbox = inbox
@@ -219,9 +247,9 @@ async def test_mark_as_processing_updates_by_id_with_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_as_failed_updates_by_id_with_error_and_processed_at() -> None:
+async def test_mark_as_failed_schedules_retry_with_backoff() -> None:
     service = WorklineInboxService()
-    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=2))
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=2, attempt_count=0, max_attempts=3))
     service.repo = fake_repo  # type: ignore[assignment]
 
     db = object()
@@ -230,10 +258,32 @@ async def test_mark_as_failed_updates_by_id_with_error_and_processed_at() -> Non
     assert len(fake_repo.update_calls) == 1
     _, inbox_id, data = fake_repo.update_calls[0]
     assert inbox_id == 2
-    assert data["status"] == InboxStatus.FAILED
+    assert data["status"] == InboxStatus.RETRY
     assert data["error_message"] == "boom"
+    assert data["attempt_count"] == 1
+    assert data["next_retry_at"] is not None
     assert data["processed_at"] is not None
-    assert result.status == InboxStatus.FAILED
+    assert result.status == InboxStatus.RETRY
+
+
+@pytest.mark.asyncio
+async def test_mark_as_failed_moves_to_dead_letter_after_max_attempts() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=3, attempt_count=3, max_attempts=3))
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_failed(db, 3, "boom")
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 3
+    assert data["status"] == InboxStatus.DEAD_LETTER
+    assert data["error_message"] == "boom"
+    assert "attempt_count" not in data
+    assert "next_retry_at" not in data
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.DEAD_LETTER
 
 
 @pytest.mark.asyncio

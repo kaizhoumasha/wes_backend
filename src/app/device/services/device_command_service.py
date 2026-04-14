@@ -11,7 +11,6 @@ import uuid
 from typing import Any, cast
 
 import httpx
-from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import (
@@ -27,6 +26,7 @@ from src.app.device.repositories.command_repository import (
 )
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
+from src.core.logger import logger
 from src.database.redis_cache import get_cache
 from src.utils.timezone import timezone
 

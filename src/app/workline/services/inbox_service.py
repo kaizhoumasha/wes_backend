@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.app.workline.models.inbox import (
@@ -260,6 +261,10 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         """
         标记消息处理失败
 
+        支持重试机制：
+        - 如果 attempt_count < max_attempts，设置 next_retry_at，状态设为 RETRY
+        - 如果 attempt_count >= max_attempts，状态设为 DEAD_LETTER
+
         Args:
             db: 数据库会话
             inbox_id: 消息 ID
@@ -268,13 +273,35 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         Returns:
             更新后的消息
         """
-        return await self._update_inbox(
-            db,
-            inbox_id,
-            status=InboxStatus.FAILED,
-            error_message=error_message,
-            processed_at=timezone.now_for_db(),
-        )
+        # 获取当前 inbox 以检查重试次数
+        inbox = await self.repo.get_by_id(db, inbox_id)
+        if inbox is None:
+            raise ValueError(f"Inbox {inbox_id} not found")
+
+        attempt_count = getattr(inbox, "attempt_count", 0) or 0
+        max_attempts = getattr(inbox, "max_attempts", 3) or 3
+
+        if attempt_count < max_attempts:
+            # 可以重试：增加计数，设置下次重试时间
+            next_retry = timezone.now_for_db() + timedelta(seconds=60 * (2 ** attempt_count))
+            return await self._update_inbox(
+                db,
+                inbox_id,
+                status=InboxStatus.RETRY,
+                error_message=error_message,
+                attempt_count=attempt_count + 1,
+                next_retry_at=next_retry,
+                processed_at=timezone.now_for_db(),
+            )
+        else:
+            # 重试耗尽：进入死信队列
+            return await self._update_inbox(
+                db,
+                inbox_id,
+                status=InboxStatus.DEAD_LETTER,
+                error_message=error_message,
+                processed_at=timezone.now_for_db(),
+            )
 
     async def _create_inbox_message(
         self,

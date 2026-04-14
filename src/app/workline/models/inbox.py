@@ -55,7 +55,9 @@ class InboxStatus(str, Enum):
     NEW = "NEW"  # 新消息
     PROCESSING = "PROCESSING"  # 处理中
     PROCESSED = "PROCESSED"  # 已处理
-    FAILED = "FAILED"  # 处理失败
+    FAILED = "FAILED"  # 处理失败（可重试）
+    RETRY = "RETRY"  # 等待重试
+    DEAD_LETTER = "DEAD_LETTER"  # 死信（重试耗尽）
 
 
 class SourceSystem(str, Enum):
@@ -198,6 +200,23 @@ class WorklineInboxBase(BaseMixin):
         default=None,
         sa_column=Column(Text),
         description="错误消息",
+    )
+
+    # 重试机制字段
+    attempt_count: int = Field(
+        default=0,
+        ge=0,
+        description="重试次数",
+    )
+    max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="最大重试次数",
+    )
+    next_retry_at: datetime | None = Field(
+        default=None,
+        index=True,
+        description="下次重试时间",
     )
 
 
