@@ -16,13 +16,16 @@ class _FakeRepo:
         move_result: object | None = None,
         update_result: object | None = None,
         batch_sort_result: object | None = None,
+        permanent_delete_result: bool = True,
     ):
         self._move_result = move_result
         self._update_result = update_result
         self._batch_sort_result = batch_sort_result
+        self._permanent_delete_result = permanent_delete_result
         self.move_node = AsyncMock(return_value=move_result)
         self.update = AsyncMock(return_value=update_result)
         self.batch_sort = AsyncMock(return_value=batch_sort_result)
+        self.permanent_delete = AsyncMock(return_value=permanent_delete_result)
         self.get_by_id = AsyncMock()
         self.get_descendants = AsyncMock()
 
@@ -129,6 +132,32 @@ async def test_batch_sort_invalidates_list_tree_once_and_all_affected_details() 
     assert invalidate_calls[5].kwargs == {"id": 5, "invalidate_list": False}
     assert invalidate_calls[6].args == (cache,)
     assert invalidate_calls[6].kwargs == {"id": 20, "invalidate_list": False}
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_invalidates_tree_and_parent_cache() -> None:
+    repo = _FakeRepo(permanent_delete_result=True)
+    repo.get_by_id = AsyncMock(return_value=SimpleNamespace(id=10, parent_id=5, is_deleted=True))
+
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    success = await service.permanent_delete(db, 10, cache=cache)
+
+    assert success is True
+    repo.get_by_id.assert_awaited_once_with(db, 10, include_deleted=True)
+    repo.permanent_delete.assert_awaited_once_with(db, 10)
+    db.commit.assert_awaited_once()
+
+    invalidate_calls = service.invalidate_cache.await_args_list
+    assert len(invalidate_calls) == 3
+    assert invalidate_calls[0].args == (cache, 10)
+    assert invalidate_calls[0].kwargs == {"invalidate_list": True}
+    assert invalidate_calls[1].args == (cache,)
+    assert invalidate_calls[1].kwargs == {"invalidate_tree": True}
+    assert invalidate_calls[2].args == (cache,)
+    assert invalidate_calls[2].kwargs == {"id": 5}
 
 
 @pytest.mark.asyncio

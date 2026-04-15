@@ -462,5 +462,25 @@ class TreeServiceMixin[M]:
 
         return result
 
+    async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+        """永久删除节点（失效树形缓存 + 父节点详情缓存）"""
+        parent_id_to_invalidate: int | None = None
+        if cache and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, id, include_deleted=True)  # type: ignore[attr-defined]
+                if instance_before:
+                    parent_id_to_invalidate = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
+        success = await super().permanent_delete(db, id, cache)  # type: ignore[misc]
+
+        if cache and hasattr(self, "invalidate_cache") and success:
+            await self.invalidate_cache(cache, invalidate_tree=True)
+            if parent_id_to_invalidate is not None:
+                await self.invalidate_cache(cache, id=parent_id_to_invalidate)
+
+        return success
+
 
 __all__ = ["TreeServiceMixin"]
