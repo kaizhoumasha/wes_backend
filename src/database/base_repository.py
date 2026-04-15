@@ -23,7 +23,7 @@
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -54,12 +54,6 @@ from src.database.repository_utils import (
     split_model_data,
     validate_version_before_update,
 )
-
-if TYPE_CHECKING:
-    from src.database.relation_metadata import RelationInfo
-else:
-    # 运行时使用字符串类型注解
-    RelationInfo = "RelationInfo"
 
 # 泛型类型变量
 T = TypeVar("T")
@@ -408,9 +402,6 @@ class BaseRepository[T]:
     def _has_relation_payload(data: dict[str, Any], relation_info: dict[str, Any]) -> bool:
         return has_relation_payload(data, relation_info)
 
-    def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
-        return self._get_relation_manager().add_relation_load(statement, relation_name, relation_info)
-
     def _add_all_relation_loads(self, statement: Any) -> Any:
         return self._get_relation_manager().add_all_relation_loads(statement)
 
@@ -420,20 +411,8 @@ class BaseRepository[T]:
     async def _handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
         await self._get_relation_manager().handle_relations(db, instance, data)
 
-    async def _preload_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
-        await self._get_relation_manager().preload_relations(db, instance, relation_info)
-
     async def _refresh_with_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
         await self._get_relation_manager().refresh_with_relations(db, instance, relation_info)
-
-    async def _handle_one_to_many_relation(
-        self,
-        db: AsyncSession,
-        instance: T,
-        relation_name: str,
-        relation_data: list[dict[str, Any]],
-    ) -> None:
-        await self._get_relation_manager().handle_one_to_many_relation(db, instance, relation_name, relation_data)
 
     # ==================== 基础 CRUD 方法 ====================
 
