@@ -465,15 +465,16 @@ class BaseRepository[T]:
                 include_deleted=True
             )
         """
+        where_clauses = [self._pk_attr == id]
+        if self._should_filter_deleted(include_deleted):
+            where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+
         if schema:
             from src.core.schema_loader import get_with_schema
 
-            where_clauses = [self._pk_attr == id]
-            if self._should_filter_deleted(include_deleted):
-                where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
             return await get_with_schema(db, self.model, schema, *where_clauses, max_depth=max_depth)
 
-        statement = self._apply_soft_delete_filter(select(self.model).where(self._pk_attr == id), include_deleted)
+        statement = select(self.model).where(*where_clauses)
 
         # 添加关联对象加载
         if include_relations:
