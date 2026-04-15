@@ -23,34 +23,41 @@ from pydantic import BaseModel, Field
 
 
 class SixInOne(BaseModel):
-    """六合一码数据 - 硬件商约定
+    """六合一码数据 - SMT物料标签条码定义
 
-    约定来源：SMT 粗分机接口调用说明书 v2.0 (2026-03-21)
+    标签结构：
+    - 6个一维条码：H.H.PN, Mfr PN, QTY, D/C, L/C, PKG ID
 
-    不变量：
-    - 至少一个字段非空（硬件商保证）
-    - 字段值不含连字符、空格等特殊字符（扫描仪固件限制，isalnum()）
-    - LotCode 是主批次码，其他字段是辅助追溯信息
-
-    Usage:
-        # 获取条码字段列表
-        fields = SixInOne.barcode_fields()
+    业务规则：
+    - 6个条码字段全部有值才算扫码 OK
+    - 任一字段缺失视为扫码 NG，需人工干预或重新扫描
     """
 
-    # 条码字段列表
-    BARCODE_FIELDS: ClassVar[tuple[str, ...]] = ("LotCode", "DateCode", "Qty", "ProductNo", "MfrPN", "PONumber")
+    # 条码字段列表（对应标签上的6个一维条码）
+    BARCODE_FIELDS: ClassVar[tuple[str, ...]] = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID")
 
     @classmethod
     def barcode_fields(cls) -> tuple[str, ...]:
         """获取条码字段列表"""
         return cls.BARCODE_FIELDS
 
-    LotCode: str | None = Field(default=None, description="批次码")
-    DateCode: str | None = Field(default=None, description="日期码")
-    Qty: str | None = Field(default=None, description="数量")
-    ProductNo: str | None = Field(default=None, description="产品PN码")
-    MfrPN: str | None = Field(default=None, description="制造商PN码")
-    PONumber: str | None = Field(default=None, description="订单码")
+    @property
+    def is_complete(self) -> bool:
+        """检查6个条码是否全部有值"""
+        return all(getattr(self, field) is not None and getattr(self, field) != "" for field in self.BARCODE_FIELDS)
+
+    @property
+    def missing_fields(self) -> list[str]:
+        """获取缺失的条码字段列表"""
+        return [field for field in self.BARCODE_FIELDS if getattr(self, field) is None or getattr(self, field) == ""]
+
+    # 6个一维条码字段
+    HHPN: str | None = Field(default=None, description="产品料号 (P) H.H.PN")
+    MfrPN: str | None = Field(default=None, description="制造商PN码 (M) Mfr PN")
+    Qty: str | None = Field(default=None, description="数量 (Q) QTY(PC)")
+    DateCode: str | None = Field(default=None, description="日期码 (D) D/C")
+    LotCode: str | None = Field(default=None, description="批次码 (L) L/C")
+    PkgID: str | None = Field(default=None, description="包装/箱号ID (S) PKG ID")
 
 
 # ==================== 基础Payload ====================

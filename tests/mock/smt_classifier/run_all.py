@@ -2,9 +2,9 @@
 SMT 粗分机工作线 Mock 服务启动脚本
 
 同时启动:
-- Pipeline Mock (PIPELINE01, port 8005)
-- Arm Mock (ARM01, port 8006)
-- Arm Mock (ARM02, port 8007)
+- Pipeline Mock (PIPELINE01 + PIPELINE02, port 8005)
+- Arm Mock (ARM01 + ARM03, port 8006)
+- Arm Mock (ARM02 + ARM04, port 8007)
 - Allocation Mock (port 8008)
 - AGV Mock (AGV01, port 8009)
 
@@ -50,28 +50,31 @@ _processes: list[multiprocessing.Process] = []
 # Mock 服务配置
 MOCK_SERVICES = [
     {
-        "name": "Pipeline Mock (PIPELINE01)",
+        "name": "Pipeline Mock (PIPELINE01 + PIPELINE02)",
         "module": "tests.mock.smt_classifier.pipeline_mock",
         "app_attr": "app",
         "host": "127.0.0.1",
         "port": 8005,
         "device_code": "PIPELINE01",
+        "hosted_device_codes": ["PIPELINE01", "PIPELINE02"],
     },
     {
-        "name": "Arm Mock (ARM01)",
+        "name": "Arm Mock (ARM01 + ARM03)",
         "module": "tests.mock.smt_classifier.arm_mock",
         "app_attr": "app",
         "host": "127.0.0.1",
         "port": 8006,
         "device_code": "ARM01",
+        "hosted_device_codes": ["ARM01", "ARM03"],
     },
     {
-        "name": "Arm Mock (ARM02)",
+        "name": "Arm Mock (ARM02 + ARM04)",
         "module": "tests.mock.smt_classifier.arm_mock",
         "app_attr": "app",
         "host": "127.0.0.1",
         "port": 8007,
         "device_code": "ARM02",
+        "hosted_device_codes": ["ARM02", "ARM04"],
     },
     {
         "name": "Allocation Mock",

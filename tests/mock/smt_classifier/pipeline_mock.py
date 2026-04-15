@@ -1,7 +1,9 @@
 """
 SMT 粗分机流水线 Mock 服务
 
-单线模式下仅模拟 PIPELINE01，负责流水线进料位到出料位的传输。
+支持左右两条标准 SMT 粗分线的流水线模拟:
+- PIPELINE01: 左侧流水线，负责左侧进料位到出料位的传输
+- PIPELINE02: 右侧流水线，负责右侧进料位到出料位的传输
 
 正式接口:
 - POST /api/v1/device/command
@@ -20,7 +22,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
@@ -40,6 +42,7 @@ from tests.mock.smt_classifier.mock_support import (
     JsonDict,
     current_millis,
     post_signed_json,
+    register_mock_exception_handlers,
 )
 
 logging.basicConfig(
@@ -53,16 +56,54 @@ DEVICE_CODE = os.getenv("DEVICE_CODE", "PIPELINE01")
 EXECUTION_TIME = float(os.getenv("EXECUTION_TIME", "1.5"))
 AUTO_TRIGGER_INTERVAL = int(os.getenv("PIPELINE_AUTO_TRIGGER_DEFAULT_INTERVAL", "5"))
 
-DEVICE_INFO = {
-    "device_code": "PIPELINE01",
-    "device_name": "SMT 粗分机流水线",
-    "device_type": "PIPELINE",
-    "port": 8005,
-    "description": "负责进料位到出料位的传输",
-    "task_types": ["MOVE_FORWARD"],
-    "source": DeviceLocation(location_id="STATION_PIPELINE1_INPUT1", location_type="PIPELINE_PLATFORM"),
-    "target": DeviceLocation(location_id="STATION_PIPELINE1_OUTPUT1", location_type="PIPELINE_PLATFORM"),
+
+class PipelineDeviceConfig(TypedDict):
+    device_code: str
+    device_name: str
+    device_type: str
+    port: int
+    description: str
+    task_types: list[str]
+    source: DeviceLocation
+    target: DeviceLocation
+
+
+DEVICE_CONFIGS: dict[str, PipelineDeviceConfig] = {
+    "PIPELINE01": {
+        "device_code": "PIPELINE01",
+        "device_name": "左侧 SMT 粗分机流水线",
+        "device_type": "PIPELINE",
+        "port": 8005,
+        "description": "负责左侧进料位到出料位的传输",
+        "task_types": ["MOVE_FORWARD"],
+        "source": DeviceLocation(location_id="LEFT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM"),
+        "target": DeviceLocation(location_id="LEFT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM"),
+    },
+    "PIPELINE02": {
+        "device_code": "PIPELINE02",
+        "device_name": "右侧 SMT 粗分机流水线",
+        "device_type": "PIPELINE",
+        "port": 8005,
+        "description": "负责右侧进料位到出料位的传输",
+        "task_types": ["MOVE_FORWARD"],
+        "source": DeviceLocation(location_id="RIGHT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM"),
+        "target": DeviceLocation(location_id="RIGHT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM"),
+    },
 }
+
+if DEVICE_CODE not in DEVICE_CONFIGS:
+    raise ValueError(f"无效的设备编码: {DEVICE_CODE}，支持的设备: {list(DEVICE_CONFIGS)}")
+
+DEVICE_INFO = DEVICE_CONFIGS[DEVICE_CODE]
+DEVICE_PORT = int(os.getenv("DEVICE_PORT", str(DEVICE_INFO["port"])))
+HOSTED_DEVICE_CONFIGS: dict[str, PipelineDeviceConfig] = {
+    code: config for code, config in DEVICE_CONFIGS.items() if config["port"] == DEVICE_PORT
+}
+if not HOSTED_DEVICE_CONFIGS:
+    raise ValueError(f"端口 {DEVICE_PORT} 未绑定任何流水线设备")
+
+DEFAULT_DEVICE_CODE = DEVICE_CODE if DEVICE_CODE in HOSTED_DEVICE_CONFIGS else next(iter(HOSTED_DEVICE_CONFIGS))
+DEFAULT_DEVICE_INFO = HOSTED_DEVICE_CONFIGS[DEFAULT_DEVICE_CODE]
 
 
 class ExecutionRecord(BaseModel):
@@ -153,18 +194,31 @@ class AutoExecuteStopResponse(BaseModel):
     execution_count: int
 
 
-DEVICE_STATUS = {
-    "device_code": DEVICE_INFO["device_code"],
-    "status": "IDLE",
-    "error_code": "NONE",
-    "is_online": True,
+DEVICE_STATUS_BY_CODE: dict[str, dict[str, object]] = {
+    code: {
+        "device_code": config["device_code"],
+        "status": "IDLE",
+        "error_code": "NONE",
+        "is_online": True,
+    }
+    for code, config in HOSTED_DEVICE_CONFIGS.items()
 }
 
 
 class PipelineSimulator:
-    def __init__(self, device_code: str = DEVICE_INFO["device_code"]):
+    def __init__(self, device_code: str = DEFAULT_DEVICE_INFO["device_code"]):
         self.device_code = device_code
-        self.device_name = DEVICE_INFO["device_name"]
+        self.device_config = HOSTED_DEVICE_CONFIGS.get(device_code, DEVICE_CONFIGS[device_code])
+        self.device_name = self.device_config["device_name"]
+        self.runtime_status = DEVICE_STATUS_BY_CODE.setdefault(
+            self.device_code,
+            {
+                "device_code": self.device_code,
+                "status": "IDLE",
+                "error_code": "NONE",
+                "is_online": True,
+            },
+        )
         self._counter = 0
         self._execution_count = 0
         self._success_count = 0
@@ -206,13 +260,13 @@ class PipelineSimulator:
         source = self._resolve_location(
             location_type=cast("str | None", source_payload.get("location_type") or params.get("source_type")),
             location_id=cast("str | None", source_payload.get("location_id") or params.get("source_loc")),
-            default_location=cast("DeviceLocation", DEVICE_INFO["source"]),
+            default_location=cast("DeviceLocation", self.device_config["source"]),
             field_name="源",
         )
         target = self._resolve_location(
             location_type=cast("str | None", target_payload.get("location_type") or params.get("target_type")),
             location_id=cast("str | None", target_payload.get("location_id") or params.get("target_loc")),
-            default_location=cast("DeviceLocation", DEVICE_INFO["target"]),
+            default_location=cast("DeviceLocation", self.device_config["target"]),
             field_name="目标",
         )
         return source, target
@@ -276,13 +330,13 @@ class PipelineSimulator:
         source = self._resolve_location(
             location_type=source_type,
             location_id=source_location_id,
-            default_location=cast("DeviceLocation", DEVICE_INFO["source"]),
+            default_location=cast("DeviceLocation", self.device_config["source"]),
             field_name="源",
         )
         target = self._resolve_location(
             location_type=target_type,
             location_id=target_location_id,
-            default_location=cast("DeviceLocation", DEVICE_INFO["target"]),
+            default_location=cast("DeviceLocation", self.device_config["target"]),
             field_name="目标",
         )
         resolved_command_code = command_code or self._generate_command_code()
@@ -339,7 +393,7 @@ class PipelineSimulator:
                 self._success_count += 1
             else:
                 self._failure_count += 1
-                DEVICE_STATUS["error_code"] = "2002"
+                self.runtime_status["error_code"] = "2002"
             return record
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
@@ -419,9 +473,9 @@ class PipelineSimulator:
     def get_status(self, current_command: JsonDict | None = None) -> PipelineStatusResponse:
         return PipelineStatusResponse(
             device_code=self.device_code,
-            status=DEVICE_STATUS["status"],
+            status=cast("str", self.runtime_status["status"]),
             current_command_code=current_command["command_code"] if current_command else None,
-            error_code=DEVICE_STATUS["error_code"],
+            error_code=cast("str", self.runtime_status["error_code"]),
             is_auto_executing=self._is_auto_executing,
             execution_count=self._execution_count,
             success_count=self._success_count,
@@ -432,21 +486,62 @@ class PipelineSimulator:
     def get_executions(self, limit: int = 50) -> list[ExecutionRecord]:
         return self._executions[-limit:]
 
+PIPELINE_SIMULATORS: dict[str, PipelineSimulator] = {
+    code: PipelineSimulator(device_code=code) for code in HOSTED_DEVICE_CONFIGS
+}
+CURRENT_COMMANDS: dict[str, JsonDict | None] = dict.fromkeys(HOSTED_DEVICE_CONFIGS, None)
+CURRENT_COMMAND_TASKS: dict[str, asyncio.Task[None] | None] = dict.fromkeys(HOSTED_DEVICE_CONFIGS, None)
 
-pipeline_simulator = PipelineSimulator()
+
+def _set_current_command(device_code: str, value: JsonDict | None) -> None:
+    global current_command
+    CURRENT_COMMANDS[device_code] = value
+    if device_code == DEFAULT_DEVICE_CODE:
+        current_command = value
+
+
+def _set_current_command_task(device_code: str, value: asyncio.Task[None] | None) -> None:
+    global current_command_task
+    CURRENT_COMMAND_TASKS[device_code] = value
+    if device_code == DEFAULT_DEVICE_CODE:
+        current_command_task = value
+
+
+def _resolve_hosted_device_code(device_code: str | None) -> str:
+    resolved_device_code = device_code or DEFAULT_DEVICE_CODE
+    if resolved_device_code not in HOSTED_DEVICE_CONFIGS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"设备 {resolved_device_code} 不由当前服务实例托管，支持设备: {sorted(HOSTED_DEVICE_CONFIGS)}",
+        )
+    return resolved_device_code
+
+
+def _find_device_code_by_command(command_code: str) -> str | None:
+    for device_code, command in CURRENT_COMMANDS.items():
+        if command is not None and command.get("command_code") == command_code:
+            return device_code
+    return None
+
+
+pipeline_simulator = PIPELINE_SIMULATORS[DEFAULT_DEVICE_CODE]
+DEVICE_STATUS = DEVICE_STATUS_BY_CODE[DEFAULT_DEVICE_CODE]
 current_command: JsonDict | None = None
 current_command_task: asyncio.Task[None] | None = None
 
 app = FastAPI(
-    title="SMT 粗分机流水线 Mock 服务",
-    description="模拟 SMT 粗分机单线流水线设备",
+    title=f"SMT 粗分机流水线 Mock 服务 - {', '.join(HOSTED_DEVICE_CONFIGS)}",
+    description=f"模拟流水线设备: {', '.join(HOSTED_DEVICE_CONFIGS)}",
     version="2.0.0",
 )
+register_mock_exception_handlers(app, logger, service_name="SMT_PIPELINE_MOCK")
 
 
 @app.get("/api/v1/device/status", response_model=DeviceStatusResponse)
-async def get_status() -> DeviceStatusResponse:
-    status = pipeline_simulator.get_status(current_command=current_command)
+async def get_status(device_code: str | None = None) -> DeviceStatusResponse:
+    resolved_device_code = _resolve_hosted_device_code(device_code)
+    simulator = PIPELINE_SIMULATORS[resolved_device_code]
+    status = simulator.get_status(current_command=CURRENT_COMMANDS[resolved_device_code])
     return DeviceStatusResponse(
         device_code=status.device_code,
         status=cast("Literal['IDLE', 'RUNNING', 'ERROR', 'OFFLINE']", status.status),
@@ -458,13 +553,16 @@ async def get_status() -> DeviceStatusResponse:
 
 @app.post("/api/v1/device/command", response_model=DeviceCommandAck)
 async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
-    global current_command, current_command_task
+    resolved_device_code = _resolve_hosted_device_code(payload.device_code)
+    device_info = HOSTED_DEVICE_CONFIGS[resolved_device_code]
+    device_status = DEVICE_STATUS_BY_CODE[resolved_device_code]
 
     # ========== 业务流程日志：收到命令 ==========
     logger.info(
         f"\n{'=' * 60}\n"
-        f"[{DEVICE_INFO['device_name']}] 收到 WES 命令\n"
+        f"[{device_info['device_name']}] 收到 WES 命令\n"
         f"{'=' * 60}\n"
+        f"  设备编号: {resolved_device_code}\n"
         f"  命令编号: {payload.command_code}\n"
         f"  任务类型: {payload.task_type}\n"
         f"  优先级: {payload.priority}\n"
@@ -473,50 +571,53 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
         f"{'=' * 60}"
     )
 
-    if DEVICE_STATUS["status"] == "RUNNING":
-        logger.warning(f"[{DEVICE_INFO['device_name']}] 设备忙，拒绝命令")
+    if device_status["status"] == "RUNNING":
+        logger.warning(f"[{device_info['device_name']}] 设备忙，拒绝命令")
         raise HTTPException(status_code=503, detail="Device Busy")
     if payload.task_type != "MOVE_FORWARD":
-        logger.error(f"[{DEVICE_INFO['device_name']}] 不支持的任务类型: {payload.task_type}")
+        logger.error(f"[{device_info['device_name']}] 不支持的任务类型: {payload.task_type}")
         raise HTTPException(status_code=400, detail="流水线仅支持 MOVE_FORWARD")
 
-    DEVICE_STATUS["status"] = "RUNNING"
-    DEVICE_STATUS["error_code"] = "NONE"
-    current_command = cast("JsonDict", payload.model_dump())
+    device_status["status"] = "RUNNING"
+    device_status["error_code"] = "NONE"
+    _set_current_command(resolved_device_code, cast("JsonDict", payload.model_dump()))
 
     # ========== 业务流程日志：开始执行 ==========
-    logger.info(f"[{DEVICE_INFO['device_name']}] 开始异步执行命令...")
+    logger.info(f"[{device_info['device_name']}] 开始异步执行命令...")
 
-    current_command_task = asyncio.create_task(_execute_wes_command_with_cleanup(payload))
-    return DeviceCommandAck(code=200, message="Accepted", trace_id=f"{DEVICE_CODE}-LOG-{payload.command_code}")
+    task = asyncio.create_task(_execute_wes_command_with_cleanup(resolved_device_code, payload))
+    _set_current_command_task(resolved_device_code, task)
+    return DeviceCommandAck(code=200, message="Accepted", trace_id=f"{resolved_device_code}-LOG-{payload.command_code}")
 
 
-async def _execute_wes_command_with_cleanup(payload: DeviceCommandPayload) -> None:
-    global current_command, current_command_task
+async def _execute_wes_command_with_cleanup(device_code: str, payload: DeviceCommandPayload) -> None:
+    device_info = HOSTED_DEVICE_CONFIGS[device_code]
+    simulator = PIPELINE_SIMULATORS[device_code]
+    device_status = DEVICE_STATUS_BY_CODE[device_code]
     try:
-        await pipeline_simulator.execute_wes_command(payload)
+        await simulator.execute_wes_command(payload)
     except asyncio.CancelledError:
-        logger.info(f"[{DEVICE_INFO['device_name']}] 指令已中断: {payload.command_code}")
+        logger.info(f"[{device_info['device_name']}] 指令已中断: {payload.command_code}")
         raise
     finally:
-        DEVICE_STATUS["status"] = "IDLE"
-        current_command = None
-        current_command_task = None
+        device_status["status"] = "IDLE"
+        _set_current_command(device_code, None)
+        _set_current_command_task(device_code, None)
 
 
 @app.post("/api/v1/device/cancel", response_model=DeviceCommandAck)
 async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
-    global current_command, current_command_task
-    logger.info(f"[{DEVICE_INFO['device_name']}] 收到取消指令请求: {request.command_code}")
-    if current_command is None:
+    resolved_device_code = _find_device_code_by_command(request.command_code)
+    if resolved_device_code is None:
         raise HTTPException(status_code=404, detail="No Active Command")
-    if current_command["command_code"] != request.command_code:
-        raise HTTPException(status_code=404, detail="Command Not Found")
-    task = current_command_task
+    device_info = HOSTED_DEVICE_CONFIGS[resolved_device_code]
+    device_status = DEVICE_STATUS_BY_CODE[resolved_device_code]
+    logger.info(f"[{device_info['device_name']}] 收到取消指令请求: {request.command_code}")
+    task = CURRENT_COMMAND_TASKS[resolved_device_code]
     if task is None or task.done():
-        DEVICE_STATUS["status"] = "IDLE"
-        current_command = None
-        current_command_task = None
+        device_status["status"] = "IDLE"
+        _set_current_command(resolved_device_code, None)
+        _set_current_command_task(resolved_device_code, None)
         raise HTTPException(status_code=409, detail="Command Already Finished")
     task.cancel()
     try:

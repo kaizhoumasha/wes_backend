@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from src.app.workline.domain.models import BarcodeDecision, BarcodeDecisionType
 
+if TYPE_CHECKING:
+    from src.workline_runtime.payloads import SixInOne
+
 
 class BarcodeDecisionService:
-    """负责条码提取、合法性校验与业务 NG 判定。"""
+    """负责条码提取、合法性校验与业务 NG 判定。
+
+    业务规则：
+    - 6个条码字段（HHPN, MfrPN, Qty, DateCode, LotCode, PkgID）全部有值才算 OK
+    - 任一字段缺失视为 INCOMPLETE，需重新扫描
+    - 条码格式非法视为 INVALID
+    - 命中 NG 规则视为 NG
+    """
 
     MIN_BARCODE_LENGTH = 3
     NG_RULE_KEYWORDS: ClassVar[dict[str, tuple[str, str]]] = {
@@ -16,95 +26,73 @@ class BarcodeDecisionService:
         "THICKNESSNG": ("SCAN_NG_BY_RULE", "条码命中厚度 NG 业务规则"),
     }
 
-    def evaluate_scan(
+    def evaluate(
         self,
-        *,
-        barcode: str | None = None,
-        lot_code: str | None = None,
-        date_code: str | None = None,
-        po_number: str | None = None,
-        mfr_pn: str | None = None,
-        product_no: str | None = None,
-        qty: str | None = None,
+        six_in_one: SixInOne,
     ) -> BarcodeDecision:
-        """对扫码事件执行领域判定。"""
+        """对六合一码执行领域判定。
 
-        barcodes = self._collect_barcodes(
-            barcode=barcode,
-            lot_code=lot_code,
-            date_code=date_code,
-            po_number=po_number,
-            mfr_pn=mfr_pn,
-            product_no=product_no,
-            qty=qty,
-        )
-        primary_barcode = barcodes[0] if barcodes else ""
+        Args:
+            six_in_one: 六合一码数据（HHPN, MfrPN, Qty, DateCode, LotCode, PkgID）
 
-        if not self._is_valid_barcode(primary_barcode):
+        Returns:
+            BarcodeDecision: 判定结果（OK / INCOMPLETE / INVALID / NG）
+        """
+        # 检查6个条码是否全部有值
+        if not six_in_one.is_complete:
+            missing = ", ".join(six_in_one.missing_fields)
             return BarcodeDecision(
-                barcode=primary_barcode,
-                barcodes=barcodes,
-                decision=BarcodeDecisionType.INVALID,
-                reason_code="BARCODE_INVALID",
-                reason_message=f"条码格式错误: {primary_barcode}",
+                six_in_one=six_in_one,
+                decision=BarcodeDecisionType.INCOMPLETE,
+                reason_code="BARCODE_INCOMPLETE",
+                reason_message=f"条码不完整，缺失字段: {missing}",
             )
 
-        ng_reason = self._match_ng_rule(primary_barcode)
+        # 校验 PkgID 格式（追溯主键）
+        pkg_id = six_in_one.PkgID or ""
+        if not self._is_valid_pkg_id(pkg_id):
+            return BarcodeDecision(
+                six_in_one=six_in_one,
+                decision=BarcodeDecisionType.INVALID,
+                reason_code="BARCODE_INVALID",
+                reason_message=f"条码格式错误: {pkg_id}",
+            )
+
+        # 匹配业务 NG 规则
+        ng_reason = self._match_ng_rule(pkg_id)
         if ng_reason is not None:
             reason_code, reason_message = ng_reason
             return BarcodeDecision(
-                barcode=primary_barcode,
-                barcodes=barcodes,
+                six_in_one=six_in_one,
                 decision=BarcodeDecisionType.NG,
                 reason_code=reason_code,
-                reason_message=f"{reason_message}: {primary_barcode}",
+                reason_message=f"{reason_message}: {pkg_id}",
             )
 
         return BarcodeDecision(
-            barcode=primary_barcode,
-            barcodes=barcodes,
+            six_in_one=six_in_one,
             decision=BarcodeDecisionType.OK,
         )
 
-    def _collect_barcodes(
-        self,
-        *,
-        barcode: str | None,
-        lot_code: str | None,
-        date_code: str | None,
-        po_number: str | None,
-        mfr_pn: str | None,
-        product_no: str | None,
-        qty: str | None,
-    ) -> list[str]:
-        """按业务优先级收集条码字段。"""
+    def _is_valid_pkg_id(self, pkg_id: str) -> bool:
+        """校验 PkgID 是否合法。
 
-        candidates = [
-            barcode,
-            lot_code,
-            date_code,
-            po_number,
-            mfr_pn,
-            product_no,
-            qty,
-        ]
-        return [candidate for candidate in candidates if candidate]
+        Todo: 需要根据业务规则调整校验逻辑
+        """
 
-    def _is_valid_barcode(self, barcode: str) -> bool:
-        """校验主条码是否合法。"""
-
-        if not barcode:
+        if not pkg_id:
             return False
-        if len(barcode) < self.MIN_BARCODE_LENGTH:
-            return False
-        return barcode.isalnum()
+        return len(pkg_id) >= self.MIN_BARCODE_LENGTH
 
-    def _match_ng_rule(self, barcode: str) -> tuple[str, str] | None:
-        """匹配业务 NG 规则。"""
+    def _match_ng_rule(self, pkg_id: str) -> tuple[str, str] | None:
+        """匹配业务 NG 规则。
 
-        normalized_barcode = barcode.upper()
+        Todo: 需要根据业务规则调整校验逻辑
+        """
+
+        normalized_pkg_id = pkg_id.upper()
         for keyword, reason in self.NG_RULE_KEYWORDS.items():
-            if keyword in normalized_barcode:
+            if keyword in normalized_pkg_id:
                 return reason
         return None
 

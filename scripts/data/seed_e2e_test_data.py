@@ -2,12 +2,16 @@
 SMT 粗分机 E2E 测试数据初始化脚本
 
 仅包含 SMT 粗分机 E2E 测试需要的测试数据：
-- 作业线 (WorkLine): WL-CONVEYOR-01
-- 设备 (Device): ARM01(进料臂), PIPELINE01(流水线), ARM02(出料臂)
+- 作业线 (WorkLine): WL-CONVEYOR-01, WL-CONVEYOR-02
+- 设备:
+  - 左侧: ARM01(进料臂), PIPELINE01(流水线), ARM02(出料臂)
+  - 右侧: ARM03(进料臂), PIPELINE02(流水线), ARM04(出料臂)
 - API 应用 (APIApplication): app_Gqnvr3dpjGwlrjtO
 - API 权限 (api:callback:result, api:callback:event)
 
-设备拓扑: ARM01 -> PIPELINE01 -> ARM02
+设备拓扑:
+- 左侧: ARM01 -> PIPELINE01 -> ARM02
+- 右侧: ARM03 -> PIPELINE02 -> ARM04
 
 与系统初始化数据 (seed_initial_data.py) 分离，避免冲突。
 
@@ -37,6 +41,81 @@ from src.app.workline.models.workline import LineType, WorkLine
 from src.core.encryption import encryption_service
 from src.database.hooks import HookType
 
+WORKLINE_SPECS = [
+    {
+        "line_code": "WL-CONVEYOR-01",
+        "line_name": "左侧 SMT 粗分线",
+        "zone_name": "SMT 左侧区域",
+        "description": "左侧 SMT 粗分机工作线，设备地址指向 host.docker.internal",
+        "sort_order": 1,
+        "devices": [
+            {
+                "device_code": "ARM01",
+                "device_name": "左侧进料机械臂",
+                "device_role": "INPUT_ARM",
+                "host": "host.docker.internal",
+                "port": 8006,
+                "sort_order": 1,
+                "description": "左侧 SMT 粗分机进料机械臂，执行扫码、检测、取放料",
+            },
+            {
+                "device_code": "PIPELINE01",
+                "device_name": "左侧粗分机流水线",
+                "device_role": "CONVEYOR",
+                "host": "host.docker.internal",
+                "port": 8005,
+                "sort_order": 2,
+                "description": "左侧 SMT 粗分机流水线，传输物料到出料位",
+            },
+            {
+                "device_code": "ARM02",
+                "device_name": "左侧出料机械臂",
+                "device_role": "OUTPUT_ARM",
+                "host": "host.docker.internal",
+                "port": 8007,
+                "sort_order": 3,
+                "description": "左侧 SMT 粗分机出料机械臂，从流水线取料放入料箱",
+            },
+        ],
+    },
+    {
+        "line_code": "WL-CONVEYOR-02",
+        "line_name": "右侧 SMT 粗分线",
+        "zone_name": "SMT 右侧区域",
+        "description": "右侧 SMT 粗分机工作线，设备地址指向 localhost，共享 8006/8005/8007 端口",
+        "sort_order": 2,
+        "devices": [
+            {
+                "device_code": "ARM03",
+                "device_name": "右侧进料机械臂",
+                "device_role": "INPUT_ARM",
+                "host": "localhost",
+                "port": 8006,
+                "sort_order": 1,
+                "description": "右侧 SMT 粗分机进料机械臂，执行扫码、检测、取放料",
+            },
+            {
+                "device_code": "PIPELINE02",
+                "device_name": "右侧粗分机流水线",
+                "device_role": "CONVEYOR",
+                "host": "localhost",
+                "port": 8005,
+                "sort_order": 2,
+                "description": "右侧 SMT 粗分机流水线，传输物料到出料位",
+            },
+            {
+                "device_code": "ARM04",
+                "device_name": "右侧出料机械臂",
+                "device_role": "OUTPUT_ARM",
+                "host": "localhost",
+                "port": 8007,
+                "sort_order": 3,
+                "description": "右侧 SMT 粗分机出料机械臂，从流水线取料放入料箱",
+            },
+        ],
+    },
+]
+
 
 def _disable_audit_hooks(repo) -> None:
     """禁用 Repository 的审计日志 Hook"""
@@ -44,6 +123,15 @@ def _disable_audit_hooks(repo) -> None:
         repo.hook_manager.hooks[hook_type] = [
             hook for hook in repo.hook_manager.hooks[hook_type] if hook.priority != 100
         ]
+
+
+def _apply_model_fields(instance: object, fields: dict[str, object]) -> bool:
+    changed = False
+    for key, value in fields.items():
+        if getattr(instance, key) != value:
+            setattr(instance, key, value)
+            changed = True
+    return changed
 
 
 if TYPE_CHECKING:
@@ -59,170 +147,102 @@ async def seed_worklines(db: AsyncSession) -> None:
     repo = WorkLineRepository()
     _disable_audit_hooks(repo)
 
-    # 检查是否已存在（查询所有未删除的记录）
-    existing_result = await db.execute(
-        select(WorkLine).where(
-            WorkLine.line_code == "WL-CONVEYOR-01",
-            WorkLine.is_deleted == False,  # noqa: E712, type: ignore
+    for spec in WORKLINE_SPECS:
+        line_code = spec["line_code"]
+        existing_result = await db.execute(
+            select(WorkLine)
+            .where(
+                WorkLine.line_code == line_code,
+                WorkLine.is_deleted == false(),
+            )
+            .order_by(desc(WorkLine.id))  # type: ignore[arg-type]
         )
-    )
-    existing_list = list(existing_result.scalars().all())
-
-    if existing_list:
-        print(f"     ℹ️  作业线 WL-CONVEYOR-01 已存在 (共 {len(existing_list)} 条)，跳过创建")
-        return
-
-    # 流水线作业线（用于 E2E 测试）
-    await repo.create(
-        db,
-        {
-            "line_code": "WL-CONVEYOR-01",
-            "line_name": "测试流水线作业线",
+        workline = existing_result.scalar_one_or_none()
+        fields = {
+            "line_code": line_code,
+            "line_name": spec["line_name"],
             "line_type": LineType.AUTO,
-            "zone_name": "测试区域",
-            "description": "E2E 测试用流水线作业线，包含识别点摄像头和搬运机械臂",
+            "zone_name": spec["zone_name"],
+            "plugin_key": "smt_classifier",
+            "config": {},
+            "description": spec["description"],
             "is_active": True,
             "capacity": 1000,
-            "sort_order": 1,
-        },
-    )
-    print("     ✅ 创建作业线: WL-CONVEYOR-01")
+            "sort_order": spec["sort_order"],
+        }
+
+        if workline is None:
+            await repo.create(db, fields)
+            print(f"     ✅ 创建作业线: {line_code}")
+            continue
+
+        if _apply_model_fields(workline, fields):
+            db.add(workline)
+            print(f"     ♻️  更新作业线: {line_code}")
+        else:
+            print(f"     ℹ️  作业线 {line_code} 已是目标配置，跳过")
 
 
 async def seed_devices(db: AsyncSession) -> None:
-    """初始化 E2E 测试设备数据
-
-    根据 SMT 粗分机 Mock 服务器创建对应的设备数据（3个设备）：
-    - ARM01: 进料机械臂 (port 8006)
-    - PIPELINE01: 流水线 (port 8005)
-    - ARM02: 出料机械臂 (port 8007)
-
-    拓扑关系: ARM01 -> PIPELINE01 -> ARM02
-    """
+    """初始化 E2E 测试设备数据（双线标准拓扑）"""
     from src.app.device.repositories.device_repository import DeviceRepository
-    from src.app.workline.repositories.workline_repository import WorkLineRepository
 
     device_repo = DeviceRepository()
     _disable_audit_hooks(device_repo)
 
-    # 获取作业线（取最新的）
-    workline_result = await db.execute(
-        select(WorkLine)
-        .where(
-            WorkLine.line_code == "WL-CONVEYOR-01",
-            WorkLine.is_deleted == False,  # noqa: E712, type: ignore
+    worklines_result = await db.execute(
+        select(WorkLine).where(
+            WorkLine.line_code.in_([spec["line_code"] for spec in WORKLINE_SPECS]),
+            WorkLine.is_deleted == false(),
         )
-        .order_by(desc(WorkLine.id))  # type: ignore[arg-type]
     )
-    workline = workline_result.scalar_one_or_none()
-    if not workline:
-        print("     ⚠️  作业线 WL-CONVEYOR-01 不存在，跳过设备创建")
-        return
+    worklines_by_code = {workline.line_code: workline for workline in worklines_result.scalars().all()}
 
-    # 1. 进料机械臂 (ARM01)
-    existing_arm01_result = await db.execute(
-        select(Device).where(
-            Device.device_code == "ARM01",
-            Device.is_deleted == False,  # noqa: E712, type: ignore
-        )
-    )
-    arm01 = existing_arm01_result.scalar_one_or_none()
-    if not arm01:
-        arm01 = await device_repo.create(
-            db,
-            {
-                "device_code": "ARM01",
-                "device_name": "进料机械臂",
-                "work_line_id": workline.id,
-                "description": "SMT 粗分机进料机械臂，执行扫码、检测、取放料 (Mock port 8006)",
-                "is_active": True,
-                "device_role": "INPUT_ARM",
-                "role_index": 1,
-                "upstream_device_id": None,  # 第一个设备，无上游
-                "vendor_type": "MOCK",
-                "host": "127.0.0.1",
-                "port": 8006,
-                "protocol": DeviceProtocol.HTTP,
-                "timeout": 10000,
-                "device_status": DeviceStatus.IDLE,
-                "supported_commands": ["PICK_AND_PUT"],
-                "max_concurrent_tasks": 1,
-                "idempotency_ttl": 3600,
-                "sort_order": 1,
-            },
-        )
-        print("     ✅ 创建设备: ARM01 (进料机械臂)")
-    else:
-        print("     ℹ️  设备 ARM01 已存在，跳过")
+    for workline_spec in WORKLINE_SPECS:
+        workline = worklines_by_code.get(workline_spec["line_code"])
+        if workline is None:
+            print(f"     ⚠️  作业线 {workline_spec['line_code']} 不存在，跳过对应设备创建")
+            continue
 
-    # 2. 流水线 (PIPELINE01)
-    existing_pipeline_result = await db.execute(
-        select(Device).where(
-            Device.device_code == "PIPELINE01",
-            Device.is_deleted == False,  # noqa: E712, type: ignore
-        )
-    )
-    pipeline = existing_pipeline_result.scalar_one_or_none()
-    if not pipeline:
-        pipeline = await device_repo.create(
-            db,
-            {
-                "device_code": "PIPELINE01",
-                "device_name": "粗分机流水线",
+        upstream_device_id: int | None = None
+        for device_spec in workline_spec["devices"]:
+            existing_device_result = await db.execute(
+                select(Device).where(
+                    Device.device_code == device_spec["device_code"],
+                    Device.is_deleted == false(),
+                )
+            )
+            device = existing_device_result.scalar_one_or_none()
+            fields = {
+                "device_code": device_spec["device_code"],
+                "device_name": device_spec["device_name"],
                 "work_line_id": workline.id,
-                "description": "SMT 粗分机流水线，传输物料并检测 (Mock port 8005)",
+                "description": device_spec["description"],
                 "is_active": True,
-                "device_role": "CONVEYOR",
+                "device_role": device_spec["device_role"],
                 "role_index": 1,
-                "upstream_device_id": arm01.id if arm01 else None,  # 上游是进料臂
+                "upstream_device_id": upstream_device_id,
                 "vendor_type": "MOCK",
-                "host": "127.0.0.1",
-                "port": 8005,
+                "host": device_spec["host"],
+                "port": device_spec["port"],
                 "protocol": DeviceProtocol.HTTP,
                 "timeout": 10000,
                 "device_status": DeviceStatus.IDLE,
                 "max_concurrent_tasks": 1,
                 "idempotency_ttl": 3600,
-                "sort_order": 2,
-            },
-        )
-        print("     ✅ 创建设备: PIPELINE01 (流水线)")
-    else:
-        print("     ℹ️  设备 PIPELINE01 已存在，跳过")
+                "sort_order": device_spec["sort_order"],
+            }
 
-    # 3. 出料机械臂 (ARM02)
-    existing_arm02_result = await db.execute(
-        select(Device).where(
-            Device.device_code == "ARM02",
-            Device.is_deleted == False,  # noqa: E712, type: ignore
-        )
-    )
-    if not existing_arm02_result.scalar_one_or_none():
-        await device_repo.create(
-            db,
-            {
-                "device_code": "ARM02",
-                "device_name": "出料机械臂",
-                "work_line_id": workline.id,
-                "description": "SMT 粗分机出料机械臂，从流水线取料放入料箱 (Mock port 8007)",
-                "is_active": True,
-                "device_role": "OUTPUT_ARM",
-                "role_index": 1,
-                "upstream_device_id": pipeline.id if pipeline else None,  # 上游是流水线
-                "vendor_type": "MOCK",
-                "host": "127.0.0.1",
-                "port": 8007,
-                "protocol": DeviceProtocol.HTTP,
-                "timeout": 10000,
-                "device_status": DeviceStatus.IDLE,
-                "max_concurrent_tasks": 1,
-                "idempotency_ttl": 3600,
-                "sort_order": 3,
-            },
-        )
-        print("     ✅ 创建设备: ARM02 (出料机械臂)")
-    else:
-        print("     ℹ️  设备 ARM02 已存在，跳过")
+            if device is None:
+                device = await device_repo.create(db, fields)
+                print(f"     ✅ 创建设备: {device_spec['device_code']} ({device_spec['device_name']})")
+            elif _apply_model_fields(device, fields):
+                db.add(device)
+                print(f"     ♻️  更新设备: {device_spec['device_code']}")
+            else:
+                print(f"     ℹ️  设备 {device_spec['device_code']} 已是目标配置，跳过")
+
+            upstream_device_id = device.id
 
 
 async def seed_api_applications(db: AsyncSession) -> None:
@@ -262,7 +282,7 @@ async def seed_api_applications(db: AsyncSession) -> None:
             "app_type": AppType.ThirdParty,
             "app_id": app_id,
             "app_secret_encrypted": app_secret_encrypted,
-            "description": "SMT 粗分机 E2E 测试用 Mock 设备应用，用于 ARM01/PIPELINE01/ARM02 调用 WES 回调接口",
+            "description": "SMT 粗分机 E2E 测试用 Mock 设备应用，用于双线标准拓扑调用 WES 回调接口",
             "ip_whitelist": None,  # E2E 测试不限制 IP
             "rate_limit_per_minute": 100,
             "rate_limit_per_hour": 5000,
@@ -416,11 +436,10 @@ async def seed_e2e_test_data(db: AsyncSession) -> None:
 
     print("🎉 E2E 测试数据初始化完成！")
     print("\n📦 SMT 粗分机 E2E 测试设备:")
-    print("  - WL-CONVEYOR-01: SMT 粗分机作业线")
-    print("  - ARM01: 进料机械臂 (127.0.0.1:8006) - 扫码/检测/取放料")
-    print("  - PIPELINE01: 流水线 (127.0.0.1:8005) - 传输/检测")
-    print("  - ARM02: 出料机械臂 (127.0.0.1:8007) - 取料入箱")
-    print("\n🔗 拓扑关系: ARM01 -> PIPELINE01 -> ARM02")
+    print("  - WL-CONVEYOR-01: 左侧 SMT 粗分线")
+    print("    ARM01 -> PIPELINE01 -> ARM02 -> host.docker.internal:8006/8005/8007")
+    print("  - WL-CONVEYOR-02: 右侧 SMT 粗分线")
+    print("    ARM03 -> PIPELINE02 -> ARM04 -> localhost:8006/8005/8007")
     print("\n🔑 API 认证:")
     print("  - app_id: app_Gqnvr3dpjGwlrjtO")
     print("  - app_secret: sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao")

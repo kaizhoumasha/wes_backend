@@ -109,6 +109,68 @@
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
+    },
+    {
+      "name": "Celery Worker: 本地调试 (连接容器 Redis/DB)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "celery",
+      "args": [
+        "-A", "src.celery_app.app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=1",
+        "--queues=default,celery,device",
+        "-E",
+        "--without-heartbeat",
+        "-B"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${command:python.interpreterPath}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "ENV": "dev",
+        "APP_DEBUG": "false",
+        "LOG_LEVEL": "INFO",
+        "LOG_DISABLE_FILE": "true",
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_USER": "wes_user",
+        "POSTGRES_PASSWORD": "5oLnQuARGsLRG2CD_ynVcfUVAML6edo7cvDhxWk3n_M",
+        "POSTGRES_DB": "wes_db",
+        "REDIS_HOST": "localhost",
+        "REDIS_PORT": "6379",
+        "REDIS_PASSWORD": "r8KxPpMnNmRsLRG2CD_ynVcfUVAML6edo"
+      }
+    },
+    {
+      "name": "Celery Worker: 本地调试 (.env.dev)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "celery",
+      "args": [
+        "-A", "src.celery_app.app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=1",
+        "--queues=default,celery,device",
+        "-E",
+        "--without-heartbeat",
+        "-B"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${command:python.interpreterPath}",
+      "envFile": "${workspaceFolder}/.env.dev",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "APP_DEBUG": "false",
+        "LOG_LEVEL": "INFO",
+        "LOG_DISABLE_FILE": "true",
+        "POSTGRES_HOST": "localhost",
+        "REDIS_HOST": "localhost"
+      }
     }
   ]
 }

@@ -169,6 +169,32 @@ Each git worktree must keep its own local runtime state. Do not reuse another wo
 ## Coding Style & Naming Conventions
 Target Python 3.13. Ruff enforces formatting, imports, and lint rules: spaces, double quotes, and a 120-character line limit. Keep the existing layering: `v1/` for routes, `services/` for business logic, `repositories/` for data access, and `models/` for schemas. Use `snake_case` for files, functions, and variables, and `PascalCase` for classes.
 
+## Comment Preservation Rules
+When modifying existing code, **preserve all valuable comments** — they are critical for long-term maintainability.
+
+- **Preserve**: Section headers (`# ===`), business logic explanations, parameter descriptions, inline clarifications, design rationale notes.
+- **Preserve**: `TODO` / `FIXME` / `HACK` markers with their context.
+- **Update**: When code behavior changes, update the corresponding comment to reflect the new behavior rather than deleting it.
+- **Add**: When introducing non-obvious logic (workarounds, edge cases, performance considerations), add a brief comment explaining *why*, not just *what*.
+- **Format**: Follow the project's existing comment style (e.g., `# ===` section dividers in config files).
+
+**Examples**:
+```python
+# ✅ CORRECT: Preserve and update comment when modifying code
+# Outbox 消息派发 - 将命令下发给设备（兜底）
+# 正常流程由编排完成后即时 send_task 触发，Beat 仅处理遗漏/重试
+"dispatch-outbox-batch": {
+    "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
+    "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
+},
+
+# ❌ WRONG: Stripping comments when modifying code
+"dispatch-outbox-batch": {
+    "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
+    "schedule": 10.0,
+},
+```
+
 ## Testing Guidelines
 Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. Add unit tests near the affected domain and use `tests/e2e/` or `tests/resilience/` for flows that span APIs, queues, or device integrations. CI publishes coverage reports; changes should cover both success and failure paths.
 

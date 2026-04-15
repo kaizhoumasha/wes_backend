@@ -1,9 +1,9 @@
 """
 SMT 粗分机机械臂 Mock 服务
 
-单线模式下仅模拟:
-- ARM01: 进料机械臂，负责扫码、检测/测厚、输入侧 PICK_AND_PUT、NG 放置
-- ARM02: 出料机械臂，负责从流水线出料位搬运到 BIN
+支持左右两条标准 SMT 粗分线:
+- ARM01 / ARM03: 进料机械臂，负责扫码、检测/测厚、输入侧 PICK_AND_PUT、NG 放置
+- ARM02 / ARM04: 出料机械臂，负责从流水线出料位搬运到 BIN
 
 正式接口:
 - POST /api/v1/device/command
@@ -44,6 +44,7 @@ from tests.mock.smt_classifier.mock_support import (
     JsonDict,
     current_millis,
     post_signed_json,
+    register_mock_exception_handlers,
 )
 
 logging.basicConfig(
@@ -90,18 +91,18 @@ class DeviceRuntimeStatus(TypedDict):
 DEVICE_CONFIGS: dict[str, DeviceConfig] = {
     "ARM01": {
         "device_code": "ARM01",
-        "device_name": "进料机械臂",
+        "device_name": "左侧进料机械臂",
         "device_type": "ROBOTIC_ARM",
         "device_role": "INPUT_ARM",
         "port": 8006,
-        "description": "负责扫码、检测/测厚、输入侧搬运与 NG 放置",
-        "task_types": ["PICK_AND_PUT", "PICK_NG"],
+        "description": "负责左侧扫码、检测/测厚、输入侧搬运与 NG 放置",
+        "task_types": ["PICK_AND_PUT", "PICK_NG", "MEASUREMENT_REEL"],
         "locations": {
-            "INPUT_PLATFORM": [DeviceLocation(location_id="STATION_INPUT1", location_type="INPUT_PLATFORM")],
+            "INPUT_PLATFORM": [DeviceLocation(location_id="LEFT_STATION_INPUT", location_type="INPUT_PLATFORM")],
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="STATION_PIPELINE1_INPUT1", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(location_id="LEFT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM")
             ],
-            "NG_PLATFORM": [DeviceLocation(location_id="STATION_NG_PLATFORM1", location_type="NG_PLATFORM")],
+            "NG_PLATFORM": [DeviceLocation(location_id="LEFT_STATION_NG", location_type="NG_PLATFORM")],
         },
         "source_types": ["INPUT_PLATFORM", "PIPELINE_PLATFORM"],
         "target_types": ["PIPELINE_PLATFORM", "NG_PLATFORM"],
@@ -110,22 +111,74 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
     },
     "ARM02": {
         "device_code": "ARM02",
-        "device_name": "出料机械臂",
+        "device_name": "左侧出料机械臂",
         "device_type": "ROBOTIC_ARM",
         "device_role": "OUTPUT_ARM",
         "port": 8007,
-        "description": "负责从流水线出料位搬运到料箱",
+        "description": "负责从左侧流水线出料位搬运到料箱",
         "task_types": ["PICK_AND_PUT", "OUTPUT"],
         "locations": {
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="STATION_PIPELINE1_OUTPUT1", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(location_id="LEFT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM")
             ],
             "BIN": [
                 DeviceLocation(
-                    location_id="STATION_OUTPUT1",
+                    location_id="LEFT_STATION_OUTPUT",
                     location_type="BIN",
-                    rack_id="RACK_001",
-                    bin_id="BIN_104",
+                    rack_id="LEFT_RACK_001",
+                    bin_id="LEFT_BIN_104",
+                    bin_type="三格箱",
+                    bin_cell_location="1",
+                    reel_layer="15",
+                    reel_thickness="20",
+                    reel_diameter="15inch",
+                    reel_totalthickness="300",
+                )
+            ],
+        },
+        "source_types": ["PIPELINE_PLATFORM"],
+        "target_types": ["BIN"],
+        "default_source_type": "PIPELINE_PLATFORM",
+        "default_target_type": "BIN",
+    },
+    "ARM03": {
+        "device_code": "ARM03",
+        "device_name": "右侧进料机械臂",
+        "device_type": "ROBOTIC_ARM",
+        "device_role": "INPUT_ARM",
+        "port": 8006,
+        "description": "负责右侧扫码、检测/测厚、输入侧搬运与 NG 放置",
+        "task_types": ["PICK_AND_PUT", "PICK_NG", "MEASUREMENT_REEL"],
+        "locations": {
+            "INPUT_PLATFORM": [DeviceLocation(location_id="RIGHT_STATION_INPUT", location_type="INPUT_PLATFORM")],
+            "PIPELINE_PLATFORM": [
+                DeviceLocation(location_id="RIGHT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM")
+            ],
+            "NG_PLATFORM": [DeviceLocation(location_id="RIGHT_STATION_NG", location_type="NG_PLATFORM")],
+        },
+        "source_types": ["INPUT_PLATFORM", "PIPELINE_PLATFORM"],
+        "target_types": ["PIPELINE_PLATFORM", "NG_PLATFORM"],
+        "default_source_type": "INPUT_PLATFORM",
+        "default_target_type": "PIPELINE_PLATFORM",
+    },
+    "ARM04": {
+        "device_code": "ARM04",
+        "device_name": "右侧出料机械臂",
+        "device_type": "ROBOTIC_ARM",
+        "device_role": "OUTPUT_ARM",
+        "port": 8007,
+        "description": "负责从右侧流水线出料位搬运到料箱",
+        "task_types": ["PICK_AND_PUT", "OUTPUT"],
+        "locations": {
+            "PIPELINE_PLATFORM": [
+                DeviceLocation(location_id="RIGHT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM")
+            ],
+            "BIN": [
+                DeviceLocation(
+                    location_id="RIGHT_STATION_OUTPUT",
+                    location_type="BIN",
+                    rack_id="RIGHT_RACK_001",
+                    bin_id="BIN_204",
                     bin_type="三格箱",
                     bin_cell_location="1",
                     reel_layer="15",
@@ -147,6 +200,14 @@ if DEVICE_CODE not in DEVICE_CONFIGS:
 
 CURRENT_DEVICE = DEVICE_CONFIGS[DEVICE_CODE]
 DEVICE_PORT = int(os.getenv("DEVICE_PORT", str(CURRENT_DEVICE["port"])))
+HOSTED_DEVICE_CONFIGS: dict[str, DeviceConfig] = {
+    code: config for code, config in DEVICE_CONFIGS.items() if config["port"] == DEVICE_PORT
+}
+if not HOSTED_DEVICE_CONFIGS:
+    raise ValueError(f"端口 {DEVICE_PORT} 未绑定任何机械臂设备")
+
+DEFAULT_DEVICE_CODE = DEVICE_CODE if DEVICE_CODE in HOSTED_DEVICE_CONFIGS else next(iter(HOSTED_DEVICE_CONFIGS))
+DEFAULT_DEVICE = HOSTED_DEVICE_CONFIGS[DEFAULT_DEVICE_CODE]
 
 
 class ExecutionRecord(BaseModel):
@@ -319,12 +380,15 @@ class InspectionCompletedDebugRequest(BaseModel):
     }
 
 
-DEVICE_STATUS: DeviceRuntimeStatus = {
-    "device_code": CURRENT_DEVICE["device_code"],
-    "status": "IDLE",
-    "is_online": True,
-    "error_code": "NONE",
-    "current_command_code": None,
+DEVICE_STATUS_BY_CODE: dict[str, DeviceRuntimeStatus] = {
+    code: {
+        "device_code": config["device_code"],
+        "status": "IDLE",
+        "is_online": True,
+        "error_code": "NONE",
+        "current_command_code": None,
+    }
+    for code, config in HOSTED_DEVICE_CONFIGS.items()
 }
 
 
@@ -337,6 +401,7 @@ class ArmSimulator:
         self.device_config = device_config
         self.device_code = device_config["device_code"]
         self.device_name = device_config["device_name"]
+        self.runtime_status = DEVICE_STATUS_BY_CODE[self.device_code]
         self._counter = 0
         self._execution_count = 0
         self._success_count = 0
@@ -452,11 +517,20 @@ class ArmSimulator:
     def _build_result_data(
         self,
         *,
+        task_type: str,
         source: DeviceLocation,
         target: DeviceLocation,
         barcode_seed: str | None,
+        pkg_id: str | None,
         move_result: str,
     ) -> JsonDict:
+        if task_type == "MEASUREMENT_REEL":
+            return {
+                "pkg_id": pkg_id or barcode_seed or "",
+                "reel_diameter": 15.0,
+                "reel_thickness": 20.0,
+            }
+
         data: JsonDict = {
             "actual_qty": 1,
             "location": target.location_id,
@@ -547,6 +621,7 @@ class ArmSimulator:
         command_code: str | None = None,
         reason: str | None = None,
         error_code: str | None = None,
+        pkg_id: str | None = None,
         report_result: bool = True,
     ) -> ExecutionRecord:
         async with self._lock:
@@ -584,8 +659,8 @@ class ArmSimulator:
             )
 
             started_at = datetime.now()
-            DEVICE_STATUS["status"] = "RUNNING"
-            DEVICE_STATUS["current_command_code"] = resolved_command_code
+            self.runtime_status["status"] = "RUNNING"
+            self.runtime_status["current_command_code"] = resolved_command_code
 
             # 模拟执行过程
             logger.info(f"[{self.device_name}] 执行中...")
@@ -628,9 +703,11 @@ class ArmSimulator:
             )
 
             callback_data = self._build_result_data(
+                task_type=resolved_task_type,
                 source=source,
                 target=target,
                 barcode_seed=barcode,
+                pkg_id=pkg_id,
                 move_result=move_result,
             )
             if report_result:
@@ -648,13 +725,13 @@ class ArmSimulator:
             duration_ms = int((finished_at - started_at).total_seconds() * 1000)
 
             # 更新设备状态
-            DEVICE_STATUS["status"] = "IDLE"
-            DEVICE_STATUS["current_command_code"] = None
+            self.runtime_status["status"] = "IDLE"
+            self.runtime_status["current_command_code"] = None
             if result == "SUCCESS":
                 self._success_count += 1
             else:
                 self._failure_count += 1
-                DEVICE_STATUS["error_code"] = cast("Literal['NONE']", "2002")
+                self.runtime_status["error_code"] = cast("Literal['NONE']", "2002")
 
             execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
@@ -708,6 +785,7 @@ class ArmSimulator:
             command_code=payload.command_code,
             reason=cast("str | None", params.get("reason")),
             error_code=cast("str | None", error_code),
+            pkg_id=cast("str | None", params.get("pkg_id")),
             report_result=True,
         )
 
@@ -856,41 +934,89 @@ class ArmSimulator:
     def get_status(self, current_command: JsonDict | None = None) -> DeviceStatusResponse:
         return DeviceStatusResponse(
             device_code=self.device_code,
-            status=DEVICE_STATUS["status"],
+            status=self.runtime_status["status"],
             current_command_code=current_command["command_code"] if current_command else None,
-            error_code=DEVICE_STATUS["error_code"],
+            error_code=self.runtime_status["error_code"],
             timestamp=current_millis(),
         )
 
     def get_executions(self, limit: int = 50) -> list[ExecutionRecord]:
-        return self._executions[-limit:]
+        if limit <= 0:
+            return []
+        return list(self._executions)[-limit:]
 
 
-arm_simulator = ArmSimulator(device_config=CURRENT_DEVICE)
+ARM_SIMULATORS: dict[str, ArmSimulator] = {
+    code: ArmSimulator(device_config=config) for code, config in HOSTED_DEVICE_CONFIGS.items()
+}
+CURRENT_COMMANDS: dict[str, JsonDict | None] = dict.fromkeys(HOSTED_DEVICE_CONFIGS, None)
+CURRENT_COMMAND_TASKS: dict[str, asyncio.Task[None] | None] = dict.fromkeys(HOSTED_DEVICE_CONFIGS, None)
+
+
+def _set_current_command(device_code: str, value: JsonDict | None) -> None:
+    global current_command
+    CURRENT_COMMANDS[device_code] = value
+    if device_code == DEFAULT_DEVICE_CODE:
+        current_command = value
+
+
+def _set_current_command_task(device_code: str, value: asyncio.Task[None] | None) -> None:
+    global current_command_task
+    CURRENT_COMMAND_TASKS[device_code] = value
+    if device_code == DEFAULT_DEVICE_CODE:
+        current_command_task = value
+
+
+def _resolve_hosted_device_code(device_code: str | None) -> str:
+    resolved_device_code = device_code or DEFAULT_DEVICE_CODE
+    if resolved_device_code not in HOSTED_DEVICE_CONFIGS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"设备 {resolved_device_code} 不由当前服务实例托管，支持设备: {sorted(HOSTED_DEVICE_CONFIGS)}",
+        )
+    return resolved_device_code
+
+
+def _find_device_code_by_command(command_code: str) -> str | None:
+    for device_code, command in CURRENT_COMMANDS.items():
+        if command is not None and command.get("command_code") == command_code:
+            return device_code
+    return None
+
+
+arm_simulator = ARM_SIMULATORS[DEFAULT_DEVICE_CODE]
+DEVICE_STATUS = DEVICE_STATUS_BY_CODE[DEFAULT_DEVICE_CODE]
 current_command: JsonDict | None = None
 current_command_task: asyncio.Task[None] | None = None
 
 app = FastAPI(
-    title=f"SMT 粗分机机械臂 Mock 服务 - {CURRENT_DEVICE['device_name']}",
-    description=f"模拟 {CURRENT_DEVICE['device_name']}（{DEVICE_CODE}）设备",
+    title=f"SMT 粗分机机械臂 Mock 服务 - {', '.join(HOSTED_DEVICE_CONFIGS)}",
+    description=f"模拟机械臂设备: {', '.join(HOSTED_DEVICE_CONFIGS)}",
     version="2.0.0",
 )
+register_mock_exception_handlers(app, logger, service_name="SMT_ARM_MOCK")
 
 
 @app.get("/api/v1/device/status", response_model=DeviceStatusResponse)
-async def get_device_status() -> DeviceStatusResponse:
-    return arm_simulator.get_status(current_command=current_command)
+async def get_device_status(device_code: str | None = None) -> DeviceStatusResponse:
+    resolved_device_code = _resolve_hosted_device_code(device_code)
+    simulator = ARM_SIMULATORS[resolved_device_code]
+    return simulator.get_status(current_command=CURRENT_COMMANDS[resolved_device_code])
 
 
 @app.post("/api/v1/device/command", response_model=DeviceCommandAck)
 async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
-    global current_command, current_command_task
+    resolved_device_code = _resolve_hosted_device_code(payload.device_code)
+    device_config = HOSTED_DEVICE_CONFIGS[resolved_device_code]
+    simulator = ARM_SIMULATORS[resolved_device_code]
+    device_status = DEVICE_STATUS_BY_CODE[resolved_device_code]
 
     # ========== 业务流程日志：收到命令 ==========
     logger.info(
         f"\n{'=' * 60}\n"
-        f"[{CURRENT_DEVICE['device_name']}] 收到 WES 命令\n"
+        f"[{device_config['device_name']}] 收到 WES 命令\n"
         f"{'=' * 60}\n"
+        f"  设备编号: {resolved_device_code}\n"
         f"  命令编号: {payload.command_code}\n"
         f"  任务类型: {payload.task_type}\n"
         f"  优先级: {payload.priority}\n"
@@ -899,54 +1025,63 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
         f"{'=' * 60}"
     )
 
-    if DEVICE_STATUS["status"] == "RUNNING":
-        logger.warning(f"[{CURRENT_DEVICE['device_name']}] 设备忙，拒绝命令")
+    if device_status["status"] == "RUNNING":
+        logger.warning(f"[{device_config['device_name']}] 设备忙，拒绝命令")
         raise HTTPException(status_code=503, detail="Device Busy")
-    if not arm_simulator._validate_task_type(payload.task_type):
-        logger.error(f"[{CURRENT_DEVICE['device_name']}] 不支持的任务类型: {payload.task_type}")
+    if not simulator._validate_task_type(payload.task_type):
+        logger.error(f"[{device_config['device_name']}] 不支持的任务类型: {payload.task_type}")
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的任务类型: {payload.task_type}，支持的任务类型: {CURRENT_DEVICE['task_types']}",
+            detail=f"不支持的任务类型: {payload.task_type}，支持的任务类型: {device_config['task_types']}",
         )
 
-    DEVICE_STATUS["status"] = "RUNNING"
-    DEVICE_STATUS["error_code"] = "NONE"
-    current_command = cast("JsonDict", payload.model_dump())
-    trace_id = f"{DEVICE_CODE}-LOG-{payload.command_code.split('-')[-1]}"
+    device_status["status"] = "RUNNING"
+    device_status["error_code"] = "NONE"
+    device_status["current_command_code"] = payload.command_code
+    _set_current_command(resolved_device_code, cast("JsonDict", payload.model_dump()))
+    trace_id = f"{resolved_device_code}-LOG-{payload.command_code.split('-')[-1]}"
 
     # ========== 业务流程日志：开始执行 ==========
-    logger.info(f"[{CURRENT_DEVICE['device_name']}] 开始异步执行命令...")
+    logger.info(f"[{device_config['device_name']}] 开始异步执行命令...")
 
-    current_command_task = asyncio.create_task(_execute_wes_command_with_cleanup(payload))
+    task = asyncio.create_task(_execute_wes_command_with_cleanup(resolved_device_code, payload))
+    _set_current_command_task(resolved_device_code, task)
     return DeviceCommandAck(code=200, message="Accepted", trace_id=trace_id)
 
 
-async def _execute_wes_command_with_cleanup(payload: DeviceCommandPayload) -> None:
-    global current_command, current_command_task
+async def _execute_wes_command_with_cleanup(device_code: str, payload: DeviceCommandPayload) -> None:
+    device_config = HOSTED_DEVICE_CONFIGS[device_code]
+    simulator = ARM_SIMULATORS[device_code]
+    device_status = DEVICE_STATUS_BY_CODE[device_code]
     try:
-        await arm_simulator.execute_wes_command(payload)
+        await simulator.execute_wes_command(payload)
     except asyncio.CancelledError:
-        logger.info(f"[{CURRENT_DEVICE['device_name']}] 指令已中断: {payload.command_code}")
+        logger.info(f"[{device_config['device_name']}] 指令已中断: {payload.command_code}")
         raise
     finally:
-        DEVICE_STATUS["status"] = "IDLE"
-        current_command = None
-        current_command_task = None
+        device_status["status"] = "IDLE"
+        device_status["current_command_code"] = None
+        _set_current_command(device_code, None)
+        _set_current_command_task(device_code, None)
 
 
 @app.post("/api/v1/device/cancel", response_model=DeviceCommandAck)
 async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
-    global current_command, current_command_task
-    logger.info(f"[{CURRENT_DEVICE['device_name']}] 收到取消指令请求: {request.command_code}")
-    if current_command is None:
+    resolved_device_code = _find_device_code_by_command(request.command_code)
+    if resolved_device_code is None:
         raise HTTPException(status_code=404, detail="No Active Command")
-    if current_command["command_code"] != request.command_code:
-        raise HTTPException(status_code=404, detail="Command Not Found")
-    task = current_command_task
+    device_config = HOSTED_DEVICE_CONFIGS[resolved_device_code]
+    device_status = DEVICE_STATUS_BY_CODE[resolved_device_code]
+    command = CURRENT_COMMANDS[resolved_device_code]
+    logger.info(f"[{device_config['device_name']}] 收到取消指令请求: {request.command_code}")
+    if command is None:
+        raise HTTPException(status_code=404, detail="No Active Command")
+    task = CURRENT_COMMAND_TASKS[resolved_device_code]
     if task is None or task.done():
-        DEVICE_STATUS["status"] = "IDLE"
-        current_command = None
-        current_command_task = None
+        device_status["status"] = "IDLE"
+        device_status["current_command_code"] = None
+        _set_current_command(resolved_device_code, None)
+        _set_current_command_task(resolved_device_code, None)
         raise HTTPException(status_code=409, detail="Command Already Finished")
     task.cancel()
     try:

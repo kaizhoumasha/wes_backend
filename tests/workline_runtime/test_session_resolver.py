@@ -489,20 +489,24 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_uses_lot_code_as_business_key(
+    async def test_resolve_device_event_uses_new_six_in_one_fields_as_business_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试 DEVICE_EVENT 使用 Six-In-One 组合生成 hash 作为 business_key。"""
+        """测试 DEVICE_EVENT 使用新 Six-In-One 字段生成稳定 business_key。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
             payload_json={
                 "data": {
+                    "HHPN": "620100L00-011-G",
+                    "MfrPN": "CC0402JRNPO9BN220",
+                    "Qty": "7387",
                     "LotCode": "LOTABC123",
                     "DateCode": "20260409",
+                    "PkgID": "SVYU00125TP4LCR02_2",
                 }
             },
         )
@@ -518,7 +522,14 @@ class TestSessionResolver:
         # Six-In-One 组合生成 16 位 hash
         import json
         import hashlib
-        fields = ["LOTABC123", "20260409"]
+        fields = [
+            "620100L00-011-G",
+            "CC0402JRNPO9BN220",
+            "7387",
+            "20260409",
+            "LOTABC123",
+            "SVYU00125TP4LCR02_2",
+        ]
         json_str = json.dumps(fields, ensure_ascii=False)
         expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
 
@@ -526,17 +537,53 @@ class TestSessionResolver:
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_falls_back_to_lot_code_as_business_key(
+    async def test_resolve_device_event_new_six_in_one_key_reuses_existing_session(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试 DEVICE_EVENT 使用 Six-In-One 生成 hash。"""
+        """测试相同的新 Six-In-One 数据会命中同一 business_key。"""
+        import hashlib
+        import json
+
+        fields = [
+            "620100L00-011-G",
+            "CC0402JRNPO9BN220",
+            "7387",
+            "20260409",
+            "LOTABC123",
+            "SVYU00125TP4LCR02_2",
+        ]
+        json_str = json.dumps(fields, ensure_ascii=False)
+        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+        _ = await mock_session_repo.create(
+            mock_db,
+            {
+                "session_code": "SES_EXISTING",
+                "workline_id": 1,
+                "plugin_key": "smt_coarse",
+                "business_key": expected_hash,
+                "status": SessionStatus.NEW,
+                "correlation_id": "corr_existing",
+                "context_json": {},
+                "started_at": None,
+            },
+        )
+
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
-            payload_json={"data": {"LotCode": "LOTABC123", "DateCode": "20260409"}},
+            payload_json={
+                "data": {
+                    "HHPN": "620100L00-011-G",
+                    "MfrPN": "CC0402JRNPO9BN220",
+                    "Qty": "7387",
+                    "LotCode": "LOTABC123",
+                    "DateCode": "20260409",
+                    "PkgID": "SVYU00125TP4LCR02_2",
+                }
+            },
         )
         workline = make_workline(workline_id=1, plugin_key="smt_coarse")
 
@@ -547,14 +594,8 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        # Six-In-One 组合生成 16 位 hash
-        import json
-        import hashlib
-        fields = ["LOTABC123", "20260409"]
-        json_str = json.dumps(fields, ensure_ascii=False)
-        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
-
         assert session.business_key == expected_hash
+        assert len(mock_session_repo.created_sessions) == 1
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio

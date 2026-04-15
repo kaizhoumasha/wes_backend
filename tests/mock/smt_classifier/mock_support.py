@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import time
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 import httpx
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI, Request
 
 JsonDict = dict[str, Any]
 DeviceStatusLiteral = Literal["IDLE", "RUNNING", "ERROR", "OFFLINE"]
@@ -58,6 +64,7 @@ class DeviceCommandAck(BaseModel):
 
 
 class DeviceCommandPayload(BaseModel):
+    device_code: str
     command_code: str
     task_type: str
     priority: int = Field(default=1, ge=1, le=10)
@@ -93,3 +100,16 @@ class DeviceLocation(BaseModel):
     def to_payload(self) -> JsonDict:
         payload = self.model_dump()
         return {key: value for key, value in payload.items() if value is not None}
+
+
+def register_mock_exception_handlers(app: FastAPI, logger: Any, *, service_name: str) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_exception_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        errors = exc.errors()
+        logger.error(
+            f"[{service_name}] RequestValidationError: path={request.url.path}, errors={json.dumps(errors, ensure_ascii=False)}"
+        )
+        return JSONResponse(status_code=422, content={"detail": errors})

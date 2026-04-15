@@ -6,6 +6,7 @@ Loguru 日志配置模块
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -42,9 +43,10 @@ DEBUG_LOGGER_LEVELS = {
     "sqlalchemy.engine": logging.INFO,
     "sqlalchemy.pool": logging.WARNING,
     "httpx": logging.INFO,
-    # Celery 内部模块：pidbox/kombu 大量 DEBUG 日志来自 Flower 心跳，抑制到 WARNING
     "celery.worker.pidbox": logging.WARNING,
     "celery.worker.consumer": logging.WARNING,
+    "celery.concurrency": logging.WARNING,
+    "celery.worker.strategy": logging.WARNING,
     "kombu": logging.WARNING,
     "amqp": logging.WARNING,
 }
@@ -55,9 +57,10 @@ DEFAULT_LOGGER_LEVELS = {
     "sqlalchemy": logging.WARNING,
     "sqlalchemy.pool": logging.WARNING,
     "httpx": logging.WARNING,
-    # Celery 内部模块：pidbox/kombu 大量 DEBUG 日志来自 Flower 心跳，抑制到 WARNING
     "celery.worker.pidbox": logging.WARNING,
     "celery.worker.consumer": logging.WARNING,
+    "celery.concurrency": logging.WARNING,
+    "celery.worker.strategy": logging.WARNING,
     "kombu": logging.WARNING,
     "amqp": logging.WARNING,
 }
@@ -153,6 +156,9 @@ def setup_logger() -> None:
     rotation_day = settings.LOG_RETENTION_DAYS
     log_compression = settings.LOG_COMPRESSION
 
+    # 检测是否禁用文件日志（用于 Celery 多进程调试场景，避免 fork 后文件句柄失效）
+    disable_file_log = os.environ.get("LOG_DISABLE_FILE", "false").lower() in ("true", "1", "yes")
+
     if is_debug:
         _ = _logger.add(
             sys.stderr,
@@ -172,45 +178,47 @@ def setup_logger() -> None:
             filter=add_request_id_filter,
         )
 
-    _ = _logger.add(
-        LOG_DIR / "app.log",
-        format=FILE_LOG_FORMAT,
-        level=log_level,
-        rotation=rotation_size,
-        retention=rotation_day,
-        compression=log_compression,
-        encoding="utf-8",
-        enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
-        backtrace=True,
-        diagnose=is_debug,
-        filter=add_request_id_filter,
-    )
-
-    _ = _logger.add(
-        LOG_DIR / "error.log",
-        format=FILE_LOG_FORMAT,
-        level="ERROR",
-        rotation=rotation_size,
-        retention=rotation_day,
-        compression=log_compression,
-        encoding="utf-8",
-        enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
-        backtrace=True,
-        diagnose=True,
-        filter=add_request_id_filter,
-    )
-
-    if not is_debug and settings.LOG_JSON_OUTPUT:
+    # 文件日志：仅在未禁用文件日志时添加
+    if not disable_file_log:
         _ = _logger.add(
-            LOG_DIR / "structured.json",
-            serialize=True,
+            LOG_DIR / "app.log",
+            format=FILE_LOG_FORMAT,
             level=log_level,
             rotation=rotation_size,
             retention=rotation_day,
             compression=log_compression,
+            encoding="utf-8",
             enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
+            backtrace=True,
+            diagnose=is_debug,
             filter=add_request_id_filter,
         )
+
+        _ = _logger.add(
+            LOG_DIR / "error.log",
+            format=FILE_LOG_FORMAT,
+            level="ERROR",
+            rotation=rotation_size,
+            retention=rotation_day,
+            compression=log_compression,
+            encoding="utf-8",
+            enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
+            backtrace=True,
+            diagnose=True,
+            filter=add_request_id_filter,
+        )
+
+        if not is_debug and settings.LOG_JSON_OUTPUT:
+            _ = _logger.add(
+                LOG_DIR / "structured.json",
+                serialize=True,
+                level=log_level,
+                rotation=rotation_size,
+                retention=rotation_day,
+                compression=log_compression,
+                enqueue=False,  # 禁用多进程队列，避免 Python 3.13 + macOS 信号量问题
+                filter=add_request_id_filter,
+            )
 
     logging.basicConfig(
         handlers=[InterceptHandler()],

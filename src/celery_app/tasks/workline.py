@@ -39,6 +39,13 @@ if TYPE_CHECKING:
 
     from src.workline_runtime.utils import JsonDict
 
+
+def _enqueue_outbox_dispatch() -> None:
+    cast("Any", celery_app).send_task(
+        "src.celery_app.tasks.workline.dispatch_outbox_batch",
+        kwargs={"limit": 50},
+    )
+
 # ============================================
 # 类型定义
 # ============================================
@@ -218,6 +225,8 @@ def _device_map_from_roles(devices_by_role: dict[str, list[Any]]) -> dict[int, A
 def _map_command_task_type(action: str) -> str:
     if action == "PICK_AND_PUT":
         return "PICK_AND_PLACE"
+    if action == "MEASUREMENT_REEL":
+        return "PROCESS"
     if action == "MOVE_FORWARD":
         return "PROCESS"
     return action
@@ -253,10 +262,14 @@ def _normalize_vendor_command_payload(
     return payload
 
 
-def _build_outbox_payload(command: Any) -> dict[str, Any]:
+def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> dict[str, Any]:
+    resolved_device_code = _string_value(device_code)
     command_params = _payload_dict(getattr(command, "params", None))
     if command_params:
-        return dict(command_params)
+        payload = dict(command_params)
+        if resolved_device_code:
+            payload["device_code"] = resolved_device_code
+        return payload
 
     command_task_type = getattr(command, "task_type", None)
     if isinstance(command_task_type, Enum):
@@ -264,7 +277,7 @@ def _build_outbox_payload(command: Any) -> dict[str, Any]:
     else:
         normalized_task_type = _string_value(command_task_type)
 
-    return {
+    payload = {
         "command_code": command.command_code,
         "task_type": normalized_task_type,
         "priority": command.priority,
@@ -272,6 +285,9 @@ def _build_outbox_payload(command: Any) -> dict[str, Any]:
         "params": {},
         "timestamp": int(timezone.now_utc().timestamp() * 1000),
     }
+    if resolved_device_code:
+        payload["device_code"] = resolved_device_code
+    return payload
 
 
 async def _add_timeline(db: Any, timeline: Any) -> None:
@@ -450,7 +466,7 @@ async def _apply_orchestrator_effects(  # noqa: PLR0912
                 dispatch_key=f"device-command:{command.command_code}",
                 target_type=TargetType.DEVICE,
                 target_code=device_code,
-                payload_json=_build_outbox_payload(command),
+                payload_json=_build_outbox_payload(command, device_code=device_code),
             )
         )
         await _add_timeline(
@@ -969,6 +985,9 @@ class ProcessInboxMessages:
                     _ = await inbox_service.mark_as_processed(db, inbox_pk)
                     result["success"] += 1
                     logger.info(f"Inbox {inbox_pk} 处理成功")
+
+                    if orch_result.commands or orch_result.decisions:
+                        _enqueue_outbox_dispatch()
                 else:
                     error_msg = orch_result.error or (
                         orch_result.failure.message if orch_result.failure is not None else "Unknown error"
@@ -1348,7 +1367,11 @@ class OutboxDispatcher:
                 if response.status_code == 200:
                     logger.info(f"设备指令发送成功: {outbox.payload_json.get('command_code')}")
                     return True
-                logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
+                response_body = response.text.strip()
+                if response_body:
+                    logger.warning(f"设备指令发送失败: HTTP {response.status_code}, body={response_body}")
+                else:
+                    logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
                 return False
         except Exception as e:
             logger.error(f"设备指令派发失败: {e}")
@@ -1459,6 +1482,16 @@ def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+class _DispatchOutboxCompat:
+    """历史测试兼容入口，复用新的 OutboxDispatcher 实现。"""
+
+    _dispatch = staticmethod(OutboxDispatcher._dispatch)
+    _dispatch_single = staticmethod(OutboxDispatcher._dispatch_single)
+
+
+dispatch_outbox = _DispatchOutboxCompat()
+
+
 # ============================================
 # 导出
 # ============================================
@@ -1467,6 +1500,7 @@ __all__ = [
     # 内部辅助函数
     "_load_related_entities",
     # Celery 任务入口（公共 API）
+    "dispatch_outbox",
     "dispatch_outbox_batch",
     "process_inbox_batch",
     "scan_timeouts_batch",
