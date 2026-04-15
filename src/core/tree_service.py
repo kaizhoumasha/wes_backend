@@ -269,16 +269,17 @@ class TreeServiceMixin[M]:
         if cache and hasattr(self, "invalidate_cache"):
             await self.invalidate_cache(cache, id=node_id, invalidate_list=True, invalidate_tree=True)
 
-            # 🔥 关键修复：失效所有后代节点的缓存
-            # 移动节点会改变所有后代的 tree_path 和 level，必须失效这些缓存
-            # 注意：TreeRepository._update_tree_path_hook 已查询后代并存储在 HookContext.results
-            # 但 Service 层无法直接访问 HookContext，因此这里需要重新查询
-            # TODO: 考虑在 Repository 层提供 get_descendants_from_hook_context 方法
-            descendants = await self.repo.get_descendants(db, node_id)
-            for descendant in descendants:
-                descendant_id = getattr(descendant, "id", None)
-                if descendant_id is not None and descendant_id != node_id:
-                    await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+            moved_descendant_ids = getattr(result, "_moved_descendant_ids", None)
+            if not isinstance(moved_descendant_ids, list):
+                descendants = await self.repo.get_descendants(db, node_id)
+                moved_descendant_ids = [
+                    descendant_id
+                    for descendant in descendants
+                    if (descendant_id := getattr(descendant, "id", None)) is not None and descendant_id != node_id
+                ]
+
+            for descendant_id in moved_descendant_ids:
+                await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
 
         return self._to_dict(result)
 

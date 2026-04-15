@@ -48,6 +48,7 @@ async def test_move_node_keeps_expected_levels(db_session: AsyncSession) -> None
     assert reloaded_child.tree_path == f"/{root_b.id}/{child.id}/"
     assert reloaded_grandchild.level == 3
     assert reloaded_grandchild.tree_path == f"/{root_b.id}/{child.id}/{grandchild.id}/"
+    assert getattr(moved, "_moved_descendant_ids", None) == [grandchild.id]
 
 
 @pytest.mark.asyncio

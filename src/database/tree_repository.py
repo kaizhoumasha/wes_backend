@@ -464,15 +464,20 @@ class TreeRepository[T](BaseRepository[T]):
         new_parent_id: int | None,
     ) -> T | None:
         """移动节点（含循环检测）"""
+        descendants = await self.get_descendants(db, node_id)
+        moved_descendant_ids = [d.id for d in descendants if getattr(d, "id", None) not in (None, node_id)]  # type: ignore[attr-defined]
+
         if new_parent_id is not None:
             if node_id == new_parent_id:
                 raise ValueError("节点不能成为自己的父节点")
 
-            descendants = await self.get_descendants(db, node_id)
             if any(d.id == new_parent_id for d in descendants):  # type: ignore[attr-defined]
                 raise ValueError("不能将节点移动到其后代节点下")
 
-        return await self.update(db, node_id, {"parent_id": new_parent_id})
+        result = await self.update(db, node_id, {"parent_id": new_parent_id})
+        if result is not None:
+            result._moved_descendant_ids = moved_descendant_ids  # type: ignore[attr-defined]
+        return result
 
     async def batch_sort(
         self,
