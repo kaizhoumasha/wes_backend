@@ -11,11 +11,18 @@ class _FakeRepo:
     _model_name = "FakeTreeNode"
     model = SimpleNamespace(__name__="FakeTreeNode")
 
-    def __init__(self, move_result: object | None = None, update_result: object | None = None):
+    def __init__(
+        self,
+        move_result: object | None = None,
+        update_result: object | None = None,
+        batch_sort_result: object | None = None,
+    ):
         self._move_result = move_result
         self._update_result = update_result
+        self._batch_sort_result = batch_sort_result
         self.move_node = AsyncMock(return_value=move_result)
         self.update = AsyncMock(return_value=update_result)
+        self.batch_sort = AsyncMock(return_value=batch_sort_result)
         self.get_by_id = AsyncMock()
         self.get_descendants = AsyncMock()
 
@@ -83,6 +90,45 @@ async def test_move_node_invalidates_old_and_new_parent_cache() -> None:
     assert invalidate_calls[1].kwargs == {"id": 20}
     assert invalidate_calls[2].args == (cache,)
     assert invalidate_calls[2].kwargs == {"id": 5}
+
+
+@pytest.mark.asyncio
+async def test_batch_sort_invalidates_list_tree_once_and_all_affected_details() -> None:
+    repo = _FakeRepo(
+        batch_sort_result=SimpleNamespace(
+            moved_descendant_ids=[11, 12],
+            affected_parent_ids=[5, 20],
+        )
+    )
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+    items = [
+        {"id": 10, "parent_id": 20, "sort_order": 1},
+        {"id": 30, "parent_id": None, "sort_order": 2},
+    ]
+
+    await service.batch_sort(db, items, cache=cache)
+
+    repo.batch_sort.assert_awaited_once_with(db, items)
+    db.commit.assert_awaited_once()
+
+    invalidate_calls = service.invalidate_cache.await_args_list
+    assert len(invalidate_calls) == 7
+    assert invalidate_calls[0].args == (cache,)
+    assert invalidate_calls[0].kwargs == {"invalidate_list": True, "invalidate_tree": True}
+    assert invalidate_calls[1].args == (cache,)
+    assert invalidate_calls[1].kwargs == {"id": 10, "invalidate_list": False}
+    assert invalidate_calls[2].args == (cache,)
+    assert invalidate_calls[2].kwargs == {"id": 30, "invalidate_list": False}
+    assert invalidate_calls[3].args == (cache,)
+    assert invalidate_calls[3].kwargs == {"id": 11, "invalidate_list": False}
+    assert invalidate_calls[4].args == (cache,)
+    assert invalidate_calls[4].kwargs == {"id": 12, "invalidate_list": False}
+    assert invalidate_calls[5].args == (cache,)
+    assert invalidate_calls[5].kwargs == {"id": 5, "invalidate_list": False}
+    assert invalidate_calls[6].args == (cache,)
+    assert invalidate_calls[6].kwargs == {"id": 20, "invalidate_list": False}
 
 
 @pytest.mark.asyncio

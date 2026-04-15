@@ -310,14 +310,44 @@ class TreeServiceMixin[M]:
             items: 排序项列表 [{"id": 1, "parent_id": None, "sort_order": 0}, ...]
             cache: 缓存实例
         """
-        await self.repo.batch_sort(db, items)
+        result = await self.repo.batch_sort(db, items)
         await db.commit()
 
         # 批量失效缓存
         if cache and hasattr(self, "invalidate_cache"):
-            # 失效所有移动节点的详情缓存、列表缓存和树形缓存
+            await self.invalidate_cache(cache, invalidate_list=True, invalidate_tree=True)
+
+            invalidated_detail_ids: set[int] = set()
             for item in items:
-                await self.invalidate_cache(cache, id=item["id"], invalidate_list=True, invalidate_tree=True)
+                node_id = item["id"]
+                if node_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(node_id)
+                await self.invalidate_cache(cache, id=node_id, invalidate_list=False)
+
+            moved_descendant_ids = getattr(result, "moved_descendant_ids", [])
+            if not isinstance(moved_descendant_ids, list):
+                moved_descendant_ids = []
+
+            for descendant_id in moved_descendant_ids:
+                if not isinstance(descendant_id, int) or descendant_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(descendant_id)
+                await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+
+            affected_parent_ids = getattr(result, "affected_parent_ids", None)
+            if not isinstance(affected_parent_ids, list):
+                affected_parent_ids = [
+                    parent_id
+                    for item in items
+                    if isinstance((parent_id := item.get("parent_id")), int)
+                ]
+
+            for parent_id in affected_parent_ids:
+                if not isinstance(parent_id, int) or parent_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(parent_id)
+                await self.invalidate_cache(cache, id=parent_id, invalidate_list=False)
         elif cache:
             # 兜底：如果没有 invalidate_cache 方法，尝试手动失效
             logger.warning("TreeServiceMixin 未继承 BaseService，无法自动失效缓存")

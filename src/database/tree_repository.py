@@ -1,5 +1,6 @@
 """树形数据 Repository（物化路径模式）"""
 
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, cast
 
 from sqlalchemy import ColumnElement, select
@@ -17,6 +18,12 @@ class TreeNodeLike(Protocol):
     parent_id: int | None
     tree_path: str
     level: int
+
+
+@dataclass(slots=True)
+class BatchSortMetadata:
+    moved_descendant_ids: list[int]
+    affected_parent_ids: list[int]
 
 
 class TreeRepository[T](BaseRepository[T]):
@@ -479,11 +486,11 @@ class TreeRepository[T](BaseRepository[T]):
             result._moved_descendant_ids = moved_descendant_ids  # type: ignore[attr-defined]
         return result
 
-    async def batch_sort(
+    async def batch_sort(  # noqa: PLR0912
         self,
         db: AsyncSession,
         items: list[dict[str, Any]],
-    ) -> None:
+    ) -> BatchSortMetadata:
         """批量更新节点的 parent_id 和 sort_order
 
         Args:
@@ -492,9 +499,12 @@ class TreeRepository[T](BaseRepository[T]):
 
         Raises:
             ValueError: 节点不存在或形成循环依赖
+
+        Returns:
+            批量排序内部元数据，用于 service 层精确失效缓存
         """
         if not items:
-            return
+            return BatchSortMetadata(moved_descendant_ids=[], affected_parent_ids=[])
 
         node_ids = [item["id"] for item in items]
 
@@ -604,28 +614,53 @@ class TreeRepository[T](BaseRepository[T]):
 
         await db.flush()
 
+        moved_descendant_ids: list[int] = []
+        seen_descendant_ids = set(node_ids)
+        for _, descendants in changed_nodes.values():
+            for descendant in descendants:
+                descendant_id = getattr(descendant, "id", None)
+                if descendant_id is None or descendant_id in seen_descendant_ids:
+                    continue
+                seen_descendant_ids.add(descendant_id)
+                moved_descendant_ids.append(descendant_id)
+
+        affected_parent_ids: list[int] = []
+        seen_parent_ids: set[int] = set()
+
+        def add_parent_id(parent_id: int | None) -> None:
+            if parent_id is None or parent_id in seen_parent_ids:
+                return
+            seen_parent_ids.add(parent_id)
+            affected_parent_ids.append(parent_id)
+
+        old_parent_ids = [original[nid]["parent_id"] for nid in changed_nodes]
+        new_parent_ids = [new_pid for new_pid, _ in changed_nodes.values()]
+        for parent_id in old_parent_ids:
+            add_parent_id(parent_id)
+        for parent_id in new_parent_ids:
+            add_parent_id(parent_id)
+
         # 第三阶段：batch_sort 绕过了 Hook 系统，手动维护 has_children
         # TODO: 考虑重构为"批量更新后触发 AFTER_UPDATE Hook"，避免手动维护
         # 只有模型具有 has_children 字段时才执行
         if changed_nodes and hasattr(self.model, "has_children"):
-            # 收集所有受影响的父节点 ID
-            old_parent_ids = {
-                original[nid]["parent_id"] for nid in changed_nodes if original[nid]["parent_id"] is not None
-            }
-            new_parent_ids = {new_pid for new_pid, _ in changed_nodes.values() if new_pid is not None}
-
             # 原父节点：重新检查是否还有非软删除子节点
-            for pid in old_parent_ids:
+            for pid in [parent_id for parent_id in old_parent_ids if parent_id is not None]:
                 await self._check_and_update_has_children(db, pid)
 
             # 新父节点：直接标记为有子节点
-            all_new_parent_ids = new_parent_ids - old_parent_ids  # 避免重复处理
-            for pid in all_new_parent_ids:
+            old_parent_id_set = {parent_id for parent_id in old_parent_ids if parent_id is not None}
+            for pid in [parent_id for parent_id in new_parent_ids if parent_id is not None and parent_id not in old_parent_id_set]:
                 parent_obj = nodes.get(pid) or external_parents.get(pid)
                 if parent_obj:
                     parent_obj.has_children = True  # type: ignore[attr-defined]
 
             await db.flush()
 
+        return BatchSortMetadata(
+            moved_descendant_ids=moved_descendant_ids,
+            affected_parent_ids=affected_parent_ids,
+        )
 
-__all__ = ["TreeRepository"]
+
+__all__ = ["BatchSortMetadata", "TreeRepository"]
