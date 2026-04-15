@@ -10,6 +10,7 @@
 
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -323,3 +324,38 @@ async def test_create_command_result_inbox_uses_command_result_kind() -> None:
     assert fake_repo.created_data["correlation_id"] == "corr-001"
     assert fake_repo.created_data["payload_json"]["command_type"] == "PICK_AND_PUT"
     assert fake_repo.created_data["payload_json"]["error_detail"] == {"message": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_create_command_result_inbox_auto_commits_by_default() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=None)
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    _ = await service.create_command_result_inbox(
+        db=db,
+        command_code="CMD-002",
+        device_code="ARM_02",
+        result="SUCCESS",
+        finish_time=1702627250001,
+        data={"foo": "bar"},
+    )
+
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_processing_can_skip_auto_commit() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=1))
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    _ = await service.mark_as_processing(db, 1, "worker-2", auto_commit=False)
+
+    db.commit.assert_not_awaited()
+    db.rollback.assert_not_awaited()

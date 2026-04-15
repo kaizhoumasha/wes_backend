@@ -49,6 +49,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         data: dict[str, Any],
         source_message_id: str | None = None,
         correlation_id: str | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         创建设备事件 Inbox 消息
@@ -61,6 +63,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             data: 事件数据
             source_message_id: 来源消息 ID（可选）
             correlation_id: 关联 ID（可选）
+            auto_commit: 是否在创建后立即提交。批处理/编排场景应显式传 False。
 
         Returns:
             创建的 Inbox 消息
@@ -90,6 +93,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             payload=payload,
             source_message_id=source_message_id,
             correlation_id=correlation_id,
+            auto_commit=auto_commit,
         )
 
     async def create_command_result_inbox(
@@ -104,6 +108,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         error_detail: dict[str, Any] | None = None,
         source_message_id: str | None = None,
         correlation_id: str | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         创建指令结果 Inbox 消息
@@ -117,6 +123,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             data: 结果数据
             source_message_id: 来源消息 ID（可选）
             correlation_id: 关联 ID（可选）
+            auto_commit: 是否在创建后立即提交。批处理/编排场景应显式传 False。
 
         Returns:
             创建的 Inbox 消息
@@ -152,6 +159,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             payload=payload,
             source_message_id=source_message_id,
             correlation_id=correlation_id,
+            auto_commit=auto_commit,
         )
 
     async def create_external_http_inbox(
@@ -163,6 +171,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         payload: dict[str, Any],
         source_system: SourceSystem = SourceSystem.SYSTEM,
         source_message_id: str | None = None,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """创建外部 HTTP 回调 Inbox 消息。"""
 
@@ -187,6 +196,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             source_message_id=source_message_id,
             correlation_id=correlation_id,
             source_system=source_system,
+            auto_commit=auto_commit,
         )
 
     async def get_new_messages(
@@ -211,6 +221,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         db: AsyncSession,
         inbox_id: int,
         processor_token: str,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         标记消息为处理中
@@ -219,6 +231,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             db: 数据库会话
             inbox_id: 消息 ID
             processor_token: 处理器令牌
+            auto_commit: 是否在更新后立即提交。批处理场景应显式传 False。
 
         Returns:
             更新后的消息
@@ -228,12 +241,15 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             inbox_id,
             status=InboxStatus.PROCESSING,
             processor_token=processor_token,
+            auto_commit=auto_commit,
         )
 
     async def mark_as_processed(
         self,
         db: AsyncSession,
         inbox_id: int,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         标记消息为已处理
@@ -241,6 +257,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         Args:
             db: 数据库会话
             inbox_id: 消息 ID
+            auto_commit: 是否在更新后立即提交。批处理场景应显式传 False。
 
         Returns:
             更新后的消息
@@ -250,6 +267,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             inbox_id,
             status=InboxStatus.PROCESSED,
             processed_at=timezone.now_for_db(),
+            auto_commit=auto_commit,
         )
 
     async def mark_as_failed(
@@ -257,6 +275,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         db: AsyncSession,
         inbox_id: int,
         error_message: str,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         标记消息处理失败
@@ -269,6 +289,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             db: 数据库会话
             inbox_id: 消息 ID
             error_message: 错误消息
+            auto_commit: 是否在更新后立即提交。批处理场景应显式传 False。
 
         Returns:
             更新后的消息
@@ -292,16 +313,18 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
                 attempt_count=attempt_count + 1,
                 next_retry_at=next_retry,
                 processed_at=timezone.now_for_db(),
+                auto_commit=auto_commit,
             )
-        else:
-            # 重试耗尽：进入死信队列
-            return await self._update_inbox(
-                db,
-                inbox_id,
-                status=InboxStatus.DEAD_LETTER,
-                error_message=error_message,
-                processed_at=timezone.now_for_db(),
-            )
+
+        # 重试耗尽：进入死信队列
+        return await self._update_inbox(
+            db,
+            inbox_id,
+            status=InboxStatus.DEAD_LETTER,
+            error_message=error_message,
+            processed_at=timezone.now_for_db(),
+            auto_commit=auto_commit,
+        )
 
     async def _create_inbox_message(
         self,
@@ -313,6 +336,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         source_message_id: str | None = None,
         correlation_id: str | None = None,
         source_system: SourceSystem = SourceSystem.DEVICE,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
         if existing:
@@ -334,9 +359,17 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         created = await self.repo.create(db, inbox_data)
         if created is None:
             raise RuntimeError("创建 Inbox 消息失败")
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
         return created
 
-    async def _update_inbox(self, db: AsyncSession, inbox_id: int, **data: Any) -> WorklineInbox:
+    async def _update_inbox(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        *,
+        auto_commit: bool = True,
+        **data: Any,
+    ) -> WorklineInbox:
         inbox = await self.repo.get_by_id(db, inbox_id)
         if not inbox:
             raise ValueError(f"消息不存在: {inbox_id}")
@@ -344,6 +377,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         updated = await self.repo.update(db, inbox_id, data)
         if updated is None:
             raise RuntimeError(f"更新 Inbox 消息失败: {inbox_id}")
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
         return updated
 
     async def create_timeout_inbox(
@@ -353,6 +387,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         workline_id: int,
         deadline_at: object | None = None,
         correlation_id: str | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> WorklineInbox:
         """
         创建超时 Inbox 消息
@@ -362,6 +398,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             session_id: 会话 ID
             workline_id: 作业线 ID
             correlation_id: 关联 ID（可选）
+            auto_commit: 是否在创建后立即提交。批处理场景应显式传 False。
 
         Returns:
             创建的 Inbox 消息
@@ -393,7 +430,13 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         created = await self.repo.create(db, inbox_data)
         if created is None:
             raise RuntimeError("创建超时 Inbox 消息失败")
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
         return created
+
+    async def _commit_inbox_mutation(self, db: AsyncSession, *, auto_commit: bool) -> None:
+        if not auto_commit:
+            return
+        await self._commit_mutation(db)
 
 
 # 创建单例

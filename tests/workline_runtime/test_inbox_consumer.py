@@ -311,6 +311,7 @@ class TestInboxConsumer:
             mock_db,
             inbox.id,
             "Entity not found",
+            auto_commit=False,
         )
         mock_db.commit.assert_called()
 

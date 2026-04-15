@@ -28,7 +28,6 @@ from src.celery_app.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
 )
 from src.core.logger import logger
-from src.utils.device_cache import workline_device_cache
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
@@ -609,19 +608,19 @@ async def _load_workline_session(db: Any, inbox: Any, session_repo: Any) -> Any 
 
 
 async def _load_workline_entity(db: Any, inbox: Any, session: Any, workline_repo: Any | None = None) -> Any | None:
-    """按 inbox/workline session 归属加载 Workline（带缓存）。"""
-    from src.app.workline.services import workline_service
-    from src.database.redis_cache import get_cache
+    """按 inbox/workline session 归属加载 Workline。"""
+    if workline_repo is None:
+        from src.app.workline.repositories import WorkLineRepository
+
+        workline_repo = WorkLineRepository()
 
     workline_id = getattr(inbox, "workline_id", None)
     if workline_id:
-        cache = get_cache()
-        return await workline_service.get_by_id(db, cache, workline_id)
+        return await workline_repo.get_by_id(db, workline_id)
 
     session_workline_id = getattr(session, "workline_id", None)
     if session_workline_id:
-        cache = get_cache()
-        return await workline_service.get_by_id(db, cache, session_workline_id)
+        return await workline_repo.get_by_id(db, session_workline_id)
 
     return None
 
@@ -699,18 +698,12 @@ async def _backfill_workline_from_device(db: Any, inbox: Any, device: Any, workl
 
 
 async def _load_devices_by_role(db: Any, workline: Any, device_repo: Any) -> dict[str, list[Any]]:
-    """加载工作线下设备并按角色分组（带缓存）。"""
+    """加载工作线下设备并按角色分组。"""
     workline_pk = _resolve_entity_id(workline)
     if workline is None or workline_pk is None:
         return {}
 
-    # 使用缓存获取设备，避免重复查询
-    devices = await workline_device_cache.get_devices(
-        db,
-        workline_pk,
-        fetch_func=lambda d, wid: device_repo.get_by_work_line_id(d, wid),
-    )
-
+    devices = await device_repo.get_by_work_line_id(db, workline_pk)
     if not devices:
         return {}
 
@@ -902,7 +895,7 @@ class ProcessInboxMessages:
                 # 尝试标记为处理中（并发控制）
                 processor_token = str(uuid.uuid4())
                 try:
-                    _ = await inbox_service.mark_as_processing(db, inbox_pk, processor_token)
+                    _ = await inbox_service.mark_as_processing(db, inbox_pk, processor_token, auto_commit=False)
                 except ValueError:
                     # 已被其他 worker 处理
                     result["skipped"] += 1
@@ -926,7 +919,7 @@ class ProcessInboxMessages:
                     if not any(barcode_values):
                         error_msg = "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
                         logger.warning(f"Inbox {inbox_pk} {error_msg}")
-                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg)
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                         result["failed"] += 1
                         result["processed"] += 1
                         continue
@@ -955,25 +948,6 @@ class ProcessInboxMessages:
                     if session is None or workline is None:
                         raise ValueError("Inbox processing missing session/workline context")
 
-                    # FAST FAIL: 如果 success=True 但没有任何产出，记录警告
-                    has_output = (
-                        orch_result.commands is not None
-                        or orch_result.decisions is not None
-                        or orch_result.transition is not None
-                    )
-                    if not has_output:
-                        logger.warning(
-                            f"Inbox {inbox_pk} 成功但无产出: transition={orch_result.transition}, "
-                            f"commands={orch_result.commands}, decisions={orch_result.decisions}"
-                        )
-                        # 标记为失败，让硬件商重试
-                        _ = await inbox_service.mark_as_failed(
-                            db, inbox_pk, "Processing succeeded but no commands generated"
-                        )
-                        result["failed"] += 1
-                        result["processed"] += 1
-                        continue
-
                     await _apply_orchestrator_effects(
                         db,
                         session=session,
@@ -982,7 +956,7 @@ class ProcessInboxMessages:
                         devices_by_role=entities["devices_by_role"],
                         orch_result=orch_result,
                     )
-                    _ = await inbox_service.mark_as_processed(db, inbox_pk)
+                    _ = await inbox_service.mark_as_processed(db, inbox_pk, auto_commit=False)
                     result["success"] += 1
                     logger.info(f"Inbox {inbox_pk} 处理成功")
 
@@ -992,7 +966,7 @@ class ProcessInboxMessages:
                     error_msg = orch_result.error or (
                         orch_result.failure.message if orch_result.failure is not None else "Unknown error"
                     )
-                    _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg)
+                    _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                     result["failed"] += 1
                     logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
 
@@ -1005,7 +979,12 @@ class ProcessInboxMessages:
                     # 使用已解析的 inbox_pk（如果在前面解析成功）
                     pk_to_mark = locals().get("inbox_pk") or _resolve_entity_id(inbox)
                     if pk_to_mark is not None:
-                        _ = await inbox_service.mark_as_failed(db, pk_to_mark, f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
+                        _ = await inbox_service.mark_as_failed(
+                            db,
+                            pk_to_mark,
+                            f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                            auto_commit=False,
+                        )
                 except Exception as mark_error:
                     logger.warning(f"Inbox 超时标记失败: {mark_error}")
                 result["failed"] += 1
@@ -1016,7 +995,7 @@ class ProcessInboxMessages:
                 try:
                     inbox_pk = _resolve_entity_id(inbox)
                     if inbox_pk is not None:
-                        _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e))
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
                 except Exception as mark_error:
                     logger.warning(f"Inbox {inbox_pk_text} 异常补记失败: {mark_error}")
                 result["failed"] += 1
@@ -1092,6 +1071,7 @@ class TimeoutScanner:
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
                     correlation_id=session.correlation_id,
+                    auto_commit=False,
                 )
                 result["timeouts_created"] += 1
                 logger.info(f"Session {session_pk} 超时，已创建 Timeout Inbox")
@@ -1491,6 +1471,10 @@ class _DispatchOutboxCompat:
 
 dispatch_outbox = _DispatchOutboxCompat()
 
+# 历史测试/脚本兼容入口
+process_inbox_messages = ProcessInboxMessages
+scan_timeouts = TimeoutScanner
+
 
 # ============================================
 # 导出
@@ -1503,6 +1487,8 @@ __all__ = [
     "dispatch_outbox",
     "dispatch_outbox_batch",
     "process_inbox_batch",
+    "process_inbox_messages",
+    "scan_timeouts",
     "scan_timeouts_batch",
     # 内部类（已注释：不导出，仅供 Celery 任务内部使用）
     # "OutboxDispatcher",

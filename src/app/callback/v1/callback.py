@@ -12,20 +12,21 @@
 """
 
 import time
-import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import ValidationError
 
 from src.app.callback.models import CallbackEventRequest
-from src.app.callback.services import callback_log_service
+from src.app.callback.services import (
+    callback_log_service,
+    callback_orchestration_service,
+)
 from src.app.device.models.command import CommandCallbackResult
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.workline.models.inbox import SourceSystem
-from src.app.workline.services import inbox_service
+from src.app.workline.services import inbox_service, workline_service  # noqa: F401
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
 from src.core.response import response_builder
@@ -33,22 +34,14 @@ from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
 from src.utils.fast_fail import fast_fail_check
-from src.utils.timezone import timezone
-from src.workline_runtime.utils import JsonDict, ensure_dict, resolve_first_str
+from src.workline_runtime.utils import JsonDict, resolve_first_str
 
 router = APIRouter()
-
-_DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-
 
 # 字段别名常量
 _CORRELATION_ID_ALIASES = ("correlation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
-
-
-def _is_duplicate_inbox_error(error: ValueError) -> bool:
-    return _DUPLICATE_ERROR_MARKER in str(error)
 
 
 def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
@@ -63,26 +56,9 @@ def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: 
     raise ValueError(f"{field_name} is required")
 
 
-def _resolve_command_type(
-    callback_result_data: JsonDict,
-    command_params: JsonDict,
-    existing_command: object,
-) -> str | None:
-    candidates = [
-        callback_result_data.get("command_type"),
-        command_params.get("action"),
-        command_params.get("task_type"),
-    ]
-    existing_task_type = getattr(existing_command, "task_type", None)
-    candidates.append(getattr(existing_task_type, "value", existing_task_type))
-
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate:
-            return candidate
-    return None
-
 
 def _enqueue_workline_processing() -> None:
+    """兼容旧测试 patch 点：触发 Workline Inbox 异步处理。"""
     from src.celery_app.app import celery_app
 
     cast("Any", celery_app).send_task(
@@ -152,13 +128,6 @@ async def _read_request_json(request: Request) -> JsonDict:
     if not isinstance(payload, dict):
         raise TypeError("request body must be an object")
     return cast("JsonDict", payload)
-
-
-async def _commit_and_enqueue_workline_processing(db: AsyncSessionDep) -> None:
-    """先持久化 Inbox，再触发异步编排。"""
-
-    await db.commit()
-    _enqueue_workline_processing()
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
@@ -322,18 +291,6 @@ async def _handle_external_validation_failure(
     return _build_contract_fail(message)
 
 
-async def _is_workline_command_callback(
-    db: AsyncSessionDep,
-    *,
-    existing_command: object | None,
-    device_code: str,
-) -> bool:
-    if _has_workline_binding(getattr(existing_command, "workline_id", None)):
-        return True
-    device = await device_service.get_device_by_code(db, device_code)
-    return _has_workline_binding(getattr(device, "work_line_id", None))
-
-
 @router.post(
     "/result",
     response_model=None,
@@ -422,67 +379,18 @@ async def callback_result(
 
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         callback = CommandCallbackResult.model_validate(callback_data)
-        inherited_correlation_id = (
-            existing_command.correlation_id if isinstance(existing_command.correlation_id, str) else None
-        )
-        raw_command_params = getattr(existing_command, "params", None)
-        command_params = ensure_dict(raw_command_params)
-        callback_result_data = ensure_dict(callback.data)
-        command_type = _resolve_command_type(callback_result_data, command_params, existing_command)
-
-        is_workline_callback = await _is_workline_command_callback(
+        outcome = await callback_orchestration_service.process_result(
             db,
+            callback=callback,
             existing_command=existing_command,
-            device_code=callback.device_code,
+            request_id=request_id,
+            resolved_contract_version=_resolved_contract_version,
+            command_service=device_command_service,
+            device_service=device_service,
+            inbox_service=inbox_service,
+            enqueue_processing=_enqueue_workline_processing,
         )
-
-        if is_workline_callback:
-            try:
-                _ = await inbox_service.create_command_result_inbox(
-                    db=db,
-                    command_code=callback.command_code,
-                    device_code=callback.device_code,
-                    result=callback.result.value,
-                    finish_time=callback.finish_time,
-                    data=callback.data or {},
-                    command_type=command_type,
-                    error_detail=callback.error_detail,
-                    source_message_id=request_id,
-                    correlation_id=inherited_correlation_id,
-                )
-                logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
-            except ValueError as exc:
-                if _is_duplicate_inbox_error(exc):
-                    is_duplicate = True
-                    logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
-                else:
-                    raise
-
-            if is_duplicate:
-                await _commit_and_enqueue_workline_processing(db)
-            else:
-                command = await device_command_service.handle_callback_result(db, callback)
-                if command is None:
-                    raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-                inherited_correlation_id = command.correlation_id or inherited_correlation_id
-                await _commit_and_enqueue_workline_processing(db)
-                logger.info(
-                    f"指令结果处理完成: {callback.command_code} -> "
-                    f"status={command.status.value}, "
-                    f"duration={command.get_duration_ms()}ms, "
-                    f"contract_version={_resolved_contract_version}"
-                )
-        else:
-            command = await device_command_service.handle_callback_result(db, callback)
-            if command is None:
-                raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-            inherited_correlation_id = command.correlation_id or inherited_correlation_id
-            await db.commit()
-            logger.info(
-                f"非 Workline 指令结果已同步处理: {callback.command_code} -> "
-                f"status={command.status.value}, "
-                f"duration={command.get_duration_ms()}ms"
-            )
+        is_duplicate = outcome.is_duplicate
 
         response_time_ms = int((time.time() - start_time) * 1000)
         await _log_callback_outcome(
@@ -492,7 +400,7 @@ async def callback_result(
             device_id=callback.device_code,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=inherited_correlation_id,
+            correlation_id=outcome.correlation_id,
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
@@ -500,7 +408,7 @@ async def callback_result(
             audit_title="设备回调结果",
             error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
         )
-        return response_builder.success(data={"ack": True, "correlation_id": inherited_correlation_id})
+        return response_builder.success(data={"ack": True, "correlation_id": outcome.correlation_id})
 
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
@@ -607,42 +515,23 @@ async def callback_event(
     try:
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
-        event_timestamp = normalized_event_request.timestamp
-        if event_timestamp is None:
-            event_timestamp = int(timezone.now_utc().timestamp() * 1000)
 
         # ctx_error 为 None 时，ctx_result 必有值
         is_workline_event = ctx_result.is_workline_bound  # type: ignore[union-attr]
-        event_correlation_id = _resolve_optional_str(event_data, _CORRELATION_ID_ALIASES)
-        if is_workline_event and event_correlation_id is None:
-            event_correlation_id = f"corr_{uuid.uuid4().hex}"
+        if not is_workline_event:
+            fallback_device = await device_service.get_device_by_code(db, device_code)
+            is_workline_event = _has_workline_binding(getattr(fallback_device, "work_line_id", None))
 
-        if is_workline_event:
-            try:
-                _ = await inbox_service.create_device_event_inbox(
-                    db=db,
-                    device_code=normalized_event_request.device_code,
-                    event_type=normalized_event_request.event_type,
-                    timestamp=event_timestamp,
-                    data=cast("dict[str, Any]", normalized_event_request.data or {}),
-                    source_message_id=request_id,
-                    correlation_id=event_correlation_id,
-                )
-                logger.info(
-                    f"设备事件已写入 Inbox: "
-                    f"{normalized_event_request.device_code} -> {normalized_event_request.event_type}"
-                )
-            except ValueError as exc:
-                if _is_duplicate_inbox_error(exc):
-                    is_duplicate = True
-                    logger.info(
-                        "设备事件幂等重复，将跳过业务处理: "
-                        f"{normalized_event_request.device_code} -> {normalized_event_request.event_type}"
-                    )
-                else:
-                    raise
-
-            await _commit_and_enqueue_workline_processing(db)
+        outcome = await callback_orchestration_service.process_event(
+            db,
+            event_request=normalized_event_request,
+            event_data=event_data,
+            request_id=request_id,
+            is_workline_event=is_workline_event,
+            inbox_service=inbox_service,
+            enqueue_processing=_enqueue_workline_processing,
+        )
+        is_duplicate = outcome.is_duplicate
 
         response_time_ms = int((time.time() - start_time) * 1000)
         await _log_callback_outcome(
@@ -652,7 +541,7 @@ async def callback_event(
             device_id=normalized_event_request.device_code,
             request_body=event_data,
             request_id=request_id,
-            correlation_id=event_correlation_id,
+            correlation_id=outcome.correlation_id,
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
@@ -666,7 +555,7 @@ async def callback_event(
             data={
                 "status": "duplicate" if is_duplicate else "submitted",
                 "device_code": normalized_event_request.device_code,
-                "correlation_id": event_correlation_id,
+                "correlation_id": outcome.correlation_id,
             },
         )
 
@@ -764,24 +653,16 @@ async def callback_external(
     logger.info(f"收到外部系统回调: {callback_type} (request_id={request_id})")
 
     try:
-        try:
-            _ = await inbox_service.create_external_http_inbox(
-                db=db,
-                callback_type=callback_type,
-                correlation_id=correlation_id,
-                payload=callback_data,
-                source_system=SourceSystem.SYSTEM,
-                source_message_id=request_id,
-            )
-            logger.info(f"外部回调已写入 Inbox: {callback_type}")
-        except ValueError as exc:
-            if _is_duplicate_inbox_error(exc):
-                is_duplicate = True
-                logger.info(f"外部回调幂等重复，将跳过业务处理: {callback_type}")
-            else:
-                raise
-
-        await _commit_and_enqueue_workline_processing(db)
+        outcome = await callback_orchestration_service.process_external(
+            db,
+            callback_type=callback_type,
+            correlation_id=correlation_id,
+            payload=callback_data,
+            request_id=request_id,
+            inbox_service=inbox_service,
+            enqueue_processing=_enqueue_workline_processing,
+        )
+        is_duplicate = outcome.is_duplicate
 
         response_time_ms = int((time.time() - start_time) * 1000)
         await _log_callback_outcome(
@@ -791,7 +672,7 @@ async def callback_external(
             device_id=callback_type,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=correlation_id,
+            correlation_id=outcome.correlation_id,
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
