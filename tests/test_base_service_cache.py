@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatch
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,9 +77,16 @@ class FakeRepo:
     def __init__(self) -> None:
         self.get_by_id_calls = 0
         self.get_list_calls = 0
+        self.create_calls: list[dict[str, Any]] = []
         self.update_calls: list[tuple[int, dict[str, Any]]] = []
+        self.delete_calls: list[int] = []
+        self.soft_delete_calls: list[tuple[int, int | None]] = []
+        self.restore_calls: list[int] = []
+        self.permanent_delete_calls: list[int] = []
         self.by_id_result: FakeModel | None = None
         self.list_result: tuple[int, list[FakeModel]] = (0, [])
+        self.delete_result: bool | None = True
+        self.permanent_delete_result = True
 
     async def get_by_id(self, db: object, id: int, **kwargs: Any) -> FakeModel | None:
         self.get_by_id_calls += 1
@@ -90,9 +98,51 @@ class FakeRepo:
         self.get_list_calls += 1
         return self.list_result
 
+    async def create(self, db: object, data: dict[str, Any]) -> FakeModel:
+        self.create_calls.append(dict(data))
+        return FakeModel(id=1, name=data.get("name", "created"))
+
     async def update(self, db: object, id: int, data: dict[str, Any]) -> FakeModel:
         self.update_calls.append((id, dict(data)))
         return FakeModel(id=id, name=data.get("name", "updated"))
+
+    async def delete(self, db: object, id: int) -> bool | None:
+        self.delete_calls.append(id)
+        return self.delete_result
+
+    async def soft_delete(self, db: object, id: int, deleted_by: int | None = None) -> FakeModel:
+        self.soft_delete_calls.append((id, deleted_by))
+        return FakeModel(id=id, name="soft-deleted")
+
+    async def restore(self, db: object, id: int) -> FakeModel:
+        self.restore_calls.append(id)
+        return FakeModel(id=id, name="restored")
+
+    async def permanent_delete(self, db: object, id: int) -> bool:
+        self.permanent_delete_calls.append(id)
+        return self.permanent_delete_result
+
+
+@pytest.mark.asyncio
+async def test_create_commits_and_invalidates_only_list_cache() -> None:
+    repo = FakeRepo()
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        list_cache_prefix="fake:list",
+        list_cache_expire=600,
+    )
+    db = AsyncMock()
+
+    created = await service.create(db, {"name": "created"}, cache)
+
+    assert created is not None
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    assert cache.deleted_patterns == ["fake:list:*"]
 
 
 @pytest.mark.asyncio
@@ -107,11 +157,122 @@ async def test_update_invalidates_detail_and_list_cache() -> None:
         list_cache_prefix="fake:list",
         list_cache_expire=600,
     )
+    db = AsyncMock()
 
-    await service.update(object(), 1, {"name": "changed"}, cache)
+    await service.update(db, 1, {"name": "changed"}, cache)
 
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
     assert "fake:detail:1:*" in cache.deleted_patterns
     assert "fake:list:*" in cache.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_record_skips_commit_and_cache_invalidation() -> None:
+    repo = FakeRepo()
+    repo.delete_result = False
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        list_cache_prefix="fake:list",
+        list_cache_expire=600,
+    )
+    db = AsyncMock()
+
+    success = await service.delete(db, 9, cache)
+
+    assert success is False
+    db.commit.assert_not_awaited()
+    db.rollback.assert_not_awaited()
+    assert cache.deleted_patterns == []
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_commits_and_invalidates_detail_and_list_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = FakeRepo()
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        list_cache_prefix="fake:list",
+        list_cache_expire=600,
+    )
+    db = AsyncMock()
+
+    monkeypatch.setattr("src.utils.audit.get_current_user_id", lambda: 77)
+
+    result = await service.soft_delete(db, 3, cache)
+
+    assert result is not None
+    assert repo.soft_delete_calls == [(3, 77)]
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    assert cache.deleted_patterns == ["fake:detail:3:*", "fake:list:*"]
+
+
+@pytest.mark.asyncio
+async def test_restore_commits_and_invalidates_detail_and_list_cache() -> None:
+    repo = FakeRepo()
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        list_cache_prefix="fake:list",
+        list_cache_expire=600,
+    )
+    db = AsyncMock()
+
+    result = await service.restore(db, 4, cache)
+
+    assert result is not None
+    assert repo.restore_calls == [4]
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    assert cache.deleted_patterns == ["fake:detail:4:*", "fake:list:*"]
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_commits_and_invalidates_detail_and_list_cache() -> None:
+    repo = FakeRepo()
+    cache = FakeRedisCache()
+    service = BaseService(
+        repo,
+        enable_cache=True,
+        cache_prefix="fake:detail",
+        cache_expire=7200,
+        list_cache_prefix="fake:list",
+        list_cache_expire=600,
+    )
+    db = AsyncMock()
+
+    success = await service.permanent_delete(db, 5, cache)
+
+    assert success is True
+    assert repo.permanent_delete_calls == [5]
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    assert cache.deleted_patterns == ["fake:detail:5:*", "fake:list:*"]
+
+
+@pytest.mark.asyncio
+async def test_commit_mutation_rolls_back_on_commit_failure() -> None:
+    repo = FakeRepo()
+    service = BaseService(repo)
+    db = AsyncMock()
+    db.commit.side_effect = RuntimeError("commit failed")
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await service._commit_mutation(db)
+
+    db.commit.assert_awaited_once()
+    db.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio
