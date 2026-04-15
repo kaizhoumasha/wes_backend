@@ -731,7 +731,7 @@ class BaseRepository[T]:
 
         try:
             await self._execute_update(db, instance, data, relation_info, has_relations)
-            await self._finalize_update(db, instance, data, start_time, old_values)
+            await self._finalize_update(db, instance, data, relation_info, has_relations, start_time, old_values)
             return instance
         except IntegrityError as e:
             await db.rollback()
@@ -798,13 +798,15 @@ class BaseRepository[T]:
         await db.flush()
 
     async def _finalize_update(
-        self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
+        self,
+        db: AsyncSession,
+        instance: T,
+        data: dict[str, Any],
+        relation_info: dict[str, Any],
+        has_relations: bool,
+        start_time: float,
+        old_values: dict[str, Any],
     ) -> None:
-        from src.database.relation_metadata import RelationMetadata
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = self._has_relation_payload(data, relation_info)
-
         if has_relations:
             for relation_name in relation_info:
                 if hasattr(instance, relation_name):
