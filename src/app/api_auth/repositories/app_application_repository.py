@@ -53,7 +53,7 @@ class APIAppRepository(BaseRepository[APIApplication]):
                 [{"app_id": app_id, "permission_id": pid} for pid in permission_ids],
             )
 
-        await db.commit()
+        await db.flush()
 
 
 api_app_repository = APIAppRepository(APIApplication)

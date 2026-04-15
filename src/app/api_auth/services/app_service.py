@@ -157,6 +157,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
         # 2. 委托给 Repository 处理关联表操作
         await self.repo.assign_permissions(db, id, permission_ids)
+        await self._commit_mutation(db)
 
         # 3. 清除缓存
         _ = await self.invalidate_cache(cache, id)
