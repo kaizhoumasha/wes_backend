@@ -525,11 +525,11 @@ class TreeRepository[T](BaseRepository[T]):
             new_parent_id = item.get("parent_id")
             if new_parent_id != original[node_id]["parent_id"]:
                 descendants = await self.get_descendants(db, node_id)
-                if new_parent_id is not None:
-                    descendant_ids = {d.id for d in descendants}  # type: ignore[attr-defined]
-                    if new_parent_id in descendant_ids:
-                        raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
-                changed_nodes[node_id] = (new_parent_id, descendants)
+                descendant_ids = {d.id for d in descendants if getattr(d, "id", None) is not None}  # type: ignore[attr-defined]
+                if new_parent_id is not None and new_parent_id in descendant_ids:
+                    raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
+                filtered_descendants = [d for d in descendants if getattr(d, "id", None) != node_id]
+                changed_nodes[node_id] = (new_parent_id, filtered_descendants)
 
         external_parent_ids = {
             new_parent_id
@@ -543,6 +543,34 @@ class TreeRepository[T](BaseRepository[T]):
             )
             external_parents = {parent.id: parent for parent in parent_result.scalars().all()}
 
+        resolved_states: dict[int, tuple[str, int]] = {}
+        resolving: set[int] = set()
+
+        def resolve_node_state(node_id: int) -> tuple[str, int]:
+            if node_id in resolved_states:
+                return resolved_states[node_id]
+            if node_id in resolving:
+                raise ValueError("批量排序形成循环依赖")
+
+            resolving.add(node_id)
+            new_parent_id, _ = changed_nodes[node_id]
+
+            if new_parent_id is None:
+                resolved = (f"/{node_id}/", 1)
+            elif new_parent_id in changed_nodes:
+                parent_tree_path, parent_level = resolve_node_state(new_parent_id)
+                resolved = (f"{parent_tree_path}{node_id}/", parent_level + 1)
+            else:
+                parent_node = nodes.get(new_parent_id) or external_parents.get(cast("int", new_parent_id))
+                if parent_node is not None:
+                    resolved = (f"{parent_node.tree_path}{node_id}/", parent_node.level + 1)
+                else:
+                    resolved = (f"/{node_id}/", 1)
+
+            resolving.remove(node_id)
+            resolved_states[node_id] = resolved
+            return resolved
+
         # 第一阶段：更新当前节点的 sort_order / parent_id / tree_path / level
         for item in items:
             node_id = item["id"]
@@ -554,14 +582,7 @@ class TreeRepository[T](BaseRepository[T]):
             if node_id not in changed_nodes:
                 continue
 
-            if new_parent_id is None:
-                node.tree_path = f"/{node_id}/"  # type: ignore[attr-defined]
-                node.level = 1  # type: ignore[attr-defined]
-            else:
-                parent_node = nodes.get(new_parent_id) or external_parents.get(cast("int", new_parent_id))
-                if parent_node is not None:
-                    node.tree_path = f"{parent_node.tree_path}{node_id}/"  # type: ignore[attr-defined]
-                    node.level = parent_node.level + 1  # type: ignore[attr-defined]
+            node.tree_path, node.level = resolve_node_state(node_id)  # type: ignore[attr-defined]
 
             node.parent_id = new_parent_id  # type: ignore[attr-defined]
             if hasattr(node, "version"):

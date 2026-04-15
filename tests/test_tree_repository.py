@@ -52,6 +52,55 @@ async def test_move_node_keeps_expected_levels(db_session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
+async def test_batch_sort_resolves_paths_against_moved_parent_regardless_of_item_order(
+    db_session: AsyncSession,
+) -> None:
+    repo = TreeRepository[TreeNode](TreeNode)
+
+    node_a = await repo.create(db_session, {"name": "A"})
+    node_b = await repo.create(db_session, {"name": "B"})
+    node_c = await repo.create(db_session, {"name": "C"})
+    await db_session.commit()
+
+    await repo.batch_sort(
+        db_session,
+        [
+            {"id": node_c.id, "parent_id": node_a.id, "sort_order": 0},
+            {"id": node_a.id, "parent_id": node_b.id, "sort_order": 0},
+        ],
+    )
+    await db_session.commit()
+
+    reloaded_a = await repo.get_by_id(db_session, node_a.id)  # type: ignore[arg-type]
+    reloaded_c = await repo.get_by_id(db_session, node_c.id)  # type: ignore[arg-type]
+
+    assert reloaded_a is not None
+    assert reloaded_c is not None
+    assert reloaded_a.tree_path == f"/{node_b.id}/{node_a.id}/"
+    assert reloaded_a.level == 2
+    assert reloaded_c.tree_path == f"/{node_b.id}/{node_a.id}/{node_c.id}/"
+    assert reloaded_c.level == 3
+
+
+@pytest.mark.asyncio
+async def test_batch_sort_rejects_cycle_created_within_same_request(db_session: AsyncSession) -> None:
+    repo = TreeRepository[TreeNode](TreeNode)
+
+    node_a = await repo.create(db_session, {"name": "A"})
+    node_b = await repo.create(db_session, {"name": "B"})
+    await db_session.commit()
+
+    with pytest.raises(ValueError, match="循环"):
+        await repo.batch_sort(
+            db_session,
+            [
+                {"id": node_a.id, "parent_id": node_b.id, "sort_order": 0},
+                {"id": node_b.id, "parent_id": node_a.id, "sort_order": 0},
+            ],
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_descendants_with_schema_loads_items_without_pk_attr_errors(db_session: AsyncSession) -> None:
     repo = TreeRepository[TreeNode](TreeNode)
 
