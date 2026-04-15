@@ -8,4 +8,4 @@ router_v1 = APIRouter(prefix="/v1/sys")
 router_v1.include_router(audit_log_router)
 router_v1.include_router(events_router)
 
-__ALL__ = ["router_v1"]
+__all__ = ["router_v1"]

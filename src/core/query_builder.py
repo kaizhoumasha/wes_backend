@@ -8,8 +8,8 @@ ILIKE 操作符约定：
     使用反斜杠转义特殊字符（%、_、\\），支持字面量搜索
 """
 
-from datetime import date, datetime
 from collections.abc import Callable
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -175,10 +175,7 @@ class QueryBuilder:
             if python_type in {int, float, str}:
                 return python_type(value)
         except (TypeError, ValueError) as exc:
-            raise InvalidParameterException(
-                field=field_name,
-                message=f"字段 '{field_name}' 的筛选值格式无效"
-            ) from exc
+            raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 的筛选值格式无效") from exc
 
         return value
 
@@ -228,4 +225,4 @@ class QueryBuilder:
         return order_by
 
 
-__ALL__ = ["QueryBuilder"]
+__all__ = ["QueryBuilder"]

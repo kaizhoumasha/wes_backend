@@ -6,4 +6,4 @@ router_v1 = APIRouter(prefix="/v1/auth")
 
 router_v1.include_router(auth_router)
 
-__ALL__ = ["router_v1"]
+__all__ = ["router_v1"]

@@ -15,4 +15,4 @@ router_v1.include_router(perm_router)
 router_v1.include_router(menu_router)
 router_v1.include_router(performance_router)
 
-__ALL__ = ["router_v1"]
+__all__ = ["router_v1"]

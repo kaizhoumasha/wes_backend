@@ -9,4 +9,4 @@ router_v1 = APIRouter(prefix="/v1/api_auth")
 router_v1.include_router(application_router)
 router_v1.include_router(access_log_router)
 
-__ALL__ = ["router_v1"]
+__all__ = ["router_v1"]

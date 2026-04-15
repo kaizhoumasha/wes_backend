@@ -6,4 +6,4 @@ router_v1 = APIRouter(prefix="/v1/demo")
 
 router_v1.include_router(demo_product_router)
 
-__ALL__ = ["router_v1"]
+__all__ = ["router_v1"]
