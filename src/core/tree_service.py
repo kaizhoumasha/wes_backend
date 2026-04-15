@@ -331,6 +331,15 @@ class TreeServiceMixin[M]:
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any], cache: object | None = None) -> Any:
         """更新节点（如果修改了 parent_id，失效新旧父节点缓存）"""
+        old_parent_id: int | None = None
+        if cache and "parent_id" in data and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, id)  # type: ignore[attr-defined]
+                if instance_before:
+                    old_parent_id = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
         # 调用 BaseService.update
         result = await super().update(db, id, data, cache)  # type: ignore[misc]
 
@@ -339,19 +348,13 @@ class TreeServiceMixin[M]:
             # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
 
-            # 🔥 如果修改了 parent_id，失效新旧父节点详情缓存
+            # 如果修改了 parent_id，失效新旧父节点详情缓存
             if "parent_id" in data:
-                # 新父节点（移动后）
                 new_parent_id = data.get("parent_id")
                 if new_parent_id is not None:
                     await self.invalidate_cache(cache, id=new_parent_id)
-
-                # 原父节点（移动前）- 从 result 获取移动前的 parent_id
-                # 注意：Hook 系统在 AFTER_UPDATE 时更新了原父节点的 has_children
-                # 但 BaseService.update 在调用 super().update 时 result 已被 refresh
-                # 所以需要从 HookContext 中获取原值，或者直接失效当前节点的旧缓存
-                # 简化处理：失效当前节点的详情缓存（包含 parent_id 信息）
-                await self.invalidate_cache(cache, id=id)
+                if old_parent_id is not None and old_parent_id != new_parent_id:
+                    await self.invalidate_cache(cache, id=old_parent_id)
 
         return result
 
