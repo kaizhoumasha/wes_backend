@@ -531,6 +531,18 @@ class TreeRepository[T](BaseRepository[T]):
                         raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
                 changed_nodes[node_id] = (new_parent_id, descendants)
 
+        external_parent_ids = {
+            new_parent_id
+            for new_parent_id, _ in changed_nodes.values()
+            if new_parent_id is not None and new_parent_id not in nodes
+        }
+        external_parents: dict[int, Any] = {}
+        if external_parent_ids:
+            parent_result = await db.execute(
+                select(self.model).where(self.model.id.in_(external_parent_ids))  # type: ignore[attr-defined]
+            )
+            external_parents = {parent.id: parent for parent in parent_result.scalars().all()}
+
         # 第一阶段：更新当前节点的 sort_order / parent_id / tree_path / level
         for item in items:
             node_id = item["id"]
@@ -546,12 +558,7 @@ class TreeRepository[T](BaseRepository[T]):
                 node.tree_path = f"/{node_id}/"  # type: ignore[attr-defined]
                 node.level = 1  # type: ignore[attr-defined]
             else:
-                parent_node = nodes.get(new_parent_id)
-                if parent_node is None:
-                    parent_result = await db.execute(
-                        select(self.model).where(self.model.id == new_parent_id)  # type: ignore[attr-defined]
-                    )
-                    parent_node = parent_result.scalar_one_or_none()
+                parent_node = nodes.get(new_parent_id) or external_parents.get(cast("int", new_parent_id))
                 if parent_node is not None:
                     node.tree_path = f"{parent_node.tree_path}{node_id}/"  # type: ignore[attr-defined]
                     node.level = parent_node.level + 1  # type: ignore[attr-defined]
@@ -593,10 +600,7 @@ class TreeRepository[T](BaseRepository[T]):
             # 新父节点：直接标记为有子节点
             all_new_parent_ids = new_parent_ids - old_parent_ids  # 避免重复处理
             for pid in all_new_parent_ids:
-                parent_result = await db.execute(
-                    select(self.model).where(self.model.id == pid)  # type: ignore[attr-defined]
-                )
-                parent_obj = parent_result.scalar_one_or_none()
+                parent_obj = nodes.get(pid) or external_parents.get(pid)
                 if parent_obj:
                     parent_obj.has_children = True  # type: ignore[attr-defined]
 
