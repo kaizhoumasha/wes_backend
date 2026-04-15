@@ -459,6 +459,20 @@ async def _safe_redis_operation(
         return fallback_result
 
 
+def _require_redis_client(operation_name: str) -> Any:
+    """安全关键路径必须要求 Redis 可用，禁止降级放行。"""
+    if not is_redis_available():
+        logger.error(f"Redis 不可用，拒绝执行安全关键操作: {operation_name}")
+        raise AuthException("认证服务暂时不可用，请稍后重试")
+
+    redis_client = get_redis()
+    if redis_client is None:
+        logger.error(f"Redis 客户端不可用，拒绝执行安全关键操作: {operation_name}")
+        raise AuthException("认证服务暂时不可用，请稍后重试")
+
+    return redis_client
+
+
 # ==================== Token 创建函数 ====================
 
 
@@ -646,12 +660,7 @@ async def create_new_token(
     Raises:
         AuthException: 刷新令牌无效或已过期
     """
-    if not is_redis_available():
-        raise AuthException("Redis 不可用，无法刷新令牌")
-
-    redis_client = get_redis()
-    if redis_client is None:
-        raise AuthException("Redis 连接失败，无法刷新令牌")
+    redis_client = _require_redis_client("刷新令牌")
 
     # 验证 refresh token
     token_payload = jwt_decode(refresh_token)
@@ -683,10 +692,7 @@ async def create_new_token(
 
     # 注意：Refresh Token 已被 GETDEL 删除，无需再次删除
 
-    # 1. 删除旧 Access Token（如果存在）
-    await redis_client.delete(_make_access_token_key(user_id, old_jti))
-
-    # 2. 获取旧会话信息以获取 access_jti
+    # 1. 获取旧会话信息以获取旧 access_jti
     old_session_key = _make_user_session_key(user_id, old_session_uuid)
     old_access_jti = None
     old_session_data = _load_session_data(
@@ -695,6 +701,11 @@ async def create_new_token(
     )
     if old_session_data:
         old_access_jti = old_session_data.get("access_jti")
+
+    # 2. 删除旧 Access Token（必须使用 access_jti，而非 refresh_jti）
+    if old_access_jti:
+        await redis_client.delete(_make_access_token_key(user_id, old_access_jti))
+        await redis_client.srem(_make_multi_login_set_key(user_id), old_access_jti)
 
     # 3. 删除旧的会话信息
     await redis_client.delete(old_session_key)
@@ -863,6 +874,8 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
     if token_payload.token_type != TokenType.ACCESS:
         raise InvalidTokenException(f"无效的 token 类型: {token_payload.token_type.value}")
 
+    redis_client = _require_redis_client("访问令牌验证")
+
     # 验证 Redis 中的 token
     async def _verify_redis(redis_client: Any) -> None:
         # 检查黑名单
@@ -881,14 +894,16 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
             await redis_client.get(session_key),
             context=f"无法解析用户会话信息: {session_key}",
         )
-        if session_data:
-            extra_info = session_data.get("extra", {})
-            if "username" in extra_info:
-                request.state.username = extra_info["username"]
-            if "email" in extra_info:
-                request.state.email = extra_info["email"]
+        if session_data is None:
+            raise InvalidTokenException("Token 会话不存在或已失效")
 
-    await _safe_redis_operation("验证 token", _verify_redis)
+        extra_info = session_data.get("extra", {})
+        if "username" in extra_info:
+            request.state.username = extra_info["username"]
+        if "email" in extra_info:
+            request.state.email = extra_info["email"]
+
+    await _verify_redis(redis_client)
 
     # 将用户信息附加到 request.state（性能优化：避免重复查询数据库）
     request.state.user_id = user_id

@@ -121,7 +121,7 @@ def register_exception(app: FastAPI) -> None:
     register_exception_handlers(app)
 
 
-def register_app() -> FastAPI:
+def create_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
 
     static_path = "/static"
@@ -190,7 +190,3 @@ def register_app() -> FastAPI:
     register_exception(app)
 
     return app
-
-
-# 创建应用实例
-app = register_app()

@@ -232,3 +232,4 @@ events.jsonl
 config.json
 views.json
 .claude-plugin/plugin.json
+sessions/**

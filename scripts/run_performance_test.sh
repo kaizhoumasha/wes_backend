@@ -37,7 +37,7 @@ check_server() {
         return 0
     else
         print_error "服务器未运行或无法访问"
-        print_info "请先启动服务器: uvicorn src.register:app --reload"
+        print_info "请先启动服务器: uvicorn main:app --reload"
         exit 1
     fi
 }

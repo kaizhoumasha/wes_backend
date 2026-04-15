@@ -169,7 +169,7 @@ apt-get install apache2-utils
 
 ```bash
 # 确保服务器在运行
-uvicorn src.register:app --reload --host 0.0.0.0 --port 8001
+uvicorn main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 ### 2. 使用测试脚本

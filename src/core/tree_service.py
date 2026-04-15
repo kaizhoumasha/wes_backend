@@ -263,6 +263,7 @@ class TreeServiceMixin[M]:
         cache: object | None = None,
     ) -> dict[str, Any]:
         result = await self.repo.move_node(db, node_id, new_parent_id)
+        await db.commit()
 
         # 失效当前节点和列表缓存
         if cache and hasattr(self, "invalidate_cache"):
@@ -295,6 +296,7 @@ class TreeServiceMixin[M]:
             cache: 缓存实例
         """
         await self.repo.batch_sort(db, items)
+        await db.commit()
 
         # 批量失效缓存
         if cache and hasattr(self, "invalidate_cache"):

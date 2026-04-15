@@ -67,7 +67,9 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
             "error_message": error_message,
         }
 
-        return await self.repo.create(db, log_data)  # type: ignore[return-value]
+        created = await self.repo.create(db, log_data)  # type: ignore[assignment]
+        await db.commit()
+        return created  # type: ignore[return-value]
 
 
 # 创建单例

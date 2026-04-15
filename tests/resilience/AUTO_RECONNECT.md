@@ -54,7 +54,7 @@ async def _check_health(self) -> bool:
 docker-compose stop redis
 
 # 2. 启动应用（会警告但成功）
-uvicorn src.register:app --reload
+uvicorn main:app --reload
 
 # 3. 启动 Redis
 docker-compose start redis
@@ -71,7 +71,7 @@ curl http://localhost:8001/api/v1/users/1
 
 ```bash
 # 1. 应用和 Redis 都在运行
-uvicorn src.register:app --reload &
+uvicorn main:app --reload &
 APP_PID=$!
 
 # 2. 访问 API（缓存命中）

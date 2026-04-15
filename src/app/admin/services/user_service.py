@@ -219,6 +219,7 @@ class UserService(BaseService[User, UserRepository]):
         # 3. 更新用户的角色集合（SQLAlchemy 会自动处理关联表）
         set_attribute(user, "roles", valid_roles)
         await db.flush()
+        await db.commit()
 
         # 4. 失效缓存（详情 + 列表）
         await self.invalidate_cache(cache, user_id, invalidate_list=True)
