@@ -660,7 +660,6 @@ class BaseRepository[T]:
             instance = self.model(**main_data)
             db.add(instance)
             await db.flush()
-            await db.refresh(instance)
 
             # 处理关联对象
             if relation_data:
@@ -668,6 +667,8 @@ class BaseRepository[T]:
                 await db.flush()
                 # 刷新实例并加载关联对象
                 await self._refresh_with_relations(db, instance, relation_info)
+            else:
+                await db.refresh(instance)
 
             pk_value = getattr(instance, self._pk_column)
             logger.info(f"创建 {self._model_name} 成功: {self._pk_column}={pk_value}")

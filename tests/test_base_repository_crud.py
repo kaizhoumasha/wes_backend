@@ -97,6 +97,36 @@ class TestCrudOperations:
         assert detail.get("resource_id") is None
 
     @pytest.mark.asyncio
+    async def test_create_with_relation_payload_skips_redundant_direct_refresh(self, monkeypatch: pytest.MonkeyPatch):
+        """测试带关联数据创建时不再做冗余的直接 refresh。"""
+        db = AsyncMock(spec=AsyncSession)
+        db.add = Mock()
+        db.flush = AsyncMock()
+        db.refresh = AsyncMock()
+
+        self.repo._handle_relations = AsyncMock()  # type: ignore[method-assign]
+        self.repo._refresh_with_relations = AsyncMock()  # type: ignore[method-assign]
+
+        from src.database.relation_metadata import RelationMetadata
+
+        monkeypatch.setattr(
+            RelationMetadata,
+            "get_relation_info",
+            lambda model: {"children": {"relation_type": RelationType.ONETOMANY}},
+        )
+
+        instance = await self.repo.create(
+            db,
+            {"code": "TEST001", "name": "Test Item", "children": [{"name": "Child Item"}]},
+        )
+
+        assert instance is not None
+        assert db.flush.await_count == 2
+        db.refresh.assert_not_awaited()
+        self.repo._handle_relations.assert_awaited_once()
+        self.repo._refresh_with_relations.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_get_by_id(self, db_session: AsyncSession):
         """测试根据 ID 获取记录"""
         # 先创建一条记录
