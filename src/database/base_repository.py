@@ -38,12 +38,17 @@ from src.database.repository_utils import (
     analyze_update_data,
     apply_model_updates,
     as_version,
+    build_deleted_count_query,
+    build_deleted_items_query,
     capture_old_values,
     capture_old_values_for_delete,
     has_audit_model_mixin,
     has_relation_payload,
     has_soft_delete_mixin,
     increment_instance_version,
+    require_deleted_instance,
+    require_existing_instance,
+    require_soft_delete_support,
     should_filter_deleted,
     split_model_data,
     validate_version_before_update,
@@ -1040,12 +1045,10 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除或记录不存在
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         instance = await self.get_by_id(db, id)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
+        require_existing_instance(instance, self._model_name)
 
         # 调用 Mixin 的 soft_delete 方法
         instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
@@ -1069,16 +1072,12 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除或记录不存在
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         # 查询包括已删除的记录
         instance = await self.get_by_id(db, id, include_deleted=True)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
-
-        if not instance.is_deleted:  # type: ignore[attr-defined]
-            raise ValueError(f"{self._model_name} 未被删除，无需恢复")
+        require_existing_instance(instance, self._model_name)
+        require_deleted_instance(instance, self._model_name)
 
         # 调用 Mixin 的 restore 方法
         instance.restore()  # type: ignore[attr-defined]
@@ -1103,21 +1102,15 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         # 统计已删除记录数量
-        count_query = select(func.count(self._pk_attr)).where(self.model.is_deleted)  # type: ignore[attr-defined]
+        count_query = build_deleted_count_query(self._pk_attr, self.model)
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
         # 查询已删除记录
-        query = (
-            select(self.model)
-            .where(self.model.is_deleted)  # type: ignore[attr-defined]
-            .order_by(self.model.deleted_at.desc())  # type: ignore[attr-defined]
-        )
-        query = query.offset(offset).limit(limit)
+        query = build_deleted_items_query(self.model, limit, offset)
         result = await db.execute(query)
         items = list(result.scalars().all())
 

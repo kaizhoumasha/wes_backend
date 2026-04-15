@@ -345,6 +345,71 @@ class TestCrudOperations:
             await self.repo.update(db_session, 99999, {"name": "New Name"})
 
     @pytest.mark.asyncio
+    async def test_soft_delete_repository_method(self, db_session: AsyncSession):
+        """测试仓储 soft_delete() 会标记删除并默认从查询结果中过滤。"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        instance = await repo.create(db_session, {"code": "SOFT001", "name": "Soft Item"})
+        await db_session.commit()
+
+        deleted = await repo.soft_delete(db_session, instance.id, deleted_by=123)  # type: ignore[arg-type]
+
+        assert deleted is not None
+        assert deleted.is_deleted is True
+        assert deleted.deleted_by == 123
+        assert await repo.get_by_id(db_session, instance.id) is None  # type: ignore[arg-type]
+        assert await repo.get_by_id(db_session, instance.id, include_deleted=True) is not None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_restore_repository_method(self, db_session: AsyncSession):
+        """测试仓储 restore() 会恢复已软删除记录。"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        instance = await repo.create(db_session, {"code": "REST001", "name": "Restore Item"})
+        await db_session.commit()
+        await repo.soft_delete(db_session, instance.id, deleted_by=456)  # type: ignore[arg-type]
+        await db_session.commit()
+
+        restored = await repo.restore(db_session, instance.id)  # type: ignore[arg-type]
+
+        assert restored is not None
+        assert restored.is_deleted is False
+        assert restored.deleted_by is None
+        assert await repo.get_by_id(db_session, instance.id) is not None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_get_deleted_returns_only_deleted_items(self, db_session: AsyncSession):
+        """测试仓储 get_deleted() 只返回已删除记录。"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        first = await repo.create(db_session, {"code": "DEL001", "name": "Deleted 1"})
+        second = await repo.create(db_session, {"code": "DEL002", "name": "Deleted 2"})
+        _ = await repo.create(db_session, {"code": "LIVE001", "name": "Live"})
+        await db_session.commit()
+
+        await repo.soft_delete(db_session, first.id)  # type: ignore[arg-type]
+        await repo.soft_delete(db_session, second.id)  # type: ignore[arg-type]
+        await db_session.commit()
+
+        total, items = await repo.get_deleted(db_session, limit=10, offset=0)
+
+        assert total == 2
+        assert len(items) == 2
+        assert {item.code for item in items} == {"DEL001", "DEL002"}
+        assert all(item.is_deleted for item in items)
+
+    @pytest.mark.asyncio
+    async def test_permanent_delete_removes_soft_deleted_record(self, db_session: AsyncSession):
+        """测试仓储 permanent_delete() 会物理删除已软删除记录。"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        instance = await repo.create(db_session, {"code": "PERM001", "name": "Permanent Item"})
+        await db_session.commit()
+        await repo.soft_delete(db_session, instance.id)  # type: ignore[arg-type]
+        await db_session.commit()
+
+        success = await repo.permanent_delete(db_session, instance.id)  # type: ignore[arg-type]
+
+        assert success is True
+        assert await repo.get_by_id(db_session, instance.id, include_deleted=True) is None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
     async def test_delete(self, db_session: AsyncSession):
         """测试删除记录"""
         # 先创建一条记录

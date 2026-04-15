@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from sqlalchemy import func, select
+
 from src.core.logger import logger
 
 
@@ -124,16 +126,49 @@ def increment_instance_version(instance: Any, model_name: str, pk_column: str) -
     logger.debug(f"乐观锁：{model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}")
 
 
+def require_soft_delete_support(model: object, model_name: str) -> None:
+    """确保模型支持软删除。"""
+    if not has_soft_delete_mixin(model):
+        raise ValueError(f"{model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+
+
+def require_existing_instance(instance: Any, model_name: str) -> None:
+    """确保实例存在。"""
+    if instance is None:
+        raise ValueError(f"{model_name} 不存在")
+
+
+def require_deleted_instance(instance: Any, model_name: str) -> None:
+    """确保实例当前处于已删除状态。"""
+    if not instance.is_deleted:
+        raise ValueError(f"{model_name} 未被删除，无需恢复")
+
+
+def build_deleted_count_query(pk_attr: Any, model: Any) -> Any:
+    """构建已删除记录统计查询。"""
+    return select(func.count(pk_attr)).where(model.is_deleted)
+
+
+def build_deleted_items_query(model: Any, limit: int, offset: int) -> Any:
+    """构建已删除记录列表查询。"""
+    return select(model).where(model.is_deleted).order_by(model.deleted_at.desc()).offset(offset).limit(limit)
+
+
 __all__ = [
     "analyze_update_data",
     "apply_model_updates",
     "as_version",
+    "build_deleted_count_query",
+    "build_deleted_items_query",
     "capture_old_values",
     "capture_old_values_for_delete",
     "has_audit_model_mixin",
     "has_relation_payload",
     "has_soft_delete_mixin",
     "increment_instance_version",
+    "require_deleted_instance",
+    "require_existing_instance",
+    "require_soft_delete_support",
     "should_filter_deleted",
     "split_model_data",
     "validate_version_before_update",
