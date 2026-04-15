@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel
 
+from src.core.mixins import SoftDeleteMixin
 from src.database.base_repository import (
     BaseRepository,
     Hook,
@@ -26,6 +27,16 @@ class HookTestModel(SQLModel, table=True):
     """测试用模型"""
 
     __tablename__ = "test_hook_model"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    value: int = 0
+
+
+class SoftDeleteHookTestModel(SoftDeleteMixin, SQLModel, table=True):
+    """软删除 Hook 测试模型"""
+
+    __tablename__ = "test_soft_delete_hook_model"
 
     id: int | None = Field(default=None, primary_key=True)
     name: str
@@ -262,3 +273,31 @@ class TestHookIntegration:
 
         assert len(before_executed) == 1
         assert len(after_executed) == 1
+
+    @pytest.mark.asyncio
+    async def test_hooks_execute_in_delete_soft_delete_branch(self, db_session: AsyncSession):
+        """测试软删除分支同样执行 delete hooks。"""
+        repo = BaseRepository[SoftDeleteHookTestModel](SoftDeleteHookTestModel)
+        instance = await repo.create(db_session, {"name": "soft-test", "value": 0})
+        await db_session.commit()
+
+        before_executed = []
+        after_executed = []
+
+        def before_hook(ctx: HookContext) -> None:
+            before_executed.append(True)
+
+        async def after_hook(ctx: HookContext) -> None:
+            after_executed.append(True)
+
+        repo.add_hook(HookType.BEFORE_DELETE, before_hook)
+        repo.add_hook(HookType.AFTER_DELETE, after_hook)
+
+        result = await repo.delete(db_session, instance.id)  # type: ignore[arg-type]
+        deleted = await repo.get_by_id(db_session, instance.id, include_deleted=True)  # type: ignore[arg-type]
+
+        assert result is True
+        assert len(before_executed) == 1
+        assert len(after_executed) == 1
+        assert deleted is not None
+        assert deleted.is_deleted is True

@@ -843,52 +843,35 @@ class BaseRepository[T]:
         """
         import time
 
-        # 检测是否支持软删除
-        if self._has_soft_delete_mixin():
-            # 使用软删除
-            instance = await self.get_by_id(db, id)
-            if not instance:
-                return False
+        soft_delete_enabled = self._has_soft_delete_mixin()
+        instance = await self.get_by_id(db, id, include_relations=not soft_delete_enabled)
+        if not instance:
+            return False
 
-            # 获取当前用户ID（如果有 AuditMixin）
+        start_time = time.time()
+        old_values = self._capture_old_values_for_delete(instance)
+        await self._run_before_delete_hooks(db, instance, start_time, old_values)
+
+        if soft_delete_enabled:
             deleted_by = None
             if hasattr(self.model, "deleted_by"):
                 from src.utils.audit import get_current_user_id
 
                 deleted_by = get_current_user_id()
 
-            start_time = time.time()
-            old_values = self._capture_old_values_for_delete(instance)
-
-            await self._run_before_delete_hooks(db, instance, start_time, old_values)
-
-            # 调用 Mixin 的 soft_delete 方法
             instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
             await db.flush()
-
-            await self._run_after_delete_hooks(db, instance, start_time, old_values)
-
             logger.info(f"软删除 {self._model_name}: id={id}")
-            return True
+        else:
+            try:
+                await self._delete_related_objects(db, instance)
+                await self._delete_main_record(db, instance, id)
+            except IntegrityError as e:
+                await db.rollback()
+                self._handle_integrity_error(e)
 
-        # 使用原有物理删除逻辑
-        instance = await self.get_by_id(db, id, include_relations=True)
-        if not instance:
-            return False
-
-        start_time = time.time()
-        old_values = self._capture_old_values_for_delete(instance)
-
-        await self._run_before_delete_hooks(db, instance, start_time, old_values)
-
-        try:
-            await self._delete_related_objects(db, instance)
-            await self._delete_main_record(db, instance, id)
-            await self._run_after_delete_hooks(db, instance, start_time, old_values)
-            return True
-        except IntegrityError as e:
-            await db.rollback()
-            self._handle_integrity_error(e)
+        await self._run_after_delete_hooks(db, instance, start_time, old_values)
+        return True
 
     def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
         return capture_old_values_for_delete(instance)
