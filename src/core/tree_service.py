@@ -262,6 +262,15 @@ class TreeServiceMixin[M]:
         new_parent_id: int | None,
         cache: object | None = None,
     ) -> dict[str, Any]:
+        old_parent_id: int | None = None
+        if cache and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, node_id)  # type: ignore[attr-defined]
+                if instance_before:
+                    old_parent_id = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
         result = await self.repo.move_node(db, node_id, new_parent_id)
         await db.commit()
 
@@ -280,6 +289,11 @@ class TreeServiceMixin[M]:
 
             for descendant_id in moved_descendant_ids:
                 await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+
+            if new_parent_id is not None:
+                await self.invalidate_cache(cache, id=new_parent_id)
+            if old_parent_id is not None and old_parent_id != new_parent_id:
+                await self.invalidate_cache(cache, id=old_parent_id)
 
         return self._to_dict(result)
 

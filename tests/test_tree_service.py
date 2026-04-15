@@ -33,6 +33,7 @@ class _FakeTreeService(TreeServiceMixin[object], BaseService[object, _FakeRepo])
 async def test_move_node_uses_repo_descendant_metadata_for_cache_invalidation() -> None:
     result = SimpleNamespace(id=10, _moved_descendant_ids=[11, 12])
     repo = _FakeRepo(move_result=result)
+    repo.get_by_id = AsyncMock(return_value=None)
     service = _FakeTreeService(repo)
     db = AsyncMock()
     cache = object()
@@ -40,18 +41,48 @@ async def test_move_node_uses_repo_descendant_metadata_for_cache_invalidation() 
     payload = await service.move_node(db, 10, 20, cache=cache)
 
     db.commit.assert_awaited_once()
+    repo.get_by_id.assert_awaited_once_with(db, 10)
     repo.move_node.assert_awaited_once_with(db, 10, 20)
     repo.get_descendants.assert_not_awaited()
     assert payload == {"id": 10}
 
     invalidate_calls = service.invalidate_cache.await_args_list
-    assert len(invalidate_calls) == 3
+    assert len(invalidate_calls) == 4
     assert invalidate_calls[0].args == (cache,)
     assert invalidate_calls[0].kwargs == {"id": 10, "invalidate_list": True, "invalidate_tree": True}
     assert invalidate_calls[1].args == (cache,)
     assert invalidate_calls[1].kwargs == {"id": 11, "invalidate_list": False}
     assert invalidate_calls[2].args == (cache,)
     assert invalidate_calls[2].kwargs == {"id": 12, "invalidate_list": False}
+    assert invalidate_calls[3].args == (cache,)
+    assert invalidate_calls[3].kwargs == {"id": 20}
+
+
+@pytest.mark.asyncio
+async def test_move_node_invalidates_old_and_new_parent_cache() -> None:
+    result = SimpleNamespace(id=10, _moved_descendant_ids=[])
+    repo = _FakeRepo(move_result=result)
+    repo.get_by_id = AsyncMock(return_value=SimpleNamespace(id=10, parent_id=5))
+
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    payload = await service.move_node(db, 10, 20, cache=cache)
+
+    assert payload == {"id": 10}
+    repo.get_by_id.assert_awaited_once_with(db, 10)
+    repo.move_node.assert_awaited_once_with(db, 10, 20)
+    db.commit.assert_awaited_once()
+
+    invalidate_calls = service.invalidate_cache.await_args_list
+    assert len(invalidate_calls) == 3
+    assert invalidate_calls[0].args == (cache,)
+    assert invalidate_calls[0].kwargs == {"id": 10, "invalidate_list": True, "invalidate_tree": True}
+    assert invalidate_calls[1].args == (cache,)
+    assert invalidate_calls[1].kwargs == {"id": 20}
+    assert invalidate_calls[2].args == (cache,)
+    assert invalidate_calls[2].kwargs == {"id": 5}
 
 
 @pytest.mark.asyncio
