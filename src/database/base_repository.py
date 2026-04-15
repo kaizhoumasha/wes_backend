@@ -34,6 +34,20 @@ from src.core.logger import logger
 from src.core.query_models import FilterGroup, SortField
 from src.database.handlers.error_translator import ErrorTranslator
 from src.database.hooks import Hook, HookContext, HookFunc, HookManager, HookType
+from src.database.repository_utils import (
+    analyze_update_data,
+    apply_model_updates,
+    as_version,
+    capture_old_values,
+    capture_old_values_for_delete,
+    has_audit_model_mixin,
+    has_relation_payload,
+    has_soft_delete_mixin,
+    increment_instance_version,
+    should_filter_deleted,
+    split_model_data,
+    validate_version_before_update,
+)
 
 if TYPE_CHECKING:
     from src.database.relation_metadata import RelationInfo
@@ -43,16 +57,6 @@ else:
 
 # 泛型类型变量
 T = TypeVar("T")
-
-
-def _as_version(value: object) -> int | None:
-    return value if isinstance(value, int) else None
-
-
-def _split_model_data(data: dict[str, Any], relation_info: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    main_data = {key: value for key, value in data.items() if key not in relation_info}
-    relation_data = {key: value for key, value in data.items() if key in relation_info}
-    return main_data, relation_data
 
 
 class BaseRepository[T]:
@@ -136,11 +140,7 @@ class BaseRepository[T]:
         Returns:
             如果模型混入了 SoftDeleteMixin 则返回 True，否则返回 False
         """
-        return (
-            hasattr(self.model, "is_deleted")
-            and callable(getattr(self.model, "soft_delete", None))
-            and callable(getattr(self.model, "restore", None))
-        )
+        return has_soft_delete_mixin(self.model)
 
     def _has_audit_model_mixin(self) -> bool:
         """
@@ -157,7 +157,7 @@ class BaseRepository[T]:
             如果模型混入了 AuditableMixin 则返回 True，否则返回 False
         """
         # 只检查 AuditableMixin，不包括 AuditMixin
-        return any(base.__name__ == "AuditableMixin" for base in self.model.__mro__)
+        return has_audit_model_mixin(self.model)
 
     def _register_status_validation_hooks(self) -> None:
         """
@@ -330,11 +330,11 @@ class BaseRepository[T]:
                 return
 
             # 获取当前数据库中的版本号
-            current_version = _as_version(getattr(instance, "version", None))
+            current_version = as_version(getattr(instance, "version", None))
 
             # 获取客户端提供的版本号
             provided_version_raw = typed_data.get("version")
-            provided_version = _as_version(provided_version_raw)
+            provided_version = as_version(provided_version_raw)
 
             # 如果客户端没有提供 version 字段，抛出异常
             # 这是必需的，因为缺少 version 字段意味着客户端使用了旧的数据
@@ -391,7 +391,7 @@ class BaseRepository[T]:
         self.error_translator.handle_integrity_error(e)
 
     def _should_filter_deleted(self, include_deleted: bool) -> bool:
-        return self._has_soft_delete_mixin() and not include_deleted
+        return should_filter_deleted(self.model, include_deleted)
 
     def _apply_soft_delete_filter(self, statement: Any, include_deleted: bool) -> Any:
         if self._should_filter_deleted(include_deleted):
@@ -400,7 +400,7 @@ class BaseRepository[T]:
 
     @staticmethod
     def _has_relation_payload(data: dict[str, Any], relation_info: dict[str, Any]) -> bool:
-        return any(key in relation_info for key in data)
+        return has_relation_payload(data, relation_info)
 
     def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
         return self._get_relation_manager().add_relation_load(statement, relation_name, relation_info)
@@ -671,7 +671,7 @@ class BaseRepository[T]:
         try:
             # 分离主表字段和关联对象字段
             relation_info = RelationMetadata.get_relation_info(self.model)
-            main_data, relation_data = _split_model_data(data, relation_info)
+            main_data, relation_data = split_model_data(data, relation_info)
 
             # 创建主表实例
             instance = self.model(**main_data)
@@ -707,7 +707,7 @@ class BaseRepository[T]:
 
             raise OptimisticLockException(
                 resource_type=self._model_name,
-                resource_id=id,
+                resource_id=None,
                 provided_version=data.get("version"),
             ) from e
 
@@ -753,30 +753,10 @@ class BaseRepository[T]:
             self._handle_integrity_error(e)
 
     def _analyze_update_data(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-        from src.database.relation_metadata import RelationMetadata
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = self._has_relation_payload(data, relation_info)
-        return relation_info, has_relations
+        return analyze_update_data(self.model, data)
 
     def _validate_version_before_update(self, instance: T, id: int, data: dict[str, Any]) -> None:
-        if not hasattr(instance, "version") or "version" not in data:
-            return
-
-        current_version = _as_version(getattr(instance, "version", None))
-        provided_version_raw = data["version"]
-        provided_version = _as_version(provided_version_raw)
-        if current_version == provided_version_raw:
-            return
-
-        from src.core.exceptions import OptimisticLockException
-
-        raise OptimisticLockException(
-            resource_type=self._model_name,
-            resource_id=id,
-            current_version=current_version,
-            provided_version=provided_version,
-        )
+        validate_version_before_update(instance, self._model_name, id, data)
 
     async def _load_instance_for_update(
         self, db: AsyncSession, id: int, relation_info: dict[str, Any], has_relations: bool
@@ -800,29 +780,13 @@ class BaseRepository[T]:
         return await self.get_by_id(db, id)
 
     def _capture_old_values(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> dict[str, Any]:
-        old_values: dict[str, Any] = {}
-        for key in data:
-            if key not in relation_info and hasattr(instance, key):
-                old_values[key] = getattr(instance, key)
-        return old_values
+        return capture_old_values(instance, data, relation_info)
 
     def _apply_model_updates(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> None:
-        for field, value in data.items():
-            if field in relation_info or field == "version":
-                continue
-            if hasattr(instance, field):
-                setattr(instance, field, value)
+        apply_model_updates(instance, data, relation_info)
 
     def _increment_instance_version(self, instance: T) -> None:
-        if not hasattr(instance, "increment_version"):
-            return
-
-        old_version = instance.version  # type: ignore[attr-defined]
-        instance.increment_version()  # type: ignore[attr-defined]
-        pk_value = getattr(instance, self._pk_column)
-        logger.debug(
-            f"乐观锁：{self._model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
-        )
+        increment_instance_version(instance, self._model_name, self._pk_column)
 
     async def _run_before_update_hooks(
         self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
@@ -942,18 +906,7 @@ class BaseRepository[T]:
             self._handle_integrity_error(e)
 
     def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
-        old_values: dict[str, Any] = {}
-        model_fields = getattr(type(instance), "model_fields", None)
-        if model_fields:
-            for field_name in model_fields:
-                if hasattr(instance, field_name):
-                    try:
-                        value = getattr(instance, field_name)
-                        old_values[field_name] = value
-                    except Exception as e:
-                        logger.debug(f"无法获取字段 {field_name} 的值: {e}")
-                        continue
-        return old_values
+        return capture_old_values_for_delete(instance)
 
     async def _run_before_delete_hooks(
         self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]

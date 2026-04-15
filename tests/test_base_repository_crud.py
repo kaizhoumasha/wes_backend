@@ -14,11 +14,15 @@
 - bulk_create: 批量创建
 """
 
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import Field, SQLModel
 
+from src.core.exceptions import OptimisticLockException
 from src.core.mixins import SoftDeleteMixin
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
 from src.database.base_repository import BaseRepository
@@ -73,6 +77,22 @@ class TestCrudOperations:
         assert instance.name == "Test Item"
         assert instance.value == 100
         assert instance.is_deleted is False  # 默认值
+
+    @pytest.mark.asyncio
+    async def test_create_stale_data_raises_optimistic_lock_without_invalid_resource_id(self):
+        """测试 create 的 StaleDataError 分支不会错误引用内置 id。"""
+        db = AsyncMock(spec=AsyncSession)
+        db.add = Mock()
+        db.flush = AsyncMock(side_effect=StaleDataError("stale on create"))
+        db.rollback = AsyncMock()
+
+        with pytest.raises(OptimisticLockException) as exc_info:
+            await self.repo.create(db, {"code": "TEST001", "name": "Test Item", "version": 1})
+
+        db.rollback.assert_awaited_once()
+        assert "built-in function id" not in str(exc_info.value)
+        detail = getattr(exc_info.value, "detail", None) or {}
+        assert detail.get("resource_id") is None
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, db_session: AsyncSession):
