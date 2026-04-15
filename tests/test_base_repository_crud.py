@@ -189,6 +189,34 @@ class TestCrudOperations:
         assert len(items) == 3
 
     @pytest.mark.asyncio
+    async def test_get_list_with_schema_respects_include_deleted(self, db_session: AsyncSession):
+        """测试 get_list 的 schema 分支正确处理软删除过滤。"""
+        repo = BaseRepository[SoftDeleteCrudModel](SoftDeleteCrudModel)
+        first = await repo.create(db_session, {"code": "TEST001", "name": "Item 1"})
+        second = await repo.create(db_session, {"code": "TEST002", "name": "Item 2"})
+        first.soft_delete()
+        await db_session.commit()
+
+        visible_total, visible_items = await repo.get_list(
+            db_session,
+            limit=10,
+            offset=0,
+            schema=CrudTestResponse,
+        )
+        all_total, all_items = await repo.get_list(
+            db_session,
+            limit=10,
+            offset=0,
+            schema=CrudTestResponse,
+            include_deleted=True,
+        )
+
+        assert visible_total == 1
+        assert [item.id for item in visible_items] == [second.id]
+        assert all_total == 2
+        assert {item.id for item in all_items} == {first.id, second.id}
+
+    @pytest.mark.asyncio
     async def test_get_list_with_filter_raw(self, db_session: AsyncSession):
         """测试带原始过滤条件获取列表"""
         # 创建多条记录

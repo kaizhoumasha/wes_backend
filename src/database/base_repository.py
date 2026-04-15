@@ -591,10 +591,13 @@ class BaseRepository[T]:
             if filter_clause is not None:
                 where_clauses.append(filter_clause)
 
-        # 自动添加软删除过滤到计数查询
-        count_query = self._apply_soft_delete_filter(select(func.count(self._pk_attr)), include_deleted)
-        if where_clauses:
-            count_query = count_query.where(*where_clauses)
+        effective_where_clauses = list(where_clauses)
+        if self._should_filter_deleted(include_deleted):
+            effective_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+
+        count_query = select(func.count(self._pk_attr))
+        if effective_where_clauses:
+            count_query = count_query.where(*effective_where_clauses)
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
@@ -604,25 +607,20 @@ class BaseRepository[T]:
         if schema:
             from src.core.schema_loader import get_all_with_schema
 
-            # 构建完整的 where_clauses，包括软删除过滤
-            all_where_clauses = list(where_clauses)
-            if self._should_filter_deleted(include_deleted):
-                all_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
-
             items = await get_all_with_schema(
                 db,
                 self.model,
                 schema,
-                *all_where_clauses,
+                *effective_where_clauses,
                 limit=limit,
                 offset=offset,
                 max_depth=max_depth,
                 order_by=order_by,
             )
         else:
-            query = self._apply_soft_delete_filter(select(self.model), include_deleted)
-            if where_clauses:
-                query = query.where(*where_clauses)
+            query = select(self.model)
+            if effective_where_clauses:
+                query = query.where(*effective_where_clauses)
             if order_by:
                 query = query.order_by(*order_by)
             query = query.offset(offset).limit(limit)
