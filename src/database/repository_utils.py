@@ -154,6 +154,35 @@ def build_deleted_items_query(model: Any, limit: int, offset: int) -> Any:
     return select(model).where(model.is_deleted).order_by(model.deleted_at.desc()).offset(offset).limit(limit)
 
 
+def collect_one_to_many_delete_batches(model: Any, instance: Any) -> list[tuple[str, Any, set[int]]]:
+    """收集一对多关联的待删除对象批次。"""
+    from src.database.relation_metadata import RelationMetadata, RelationType
+
+    if not RelationMetadata.has_relations(model):
+        return []
+
+    batches: list[tuple[str, Any, set[int]]] = []
+    relation_info = RelationMetadata.get_relation_info(model)
+    for relation_name, info in relation_info.items():
+        relation_type = info.get("relation_type", "ONETOMANY")
+        if relation_type != RelationType.ONETOMANY:
+            continue
+
+        relation_attr = getattr(model, relation_name, None)
+        if not relation_attr:
+            continue
+
+        current_relations = getattr(instance, relation_name, [])
+        if not current_relations:
+            continue
+
+        ids_to_delete = {rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None}
+        if ids_to_delete:
+            batches.append((relation_name, relation_attr, ids_to_delete))
+
+    return batches
+
+
 __all__ = [
     "analyze_update_data",
     "apply_model_updates",
@@ -162,6 +191,7 @@ __all__ = [
     "build_deleted_items_query",
     "capture_old_values",
     "capture_old_values_for_delete",
+    "collect_one_to_many_delete_batches",
     "has_audit_model_mixin",
     "has_relation_payload",
     "has_soft_delete_mixin",

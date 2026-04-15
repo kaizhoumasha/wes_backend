@@ -42,6 +42,7 @@ from src.database.repository_utils import (
     build_deleted_items_query,
     capture_old_values,
     capture_old_values_for_delete,
+    collect_one_to_many_delete_batches,
     has_audit_model_mixin,
     has_relation_payload,
     has_soft_delete_mixin,
@@ -925,26 +926,10 @@ class BaseRepository[T]:
         )
 
     async def _delete_related_objects(self, db: AsyncSession, instance: T) -> None:
-        from src.database.relation_metadata import RelationMetadata, RelationType
-
-        if not RelationMetadata.has_relations(self.model):
-            return
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        for relation_name, info in relation_info.items():
-            relation_type = info.get("relation_type", "ONETOMANY")
-
-            if relation_type == RelationType.ONETOMANY:
-                relation_attr = getattr(self.model, relation_name, None)
-                if relation_attr:
-                    current_relations = getattr(instance, relation_name, [])
-                    if current_relations:
-                        ids_to_delete = {
-                            rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None
-                        }
-                        if ids_to_delete:
-                            await self._delete_relation_objects(db, relation_attr, ids_to_delete)
-                            logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
+        batches = collect_one_to_many_delete_batches(self.model, instance)
+        for _, relation_attr, ids_to_delete in batches:
+            await self._delete_relation_objects(db, relation_attr, ids_to_delete)
+            logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
 
     async def _delete_main_record(self, db: AsyncSession, instance: T, id: int) -> None:
         await db.delete(instance)

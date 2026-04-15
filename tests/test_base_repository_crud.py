@@ -14,6 +14,7 @@
 - bulk_create: 批量创建
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -26,6 +27,7 @@ from src.core.exceptions import OptimisticLockException
 from src.core.mixins import SoftDeleteMixin
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
 from src.database.base_repository import BaseRepository
+from src.database.relation_metadata import RelationType
 
 
 class CrudTestModel(SQLModel, table=True):
@@ -408,6 +410,44 @@ class TestCrudOperations:
 
         assert success is True
         assert await repo.get_by_id(db_session, instance.id, include_deleted=True) is None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_delete_related_objects_only_handles_one_to_many(self, monkeypatch: pytest.MonkeyPatch):
+        """测试 _delete_related_objects() 只清理一对多关系中的有效关联 ID。"""
+
+        class FakeParentModel:
+            id = "id"
+            children = object()
+            owner = object()
+
+        class FakeChild:
+            def __init__(self, relation_id: int | None):
+                self.id = relation_id
+
+        class FakeParentInstance:
+            def __init__(self):
+                self.children = [FakeChild(1), FakeChild(None), FakeChild(2)]
+                self.owner = object()
+
+        repo: BaseRepository[Any] = BaseRepository(FakeParentModel)  # type: ignore[type-arg,arg-type]
+        db = AsyncMock(spec=AsyncSession)
+        repo._delete_relation_objects = AsyncMock()  # type: ignore[method-assign]
+
+        from src.database.relation_metadata import RelationMetadata
+
+        monkeypatch.setattr(RelationMetadata, "has_relations", lambda model: True)
+        monkeypatch.setattr(
+            RelationMetadata,
+            "get_relation_info",
+            lambda model: {
+                "children": {"relation_type": RelationType.ONETOMANY},
+                "owner": {"relation_type": RelationType.MANYTOONE},
+            },
+        )
+
+        await repo._delete_related_objects(db, FakeParentInstance())
+
+        repo._delete_relation_objects.assert_awaited_once_with(db, FakeParentModel.children, {1, 2})
 
     @pytest.mark.asyncio
     async def test_delete(self, db_session: AsyncSession):
