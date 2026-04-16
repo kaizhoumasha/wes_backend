@@ -45,6 +45,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         enable_permission: bool = True,
         max_depth: int = 2,
         custom_routes: list[RouteRegistrar] | None = None,
+        permission_resource: str | None = None,
     ) -> None:
         self.module_name = module_name
         self.model = model
@@ -60,7 +61,8 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.gen_bulk_delete = gen_bulk_delete
         self.enable_permission = enable_permission
         self.max_depth = max_depth
-        self.perm_prefix = f"{module_name}:{model.__name__.lower()}"
+        self.permission_resource = permission_resource or model.__name__.lower()
+        self.perm_prefix = f"{module_name}:{self.permission_resource}"
         self.resource_name = model.__name__
         self.operation_id_prefix = self._build_operation_id_prefix()
         self.supports_soft_delete = all(hasattr(model, attr) for attr in ("is_deleted", "soft_delete", "restore"))

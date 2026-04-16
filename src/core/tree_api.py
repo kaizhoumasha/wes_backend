@@ -54,6 +54,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         tree_node_response_schema: type[Any] | None = None,
         # 使用与 BaseAPI 兼容的类型（函数类型参数是不变的）
         custom_routes: list[Callable[[APIRouter, Any], None]] | None = None,
+        permission_resource: str | None = None,
     ) -> None:
         self.tree_response_schema = tree_response_schema
         self.tree_node_response_schema = (
@@ -75,6 +76,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             enable_permission,
             max_depth,
             custom_routes=custom_routes,
+            permission_resource=permission_resource,
         )
         # 设置 service.response_schema 用于关联数据加载
         if hasattr(service, "response_schema"):

@@ -274,6 +274,7 @@ api_app_api = BaseAPI(
     enable_permission=True,
     gen_create=False,
     custom_routes=[register_custom_route],
+    permission_resource="api_application",
 )
 
 # 获取 router，直接在其上添加更多自定义路由
