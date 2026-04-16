@@ -471,9 +471,7 @@ class TestDispatchByType:
             patch("httpx.AsyncClient") as mock_client,
             patch("src.celery_app.tasks.workline.logger.warning") as mock_warning,
         ):
-            mock_response = MagicMock(
-                status_code=422, text='{"detail":[{"loc":["body","device_code"],"msg":"Field required"}]}'
-            )
+            mock_response = MagicMock(status_code=422, text='{"detail":[{"loc":["body","device_code"],"msg":"Field required"}]}')
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             result = await dispatch_outbox._dispatch_single(mock_db, outbox)

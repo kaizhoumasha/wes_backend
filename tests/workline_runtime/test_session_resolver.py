@@ -520,9 +520,8 @@ class TestSessionResolver:
         )
 
         # Six-In-One 组合生成 16 位 hash
-        import hashlib
         import json
-
+        import hashlib
         fields = [
             "620100L00-011-G",
             "CC0402JRNPO9BN220",

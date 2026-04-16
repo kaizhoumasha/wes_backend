@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain
 from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
@@ -93,8 +92,6 @@ class OrchestratorResult:
 
     success: bool
     error: str | None = None
-    error_code: str | None = None
-    error_domain: str | None = None
     transition: str | None = None
     decisions: list[dict[str, Any]] | None = None
     commands: list[CommandIntent] | None = None
@@ -209,12 +206,7 @@ class OrchestratorService:
         """
         session_id = self._resolve_session_pk(session)
         if session_id is None:
-            return OrchestratorResult(
-                success=False,
-                error="Session missing primary key",
-                error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
-                error_domain=ErrorDomain.WORKFLOW.value,
-            )
+            return OrchestratorResult(success=False, error="Session missing primary key")
 
         lock_key = f"session:{session_id}"
 
@@ -252,21 +244,11 @@ class OrchestratorService:
 
         except LockAcquireError:
             logger.exception(f"Failed to acquire lock for session {session_id}")
-            return OrchestratorResult(
-                success=False,
-                error="Lock acquire failed",
-                error_code=ErrorCode.UNKNOWN.value,
-                error_domain=ErrorDomain.SYSTEM.value,
-            )
+            return OrchestratorResult(success=False, error="Lock acquire failed")
         except Exception as e:
             inbox_id = getattr(inbox, "id", "unknown") if inbox else "unknown"
             logger.exception(f"Unexpected error processing inbox {inbox_id}")
-            return OrchestratorResult(
-                success=False,
-                error=str(e),
-                error_code=ErrorCode.UNKNOWN.value,
-                error_domain=ErrorDomain.SYSTEM.value,
-            )
+            return OrchestratorResult(success=False, error=str(e))
 
     async def _process_read_phase(
         self,
@@ -305,7 +287,6 @@ class OrchestratorService:
             services=services,
             correlation_id=correlation_id,
             logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
-            inbox=inbox,
         )
 
         session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
@@ -313,9 +294,6 @@ class OrchestratorService:
         if session_contract and plugin_contract and session_contract != plugin_contract:
             return OrchestratorResult(
                 success=False,
-                error=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
-                error_code=ErrorCode.CONTRACT_MISMATCH.value,
-                error_domain=ErrorDomain.CONFIG.value,
                 failure=FailureIntent(
                     domain=FailureDomain.SOFTWARE.value,
                     code=FailureCode.CONTRACT_MISMATCH,
@@ -327,12 +305,7 @@ class OrchestratorService:
             result = await self._call_plugin(plugin, ctx, inbox)
         except Exception as e:
             logger.exception("Plugin execution failed")
-            return OrchestratorResult(
-                success=False,
-                error=str(e),
-                error_code=ErrorCode.PLUGIN_EXECUTION_FAILED.value,
-                error_domain=ErrorDomain.PLUGIN.value,
-            )
+            return OrchestratorResult(success=False, error=str(e))
 
         return self._process_result(result, session, getattr(workline, "state_machine_class", None))
 
@@ -473,12 +446,7 @@ class OrchestratorService:
             )
             if not is_valid:
                 logger.error(f"Invalid transition: {error}")
-                return OrchestratorResult(
-                    success=False,
-                    error=error,
-                    error_code=ErrorCode.PLUGIN_TRANSITION_INVALID.value,
-                    error_domain=ErrorDomain.PLUGIN.value,
-                )
+                return OrchestratorResult(success=False, error=error)
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")

@@ -45,7 +45,6 @@ def _enqueue_outbox_dispatch() -> None:
         kwargs={"limit": 50},
     )
 
-
 # ============================================
 # 类型定义
 # ============================================
@@ -912,13 +911,11 @@ class ProcessInboxMessages:
                 if event_type == "SCAN_COMPLETED":
                     # 从 data 字段和 payload 中收集条码
                     barcode_values: list[Any] = [data_field.get(f) for f in SixInOne.BARCODE_FIELDS]
-                    barcode_values.extend(
-                        [
-                            payload.get("LotCode"),
-                            payload.get("DateCode"),
-                            payload.get("barcode"),
-                        ]
-                    )
+                    barcode_values.extend([
+                        payload.get("LotCode"),
+                        payload.get("DateCode"),
+                        payload.get("barcode"),
+                    ])
                     if not any(barcode_values):
                         error_msg = "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
                         logger.warning(f"Inbox {inbox_pk} {error_msg}")

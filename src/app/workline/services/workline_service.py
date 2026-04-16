@@ -11,11 +11,7 @@ from src.app.workline.repositories import WorkLineRepository, workline_repositor
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.utils.device_cache import workline_device_cache
-from src.workline_plugin_registry import (
-    get_plugin_contract_version,
-    get_workline_plugin_definition,
-    validate_workline_plugin_assignment,
-)
+from src.workline_plugin_registry import get_workline_plugin_definition, validate_workline_plugin_assignment
 
 
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
@@ -33,8 +29,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""
+
         self._validate_plugin_key(data.get("plugin_key"))
-        self._apply_runtime_defaults(data)
         return await super().create(db, data, cache)
 
     async def update(
@@ -45,12 +41,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         cache: object | None = None,
     ) -> WorkLine | None:
         """更新工作线前校验插件拓扑要求。"""
+
         current = await self.repo.get_by_id(db, id)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {id}")
 
         await self._validate_plugin_assignment(db, current=current, data=data)
-        self._apply_runtime_defaults(data, current=current)
         return await super().update(db, id, data, cache)
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
@@ -89,20 +85,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             from src.core.exceptions import BadRequestException
 
             raise BadRequestException(message=f"不支持的工作线插件: {plugin_key}")
-
-    @staticmethod
-    def _apply_runtime_defaults(data: dict[str, Any], current: WorkLine | None = None) -> None:
-        """为工作线写入运行时治理默认值。"""
-        plugin_key = data.get("plugin_key", getattr(current, "plugin_key", None))
-        contract_version = data.get("contract_version", getattr(current, "contract_version", None))
-        if (
-            (not isinstance(contract_version, str) or not contract_version)
-            and isinstance(plugin_key, str)
-            and plugin_key
-        ):
-            resolved = get_plugin_contract_version(plugin_key)
-            if isinstance(resolved, str) and resolved:
-                data.setdefault("contract_version", resolved)
 
 
 # 创建单例
