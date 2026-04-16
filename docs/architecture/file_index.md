@@ -331,6 +331,7 @@
 | `models/` | `inbox.py` | WorklineInbox/Outbox 收发件箱模型 | 🔧 架构核心 |
 | | `session.py` | WorklineSession 会话模型 | 🔧 架构核心 |
 | | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
+| | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（inbox_repository） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
@@ -356,11 +357,12 @@
 | `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架） | 🔧 架构核心 |
 | `payloads.py` | 共享 Payload 定义（Pydantic 模型） | 🔄 常用功能 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
-| `plugin_context.py` | 插件上下文（依赖注入） | 🔧 架构核心 |
+| `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文） | 🔧 架构核心 |
 | `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
 | `orchestrator.py` | 编排器服务（锁、事务、派发） | 🔧 架构核心 |
 | `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
-| `state_machine.py` | 状态机基类（SmtClassifierStageMachine 等） | 🔧 架构核心 |
+| `plugin_sdk/` | 插件 SDK（标准化输入、运行时配置、分类器） | 🔧 架构核心 |
+| `diagnostics/` | 统一诊断模型、错误码、角色化投影 | 🔧 架构核心 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
@@ -395,7 +397,7 @@
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `device.py` | 设备模型 | 🔧 架构核心 |
+| `models/` | `device.py` | 设备模型（能力声明、通信治理、诊断配置） | 🔧 架构核心 |
 | | `command.py` | 设备指令模型 | 🔧 架构核心 |
 | `repositories/` | `device_repository.py` | 设备仓库 | 🔧 架构核心 |
 | | `command_repository.py` | 指令仓库 | 🔧 架构核心 |

@@ -75,14 +75,15 @@ class DeviceContextService:
                 logger.warning(f"工作线 {workline.id} 未启用")
                 return None, self._build_inactive(workline.id)
 
-        # 4. 解析 plugin_key
-        plugin_key: str | None = getattr(device, "plugin_key", None)
-        if not isinstance(plugin_key, str) or not plugin_key:
-            candidate = getattr(workline, "plugin_key", None) if workline else None
-            plugin_key = candidate if isinstance(candidate, str) and candidate else None
+        # 4. 解析 plugin_key（唯一来源：WorkLine）
+        candidate = getattr(workline, "plugin_key", None) if workline else None
+        plugin_key: str | None = candidate if isinstance(candidate, str) and candidate else None
 
-        # 5. 解析 contract_version
-        contract_version: str | None = getattr(device, "contract_version", None)
+        # 5. 解析 contract_version（唯一来源：WorkLine / Plugin Registry）
+        workline_contract = getattr(workline, "contract_version", None) if workline else None
+        contract_version: str | None = (
+            workline_contract if isinstance(workline_contract, str) and workline_contract else None
+        )
         if not isinstance(contract_version, str) or not contract_version:
             contract_version = get_plugin_contract_version(plugin_key)
 
