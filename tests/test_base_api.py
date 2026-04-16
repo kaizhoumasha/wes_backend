@@ -87,6 +87,7 @@ class FakeBatchService(FakeService):
         self.restore_results: dict[int, object] = {}
         self.restore_errors: dict[int, Exception] = {}
         self.permanent_delete_results: dict[int, bool] = {}
+        self.permanent_delete_errors: dict[int, Exception] = {}
 
     async def create(self, db: object, data: dict[str, Any], cache: object) -> object:
         if self.create_error is not None:
@@ -104,6 +105,8 @@ class FakeBatchService(FakeService):
         return self.restore_results.get(id, SimpleNamespace(id=id, name=f"restored-{id}", children=[]))
 
     async def permanent_delete(self, db: object, id: int, cache: object) -> bool:
+        if id in self.permanent_delete_errors:
+            raise self.permanent_delete_errors[id]
         return self.permanent_delete_results.get(id, True)
 
 
@@ -254,6 +257,7 @@ def test_base_api_assigns_stable_operation_ids() -> None:
     assert (
         _get_route_operation_id(api, "/dummy-items/trash/permanent", "DELETE") == "dummy_items_batch_permanent_delete"
     )
+    assert _get_route_operation_id(api, "/dummy-items/{id}/permanent", "DELETE") == "dummy_items_permanent_delete"
     assert _get_route_operation_id(api, "/dummy-items/{id}/restore", "POST") == "dummy_items_restore"
 
 
@@ -335,10 +339,34 @@ async def test_delete_endpoint_maps_value_error_to_standard_fail_response() -> N
     )
 
     endpoint = _get_endpoint(api, "/dummy/{id}", "DELETE")
-    response = await endpoint(id=7, db=object(), cache=object(), permanent=False)
+    response = await endpoint(id=7, db=object(), cache=object())
 
     assert response["code"] == "4001"
     assert response["message"] == "当前状态不允许删除"
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_endpoint_maps_value_error_to_standard_fail_response() -> None:
+    service = FakeBatchService()
+    service.permanent_delete_errors = {7: ValueError("当前状态不允许永久删除")}
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        gen_bulk_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy/{id}/permanent", "DELETE")
+    response = await endpoint(id=7, db=object(), cache=object())
+
+    assert response["code"] == "4001"
+    assert response["message"] == "当前状态不允许永久删除"
 
 
 @pytest.mark.asyncio
@@ -457,7 +485,7 @@ def test_base_api_summary_permission_codes_match_route_dependencies() -> None:
 
     detail_permission = "test:dummysoftdeletemodel:detail"
     restore_permission = "test:dummysoftdeletemodel:restore"
-    delete_permission = "test:dummysoftdeletemodel:delete"
+    permanent_delete_permission = "test:dummysoftdeletemodel:permanent_delete"
 
     assert _get_route_dependency_permissions(api, "/dummy-items/{id}", "GET") == [detail_permission]
     assert _get_route_summary(api, "/dummy-items/{id}", "GET") == f"[{detail_permission}] 获取DummySoftDeleteModel"
@@ -467,9 +495,18 @@ def test_base_api_summary_permission_codes_match_route_dependencies() -> None:
         f"[{restore_permission}] 批量恢复DummySoftDeleteModel"
     )
 
-    assert _get_route_dependency_permissions(api, "/dummy-items/trash/permanent", "DELETE") == [delete_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-items/trash/permanent", "DELETE") == [
+        permanent_delete_permission
+    ]
     assert _get_route_summary(api, "/dummy-items/trash/permanent", "DELETE") == (
-        f"[{delete_permission}] 批量永久删除DummySoftDeleteModel"
+        f"[{permanent_delete_permission}] 批量永久删除DummySoftDeleteModel"
+    )
+
+    assert _get_route_dependency_permissions(api, "/dummy-items/{id}/permanent", "DELETE") == [
+        permanent_delete_permission
+    ]
+    assert _get_route_summary(api, "/dummy-items/{id}/permanent", "DELETE") == (
+        f"[{permanent_delete_permission}] 永久删除DummySoftDeleteModel"
     )
 
 

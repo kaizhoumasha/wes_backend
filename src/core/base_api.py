@@ -317,20 +317,9 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
-            permanent: bool = Query(False, description="是否永久删除"),  # pyright: ignore[reportCallInDefaultInitializer]
         ) -> dict[str, Any]:
             response_builder_any = self._response_builder()
             try:
-                if permanent:
-                    # 永久删除
-                    success = await self.service.permanent_delete(db, id, cache)
-                    if not success:
-                        return response_builder_any.fail(
-                            code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
-                        )
-                    logger.info(f"永久删除{self.resource_name}成功: id={id}")
-                    return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
-
                 # 软删除或物理删除（根据模型支持情况）
                 success = await self.service.delete(db, id, cache)
                 if not success:
@@ -472,7 +461,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
 
         # 2. 批量永久删除接口
         batch_permanent_delete_summary = self._build_summary(
-            "delete", f"批量永久删除{self.resource_name}"
+            "permanent_delete", f"批量永久删除{self.resource_name}"
         )
 
         @self.router.delete(
@@ -480,7 +469,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             summary=batch_permanent_delete_summary,
             operation_id=self._operation_id("batch_permanent_delete"),
             response_model=BatchOperationResponseModel,
-            dependencies=self._permission_dependencies("delete"),
+            dependencies=self._permission_dependencies("permanent_delete"),
         )
         async def batch_permanent_delete(  # pyright: ignore[reportUnusedFunction]
             ids: Annotated[list[int], Body(...)],
@@ -499,7 +488,35 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 f"批量永久删除{self.resource_name}",
             )
 
-        # 3. 恢复接口
+        # 3. 单条永久删除接口
+        permanent_delete_summary = self._build_summary("permanent_delete", f"永久删除{self.resource_name}")
+
+        @self.router.delete(
+            "/{id}/permanent",
+            summary=permanent_delete_summary,
+            operation_id=self._operation_id("permanent_delete"),
+            response_model=ResponseSchemaModel[dict[str, str]],
+            dependencies=self._permission_dependencies("permanent_delete"),
+        )
+        async def permanent_delete(  # pyright: ignore[reportUnusedFunction]
+            id: Annotated[int, Path(...)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+        ) -> dict[str, Any]:
+            response_builder_any = self._response_builder()
+            try:
+                success = await self.service.permanent_delete(db, id, cache)
+                if not success:
+                    return response_builder_any.fail(
+                        code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
+                    )
+                logger.info(f"永久删除{self.resource_name}成功: id={id}")
+                return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
+            except ValueError as e:
+                logger.warning(f"永久删除{self.resource_name}失败: id={id}, error={e}")
+                return self._value_error_response(e, resource_id=id, not_found_message=self._not_found_message(id))
+
+        # 4. 恢复接口
         restore_summary = self._build_summary("restore", f"恢复{self.resource_name}")
 
         @self.router.post(
