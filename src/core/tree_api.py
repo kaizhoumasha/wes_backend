@@ -181,7 +181,10 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         ) -> dict[str, Any]:
             """移动节点"""
             response_builder_any = self._response_builder()
-            result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
+            try:
+                result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
+            except ValueError as e:
+                return self._value_error_response(e, resource_id=node_id)
             return response_builder_any.success(data=result)
 
         @self.router.put(
@@ -199,7 +202,10 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             适用于拖拽排序场景，一次请求更新多个节点的 parent_id 和 sort_order
             """
             items = [item.model_dump() for item in request.items]
-            await self.service.batch_sort(db, items, cache=cache)
+            try:
+                await self.service.batch_sort(db, items, cache=cache)
+            except ValueError as e:
+                return self._value_error_response(e)
             return self._response_builder().success(data=None)
 
 

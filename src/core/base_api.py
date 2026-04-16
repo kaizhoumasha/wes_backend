@@ -177,6 +177,30 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _not_found_message(self, id: int) -> str:
         return f"{self.resource_name} (ID: {id}) 不存在或已被删除"
 
+    def _value_error_response(
+        self,
+        exc: ValueError,
+        *,
+        resource_id: int | None = None,
+        not_found_message: str | None = None,
+    ) -> dict[str, Any]:
+        response_builder_any = self._response_builder()
+        message = str(exc)
+
+        if "不存在" in message:
+            if not_found_message is not None:
+                missing_message = not_found_message
+            elif resource_id is not None:
+                missing_message = self._missing_message(resource_id)
+            else:
+                missing_message = message
+            return response_builder_any.fail(code=ResourceErrorCode.NOT_FOUND, message=missing_message)
+
+        if any(keyword in message for keyword in ("已存在", "重复", "冲突")):
+            return response_builder_any.fail(code=ResourceErrorCode.ALREADY_EXISTS, message=message)
+
+        return response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
+
     def _list_response_data(self, total: int, items: list[Any], limit: int, offset: int) -> dict[str, Any]:
         return {
             "total": total,
@@ -238,7 +262,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         ) -> dict[str, Any]:
             response_builder_any = self._response_builder()
             data = self._request_data(obj_in)
-            resource = await self.service.create(db, data, cache)
+            try:
+                resource = await self.service.create(db, data, cache)
+            except ValueError as e:
+                return self._value_error_response(e)
 
             logger.info(f"创建{self.resource_name}成功: id={resource.id if resource else ''}")
             response_data = self.service.to_response(resource, self.response_schema)
@@ -268,13 +295,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             try:
                 resource = await self.service.update(db, id, data, cache)
             except ValueError as e:
-                # 处理记录不存在的情况
-                if "不存在" in str(e):
-                    return response_builder_any.fail(
-                        code=ResourceErrorCode.NOT_FOUND, message=self._missing_message(id)
-                    )
-                # 其他验证错误
-                return response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
+                return self._value_error_response(e, resource_id=id)
 
             logger.info(f"更新{self.resource_name}成功: id={id}")
             response_resource = await self.service.get_by_id(db, cache, id, max_depth=1) or resource
@@ -299,21 +320,26 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             permanent: bool = Query(False, description="是否永久删除"),  # pyright: ignore[reportCallInDefaultInitializer]
         ) -> dict[str, Any]:
             response_builder_any = self._response_builder()
-            if permanent:
-                # 永久删除
-                success = await self.service.permanent_delete(db, id, cache)
+            try:
+                if permanent:
+                    # 永久删除
+                    success = await self.service.permanent_delete(db, id, cache)
+                    if not success:
+                        return response_builder_any.fail(
+                            code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
+                        )
+                    logger.info(f"永久删除{self.resource_name}成功: id={id}")
+                    return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
+
+                # 软删除或物理删除（根据模型支持情况）
+                success = await self.service.delete(db, id, cache)
                 if not success:
-                    return response_builder_any.fail(
-                        code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
-                    )
-                logger.info(f"永久删除{self.resource_name}成功: id={id}")
-                return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
-            # 软删除或物理删除（根据模型支持情况）
-            success = await self.service.delete(db, id, cache)
-            if not success:
-                return response_builder_any.fail(code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id))
-            logger.info(f"删除{self.resource_name}成功: id={id}")
-            return response_builder_any.success(data={"message": f"{self.resource_name}删除成功"})
+                    return response_builder_any.fail(code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id))
+                logger.info(f"删除{self.resource_name}成功: id={id}")
+                return response_builder_any.success(data={"message": f"{self.resource_name}删除成功"})
+            except ValueError as e:
+                logger.warning(f"删除{self.resource_name}失败: id={id}, error={e}")
+                return self._value_error_response(e, resource_id=id, not_found_message=self._not_found_message(id))
 
     def _register_bulk_delete(self) -> None:
         """注册批量删除接口"""
@@ -492,11 +518,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             try:
                 resource = await self.service.restore(db, id, cache)
             except ValueError as e:
-                if "不存在" in str(e):
-                    return response_builder_any.fail(
-                        code=ResourceErrorCode.NOT_FOUND, message=self._missing_message(id)
-                    )
-                return response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
+                return self._value_error_response(e, resource_id=id)
 
             logger.info(f"恢复{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)

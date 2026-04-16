@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.base_api import BaseAPI
 from src.core.openapi import generate_route_operation_id
-from src.core.tree_api import TreeAPI
+from src.core.tree_api import BatchSortRequest, SortItem, TreeAPI
 
 
 class DummyModel:
@@ -39,6 +39,10 @@ class DummyResponse(BaseModel):
     id: int
     name: str
     children: list[ChildResponse] = Field(default_factory=list)
+
+
+class DummyCreate(BaseModel):
+    name: str
 
 
 class DummyUpdate(BaseModel):
@@ -77,12 +81,21 @@ class FakeService:
 class FakeBatchService(FakeService):
     def __init__(self) -> None:
         super().__init__()
+        self.create_error: Exception | None = None
         self.delete_results: dict[int, bool] = {}
+        self.delete_errors: dict[int, Exception] = {}
         self.restore_results: dict[int, object] = {}
         self.restore_errors: dict[int, Exception] = {}
         self.permanent_delete_results: dict[int, bool] = {}
 
+    async def create(self, db: object, data: dict[str, Any], cache: object) -> object:
+        if self.create_error is not None:
+            raise self.create_error
+        return SimpleNamespace(id=1, name=data["name"], children=[])
+
     async def delete(self, db: object, id: int, cache: object) -> bool:
+        if id in self.delete_errors:
+            raise self.delete_errors[id]
         return self.delete_results.get(id, True)
 
     async def restore(self, db: object, id: int, cache: object) -> object:
@@ -95,6 +108,11 @@ class FakeBatchService(FakeService):
 
 
 class FakeTreeService(FakeService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.move_error: Exception | None = None
+        self.batch_sort_error: Exception | None = None
+
     async def get_tree(
         self,
         db: object,
@@ -118,10 +136,13 @@ class FakeTreeService(FakeService):
     async def move_node(
         self, db: object, node_id: int, new_parent_id: int | None, cache: object | None = None
     ) -> SimpleNamespace:
+        if self.move_error is not None:
+            raise self.move_error
         return SimpleNamespace(id=node_id, name="moved", children=[])
 
     async def batch_sort(self, db: object, items: list[dict[str, Any]], cache: object | None = None) -> None:
-        return None
+        if self.batch_sort_error is not None:
+            raise self.batch_sort_error
 
 
 def _get_update_endpoint(api: BaseAPI[Any, Any, Any]):
@@ -268,6 +289,52 @@ def _get_route_dependency_permissions(api: BaseAPI[Any, Any, Any], path: str, me
 
 
 @pytest.mark.asyncio
+async def test_create_endpoint_maps_value_error_to_business_fail_response() -> None:
+    service = FakeBatchService()
+    service.create_error = ValueError("资源已存在: dummy")
+    api = BaseAPI(
+        module_name="test",
+        model=DummyModel,
+        service=service,
+        create_schema=DummyCreate,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy", "POST")
+    response = await endpoint(obj_in=DummyCreate(name="duplicated"), db=object(), cache=object())
+
+    assert response["code"] == "3010"
+    assert response["message"] == "资源已存在: dummy"
+
+
+@pytest.mark.asyncio
+async def test_delete_endpoint_maps_value_error_to_standard_fail_response() -> None:
+    service = FakeBatchService()
+    service.delete_errors = {7: ValueError("当前状态不允许删除")}
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_bulk_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy/{id}", "DELETE")
+    response = await endpoint(id=7, db=object(), cache=object(), permanent=False)
+
+    assert response["code"] == "4001"
+    assert response["message"] == "当前状态不允许删除"
+
+
+@pytest.mark.asyncio
 async def test_bulk_delete_counts_false_results_as_failures() -> None:
     service = FakeBatchService()
     service.delete_results = {1: True, 2: False}
@@ -313,6 +380,58 @@ async def test_restore_endpoint_maps_not_found_to_standard_fail_response() -> No
 
     assert response["code"] == "3000"
     assert response["message"] == "DummySoftDeleteModel (ID: 7) 不存在"
+
+
+@pytest.mark.asyncio
+async def test_tree_move_endpoint_maps_value_error_to_business_fail_response() -> None:
+    service = FakeTreeService()
+    service.move_error = ValueError("节点 3 不能移动到其后代节点 5 下")
+    api = TreeAPI(
+        module_name="admin",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        tree_response_schema=DummyResponse,
+        prefix="/dummy-tree",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy-tree/move", "PUT")
+    response = await endpoint(db=object(), cache=object(), node_id=3, new_parent_id=5)
+
+    assert response["code"] == "4001"
+    assert response["message"] == "节点 3 不能移动到其后代节点 5 下"
+
+
+@pytest.mark.asyncio
+async def test_tree_batch_sort_endpoint_maps_value_error_to_business_fail_response() -> None:
+    service = FakeTreeService()
+    service.batch_sort_error = ValueError("批量排序形成循环依赖")
+    api = TreeAPI(
+        module_name="admin",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        tree_response_schema=DummyResponse,
+        prefix="/dummy-tree",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy-tree/batch-sort", "PUT")
+    response = await endpoint(
+        db=object(),
+        cache=object(),
+        request=BatchSortRequest(items=[SortItem(id=1, parent_id=2, sort_order=0)]),
+    )
+
+    assert response["code"] == "4001"
+    assert response["message"] == "批量排序形成循环依赖"
 
 
 def test_tree_api_uses_tree_permission_for_tree_read_routes() -> None:
