@@ -133,25 +133,27 @@ async def test_after_permission_change_invalidates_related_app_caches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_permission_restore_invalidates_related_app_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_permission_restore_invalidates_related_user_and_app_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     service = PermissionService(repo=_FakeRepo())  # type: ignore[arg-type]
-    invalidated: list[set[int]] = []
+    invalidated_users: list[set[int]] = []
+    invalidated_apps: list[set[int]] = []
 
     async def fake_restore(self: BaseService, db: object, id: int, cache: object | None = None):
         return SimpleNamespace(id=id)
 
     async def fake_query_users(db: object, permission_id: int) -> set[int]:
-        return set()
+        assert permission_id == 21
+        return {2, 7}
 
     async def fake_query_apps(db: object, permission_id: int) -> set[int]:
         assert permission_id == 21
         return {5, 8}
 
     async def fake_invalidate_users(user_ids: set[int]) -> None:
-        return None
+        invalidated_users.append(set(user_ids))
 
     async def fake_invalidate_apps(app_ids: set[int]) -> None:
-        invalidated.append(set(app_ids))
+        invalidated_apps.append(set(app_ids))
 
     monkeypatch.setattr(BaseService, "restore", fake_restore)
     service._query_user_ids_by_permission_id = fake_query_users  # type: ignore[method-assign]
@@ -162,29 +164,34 @@ async def test_permission_restore_invalidates_related_app_caches(monkeypatch: py
     restored = await service.restore(object(), 21)
 
     assert restored is not None
-    assert invalidated == [{5, 8}]
+    assert invalidated_users == [{2, 7}]
+    assert invalidated_apps == [{5, 8}]
 
 
 @pytest.mark.asyncio
-async def test_permission_permanent_delete_invalidates_related_app_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_permission_permanent_delete_invalidates_related_user_and_app_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = PermissionService(repo=_FakeRepo())  # type: ignore[arg-type]
-    invalidated: list[set[int]] = []
+    invalidated_users: list[set[int]] = []
+    invalidated_apps: list[set[int]] = []
 
     async def fake_permanent_delete(self: BaseService, db: object, id: int, cache: object | None = None) -> bool:
         return True
 
     async def fake_query_users(db: object, permission_id: int) -> set[int]:
-        return set()
+        assert permission_id == 34
+        return {4, 6}
 
     async def fake_query_apps(db: object, permission_id: int) -> set[int]:
         assert permission_id == 34
         return {3, 9}
 
     async def fake_invalidate_users(user_ids: set[int]) -> None:
-        return None
+        invalidated_users.append(set(user_ids))
 
     async def fake_invalidate_apps(app_ids: set[int]) -> None:
-        invalidated.append(set(app_ids))
+        invalidated_apps.append(set(app_ids))
 
     monkeypatch.setattr(BaseService, "permanent_delete", fake_permanent_delete)
     service._query_user_ids_by_permission_id = fake_query_users  # type: ignore[method-assign]
@@ -195,4 +202,5 @@ async def test_permission_permanent_delete_invalidates_related_app_caches(monkey
     success = await service.permanent_delete(object(), 34)
 
     assert success is True
-    assert invalidated == [{3, 9}]
+    assert invalidated_users == [{4, 6}]
+    assert invalidated_apps == [{3, 9}]
