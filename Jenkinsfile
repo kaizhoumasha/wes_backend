@@ -373,7 +373,7 @@ pipeline {
                             export BACKEND_ENV_FILE=${DEPLOY_ENV_FILE}
                             export BACKEND_IMAGE=${RUNTIME_IMAGE}
                             COMPOSE_CMD="docker compose -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
-                            HEALTH_ENDPOINT='http://127.0.0.1:8001/api/v1/performance/health'
+                            HEALTH_ENDPOINT='http://127.0.0.1:8001/health'
 
                             trap 'docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true' EXIT
                             echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
