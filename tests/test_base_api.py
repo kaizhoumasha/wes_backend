@@ -288,6 +288,13 @@ def _get_route_dependency_permissions(api: BaseAPI[Any, Any, Any], path: str, me
     raise AssertionError(f"{method} {path} route not found")
 
 
+def _get_route_summary(api: BaseAPI[Any, Any, Any], path: str, method: str) -> str | None:
+    for route in api.router.routes:
+        if method in route.methods and route.path == path:
+            return route.summary
+    raise AssertionError(f"{method} {path} route not found")
+
+
 @pytest.mark.asyncio
 async def test_create_endpoint_maps_value_error_to_business_fail_response() -> None:
     service = FakeBatchService()
@@ -432,6 +439,38 @@ async def test_tree_batch_sort_endpoint_maps_value_error_to_business_fail_respon
 
     assert response["code"] == "4001"
     assert response["message"] == "批量排序形成循环依赖"
+
+
+def test_base_api_summary_permission_codes_match_route_dependencies() -> None:
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=FakeBatchService(),
+        response_schema=DummyResponse,
+        prefix="/dummy-items",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        gen_bulk_delete=False,
+        enable_permission=True,
+    )
+
+    detail_permission = "test:dummysoftdeletemodel:detail"
+    restore_permission = "test:dummysoftdeletemodel:restore"
+    delete_permission = "test:dummysoftdeletemodel:delete"
+
+    assert _get_route_dependency_permissions(api, "/dummy-items/{id}", "GET") == [detail_permission]
+    assert _get_route_summary(api, "/dummy-items/{id}", "GET") == f"[{detail_permission}] 获取DummySoftDeleteModel"
+
+    assert _get_route_dependency_permissions(api, "/dummy-items/trash/restore", "POST") == [restore_permission]
+    assert _get_route_summary(api, "/dummy-items/trash/restore", "POST") == (
+        f"[{restore_permission}] 批量恢复DummySoftDeleteModel"
+    )
+
+    assert _get_route_dependency_permissions(api, "/dummy-items/trash/permanent", "DELETE") == [delete_permission]
+    assert _get_route_summary(api, "/dummy-items/trash/permanent", "DELETE") == (
+        f"[{delete_permission}] 批量永久删除DummySoftDeleteModel"
+    )
 
 
 def test_tree_api_uses_tree_permission_for_tree_read_routes() -> None:

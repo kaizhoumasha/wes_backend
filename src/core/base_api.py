@@ -371,7 +371,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
 
     def _register_get(self) -> None:
         """注册获取单个接口"""
-        summary = self._build_summary("get", f"获取{self.resource_name}")
+        summary = self._build_summary("detail", f"获取{self.resource_name}")
 
         @self.router.get(
             "/{id}",
@@ -444,7 +444,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             return
 
         # 1. 批量恢复接口
-        batch_restore_summary = self._build_summary("batch_restore", f"批量恢复{self.resource_name}")
+        batch_restore_summary = self._build_summary("restore", f"批量恢复{self.resource_name}")
 
         @self.router.post(
             "/trash/restore",
@@ -472,7 +472,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
 
         # 2. 批量永久删除接口
         batch_permanent_delete_summary = self._build_summary(
-            "batch_permanent_delete", f"批量永久删除{self.resource_name}"
+            "delete", f"批量永久删除{self.resource_name}"
         )
 
         @self.router.delete(
