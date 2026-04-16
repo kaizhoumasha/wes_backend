@@ -100,6 +100,17 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         """根据 app_id 查询应用（委托给 Repository）"""
         return await self.repo.get_by_app_id(db, app_id)
 
+    async def create(
+        self,
+        db: AsyncSession,
+        data: dict[str, Any],
+        cache: object | None = None,
+    ) -> APIApplication | None:
+        result = await super().create(db, data, cache)
+        if result is not None:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(result, "app_id", None))
+        return result
+
     async def update(
         self,
         db: AsyncSession,
@@ -109,7 +120,11 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
     ) -> APIApplication | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         result = await super().update(db, id, data, cache)
-        await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
+        old_app_id = getattr(app, "app_id", None)
+        new_app_id = getattr(result, "app_id", old_app_id) if result is not None else old_app_id
+        await self._invalidate_app_cache_entries(cache, app_id=old_app_id)
+        if new_app_id != old_app_id:
+            await self._invalidate_app_cache_entries(cache, app_id=new_app_id)
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:

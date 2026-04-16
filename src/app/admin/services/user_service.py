@@ -90,8 +90,9 @@ class UserService(BaseService[User, UserRepository]):
 
     async def create(self, db: AsyncSession, data: dict[str, object], cache: object | None = None) -> User | None:
         user = await super().create(db, data, cache)
-        if user is not None and getattr(user, "id", None) is not None:
-            await self._invalidate_permissions_for_user(int(user.id))
+        user_id = getattr(user, "id", None) if user is not None else None
+        if user_id is not None:
+            await self._invalidate_permissions_for_user(int(user_id))
         return user
 
     async def update(
@@ -128,9 +129,10 @@ class UserService(BaseService[User, UserRepository]):
 
     async def _after_user_changed_invalidate_permission_cache(self, context: HookContext) -> None:
         user = context.params.get("instance")
-        if user is None or getattr(user, "id", None) is None:
+        user_id = getattr(user, "id", None) if user is not None else None
+        if user_id is None:
             return
-        await self._invalidate_permissions_for_user(int(user.id))
+        await self._invalidate_permissions_for_user(int(user_id))
 
     async def _invalidate_permissions_for_user(self, user_id: int) -> None:
         cache = get_cache()
@@ -242,7 +244,7 @@ class UserService(BaseService[User, UserRepository]):
         # 3. 更新用户的角色集合（SQLAlchemy 会自动处理关联表）
         set_attribute(user, "roles", valid_roles)
         await db.flush()
-        await db.commit()
+        await self._commit_mutation(db)
 
         # 4. 失效缓存（详情 + 列表）
         await self.invalidate_cache(cache, user_id, invalidate_list=True)

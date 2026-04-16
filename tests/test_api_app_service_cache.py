@@ -185,6 +185,39 @@ async def test_get_by_app_id_caches_null_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_invalidates_new_app_alias_null_cache() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = AsyncMock()
+    new_alias = CacheKeys.app_by_app_id("app_reserved_key")
+    cache.storage[new_alias] = "__BASE_SERVICE_NULL__"
+
+    created = await service.create(
+        db,
+        {
+            "app_name": "Created App",
+            "app_type": AppType.ECS,
+            "description": "cache test",
+            "rate_limit_per_minute": 100,
+            "rate_limit_per_hour": 5000,
+            "validity_period": ValidityPeriod.ONE_YEAR,
+            "app_id": "app_reserved_key",
+            "app_secret_encrypted": "encrypted-secret",
+            "status": AppStatus.ACTIVE,
+            "ip_whitelist": None,
+            "expires_at": None,
+        },
+        cache,
+    )
+
+    assert created is not None
+    assert new_alias not in cache.storage
+    assert new_alias in cache.deleted_keys
+    assert f"{service.list_cache_prefix}:*" in cache.deleted_patterns
+
+
+@pytest.mark.asyncio
 async def test_update_invalidates_app_alias_cache() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
@@ -218,6 +251,34 @@ async def test_update_invalidates_app_alias_cache() -> None:
     assert updated.description == "updated"
     assert alias_key not in cache.storage
     assert alias_key in cache.deleted_keys
+
+
+@pytest.mark.asyncio
+async def test_update_invalidates_old_and_new_app_alias_cache_when_app_id_changes() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
+    old_alias_key = CacheKeys.app_by_app_id(app.app_id)
+    new_alias_key = CacheKeys.app_by_app_id("app_cache_new")
+    cache.storage[old_alias_key] = app.model_dump(mode="json")
+    cache.storage[new_alias_key] = "__BASE_SERVICE_NULL__"
+
+    updated = await service.update(
+        db,
+        app_id,
+        {"app_id": "app_cache_new", "version": app.version},
+        cache,
+    )
+
+    assert updated is not None
+    assert updated.app_id == "app_cache_new"
+    assert old_alias_key not in cache.storage
+    assert new_alias_key not in cache.storage
+    assert old_alias_key in cache.deleted_keys
+    assert new_alias_key in cache.deleted_keys
 
 
 @pytest.mark.asyncio
