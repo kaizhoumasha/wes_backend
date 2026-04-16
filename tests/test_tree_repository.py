@@ -48,6 +48,77 @@ async def test_move_node_keeps_expected_levels(db_session: AsyncSession) -> None
     assert reloaded_child.tree_path == f"/{root_b.id}/{child.id}/"
     assert reloaded_grandchild.level == 3
     assert reloaded_grandchild.tree_path == f"/{root_b.id}/{child.id}/{grandchild.id}/"
+    assert getattr(moved, "_moved_descendant_ids", None) == [grandchild.id]
+
+
+@pytest.mark.asyncio
+async def test_batch_sort_returns_metadata_for_affected_parents_and_descendants(db_session: AsyncSession) -> None:
+    repo = TreeRepository[TreeNode](TreeNode)
+
+    root_a = await repo.create(db_session, {"name": "Root A"})
+    root_b = await repo.create(db_session, {"name": "Root B"})
+    child = await repo.create(db_session, {"name": "Child", "parent_id": root_a.id})
+    grandchild = await repo.create(db_session, {"name": "Grandchild", "parent_id": child.id})
+    await db_session.commit()
+
+    metadata = await repo.batch_sort(
+        db_session,
+        [
+            {"id": child.id, "parent_id": root_b.id, "sort_order": 0},
+        ],
+    )
+
+    assert getattr(metadata, "moved_descendant_ids", None) == [grandchild.id]
+    assert set(getattr(metadata, "affected_parent_ids", [])) == {root_a.id, root_b.id}
+
+
+@pytest.mark.asyncio
+async def test_batch_sort_resolves_paths_against_moved_parent_regardless_of_item_order(
+    db_session: AsyncSession,
+) -> None:
+    repo = TreeRepository[TreeNode](TreeNode)
+
+    node_a = await repo.create(db_session, {"name": "A"})
+    node_b = await repo.create(db_session, {"name": "B"})
+    node_c = await repo.create(db_session, {"name": "C"})
+    await db_session.commit()
+
+    await repo.batch_sort(
+        db_session,
+        [
+            {"id": node_c.id, "parent_id": node_a.id, "sort_order": 0},
+            {"id": node_a.id, "parent_id": node_b.id, "sort_order": 0},
+        ],
+    )
+    await db_session.commit()
+
+    reloaded_a = await repo.get_by_id(db_session, node_a.id)  # type: ignore[arg-type]
+    reloaded_c = await repo.get_by_id(db_session, node_c.id)  # type: ignore[arg-type]
+
+    assert reloaded_a is not None
+    assert reloaded_c is not None
+    assert reloaded_a.tree_path == f"/{node_b.id}/{node_a.id}/"
+    assert reloaded_a.level == 2
+    assert reloaded_c.tree_path == f"/{node_b.id}/{node_a.id}/{node_c.id}/"
+    assert reloaded_c.level == 3
+
+
+@pytest.mark.asyncio
+async def test_batch_sort_rejects_cycle_created_within_same_request(db_session: AsyncSession) -> None:
+    repo = TreeRepository[TreeNode](TreeNode)
+
+    node_a = await repo.create(db_session, {"name": "A"})
+    node_b = await repo.create(db_session, {"name": "B"})
+    await db_session.commit()
+
+    with pytest.raises(ValueError, match="循环"):
+        await repo.batch_sort(
+            db_session,
+            [
+                {"id": node_a.id, "parent_id": node_b.id, "sort_order": 0},
+                {"id": node_b.id, "parent_id": node_a.id, "sort_order": 0},
+            ],
+        )
 
 
 @pytest.mark.asyncio

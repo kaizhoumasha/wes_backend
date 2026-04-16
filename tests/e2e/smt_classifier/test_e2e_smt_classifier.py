@@ -63,12 +63,12 @@ class TestSmtClassifierE2EBase:
             "timestamp": int(time.time() * 1000),
             "data": {
                 "location": location,
-                "LotCode": barcode.split("-", maxsplit=1)[0] if "-" in barcode else barcode,
-                "DateCode": barcode.split("-")[1] if "-" in barcode and len(barcode.split("-")) > 1 else None,
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
                 "Qty": "100",
-                "ProductNo": barcode.split("-")[3] if "-" in barcode and len(barcode.split("-")) > 3 else None,
-                "MfrPN": "MFR002",
-                "PONumber": "PO2026040901",
+                "DateCode": barcode.split("-")[1] if "-" in barcode and len(barcode.split("-")) > 1 else "20250317",
+                "LotCode": barcode.split("-", maxsplit=1)[0] if "-" in barcode else barcode,
+                "PkgID": barcode,
             },
         }
         # 移除 None 值
@@ -156,7 +156,7 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         """测试扫码完成 OK 流程
 
         流程:
-        1. 扫码完成 → 验证条码 → 生成 PICK_AND_PUT 命令
+        1. 扫码完成 → 验证条码 → 生成 MEASUREMENT_REEL 命令
         """
         logger.info("=" * 60)
         logger.info("开始测试: 扫码完成 OK 流程")
@@ -171,21 +171,21 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
             "timestamp": 1702627300000,
             "data": {
                 "location": "STATION_INPUT1",
-                "LotCode": "LOTABC123",
-                "DateCode": "20250317",
-                "Qty": "100",
-                "ProductNo": "PROD001",
+                "HHPN": "620100L00-011-G",
                 "MfrPN": "MFR001",
-                "PONumber": "PO001",
+                "Qty": "100",
+                "DateCode": "20250317",
+                "LotCode": "LOTABC123",
+                "PkgID": "PKG-OK-001",
             },
         }
 
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
         assert result.transition == "scan_ok"
-        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_PICK_PLACE
+        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_MEASUREMENT
         assert len(result.commands) == 1
-        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].action == "MEASUREMENT_REEL"
         # CommandIntent 只有 target_device_id，没有 device_role
         assert result.commands[0].target_device_id > 0
 
@@ -210,7 +210,12 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
             "timestamp": 1702627300000,
             "data": {
                 "location": "STATION_INPUT1",
-                "LotCode": "X",  # 太短，无效
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "MFR001",
+                "Qty": "100",
+                "DateCode": "20250317",
+                "LotCode": "LOTABC123",
+                "PkgID": "X",  # 太短，无效
             },
         }
 
@@ -221,6 +226,40 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         assert result.failure.code == "BARCODE_INVALID"
 
         logger.info(f"✓ 测试通过: 正确识别无效条码, failure={result.failure.message}")
+
+    @pytest.mark.asyncio
+    async def test_scan_incomplete_barcode_stops_forward_flow(
+        self,
+        plugin: SmtClassifierPlugin,
+        mock_plugin_context: MagicMock,
+        mock_inbox: MagicMock,
+    ) -> None:
+        """测试条码不完整时不会继续进入测量流程。"""
+
+        mock_plugin_context.session.status = "NEW"
+        mock_inbox.payload_json = {
+            "event_type": "SCAN_COMPLETED",
+            "device_code": "ARM01",
+            "timestamp": 1702627300000,
+            "data": {
+                "location": "STATION_INPUT1",
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                # 缺少 PkgID
+            },
+        }
+
+        result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
+
+        assert result.transition == "scan_ng"
+        assert result.failure is not None
+        assert result.failure.code == "BARCODE_INCOMPLETE"
+        assert result.commands
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
 
     @pytest.mark.asyncio
     async def test_pick_success_flow(
@@ -268,6 +307,69 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
 
         logger.info(f"✓ 测试通过: transition={result.transition}, next_command=MOVE_FORWARD")
 
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_requires_waiting_measurement_state(
+        self,
+        plugin: SmtClassifierPlugin,
+        mock_plugin_context: MagicMock,
+        mock_inbox: MagicMock,
+    ) -> None:
+        """测量完成回调必须在 WAITING_MEASUREMENT 状态下处理。"""
+
+        mock_plugin_context.session.status = "NEW"
+        mock_plugin_context.session.context_json = {
+            "step_code": SmtClassifierState.WAITING_PICK_PLACE,
+        }
+
+        mock_inbox.kind = "COMMAND_RESULT"
+        mock_inbox.payload_json = {
+            "device_code": "ARM01",
+            "command_code": "CMD-002",
+            "task_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "finish_time": 1702627250000,
+            "data": {
+                "pkg_id": "PKG001",
+                "reel_diameter": 180.5,
+                "reel_thickness": 12.3,
+            },
+        }
+
+        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
+
+        assert result.failure is not None
+        assert result.failure.code == "STATE_MISMATCH"
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_missing_data_returns_failure(
+        self,
+        plugin: SmtClassifierPlugin,
+        mock_plugin_context: MagicMock,
+        mock_inbox: MagicMock,
+    ) -> None:
+        """测量成功回调缺少 data 时必须显式失败。"""
+
+        mock_plugin_context.session.status = "NEW"
+        mock_plugin_context.session.context_json = {
+            "step_code": SmtClassifierState.WAITING_MEASUREMENT,
+        }
+
+        mock_inbox.kind = "COMMAND_RESULT"
+        mock_inbox.payload_json = {
+            "device_code": "ARM01",
+            "command_code": "CMD-003",
+            "task_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "finish_time": 1702627250000,
+            "data": None,
+        }
+
+        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
+
+        assert result.failure is not None
+        assert result.failure.code == "MEASUREMENT_DATA_MISSING"
+        assert result.transition == "measurement_ng"
+
 
 # ==================== Mock 服务交互测试 ====================
 
@@ -305,11 +407,14 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
         import time
 
         command_payload: dict[str, Any] = {
+            "device_code": "ARM01",
             "command_code": f"E2E-CMD-{int(time.time())}",
             "task_type": "PICK_AND_PUT",
             "priority": 1,
             "timeout": 30,
             "params": {
+                "source_type": "INPUT_PLATFORM",
+                "target_type": "PIPELINE_PLATFORM",
                 "source_loc": "STATION_INPUT1",  # 使用具体的 location_id
                 "target_loc": "STATION_PIPELINE1_INPUT1",  # 使用具体的 location_id
                 "execution_time": 1,
@@ -458,9 +563,6 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
                 "error_code": "2002",  # 搬运失败
                 "error_message": "机械臂搬运失败",
             },
-            # 顶层字段（从 error_detail 合并）
-            "error_code": "2002",
-            "error_message": "机械臂搬运失败",
         }
 
         result = await plugin.on_command_result(mock_plugin_context, mock_inbox)

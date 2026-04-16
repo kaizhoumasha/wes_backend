@@ -9,7 +9,7 @@ from src.app.admin.repositories.role_repository import RoleRepository, role_repo
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.rbac import invalidate_users_permissions
-from src.database.base_repository import HookContext, HookType
+from src.database.base_repository import HookContext
 from src.database.redis_cache import get_cache
 
 
@@ -25,12 +25,6 @@ class RoleService(BaseService[Role, RoleRepository]):
             list_cache_prefix=cache_settings.ROLE_LIST.prefix,
             list_cache_expire=cache_settings.ROLE_LIST.expire,
         )
-
-        # 角色变更会影响关联用户权限，统一在 Hook 中失效用户权限缓存
-        self.add_hook(HookType.BEFORE_UPDATE, self._before_role_update_capture_user_ids, priority=100)
-        self.add_hook(HookType.AFTER_CREATE, self._after_role_change_invalidate_user_permissions, priority=100)
-        self.add_hook(HookType.AFTER_UPDATE, self._after_role_change_invalidate_user_permissions, priority=100)
-        self.add_hook(HookType.AFTER_DELETE, self._after_role_change_invalidate_user_permissions, priority=100)
 
     async def get_active_roles_by_ids(self, db: AsyncSession, role_ids: list[int]) -> list[Role]:
         """按 ID 列表获取有效角色。
@@ -60,6 +54,39 @@ class RoleService(BaseService[Role, RoleRepository]):
             raise NotFoundException(f"角色 {deleted_text} 已删除")
 
         return roles
+
+    async def update(
+        self,
+        db: AsyncSession,
+        id: int,
+        data: dict[str, object],
+        cache: object | None = None,
+    ) -> Role | None:
+        affected_user_ids_before = await self._query_user_ids_by_role_id(db, id)
+
+        role = await super().update(db, id, data, cache)
+        if role is None:
+            return None
+
+        affected_user_ids = set(affected_user_ids_before)
+        affected_user_ids.update(await self._query_user_ids_by_role_id(db, id))
+        await self._invalidate_permissions_for_users(affected_user_ids)
+        return role
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        affected_user_ids = await self._query_user_ids_by_role_id(db, id)
+        success = await super().delete(db, id, cache)
+        if success:
+            await self._invalidate_permissions_for_users(affected_user_ids)
+        return success
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> Role | None:
+        affected_user_ids = await self._query_user_ids_by_role_id(db, id)
+        role = await super().soft_delete(db, id, cache)
+        if role is None:
+            return None
+        await self._invalidate_permissions_for_users(affected_user_ids)
+        return role
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Role | None:
         role = await super().restore(db, id, cache)

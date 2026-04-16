@@ -1,6 +1,6 @@
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel
 
 from src.app.admin.services import permission_service
@@ -25,6 +25,22 @@ response_builder_any = cast("Any", response_builder)
 api_app_service_any = cast("Any", api_app_service)
 
 
+def _value_error_response(
+    api: BaseAPI[APIApplication, APIApplicationCreate, APIApplicationUpdate],
+    resource_id: int,
+    exc: ValueError,
+) -> ResponseSchemaModel[Any]:
+    if "不存在" in str(exc):
+        return cast(
+            "ResponseSchemaModel[Any]",
+            response_builder_any.fail(code=ResourceErrorCode.NOT_FOUND, message=api._missing_message(resource_id)),
+        )
+    return cast(
+        "ResponseSchemaModel[Any]",
+        response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
+    )
+
+
 def register_custom_route(
     router: APIRouter,
     api: BaseAPI[APIApplication, APIApplicationCreate, APIApplicationUpdate],
@@ -39,23 +55,35 @@ def register_custom_route(
     @router.get(
         "/available-permissions",
         summary="[api-auth:api_application:list_permissions] 获取系统支持的 API 权限列表",
-        dependencies=[Depends(RequirePermission("api-auth:api_application:detail"))],
+        dependencies=[Depends(RequirePermission("api-auth:api_application:list_permissions"))],
     )
     async def get_system_api_permissions(  # pyright: ignore[reportUnusedFunction]
-        request: Request,
         db: AsyncSessionDep,
-        sync: bool = Query(False, description="是否强制从代码重新扫描并同步到数据库"),  # pyright: ignore[reportCallInDefaultInitializer]
     ) -> ResponseSchemaModel[list[Any]]:
         """
         返回可供分配给 API 应用的权限列表。
         """
-        if sync:
-            _ = await sync_permissions_to_db(request.app, db)
-
         # 通过 Service 层获取 API 权限（符合分层架构）
         permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
 
         return cast("ResponseSchemaModel[list[Any]]", response_builder_any.success(data=permissions))
+
+    @router.post(
+        "/available-permissions/sync",
+        summary="[api-auth:api_application:sync_permissions] 重新扫描并同步 API 权限",
+        dependencies=[Depends(RequirePermission("api-auth:api_application:sync_permissions"))],
+    )
+    async def sync_system_api_permissions(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+        db: AsyncSessionDep,
+    ) -> ResponseSchemaModel[list[Any]]:
+        """重新扫描代码中的权限并同步到数据库。"""
+        _ = await sync_permissions_to_db(request.app, db)
+        permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
+        return cast(
+            "ResponseSchemaModel[list[Any]]",
+            response_builder_any.success(data=permissions, message="权限同步成功"),
+        )
 
     @router.post(
         "",
@@ -74,27 +102,23 @@ def register_custom_route(
                 "tuple[APIApplication | None, str]",
                 await api_app_service_any.create_app(db, data, cache),
             )
-            if app is None:
-                return cast(
-                    "ResponseSchemaModel[dict[str, Any]]",
-                    response_builder_any.fail(code=BusinessErrorCode.OPERATION_FAILED, message="应用创建失败"),
-                )
+        except ValueError as exc:
+            return cast("ResponseSchemaModel[dict[str, Any]]", _value_error_response(api, 0, exc))
 
-            response_data: dict[str, Any] = {
-                **app.model_dump(exclude={"app_secret_encrypted"}),  # type: ignore[arg-type]
-                "app_secret": app_secret,
-            }
+        if app is None:
             return cast(
                 "ResponseSchemaModel[dict[str, Any]]",
-                response_builder_any.success(
-                    data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"
-                ),
+                response_builder_any.fail(code=BusinessErrorCode.OPERATION_FAILED, message="应用创建失败"),
             )
-        except Exception as e:
-            return cast(
-                "ResponseSchemaModel[dict[str, Any]]",
-                response_builder_any.fail(code=BusinessErrorCode.OPERATION_FAILED, message=f"应用创建失败: {e}"),
-            )
+
+        response_data: dict[str, Any] = {
+            **app.model_dump(exclude={"app_secret_encrypted"}),  # type: ignore[arg-type]
+            "app_secret": app_secret,
+        }
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder_any.success(data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"),
+        )
 
     @router.post(
         "/{id}/revoke",
@@ -146,13 +170,16 @@ def register_custom_route(
             data: 包含新的有效期时长和修改原因
             db: 数据库会话
         """
-        app = await api_app_service.reset_validity_period(
-            db=db,
-            cache=cache,
-            application_id=id,
-            validity_period=data.validity_period,
-            version=data.version,
-        )
+        try:
+            app = await api_app_service.reset_validity_period(
+                db=db,
+                cache=cache,
+                application_id=id,
+                validity_period=data.validity_period,
+                version=data.version,
+            )
+        except ValueError as exc:
+            return cast("ResponseSchemaModel[APIApplicationResponse]", _value_error_response(api, id, exc))
 
         return cast(
             "ResponseSchemaModel[APIApplicationResponse]",
@@ -203,7 +230,10 @@ def register_custom_route(
         cache: CacheDep,
     ) -> ResponseSchemaModel[None]:
         """为应用分配权限"""
-        await api_app_service.assign_permissions(db, cache, id, permission_ids)
+        try:
+            await api_app_service.assign_permissions(db, cache, id, permission_ids)
+        except ValueError as exc:
+            return cast("ResponseSchemaModel[None]", _value_error_response(api, id, exc))
         return cast("ResponseSchemaModel[None]", response_builder_any.success(message="权限分配成功"))
 
     @router.post(
@@ -220,7 +250,10 @@ def register_custom_route(
 
         ⚠️ 注意: 旧密钥将立即失效，新密钥仅返回一次。
         """
-        new_secret = await api_app_service.reset_secret(db, cache, id)
+        try:
+            new_secret = await api_app_service.reset_secret(db, cache, id)
+        except ValueError as exc:
+            return cast("ResponseSchemaModel[dict[str, str]]", _value_error_response(api, id, exc))
         return cast(
             "ResponseSchemaModel[dict[str, str]]",
             response_builder_any.success(data={"app_secret": new_secret}, message="密钥重置成功，请妥善保存新密钥"),
@@ -241,6 +274,7 @@ api_app_api = BaseAPI(
     enable_permission=True,
     gen_create=False,
     custom_routes=[register_custom_route],
+    permission_resource="api_application",
 )
 
 # 获取 router，直接在其上添加更多自定义路由

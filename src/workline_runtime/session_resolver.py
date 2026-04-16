@@ -29,6 +29,7 @@ from src.app.workline.repositories.session_repository import (
 )
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_runtime.payloads import SixInOne
 from src.workline_runtime.utils import ensure_dict
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
 }
-_SIX_IN_ONE_KEY_ALIASES = ("LotCode", "DateCode", "ProductNo", "MfrPN", "PONumber", "Qty")
+_SIX_IN_ONE_KEY_ALIASES = SixInOne.BARCODE_FIELDS
 
 
 def _generate_six_in_one_business_key(data: dict[str, Any]) -> str | None:

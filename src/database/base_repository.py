@@ -23,7 +23,7 @@
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -34,25 +34,29 @@ from src.core.logger import logger
 from src.core.query_models import FilterGroup, SortField
 from src.database.handlers.error_translator import ErrorTranslator
 from src.database.hooks import Hook, HookContext, HookFunc, HookManager, HookType
-
-if TYPE_CHECKING:
-    from src.database.relation_metadata import RelationInfo
-else:
-    # 运行时使用字符串类型注解
-    RelationInfo = "RelationInfo"
+from src.database.repository_utils import (
+    analyze_update_data,
+    apply_model_updates,
+    as_version,
+    build_deleted_count_query,
+    build_deleted_items_query,
+    capture_old_values,
+    capture_old_values_for_delete,
+    collect_one_to_many_delete_batches,
+    has_audit_model_mixin,
+    has_relation_payload,
+    has_soft_delete_mixin,
+    increment_instance_version,
+    require_deleted_instance,
+    require_existing_instance,
+    require_soft_delete_support,
+    should_filter_deleted,
+    split_model_data,
+    validate_version_before_update,
+)
 
 # 泛型类型变量
 T = TypeVar("T")
-
-
-def _as_version(value: object) -> int | None:
-    return value if isinstance(value, int) else None
-
-
-def _split_model_data(data: dict[str, Any], relation_info: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    main_data = {key: value for key, value in data.items() if key not in relation_info}
-    relation_data = {key: value for key, value in data.items() if key in relation_info}
-    return main_data, relation_data
 
 
 class BaseRepository[T]:
@@ -136,11 +140,7 @@ class BaseRepository[T]:
         Returns:
             如果模型混入了 SoftDeleteMixin 则返回 True，否则返回 False
         """
-        return (
-            hasattr(self.model, "is_deleted")
-            and callable(getattr(self.model, "soft_delete", None))
-            and callable(getattr(self.model, "restore", None))
-        )
+        return has_soft_delete_mixin(self.model)
 
     def _has_audit_model_mixin(self) -> bool:
         """
@@ -157,7 +157,7 @@ class BaseRepository[T]:
             如果模型混入了 AuditableMixin 则返回 True，否则返回 False
         """
         # 只检查 AuditableMixin，不包括 AuditMixin
-        return any(base.__name__ == "AuditableMixin" for base in self.model.__mro__)
+        return has_audit_model_mixin(self.model)
 
     def _register_status_validation_hooks(self) -> None:
         """
@@ -330,11 +330,11 @@ class BaseRepository[T]:
                 return
 
             # 获取当前数据库中的版本号
-            current_version = _as_version(getattr(instance, "version", None))
+            current_version = as_version(getattr(instance, "version", None))
 
             # 获取客户端提供的版本号
             provided_version_raw = typed_data.get("version")
-            provided_version = _as_version(provided_version_raw)
+            provided_version = as_version(provided_version_raw)
 
             # 如果客户端没有提供 version 字段，抛出异常
             # 这是必需的，因为缺少 version 字段意味着客户端使用了旧的数据
@@ -391,7 +391,7 @@ class BaseRepository[T]:
         self.error_translator.handle_integrity_error(e)
 
     def _should_filter_deleted(self, include_deleted: bool) -> bool:
-        return self._has_soft_delete_mixin() and not include_deleted
+        return should_filter_deleted(self.model, include_deleted)
 
     def _apply_soft_delete_filter(self, statement: Any, include_deleted: bool) -> Any:
         if self._should_filter_deleted(include_deleted):
@@ -400,10 +400,7 @@ class BaseRepository[T]:
 
     @staticmethod
     def _has_relation_payload(data: dict[str, Any], relation_info: dict[str, Any]) -> bool:
-        return any(key in relation_info for key in data)
-
-    def _add_relation_load(self, statement: Any, relation_name: str, relation_info: RelationInfo) -> Any:
-        return self._get_relation_manager().add_relation_load(statement, relation_name, relation_info)
+        return has_relation_payload(data, relation_info)
 
     def _add_all_relation_loads(self, statement: Any) -> Any:
         return self._get_relation_manager().add_all_relation_loads(statement)
@@ -414,20 +411,8 @@ class BaseRepository[T]:
     async def _handle_relations(self, db: AsyncSession, instance: T, data: dict[str, Any]) -> None:
         await self._get_relation_manager().handle_relations(db, instance, data)
 
-    async def _preload_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
-        await self._get_relation_manager().preload_relations(db, instance, relation_info)
-
     async def _refresh_with_relations(self, db: AsyncSession, instance: T, relation_info: dict[str, Any]) -> None:
         await self._get_relation_manager().refresh_with_relations(db, instance, relation_info)
-
-    async def _handle_one_to_many_relation(
-        self,
-        db: AsyncSession,
-        instance: T,
-        relation_name: str,
-        relation_data: list[dict[str, Any]],
-    ) -> None:
-        await self._get_relation_manager().handle_one_to_many_relation(db, instance, relation_name, relation_data)
 
     # ==================== 基础 CRUD 方法 ====================
 
@@ -480,15 +465,16 @@ class BaseRepository[T]:
                 include_deleted=True
             )
         """
+        where_clauses = [self._pk_attr == id]
+        if self._should_filter_deleted(include_deleted):
+            where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+
         if schema:
             from src.core.schema_loader import get_with_schema
 
-            where_clauses = [self._pk_attr == id]
-            if self._should_filter_deleted(include_deleted):
-                where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
             return await get_with_schema(db, self.model, schema, *where_clauses, max_depth=max_depth)
 
-        statement = self._apply_soft_delete_filter(select(self.model).where(self._pk_attr == id), include_deleted)
+        statement = select(self.model).where(*where_clauses)
 
         # 添加关联对象加载
         if include_relations:
@@ -606,10 +592,13 @@ class BaseRepository[T]:
             if filter_clause is not None:
                 where_clauses.append(filter_clause)
 
-        # 自动添加软删除过滤到计数查询
-        count_query = self._apply_soft_delete_filter(select(func.count(self._pk_attr)), include_deleted)
-        if where_clauses:
-            count_query = count_query.where(*where_clauses)
+        effective_where_clauses = list(where_clauses)
+        if self._should_filter_deleted(include_deleted):
+            effective_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
+
+        count_query = select(func.count(self._pk_attr))
+        if effective_where_clauses:
+            count_query = count_query.where(*effective_where_clauses)
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
@@ -619,25 +608,20 @@ class BaseRepository[T]:
         if schema:
             from src.core.schema_loader import get_all_with_schema
 
-            # 构建完整的 where_clauses，包括软删除过滤
-            all_where_clauses = list(where_clauses)
-            if self._should_filter_deleted(include_deleted):
-                all_where_clauses.append(self.model.is_deleted.is_(False))  # type: ignore[attr-defined]
-
             items = await get_all_with_schema(
                 db,
                 self.model,
                 schema,
-                *all_where_clauses,
+                *effective_where_clauses,
                 limit=limit,
                 offset=offset,
                 max_depth=max_depth,
                 order_by=order_by,
             )
         else:
-            query = self._apply_soft_delete_filter(select(self.model), include_deleted)
-            if where_clauses:
-                query = query.where(*where_clauses)
+            query = select(self.model)
+            if effective_where_clauses:
+                query = query.where(*effective_where_clauses)
             if order_by:
                 query = query.order_by(*order_by)
             query = query.offset(offset).limit(limit)
@@ -671,13 +655,12 @@ class BaseRepository[T]:
         try:
             # 分离主表字段和关联对象字段
             relation_info = RelationMetadata.get_relation_info(self.model)
-            main_data, relation_data = _split_model_data(data, relation_info)
+            main_data, relation_data = split_model_data(data, relation_info)
 
             # 创建主表实例
             instance = self.model(**main_data)
             db.add(instance)
             await db.flush()
-            await db.refresh(instance)
 
             # 处理关联对象
             if relation_data:
@@ -685,6 +668,8 @@ class BaseRepository[T]:
                 await db.flush()
                 # 刷新实例并加载关联对象
                 await self._refresh_with_relations(db, instance, relation_info)
+            else:
+                await db.refresh(instance)
 
             pk_value = getattr(instance, self._pk_column)
             logger.info(f"创建 {self._model_name} 成功: {self._pk_column}={pk_value}")
@@ -707,7 +692,7 @@ class BaseRepository[T]:
 
             raise OptimisticLockException(
                 resource_type=self._model_name,
-                resource_id=id,
+                resource_id=None,
                 provided_version=data.get("version"),
             ) from e
 
@@ -746,37 +731,17 @@ class BaseRepository[T]:
 
         try:
             await self._execute_update(db, instance, data, relation_info, has_relations)
-            await self._finalize_update(db, instance, data, start_time, old_values)
+            await self._finalize_update(db, instance, data, relation_info, has_relations, start_time, old_values)
             return instance
         except IntegrityError as e:
             await db.rollback()
             self._handle_integrity_error(e)
 
     def _analyze_update_data(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-        from src.database.relation_metadata import RelationMetadata
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = self._has_relation_payload(data, relation_info)
-        return relation_info, has_relations
+        return analyze_update_data(self.model, data)
 
     def _validate_version_before_update(self, instance: T, id: int, data: dict[str, Any]) -> None:
-        if not hasattr(instance, "version") or "version" not in data:
-            return
-
-        current_version = _as_version(getattr(instance, "version", None))
-        provided_version_raw = data["version"]
-        provided_version = _as_version(provided_version_raw)
-        if current_version == provided_version_raw:
-            return
-
-        from src.core.exceptions import OptimisticLockException
-
-        raise OptimisticLockException(
-            resource_type=self._model_name,
-            resource_id=id,
-            current_version=current_version,
-            provided_version=provided_version,
-        )
+        validate_version_before_update(instance, self._model_name, id, data)
 
     async def _load_instance_for_update(
         self, db: AsyncSession, id: int, relation_info: dict[str, Any], has_relations: bool
@@ -800,29 +765,13 @@ class BaseRepository[T]:
         return await self.get_by_id(db, id)
 
     def _capture_old_values(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> dict[str, Any]:
-        old_values: dict[str, Any] = {}
-        for key in data:
-            if key not in relation_info and hasattr(instance, key):
-                old_values[key] = getattr(instance, key)
-        return old_values
+        return capture_old_values(instance, data, relation_info)
 
     def _apply_model_updates(self, instance: T, data: dict[str, Any], relation_info: dict[str, Any]) -> None:
-        for field, value in data.items():
-            if field in relation_info or field == "version":
-                continue
-            if hasattr(instance, field):
-                setattr(instance, field, value)
+        apply_model_updates(instance, data, relation_info)
 
     def _increment_instance_version(self, instance: T) -> None:
-        if not hasattr(instance, "increment_version"):
-            return
-
-        old_version = instance.version  # type: ignore[attr-defined]
-        instance.increment_version()  # type: ignore[attr-defined]
-        pk_value = getattr(instance, self._pk_column)
-        logger.debug(
-            f"乐观锁：{self._model_name} (ID: {pk_value}) 版本号从 {old_version} 递增到 {instance.version}"  # type: ignore[attr-defined]
-        )
+        increment_instance_version(instance, self._model_name, self._pk_column)
 
     async def _run_before_update_hooks(
         self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
@@ -849,13 +798,15 @@ class BaseRepository[T]:
         await db.flush()
 
     async def _finalize_update(
-        self, db: AsyncSession, instance: T, data: dict[str, Any], start_time: float, old_values: dict[str, Any]
+        self,
+        db: AsyncSession,
+        instance: T,
+        data: dict[str, Any],
+        relation_info: dict[str, Any],
+        has_relations: bool,
+        start_time: float,
+        old_values: dict[str, Any],
     ) -> None:
-        from src.database.relation_metadata import RelationMetadata
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        has_relations = self._has_relation_payload(data, relation_info)
-
         if has_relations:
             for relation_name in relation_info:
                 if hasattr(instance, relation_name):
@@ -894,66 +845,38 @@ class BaseRepository[T]:
         """
         import time
 
-        # 检测是否支持软删除
-        if self._has_soft_delete_mixin():
-            # 使用软删除
-            instance = await self.get_by_id(db, id)
-            if not instance:
-                return False
+        soft_delete_enabled = self._has_soft_delete_mixin()
+        instance = await self.get_by_id(db, id, include_relations=not soft_delete_enabled)
+        if not instance:
+            return False
 
-            # 获取当前用户ID（如果有 AuditMixin）
+        start_time = time.time()
+        old_values = self._capture_old_values_for_delete(instance)
+        await self._run_before_delete_hooks(db, instance, start_time, old_values)
+
+        if soft_delete_enabled:
             deleted_by = None
             if hasattr(self.model, "deleted_by"):
                 from src.utils.audit import get_current_user_id
 
                 deleted_by = get_current_user_id()
 
-            start_time = time.time()
-            old_values = self._capture_old_values_for_delete(instance)
-
-            await self._run_before_delete_hooks(db, instance, start_time, old_values)
-
-            # 调用 Mixin 的 soft_delete 方法
             instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
             await db.flush()
-
-            await self._run_after_delete_hooks(db, instance, start_time, old_values)
-
             logger.info(f"软删除 {self._model_name}: id={id}")
-            return True
+        else:
+            try:
+                await self._delete_related_objects(db, instance)
+                await self._delete_main_record(db, instance, id)
+            except IntegrityError as e:
+                await db.rollback()
+                self._handle_integrity_error(e)
 
-        # 使用原有物理删除逻辑
-        instance = await self.get_by_id(db, id, include_relations=True)
-        if not instance:
-            return False
-
-        start_time = time.time()
-        old_values = self._capture_old_values_for_delete(instance)
-
-        await self._run_before_delete_hooks(db, instance, start_time, old_values)
-
-        try:
-            await self._delete_related_objects(db, instance)
-            await self._delete_main_record(db, instance, id)
-            await self._run_after_delete_hooks(db, instance, start_time, old_values)
-            return True
-        except IntegrityError as e:
-            await db.rollback()
-            self._handle_integrity_error(e)
+        await self._run_after_delete_hooks(db, instance, start_time, old_values)
+        return True
 
     def _capture_old_values_for_delete(self, instance: T) -> dict[str, Any]:
-        old_values: dict[str, Any] = {}
-        model_fields = getattr(type(instance), "model_fields", None)
-        if model_fields:
-            for field_name in model_fields:
-                if hasattr(instance, field_name):
-                    try:
-                        value = getattr(instance, field_name)
-                        old_values[field_name] = value
-                    except Exception as e:
-                        logger.debug(f"无法获取字段 {field_name} 的值: {e}")
-                        continue
-        return old_values
+        return capture_old_values_for_delete(instance)
 
     async def _run_before_delete_hooks(
         self, db: AsyncSession, instance: T, start_time: float, old_values: dict[str, Any]
@@ -967,26 +890,10 @@ class BaseRepository[T]:
         )
 
     async def _delete_related_objects(self, db: AsyncSession, instance: T) -> None:
-        from src.database.relation_metadata import RelationMetadata, RelationType
-
-        if not RelationMetadata.has_relations(self.model):
-            return
-
-        relation_info = RelationMetadata.get_relation_info(self.model)
-        for relation_name, info in relation_info.items():
-            relation_type = info.get("relation_type", "ONETOMANY")
-
-            if relation_type == RelationType.ONETOMANY:
-                relation_attr = getattr(self.model, relation_name, None)
-                if relation_attr:
-                    current_relations = getattr(instance, relation_name, [])
-                    if current_relations:
-                        ids_to_delete = {
-                            rel.id for rel in current_relations if hasattr(rel, "id") and rel.id is not None
-                        }
-                        if ids_to_delete:
-                            await self._delete_relation_objects(db, relation_attr, ids_to_delete)
-                            logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
+        batches = collect_one_to_many_delete_batches(self.model, instance)
+        for _, relation_attr, ids_to_delete in batches:
+            await self._delete_relation_objects(db, relation_attr, ids_to_delete)
+            logger.info(f"删除 {self._model_name} 的关联对象: 数量={len(ids_to_delete)}")
 
     async def _delete_main_record(self, db: AsyncSession, instance: T, id: int) -> None:
         await db.delete(instance)
@@ -1087,12 +994,10 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除或记录不存在
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         instance = await self.get_by_id(db, id)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
+        require_existing_instance(instance, self._model_name)
 
         # 调用 Mixin 的 soft_delete 方法
         instance.soft_delete(deleted_by)  # type: ignore[attr-defined]
@@ -1116,16 +1021,12 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除或记录不存在
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         # 查询包括已删除的记录
         instance = await self.get_by_id(db, id, include_deleted=True)
-        if not instance:
-            raise ValueError(f"{self._model_name} 不存在")
-
-        if not instance.is_deleted:  # type: ignore[attr-defined]
-            raise ValueError(f"{self._model_name} 未被删除，无需恢复")
+        require_existing_instance(instance, self._model_name)
+        require_deleted_instance(instance, self._model_name)
 
         # 调用 Mixin 的 restore 方法
         instance.restore()  # type: ignore[attr-defined]
@@ -1150,21 +1051,15 @@ class BaseRepository[T]:
         Raises:
             ValueError: 模型不支持软删除
         """
-        if not self._has_soft_delete_mixin():
-            raise ValueError(f"{self._model_name} 不支持软删除（未混入 SoftDeleteMixin）")
+        require_soft_delete_support(self.model, self._model_name)
 
         # 统计已删除记录数量
-        count_query = select(func.count(self._pk_attr)).where(self.model.is_deleted)  # type: ignore[attr-defined]
+        count_query = build_deleted_count_query(self._pk_attr, self.model)
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
         # 查询已删除记录
-        query = (
-            select(self.model)
-            .where(self.model.is_deleted)  # type: ignore[attr-defined]
-            .order_by(self.model.deleted_at.desc())  # type: ignore[attr-defined]
-        )
-        query = query.offset(offset).limit(limit)
+        query = build_deleted_items_query(self.model, limit, offset)
         result = await db.execute(query)
         items = list(result.scalars().all())
 

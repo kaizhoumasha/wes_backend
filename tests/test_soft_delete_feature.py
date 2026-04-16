@@ -147,7 +147,7 @@ POST /articles/query
 {"limit": 10, "offset": 0}
 
 # 永久删除
-DELETE /articles/1?permanent=true
+DELETE /articles/1/permanent
 
 # 尝试获取文章（应该返回 404）
 GET /articles/1

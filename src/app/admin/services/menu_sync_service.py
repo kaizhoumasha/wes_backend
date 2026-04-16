@@ -121,6 +121,8 @@ class MenuSyncService:
         resolved_ids = {menu.name: menu.id for menu in existing_menus if menu.id is not None}
         next_temp_id = -1
 
+        mutated = False
+
         for definition in menu_definitions:
             parent_id = None
             if definition.parent_name:
@@ -138,6 +140,7 @@ class MenuSyncService:
             if existing is None:
                 if not dry_run:
                     created = await self.repo.create(db, payload)
+                    mutated = True
                     if created and created.id is not None:
                         resolved_ids[definition.name] = created.id
                         existing_by_name[definition.name] = created
@@ -158,11 +161,15 @@ class MenuSyncService:
 
             if not dry_run and existing_id is not None:
                 _ = await self.repo.update(db, existing_id, update_data)
+                mutated = True
                 await db.refresh(existing)
 
             result.updated += 1
             if existing_id is not None:
                 resolved_ids[definition.name] = existing_id
+
+        if mutated and not dry_run:
+            await db.commit()
 
         return result
 

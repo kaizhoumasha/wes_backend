@@ -1,7 +1,7 @@
-# FXR-WES 项目文件索引
+# P9 WES Backend 项目文件索引
 
-**最后更新**: 2026年3月31日
-**同步状态**: ✅ 已同步（v0.1.1.0 - 文档清理 + 模块补全）
+**最后更新**: 2026年4月16日
+**同步状态**: ⚠️ 已完成高优先级文档入口修正；其余内容请以实际仓库结构为准
 
 ---
 
@@ -9,6 +9,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-04-16 | docs-hotfix | 修正文档入口路径与失效链接，并为历史提案类文档补充状态说明 |
 | 2026-03-31 | v0.1.1.0 | 文档清理：删除 36 个过程文档，补全 callback/device 模块，修复 Mixin 继承示例 |
 | 2026-03-23 | v0.1.0.0 | 初始生产版本：完整 3 层架构、JWT 认证、RBAC 权限、设备管理、作业线模块、254 个测试通过 |
 | 2026-03-17 | v2.3 | Workline Phase 1 完成：Inbox/Outbox 模型、Repository、Service、Callback 集成、幂等性控制 |
@@ -20,7 +21,9 @@
 
 ## 1. 文档目的
 
-本文件为 `fxn-wms` 后端项目提供**完整的代码结构索引**，帮助开发者快速定位文件、理解架构。
+本文件为 `wes_backend`（P9 WES Backend）项目提供代码结构索引，帮助开发者快速定位文件、理解架构。
+
+> 说明：仓库中的文档已逐步按主题拆分到 `docs/architecture/`、`docs/devops/`、`docs/integration/` 等子目录；若本文与实际目录不一致，请以当前文件树为准。
 
 ### 核心设计原则
 
@@ -485,21 +488,21 @@
 |------|------|------|
 | `SRS.md` | 软件需求规格说明书 | 📖 必读文档 |
 | `ARCHITECTURE_EVOLUTION_ROADMAP.md` | 架构演进路线图 | 📖 必读文档 |
-| `file_index.md` | 代码库动态索引（本文档） | 📖 必读文档 |
+| `architecture/file_index.md` | 代码库动态索引（本文档） | 📖 必读文档 |
 | `permission-model.md` | RBAC 权限模型文档 | 📖 必读文档 |
 | `CLAUDE.md` | Claude Code 开发指南 | 📖 必读文档 |
-| `database_migration.md` | 数据库迁移指南 | 🔄 常用功能 |
+| `devops/database_migration.md` | 数据库迁移指南 | 🔄 常用功能 |
 | `menu-api-usage.md` | 菜单 API 使用指南 | 📚 参考资料 |
 | `REPOSITORY_GUIDE.md` | Repository 使用指南 | 📚 参考资料 |
-| `interact_backend.md` | 后端交互指南 | 📚 参考资料 |
+| `integration/interact_backend.md` | 后端交互需求草案（历史提案） | 📚 参考资料 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
 | `third_party_integration_whitepaper.md` | 第三方集成指南 | 📚 参考资料 |
 | `workline_smt_classifier_runtime_flow.md` | SMT 粗分机插件与 Mock 设备端到端数据流说明 | 📚 参考资料 |
 | `workline_smt_classifier_hardware_gap_analysis.md` | SMT 粗分机当前实现与真实硬件协议偏差分析 | 📚 参考资料 |
-| `JENKINS.md` | Jenkins 使用指南 | 📚 参考资料 |
-| `jenkins-setup-current-env.md` | Jenkins 环境配置 | 📚 参考资料 |
-| `jenkins-checklist.md` | Jenkins 部署检查清单 | 📚 参考资料 |
+| `devops/JENKINS.md` | Jenkins 使用指南 | 📚 参考资料 |
+| `devops/jenkins-setup-current-env.md` | Jenkins 环境配置 | 📚 参考资料 |
+| `devops/jenkins-checklist.md` | Jenkins 部署检查清单 | 📚 参考资料 |
 | `系统架构图.eddx` | 系统架构图（图形文件） | 📚 参考资料 |
 
 ---
@@ -551,16 +554,16 @@
 │
 ├───docs/                     # 项目文档
 │   ├───ARCHITECTURE_EVOLUTION_ROADMAP.md
-│   ├───JENKINS.md
+│   ├───devops/JENKINS.md
 │   ├───REPOSITORY_GUIDE.md
 │   ├───SRS.md
 │   ├───api_authentication_design.md
 │   ├───api_authentication_summary.md
-│   ├───database_migration.md
-│   ├───file_index.md         # 本文档
-│   ├───interact_backend.md
-│   ├───jenkins-checklist.md
-│   ├───jenkins-setup-current-env.md
+│   ├───devops/database_migration.md
+│   ├───architecture/file_index.md  # 本文档
+│   ├───integration/interact_backend.md
+│   ├───devops/jenkins-checklist.md
+│   ├───devops/jenkins-setup-current-env.md
 │   ├───menu-api-usage.md
 │   ├───permission-model.md
 │   ├───third_party_integration_whitepaper.md

@@ -88,6 +88,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         command = await self.repo.create(db, command_data)
         if command:
+            await db.commit()
             await self._invalidate_command_cache(invalidate_list=True)
             logger.info(f"创建指令: {command_code} -> {command_request.task_type.value}")
 
@@ -187,6 +188,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command = await self.repo.update(db, command.id, update_data)
         if updated_command:
+            await db.commit()
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(
                 f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
@@ -225,6 +227,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         )
 
         if updated_command:
+            await db.commit()
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(f"指令已取消: {command_code}")
         return updated_command
@@ -259,6 +262,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         updated_command = await self.repo.update(db, command.id, update_data)
 
         if updated_command:
+            await db.commit()
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(f"指令已重置: {command_code} (重试次数: {updated_command.retry_count})")
         return updated_command
@@ -339,6 +343,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command = await self.repo.update(db, command.id, update_data)
         if updated_command:
+            await db.commit()
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
 
     async def _update_command_status(
@@ -362,6 +367,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command = await self.repo.update(db, command.id, update_data)
         if updated_command:
+            await db.commit()
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
 
     def _normalize_error_detail(self, error_detail: dict[str, Any] | str | None) -> dict[str, Any] | None:

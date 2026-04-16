@@ -28,9 +28,6 @@ class RelationManager:
         self.loader = RelationLoader(model, pk_column)
         self.crud = RelationCRUD(model)
 
-    def add_relation_load(self, statement: Any, relation_name: str, relation_info: Any) -> Any:
-        return self.loader.add_relation_load(statement, relation_name, relation_info)
-
     def add_all_relation_loads(self, statement: Any) -> Any:
         return self.loader.add_all_relation_loads(statement)
 
@@ -40,20 +37,8 @@ class RelationManager:
     async def handle_relations(self, db: AsyncSession, instance: Any, data: dict[str, Any]) -> None:
         await self.crud.handle_relations(db, instance, data)
 
-    async def preload_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
-        await self.loader.preload_relations(db, instance, relation_info)
-
     async def refresh_with_relations(self, db: AsyncSession, instance: Any, relation_info: dict[str, Any]) -> None:
         await self.loader.refresh_with_relations(db, instance, relation_info)
-
-    async def handle_one_to_many_relation(
-        self,
-        db: AsyncSession,
-        instance: Any,
-        relation_name: str,
-        relation_data: list[dict[str, Any]],
-    ) -> None:
-        await self.crud.handle_one_to_many_relation(db, instance, relation_name, relation_data)
 
     async def update_relations(
         self,

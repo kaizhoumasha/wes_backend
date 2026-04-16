@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.celery_app.tasks.workline import _ensure_non_empty_retry_result
+from src.celery_app.tasks.workline import _ensure_non_empty_retry_result, _map_command_task_type
 
 
 def test_ensure_non_empty_retry_result_allows_empty_first_attempt() -> None:
@@ -42,3 +42,7 @@ def test_ensure_non_empty_retry_result_rejects_empty_retry() -> None:
             },
             retries=2,
         )
+
+
+def test_map_command_task_type_maps_measurement_reel_to_process() -> None:
+    assert _map_command_task_type("MEASUREMENT_REEL") == "PROCESS"

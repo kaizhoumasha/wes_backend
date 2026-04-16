@@ -8,32 +8,29 @@
 # ============================================
 # 定时任务配置 (Beat Schedule)
 # ============================================
+# 注意：inbox/outbox 处理已支持事件驱动即时触发，
+#       Beat 仅作兜底轮询，无需高频调度。
+# ============================================
 
 beat_schedule: dict[str, dict[str, str | float]] = {
-    # ============================================
     # 健康检查任务
-    # ============================================
     "health-check": {
         "task": "src.celery_app.tasks.core.health_check",
         "schedule": 60.0,  # 每分钟
     },
-    # ============================================
-    # Inbox 消息处理任务 - 定期扫描并处理新消息
-    # ============================================
+    # Inbox 消息处理 - 扫描并处理新消息（兜底）
+    # 正常流程由 API 写入 Inbox 后即时 send_task 触发，Beat 仅处理遗漏/重试
     "process-inbox-batch": {
         "task": "src.celery_app.tasks.workline.process_inbox_batch",
-        "schedule": 1.0,  # 每1秒处理一次（降低事件响应延迟）
+        "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
-    # ============================================
-    # Outbox 消息派发任务 - 定期将命令下发给设备
-    # ============================================
+    # Outbox 消息派发 - 将命令下发给设备（兜底）
+    # 正常流程由编排完成后即时 send_task 触发，Beat 仅处理遗漏/重试
     "dispatch-outbox-batch": {
         "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
-        "schedule": 1.0,  # 每1秒派发一次（降低命令下发延迟）
+        "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
-    # ============================================
     # 超时 Session 扫描任务
-    # ============================================
     "scan-timeouts-batch": {
         "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
         "schedule": 30.0,  # 每30秒扫描一次

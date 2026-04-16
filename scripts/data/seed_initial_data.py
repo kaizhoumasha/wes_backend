@@ -643,8 +643,10 @@ async def seed_user_roles(db: AsyncSession) -> None:
 
 async def seed_all(db: AsyncSession) -> None:
     """初始化所有数据"""
-    from src.register import app
+    from src.register import create_app
     from src.utils.permission_scanner import sync_permissions_to_db
+
+    app = create_app()
 
     print("🌱 开始初始化系统数据...")
 

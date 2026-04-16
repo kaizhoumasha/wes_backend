@@ -1,0 +1,26 @@
+from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_docker_compose_dev_uses_beat_autoreload_script() -> None:
+    compose_text = (BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert 'if [ "${ENV:-prod}" = "dev" ]; then' in compose_text
+    assert "exec sh /app/src/celery_app/dev_beat_autoreload.sh;" in compose_text
+
+
+def test_deploy_compose_dev_uses_beat_autoreload_script() -> None:
+    compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+
+    assert 'if [ "${ENV:-prod}" = "dev" ]; then' in compose_text
+    assert "exec sh /app/src/celery_app/dev_beat_autoreload.sh;" in compose_text
+
+
+def test_dev_beat_autoreload_script_runs_celery_beat() -> None:
+    script_text = (BACKEND_ROOT / "src/celery_app/dev_beat_autoreload.sh").read_text(encoding="utf-8")
+
+    assert "Development-only auto-restart wrapper for Celery beat." in script_text
+    assert 'WATCH_PATH="${CELERY_WATCH_PATH:-/app/src}"' in script_text
+    assert 'CELERY_CMD="celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}"' in script_text
+    assert 'echo "[celery-beat-dev-reload] code change detected, restarting beat"' in script_text

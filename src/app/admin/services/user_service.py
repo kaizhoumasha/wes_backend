@@ -72,9 +72,6 @@ class UserService(BaseService[User, UserRepository]):
         self.password_hasher = password_hasher
 
         self.add_hook(HookType.BEFORE_CREATE, self._before_create_password_hash)
-        self.add_hook(HookType.AFTER_CREATE, self._after_user_changed_invalidate_permission_cache)
-        self.add_hook(HookType.AFTER_UPDATE, self._after_user_changed_invalidate_permission_cache)
-        self.add_hook(HookType.AFTER_DELETE, self._after_user_changed_invalidate_permission_cache)
 
     async def _before_create_password_hash(self, context: HookContext) -> None:
         """
@@ -91,6 +88,33 @@ class UserService(BaseService[User, UserRepository]):
             data["hashed_password"] = await self.password_hasher.hash_async(password)
             data.pop("password", None)
 
+    async def create(self, db: AsyncSession, data: dict[str, object], cache: object | None = None) -> User | None:
+        user = await super().create(db, data, cache)
+        user_id = getattr(user, "id", None) if user is not None else None
+        if user_id is not None:
+            await self._invalidate_permissions_for_user(int(user_id))
+        return user
+
+    async def update(
+        self, db: AsyncSession, id: int, data: dict[str, object], cache: object | None = None
+    ) -> User | None:
+        user = await super().update(db, id, data, cache)
+        if user is not None:
+            await self._invalidate_permissions_for_user(id)
+        return user
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        success = await super().delete(db, id, cache)
+        if success:
+            await self._invalidate_permissions_for_user(id)
+        return success
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> User | None:
+        user = await super().soft_delete(db, id, cache)
+        if user is not None:
+            await self._invalidate_permissions_for_user(id)
+        return user
+
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> User | None:
         user = await super().restore(db, id, cache)
         if user is not None:
@@ -105,9 +129,10 @@ class UserService(BaseService[User, UserRepository]):
 
     async def _after_user_changed_invalidate_permission_cache(self, context: HookContext) -> None:
         user = context.params.get("instance")
-        if user is None or getattr(user, "id", None) is None:
+        user_id = getattr(user, "id", None) if user is not None else None
+        if user_id is None:
             return
-        await self._invalidate_permissions_for_user(int(user.id))
+        await self._invalidate_permissions_for_user(int(user_id))
 
     async def _invalidate_permissions_for_user(self, user_id: int) -> None:
         cache = get_cache()
@@ -219,6 +244,7 @@ class UserService(BaseService[User, UserRepository]):
         # 3. 更新用户的角色集合（SQLAlchemy 会自动处理关联表）
         set_attribute(user, "roles", valid_roles)
         await db.flush()
+        await self._commit_mutation(db)
 
         # 4. 失效缓存（详情 + 列表）
         await self.invalidate_cache(cache, user_id, invalidate_list=True)

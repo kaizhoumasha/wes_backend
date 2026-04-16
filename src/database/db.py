@@ -88,9 +88,14 @@ async def close_db() -> None:
     """
     关闭数据库连接
     """
+    global engine, AsyncSessionLocal
+
     if engine:
         await engine.dispose()
         logger.info("Database connection closed")
+
+    engine = None
+    AsyncSessionLocal = None
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -98,6 +103,10 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
     获取数据库会话依赖
 
     用于 FastAPI 依赖注入系统。
+
+    注意：这里不再在请求结束时自动 commit。
+    写入操作必须由 Service / Application Service 显式提交，
+    避免路由层、依赖层和业务层同时决定事务边界。
     """
     if AsyncSessionLocal is None:
         raise RuntimeError("Database is not initialized")
@@ -105,7 +114,6 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except StaleDataError as e:
             await session.rollback()
             from src.core.exceptions import OptimisticLockException

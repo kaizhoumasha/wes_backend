@@ -29,30 +29,49 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+API_BASE_URL="${API_BASE_URL:-http://localhost:8001}"
+HEALTH_ENDPOINT="${API_BASE_URL}/health"
+PERFORMANCE_BASE_URL="${API_BASE_URL}/api/v1/admin/performance"
+AUTH_HEADERS=()
+
+if [ -n "${PERF_AUTH_TOKEN:-}" ]; then
+    AUTH_HEADERS=(-H "Authorization: Bearer ${PERF_AUTH_TOKEN}")
+fi
+
+require_perf_auth() {
+    if [ -n "${PERF_AUTH_TOKEN:-}" ]; then
+        return 0
+    fi
+
+    print_error "性能管理接口需要登录令牌，请先设置环境变量 PERF_AUTH_TOKEN"
+    exit 1
+}
+
 # 检查服务是否运行
 check_server() {
     print_info "检查服务器状态..."
-    if curl -s http://localhost:8001/api/v1/performance/health > /dev/null; then
+    if curl -s "${HEALTH_ENDPOINT}" > /dev/null; then
         print_success "服务器运行正常"
         return 0
     else
         print_error "服务器未运行或无法访问"
-        print_info "请先启动服务器: uvicorn src.register:app --reload"
+        print_info "请先启动服务器: uvicorn main:app --reload"
         exit 1
     fi
 }
 
 # 重置测试数据
 reset_test_data() {
+    require_perf_auth
     print_info "重置测试数据..."
-    curl -s -X POST http://localhost:8001/api/v1/performance/load-test/reset
+    curl -s -X POST "${AUTH_HEADERS[@]}" "${PERFORMANCE_BASE_URL}/load-test/reset"
     print_success "测试数据已重置"
 }
 
 # 运行健康检查
 health_check() {
     print_info "执行健康检查..."
-    response=$(curl -s http://localhost:8001/api/v1/performance/health)
+    response=$(curl -s "${HEALTH_ENDPOINT}")
     if command -v jq &> /dev/null; then
         echo "$response" | jq .
     else
@@ -62,8 +81,9 @@ health_check() {
 
 # 获取性能指标
 get_metrics() {
+    require_perf_auth
     print_info "获取性能指标..."
-    response=$(curl -s http://localhost:8001/api/v1/performance/metrics)
+    response=$(curl -s "${AUTH_HEADERS[@]}" "${PERFORMANCE_BASE_URL}/metrics")
     if command -v jq &> /dev/null; then
         echo "$response" | jq .
     else

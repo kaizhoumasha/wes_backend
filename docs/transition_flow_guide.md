@@ -266,8 +266,8 @@ state_machine.trigger("scan_ok")  # 简化插件不这样做
 
 ## 进一步阅读
 
-- **插件开发指南**：`docs/plugin_development_guide.md` - @step 装饰器使用
-- **系统能力边界**：`docs/system_vs_plugin_capabilities.md` - transition 设计理念
+- **插件开发指南**：`plugin_development_guide.md` - @step 装饰器使用
+- **系统能力边界**：`system_vs_plugin_capabilities.md` - transition 设计理念
 - **状态机定义**：`src/workline_plugins/smt_classifier/state_machine.py` - SmtClassifierStageMachine
 - **编排器源码**：`src/workline_runtime/orchestrator.py` - OrchestratorService
 - **验证器源码**：`src/workline_runtime/transition_validator.py` - TransitionValidator

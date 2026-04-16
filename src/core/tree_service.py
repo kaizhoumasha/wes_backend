@@ -262,22 +262,38 @@ class TreeServiceMixin[M]:
         new_parent_id: int | None,
         cache: object | None = None,
     ) -> dict[str, Any]:
+        old_parent_id: int | None = None
+        if cache and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, node_id)  # type: ignore[attr-defined]
+                if instance_before:
+                    old_parent_id = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
         result = await self.repo.move_node(db, node_id, new_parent_id)
+        await db.commit()
 
         # 失效当前节点和列表缓存
         if cache and hasattr(self, "invalidate_cache"):
             await self.invalidate_cache(cache, id=node_id, invalidate_list=True, invalidate_tree=True)
 
-            # 🔥 关键修复：失效所有后代节点的缓存
-            # 移动节点会改变所有后代的 tree_path 和 level，必须失效这些缓存
-            # 注意：TreeRepository._update_tree_path_hook 已查询后代并存储在 HookContext.results
-            # 但 Service 层无法直接访问 HookContext，因此这里需要重新查询
-            # TODO: 考虑在 Repository 层提供 get_descendants_from_hook_context 方法
-            descendants = await self.repo.get_descendants(db, node_id)
-            for descendant in descendants:
-                descendant_id = getattr(descendant, "id", None)
-                if descendant_id is not None and descendant_id != node_id:
-                    await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+            moved_descendant_ids = getattr(result, "_moved_descendant_ids", None)
+            if not isinstance(moved_descendant_ids, list):
+                descendants = await self.repo.get_descendants(db, node_id)
+                moved_descendant_ids = [
+                    descendant_id
+                    for descendant in descendants
+                    if (descendant_id := getattr(descendant, "id", None)) is not None and descendant_id != node_id
+                ]
+
+            for descendant_id in moved_descendant_ids:
+                await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+
+            if new_parent_id is not None:
+                await self.invalidate_cache(cache, id=new_parent_id)
+            if old_parent_id is not None and old_parent_id != new_parent_id:
+                await self.invalidate_cache(cache, id=old_parent_id)
 
         return self._to_dict(result)
 
@@ -294,18 +310,86 @@ class TreeServiceMixin[M]:
             items: 排序项列表 [{"id": 1, "parent_id": None, "sort_order": 0}, ...]
             cache: 缓存实例
         """
-        await self.repo.batch_sort(db, items)
+        result = await self.repo.batch_sort(db, items)
+        await db.commit()
 
         # 批量失效缓存
         if cache and hasattr(self, "invalidate_cache"):
-            # 失效所有移动节点的详情缓存、列表缓存和树形缓存
+            await self.invalidate_cache(cache, invalidate_list=True, invalidate_tree=True)
+
+            invalidated_detail_ids: set[int] = set()
             for item in items:
-                await self.invalidate_cache(cache, id=item["id"], invalidate_list=True, invalidate_tree=True)
+                node_id = item["id"]
+                if node_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(node_id)
+                await self.invalidate_cache(cache, id=node_id, invalidate_list=False)
+
+            moved_descendant_ids = getattr(result, "moved_descendant_ids", [])
+            if not isinstance(moved_descendant_ids, list):
+                moved_descendant_ids = []
+
+            for descendant_id in moved_descendant_ids:
+                if not isinstance(descendant_id, int) or descendant_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(descendant_id)
+                await self.invalidate_cache(cache, id=descendant_id, invalidate_list=False)
+
+            affected_parent_ids = getattr(result, "affected_parent_ids", None)
+            if not isinstance(affected_parent_ids, list):
+                affected_parent_ids = [
+                    parent_id
+                    for item in items
+                    if isinstance((parent_id := item.get("parent_id")), int)
+                ]
+
+            for parent_id in affected_parent_ids:
+                if not isinstance(parent_id, int) or parent_id in invalidated_detail_ids:
+                    continue
+                invalidated_detail_ids.add(parent_id)
+                await self.invalidate_cache(cache, id=parent_id, invalidate_list=False)
         elif cache:
             # 兜底：如果没有 invalidate_cache 方法，尝试手动失效
             logger.warning("TreeServiceMixin 未继承 BaseService，无法自动失效缓存")
 
     # ==================== 重写 CRUD 方法（增加树形缓存失效） ====================
+
+    async def _ensure_node_has_no_children(self, db: AsyncSession, node_id: int) -> None:
+        """删除前校验节点是否仍有子节点。
+
+        设计约束：
+        - 当前树资源（菜单、权限）前端采用懒加载树展示
+        - 若允许直接删除父节点，会导致子节点在懒加载模式下变成不可见孤儿节点
+        - 这里连同已删除子节点一起校验，避免父节点删除后回收站中的子节点变成孤儿
+        """
+        children = await self.repo.get_children(  # type: ignore[attr-defined]
+            db,
+            node_id,
+            include_inactive=True,
+            relation_max_depth=1,
+        )
+        if children:
+            raise ValueError("当前节点存在下级节点，请先删除或移动下级节点后再删除")
+
+    async def _ensure_parent_available_for_restore(self, db: AsyncSession, id: int) -> None:
+        """恢复前校验父节点状态，避免恢复出孤儿节点。"""
+        if not hasattr(self, "repo"):
+            return
+
+        instance_before = await self.repo.get_by_id(db, id, include_deleted=True)  # type: ignore[attr-defined]
+        if not instance_before:
+            return
+
+        parent_id = getattr(instance_before, "parent_id", None)
+        if parent_id is None:
+            return
+
+        parent = await self.repo.get_by_id(db, parent_id, include_deleted=True)  # type: ignore[attr-defined]
+        if parent is None:
+            raise ValueError("父节点不存在，无法恢复当前节点，请先处理父节点")
+
+        if getattr(parent, "is_deleted", False):
+            raise ValueError("父节点仍在回收站中，请先恢复父节点后再恢复当前节点")
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> Any:
         """创建节点（失效树形缓存 + 父节点详情缓存）"""
@@ -328,6 +412,15 @@ class TreeServiceMixin[M]:
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any], cache: object | None = None) -> Any:
         """更新节点（如果修改了 parent_id，失效新旧父节点缓存）"""
+        old_parent_id: int | None = None
+        if cache and "parent_id" in data and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, id)  # type: ignore[attr-defined]
+                if instance_before:
+                    old_parent_id = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
         # 调用 BaseService.update
         result = await super().update(db, id, data, cache)  # type: ignore[misc]
 
@@ -336,24 +429,20 @@ class TreeServiceMixin[M]:
             # 失效树形缓存
             await self.invalidate_cache(cache, invalidate_tree=True)
 
-            # 🔥 如果修改了 parent_id，失效新旧父节点详情缓存
+            # 如果修改了 parent_id，失效新旧父节点详情缓存
             if "parent_id" in data:
-                # 新父节点（移动后）
                 new_parent_id = data.get("parent_id")
                 if new_parent_id is not None:
                     await self.invalidate_cache(cache, id=new_parent_id)
-
-                # 原父节点（移动前）- 从 result 获取移动前的 parent_id
-                # 注意：Hook 系统在 AFTER_UPDATE 时更新了原父节点的 has_children
-                # 但 BaseService.update 在调用 super().update 时 result 已被 refresh
-                # 所以需要从 HookContext 中获取原值，或者直接失效当前节点的旧缓存
-                # 简化处理：失效当前节点的详情缓存（包含 parent_id 信息）
-                await self.invalidate_cache(cache, id=id)
+                if old_parent_id is not None and old_parent_id != new_parent_id:
+                    await self.invalidate_cache(cache, id=old_parent_id)
 
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
         """删除节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_node_has_no_children(db, id)
+
         # 删除前先获取 parent_id（删除后实例不可用）
         parent_id_to_invalidate: int | None = None
         if cache and hasattr(self, "repo"):
@@ -397,6 +486,8 @@ class TreeServiceMixin[M]:
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Any:
         """恢复节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_parent_available_for_restore(db, id)
+
         # 调用 BaseService.restore
         result = await super().restore(db, id, cache)  # type: ignore[misc]
 
@@ -411,6 +502,28 @@ class TreeServiceMixin[M]:
                 await self.invalidate_cache(cache, id=parent_id)
 
         return result
+
+    async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
+        """永久删除节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_node_has_no_children(db, id)
+
+        parent_id_to_invalidate: int | None = None
+        if cache and hasattr(self, "repo"):
+            try:
+                instance_before = await self.repo.get_by_id(db, id, include_deleted=True)  # type: ignore[attr-defined]
+                if instance_before:
+                    parent_id_to_invalidate = getattr(instance_before, "parent_id", None)
+            except Exception:
+                pass
+
+        success = await super().permanent_delete(db, id, cache)  # type: ignore[misc]
+
+        if cache and hasattr(self, "invalidate_cache") and success:
+            await self.invalidate_cache(cache, invalidate_tree=True)
+            if parent_id_to_invalidate is not None:
+                await self.invalidate_cache(cache, id=parent_id_to_invalidate)
+
+        return success
 
 
 __all__ = ["TreeServiceMixin"]

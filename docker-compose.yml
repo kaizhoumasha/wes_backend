@@ -185,7 +185,14 @@ services:
     image: wes-backend:${ENV:-prod}
     container_name: wes_celery_beat_${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    command: celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}
+    command: >
+      sh -c '
+      if [ "${ENV:-prod}" = "dev" ]; then
+        exec sh /app/src/celery_app/dev_beat_autoreload.sh;
+      else
+        exec celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO};
+      fi
+      '
     env_file:
       - ${BACKEND_ENV_FILE:-.env}
     environment:

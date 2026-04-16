@@ -22,7 +22,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from src.database.db import get_db_context, init_db
-from src.register import app
+from src.register import create_app
 from src.utils.permission_scanner import (
     build_permission_preview_rows,
     scan_routes_for_permissions,
@@ -33,6 +33,7 @@ from src.utils.permission_scanner import (
 
 def preview_permissions() -> None:
     """预览从路由扫描到的权限数据"""
+    app = create_app()
     permissions = scan_routes_for_permissions(app)
 
     print("\n📋 权限数据预览:")
@@ -57,6 +58,7 @@ async def main_async(args: argparse.Namespace) -> None:
         preview_permissions()
         return
 
+    app = create_app()
     permissions = scan_routes_for_permissions(app)
     print(f"🔍 已扫描后端路由权限 {len(permissions)} 条")
 

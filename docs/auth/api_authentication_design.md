@@ -1195,10 +1195,38 @@ router = api_app_api.router
 
 # ==================== 自定义端点 ====================
 
+@router.get(
+    "/available-permissions",
+    summary="[api-auth:api_application:list_permissions] 获取系统支持的 API 权限列表",
+    dependencies=[Depends(RequirePermission("api-auth:api_application:list_permissions"))],
+)
+async def get_system_api_permissions(
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[list[Any]]:
+    """返回当前系统支持分配给 API 应用的权限列表。"""
+    permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
+    return response_builder.success(data=permissions)
+
+
+@router.post(
+    "/available-permissions/sync",
+    summary="[api-auth:api_application:sync_permissions] 重新扫描并同步 API 权限",
+    dependencies=[Depends(RequirePermission("api-auth:api_application:sync_permissions"))],
+)
+async def sync_system_api_permissions(
+    request: Request,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[list[Any]]:
+    """重新扫描代码中的权限并同步到数据库。"""
+    _ = await sync_permissions_to_db(request.app, db)
+    permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
+    return response_builder.success(data=permissions, message="权限同步成功")
+
+
 @router.post(
     "",
-    summary="[admin:api_application:create] 创建 API 应用",
-    dependencies=[Depends(RequirePermission("admin:api_application:create"))],
+    summary="[api-auth:api_application:create] 创建 API 应用",
+    dependencies=[Depends(RequirePermission("api-auth:api_application:create"))],
 )
 async def create_application(
     obj_in: Annotated[APIApplicationCreate, Body(...)],
@@ -1228,8 +1256,8 @@ async def create_application(
 
 @router.post(
     "/{id}/revoke",
-    summary="[admin:api_application:revoke] 撤销 API 应用",
-    dependencies=[Depends(RequirePermission("admin:api_application:revoke"))],
+    summary="[api-auth:api_application:revoke] 撤销 API 应用",
+    dependencies=[Depends(RequirePermission("api-auth:api_application:revoke"))],
 )
 async def revoke_application(
     id: Annotated[int, Path(...)],
@@ -1249,8 +1277,8 @@ async def revoke_application(
 
 @router.post(
     "/{id}/permissions",
-    summary="[admin:api_application:assign_permission] 分配权限",
-    dependencies=[Depends(RequirePermission("admin:api_application:assign_permission"))],
+    summary="[api-auth:api_application:assign_permission] 分配权限",
+    dependencies=[Depends(RequirePermission("api-auth:api_application:assign_permission"))],
 )
 async def assign_permissions(
     id: Annotated[int, Path(...)],
@@ -1259,18 +1287,7 @@ async def assign_permissions(
     cache: CacheDep,
 ):
     """为应用分配权限"""
-    from src.app.api_auth.services.permission_service import invalidate_app_permissions
-    
-    app = await api_app_service.get_by_id(db, cache, id)
-    if not app:
-        return response_builder.fail(message=f"应用不存在: {id}")
-    
-    # 更新权限关联（通过 Repository）
-    # TODO: 实现权限分配逻辑
-    
-    # 清除权限缓存
-    await invalidate_app_permissions(cache, app.id)
-    
+    await api_app_service.assign_permissions(db, cache, id, permission_ids)
     return response_builder.success(message="权限分配成功")
 ```
 
@@ -1522,7 +1539,8 @@ CREATE INDEX ix_api_log_path ON wes_sys.api_access_logs(path, created_at);
 - [ ] 使用 `BaseAPI` 生成 CRUD
 - [ ] 实现 `create_application` (返回明文 secret)
 - [ ] 实现 `revoke_application`
-- [ ] 实现 `assign_permissions`
+- [x] 实现 `assign_permissions`
+- [x] 拆分“查询可分配权限”和“同步权限扫描”端点
 - [ ] 编写 API 测试
 
 **Phase 5: 文档和测试** (预计 30 分钟)
@@ -1619,13 +1637,16 @@ psql -d wes_db -c "\dt wes_sys.api_*"
 ```sql
 -- 插入 API 认证管理权限
 INSERT INTO wes_sys.permissions (name, type, resource, action, description) VALUES
-('admin:api_application:create', 'api', 'api_application', 'create', '创建 API 应用'),
-('admin:api_application:update', 'api', 'api_application', 'update', '更新 API 应用'),
-('admin:api_application:delete', 'api', 'api_application', 'delete', '删除 API 应用'),
-('admin:api_application:list', 'api', 'api_application', 'list', '查询 API 应用列表'),
-('admin:api_application:detail', 'api', 'api_application', 'detail', '查看 API 应用详情'),
-('admin:api_application:revoke', 'api', 'api_application', 'revoke', '撤销 API 应用'),
-('admin:api_application:assign_permission', 'api', 'api_application', 'assign_permission', '分配权限');
+('api-auth:api_application:create', 'api', 'api_application', 'create', '创建 API 应用'),
+('api-auth:api_application:update', 'api', 'api_application', 'update', '更新 API 应用'),
+('api-auth:api_application:delete', 'api', 'api_application', 'delete', '删除 API 应用'),
+('api-auth:api_application:list', 'api', 'api_application', 'list', '查询 API 应用列表'),
+('api-auth:api_application:detail', 'api', 'api_application', 'detail', '查看 API 应用详情'),
+('api-auth:api_application:revoke', 'api', 'api_application', 'revoke', '撤销 API 应用'),
+('api-auth:api_application:assign_permission', 'api', 'api_application', 'assign_permission', '分配权限'),
+('api-auth:api_application:list_permissions', 'api', 'api_application', 'list_permissions', '获取可分配 API 权限列表'),
+('api-auth:api_application:sync_permissions', 'api', 'api_application', 'sync_permissions', '同步 API 权限扫描结果'),
+('api-auth:api_application:reset_secret', 'api', 'api_application', 'reset_secret', '重置应用密钥');
 ```
 
 ---

@@ -4,13 +4,13 @@
 > **日期**: 2026-03-14
 > **依据**: SRS.md, third_party_integration_whitepaper.md, workline_plugin_architecture_design.md
 > **范围**: 基础数据需求 + 装箱区 WMS/RCS 接口
-> **运行时语义 SSOT**: `docs/business/workline_business_data_event_flow_spec.md`
+> **运行时语义 SSOT**: `workline_business_data_event_flow_spec.md`
 
 > **口径修订（2026-03-25）**:
 > 本文档主要描述 WMS/RCS 与 WES 的接口需求和外部协同边界。
 > 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、
 > `WorklineInbox` 类型、工作线边界与运行时主链路语义时，以
-> `docs/business/workline_business_data_event_flow_spec.md` 为准。
+> `workline_business_data_event_flow_spec.md` 为准。
 
 ---
 

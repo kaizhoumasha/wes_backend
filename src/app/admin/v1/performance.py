@@ -17,12 +17,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.conf import settings
+from src.core.exceptions import PermissionException
 from src.core.logger import logger
+from src.core.security import require_auth
 from src.database.db import get_db
 from src.database.redis_cache import get_cache
 from src.utils.health import check_database_health, check_database_pool_status, check_redis_health
 
-router = APIRouter(prefix="/performance", tags=["性能监控"])
+router = APIRouter(prefix="/performance", tags=["性能监控"], dependencies=[Depends(require_auth)])
 
 
 @router.get("/metrics", summary="获取系统性能指标")
@@ -154,6 +156,9 @@ async def reset_load_test_data(
 
     清空所有缓存，准备开始新的性能测试
     """
+    if not settings.APP_DEBUG:
+        raise PermissionException("该接口仅在开发/测试环境开放")
+
     try:
         # 清空 Redis 缓存
         cache = get_cache()
@@ -192,8 +197,8 @@ async def get_performance_config() -> dict[str, Any]:
             "url": str(settings.REDIS_URL).split("@")[-1] if "@" in str(settings.REDIS_URL) else "configured",
         },
         "performance": {
-            "db_pool_size": 20,
-            "db_max_overflow": 10,
-            "redis_max_connections": 50,
+            "transaction_boundary": "service-managed",
+            "database_pool": "runtime-configured",
+            "redis_pool": "runtime-configured",
         },
     }

@@ -826,4 +826,4 @@ class NewPlugin(WorklinePlugin):
 - **Payload定义**：`src/workline_runtime/payloads.py`
 - **示例插件**：`src/workline_plugins/simple_plugin.py`
 - **测试示例**：`tests/workline_runtime/test_plugin_base.py`
-- **完整提案**：`docs/plugin_simplification_proposal.md`
+- **架构设计背景**：`docs/business/workline_plugin_architecture_design.md`

@@ -401,10 +401,17 @@ def _handle_integrity_error(_request: Request, exc: IntegrityError, _detail: str
 
 def _handle_dbapi_error(_request: Request, exc: DBAPIError, _detail: str) -> Response:
     """处理数据库 API 错误"""
+    if exc.connection_invalidated:
+        return error_response(
+            code="5011",
+            message="数据库连接失败",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     return error_response(
-        code="5011",
-        message="数据库连接失败",
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="5010",
+        message=f"数据库错误: {exc.orig}",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
 

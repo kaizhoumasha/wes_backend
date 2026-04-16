@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.core.logger import logger
@@ -121,7 +121,42 @@ def register_exception(app: FastAPI) -> None:
     register_exception_handlers(app)
 
 
-def register_app() -> FastAPI:
+def register_health_route(app: FastAPI) -> None:
+    """注册公共健康检查路由。"""
+    from src.core.health import system_health
+
+    @app.get("/health", include_in_schema=False)
+    async def health_check() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        is_stale = system_health.is_stale
+        is_ready = system_health.is_ready
+
+        if is_stale:
+            status = "stale"
+            status_code = 200
+        elif is_ready:
+            status = "healthy"
+            status_code = 200
+        else:
+            status = "unhealthy"
+            status_code = 503
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": status,
+                "ready": is_ready,
+                "stale": is_stale,
+                "components": {
+                    "database": system_health.db_ok,
+                    "redis": system_health.redis_ok,
+                    "celery": system_health.celery_ok,
+                },
+                "version": settings.VERSION,
+            },
+        )
+
+
+def create_app() -> FastAPI:
     from fastapi.openapi.docs import get_swagger_ui_html
 
     static_path = "/static"
@@ -150,6 +185,8 @@ def register_app() -> FastAPI:
     # 挂载静态文件目录
     local_static_path = STATIC_DIR
     app.mount("/static", StaticFiles(directory=local_static_path), name="static")
+
+    register_health_route(app)
 
     # 自定义 Swagger UI 路由
     @app.get(settings.DOCS_URL, include_in_schema=False)
@@ -190,7 +227,3 @@ def register_app() -> FastAPI:
     register_exception(app)
 
     return app
-
-
-# 创建应用实例
-app = register_app()

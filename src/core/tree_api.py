@@ -54,6 +54,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         tree_node_response_schema: type[Any] | None = None,
         # 使用与 BaseAPI 兼容的类型（函数类型参数是不变的）
         custom_routes: list[Callable[[APIRouter, Any], None]] | None = None,
+        permission_resource: str | None = None,
     ) -> None:
         self.tree_response_schema = tree_response_schema
         self.tree_node_response_schema = (
@@ -75,6 +76,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             enable_permission,
             max_depth,
             custom_routes=custom_routes,
+            permission_resource=permission_resource,
         )
         # 设置 service.response_schema 用于关联数据加载
         if hasattr(service, "response_schema"):
@@ -88,13 +90,13 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
 
     def _register_tree_routes(self) -> None:
         """注册树形结构路由"""
-        view_dependencies = self._permission_dependencies("view")
+        tree_dependencies = self._permission_dependencies("tree")
         update_dependencies = self._permission_dependencies("update")
 
         @self.router.get(
             "/tree",
             response_model=ResponseSchemaModel[list[self.tree_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -127,7 +129,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/siblings/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_siblings(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -142,7 +144,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/ancestors/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_ancestors(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -157,7 +159,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/children/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_children(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -181,7 +183,10 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         ) -> dict[str, Any]:
             """移动节点"""
             response_builder_any = self._response_builder()
-            result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
+            try:
+                result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
+            except ValueError as e:
+                return self._value_error_response(e, resource_id=node_id)
             return response_builder_any.success(data=result)
 
         @self.router.put(
@@ -199,7 +204,10 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             适用于拖拽排序场景，一次请求更新多个节点的 parent_id 和 sort_order
             """
             items = [item.model_dump() for item in request.items]
-            await self.service.batch_sort(db, items, cache=cache)
+            try:
+                await self.service.batch_sort(db, items, cache=cache)
+            except ValueError as e:
+                return self._value_error_response(e)
             return self._response_builder().success(data=None)
 
 

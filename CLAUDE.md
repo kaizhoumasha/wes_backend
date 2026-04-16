@@ -238,7 +238,7 @@ class WorklineSession(..., table=True):
 
 | 文档 | 位置 | 内容 |
 |------|------|------|
-| 项目文件索引 | [docs/file_index.md](docs/file_index.md) | 代码结构、目录说明、快速查找、响应码 |
+| 项目文件索引 | [docs/architecture/file_index.md](docs/architecture/file_index.md) | 代码结构、目录说明、快速查找、响应码 |
 | 核心架构 | [.claude/context/architecture.md](.claude/context/architecture.md) | 分层架构、Hook/Mixin 系统、状态验证、JWT/RBAC |
 | 开发规则 | [.claude/context/rules.md](.claude/context/rules.md) | 分层架构规则、Service 调用、模块导出、时区规则 |
 | 常见任务 | [.claude/context/howto.md](.claude/context/howto.md) | 创建模块、自定义逻辑、状态验证、树形结构 |
@@ -265,12 +265,12 @@ class WorklineSession(..., table=True):
 
 ## 文档同步规则
 
-每次更新功能后，**必须**同步更新 `docs/file_index.md`。
+每次更新功能后，**必须**同步更新 `docs/architecture/file_index.md`。
 
 ```bash
 # 验证文档同步
 serena list_dir . --recursive --skip-ignored
-# 对比 docs/file_index.md
+# 对比 docs/architecture/file_index.md
 ```
 
 ## GIT 提交规范

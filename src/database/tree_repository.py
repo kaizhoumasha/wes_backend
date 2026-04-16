@@ -1,5 +1,6 @@
 """树形数据 Repository（物化路径模式）"""
 
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, cast
 
 from sqlalchemy import ColumnElement, select
@@ -17,6 +18,12 @@ class TreeNodeLike(Protocol):
     parent_id: int | None
     tree_path: str
     level: int
+
+
+@dataclass(slots=True)
+class BatchSortMetadata:
+    moved_descendant_ids: list[int]
+    affected_parent_ids: list[int]
 
 
 class TreeRepository[T](BaseRepository[T]):
@@ -464,21 +471,26 @@ class TreeRepository[T](BaseRepository[T]):
         new_parent_id: int | None,
     ) -> T | None:
         """移动节点（含循环检测）"""
+        descendants = await self.get_descendants(db, node_id)
+        moved_descendant_ids = [d.id for d in descendants if getattr(d, "id", None) not in (None, node_id)]  # type: ignore[attr-defined]
+
         if new_parent_id is not None:
             if node_id == new_parent_id:
                 raise ValueError("节点不能成为自己的父节点")
 
-            descendants = await self.get_descendants(db, node_id)
             if any(d.id == new_parent_id for d in descendants):  # type: ignore[attr-defined]
                 raise ValueError("不能将节点移动到其后代节点下")
 
-        return await self.update(db, node_id, {"parent_id": new_parent_id})
+        result = await self.update(db, node_id, {"parent_id": new_parent_id})
+        if result is not None:
+            result._moved_descendant_ids = moved_descendant_ids  # type: ignore[attr-defined]
+        return result
 
-    async def batch_sort(
+    async def batch_sort(  # noqa: PLR0912
         self,
         db: AsyncSession,
         items: list[dict[str, Any]],
-    ) -> None:
+    ) -> BatchSortMetadata:
         """批量更新节点的 parent_id 和 sort_order
 
         Args:
@@ -487,9 +499,12 @@ class TreeRepository[T](BaseRepository[T]):
 
         Raises:
             ValueError: 节点不存在或形成循环依赖
+
+        Returns:
+            批量排序内部元数据，用于 service 层精确失效缓存
         """
         if not items:
-            return
+            return BatchSortMetadata(moved_descendant_ids=[], affected_parent_ids=[])
 
         node_ids = [item["id"] for item in items]
 
@@ -520,11 +535,51 @@ class TreeRepository[T](BaseRepository[T]):
             new_parent_id = item.get("parent_id")
             if new_parent_id != original[node_id]["parent_id"]:
                 descendants = await self.get_descendants(db, node_id)
-                if new_parent_id is not None:
-                    descendant_ids = {d.id for d in descendants}  # type: ignore[attr-defined]
-                    if new_parent_id in descendant_ids:
-                        raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
-                changed_nodes[node_id] = (new_parent_id, descendants)
+                descendant_ids = {d.id for d in descendants if getattr(d, "id", None) is not None}  # type: ignore[attr-defined]
+                if new_parent_id is not None and new_parent_id in descendant_ids:
+                    raise ValueError(f"节点 {node_id} 不能移动到其后代节点 {new_parent_id} 下")
+                filtered_descendants = [d for d in descendants if getattr(d, "id", None) != node_id]
+                changed_nodes[node_id] = (new_parent_id, filtered_descendants)
+
+        external_parent_ids = {
+            new_parent_id
+            for new_parent_id, _ in changed_nodes.values()
+            if new_parent_id is not None and new_parent_id not in nodes
+        }
+        external_parents: dict[int, Any] = {}
+        if external_parent_ids:
+            parent_result = await db.execute(
+                select(self.model).where(self.model.id.in_(external_parent_ids))  # type: ignore[attr-defined]
+            )
+            external_parents = {parent.id: parent for parent in parent_result.scalars().all()}
+
+        resolved_states: dict[int, tuple[str, int]] = {}
+        resolving: set[int] = set()
+
+        def resolve_node_state(node_id: int) -> tuple[str, int]:
+            if node_id in resolved_states:
+                return resolved_states[node_id]
+            if node_id in resolving:
+                raise ValueError("批量排序形成循环依赖")
+
+            resolving.add(node_id)
+            new_parent_id, _ = changed_nodes[node_id]
+
+            if new_parent_id is None:
+                resolved = (f"/{node_id}/", 1)
+            elif new_parent_id in changed_nodes:
+                parent_tree_path, parent_level = resolve_node_state(new_parent_id)
+                resolved = (f"{parent_tree_path}{node_id}/", parent_level + 1)
+            else:
+                parent_node = nodes.get(new_parent_id) or external_parents.get(cast("int", new_parent_id))
+                if parent_node is not None:
+                    resolved = (f"{parent_node.tree_path}{node_id}/", parent_node.level + 1)
+                else:
+                    resolved = (f"/{node_id}/", 1)
+
+            resolving.remove(node_id)
+            resolved_states[node_id] = resolved
+            return resolved
 
         # 第一阶段：更新当前节点的 sort_order / parent_id / tree_path / level
         for item in items:
@@ -537,19 +592,7 @@ class TreeRepository[T](BaseRepository[T]):
             if node_id not in changed_nodes:
                 continue
 
-            if new_parent_id is None:
-                node.tree_path = f"/{node_id}/"  # type: ignore[attr-defined]
-                node.level = 1  # type: ignore[attr-defined]
-            else:
-                parent_node = nodes.get(new_parent_id)
-                if parent_node is None:
-                    parent_result = await db.execute(
-                        select(self.model).where(self.model.id == new_parent_id)  # type: ignore[attr-defined]
-                    )
-                    parent_node = parent_result.scalar_one_or_none()
-                if parent_node is not None:
-                    node.tree_path = f"{parent_node.tree_path}{node_id}/"  # type: ignore[attr-defined]
-                    node.level = parent_node.level + 1  # type: ignore[attr-defined]
+            node.tree_path, node.level = resolve_node_state(node_id)  # type: ignore[attr-defined]
 
             node.parent_id = new_parent_id  # type: ignore[attr-defined]
             if hasattr(node, "version"):
@@ -571,31 +614,53 @@ class TreeRepository[T](BaseRepository[T]):
 
         await db.flush()
 
+        moved_descendant_ids: list[int] = []
+        seen_descendant_ids = set(node_ids)
+        for _, descendants in changed_nodes.values():
+            for descendant in descendants:
+                descendant_id = getattr(descendant, "id", None)
+                if descendant_id is None or descendant_id in seen_descendant_ids:
+                    continue
+                seen_descendant_ids.add(descendant_id)
+                moved_descendant_ids.append(descendant_id)
+
+        affected_parent_ids: list[int] = []
+        seen_parent_ids: set[int] = set()
+
+        def add_parent_id(parent_id: int | None) -> None:
+            if parent_id is None or parent_id in seen_parent_ids:
+                return
+            seen_parent_ids.add(parent_id)
+            affected_parent_ids.append(parent_id)
+
+        old_parent_ids = [original[nid]["parent_id"] for nid in changed_nodes]
+        new_parent_ids = [new_pid for new_pid, _ in changed_nodes.values()]
+        for parent_id in old_parent_ids:
+            add_parent_id(parent_id)
+        for parent_id in new_parent_ids:
+            add_parent_id(parent_id)
+
         # 第三阶段：batch_sort 绕过了 Hook 系统，手动维护 has_children
         # TODO: 考虑重构为"批量更新后触发 AFTER_UPDATE Hook"，避免手动维护
         # 只有模型具有 has_children 字段时才执行
         if changed_nodes and hasattr(self.model, "has_children"):
-            # 收集所有受影响的父节点 ID
-            old_parent_ids = {
-                original[nid]["parent_id"] for nid in changed_nodes if original[nid]["parent_id"] is not None
-            }
-            new_parent_ids = {new_pid for new_pid, _ in changed_nodes.values() if new_pid is not None}
-
             # 原父节点：重新检查是否还有非软删除子节点
-            for pid in old_parent_ids:
+            for pid in [parent_id for parent_id in old_parent_ids if parent_id is not None]:
                 await self._check_and_update_has_children(db, pid)
 
             # 新父节点：直接标记为有子节点
-            all_new_parent_ids = new_parent_ids - old_parent_ids  # 避免重复处理
-            for pid in all_new_parent_ids:
-                parent_result = await db.execute(
-                    select(self.model).where(self.model.id == pid)  # type: ignore[attr-defined]
-                )
-                parent_obj = parent_result.scalar_one_or_none()
+            old_parent_id_set = {parent_id for parent_id in old_parent_ids if parent_id is not None}
+            for pid in [parent_id for parent_id in new_parent_ids if parent_id is not None and parent_id not in old_parent_id_set]:
+                parent_obj = nodes.get(pid) or external_parents.get(pid)
                 if parent_obj:
                     parent_obj.has_children = True  # type: ignore[attr-defined]
 
             await db.flush()
 
+        return BatchSortMetadata(
+            moved_descendant_ids=moved_descendant_ids,
+            affected_parent_ids=affected_parent_ids,
+        )
 
-__all__ = ["TreeRepository"]
+
+__all__ = ["BatchSortMetadata", "TreeRepository"]

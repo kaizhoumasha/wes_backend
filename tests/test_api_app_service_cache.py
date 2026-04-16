@@ -3,11 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.api_auth.constants import CacheKeys
 from src.app.api_auth.models.api_application import APIApplication, AppStatus, AppType, ValidityPeriod
+from src.app.api_auth.repositories.app_application_repository import APIAppRepository
 from src.app.api_auth.services.app_service import APIAppService
 from src.common.cache_config import cache_settings
 from src.database.redis_cache import RedisCache
@@ -52,6 +54,7 @@ class FakeAPIAppRepository:
     def __init__(self) -> None:
         self.items: dict[int, APIApplication] = {}
         self.next_id = 1
+        self.assigned_permissions: dict[int, list[int]] = {}
 
     def add_hook(self, *args: Any, **kwargs: Any) -> None:
         return None
@@ -107,6 +110,12 @@ class FakeAPIAppRepository:
     async def permanent_delete(self, db: object, id: int) -> bool:
         return self.items.pop(id, None) is not None
 
+    async def assign_permissions(self, db: object, app_id: int, permission_ids: list[int]) -> None:
+        self.assigned_permissions[app_id] = list(permission_ids)
+        flush = getattr(db, "flush", None)
+        if callable(flush):
+            await flush()
+
 
 def _build_service(repo: FakeAPIAppRepository) -> APIAppService:
     service = APIAppService()
@@ -144,6 +153,18 @@ async def _seed_app(repo: FakeAPIAppRepository) -> APIApplication:
 
 
 @pytest.mark.asyncio
+async def test_repository_assign_permissions_flushes_without_committing() -> None:
+    repo = APIAppRepository(APIApplication)
+    db = AsyncMock()
+
+    await repo.assign_permissions(db, 7, [1, 2])
+
+    assert db.execute.await_count == 2
+    db.flush.assert_awaited_once()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_by_app_id_caches_null_result() -> None:
     repo = FakeAPIAppRepository()
     service = _build_service(repo)
@@ -161,6 +182,39 @@ async def test_get_by_app_id_caches_null_result() -> None:
         "__BASE_SERVICE_NULL__",
         service.null_cache_expire,
     )
+
+
+@pytest.mark.asyncio
+async def test_create_invalidates_new_app_alias_null_cache() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = AsyncMock()
+    new_alias = CacheKeys.app_by_app_id("app_reserved_key")
+    cache.storage[new_alias] = "__BASE_SERVICE_NULL__"
+
+    created = await service.create(
+        db,
+        {
+            "app_name": "Created App",
+            "app_type": AppType.ECS,
+            "description": "cache test",
+            "rate_limit_per_minute": 100,
+            "rate_limit_per_hour": 5000,
+            "validity_period": ValidityPeriod.ONE_YEAR,
+            "app_id": "app_reserved_key",
+            "app_secret_encrypted": "encrypted-secret",
+            "status": AppStatus.ACTIVE,
+            "ip_whitelist": None,
+            "expires_at": None,
+        },
+        cache,
+    )
+
+    assert created is not None
+    assert new_alias not in cache.storage
+    assert new_alias in cache.deleted_keys
+    assert f"{service.list_cache_prefix}:*" in cache.deleted_patterns
 
 
 @pytest.mark.asyncio
@@ -197,6 +251,34 @@ async def test_update_invalidates_app_alias_cache() -> None:
     assert updated.description == "updated"
     assert alias_key not in cache.storage
     assert alias_key in cache.deleted_keys
+
+
+@pytest.mark.asyncio
+async def test_update_invalidates_old_and_new_app_alias_cache_when_app_id_changes() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = _db_session()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
+    old_alias_key = CacheKeys.app_by_app_id(app.app_id)
+    new_alias_key = CacheKeys.app_by_app_id("app_cache_new")
+    cache.storage[old_alias_key] = app.model_dump(mode="json")
+    cache.storage[new_alias_key] = "__BASE_SERVICE_NULL__"
+
+    updated = await service.update(
+        db,
+        app_id,
+        {"app_id": "app_cache_new", "version": app.version},
+        cache,
+    )
+
+    assert updated is not None
+    assert updated.app_id == "app_cache_new"
+    assert old_alias_key not in cache.storage
+    assert new_alias_key not in cache.storage
+    assert old_alias_key in cache.deleted_keys
+    assert new_alias_key in cache.deleted_keys
 
 
 @pytest.mark.asyncio
@@ -271,6 +353,7 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
 
     assert updated is not None
     assert updated.status == AppStatus.ACTIVE
+    assert updated.expires_at == repo.items[app_id].created_at + ValidityPeriod.ONE_YEAR.to_timedelta()
     assert detail_key not in cache.storage
     assert alias_key not in cache.storage
     assert list_key not in cache.storage
@@ -314,6 +397,28 @@ async def test_delete_and_restore_invalidate_app_alias_cache() -> None:
     visible = await service.get_by_app_id(db, cache, app.app_id)
     assert visible is not None
     assert visible.app_id == app.app_id
+
+
+@pytest.mark.asyncio
+async def test_assign_permissions_commits_and_invalidates_permission_cache() -> None:
+    repo = FakeAPIAppRepository()
+    service = _build_service(repo)
+    cache = FakeRedisCache()
+    db = AsyncMock()
+    app = await _seed_app(repo)
+    app_id = _require_id(app)
+    permission_key = CacheKeys.app_permissions(app_id)
+    cache.storage[permission_key] = ["api:callback:event"]
+
+    await service.assign_permissions(db, cache, app_id, [11, 12])
+
+    assert repo.assigned_permissions[app_id] == [11, 12]
+    db.flush.assert_awaited_once()
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    assert f"{service.cache_prefix}:{app_id}:*" in cache.deleted_patterns
+    assert permission_key not in cache.storage
+    assert permission_key in cache.deleted_keys
 
 
 @pytest.mark.asyncio

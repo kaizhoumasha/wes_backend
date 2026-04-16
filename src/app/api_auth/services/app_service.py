@@ -100,6 +100,17 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         """根据 app_id 查询应用（委托给 Repository）"""
         return await self.repo.get_by_app_id(db, app_id)
 
+    async def create(
+        self,
+        db: AsyncSession,
+        data: dict[str, Any],
+        cache: object | None = None,
+    ) -> APIApplication | None:
+        result = await super().create(db, data, cache)
+        if result is not None:
+            await self._invalidate_app_cache_entries(cache, app_id=getattr(result, "app_id", None))
+        return result
+
     async def update(
         self,
         db: AsyncSession,
@@ -109,7 +120,11 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
     ) -> APIApplication | None:
         app = await self._load_app_for_cache_invalidation(db, id)
         result = await super().update(db, id, data, cache)
-        await self._invalidate_app_cache_entries(cache, app_id=getattr(app, "app_id", None))
+        old_app_id = getattr(app, "app_id", None)
+        new_app_id = getattr(result, "app_id", old_app_id) if result is not None else old_app_id
+        await self._invalidate_app_cache_entries(cache, app_id=old_app_id)
+        if new_app_id != old_app_id:
+            await self._invalidate_app_cache_entries(cache, app_id=new_app_id)
         return result
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
@@ -157,6 +172,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
         # 2. 委托给 Repository 处理关联表操作
         await self.repo.assign_permissions(db, id, permission_ids)
+        await self._commit_mutation(db)
 
         # 3. 清除缓存
         _ = await self.invalidate_cache(cache, id)
@@ -170,7 +186,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         validity_period: ValidityPeriod,
         version: int,
     ) -> APIApplication | None:
-        """重置有效期：基于 timezone.now_for_db() 重新计算 expires_at
+        """重置有效期：基于应用创建时间重新计算 expires_at
 
         Args:
             db: 数据库会话
@@ -189,8 +205,9 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
         # 计算新的过期时间（基于创建时间，而不是当前时间）
         delta = validity_period.to_timedelta()
+        created_at = app.created_at or timezone.now_for_db()
 
-        new_expires_at = delta if delta is None else timezone.now_for_db() + delta
+        new_expires_at = None if delta is None else created_at + delta
 
         # 如果应用已过期，自动恢复为 ACTIVE 状态
         new_status = app.status

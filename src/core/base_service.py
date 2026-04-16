@@ -38,7 +38,7 @@
             return container
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, cast
 
 from pydantic import BaseModel
@@ -428,6 +428,21 @@ class BaseService[M, R]:
         """
         return await self._repo_base.count(db, where_clauses)
 
+    async def _commit_mutation(self, db: AsyncSession) -> None:
+        """统一提交写操作，失败时确保回滚。"""
+        commit = cast("Callable[[], Awaitable[None]] | None", getattr(db, "commit", None))
+        rollback = cast("Callable[[], Awaitable[None]] | None", getattr(db, "rollback", None))
+
+        if commit is None:
+            return
+
+        try:
+            await commit()
+        except Exception:
+            if rollback is not None:
+                await rollback()
+            raise
+
     # ==================== CRUD 方法 ====================
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> M | None:
@@ -456,6 +471,7 @@ class BaseService[M, R]:
             IntegrityError: 数据完整性约束冲突
         """
         result = await self._repo_base.create(db, data)
+        await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, invalidate_list=True)
         return result
@@ -477,6 +493,7 @@ class BaseService[M, R]:
             ValueError: 记录不存在
         """
         result = await self._repo_base.update(db, id, data)
+        await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -496,7 +513,10 @@ class BaseService[M, R]:
         success = await self._repo_base.delete(db, id)
         if not success:
             logger.warning(f"删除 {self._model_name} 失败: id={id} 不存在")
-        elif cache:
+            return success
+
+        await self._commit_mutation(db)
+        if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return success
 
@@ -553,6 +573,7 @@ class BaseService[M, R]:
         from src.utils.audit import get_current_user_id
 
         result = await self._repo_base.soft_delete(db, id, get_current_user_id())
+        await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -570,6 +591,7 @@ class BaseService[M, R]:
             恢复后的模型实例
         """
         result = await self._repo_base.restore(db, id)
+        await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
@@ -603,7 +625,11 @@ class BaseService[M, R]:
             是否删除成功
         """
         success = await self._repo_base.permanent_delete(db, id)
-        if success and cache:
+        if not success:
+            return success
+
+        await self._commit_mutation(db)
+        if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return success
 

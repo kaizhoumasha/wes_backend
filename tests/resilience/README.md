@@ -63,7 +63,7 @@ curl http://localhost:8001/api/v1/performance/metrics | jq '.cache'
 
 ```bash
 # 1. 确保应用和 Redis 都在运行
-uvicorn src.register:app --reload
+uvicorn main:app --reload
 
 # 2. 在另一个终端，停止 Redis
 docker-compose stop redis  # 或 redis-cli shutdown

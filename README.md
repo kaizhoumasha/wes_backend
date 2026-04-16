@@ -37,7 +37,7 @@ P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框�
    ```bash
    ./scripts/migrate.sh upgrade
    ```
-   See [Database Migration Guide](docs/database_migration.md) for more details.
+   See [Database Migration Guide](docs/devops/database_migration.md) for more details.
 
 4. **Run Application**
    ```bash

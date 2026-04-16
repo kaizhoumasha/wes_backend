@@ -306,6 +306,29 @@ class TestOutboxDispatcher:
 
         assert payload == command.params
 
+    def test_build_outbox_payload_injects_device_code_into_vendor_payload(self):
+        """测试发往设备的 payload 会补齐 target device_code。"""
+        from src.celery_app.tasks.workline import _build_outbox_payload
+
+        command = MagicMock()
+        command.command_code = "CMD-VENDOR-DEVICE-001"
+        command.task_type = "PICK_AND_PLACE"
+        command.priority = 5
+        command.timeout_ms = 300000
+        command.params = {
+            "command_code": "CMD-VENDOR-DEVICE-001",
+            "task_type": "PICK_AND_PUT",
+            "priority": 1,
+            "timeout": 30000,
+            "params": {},
+            "timestamp": 1743235200000,
+        }
+
+        payload = _build_outbox_payload(command, device_code="ARM03")
+
+        assert payload["device_code"] == "ARM03"
+        assert payload["command_code"] == "CMD-VENDOR-DEVICE-001"
+
     def test_build_outbox_payload_legacy_command_fallback(self):
         """测试历史命令 params 为空时回退到基础字段组装。"""
         from src.celery_app.tasks.workline import _build_outbox_payload
@@ -317,8 +340,9 @@ class TestOutboxDispatcher:
         command.timeout_ms = 120000
         command.params = {}
 
-        payload = _build_outbox_payload(command)
+        payload = _build_outbox_payload(command, device_code="PIPELINE02")
 
+        assert payload["device_code"] == "PIPELINE02"
         assert payload["command_code"] == "CMD-LEGACY-001"
         assert payload["task_type"] == "PROCESS"
         assert payload["priority"] == 3
@@ -421,6 +445,41 @@ class TestDispatchByType:
 
         assert result is True
         mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "ROBOT_001")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_device_command_logs_response_body_on_http_error(self, mock_db):
+        """测试设备派发失败时会记录响应体，便于排查 4xx/5xx。"""
+        from src.celery_app.tasks.workline import dispatch_outbox
+
+        outbox = MockOutbox(
+            dispatch_type=DispatchType.DEVICE_COMMAND,
+            target_type=TargetType.DEVICE,
+            target_code="ROBOT_001",
+            payload_json={"command_code": "CMD-422-001"},
+        )
+
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code = AsyncMock(
+            return_value=SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP")
+        )
+
+        with (
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
+            ),
+            patch("httpx.AsyncClient") as mock_client,
+            patch("src.celery_app.tasks.workline.logger.warning") as mock_warning,
+        ):
+            mock_response = MagicMock(status_code=422, text='{"detail":[{"loc":["body","device_code"],"msg":"Field required"}]}')
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+
+        assert result is False
+        mock_warning.assert_called_with(
+            '设备指令发送失败: HTTP 422, body={"detail":[{"loc":["body","device_code"],"msg":"Field required"}]}'
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_external_http(self, mock_db):

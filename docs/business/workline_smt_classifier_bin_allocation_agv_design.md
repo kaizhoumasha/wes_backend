@@ -4,6 +4,8 @@
 
 本文档定义 `smt_classifier` 在 OK 主链路尾段引入“库位分配 + AGV 补货架”后的目标运行时设计。
 
+> **文档状态说明（2026-04-16）**：本文属于目标态设计说明，描述的是期望交互与编排方案，不等同于仓库当前已交付实现；涉及现状时请结合实际代码与运行时 SSOT 文档交叉确认。
+
 设计目标：
 
 - `ARM02` 出料前，由 `WES` 主动调用正式“库位分配接口”
@@ -20,7 +22,7 @@
 
 补充说明：
 
-- [third_party_integration_whitepaper.md](/Users/kaizhou/SynologyDrive/works/wes_backend/docs/third_party_integration_whitepaper.md) 当前版本未覆盖 AGV/RCS
+- [third_party_integration_whitepaper.md](../integration/third_party_integration_whitepaper.md) 当前版本未覆盖 AGV/RCS
 - 本设计对 AGV 交互采用与白皮书一致的工程语义：`Command -> Ack -> Callback`、幂等、超时重试、异步回流
 - 这部分是运行时编排设计，不代表已发布的 AGV 对外标准协议
 
@@ -261,7 +263,7 @@ OK 主链路调整为：
 
 ## 5. 失败策略
 
-失败处理遵循 [third_party_integration_whitepaper.md](/Users/kaizhou/SynologyDrive/works/wes_backend/docs/third_party_integration_whitepaper.md) 已定义的通信原则：
+失败处理遵循 [third_party_integration_whitepaper.md](../integration/third_party_integration_whitepaper.md) 已定义的通信原则：
 
 - `WES` 调用第三方接口 10 秒未收到 HTTP 200，则按指数退避重试
 - 重试间隔 `1s / 2s / 4s`

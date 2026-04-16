@@ -290,7 +290,7 @@ docker exec wes_postgres_dev psql -U wes_user -d wes_db -c \
 
 - Mock 服务代码：`tests/mock/smt_classifier/arm_mock.py`, `tests/mock/smt_classifier/pipeline_mock.py`
 - 测试用例：`tests/e2e/smt_classifier/test_full_business_flows.py`
-- 硬件接口规范：`docs/hardware/SMT粗分机接口调用说明书20260321-v1.md`
+- 硬件接口规范：`../hardware/SMT粗分机接口调用说明书20260321-v1.md`
 
 ## 参考文档
 

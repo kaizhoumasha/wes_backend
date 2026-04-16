@@ -226,3 +226,10 @@ SOUL.md
 USER.md
 memory/
 TOOLS.md
+statuses/**
+celerybeat-schedule-*
+events.jsonl
+config.json
+views.json
+.claude-plugin/plugin.json
+sessions/**
