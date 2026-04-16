@@ -354,6 +354,43 @@ class TreeServiceMixin[M]:
 
     # ==================== 重写 CRUD 方法（增加树形缓存失效） ====================
 
+    async def _ensure_node_has_no_children(self, db: AsyncSession, node_id: int) -> None:
+        """删除前校验节点是否仍有子节点。
+
+        设计约束：
+        - 当前树资源（菜单、权限）前端采用懒加载树展示
+        - 若允许直接删除父节点，会导致子节点在懒加载模式下变成不可见孤儿节点
+        - 这里连同已删除子节点一起校验，避免父节点删除后回收站中的子节点变成孤儿
+        """
+        children = await self.repo.get_children(  # type: ignore[attr-defined]
+            db,
+            node_id,
+            include_inactive=True,
+            relation_max_depth=1,
+        )
+        if children:
+            raise ValueError("当前节点存在下级节点，请先删除或移动下级节点后再删除")
+
+    async def _ensure_parent_available_for_restore(self, db: AsyncSession, id: int) -> None:
+        """恢复前校验父节点状态，避免恢复出孤儿节点。"""
+        if not hasattr(self, "repo"):
+            return
+
+        instance_before = await self.repo.get_by_id(db, id, include_deleted=True)  # type: ignore[attr-defined]
+        if not instance_before:
+            return
+
+        parent_id = getattr(instance_before, "parent_id", None)
+        if parent_id is None:
+            return
+
+        parent = await self.repo.get_by_id(db, parent_id, include_deleted=True)  # type: ignore[attr-defined]
+        if parent is None:
+            raise ValueError("父节点不存在，无法恢复当前节点，请先处理父节点")
+
+        if getattr(parent, "is_deleted", False):
+            raise ValueError("父节点仍在回收站中，请先恢复父节点后再恢复当前节点")
+
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> Any:
         """创建节点（失效树形缓存 + 父节点详情缓存）"""
         # 调用 BaseService.create
@@ -404,6 +441,8 @@ class TreeServiceMixin[M]:
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
         """删除节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_node_has_no_children(db, id)
+
         # 删除前先获取 parent_id（删除后实例不可用）
         parent_id_to_invalidate: int | None = None
         if cache and hasattr(self, "repo"):
@@ -447,6 +486,8 @@ class TreeServiceMixin[M]:
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Any:
         """恢复节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_parent_available_for_restore(db, id)
+
         # 调用 BaseService.restore
         result = await super().restore(db, id, cache)  # type: ignore[misc]
 
@@ -464,6 +505,8 @@ class TreeServiceMixin[M]:
 
     async def permanent_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool:
         """永久删除节点（失效树形缓存 + 父节点详情缓存）"""
+        await self._ensure_node_has_no_children(db, id)
+
         parent_id_to_invalidate: int | None = None
         if cache and hasattr(self, "repo"):
             try:

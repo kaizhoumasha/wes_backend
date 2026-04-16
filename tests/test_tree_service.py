@@ -16,6 +16,8 @@ class _FakeRepo:
         move_result: object | None = None,
         update_result: object | None = None,
         batch_sort_result: object | None = None,
+        delete_result: bool = True,
+        restore_result: object | None = None,
         permanent_delete_result: bool = True,
     ):
         self._move_result = move_result
@@ -25,8 +27,11 @@ class _FakeRepo:
         self.move_node = AsyncMock(return_value=move_result)
         self.update = AsyncMock(return_value=update_result)
         self.batch_sort = AsyncMock(return_value=batch_sort_result)
+        self.delete = AsyncMock(return_value=delete_result)
+        self.restore = AsyncMock(return_value=restore_result)
         self.permanent_delete = AsyncMock(return_value=permanent_delete_result)
         self.get_by_id = AsyncMock()
+        self.get_children = AsyncMock(return_value=[])
         self.get_descendants = AsyncMock()
 
 
@@ -188,3 +193,87 @@ async def test_update_invalidates_old_and_new_parent_cache_on_parent_change() ->
     assert invalidate_calls[2].kwargs == {"id": 20}
     assert invalidate_calls[3].args == (cache,)
     assert invalidate_calls[3].kwargs == {"id": 5}
+
+
+@pytest.mark.asyncio
+async def test_delete_rejects_node_with_children_before_repo_delete() -> None:
+    repo = _FakeRepo(delete_result=True)
+    repo.get_children = AsyncMock(return_value=[SimpleNamespace(id=99)])
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    with pytest.raises(ValueError, match="当前节点存在下级节点"):
+        await service.delete(db, 10, cache=cache)
+
+    repo.get_children.assert_awaited_once_with(db, 10, include_inactive=True, relation_max_depth=1)
+    repo.delete.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    service.invalidate_cache.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_rejects_node_with_children_before_repo_delete() -> None:
+    repo = _FakeRepo(permanent_delete_result=True)
+    repo.get_children = AsyncMock(return_value=[SimpleNamespace(id=99)])
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    with pytest.raises(ValueError, match="当前节点存在下级节点"):
+        await service.permanent_delete(db, 10, cache=cache)
+
+    repo.get_children.assert_awaited_once_with(db, 10, include_inactive=True, relation_max_depth=1)
+    repo.permanent_delete.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    service.invalidate_cache.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_when_parent_missing() -> None:
+    repo = _FakeRepo(restore_result=SimpleNamespace(id=10, parent_id=5, is_deleted=False))
+    repo.get_by_id = AsyncMock(
+        side_effect=[
+            SimpleNamespace(id=10, parent_id=5, is_deleted=True),
+            None,
+        ]
+    )
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    with pytest.raises(ValueError, match="父节点不存在，无法恢复当前节点"):
+        await service.restore(db, 10, cache=cache)
+
+    assert repo.get_by_id.await_args_list[0].args == (db, 10)
+    assert repo.get_by_id.await_args_list[0].kwargs == {"include_deleted": True}
+    assert repo.get_by_id.await_args_list[1].args == (db, 5)
+    assert repo.get_by_id.await_args_list[1].kwargs == {"include_deleted": True}
+    repo.restore.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    service.invalidate_cache.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_when_parent_is_deleted() -> None:
+    repo = _FakeRepo(restore_result=SimpleNamespace(id=10, parent_id=5, is_deleted=False))
+    repo.get_by_id = AsyncMock(
+        side_effect=[
+            SimpleNamespace(id=10, parent_id=5, is_deleted=True),
+            SimpleNamespace(id=5, parent_id=None, is_deleted=True),
+        ]
+    )
+    service = _FakeTreeService(repo)
+    db = AsyncMock()
+    cache = object()
+
+    with pytest.raises(ValueError, match="父节点仍在回收站中"):
+        await service.restore(db, 10, cache=cache)
+
+    assert repo.get_by_id.await_args_list[0].args == (db, 10)
+    assert repo.get_by_id.await_args_list[0].kwargs == {"include_deleted": True}
+    assert repo.get_by_id.await_args_list[1].args == (db, 5)
+    assert repo.get_by_id.await_args_list[1].kwargs == {"include_deleted": True}
+    repo.restore.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    service.invalidate_cache.assert_not_awaited()
