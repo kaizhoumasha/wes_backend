@@ -227,10 +227,10 @@ uv run uvicorn main:app --reload
 
 ## 📚 相关文档
 
-- **验证计划**: `docs/plugin_validation_plan.md`
-- **插件开发指南**: `docs/plugin_development_guide.md`
-- **系统与插件能力边界**: `docs/system_vs_plugin_capabilities.md`
-- **Transition 流程详解**: `docs/transition_flow_guide.md`
+- **验证快速开始**: `../../docs/plugin_validation_quickstart.md`
+- **插件开发指南**: `../../docs/plugin_development_guide.md`
+- **系统与插件能力边界**: `../../docs/system_vs_plugin_capabilities.md`
+- **Transition 流程详解**: `../../docs/transition_flow_guide.md`
 
 ---
 

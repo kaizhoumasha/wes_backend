@@ -292,6 +292,7 @@ async def test_reset_validity_period_invalidates_all_app_caches() -> None:
 
     assert updated is not None
     assert updated.status == AppStatus.ACTIVE
+    assert updated.expires_at == repo.items[app_id].created_at + ValidityPeriod.ONE_YEAR.to_timedelta()
     assert detail_key not in cache.storage
     assert alias_key not in cache.storage
     assert list_key not in cache.storage

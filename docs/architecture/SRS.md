@@ -253,7 +253,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.3.0 WES 核心基础平台 (WES Core Foundation Platform)
 
-为支撑后续章节中复杂的 SMT 智能装箱 (3.3.1)、混合入库 (3.3.2) 及 生产发料 (3.3.3) 业务，WES 必须首先构建一个 **标准化的核心能力平台 (Core Capability Platform)**。根据 *@[docs/third_party_integration_whitepaper.md]* 定义的接入标准，该平台需具备以下软件基础设施：
+为支撑后续章节中复杂的 SMT 智能装箱 (3.3.1)、混合入库 (3.3.2) 及 生产发料 (3.3.3) 业务，WES 必须首先构建一个 **标准化的核心能力平台 (Core Capability Platform)**。根据 *@[docs/integration/third_party_integration_whitepaper.md]* 定义的接入标准，该平台需具备以下软件基础设施：
 
 **1. 控制系统集成 (Control System Integration)**
 

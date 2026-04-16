@@ -171,7 +171,7 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         validity_period: ValidityPeriod,
         version: int,
     ) -> APIApplication | None:
-        """重置有效期：基于 timezone.now_for_db() 重新计算 expires_at
+        """重置有效期：基于应用创建时间重新计算 expires_at
 
         Args:
             db: 数据库会话
@@ -190,8 +190,9 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
         # 计算新的过期时间（基于创建时间，而不是当前时间）
         delta = validity_period.to_timedelta()
+        created_at = app.created_at or timezone.now_for_db()
 
-        new_expires_at = delta if delta is None else timezone.now_for_db() + delta
+        new_expires_at = None if delta is None else created_at + delta
 
         # 如果应用已过期，自动恢复为 ACTIVE 状态
         new_status = app.status

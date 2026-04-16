@@ -309,5 +309,5 @@ sudo usermod -aG docker jenkins
 ## 📞 需要帮助？
 
 参考详细文档：
-- [当前环境配置指南](docs/jenkins-setup-current-env.md)
-- [完整迁移指南](docs/jenkins-migration-guide.md)
+- [当前环境配置指南](jenkins-setup-current-env.md)
+- [Jenkins 总览与现役 Job 说明](JENKINS.md)

@@ -88,13 +88,13 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
 
     def _register_tree_routes(self) -> None:
         """注册树形结构路由"""
-        view_dependencies = self._permission_dependencies("view")
+        tree_dependencies = self._permission_dependencies("tree")
         update_dependencies = self._permission_dependencies("update")
 
         @self.router.get(
             "/tree",
             response_model=ResponseSchemaModel[list[self.tree_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -127,7 +127,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/siblings/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_siblings(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -142,7 +142,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/ancestors/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_ancestors(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -157,7 +157,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/children/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=view_dependencies,
+            dependencies=tree_dependencies,
         )
         async def get_children(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,

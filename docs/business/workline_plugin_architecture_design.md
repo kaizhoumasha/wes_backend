@@ -8,14 +8,17 @@
 > **目标**: 将当前“按设备类型分发”的实现，演进为“按作业线插件编排”的可实施架构
 
 > **相关文档**:
-> - 软件需求规格说明书: `@docs/architecture/SRS.md`
-> - 第三方设备接入白皮书: `@docs/integration/third_party_integration_whitepaper.md`
-> - 运行时语义 SSOT: `@docs/business/workline_business_data_event_flow_spec.md`
+> - 软件需求规格说明书: `../architecture/SRS.md`
+> - 第三方设备接入白皮书: `../integration/third_party_integration_whitepaper.md`
+> - 运行时语义 SSOT: `workline_business_data_event_flow_spec.md`
+
+> **文档状态说明（2026-04-16）**:
+> 本文保留了架构设计与分阶段落地思路，其中 Phase 百分比、完成度描述属于**设计阶段快照**，不应直接视为当前仓库实现状态；验收现状请以实际代码与 SSOT 文档为准。
 
 > **口径修订（2026-03-25）**:
 > 本文档保留作业线插件化、Inbox/Outbox、编排分层等架构设计内容；
 > 涉及 `callback/event`、`callback/result`、`correlation_id`、`command_code`、`session_id`、
-> 工作线边界、设备拓扑来源等运行时语义时，以 `docs/business/workline_business_data_event_flow_spec.md` 为准。
+> 工作线边界、设备拓扑来源等运行时语义时，以 `workline_business_data_event_flow_spec.md` 为准。
 
 ---
 

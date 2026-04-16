@@ -207,7 +207,9 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
 
         for id in ids:
             try:
-                await action(id)
+                result = await action(id)
+                if result is False or result is None:
+                    raise ValueError("操作失败")
                 success_count += 1
             except Exception as e:
                 failed_count += 1
@@ -329,8 +331,11 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            async def delete_one(resource_id: int) -> Any:
-                return await self.service.delete(db, resource_id, cache)
+            async def delete_one(resource_id: int) -> bool:
+                success = await self.service.delete(db, resource_id, cache)
+                if not success:
+                    raise ValueError(self._not_found_message(resource_id))
+                return True
 
             return await self._run_batch_operation(
                 ids,
@@ -428,7 +433,10 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             cache: CacheDep,
         ) -> dict[str, Any]:
             async def restore_one(resource_id: int) -> Any:
-                return await self.service.restore(db, resource_id, cache)
+                resource = await self.service.restore(db, resource_id, cache)
+                if resource is None:
+                    raise ValueError(self._missing_message(resource_id))
+                return resource
 
             return await self._run_batch_operation(
                 ids,
@@ -453,8 +461,11 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             db: AsyncSessionDep,
             cache: CacheDep,
         ) -> dict[str, Any]:
-            async def permanent_delete_one(resource_id: int) -> Any:
-                return await self.service.permanent_delete(db, resource_id, cache)
+            async def permanent_delete_one(resource_id: int) -> bool:
+                success = await self.service.permanent_delete(db, resource_id, cache)
+                if not success:
+                    raise ValueError(self._not_found_message(resource_id))
+                return True
 
             return await self._run_batch_operation(
                 ids,
@@ -478,7 +489,15 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             cache: CacheDep,
         ) -> dict[str, Any]:
             response_builder_any = self._response_builder()
-            resource = await self.service.restore(db, id, cache)
+            try:
+                resource = await self.service.restore(db, id, cache)
+            except ValueError as e:
+                if "不存在" in str(e):
+                    return response_builder_any.fail(
+                        code=ResourceErrorCode.NOT_FOUND, message=self._missing_message(id)
+                    )
+                return response_builder_any.fail(code=BusinessErrorCode.INVALID_STATE, message=str(e))
+
             logger.info(f"恢复{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder_any.success(data=response_data)

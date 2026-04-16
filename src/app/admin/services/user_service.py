@@ -72,9 +72,6 @@ class UserService(BaseService[User, UserRepository]):
         self.password_hasher = password_hasher
 
         self.add_hook(HookType.BEFORE_CREATE, self._before_create_password_hash)
-        self.add_hook(HookType.AFTER_CREATE, self._after_user_changed_invalidate_permission_cache)
-        self.add_hook(HookType.AFTER_UPDATE, self._after_user_changed_invalidate_permission_cache)
-        self.add_hook(HookType.AFTER_DELETE, self._after_user_changed_invalidate_permission_cache)
 
     async def _before_create_password_hash(self, context: HookContext) -> None:
         """
@@ -90,6 +87,32 @@ class UserService(BaseService[User, UserRepository]):
         if password:
             data["hashed_password"] = await self.password_hasher.hash_async(password)
             data.pop("password", None)
+
+    async def create(self, db: AsyncSession, data: dict[str, object], cache: object | None = None) -> User | None:
+        user = await super().create(db, data, cache)
+        if user is not None and getattr(user, "id", None) is not None:
+            await self._invalidate_permissions_for_user(int(user.id))
+        return user
+
+    async def update(
+        self, db: AsyncSession, id: int, data: dict[str, object], cache: object | None = None
+    ) -> User | None:
+        user = await super().update(db, id, data, cache)
+        if user is not None:
+            await self._invalidate_permissions_for_user(id)
+        return user
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        success = await super().delete(db, id, cache)
+        if success:
+            await self._invalidate_permissions_for_user(id)
+        return success
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> User | None:
+        user = await super().soft_delete(db, id, cache)
+        if user is not None:
+            await self._invalidate_permissions_for_user(id)
+        return user
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> User | None:
         user = await super().restore(db, id, cache)

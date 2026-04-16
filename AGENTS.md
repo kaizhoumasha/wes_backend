@@ -131,7 +131,7 @@ user_api = BaseAPI(
 
 | Document | Path | Content |
 |----------|------|---------|
-| Project File Index | `docs/file_index.md` | Code structure, directory docs, quick find, response codes |
+| Project File Index | `docs/architecture/file_index.md` | Code structure, directory docs, quick find, response codes |
 | Architecture Details | `.claude/context/architecture.md` | Layered architecture, Hook/Mixin system, status validation, JWT/RBAC |
 | Development Rules | `.claude/context/rules.md` | Layer rules, Service calls, module export, timezone rules |
 | Common Tasks | `.claude/context/howto.md` | Create module, custom logic, status validation, tree structure |

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.base_api import BaseAPI
 from src.core.openapi import generate_route_operation_id
+from src.core.tree_api import TreeAPI
 
 
 class DummyModel:
@@ -71,6 +72,56 @@ class FakeService:
 
     def to_response(self, resource: object, schema: type[BaseModel]) -> BaseModel:
         return schema.model_validate(resource)
+
+
+class FakeBatchService(FakeService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_results: dict[int, bool] = {}
+        self.restore_results: dict[int, object] = {}
+        self.restore_errors: dict[int, Exception] = {}
+        self.permanent_delete_results: dict[int, bool] = {}
+
+    async def delete(self, db: object, id: int, cache: object) -> bool:
+        return self.delete_results.get(id, True)
+
+    async def restore(self, db: object, id: int, cache: object) -> object:
+        if id in self.restore_errors:
+            raise self.restore_errors[id]
+        return self.restore_results.get(id, SimpleNamespace(id=id, name=f"restored-{id}", children=[]))
+
+    async def permanent_delete(self, db: object, id: int, cache: object) -> bool:
+        return self.permanent_delete_results.get(id, True)
+
+
+class FakeTreeService(FakeService):
+    async def get_tree(
+        self,
+        db: object,
+        root_id: int | None = None,
+        max_depth: int = 1,
+        tree_depth: int = 0,
+        schema: type[Any] | None = None,
+        cache: object | None = None,
+    ) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id=1, name="root", children=[])]
+
+    async def get_siblings(self, db: object, node_id: int, include_self: bool = False) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id=node_id, name="sibling", children=[])]
+
+    async def get_ancestors(self, db: object, node_id: int, include_self: bool = False) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id=node_id, name="ancestor", children=[])]
+
+    async def get_children(self, db: object, node_id: int) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id=node_id, name="child", children=[])]
+
+    async def move_node(
+        self, db: object, node_id: int, new_parent_id: int | None, cache: object | None = None
+    ) -> SimpleNamespace:
+        return SimpleNamespace(id=node_id, name="moved", children=[])
+
+    async def batch_sort(self, db: object, items: list[dict[str, Any]], cache: object | None = None) -> None:
+        return None
 
 
 def _get_update_endpoint(api: BaseAPI[Any, Any, Any]):
@@ -200,3 +251,86 @@ def test_generate_route_operation_id_produces_compact_path_based_ids() -> None:
 
     assert schema["paths"]["/api/v1/auth/login"]["post"]["operationId"] == "auth_login_post"
     assert schema["paths"]["/api/v1/users/{id}/assign-roles"]["put"]["operationId"] == "users_by_id_assign_roles_put"
+
+
+def _get_endpoint(api: BaseAPI[Any, Any, Any], path: str, method: str):
+    for route in api.router.routes:
+        if method in route.methods and route.path == path:
+            return route.endpoint
+    raise AssertionError(f"{method} {path} endpoint not found")
+
+
+def _get_route_dependency_permissions(api: BaseAPI[Any, Any, Any], path: str, method: str) -> list[str]:
+    for route in api.router.routes:
+        if method in route.methods and route.path == path:
+            return [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies]
+    raise AssertionError(f"{method} {path} route not found")
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_counts_false_results_as_failures() -> None:
+    service = FakeBatchService()
+    service.delete_results = {1: True, 2: False}
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        gen_bulk_delete=True,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy/bulk", "DELETE")
+    response = await endpoint(ids=[1, 2], db=object(), cache=object())
+
+    assert response["data"]["success"] == 1
+    assert response["data"]["failed"] == 1
+    assert response["data"]["errors"] == [{"id": 2, "message": "DummySoftDeleteModel (ID: 2) 不存在或已被删除"}]
+
+
+@pytest.mark.asyncio
+async def test_restore_endpoint_maps_not_found_to_standard_fail_response() -> None:
+    service = FakeBatchService()
+    service.restore_errors = {7: ValueError("DummySoftDeleteModel 不存在")}
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy/{id}/restore", "POST")
+    response = await endpoint(id=7, db=object(), cache=object())
+
+    assert response["code"] == "3000"
+    assert response["message"] == "DummySoftDeleteModel (ID: 7) 不存在"
+
+
+def test_tree_api_uses_tree_permission_for_tree_read_routes() -> None:
+    api = TreeAPI(
+        module_name="admin",
+        model=DummySoftDeleteModel,
+        service=FakeTreeService(),
+        response_schema=DummyResponse,
+        tree_response_schema=DummyResponse,
+        prefix="/dummy-tree",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=True,
+    )
+
+    expected_permission = "admin:dummysoftdeletemodel:tree"
+    assert _get_route_dependency_permissions(api, "/dummy-tree/tree", "GET") == [expected_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/siblings/{node_id}", "GET") == [expected_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/ancestors/{node_id}", "GET") == [expected_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/children/{node_id}", "GET") == [expected_permission]

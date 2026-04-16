@@ -15,7 +15,7 @@ from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.rbac import invalidate_users_permissions
 from src.core.tree_service import TreeServiceMixin
-from src.database.base_repository import HookContext, HookType
+from src.database.base_repository import HookContext
 from src.database.redis_cache import get_cache
 
 # ==================== 常量 ====================
@@ -35,13 +35,6 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
             list_cache_prefix=cache_settings.PERMISSION_LIST.prefix,
             list_cache_expire=cache_settings.PERMISSION_LIST.expire,
         )
-        self.add_hook(HookType.BEFORE_UPDATE, self._before_permission_update_capture_user_ids, priority=100)
-        self.add_hook(HookType.AFTER_CREATE, self._after_permission_change_invalidate_user_permissions, priority=100)
-        self.add_hook(HookType.AFTER_UPDATE, self._after_permission_change_invalidate_user_permissions, priority=100)
-        self.add_hook(HookType.AFTER_DELETE, self._after_permission_change_invalidate_user_permissions, priority=100)
-        self.add_hook(HookType.BEFORE_UPDATE, self._before_permission_update_capture_app_ids, priority=100)
-        self.add_hook(HookType.AFTER_UPDATE, self._after_permission_change_invalidate_app_permissions, priority=100)
-        self.add_hook(HookType.AFTER_DELETE, self._after_permission_change_invalidate_app_permissions, priority=100)
 
     # ==================== 用户权限收集 ====================
 
@@ -118,6 +111,52 @@ class PermissionService(TreeServiceMixin[Permission], BaseService[Permission, Pe
 
         # 2. 过滤出用户有权限的 API（直接返回，避免不必要的变量赋值）
         return [perm for perm in all_api_perms if perm.name in permission_names]
+
+    async def update(
+        self,
+        db: AsyncSession,
+        id: int,
+        data: dict[str, object],
+        cache: object | None = None,
+    ) -> Permission | None:
+        affected_user_ids_before = await self._query_user_ids_by_permission_id(db, id)
+        affected_app_ids_before = await self._query_app_ids_by_permission_id(db, id)
+
+        permission = await super().update(db, id, data, cache)
+        if permission is None:
+            return None
+
+        affected_user_ids = set(affected_user_ids_before)
+        affected_user_ids.update(await self._query_user_ids_by_permission_id(db, id))
+        await self._invalidate_permissions_for_users(affected_user_ids)
+
+        affected_app_ids = set(affected_app_ids_before)
+        affected_app_ids.update(await self._query_app_ids_by_permission_id(db, id))
+        await self._invalidate_app_permissions_for_apps(affected_app_ids)
+
+        return permission
+
+    async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
+        affected_user_ids = await self._query_user_ids_by_permission_id(db, id)
+        affected_app_ids = await self._query_app_ids_by_permission_id(db, id)
+
+        success = await super().delete(db, id, cache)
+        if success:
+            await self._invalidate_permissions_for_users(affected_user_ids)
+            await self._invalidate_app_permissions_for_apps(affected_app_ids)
+        return success
+
+    async def soft_delete(self, db: AsyncSession, id: int, cache: object | None = None) -> Permission | None:
+        affected_user_ids = await self._query_user_ids_by_permission_id(db, id)
+        affected_app_ids = await self._query_app_ids_by_permission_id(db, id)
+
+        permission = await super().soft_delete(db, id, cache)
+        if permission is None:
+            return None
+
+        await self._invalidate_permissions_for_users(affected_user_ids)
+        await self._invalidate_app_permissions_for_apps(affected_app_ids)
+        return permission
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> Permission | None:
         permission = await super().restore(db, id, cache)

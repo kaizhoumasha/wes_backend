@@ -42,11 +42,16 @@ def register_custom_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> No
         api: BaseAPI 实例，可获取权限码等辅助信息
     """
 
-    @router.get("/stats/cache", summary="[admin:user:stats] 获取缓存统计")
+    @router.get(
+        "/stats/cache",
+        summary="[admin:user:stats] 获取缓存统计",
+        response_model=ResponseSchemaModel[dict[str, Any]],
+        dependencies=[Depends(RequirePermission("admin:user:stats"))],
+    )
     async def get_cache_stats(
         db: AsyncSessionDep,
         cache: CacheDep,
-    ) -> dict[str, Any]:
+    ) -> ResponseSchemaModel[dict[str, Any]]:
         """
         获取缓存统计信息
 
@@ -72,11 +77,16 @@ def register_custom_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> No
         except Exception as e:
             logger.error(f"获取缓存键数量失败: {e}")
 
-        return {
-            "total_users": total_users,
-            "cache_status": cache_status,
-            "cache_keys_count": cache_keys_count,
-        }
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.success(
+                data={
+                    "total_users": total_users,
+                    "cache_status": cache_status,
+                    "cache_keys_count": cache_keys_count,
+                }
+            ),
+        )
 
     @router.put(  # pyright: ignore[reportUnknownMemberType]
         "/{id}/reset-password",

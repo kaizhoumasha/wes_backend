@@ -131,3 +131,109 @@ async def test_user_service_assign_roles_uses_role_service(monkeypatch: pytest.M
     assert service.repo.get_by_id_with_roles.await_count == 1  # type: ignore[attr-defined]
     service.invalidate_cache.assert_awaited_once_with(cache, 7, invalidate_list=True)
     service._invalidate_permissions_for_user.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_role_service_update_invalidates_related_user_permissions_after_super(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = RoleService(RoleRepository())
+    db = object()
+    queried_role_ids: list[int] = []
+    responses = [{3, 8}, {8, 11}]
+    invalidated: list[set[int]] = []
+    call_order: list[str] = []
+
+    async def fake_update(
+        self: BaseService,
+        db: object,
+        id: int,
+        data: dict[str, object],
+        cache: object | None = None,
+    ):
+        call_order.append("super")
+        return SimpleNamespace(id=id)
+
+    async def fake_query(db: object, role_id: int) -> set[int]:
+        queried_role_ids.append(role_id)
+        return responses.pop(0)
+
+    async def fake_invalidate(user_ids: set[int]) -> None:
+        call_order.append("invalidate")
+        invalidated.append(set(user_ids))
+
+    monkeypatch.setattr(BaseService, "update", fake_update)
+    service._query_user_ids_by_role_id = fake_query  # type: ignore[method-assign]
+    service._invalidate_permissions_for_users = fake_invalidate  # type: ignore[method-assign]
+
+    updated = await service.update(db, 31, {"version": 1})
+
+    assert updated is not None
+    assert queried_role_ids == [31, 31]
+    assert responses == []
+    assert invalidated == [{3, 8, 11}]
+    assert call_order == ["super", "invalidate"]
+
+
+@pytest.mark.asyncio
+async def test_role_service_soft_delete_invalidates_related_user_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = RoleService(RoleRepository())
+    service._invalidate_permissions_for_users = AsyncMock()  # type: ignore[method-assign]
+    db = object()
+
+    async def fake_soft_delete(self: BaseService, db: object, id: int, cache: object | None = None):
+        return SimpleNamespace(id=id)
+
+    monkeypatch.setattr(BaseService, "soft_delete", fake_soft_delete)
+    service._query_user_ids_by_role_id = AsyncMock(return_value={5, 12})  # type: ignore[method-assign]
+
+    deleted = await service.soft_delete(db, 32)
+
+    assert deleted is not None
+    service._query_user_ids_by_role_id.assert_awaited_once_with(db, 32)  # type: ignore[attr-defined]
+    service._invalidate_permissions_for_users.assert_awaited_once_with({5, 12})  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_user_service_update_invalidates_own_permission_cache_after_super(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = UserService(UserRepository())
+    call_order: list[str] = []
+
+    async def fake_update(self: BaseService, db: object, id: int, data: dict[str, object], cache: object | None = None):
+        call_order.append("super")
+        return SimpleNamespace(id=id)
+
+    async def fake_invalidate(user_id: int) -> None:
+        call_order.append("invalidate")
+        assert user_id == 41
+
+    monkeypatch.setattr(BaseService, "update", fake_update)
+    service._invalidate_permissions_for_user = fake_invalidate  # type: ignore[method-assign]
+
+    updated = await service.update(object(), 41, {"version": 1})
+
+    assert updated is not None
+    assert call_order == ["super", "invalidate"]
+
+
+@pytest.mark.asyncio
+async def test_user_service_soft_delete_invalidates_own_permission_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = UserService(UserRepository())
+    service._invalidate_permissions_for_user = AsyncMock()  # type: ignore[method-assign]
+    db = object()
+
+    async def fake_soft_delete(self: BaseService, db: object, id: int, cache: object | None = None):
+        return SimpleNamespace(id=id)
+
+    monkeypatch.setattr(BaseService, "soft_delete", fake_soft_delete)
+
+    deleted = await service.soft_delete(db, 42)
+
+    assert deleted is not None
+    service._invalidate_permissions_for_user.assert_awaited_once_with(42)  # type: ignore[attr-defined]

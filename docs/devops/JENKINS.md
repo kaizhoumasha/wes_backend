@@ -14,9 +14,9 @@
 |------|------|
 | `Jenkinsfile.backend-ci` | 后端 CI 与镜像发布 |
 | `Jenkinsfile.test-deploy` | TEST 环境自动部署 |
-| `docs/devops/prod-release-deploy.md` | 生产环境手动发布 Runbook |
-| `docs/devops/jenkins-setup-current-env.md` | 详细配置指南 |
-| `docs/devops/jenkins-checklist.md` | 快速配置清单 |
+| `prod-release-deploy.md` | 生产环境手动发布 Runbook |
+| `jenkins-setup-current-env.md` | 详细配置指南 |
+| `jenkins-checklist.md` | 快速配置清单 |
 
 ## 🚀 快速开始
 
@@ -69,7 +69,7 @@ git push gitlab develop
 
 ### 5. 配置 Jenkins Pipeline
 
-参考 [快速配置清单](docs/jenkins-checklist.md) 完成配置。
+参考 [快速配置清单](jenkins-checklist.md) 完成配置。
 
 ## 🎯 Pipeline 流程
 
@@ -115,9 +115,9 @@ bash scripts/data/bootstrap_admin.sh
 
 ## 📖 详细文档
 
-- **配置指南**：[jenkins-setup-current-env.md](docs/jenkins-setup-current-env.md)
-- **配置清单**：[jenkins-checklist.md](docs/jenkins-checklist.md)
-- **生产发布 Runbook**：[prod-release-deploy.md](docs/devops/prod-release-deploy.md)
+- **配置指南**：[jenkins-setup-current-env.md](jenkins-setup-current-env.md)
+- **配置清单**：[jenkins-checklist.md](jenkins-checklist.md)
+- **生产发布 Runbook**：[prod-release-deploy.md](prod-release-deploy.md)
 
 ## ⚠️ 注意事项
 
