@@ -253,11 +253,6 @@ class WorklineTimelineBase(BaseMixin):
         description="关联的设备指令 ID",
     )
 
-    related_external_call_id: int | None = Field(
-        default=None,
-        description="关联的外部调用 ID",
-    )
-
 
 # ==================== 数据库表模型 ====================
 
@@ -278,7 +273,7 @@ class WorklineTimeline(
     - stage/action_type: 阶段和动作类型
     - actor_type/actor_code: 参与者信息
     - from_status/to_status: 状态转换
-    - related_*_id: 关联对象（便于追溯）
+    - related_inbox_id/related_command_id: 关联对象（便于追溯）
 
     约束:
     - seq_no 必须在同一 session_id 内单调递增

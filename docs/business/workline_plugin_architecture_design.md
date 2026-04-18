@@ -821,9 +821,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `failure_code`
 * `failure_message`
 * `failure_message`
-* `retry_count`
 * `last_inbox_id`
-* `last_decision_id`  # 便于追溯最后一次决策
 
 建议状态：
 
@@ -843,7 +841,6 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `awaiting_command_id` 若保留，仅表示内部数据库外键（`DeviceCommand.id`）
 * 业务语义层仍应以 `command_code` 表示“正在等待哪条控制流命令结果”
 * `last_inbox_id` 用于辅助重放和排障
-* `last_decision_id` 用于快速定位最后一次决策，便于排障和回溯
 
 ### 8.4 WorklineTimeline ✅ 已实现 (2026-03-17)
 
@@ -869,7 +866,6 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `payload_json`
 * `related_inbox_id`
 * `related_command_id`  # 内部数据库外键；业务语义仍以 `command_code` 表达
-* `related_external_call_id`
 
 建议 `stage`：
 

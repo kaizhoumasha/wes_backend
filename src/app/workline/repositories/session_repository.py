@@ -27,7 +27,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         result = await db.execute(
             select(WorklineSession).where(
                 columns.session_code == session_code,
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -51,7 +50,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         columns = cast("Any", WorklineSession).__table__.c
         query = select(WorklineSession).where(
             columns.workline_id == workline_id,
-            columns.is_deleted.is_(False),
         )
         if status:
             query = query.where(columns.status == status)
@@ -89,7 +87,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 columns.workline_id == workline_id,
                 columns.business_key == business_key,
                 columns.status.in_(open_statuses),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -117,7 +114,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             select(WorklineSession).where(
                 columns.workline_id == workline_id,
                 columns.business_key == business_key,
-                columns.is_deleted.is_(False),
             ).order_by(columns.id.desc()).limit(1)
         )
         return result.scalar_one_or_none()
@@ -140,7 +136,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         result = await db.execute(
             select(WorklineSession).where(
                 columns.correlation_id == correlation_id,
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -163,7 +158,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             select(WorklineSession).where(
                 columns.awaiting_command_id == command_id,
                 columns.status.in_(open_statuses),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -198,7 +192,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 columns.status.in_(waiting_statuses),
                 columns.deadline_at.isnot(None),
                 columns.deadline_at < now,
-                columns.is_deleted.is_(False),
             )
             .limit(limit)
         )

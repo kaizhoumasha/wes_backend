@@ -37,7 +37,6 @@ class MockSession:
         self.id = session_id
         self.status = status
         self.context_json = context or {}
-        self.version = 1
         self.workline_id = 1
         self.plugin_key = "test_plugin"
 

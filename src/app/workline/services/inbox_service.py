@@ -49,6 +49,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         data: dict[str, Any],
         source_message_id: str | None = None,
         correlation_id: str | None = None,
+        canonical_event_type: str | None = None,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
@@ -81,6 +82,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "message_type": "DEVICE_EVENT",
             "device_code": device_code,
             "event_type": event_type,
+            "canonical_event_type": canonical_event_type or event_type,
             "timestamp": timestamp,
             "data": data,
         }
@@ -304,7 +306,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
 
         if attempt_count < max_attempts:
             # 可以重试：增加计数，设置下次重试时间
-            next_retry = timezone.now_for_db() + timedelta(seconds=60 * (2 ** attempt_count))
+            next_retry = timezone.now_for_db() + timedelta(seconds=60 * (2**attempt_count))
             return await self._update_inbox(
                 db,
                 inbox_id,

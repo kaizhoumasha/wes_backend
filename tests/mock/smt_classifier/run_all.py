@@ -53,7 +53,7 @@ MOCK_SERVICES = [
         "name": "Pipeline Mock (PIPELINE01 + PIPELINE02)",
         "module": "tests.mock.smt_classifier.pipeline_mock",
         "app_attr": "app",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8005,
         "device_code": "PIPELINE01",
         "hosted_device_codes": ["PIPELINE01", "PIPELINE02"],
@@ -62,7 +62,7 @@ MOCK_SERVICES = [
         "name": "Arm Mock (ARM01 + ARM03)",
         "module": "tests.mock.smt_classifier.arm_mock",
         "app_attr": "app",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8006,
         "device_code": "ARM01",
         "hosted_device_codes": ["ARM01", "ARM03"],
@@ -71,7 +71,7 @@ MOCK_SERVICES = [
         "name": "Arm Mock (ARM02 + ARM04)",
         "module": "tests.mock.smt_classifier.arm_mock",
         "app_attr": "app",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8007,
         "device_code": "ARM02",
         "hosted_device_codes": ["ARM02", "ARM04"],
@@ -80,7 +80,7 @@ MOCK_SERVICES = [
         "name": "Allocation Mock",
         "module": "tests.mock.smt_classifier.allocation_mock",
         "app_attr": "app",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8008,
         "device_code": "ALLOCATION",
     },
@@ -88,7 +88,7 @@ MOCK_SERVICES = [
         "name": "AGV Mock (AGV01)",
         "module": "tests.mock.smt_classifier.agv_mock",
         "app_attr": "app",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8009,
         "device_code": "AGV01",
     },
@@ -146,8 +146,8 @@ def run_server(
         logger.info(f"收到信号 {signum}，准备关闭服务 {device_code}")
         server.should_exit = True
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    _ = signal.signal(signal.SIGINT, handle_signal)
+    _ = signal.signal(signal.SIGTERM, handle_signal)
 
     logger.info(f"启动服务 {device_code} -> http://{host}:{port}")
     server.run()
@@ -237,8 +237,8 @@ def signal_handler(signum: int, frame: Any) -> None:
 def main() -> None:
     """主函数"""
     # 设置信号处理（主进程）
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _ = signal.signal(signal.SIGINT, signal_handler)
+    _ = signal.signal(signal.SIGTERM, signal_handler)
 
     # 启动所有服务
     start_all_services()

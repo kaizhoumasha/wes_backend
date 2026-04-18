@@ -178,7 +178,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "completed_at": completed_at,
             "result_data": cast("dict[str, Any] | None", callback.data),
             "error_detail": self._normalize_error_detail(callback.error_detail),
-            "version": command.version,  # 乐观锁：必须包含当前版本号
         }
 
         if callback.result == "SUCCESS":
@@ -188,7 +187,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command = await self.repo.update(db, command.id, update_data)
         if updated_command:
-            await db.commit()
+            # 由调用方统一控制事务边界，避免在 trace 链中间提前提交。
             await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
             logger.info(
                 f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
@@ -222,7 +221,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             command.id,
             {
                 "status": CommandStatus.CANCELLED,
-                "version": command.version,
             },
         )
 
@@ -256,7 +254,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "result_data": None,
             "error_detail": None,
             "retry_count": command.retry_count + 1,
-            "version": command.version,
         }
 
         updated_command = await self.repo.update(db, command.id, update_data)
@@ -334,7 +331,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "ack_code": ack_code,
             "ack_message": ack_message,
             "ack_trace_id": trace_id,
-            "version": command.version,  # 乐观锁：必须包含当前版本号
         }
 
         if ack_code == 200:
@@ -359,7 +355,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         update_data: dict[str, Any] = {
             "status": status,
-            "version": command.version,  # 乐观锁：必须包含当前版本号
         }
         normalized_error = self._normalize_error_detail(error_detail)
         if normalized_error is not None:

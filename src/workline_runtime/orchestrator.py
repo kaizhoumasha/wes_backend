@@ -18,22 +18,24 @@ Phase 2 默认行为：
 from __future__ import annotations
 
 import logging
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain
 from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
+from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.transition_validator import TransitionValidator
 from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
 from src.workline_runtime.utils import ensure_dict
 
 # 类型注解用（运行时需要这些类型作为函数签名）
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+    from contextlib import AbstractAsyncContextManager
 
     from src.app.workline.models import WorkLine
     from src.app.workline.models.inbox import WorklineInbox
@@ -43,9 +45,9 @@ if TYPE_CHECKING:
 class LockStage(str, Enum):
     """锁阶段枚举
 
-    用于支持细粒度锁策略：
-    - READ: 读取阶段，多个读取可并发
-    - WRITE: 写入阶段，独占锁
+    当前仅用于标记 orchestrator 处理阶段。
+    在尚未引入真正 RWLock 之前，READ / WRITE 都复用同一把 session 互斥锁，
+    不提供“共享读 / 独占写”的并发语义。
     """
 
     READ = "read"
@@ -74,6 +76,15 @@ def _ensure_non_empty_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _system_error_result(message: str) -> OrchestratorResult:
+    return OrchestratorResult(
+        success=False,
+        error=message,
+        error_code=ErrorCode.UNKNOWN.value,
+        error_domain=ErrorDomain.SYSTEM.value,
+    )
+
+
 @dataclass
 class OrchestratorResult:
     """编排器处理结果
@@ -92,6 +103,8 @@ class OrchestratorResult:
 
     success: bool
     error: str | None = None
+    error_code: str | None = None
+    error_domain: str | None = None
     transition: str | None = None
     decisions: list[dict[str, Any]] | None = None
     commands: list[CommandIntent] | None = None
@@ -154,30 +167,25 @@ class OrchestratorService:
         status = getattr(session, "status", None)
         return status if isinstance(status, str) and status else ""
 
-    def _get_lock(self, lock_key: str, stage: LockStage = LockStage.WRITE) -> AbstractAsyncContextManager[None]:
-        """获取锁上下文管理器
+    def _get_lock(self, lock_key: str, _stage: LockStage = LockStage.WRITE) -> AbstractAsyncContextManager[None]:
+        """获取锁上下文管理器。
 
         Args:
             lock_key: 锁的 key
-            stage: 锁阶段（READ 或 WRITE）
+            stage: 锁阶段标签（READ / WRITE）。当前仅用于表达处理阶段，
+                不会派生出不同锁 key；两阶段统一复用同一个 session 互斥锁。
 
         Returns:
             异步上下文管理器
         """
-        # 组合锁 key 和阶段
-        full_lock_key = f"{lock_key}:{stage.value}"
-
         if self._lock_provider:
-            return self._lock_provider(full_lock_key)
+            return self._lock_provider(lock_key)
 
-        # 默认使用 RedisDistributedLock（需要外部注入 redis_client）
-        # 这里返回一个空操作的上下文管理器作为 fallback
-        @asynccontextmanager
-        async def noop_lock():
-            yield
-
-        logger.warning("No lock provider configured, using noop lock. This is only suitable for testing.")
-        return noop_lock()
+        logger.error(
+            "No lock provider configured for OrchestratorService; "
+            "production paths must inject a real lock provider explicitly"
+        )
+        raise LockAcquireError("No lock provider configured for OrchestratorService")
 
     async def process_inbox(
         self,
@@ -187,11 +195,15 @@ class OrchestratorService:
         devices_by_role: dict[str, list[Any]],
         services: Any,
         correlation_id: str,
+        write_callback: Callable[[OrchestratorResult], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        """处理 Inbox 事件（两阶段锁）
+        """处理 Inbox 事件（两阶段串行互斥锁）
 
         阶段 1 (READ): 加载插件、构建上下文、契约检测
         阶段 2 (WRITE): 调用插件、处理结果、状态迁移
+
+        注意：当前 READ / WRITE 仍使用同一个 `session:{id}` 互斥锁。
+        这里的 READ / WRITE 只是处理阶段划分，不代表已实现真正的 RWLock。
 
         Args:
             session: WorklineSession 实体
@@ -200,20 +212,29 @@ class OrchestratorService:
             devices_by_role: 按角色分组的设备映射
             services: 领域服务容器
             correlation_id: 关联 ID
+            write_callback: 可选的写入回调。若提供，则在 WRITE 锁临界区内执行，
+                由 Celery worker 负责完成真实持久化写入
+                （session / command / outbox / timeline / inbox）。
 
         Returns:
             OrchestratorResult: 处理结果
         """
         session_id = self._resolve_session_pk(session)
         if session_id is None:
-            return OrchestratorResult(success=False, error="Session missing primary key")
+            return OrchestratorResult(
+                success=False,
+                error="Session missing primary key",
+                error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
+                error_domain=ErrorDomain.WORKFLOW.value,
+            )
 
         lock_key = f"session:{session_id}"
 
-        # 阶段 1: READ（可并发）
+        # 阶段 1: READ（当前与 WRITE 复用同一把 session 互斥锁）
         try:
             async with self._get_lock(lock_key, LockStage.READ):
-                # 读取阶段：加载插件、构建上下文、契约检测
+                # 读取阶段：加载插件、构建上下文、契约检测。
+                # 当前仍受同一把 session 互斥锁保护，不提供共享读并发。
                 result = await self._process_read_phase(
                     session=session,
                     workline=workline,
@@ -227,12 +248,11 @@ class OrchestratorService:
                 if not result.success:
                     return result
 
-            # 阶段 2: WRITE（独占）
-            # 注意：当前实现中，实际的状态写入在 Celery 任务的 _apply_orchestrator_effects 中完成
-            # 该任务不在编排器锁保护下。这是简化设计，代价是并发写入冲突时可能需要重试
+            # 阶段 2: WRITE（与 READ 复用同一把 session 互斥锁）
+            # 若 worker 提供 write_callback，则真实持久化写入也在同一 session 锁临界区内完成。
             async with self._get_lock(lock_key, LockStage.WRITE):
                 logger.debug(f"Session {session_id} 获得 WRITE 锁")
-                return await self._process_write_phase(
+                write_result = await self._process_write_phase(
                     session=session,
                     workline=workline,
                     inbox=inbox,
@@ -241,14 +261,17 @@ class OrchestratorService:
                     correlation_id=correlation_id,
                     read_result=result,
                 )
+                if write_callback is not None and write_result.success:
+                    await write_callback(write_result)
+                return write_result
 
         except LockAcquireError:
             logger.exception(f"Failed to acquire lock for session {session_id}")
-            return OrchestratorResult(success=False, error="Lock acquire failed")
+            return _system_error_result("Lock acquire failed")
         except Exception as e:
             inbox_id = getattr(inbox, "id", "unknown") if inbox else "unknown"
             logger.exception(f"Unexpected error processing inbox {inbox_id}")
-            return OrchestratorResult(success=False, error=str(e))
+            return _system_error_result(str(e))
 
     async def _process_read_phase(
         self,
@@ -259,7 +282,7 @@ class OrchestratorService:
         services: Any,
         correlation_id: str,
     ) -> OrchestratorResult:
-        """阶段 1: READ - 读取阶段（可并发）
+        """阶段 1: READ - 读取阶段（当前非共享读）
 
         执行：
         - 加载插件
@@ -280,13 +303,21 @@ class OrchestratorService:
         plugin = self._load_plugin(getattr(workline, "plugin_class", None))
 
         session_id = self._resolve_session_pk(session)
+        trace = TraceContext.from_runtime(
+            session=session,
+            workline=workline,
+            inbox=inbox,
+            correlation_id=correlation_id,
+        )
         ctx = self.context_builder.build(
             session=session,
             workline=workline,
             devices_by_role=devices_by_role,
             services=services,
-            correlation_id=correlation_id,
+            correlation_id=trace.correlation_id or correlation_id,
             logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
+            inbox=inbox,
+            trace=trace,
         )
 
         session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
@@ -294,6 +325,9 @@ class OrchestratorService:
         if session_contract and plugin_contract and session_contract != plugin_contract:
             return OrchestratorResult(
                 success=False,
+                error=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
+                error_code=ErrorCode.CONTRACT_MISMATCH.value,
+                error_domain=ErrorDomain.CONFIG.value,
                 failure=FailureIntent(
                     domain=FailureDomain.SOFTWARE.value,
                     code=FailureCode.CONTRACT_MISMATCH,
@@ -305,7 +339,12 @@ class OrchestratorService:
             result = await self._call_plugin(plugin, ctx, inbox)
         except Exception as e:
             logger.exception("Plugin execution failed")
-            return OrchestratorResult(success=False, error=str(e))
+            return OrchestratorResult(
+                success=False,
+                error=str(e),
+                error_code=ErrorCode.PLUGIN_EXECUTION_FAILED.value,
+                error_domain=ErrorDomain.PLUGIN.value,
+            )
 
         return self._process_result(result, session, getattr(workline, "state_machine_class", None))
 
@@ -325,8 +364,9 @@ class OrchestratorService:
         - 状态迁移验证
         - 结果返回（供 Celery 任务使用）
 
-        注意：实际的状态修改在 Celery 任务的 _apply_orchestrator_effects 中完成，
-        不在编排器锁保护下。这是简化设计，依赖 Celery 重试机制处理并发冲突。
+        注意：实际的状态修改默认仍由 Celery 任务的 `_apply_orchestrator_effects` 完成；
+        当 `process_inbox(..., write_callback=...)` 提供写回调时，worker 会在同一 WRITE 锁临界区内
+        执行真实持久化写入，从而避免“锁住编排结果、放开真实写入”的并发窗口。
 
         Args:
             session: WorklineSession 实体
@@ -446,7 +486,12 @@ class OrchestratorService:
             )
             if not is_valid:
                 logger.error(f"Invalid transition: {error}")
-                return OrchestratorResult(success=False, error=error)
+                return OrchestratorResult(
+                    success=False,
+                    error=error,
+                    error_code=ErrorCode.PLUGIN_TRANSITION_INVALID.value,
+                    error_domain=ErrorDomain.PLUGIN.value,
+                )
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")

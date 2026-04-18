@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import ConfigDict
+from pydantic.fields import PydanticUndefined
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin
@@ -160,14 +161,15 @@ class ModelFactory:
                 # Update 模型：所有字段都改为可选
                 final_type = field_type | None if not already_optional else field_type
                 default_value = None
+            elif field_info.default_factory is not None:
+                # Create 模型需要保留 default_factory 语义：字段可省略，缺省时自动生成默认值。
+                field_kwargs["default_factory"] = field_info.default_factory
+            elif field_info.default is not PydanticUndefined and field_info.default != ...:
+                # 保持原默认值
+                default_value = field_info.default
             elif is_required and not already_optional:
                 # 保持必需
                 default_value = ...
-            elif field_info.default is not None and field_info.default != ...:
-                # 保持原默认值
-                default_value = field_info.default
-            elif field_info.default_factory is not None:
-                field_kwargs["default_factory"] = field_info.default_factory
             else:
                 # 原本就是可选字段，保持默认值为 None
                 default_value = None

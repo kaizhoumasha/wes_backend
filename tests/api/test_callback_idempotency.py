@@ -85,18 +85,22 @@ class TestCallbackResultIdempotency:
                 new=AsyncMock(return_value=existing_command),
             ),
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.v1.callback.device_context_service.resolve",
                 new=AsyncMock(
-                    return_value=SimpleNamespace(
-                        work_line_id=1,
-                        plugin_key="smt_classifier",
-                        contract_version="1.0",
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(
+                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                            ),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
                     )
                 ),
-            ),
-            patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
@@ -138,6 +142,8 @@ class TestCallbackResultIdempotency:
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
         assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
+        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
 
 
@@ -150,18 +156,22 @@ class TestCallbackEventIdempotency:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.v1.callback.device_context_service.resolve",
                 new=AsyncMock(
-                    return_value=SimpleNamespace(
-                        work_line_id=1,
-                        plugin_key="smt_classifier",
-                        contract_version="1.0",
+                    return_value=(
+                        SimpleNamespace(
+                            device=None,
+                            workline=SimpleNamespace(
+                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                            ),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
                     )
                 ),
-            ),
-            patch(
-                "src.app.callback.v1.callback.workline_service.get_by_id",
-                new=AsyncMock(return_value=SimpleNamespace(plugin_key="smt_classifier")),
             ),
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
@@ -199,6 +209,8 @@ class TestCallbackEventIdempotency:
         assert mock_create_inbox.await_count == 2
         assert mock_log_callback.await_count == 2
         assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
+        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
 
 
@@ -245,4 +257,6 @@ class TestCallbackExternalIdempotency:
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
         assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
+        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1

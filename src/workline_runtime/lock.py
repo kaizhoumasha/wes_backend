@@ -8,14 +8,15 @@ Redis 分布式锁实现
 - 支持 TTL 自动过期（默认 30 秒）
 - 支持重试获取锁
 - 支持自动续期（处理长时间运行的任务）
-- 支持 Redis 故障时降级到 PostgreSQL 行锁
+- 支持 Redis 故障时降级到 PostgreSQL advisory 事务锁
 
 设计参考:
-- CEO Decision #1: Redis 故障降级到 PostgreSQL 行锁
+- CEO Decision #1: Redis 故障降级到 PostgreSQL advisory 事务锁
 - CEO Decision #3: 锁自动续期（处理 >15s 续期）
 """
 
 import asyncio
+import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -23,6 +24,29 @@ from datetime import timedelta
 from typing import Any
 
 from redis.asyncio import Redis
+
+
+def _resolve_ttl_seconds(ttl: timedelta | int | None, *, default_ttl: int) -> int:
+    if isinstance(ttl, timedelta):
+        return int(ttl.total_seconds())
+    if ttl is None:
+        return default_ttl
+    return ttl
+
+
+def _decode_redis_token(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        return value.decode()
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _stable_resource_id(resource: str) -> int:
+    """为 PostgreSQL advisory lock 生成跨进程稳定的资源 ID。"""
+
+    digest = hashlib.blake2b(resource.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) % (2**63)
 
 
 class LockAcquireError(Exception):
@@ -71,7 +95,7 @@ class RedisDistributedLock:
     auto_renewal: bool = False
     renewal_interval: float = 10.0
     fallback_to_pg: bool = True
-    pg_lock_func: str = "pg_advisory_lock"
+    pg_lock_func: str = "pg_advisory_xact_lock"
 
     # 内部状态
     _renewal_active: bool = field(default=False, init=False, repr=False)
@@ -108,12 +132,7 @@ class RedisDistributedLock:
         key = f"{self.key_prefix}{resource}"
         token = str(uuid.uuid4())
 
-        if isinstance(ttl, timedelta):
-            ttl_seconds = int(ttl.total_seconds())
-        elif ttl is None:
-            ttl_seconds = self.default_ttl
-        else:
-            ttl_seconds = ttl
+        ttl_seconds = _resolve_ttl_seconds(ttl, default_ttl=self.default_ttl)
 
         acquired = False
         used_pg_fallback = False
@@ -127,7 +146,7 @@ class RedisDistributedLock:
                         break
                 except (ConnectionError, OSError) as e:
                     if self.fallback_to_pg and db is not None:
-                        # 降级到 PostgreSQL 行锁
+                        # 降级到 PostgreSQL 事务级 advisory lock
                         await self._pg_lock_acquire(db, resource)
                         used_pg_fallback = True
                         acquired = True
@@ -225,11 +244,7 @@ class RedisDistributedLock:
             try:
                 # 检查是否仍持有锁
                 current = await self.redis_client.get(key)
-                current_token: str | None = None
-                if isinstance(current, bytes):
-                    current_token = current.decode()
-                elif isinstance(current, str):
-                    current_token = current
+                current_token = _decode_redis_token(current)
 
                 if current_token == token:
                     await self.redis_client.expire(key, ttl)
@@ -244,37 +259,37 @@ class RedisDistributedLock:
 
     async def _pg_lock_acquire(self, db: Any, resource: str) -> None:
         """
-        使用 PostgreSQL 行锁（降级方案）
+        使用 PostgreSQL advisory 锁（降级方案）
 
         Args:
             db: 数据库连接
             resource: 资源标识
         """
-        # 将资源标识转换为整数（用于 pg_advisory_lock）
-        resource_id = abs(hash(resource)) % (2**31)
+        # 使用稳定哈希，确保多进程/多 worker 的 advisory lock 锁键一致。
+        resource_id = _stable_resource_id(resource)
 
         if self.pg_lock_func == "pg_advisory_xact_lock":
             # 事务级锁，随事务结束自动释放
             await db.execute(f"SELECT pg_advisory_xact_lock({resource_id})")
         else:
-            # 会话级锁，需要手动释放
+            # 兼容极少数显式要求会话级锁的调用方；正常 fallback 应优先事务级锁。
             await db.execute(f"SELECT pg_advisory_lock({resource_id})")
 
     async def _pg_lock_release(self, db: Any, resource: str) -> None:
         """
-        释放 PostgreSQL 行锁
+        释放 PostgreSQL advisory 锁
 
         Args:
             db: 数据库连接
             resource: 资源标识
         """
-        resource_id = abs(hash(resource)) % (2**31)
+        resource_id = _stable_resource_id(resource)
 
         if self.pg_lock_func == "pg_advisory_xact_lock":
-            # 事务级锁不需要手动释放
-            pass
-        else:
-            await db.execute(f"SELECT pg_advisory_unlock({resource_id})")
+            # 事务级锁随 commit/rollback 自动释放，禁止再依赖手动 unlock。
+            return
+
+        await db.execute(f"SELECT pg_advisory_unlock({resource_id})")
 
 
 __all__ = [

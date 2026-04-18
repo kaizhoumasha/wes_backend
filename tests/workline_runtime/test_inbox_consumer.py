@@ -10,6 +10,7 @@ InboxConsumer 单元测试
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ import pytest
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus
 from src.workline_runtime.orchestrator import OrchestratorResult
+from src.workline_runtime.types import CommandIntent, WaitIntent
 
 
 def make_noop_lock():
@@ -30,6 +32,25 @@ def make_noop_lock():
         yield
 
     return noop_lock()
+
+
+def _loaded_entities(
+    *,
+    session: Any | None = None,
+    workline: Any | None = None,
+    device: Any | None = None,
+    command: Any | None = None,
+    devices_by_role: dict[str, list[Any]] | None = None,
+    services: Any | None = None,
+) -> dict[str, Any]:
+    return {
+        "session": session,
+        "workline": workline,
+        "device": device,
+        "command": command,
+        "devices_by_role": devices_by_role or {},
+        "services": services or MagicMock(),
+    }
 
 
 class MockInbox:
@@ -69,12 +90,10 @@ class MockSession:
         session_id: int = 12345,
         status: str = "RUNNING",
         context: dict[str, Any] | None = None,
-        version: int = 1,
     ):
         self.id = session_id
         self.status = status
         self.context = context or {}
-        self.version = version
 
 
 class MockWorkline:
@@ -89,6 +108,54 @@ class MockWorkline:
         self.id = workline_id
         self.plugin_class = plugin_class
         self.state_machine_class = state_machine_class
+
+
+class CommitAwareDb:
+    """最小提交感知 DB，用于验证失败状态是否真的在 commit 后持久化。"""
+
+    def __init__(self) -> None:
+        self._pending_actions: list[Any] = []
+        self.commit = AsyncMock(side_effect=self._commit)
+        self.rollback = AsyncMock(side_effect=self._rollback)
+
+    def stage(self, action) -> None:
+        self._pending_actions.append(action)
+
+    async def _commit(self) -> None:
+        for action in self._pending_actions:
+            action()
+        self._pending_actions.clear()
+
+    async def _rollback(self) -> None:
+        self._pending_actions.clear()
+
+
+class CommitAwareInboxService:
+    """最小 inbox service，只有 commit 后才会把失败状态真正落到 inbox 对象上。"""
+
+    def __init__(self, inbox: MockInbox) -> None:
+        self._inbox = inbox
+        self.get_new_messages = AsyncMock(return_value=[inbox])
+        self.mark_as_processed = AsyncMock()
+        self.mark_as_failed = AsyncMock(side_effect=self._mark_as_failed)
+
+    async def mark_as_processing(self, _db, inbox_id: int, processor_token: str, auto_commit: bool = False):
+        assert auto_commit is False
+        assert inbox_id == self._inbox.id
+        self._inbox.status = InboxStatus.PROCESSING
+        self._inbox.processor_token = processor_token
+        return self._inbox
+
+    async def _mark_as_failed(self, db, inbox_id: int, error_message: str, auto_commit: bool = False):
+        assert auto_commit is False
+        assert inbox_id == self._inbox.id
+
+        def persist_failure() -> None:
+            self._inbox.status = InboxStatus.FAILED
+            self._inbox.error_message = error_message
+
+        db.stage(persist_failure)
+        return self._inbox
 
 
 class TestInboxConsumer:
@@ -116,7 +183,18 @@ class TestInboxConsumer:
     def mock_orchestrator(self):
         """创建模拟 OrchestratorService"""
         orchestrator = MagicMock()
-        orchestrator.process_inbox = AsyncMock(return_value=OrchestratorResult(success=True))
+        process_inbox = AsyncMock(return_value=OrchestratorResult(success=True))
+
+        async def _process_inbox(*args, **kwargs):
+            _ = args
+            result = process_inbox.return_value
+            write_callback = kwargs.get("write_callback")
+            if write_callback is not None and isinstance(result, OrchestratorResult) and result.success:
+                await write_callback(result)
+            return result
+
+        process_inbox.side_effect = _process_inbox
+        orchestrator.process_inbox = process_inbox
         return orchestrator
 
     @pytest.mark.asyncio
@@ -156,14 +234,7 @@ class TestInboxConsumer:
             ),
             patch(
                 "src.celery_app.tasks.workline._load_related_entities",
-                AsyncMock(
-                    return_value={
-                        "session": MockSession(),
-                        "workline": MockWorkline(),
-                        "devices_by_role": {},
-                        "services": MagicMock(),
-                    }
-                ),
+                AsyncMock(return_value=_loaded_entities(session=MockSession(), workline=MockWorkline())),
             ),
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
@@ -186,11 +257,21 @@ class TestInboxConsumer:
         """测试单条消息处理失败"""
         from src.celery_app.tasks.workline import process_inbox_messages
 
-        inbox = MockInbox(inbox_id=1, kind=InboxKind.DEVICE_EVENT)
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-failed-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {"LotCode": "LOT-FAILED-001"},
+            },
+        )
+        inbox.source_message_id = "req-failed-001"
         mock_inbox_service.get_new_messages.return_value = [inbox]
         mock_orchestrator.process_inbox.return_value = OrchestratorResult(
             success=False,
             error="Processing failed",
+            transition="dispatch_robot",
         )
 
         with (
@@ -208,11 +289,14 @@ class TestInboxConsumer:
                     return_value={
                         "session": MockSession(),
                         "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
                         "devices_by_role": {},
                         "services": MagicMock(),
                     }
                 ),
             ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
 
@@ -221,6 +305,198 @@ class TestInboxConsumer:
         assert result["failed"] == 1
 
         mock_inbox_service.mark_as_failed.assert_called_once()
+        mock_log_diagnostic.assert_called_once()
+        assert mock_log_diagnostic.call_args.kwargs["inbox"] is inbox
+        assert mock_log_diagnostic.call_args.kwargs["transition"] == "dispatch_robot"
+        mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_rejects_scan_finish_when_canonical_scan_completed_missing_barcode(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """canonical_event_type=SCAN_COMPLETED 时，vendor event 也必须命中扫码前置校验。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            payload_json={
+                "event_type": "SCAN_FINISH",
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {},
+            },
+        )
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        with (
+            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
+            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
+        mock_orchestrator.process_inbox.assert_not_called()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once_with(
+            inbox=inbox,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+            message="SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_still_validates_legacy_scan_completed_missing_barcode(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """旧 payload 仅有 event_type=SCAN_COMPLETED 时，仍保持原有前置校验行为。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            payload_json={
+                "event_type": "SCAN_COMPLETED",
+                "data": {},
+            },
+        )
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        with (
+            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
+            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
+        mock_orchestrator.process_inbox.assert_not_called()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once_with(
+            inbox=inbox,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+            message="SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_scan_completed_failure_is_persisted_after_commit(self):
+        """malformed SCAN_COMPLETED 前置校验失败后，FAILED 状态必须在 commit 后真正落到 inbox。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            status=InboxStatus.NEW,
+            payload_json={
+                "event_type": "SCAN_COMPLETED",
+                "data": {},
+            },
+        )
+        db = CommitAwareDb()
+        inbox_service = CommitAwareInboxService(inbox)
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.process_inbox = AsyncMock()
+
+        with (
+            patch("src.app.workline.services.inbox_service.inbox_service", inbox_service),
+            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch("src.celery_app.tasks.workline._log_diagnostic"),
+        ):
+            result = await process_inbox_messages._process_batch(db, limit=10)
+
+        assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
+        assert inbox.status == InboxStatus.FAILED
+        assert inbox.error_message == "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
+        db.commit.assert_awaited_once()
+        mock_orchestrator.process_inbox.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_missing_session_context_logs_once_with_trace_anchor(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """session/workline 缺失应单次明确归因，不再掉进 UNKNOWN 二次诊断。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-missing-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {"LotCode": "LOT-MISSING-001"},
+            },
+        )
+        inbox.source_message_id = "req-missing-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(success=True)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": None,
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Inbox processing missing session/workline context",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once_with(
+            inbox=inbox,
+            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+            message="Inbox processing missing session/workline context",
+            session=None,
+            workline=mock_log_diagnostic.call_args.kwargs["workline"],
+            device=None,
+            command=None,
+        )
+        assert mock_log_diagnostic.call_args.kwargs["inbox"] is inbox
+        assert mock_log_diagnostic.call_args.kwargs["workline"] is not None
         mock_db.commit.assert_called()
 
     @pytest.mark.asyncio
@@ -260,6 +536,8 @@ class TestInboxConsumer:
                     return_value={
                         "session": MockSession(),
                         "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
                         "devices_by_role": {},
                         "services": MagicMock(),
                     }
@@ -288,7 +566,16 @@ class TestInboxConsumer:
         """测试处理过程中异常"""
         from src.celery_app.tasks.workline import process_inbox_messages
 
-        inbox = MockInbox(inbox_id=1, kind=InboxKind.DEVICE_EVENT)
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-exception-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {"LotCode": "LOT-EXCEPTION-001"},
+            },
+        )
+        inbox.source_message_id = "req-exception-001"
         mock_inbox_service.get_new_messages.return_value = [inbox]
 
         with (
@@ -300,6 +587,7 @@ class TestInboxConsumer:
                 "src.celery_app.tasks.workline._load_related_entities",
                 AsyncMock(side_effect=ValueError("Entity not found")),
             ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
 
@@ -313,7 +601,323 @@ class TestInboxConsumer:
             "Entity not found",
             auto_commit=False,
         )
+        mock_log_diagnostic.assert_called_once()
+        assert mock_log_diagnostic.call_args.kwargs["inbox"] is inbox
+        assert mock_log_diagnostic.call_args.kwargs["message"] == "Entity not found"
         mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_timeout_logs_diagnostic_with_trace_anchor(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """timeout 分支也必须把原始 inbox trace 锚点透传给 diagnostics。"""
+        from src.celery_app.constants import INBOX_PROCESS_TIMEOUT_SECONDS
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-timeout-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {"LotCode": "LOT-TIMEOUT-001"},
+            },
+        )
+        inbox.source_message_id = "req-timeout-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        async def raise_timeout(coro, timeout):
+            _ = timeout
+            coro.close()
+            raise TimeoutError
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": MockSession(),
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch("src.celery_app.tasks.workline.asyncio.wait_for", new=AsyncMock(side_effect=raise_timeout)),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once_with(
+            inbox=inbox,
+            error_code=ErrorCode.DEVICE_TIMEOUT,
+            message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+        )
+        mock_db.commit.assert_called()
+
+    def test_log_diagnostic_uses_inbox_trace_fields(self) -> None:
+        """Workline diagnostics 应直接复用 inbox trace 字段，而不是重新发明 request 锚点。"""
+        from src.celery_app.tasks.workline import _log_diagnostic
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = SimpleNamespace(
+            id=303,
+            source_message_id="req-diag-001",
+            correlation_id="corr-diag-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        session = SimpleNamespace(id=123, correlation_id="corr-diag-001")
+        workline = SimpleNamespace(id=1, line_code="WL-01", plugin_key="smt_classifier")
+
+        with patch("src.celery_app.tasks.workline.logger.warning") as mock_warning:
+            _log_diagnostic(
+                inbox=inbox,
+                error_code=ErrorCode.DEVICE_TIMEOUT,
+                message="device timeout",
+                session=session,
+                workline=workline,
+                transition="wait_device_result",
+            )
+
+        mock_warning.assert_called_once()
+        log_message = mock_warning.call_args.args[0]
+        assert log_message.startswith("[WorklineDiagnostic] ")
+        payload = json.loads(log_message.removeprefix("[WorklineDiagnostic] "))
+        assert payload["context"]["request_id"] == "req-diag-001"
+        assert payload["context"]["correlation_id"] == "corr-diag-001"
+        assert payload["context"]["canonical_event_type"] == "SCAN_COMPLETED"
+        assert payload["context"]["transition"] == "wait_device_result"
+        assert payload["context"]["inbox_id"] == 303
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_write_callback_rolls_back_and_marks_failed(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """锁内写回异常必须回滚，不能保留半写入状态。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(inbox_id=1, kind=InboxKind.DEVICE_EVENT)
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(success=True)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": MockSession(),
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch(
+                "src.celery_app.tasks.workline._apply_orchestrator_effects",
+                AsyncMock(side_effect=RuntimeError("write failed")),
+            ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_db.rollback.assert_awaited()
+        mock_inbox_service.mark_as_processed.assert_not_called()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "write failed",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once()
+        assert mock_log_diagnostic.call_args.kwargs["message"] == "write failed"
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_rejects_stale_session_write_under_write_lock(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """若同 session 已被其他事务推进，当前 stale 编排结果不得继续写入。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(inbox_id=1, kind=InboxKind.DEVICE_EVENT)
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(success=True)
+        session = MockSession(status="RUNNING")
+        session.step_code = "WAITING_DEVICE_RESULT"
+        session.awaiting_command_id = None
+
+        async def refresh_session(target):
+            target.status = "WAITING_DEVICE_RESULT"
+
+        mock_db.refresh = AsyncMock(side_effect=refresh_session)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": session,
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch(
+                "src.celery_app.tasks.workline._apply_orchestrator_effects",
+                AsyncMock(),
+            ) as mock_apply_effects,
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_db.rollback.assert_awaited()
+        mock_apply_effects.assert_not_called()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Session state changed before WRITE apply; refusing stale orchestrator effects",
+            auto_commit=False,
+        )
+        assert mock_log_diagnostic.call_args.kwargs["message"] == (
+            "Session state changed before WRITE apply; refusing stale orchestrator effects"
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_reapplies_pending_ingress_metadata_after_refresh(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """复用已有 session 的 ingress 元数据在锁内 refresh 后仍必须可靠持久化。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(inbox_id=1, kind=InboxKind.DEVICE_EVENT)
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(success=True)
+
+        observed_at = datetime.now()
+        session = MockSession(status="RUNNING")
+        session.step_code = "WAITING_DEVICE_RESULT"
+        session.awaiting_command_id = None
+        session.ingress_count = 2
+        session.last_request_id = "req-new"
+        session.last_ingress_at = observed_at
+        session._pending_session_ingress_metadata = {
+            "ingress_count": 2,
+            "last_request_id": "req-new",
+            "last_ingress_at": observed_at,
+        }
+
+        async def refresh_session(target):
+            target.status = "RUNNING"
+            target.step_code = "WAITING_DEVICE_RESULT"
+            target.awaiting_command_id = None
+            target.ingress_count = 1
+            target.last_request_id = "req-old"
+            target.last_ingress_at = None
+
+        async def assert_ingress_reapplied(_db, *, session, **kwargs):
+            _ = kwargs
+            assert session.ingress_count == 2
+            assert session.last_request_id == "req-new"
+            assert session.last_ingress_at == observed_at
+
+        mock_db.refresh = AsyncMock(side_effect=refresh_session)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": session,
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch(
+                "src.celery_app.tasks.workline._apply_orchestrator_effects",
+                AsyncMock(side_effect=assert_ingress_reapplied),
+            ) as mock_apply_effects,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 1
+        assert result["failed"] == 0
+        mock_db.refresh.assert_awaited_once_with(session)
+        mock_apply_effects.assert_awaited_once()
+        mock_inbox_service.mark_as_processed.assert_called_once_with(mock_db, inbox.id, auto_commit=False)
+        assert session.ingress_count == 2
+        assert session.last_request_id == "req-new"
+        assert session.last_ingress_at == observed_at
 
     @pytest.mark.asyncio
     async def test_process_inbox_multiple_messages(
@@ -340,13 +944,19 @@ class TestInboxConsumer:
             patch(
                 "src.celery_app.tasks.workline._load_related_entities",
                 AsyncMock(
-                    return_value={
+                    side_effect=lambda *_args, **_kwargs: {
                         "session": MockSession(),
                         "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
                         "devices_by_role": {},
                         "services": MagicMock(),
                     }
                 ),
+            ),
+            patch(
+                "src.celery_app.tasks.workline._apply_orchestrator_effects",
+                new=AsyncMock(),
             ),
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
@@ -355,6 +965,49 @@ class TestInboxConsumer:
         assert result["success"] == 3
         assert result["failed"] == 0
         assert mock_inbox_service.mark_as_processed.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_emit_timeline_assigns_monotonic_seq_no_within_same_batch(self, mock_db):
+        """同一批 effect 内的多条 timeline 必须共享同一条递增序列。"""
+        from src.celery_app.tasks.workline import EffectApplyContext, _emit_timeline
+
+        session = SimpleNamespace(id=123, workline_id=1)
+        captured_timelines: list[Any] = []
+
+        scalar_result = MagicMock()
+        scalar_result.scalar_one_or_none.return_value = 5
+        mock_db.execute = AsyncMock(return_value=scalar_result)
+        mock_db.add = MagicMock(side_effect=lambda timeline: captured_timelines.append(timeline))
+
+        ctx: EffectApplyContext = {
+            "db": mock_db,
+            "session": session,
+            "workline": None,
+            "inbox": None,
+            "devices_by_role": {},
+            "orch_result": OrchestratorResult(success=True),
+            "current_status": None,
+            "correlation_id": None,
+            "session_ctx": {},
+            "now": datetime.now(),
+            "awaiting_command_id": None,
+            "awaiting_command_code": None,
+            "next_timeline_seq_no": None,
+        }
+
+        with patch(
+            "src.workline_runtime.timeline_generator.timeline_generator.generate",
+            side_effect=[
+                SimpleNamespace(session_id=123, seq_no=None, action_type="COMMAND_SENT"),
+                SimpleNamespace(session_id=123, seq_no=None, action_type="WAIT_STARTED"),
+            ],
+        ):
+            await _emit_timeline(ctx, stage="DISPATCH_PREPARE", action_type="COMMAND_SENT")
+            await _emit_timeline(ctx, stage="WAITING", action_type="WAIT_STARTED")
+
+        assert [item.seq_no for item in captured_timelines] == [6, 7]
+        assert ctx["next_timeline_seq_no"] == 8
+        mock_db.execute.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_apply_orchestrator_effects_preserves_wait_on_manual_hold(self, mock_db):
@@ -503,7 +1156,7 @@ class TestInboxConsumer:
         with (
             patch(
                 "src.celery_app.tasks.workline._add_timeline",
-                new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t)),
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
             ),
             patch(
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
@@ -564,7 +1217,12 @@ class TestInboxConsumer:
             failure_message=None,
         )
         workline = SimpleNamespace(plugin_key="smt_classifier")
-        inbox = SimpleNamespace(id=99, correlation_id="corr-external-001")
+        inbox = SimpleNamespace(
+            id=99,
+            correlation_id="corr-external-001",
+            source_message_id="req-external-001",
+            payload_json={"canonical_event_type": "AGV_REQUESTED"},
+        )
         orch_result = OrchestratorResult(
             success=True,
             transition="agv_requested",
@@ -577,7 +1235,11 @@ class TestInboxConsumer:
                     "source_system": "AGV",
                 }
             ],
-            wait=SimpleNamespace(wait_type="EXTERNAL_HTTP", wait_token="AGV-REQ-001", deadline_seconds=300),
+            wait=WaitIntent(
+                wait_type="EXTERNAL_HTTP",
+                wait_token="AGV-REQ-001",
+                deadline_seconds=300,
+            ),
             context_patch={"stage": "WAITING_AGV_DELIVERY"},
         )
 
@@ -589,7 +1251,7 @@ class TestInboxConsumer:
         with (
             patch(
                 "src.celery_app.tasks.workline._add_timeline",
-                new=AsyncMock(side_effect=lambda _db, t: captured_timelines.append(t)),
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
             ),
             patch(
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
@@ -610,10 +1272,486 @@ class TestInboxConsumer:
         assert outboxes[0].dispatch_type == DispatchType.EXTERNAL_HTTP
         assert outboxes[0].target_type == TargetType.HTTP_ENDPOINT
         assert outboxes[0].dispatch_key == "external-http:AGV-REQ-001"
+        assert outboxes[0].target_code == "http://agv.mock/api/v1/device/command"
+        assert outboxes[0].payload_json == {"command_code": "AGV-REQ-001"}
         assert session.status == "WAITING_EXTERNAL"
         assert session.current_wait_type == "EXTERNAL_HTTP"
         assert session.current_wait_token == "AGV-REQ-001"
         assert TimelineActionType.EXTERNAL_CALL_STARTED in [item.action_type for item in captured_timelines]
+        external_timeline = next(
+            item for item in captured_timelines if item.action_type == TimelineActionType.EXTERNAL_CALL_STARTED
+        )
+        assert external_timeline.payload["request_id"] == "req-external-001"
+        assert external_timeline.payload["correlation_id"] == "corr-external-001"
+        assert external_timeline.payload["canonical_event_type"] == "AGV_REQUESTED"
+        assert external_timeline.payload["dispatch_key"] == "external-http:AGV-REQ-001"
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_creates_command_before_wait_transition(self, mock_db):
+        """命令 effect 应先创建 command/outbox，再把 Session 推进到等待态。
+
+        这个顺序是 Phase 2 拆分后最关键的执行边界：
+        - context patch 先写入 session
+        - command create payload 读取更新后的 step_code / plugin snapshot
+        - wait transition 再引用首条 awaiting_command_id
+        """
+        from src.app.workline.models.outbox import DispatchType
+        from src.app.workline.models.timeline import TimelineActionType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        captured_timelines: list[Any] = []
+        added_models: list[Any] = []
+        created_command_payloads: list[dict[str, Any]] = []
+
+        session = SimpleNamespace(
+            id=123,
+            workline_id=1,
+            status="RUNNING",
+            context_json={"stage": "PREPARE"},
+            correlation_id="corr-session-legacy-001",
+            plugin_key=None,
+            contract_version="legacy-0.9",
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain="OLD",
+            failure_code="OLD",
+            failure_message="OLD",
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin", contract_version="wl-v2026.04")
+        inbox = SimpleNamespace(
+            id=101,
+            correlation_id="corr-inbox-001",
+            source_message_id="req-command-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        target_device = SimpleNamespace(id=8, device_code="ROBOT-001", device_role="ROBOT")
+        orch_result = OrchestratorResult(
+            success=True,
+            transition="dispatch_robot",
+            context_patch={"step_code": "SCAN_01", "barcode": "BC-001"},
+            commands=[
+                CommandIntent(
+                    target_device_id=8,
+                    action="PICK_AND_PUT",
+                    parameters={"command_code": "VENDOR-CMD-001", "priority": 9},
+                )
+            ],
+            wait=WaitIntent(
+                wait_type="COMMAND_RESULT",
+                wait_token="VENDOR-CMD-001",
+                deadline_seconds=180,
+            ),
+        )
+
+        command_model = SimpleNamespace(
+            id=321,
+            command_code="VENDOR-CMD-001",
+            params={
+                "command_code": "VENDOR-CMD-001",
+                "task_type": "PICK_AND_PUT",
+                "priority": 9,
+                "timeout": 300000,
+                "timestamp": 1710000000000,
+            },
+            task_type="PICK_AND_PLACE",
+            priority=9,
+            timeout_ms=300000,
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.create = AsyncMock(
+            side_effect=lambda _db, payload: created_command_payloads.append(payload) or command_model
+        )
+
+        def capture_add(model: Any) -> None:
+            added_models.append(model)
+
+        mock_db.add = MagicMock(side_effect=capture_add)
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch("src.celery_app.tasks.workline.get_plugin_contract_version", return_value="registry-v1999.01"),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository", return_value=mock_command_repo
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={"ROBOT": [target_device]},
+                orch_result=orch_result,
+            )
+
+        outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
+        assert len(outboxes) == 1
+        assert outboxes[0].dispatch_type == DispatchType.DEVICE_COMMAND
+        assert outboxes[0].dispatch_key == "device-command:VENDOR-CMD-001"
+        assert outboxes[0].target_code == "ROBOT-001"
+        assert outboxes[0].payload_json["command_code"] == "VENDOR-CMD-001"
+        assert outboxes[0].payload_json["device_code"] == "ROBOT-001"
+        assert outboxes[0].payload_json["task_type"] == "PICK_AND_PUT"
+
+        assert len(created_command_payloads) == 1
+        assert created_command_payloads[0]["plugin_key"] == "demo_plugin"
+        assert created_command_payloads[0]["contract_version"] == "wl-v2026.04"
+        assert created_command_payloads[0]["step_code"] == "SCAN_01"
+        assert created_command_payloads[0]["task_type"] == "PICK_AND_PLACE"
+        assert created_command_payloads[0]["correlation_id"] == "corr-inbox-001"
+
+        assert session.correlation_id == "corr-inbox-001"
+        assert session.plugin_key == "demo_plugin"
+        assert session.contract_version == "wl-v2026.04"
+        assert session.step_code == "SCAN_01"
+        assert session.barcode == "BC-001"
+        assert session.status == "WAITING_DEVICE_RESULT"
+        assert session.current_wait_type == "COMMAND_RESULT"
+        assert session.current_wait_token == "VENDOR-CMD-001"
+        assert session.awaiting_command_id == 321
+        assert session.failure_domain is None
+        assert session.failure_code is None
+        assert session.failure_message is None
+        assert [item.action_type for item in captured_timelines] == [
+            TimelineActionType.DECISION_MADE,
+            TimelineActionType.COMMAND_SENT,
+            TimelineActionType.WAIT_STARTED,
+        ]
+        assert captured_timelines[0].payload == {
+            "request_id": "req-command-001",
+            "correlation_id": "corr-inbox-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "transition": "dispatch_robot",
+            "context_patch": {"step_code": "SCAN_01", "barcode": "BC-001"},
+        }
+        assert captured_timelines[1].payload == {
+            "request_id": "req-command-001",
+            "correlation_id": "corr-inbox-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "command_code": "VENDOR-CMD-001",
+            "command_type": "PICK_AND_PUT",
+            "dispatch_key": "device-command:VENDOR-CMD-001",
+            "parameters": {
+                "command_code": "VENDOR-CMD-001",
+                "priority": 9,
+                "task_type": "PICK_AND_PUT",
+                "timeout": 300000,
+                "timestamp": created_command_payloads[0]["params"]["timestamp"],
+            },
+        }
+        assert captured_timelines[2].payload == {
+            "request_id": "req-command-001",
+            "correlation_id": "corr-inbox-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "wait_type": "COMMAND_RESULT",
+            "wait_token": "VENDOR-CMD-001",
+            "deadline_seconds": 180,
+        }
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_rejects_unsupported_command_type(self, mock_db):
+        """supports_command_types 必须在命令创建前被运行时消费。"""
+        from src.app.workline.models.timeline import TimelineActionType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        captured_timelines: list[Any] = []
+        added_models: list[Any] = []
+
+        session = SimpleNamespace(
+            id=456,
+            workline_id=1,
+            status="RUNNING",
+            context_json={},
+            correlation_id=None,
+            plugin_key=None,
+            contract_version=None,
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin")
+        inbox = SimpleNamespace(
+            id=201,
+            correlation_id="corr-unsupported-001",
+            source_message_id="req-unsupported-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        target_device = SimpleNamespace(
+            id=99,
+            device_code="ROBOT-001",
+            capabilities_json={"supports_command_types": ["MOVE_FORWARD"]},
+            maintenance_mode=False,
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            transition="dispatch_robot",
+            context_patch={"step_code": "SCAN_01"},
+            commands=[
+                CommandIntent(
+                    target_device_id=99,
+                    action="PICK_AND_PUT",
+                    parameters={"command_code": "VENDOR-CMD-001"},
+                )
+            ],
+            wait=WaitIntent(
+                wait_type="COMMAND_RESULT",
+                wait_token="VENDOR-CMD-001",
+                deadline_seconds=180,
+            ),
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.create = AsyncMock()
+        mock_db.add = MagicMock(side_effect=lambda model: added_models.append(model))
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={"ROBOT": [target_device]},
+                orch_result=orch_result,
+            )
+
+        outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
+        assert outboxes == []
+        mock_command_repo.create.assert_not_called()
+        assert session.status == "FAILED"
+        assert session.current_wait_type is None
+        assert session.current_wait_token is None
+        assert session.awaiting_command_id is None
+        assert session.failure_domain == "CONFIG"
+        assert session.failure_code == "UNSUPPORTED_COMMAND_TYPE"
+        assert session.failure_message == "设备 ROBOT-001 不支持 command_type=PICK_AND_PUT，拒绝命令创建"
+        assert [item.action_type for item in captured_timelines] == [
+            TimelineActionType.DECISION_MADE,
+            TimelineActionType.SESSION_FAILED,
+        ]
+        assert captured_timelines[-1].payload == {
+            "request_id": "req-unsupported-001",
+            "correlation_id": "corr-unsupported-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "message": "设备 ROBOT-001 不支持 command_type=PICK_AND_PUT，拒绝命令创建",
+        }
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_rejects_device_in_maintenance_mode(self, mock_db):
+        """maintenance_mode 必须在命令创建前被运行时消费。"""
+        from src.app.workline.models.timeline import TimelineActionType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        captured_timelines: list[Any] = []
+
+        session = SimpleNamespace(
+            id=457,
+            workline_id=1,
+            status="RUNNING",
+            context_json={},
+            correlation_id=None,
+            plugin_key=None,
+            contract_version=None,
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin")
+        inbox = SimpleNamespace(
+            id=202,
+            correlation_id="corr-maint-001",
+            source_message_id="req-maint-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        target_device = SimpleNamespace(
+            id=100,
+            device_code="ROBOT-002",
+            capabilities_json={"supports_command_types": ["PICK_AND_PUT"]},
+            maintenance_mode=True,
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            transition="dispatch_robot",
+            commands=[
+                CommandIntent(
+                    target_device_id=100,
+                    action="PICK_AND_PUT",
+                    parameters={"command_code": "VENDOR-CMD-002"},
+                )
+            ],
+            wait=WaitIntent(
+                wait_type="COMMAND_RESULT",
+                wait_token="VENDOR-CMD-002",
+                deadline_seconds=180,
+            ),
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.create = AsyncMock()
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={"ROBOT": [target_device]},
+                orch_result=orch_result,
+            )
+
+        mock_command_repo.create.assert_not_called()
+        assert session.status == "FAILED"
+        assert session.failure_domain == "MANUAL_INTERVENTION"
+        assert session.failure_code == "DEVICE_MAINTENANCE_MODE"
+        assert (
+            session.failure_message == "设备 ROBOT-002 处于 maintenance_mode，拒绝命令创建: command_type=PICK_AND_PUT"
+        )
+        assert [item.action_type for item in captured_timelines] == [
+            TimelineActionType.DECISION_MADE,
+            TimelineActionType.SESSION_FAILED,
+        ]
+        assert captured_timelines[-1].payload == {
+            "request_id": "req-maint-001",
+            "correlation_id": "corr-maint-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "message": "设备 ROBOT-002 处于 maintenance_mode，拒绝命令创建: command_type=PICK_AND_PUT",
+        }
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_failure_syncs_trace_to_session_and_timeline(self, mock_db):
+        """失败路径也必须保留入口 trace 主链，便于 replay/debug。"""
+        from src.app.workline.models.timeline import TimelineActionType, TimelineStage, TimelineStatus
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+        from src.workline_runtime.types import FailureIntent
+
+        captured_timelines: list[Any] = []
+
+        session = SimpleNamespace(
+            id=456,
+            workline_id=1,
+            status="RUNNING",
+            context_json={"stage": "WAITING_PICK_PLACE"},
+            correlation_id=None,
+            plugin_key=None,
+            contract_version=None,
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type="COMMAND_RESULT",
+            current_wait_token="wait-token-001",
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=88,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin")
+        inbox = SimpleNamespace(
+            id=202,
+            correlation_id="corr-failure-001",
+            source_message_id="req-failure-001",
+            payload_json={"canonical_event_type": "MOVE_FORWARD"},
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            failure=FailureIntent(
+                domain="HARDWARE",
+                code="DEVICE_TIMEOUT",
+                message="device timed out",
+            ),
+        )
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={},
+                orch_result=orch_result,
+            )
+
+        assert session.correlation_id == "corr-failure-001"
+        assert session.last_inbox_id == 202
+        assert session.status == "FAILED"
+        assert session.current_wait_type is None
+        assert session.current_wait_token is None
+        assert session.awaiting_command_id is None
+        assert session.failure_domain == "HARDWARE"
+        assert session.failure_code == "DEVICE_TIMEOUT"
+        assert session.failure_message == "device timed out"
+        assert len(captured_timelines) == 1
+        assert captured_timelines[0].action_type == TimelineActionType.SESSION_FAILED
+        assert captured_timelines[0].stage == TimelineStage.FAIL
+        assert captured_timelines[0].status == TimelineStatus.FAILED
+        assert captured_timelines[0].related_inbox_id == 202
+        assert captured_timelines[0].payload == {
+            "request_id": "req-failure-001",
+            "correlation_id": "corr-failure-001",
+            "canonical_event_type": "MOVE_FORWARD",
+            "message": "device timed out",
+        }
 
     @pytest.mark.asyncio
     async def test_process_inbox_skips_already_processing(

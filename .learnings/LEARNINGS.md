@@ -1474,3 +1474,38 @@ async def handler(..., db: AsyncSessionDep):
   - src/app/callback/v1/callback.py
 - Tags: fastapi, health-check, best-practice
 
+## [LRN-20260418-001] correction
+
+**Logged**: 2026-04-18T11:33:50+08:00
+**Priority**: medium
+**Status**: resolved
+**Category**: correction
+**Area**: backend
+
+### Summary
+不要把 `RequireAPIPermission` 用到后台查询路由上
+
+### Details
+在 review 后续修复里，把 `src/app/callback/v1/callback_log.py` 的日志查询接口错误地加上了
+`RequireAPIPermission("api:callback:log:*")`。这类依赖属于应用侧签名认证边界，要求请求带
+`X-App-ID`、`X-Timestamp`、`X-Signature`，适用于 `/callback/result`、`/callback/event` 这类设备/
+外部系统回调入口，不适用于后台或内部查询接口。
+
+这次错误的根因是把“需要鉴权”直接等同为“需要 API 应用权限”，没有先核实该路由属于用户 JWT/RBAC
+边界还是应用签名边界。
+
+### Suggested Action
+以后遇到权限类 review 项时，先区分：
+1. 用户后台接口：`require_auth` / `RequirePermission`
+2. 应用/设备调用接口：`RequireAPIAuth` / `RequireAPIPermission`
+3. 公共接口：显式说明为何允许匿名
+
+在没有证据前，不要把一种权限模型直接替换到另一种接口上。
+
+### Metadata
+- Source: user_feedback
+- Related Files:
+  - src/app/callback/v1/callback_log.py
+  - src/core/api_security.py
+  - src/core/rbac.py
+- Tags: auth-boundary, review, correction

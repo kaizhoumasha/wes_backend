@@ -1,5 +1,6 @@
 """Device 模型导出"""
 
+from .capability import DeviceCapabilityProfile, parse_device_capabilities
 from .command import (
     CommandAck,
     CommandBase,
@@ -33,6 +34,7 @@ __all__ = [
     "CommandStatus",
     "Device",
     "DeviceBase",
+    "DeviceCapabilityProfile",
     "DeviceCommand",
     "DeviceCommandCreate",
     "DeviceCommandUpdate",
@@ -42,4 +44,5 @@ __all__ = [
     "DeviceStatus",
     "DeviceUpdate",
     "TaskType",
+    "parse_device_capabilities",
 ]

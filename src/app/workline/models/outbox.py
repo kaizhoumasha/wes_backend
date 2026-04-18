@@ -19,6 +19,7 @@ from sqlmodel import Field, Relationship
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.workline.models.session import WorklineSession
@@ -158,7 +159,7 @@ class WorklineOutboxBase(BaseMixin):
 
     # 时间戳
     created_at: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=lambda: timezone.now_for_db(),
         index=True,
         description="创建时间",
     )

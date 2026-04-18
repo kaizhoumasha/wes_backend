@@ -30,6 +30,7 @@ from src.app.workline.repositories.session_repository import (
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.payloads import SixInOne
+from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import ensure_dict
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ _SESSION_ID_KINDS = {
     InboxKind.REPLAY_REQUEST,
 }
 _SIX_IN_ONE_KEY_ALIASES = SixInOne.BARCODE_FIELDS
+_PENDING_SESSION_INGRESS_METADATA_ATTR = "_pending_session_ingress_metadata"
 
 
 def _generate_six_in_one_business_key(data: dict[str, Any]) -> str | None:
@@ -95,6 +97,89 @@ def _resolve_business_key(payload_json: dict[str, Any]) -> str:
         return six_in_one_key
 
     return f"auto_{uuid.uuid4().hex[:12]}"
+
+
+def _build_session_ingress_metadata(
+    session: WorklineSession,
+    *,
+    trace: TraceContext,
+    observed_at: Any,
+) -> dict[str, Any]:
+    """为复用已有 session 构造最终应持久化的 ingress 元数据。"""
+
+    current = getattr(session, "ingress_count", None)
+    ingress_count = current + 1 if isinstance(current, int) and current >= 1 else 2
+    metadata: dict[str, Any] = {
+        "ingress_count": ingress_count,
+        "last_ingress_at": observed_at,
+    }
+    if trace.request_id:
+        metadata["last_request_id"] = trace.request_id
+    return metadata
+
+
+def _apply_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+    """把 ingress 元数据应用到 session 对象。"""
+
+    session.ingress_count = metadata["ingress_count"]
+    if "last_request_id" in metadata:
+        session.last_request_id = metadata["last_request_id"]
+    session.last_ingress_at = metadata["last_ingress_at"]
+
+
+def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+    """暂存复用 session 的 ingress 补丁，供锁内 refresh 后重放。"""
+
+    setattr(session, _PENDING_SESSION_INGRESS_METADATA_ATTR, dict(metadata))
+
+
+def reapply_pending_session_ingress_metadata(session: WorklineSession) -> bool:
+    """在 refresh() 之后重放复用 session 的 ingress 元数据补丁。"""
+
+    metadata = getattr(session, _PENDING_SESSION_INGRESS_METADATA_ATTR, None)
+    if not isinstance(metadata, dict) or not metadata:
+        return False
+
+    _apply_session_ingress_metadata(session, metadata)
+    return True
+
+
+def _bind_reused_session_to_inbox(inbox: "WorklineInbox", session: WorklineSession) -> None:
+    """复用已有 session 时，把 inbox trace 锚点对齐到 session 主链。"""
+
+    session_id = getattr(session, "id", None)
+    if isinstance(session_id, int):
+        inbox.session_id = session_id
+
+    session_correlation_id = getattr(session, "correlation_id", None)
+    if isinstance(session_correlation_id, str) and session_correlation_id:
+        inbox.correlation_id = session_correlation_id
+
+
+def _reuse_existing_session(
+    inbox: "WorklineInbox",
+    session: WorklineSession,
+    *,
+    trace: TraceContext,
+    observed_at: Any,
+) -> WorklineSession:
+    ingress_metadata = _build_session_ingress_metadata(session, trace=trace, observed_at=observed_at)
+    _apply_session_ingress_metadata(session, ingress_metadata)
+    _stash_pending_session_ingress_metadata(session, ingress_metadata)
+    _bind_reused_session_to_inbox(inbox, session)
+    return session
+
+
+def _resolve_workline_contract_version(workline: "WorkLine | None") -> str | None:
+    """解析运行时 contract_version，优先 workline 快照，缺失时回退 registry。"""
+
+    workline_contract_version = getattr(workline, "contract_version", None)
+    if isinstance(workline_contract_version, str) and workline_contract_version:
+        return workline_contract_version
+
+    plugin_key = getattr(workline, "plugin_key", None)
+    contract_version = get_plugin_contract_version(plugin_key)
+    return contract_version if isinstance(contract_version, str) and contract_version else None
 
 
 class SessionResolver:
@@ -175,6 +260,8 @@ class SessionResolver:
         """
         payload_json = ensure_dict(inbox.payload_json)
         business_key = _resolve_business_key(payload_json)
+        now = timezone.now_for_db()
+        trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
 
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int):
@@ -188,18 +275,17 @@ class SessionResolver:
         )
 
         if existing_session:
-            return existing_session
+            return _reuse_existing_session(inbox, existing_session, trace=trace, observed_at=now)
 
         # 2. 如果没有未结束的 Session，尝试通过 correlation_id 查找
-        correlation_id = getattr(inbox, "correlation_id", None)
+        correlation_id = trace.correlation_id
         if correlation_id:
             session_by_corr = await self.session_repo.get_by_correlation_id(
                 db=db,
                 correlation_id=correlation_id,
             )
             if session_by_corr:
-                inbox.session_id = session_by_corr.id
-                return session_by_corr
+                return _reuse_existing_session(inbox, session_by_corr, trace=trace, observed_at=now)
 
         # 3. 如果还是没有，查找最新的 Session（处理事件在 session 完成后立即到达的情况）
         latest_session = await self.session_repo.get_latest_session_by_business_key(
@@ -208,19 +294,14 @@ class SessionResolver:
             business_key=business_key,
         )
 
-        if latest_session:
+        if latest_session and latest_session.ended_at:
             # 如果最新的 session 刚完成不久（5秒内），继续使用它
-            now = timezone.now_for_db()
-            if latest_session.ended_at:
-                elapsed = (now - latest_session.ended_at).total_seconds()
-                if elapsed < 5:
-                    inbox.session_id = latest_session.id
-                    inbox.correlation_id = latest_session.correlation_id
-                    return latest_session
+            elapsed = (now - latest_session.ended_at).total_seconds()
+            if elapsed < 5:
+                return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=now)
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
-        now = timezone.now_for_db()
 
         session_data: dict[str, Any] = {
             "session_code": session_code,
@@ -228,16 +309,19 @@ class SessionResolver:
             "plugin_key": getattr(workline, "plugin_key", None),
             "business_key": business_key,
             "status": SessionStatus.NEW,
-            "correlation_id": getattr(inbox, "correlation_id", None) or f"corr_{uuid.uuid4().hex}",
+            "ingress_count": 1,
+            "last_request_id": trace.request_id,
+            "last_ingress_at": now,
+            "correlation_id": trace.correlation_id or f"corr_{uuid.uuid4().hex}",
             "context_json": {
                 "device_id": inbox.device_id,
-                "source_message_id": getattr(inbox, "source_message_id", None),
+                "source_message_id": trace.request_id,
                 "initial_payload": payload_json,
             },
             "started_at": now,
         }
 
-        contract_version = get_plugin_contract_version(getattr(workline, "plugin_key", None))
+        contract_version = _resolve_workline_contract_version(workline)
         if contract_version:
             session_data["contract_version"] = contract_version
 
@@ -264,20 +348,21 @@ class SessionResolver:
         if command.id is None:
             raise ValueError(f"DeviceCommand id is missing for command_code: {command_code}")
 
-        inbox.command_id = command.id
-        inbox.device_id = command.device_id
-        if command.workline_id is not None:
-            inbox.workline_id = command.workline_id
-        if command.correlation_id:
-            inbox.correlation_id = command.correlation_id
+        trace = TraceContext.from_runtime(inbox=inbox).with_command(command)
+        inbox.command_id = trace.command_id
+        inbox.device_id = trace.device_id or command.device_id
+        if trace.workline_id is not None:
+            inbox.workline_id = trace.workline_id
+        if trace.correlation_id:
+            inbox.correlation_id = trace.correlation_id
 
         session = await self.session_repo.get_open_session_by_awaiting_command_id(db, command.id)
         if session:
             inbox.session_id = session.id
             return session
 
-        if command.correlation_id:
-            session = await self.session_repo.get_by_correlation_id(db, command.correlation_id)
+        if trace.correlation_id:
+            session = await self.session_repo.get_by_correlation_id(db, trace.correlation_id)
             if session:
                 inbox.session_id = session.id
                 return session
@@ -303,7 +388,8 @@ class SessionResolver:
         Raises:
             ValueError: 当 correlation_id 缺失或 Session 不存在时
         """
-        correlation_id = inbox.correlation_id
+        trace = TraceContext.from_runtime(inbox=inbox)
+        correlation_id = trace.correlation_id
 
         if not correlation_id:
             raise ValueError("correlation_id is required for EXTERNAL_HTTP")

@@ -61,10 +61,27 @@ class WorkLineBase(BaseMixin):
         index=True,
         description="工作线执行插件标识",
     )
+    contract_version: str | None = Field(
+        default=None,
+        max_length=50,
+        description="工作线默认插件契约版本",
+    )
     config: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
         description="工作线插件配置",
+    )
+    runtime_config_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="工作线运行时配置（重试、超时、会话归属等）",
+    )
+    owner_team: str | None = Field(default=None, max_length=100, description="工作线主责团队")
+    support_contact: str | None = Field(default=None, max_length=100, description="工作线支持联系人")
+    diagnostic_profile: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="工作线诊断配置（软件/硬件分类偏好、展示策略等）",
     )
     description: str | None = Field(default=None, max_length=500, description="作业线描述")
     is_active: bool = Field(default=True, description="是否启用")
@@ -82,7 +99,12 @@ class WorkLine(
     """
     作业线数据库表模型
 
-    作业线是生产线或工作站的抽象，用于组织和管理设备
+    作业线是生产线或工作站的抽象，用于组织和管理设备。
+
+    除基础信息外，它还是插件运行容器：
+    - plugin_key / contract_version: 默认插件和契约来源
+    - runtime_config_json: 运行时行为配置
+    - owner_team / support_contact / diagnostic_profile: 诊断与支持归属
     """
 
     __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -107,6 +129,25 @@ class WorkLine(
 
         definition = self.plugin_definition
         return definition.state_machine_class if definition else None
+
+    @property
+    def resolved_runtime_config(self) -> dict[str, Any]:
+        """合并后的运行时配置视图。"""
+
+        merged = dict(self.runtime_config_json or {})
+        merged.setdefault("plugin_key", self.plugin_key)
+        merged.setdefault("contract_version", self.contract_version)
+        return merged
+
+    @property
+    def diagnostic_summary(self) -> dict[str, Any]:
+        """供排错与页面复用的作业线诊断摘要。"""
+
+        return {
+            "owner_team": self.owner_team,
+            "support_contact": self.support_contact,
+            "diagnostic_profile": dict(self.diagnostic_profile or {}),
+        }
 
 
 class WorkLineCreate(ModelFactory(WorkLineBase).for_create()):

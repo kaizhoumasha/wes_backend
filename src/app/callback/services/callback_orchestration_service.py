@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from src.app.workline.models.inbox import SourceSystem
+from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -26,6 +27,10 @@ from src.utils.timezone import timezone
 from src.workline_runtime.utils import JsonDict, ensure_dict
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
+
+
+def _current_timestamp_ms() -> int:
+    return int(timezone.now_utc().timestamp() * 1000)
 
 
 @dataclass(frozen=True)
@@ -79,8 +84,40 @@ class CallbackOrchestrationService:
             kwargs={"limit": 10},
         )
 
+    def _resolve_duplicate_inbox_error(self, error: ValueError, *, duplicate_message: str) -> bool:
+        if not self._is_duplicate_inbox_error(error):
+            raise error
+        logger.info(duplicate_message)
+        return True
+
     def _has_workline_binding(self, value: object) -> bool:
         return isinstance(value, int) and value > 0
+
+    def _build_trace_context(
+        self,
+        *,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        device_code: str | None = None,
+        command_code: str | None = None,
+        canonical_event_type: str | None = None,
+        existing_command: object | None = None,
+    ) -> TraceContext:
+        trace = TraceContext.from_request(
+            request_id=request_id,
+            correlation_id=correlation_id,
+            device_code=device_code,
+            canonical_event_type=canonical_event_type,
+        )
+        if existing_command is not None:
+            trace = trace.with_command(existing_command)
+        if command_code is not None:
+            trace = trace.with_command_code(command_code)
+        if device_code is not None:
+            trace = trace.with_device_code(device_code)
+        if canonical_event_type is not None:
+            trace = trace.with_canonical_event_type(canonical_event_type)
+        return trace
 
     async def _commit_and_enqueue_workline_processing(
         self,
@@ -120,12 +157,18 @@ class CallbackOrchestrationService:
         inbox_service: WorklineInboxService,
         enqueue_processing: Callable[[], None] | None = None,
     ) -> ResultCallbackOutcome:
-        existing_correlation_id = getattr(existing_command, "correlation_id", None)
-        inherited_correlation_id = existing_correlation_id if isinstance(existing_correlation_id, str) else None
         raw_command_params = getattr(existing_command, "params", None)
         command_params = ensure_dict(raw_command_params)
         callback_result_data = ensure_dict(callback.data)
         command_type = self._resolve_command_type(callback_result_data, command_params, existing_command)
+        trace = self._build_trace_context(
+            request_id=request_id,
+            correlation_id=getattr(existing_command, "correlation_id", None),
+            device_code=callback.device_code,
+            command_code=callback.command_code,
+            existing_command=existing_command,
+        )
+        inherited_correlation_id = trace.correlation_id
 
         is_duplicate = False
         is_workline_callback = await self._is_workline_command_callback(
@@ -146,17 +189,16 @@ class CallbackOrchestrationService:
                     data=callback.data or {},
                     command_type=command_type,
                     error_detail=callback.error_detail,
-                    source_message_id=request_id,
+                    source_message_id=trace.request_id,
                     correlation_id=inherited_correlation_id,
                     auto_commit=False,
                 )
                 logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
             except ValueError as exc:
-                if self._is_duplicate_inbox_error(exc):
-                    is_duplicate = True
-                    logger.info(f"指令结果幂等重复，将跳过业务处理: {callback.command_code}")
-                else:
-                    raise
+                is_duplicate = self._resolve_duplicate_inbox_error(
+                    exc,
+                    duplicate_message=f"指令结果幂等重复，将跳过业务处理: {callback.command_code}",
+                )
 
             if is_duplicate:
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
@@ -164,7 +206,8 @@ class CallbackOrchestrationService:
                 command = await command_service.handle_callback_result(db, callback)
                 if command is None:
                     raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-                inherited_correlation_id = command.correlation_id or inherited_correlation_id
+                trace = trace.with_command(command)
+                inherited_correlation_id = trace.correlation_id or inherited_correlation_id
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
                 logger.info(
                     f"指令结果处理完成: {callback.command_code} -> "
@@ -176,7 +219,8 @@ class CallbackOrchestrationService:
             command = await command_service.handle_callback_result(db, callback)
             if command is None:
                 raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-            inherited_correlation_id = command.correlation_id or inherited_correlation_id
+            trace = trace.with_command(command)
+            inherited_correlation_id = trace.correlation_id or inherited_correlation_id
             await db.commit()
             logger.info(
                 f"非 Workline 指令结果已同步处理: {callback.command_code} -> "
@@ -197,16 +241,24 @@ class CallbackOrchestrationService:
         event_data: JsonDict,
         request_id: str | None,
         is_workline_event: bool,
+        canonical_event_type: str,
         inbox_service: WorklineInboxService,
         enqueue_processing: Callable[[], None] | None = None,
     ) -> EventCallbackOutcome:
         event_timestamp = event_request.timestamp
         if event_timestamp is None:
-            event_timestamp = int(timezone.now_utc().timestamp() * 1000)
+            event_timestamp = _current_timestamp_ms()
 
-        event_correlation_id = cast("str | None", event_data.get("correlation_id"))
+        trace = self._build_trace_context(
+            request_id=request_id,
+            correlation_id=cast("str | None", event_data.get("correlation_id")),
+            device_code=event_request.device_code,
+            canonical_event_type=canonical_event_type,
+        )
+        event_correlation_id = trace.correlation_id
         if is_workline_event and event_correlation_id is None:
             event_correlation_id = f"corr_{uuid.uuid4().hex}"
+            trace = trace.with_correlation_id(event_correlation_id)
 
         is_duplicate = False
         if is_workline_event:
@@ -217,23 +269,19 @@ class CallbackOrchestrationService:
                     event_type=event_request.event_type,
                     timestamp=event_timestamp,
                     data=cast("dict[str, Any]", event_request.data or {}),
-                    source_message_id=request_id,
+                    source_message_id=trace.request_id,
                     correlation_id=event_correlation_id,
+                    canonical_event_type=canonical_event_type,
                     auto_commit=False,
                 )
-                logger.info(
-                    f"设备事件已写入 Inbox: "
-                    f"{event_request.device_code} -> {event_request.event_type}"
-                )
+                logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type}")
             except ValueError as exc:
-                if self._is_duplicate_inbox_error(exc):
-                    is_duplicate = True
-                    logger.info(
-                        "设备事件幂等重复，将跳过业务处理: "
-                        f"{event_request.device_code} -> {event_request.event_type}"
-                    )
-                else:
-                    raise
+                is_duplicate = self._resolve_duplicate_inbox_error(
+                    exc,
+                    duplicate_message=(
+                        f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type}"
+                    ),
+                )
 
             await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
 
@@ -254,24 +302,28 @@ class CallbackOrchestrationService:
         enqueue_processing: Callable[[], None] | None = None,
     ) -> ExternalCallbackOutcome:
         is_duplicate = False
+        trace = self._build_trace_context(
+            request_id=request_id,
+            correlation_id=correlation_id,
+            canonical_event_type=callback_type,
+        )
 
         try:
             _ = await inbox_service.create_external_http_inbox(
                 db=db,
                 callback_type=callback_type,
-                correlation_id=correlation_id,
+                correlation_id=trace.correlation_id or correlation_id,
                 payload=payload,
                 source_system=SourceSystem.SYSTEM,
-                source_message_id=request_id,
+                source_message_id=trace.request_id,
                 auto_commit=False,
             )
             logger.info(f"外部回调已写入 Inbox: {callback_type}")
         except ValueError as exc:
-            if self._is_duplicate_inbox_error(exc):
-                is_duplicate = True
-                logger.info(f"外部回调幂等重复，将跳过业务处理: {callback_type}")
-            else:
-                raise
+            is_duplicate = self._resolve_duplicate_inbox_error(
+                exc,
+                duplicate_message=f"外部回调幂等重复，将跳过业务处理: {callback_type}",
+            )
 
         await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
 

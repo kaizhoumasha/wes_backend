@@ -10,6 +10,7 @@ SessionResolver 单元测试
 设计参考: 设计文档 phase2-orchestrator
 """
 
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -191,18 +192,24 @@ class TestSessionResolver:
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
+            source_message_id="req-001",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
         workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline.contract_version = "wl-2026.04"
         devices_by_role = make_devices_by_role()
 
         # Act
-        session = await resolver.resolve_or_create(
-            db=mock_db,
-            inbox=inbox,
-            workline=workline,
-            devices_by_role=devices_by_role,
-        )
+        with patch(
+            "src.workline_runtime.session_resolver.get_plugin_contract_version",
+            return_value="registry-legacy",
+        ):
+            session = await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=workline,
+                devices_by_role=devices_by_role,
+            )
 
         # Assert
         assert session is not None
@@ -210,7 +217,38 @@ class TestSessionResolver:
         assert session.plugin_key == "smt_coarse"
         assert session.business_key == "ORDER_001"
         assert session.status == SessionStatus.NEW
-        assert session.correlation_id is not None
+        assert session.ingress_count == 1
+        assert session.last_request_id == "req-001"
+        assert session.last_ingress_at is not None
+        assert isinstance(session.correlation_id, str)
+        assert session.correlation_id.startswith("corr_")
+        assert session.contract_version == "wl-2026.04"
+        assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(self, mock_db, mock_session_repo, resolver):
+        """workline.contract_version 缺失时才回退 registry。"""
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            source_message_id="req-002",
+            payload_json={"barcode": "PKG12346", "business_key": "ORDER_003"},
+        )
+        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline.contract_version = None
+
+        with patch(
+            "src.workline_runtime.session_resolver.get_plugin_contract_version",
+            return_value="registry-2026.04",
+        ):
+            session = await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=workline,
+                devices_by_role=make_devices_by_role(),
+            )
+
+        assert session.contract_version == "registry-2026.04"
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
@@ -256,6 +294,10 @@ class TestSessionResolver:
             plugin_key="smt_coarse",
             business_key="ORDER_001",
             status=SessionStatus.RUNNING,
+            ingress_count=1,
+            last_request_id="req-old",
+            last_ingress_at=None,
+            correlation_id="corr-main-001",
             context_json={},
         )
         mock_session_repo.sessions[100] = existing_session
@@ -263,6 +305,8 @@ class TestSessionResolver:
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
+            correlation_id="corr_temp_001",
+            source_message_id="req-new",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
         workline = make_workline(workline_id=1, plugin_key="smt_coarse")
@@ -279,6 +323,17 @@ class TestSessionResolver:
         # Assert - 应该返回已存在的 Session，不创建新的
         assert session.id == 100
         assert session.business_key == "ORDER_001"
+        assert session.ingress_count == 2
+        assert session.last_request_id == "req-new"
+        assert isinstance(session.last_ingress_at, datetime)
+        pending_ingress = getattr(session, "_pending_session_ingress_metadata", None)
+        assert pending_ingress is not None
+        assert pending_ingress["ingress_count"] == 2
+        assert pending_ingress["last_request_id"] == "req-new"
+        assert pending_ingress["last_ingress_at"] == session.last_ingress_at
+        assert inbox.session_id == 100
+        assert inbox.correlation_id == "corr-main-001"
+        assert session.correlation_id == "corr-main-001"
         assert len(mock_session_repo.created_sessions) == 0
         # 验证调用了 business_key 查找
         assert ("business_key", 1, "ORDER_001") in mock_session_repo.find_calls
@@ -520,8 +575,9 @@ class TestSessionResolver:
         )
 
         # Six-In-One 组合生成 16 位 hash
-        import json
         import hashlib
+        import json
+
         fields = [
             "620100L00-011-G",
             "CC0402JRNPO9BN220",
@@ -565,6 +621,9 @@ class TestSessionResolver:
                 "plugin_key": "smt_coarse",
                 "business_key": expected_hash,
                 "status": SessionStatus.NEW,
+                "ingress_count": 1,
+                "last_request_id": "req-existing",
+                "last_ingress_at": None,
                 "correlation_id": "corr_existing",
                 "context_json": {},
                 "started_at": None,
@@ -574,6 +633,7 @@ class TestSessionResolver:
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
+            source_message_id="req-latest",
             payload_json={
                 "data": {
                     "HHPN": "620100L00-011-G",
@@ -595,6 +655,14 @@ class TestSessionResolver:
         )
 
         assert session.business_key == expected_hash
+        assert session.ingress_count == 2
+        assert session.last_request_id == "req-latest"
+        assert isinstance(session.last_ingress_at, datetime)
+        pending_ingress = getattr(session, "_pending_session_ingress_metadata", None)
+        assert pending_ingress is not None
+        assert pending_ingress["ingress_count"] == 2
+        assert pending_ingress["last_request_id"] == "req-latest"
+        assert pending_ingress["last_ingress_at"] == session.last_ingress_at
         assert len(mock_session_repo.created_sessions) == 1
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 

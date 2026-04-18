@@ -15,8 +15,11 @@ from src.workline_runtime.plugin_base import (
     on_command,
     on_event,
     on_timeout,
+    resolve_normalized_command_envelope,
+    resolve_normalized_command_failure,
     step,
 )
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult, NormalizedDeviceEvent
 from src.workline_runtime.types import (
     CommandIntent,
     FailureIntent,
@@ -84,6 +87,38 @@ class TestPlugin(WorklinePlugin):
     async def handle_timeout(self, ctx, inbox):
         """超时处理"""
         return PluginResultBuilder(ctx).failure(domain="TIMEOUT", code="TIMEOUT", message="超时").build()
+
+
+class NormalizedInputPlugin(WorklinePlugin):
+    """验证标准化输入可直接注入到装饰器插件。"""
+
+    plugin_key = "normalized-test"
+    contract_version = "1.0"
+
+    @on_event("SCAN_COMPLETED")
+    async def handle_scan(self, ctx, event: NormalizedDeviceEvent):
+        return (
+            PluginResultBuilder(ctx)
+            .context(
+                {
+                    "canonical_event_type": event.canonical_event_type,
+                    "business_key": event.business_key,
+                }
+            )
+            .build()
+        )
+
+    @on_command("PICK", result="FAILED")
+    async def handle_pick_failed(self, ctx, result: NormalizedCommandResult):
+        return (
+            PluginResultBuilder(ctx)
+            .failure(
+                domain="HARDWARE",
+                code=str(result.error_detail.get("error_code") or "UNKNOWN"),
+                message=str(result.normalized_result),
+            )
+            .build()
+        )
 
 
 # ==================== 测试用例 ====================
@@ -187,6 +222,98 @@ class TestPydanticParsing:
         assert result.failure is not None
         assert result.failure.domain == "DATA"
         assert result.failure.code == "PAYLOAD_INVALID"
+
+    @pytest.mark.asyncio
+    async def test_invoke_handler_prefers_normalized_input_model(self):
+        """验证 handler 标注标准化模型时，优先注入 ctx.normalized_input。"""
+        plugin = NormalizedInputPlugin()
+
+        ctx = MagicMock()
+        ctx.logger = MagicMock()
+        ctx.session = MagicMock()
+        ctx.session.context_json = {}
+        ctx.normalized_input = NormalizedDeviceEvent(
+            source_event_type="VENDOR_SCAN_DONE",
+            canonical_event_type="SCAN_COMPLETED",
+            business_key="PKG-001",
+            device_code="SCANNER01",
+        )
+
+        inbox = MagicMock()
+        inbox.payload_json = {"event_type": "VENDOR_SCAN_DONE"}
+
+        handler = NormalizedInputPlugin._event_handlers["SCAN_COMPLETED"]
+        result = await plugin._invoke_handler(handler, ctx, inbox, inbox.payload_json)
+
+        assert result.context_patch["canonical_event_type"] == "SCAN_COMPLETED"
+        assert result.context_patch["business_key"] == "PKG-001"
+
+
+class TestNormalizedCommandHelpers:
+    """标准化命令结果 helper 测试。"""
+
+    def test_resolve_normalized_command_envelope_requires_command_and_device_code(self):
+        result = NormalizedCommandResult(
+            command_code="CMD-001",
+            command_type="PICK",
+            source_result="SUCCESS",
+            normalized_result="SUCCESS",
+            device_code="ARM01",
+        )
+
+        assert resolve_normalized_command_envelope(result) == ("CMD-001", "ARM01")
+
+        missing_device = NormalizedCommandResult(
+            command_code="CMD-001",
+            command_type="PICK",
+            source_result="SUCCESS",
+            normalized_result="SUCCESS",
+            device_code=None,
+        )
+        assert resolve_normalized_command_envelope(missing_device) is None
+
+    def test_resolve_normalized_command_failure_prefers_error_detail_then_payload(self):
+        with_error_detail = NormalizedCommandResult(
+            command_code="CMD-002",
+            command_type="PICK",
+            source_result="FAILED",
+            normalized_result="TERMINAL_FAILURE",
+            device_code="ARM01",
+            payload={"error_code": "PAYLOAD_CODE", "error_message": "payload message"},
+            error_detail={"error_code": "DETAIL_CODE", "error_message": "detail message"},
+        )
+        assert resolve_normalized_command_failure(
+            with_error_detail,
+            default_code="UNKNOWN",
+            default_message="未知错误",
+        ) == ("DETAIL_CODE", "detail message")
+
+        payload_only = NormalizedCommandResult(
+            command_code="CMD-003",
+            command_type="PICK",
+            source_result="FAILED",
+            normalized_result="TERMINAL_FAILURE",
+            device_code="ARM01",
+            payload={"error_code": "PAYLOAD_CODE", "error_message": "payload message"},
+        )
+        assert resolve_normalized_command_failure(
+            payload_only,
+            default_code="UNKNOWN",
+            default_message="未知错误",
+        ) == ("PAYLOAD_CODE", "payload message")
+
+        no_error_info = NormalizedCommandResult(
+            command_code="CMD-004",
+            command_type="PICK",
+            source_result="FAILED",
+            normalized_result="TERMINAL_FAILURE",
+            device_code="ARM01",
+        )
+        assert resolve_normalized_command_failure(
+            no_error_info,
+            default_code="UNKNOWN",
+            default_message="未知错误",
+        ) == ("UNKNOWN", "未知错误")
 
 
 class TestStateValidation:
@@ -414,6 +541,31 @@ class TestEventRouting:
         assert result.commands is not None
 
     @pytest.mark.asyncio
+    async def test_on_device_event_prefers_canonical_event_type(self):
+        """验证设备事件优先按标准化 canonical_event_type 路由。"""
+        plugin = TestPlugin()
+
+        ctx = MagicMock()
+        ctx.logger = MagicMock()
+        ctx.session = MagicMock()
+        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
+
+        inbox = MagicMock()
+        inbox.id = 11
+        inbox.payload_json = {
+            "event_type": "VENDOR_SCAN_DONE",
+            "device_code": "SCANNER01",
+            "barcode": "ABC123",
+            "location_id": "LOC01",
+        }
+
+        result = await plugin.on_device_event(ctx, inbox)
+
+        assert result.transition == "scan_ok"
+        assert result.commands is not None
+
+    @pytest.mark.asyncio
     async def test_on_command_result_routes_to_command_handler(self):
         """验证 on_command_result 自动路由到 @on_command 标记的方法"""
         plugin = TestPlugin()
@@ -438,6 +590,64 @@ class TestEventRouting:
 
         # Verify routed to handle_pick_success
         assert result.transition == "pick_ok"
+
+    @pytest.mark.asyncio
+    async def test_on_command_result_accepts_normalized_failure_alias(self):
+        """验证命令结果可通过标准化失败语义路由到 legacy FAILED handler。"""
+        plugin = TestPlugin()
+
+        ctx = MagicMock()
+        ctx.logger = MagicMock()
+        ctx.session = MagicMock()
+        ctx.session.context_json = {"step_code": "WAITING_INSPECTION"}
+        ctx.normalized_input = MagicMock(
+            command_type="PICK", source_result="ERROR", normalized_result="TERMINAL_FAILURE"
+        )
+
+        inbox = MagicMock()
+        inbox.id = 12
+        inbox.payload_json = {
+            "command_type": "PICK",
+            "result": "ERROR",
+            "device_code": "ARM01",
+        }
+
+        result = await plugin.on_command_result(ctx, inbox)
+
+        assert result.failure is not None
+        assert result.failure.code == "PICK_FAILED"
+        assert result.failure.domain == "HARDWARE"
+
+    @pytest.mark.asyncio
+    async def test_on_command_result_injects_normalized_result_model(self):
+        """验证命令结果 handler 可直接消费 NormalizedCommandResult。"""
+        plugin = NormalizedInputPlugin()
+
+        ctx = MagicMock()
+        ctx.logger = MagicMock()
+        ctx.session = MagicMock()
+        ctx.session.context_json = {}
+        ctx.normalized_input = NormalizedCommandResult(
+            command_code="CMD-001",
+            source_result="ERROR",
+            normalized_result="TERMINAL_FAILURE",
+            command_type="PICK",
+            error_detail={"error_code": "ARM_ERROR"},
+        )
+
+        inbox = MagicMock()
+        inbox.id = 13
+        inbox.payload_json = {
+            "command_type": "PICK",
+            "result": "ERROR",
+        }
+
+        result = await plugin.on_command_result(ctx, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "ARM_ERROR"
+        assert result.failure.message == "TERMINAL_FAILURE"
 
     @pytest.mark.asyncio
     async def test_on_timeout_routes_to_timeout_handler(self):

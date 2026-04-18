@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
+from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Index, Relationship
 
@@ -90,6 +91,11 @@ class DeviceBase(BaseMixin):
         max_length=50,
         description="厂商类型（ECS, KEYENCE, FANUC...）",
     )
+    capabilities_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="设备能力声明（支持事件、命令、回调等）",
+    )
 
     # ===== 通信配置（白皮书 2.1-2.3 节）=====
     host: str | None = Field(default=None, max_length=100, description="设备 IP 地址")
@@ -112,6 +118,7 @@ class DeviceBase(BaseMixin):
 
     auth_token: str | None = Field(default=None, max_length=500, description="认证 Token（Bearer Token）")
     timeout: int = Field(default=10000, ge=1000, le=300000, description="请求超时时间（毫秒，默认 10s）")
+    callback_path: str | None = Field(default=None, max_length=255, description="设备侧回调/命令接收路径覆盖")
 
     # ===== 设备状态（白皮书 3.1.2 节）=====
     # 🔥 使用 VARCHAR + CHECK 约束
@@ -132,6 +139,7 @@ class DeviceBase(BaseMixin):
     current_command_id: int | None = Field(default=None, description="当前执行的指令 ID（关联 DeviceCommand.id）")
     last_heartbeat_at: datetime | None = Field(default=None, description="最后心跳时间")
     error_code: str | None = Field(default=None, max_length=50, description="错误代码（status=ERROR 时）")
+    maintenance_mode: bool = Field(default=False, description="是否处于维护模式（维护中不参与正常编排）")
 
     # ===== 能力配置（白皮书 5.1 节）=====
     max_concurrent_tasks: int = Field(default=1, ge=1, le=10, description="最大并发任务数")
@@ -142,6 +150,13 @@ class DeviceBase(BaseMixin):
         ge=60,
         le=86400,
         description="指令去重缓存时间（秒，默认 1 小时）",
+    )
+
+    # ===== 诊断配置（排错平台） =====
+    diagnostic_profile: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="设备诊断配置（责任角色、显示偏好、扩展属性）",
     )
 
 
@@ -163,16 +178,19 @@ class Device(
     字段说明:
     - 基本信息: device_code, device_name, work_line_id
     - 角色和拓扑: device_role, role_index, upstream_device_id（架构 8.2 节）
-    - 厂商: vendor_type
-    - 通信配置: host, port, protocol, auth_token, timeout（白皮书 2.1-2.3 节）
-    - 设备状态: device_status, current_command_id, last_heartbeat_at, error_code（白皮书 5.2 节）
+    - 厂商与能力: vendor_type, capabilities_json
+    - 通信配置: host, port, protocol, auth_token, timeout, callback_path（白皮书 2.1-2.3 节）
+    - 设备状态: device_status, current_command_id, last_heartbeat_at,
+      error_code, maintenance_mode（白皮书 5.2 节）
     - 能力配置: max_concurrent_tasks（白皮书 5.1 节）
     - 幂等性配置: idempotency_ttl（白皮书 4.1 节）
+    - 诊断配置: diagnostic_profile
 
     架构设计参考:
     - device_role: 业务角色（SCANNER, ROBOT_ARM, XRAY），用于插件按角色选设备
     - role_index: 同角色多设备序号（如 ROBOT_ARM_1, ROBOT_ARM_2）
     - upstream_device_id: 线性拓扑（符合 KISS 原则）
+    - plugin_key/contract_version 的唯一来源是 WorkLine，而非 Device
 
     注意:
     - WES 回调端点固定在路由中: /api/v1/callback/result, /api/v1/callback/event
@@ -207,6 +225,19 @@ class Device(
             "primaryjoin": "Device.upstream_device_id == Device.id",
         }
     )
+
+    @property
+    def communication_profile(self) -> dict[str, Any]:
+        """供派发与诊断链路复用的通信配置快照。"""
+
+        protocol_value = getattr(self.protocol, "value", self.protocol)
+        return {
+            "protocol": protocol_value,
+            "host": self.host,
+            "port": self.port,
+            "timeout": self.timeout,
+            "callback_path": self.callback_path,
+        }
 
 
 # ==================== 自动生成的 Schema ====================
