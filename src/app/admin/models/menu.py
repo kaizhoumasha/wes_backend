@@ -74,7 +74,7 @@ class MenuResponse(MenuBase):
 class MenuTreeResponse(MenuResponse):
     """菜单树响应 Schema"""
 
-    children: list["MenuResponse"] = Field(default_factory=list)
+    children: list["MenuTreeResponse"] = Field(default_factory=list)
 
 
 class MenuTreeResponseSimple(MenuBase):
