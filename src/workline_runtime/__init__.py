@@ -13,6 +13,8 @@ WES 作业线运行时模块
 - 决策记录（Decision）
 - 外部调用日志（ExternalCall）
 - 枚举定义（SessionStatus, FailureDomain 等）
+- 统一诊断模型与软件/硬件归类
+- 插件 SDK 标准化输入与运行时快照
 
 设计原则：
 - DRY: 横切能力统一实现，不散落到插件中
@@ -24,6 +26,19 @@ WES 作业线运行时模块
 from src.app.workline.models.inbox import InboxStatus
 from src.app.workline.models.session import SessionStatus
 from src.workline_runtime.atomic_writer import AtomicWriter, atomic_writer
+from src.workline_runtime.diagnostics import (
+    DiagnosticCard,
+    DiagnosticContext,
+    DiagnosticEvent,
+    ErrorCode,
+    ErrorDomain,
+    ProblemClass,
+    Recoverability,
+    Severity,
+    build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
+)
 from src.workline_runtime.enums import (
     DecisionType,
     FailureDomain,
@@ -32,22 +47,28 @@ from src.workline_runtime.enums import (
     OutboxStatus,
     TimelineStage,
 )
-from src.workline_runtime.lock import (
-    LockAcquireError,
-    LockReleaseError,
-    RedisDistributedLock,
-)
+from src.workline_runtime.lock import LockAcquireError, LockReleaseError, RedisDistributedLock
 from src.workline_runtime.null_plugin import NullPlugin, null_plugin
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
-from src.workline_runtime.session_resolver import SessionResolver, session_resolver
-from src.workline_runtime.transition_validator import TransitionValidator
-from src.workline_runtime.types import (
-    CommandIntent,
-    FailureIntent,
-    PluginResult,
-    WaitIntent,
+from src.workline_runtime.plugin_sdk import (
+    NormalizedCommandResult,
+    NormalizedDeviceEvent,
+    NormalizedExternalCallback,
+    ResolvedDeviceRuntimeConfig,
+    ResolvedExecutionContext,
+    ResolvedWorklineRuntimeConfig,
+    canonicalize_event_type,
+    classify_result,
+    normalize_inbox_input,
+    resolve_device_runtime_config,
+    resolve_execution_context,
+    resolve_workline_runtime_config,
 )
+from src.workline_runtime.session_resolver import SessionResolver, session_resolver
+from src.workline_runtime.trace_context import TraceContext
+from src.workline_runtime.transition_validator import TransitionValidator
+from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
 
 __version__ = "1.0.0"
 
@@ -55,12 +76,20 @@ __all__ = [
     "AtomicWriter",
     "CommandIntent",
     "DecisionType",
+    "DiagnosticCard",
+    "DiagnosticContext",
+    "DiagnosticEvent",
+    "ErrorCode",
+    "ErrorDomain",
     "FailureDomain",
     "FailureIntent",
     "InboxStatus",
     "LockAcquireError",
     "LockReleaseError",
     "ManualOperationType",
+    "NormalizedCommandResult",
+    "NormalizedDeviceEvent",
+    "NormalizedExternalCallback",
     "NullPlugin",
     "OrchestratorResult",
     "OrchestratorService",
@@ -69,13 +98,29 @@ __all__ = [
     "PluginContext",
     "PluginContextBuilder",
     "PluginResult",
+    "ProblemClass",
+    "Recoverability",
     "RedisDistributedLock",
+    "ResolvedDeviceRuntimeConfig",
+    "ResolvedExecutionContext",
+    "ResolvedWorklineRuntimeConfig",
     "SessionResolver",
     "SessionStatus",
+    "Severity",
     "TimelineStage",
+    "TraceContext",
     "TransitionValidator",
     "WaitIntent",
     "atomic_writer",
+    "build_diagnostic_card",
+    "build_diagnostic_context",
+    "build_diagnostic_event",
+    "canonicalize_event_type",
+    "classify_result",
+    "normalize_inbox_input",
     "null_plugin",
+    "resolve_device_runtime_config",
+    "resolve_execution_context",
+    "resolve_workline_runtime_config",
     "session_resolver",
 ]

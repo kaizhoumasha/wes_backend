@@ -6,11 +6,12 @@
 
 from typing import Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
 from src.app.callback.models import CallbackLogResponse
 from src.app.callback.services import callback_log_service
 from src.core.query_models import FilterGroup, SortField
+from src.core.rbac import RequirePermission
 from src.core.response import DEFAULT_NOT_FOUND, response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
@@ -25,6 +26,7 @@ router = APIRouter()
     response_model=CallbackLogResponse,
     status_code=status.HTTP_200_OK,
     summary="根据请求 ID 查询回调日志",
+    dependencies=[Depends(RequirePermission("callback:callback_log:detail"))],
     description="根据 request_id 查询单条回调日志记录",
 )
 async def get_by_request_id(
@@ -36,7 +38,7 @@ async def get_by_request_id(
 
     用于追踪特定请求的回调记录。
     """
-    log = await callback_log_service.repo.get_by_request_id(db, request_id)
+    log = await callback_log_service.get_by_request_id(db, request_id)
     if not log:
         return response_builder.fail(
             code=DEFAULT_NOT_FOUND,
@@ -49,6 +51,7 @@ async def get_by_request_id(
     "/correlation/{correlation_id}",
     status_code=status.HTTP_200_OK,
     summary="根据关联 ID 查询回调日志",
+    dependencies=[Depends(RequirePermission("callback:callback_log:list"))],
     description="根据 correlation_id 查询所有相关的回调日志（用于串联整个流程）",
 )
 async def get_by_correlation_id(
@@ -60,7 +63,7 @@ async def get_by_correlation_id(
 
     用于追踪整个业务流程的回调链路。
     """
-    logs = await callback_log_service.repo.get_by_correlation_id(db, correlation_id)
+    logs = await callback_log_service.get_by_correlation_id(db, correlation_id)
     return response_builder.success(
         data={
             "correlation_id": correlation_id,
@@ -74,6 +77,7 @@ async def get_by_correlation_id(
     "/device/{device_id}",
     status_code=status.HTTP_200_OK,
     summary="根据设备 ID 查询回调日志",
+    dependencies=[Depends(RequirePermission("callback:callback_log:list"))],
     description="查询指定设备最近的回调记录",
 )
 async def get_by_device_id(
@@ -86,7 +90,7 @@ async def get_by_device_id(
 
     用于监控设备回调历史和排查问题。
     """
-    logs = await callback_log_service.repo.get_by_device_id(db, device_id, limit)
+    logs = await callback_log_service.get_by_device_id(db, device_id, limit)
     return response_builder.success(
         data={
             "device_id": device_id,
@@ -100,6 +104,7 @@ async def get_by_device_id(
     "/query",
     status_code=status.HTTP_200_OK,
     summary="回调日志列表查询",
+    dependencies=[Depends(RequirePermission("callback:callback_log:list"))],
     description="通用列表查询接口，支持分页、过滤和排序",
 )
 async def query_callback_logs(
@@ -114,11 +119,13 @@ async def query_callback_logs(
     回调日志列表查询
 
     支持的过滤字段：
-    - callback_type: 回调类型 (event/result)
+    - callback_type: 回调类型 (event/result/external)
     - device_id: 设备 ID
     - response_status: 响应状态码
-    - request_id: 请求 ID
+    - request_id: 请求 ID（callback ingress trace 锚点）
     - correlation_id: 关联 ID
+    - ingress_outcome: 入口结果（ACCEPTED/REJECTED/FAILED/DUPLICATE）
+    - failure_stage: 入口失败阶段（REQUEST_PARSE/ENVELOPE_VALIDATE/...）
 
     示例：
     ```json

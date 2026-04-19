@@ -10,6 +10,7 @@ OrchestratorService 单元测试
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -57,7 +58,6 @@ class TestOrchestratorServicePhase2:
         session.id = 12345
         session.status = "RUNNING"
         session.context_json = {"key": "value"}
-        session.version = 1
         return session
 
     @pytest.fixture
@@ -122,7 +122,7 @@ class TestOrchestratorServicePhase2:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_process_inbox_acquires_lock(
+    async def test_process_inbox_reuses_same_session_lock_key_for_read_and_write(
         self,
         mock_session,
         mock_workline,
@@ -130,17 +130,14 @@ class TestOrchestratorServicePhase2:
         mock_devices_by_role,
         mock_services,
     ):
-        """测试处理 Inbox 时获取分布式锁"""
+        """READ / WRITE 阶段应复用同一个 session 锁 key。"""
         from src.workline_runtime.orchestrator import OrchestratorService
 
-        lock_acquired = False
-        lock_key_received = None
+        lock_keys: list[str] = []
 
         @asynccontextmanager
         async def test_lock(key):
-            nonlocal lock_acquired, lock_key_received
-            lock_acquired = True
-            lock_key_received = key
+            lock_keys.append(key)
             yield
 
         orchestrator = OrchestratorService(lock_provider=test_lock)
@@ -154,8 +151,135 @@ class TestOrchestratorServicePhase2:
             correlation_id="test-correlation-id",
         )
 
-        assert lock_acquired is True
-        assert "session:12345" in lock_key_received
+        assert lock_keys == ["session:12345", "session:12345"]
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_write_callback_runs_inside_second_session_lock_acquire(
+        self,
+        mock_session,
+        mock_workline,
+        mock_inbox,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """成功结果的真实写回必须发生在第二次 session 锁临界区内。"""
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        stages: list[str] = []
+        acquire_count = 0
+
+        @asynccontextmanager
+        async def test_lock(key):
+            nonlocal acquire_count
+            acquire_count += 1
+            phase = "read" if acquire_count == 1 else "write"
+            stages.append(f"enter_{phase}:{key}")
+            try:
+                yield
+            finally:
+                stages.append(f"exit_{phase}:{key}")
+
+        orchestrator = OrchestratorService(lock_provider=test_lock)
+        write_callback = AsyncMock(side_effect=lambda result: stages.append(f"write_callback:{result.success}"))
+
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=mock_inbox,
+            devices_by_role=mock_devices_by_role,
+            services=mock_services,
+            correlation_id="test-correlation-id",
+            write_callback=write_callback,
+        )
+
+        assert result.success is True
+        assert stages == [
+            "enter_read:session:12345",
+            "exit_read:session:12345",
+            "enter_write:session:12345",
+            "write_callback:True",
+            "exit_write:session:12345",
+        ]
+        write_callback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_same_session_read_waits_for_other_message_write_lock(
+        self,
+        mock_session,
+        mock_workline,
+        mock_inbox,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """同一 session 的另一条 READ 在对方 WRITE 持锁期间不得穿透。"""
+        from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
+
+        locks: dict[str, asyncio.Lock] = {}
+        write_entered = asyncio.Event()
+        release_write = asyncio.Event()
+        second_read_entered = asyncio.Event()
+        read_started = False
+
+        @asynccontextmanager
+        async def keyed_lock(key):
+            lock = locks.setdefault(key, asyncio.Lock())
+            await lock.acquire()
+            try:
+                yield
+            finally:
+                lock.release()
+
+        orchestrator = OrchestratorService(lock_provider=keyed_lock)
+
+        async def fake_read_phase(*args, **kwargs):
+            nonlocal read_started
+            if read_started:
+                second_read_entered.set()
+            read_started = True
+            return OrchestratorResult(success=True)
+
+        async def fake_write_phase(*args, **kwargs):
+            write_entered.set()
+            await release_write.wait()
+            return OrchestratorResult(success=True)
+
+        with (
+            patch.object(orchestrator, "_process_read_phase", side_effect=fake_read_phase),
+            patch.object(orchestrator, "_process_write_phase", side_effect=fake_write_phase),
+        ):
+            first_task = asyncio.create_task(
+                orchestrator.process_inbox(
+                    session=mock_session,
+                    workline=mock_workline,
+                    inbox=mock_inbox,
+                    devices_by_role=mock_devices_by_role,
+                    services=mock_services,
+                    correlation_id="corr-1",
+                )
+            )
+            await write_entered.wait()
+
+            second_task = asyncio.create_task(
+                orchestrator.process_inbox(
+                    session=mock_session,
+                    workline=mock_workline,
+                    inbox=mock_inbox,
+                    devices_by_role=mock_devices_by_role,
+                    services=mock_services,
+                    correlation_id="corr-2",
+                )
+            )
+
+            await asyncio.sleep(0.05)
+            assert second_read_entered.is_set() is False
+
+            release_write.set()
+            first_result = await first_task
+            second_result = await second_task
+
+        assert first_result.success is True
+        assert second_result.success is True
+        assert second_read_entered.is_set() is True
 
     @pytest.mark.asyncio
     async def test_process_inbox_lock_failure(
@@ -500,6 +624,38 @@ class TestOrchestratorServiceEdgeCases:
 
         assert result.success is True
 
+    @pytest.mark.asyncio
+    async def test_process_inbox_without_lock_provider_fails_closed(self):
+        """默认构造必须失败关闭，不能静默退化为无锁。"""
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        mock_session = MagicMock()
+        mock_session.id = 12345
+        mock_session.status = "RUNNING"
+        mock_session.context = {}
+
+        mock_workline = MagicMock()
+        mock_workline.plugin_class = None
+
+        mock_inbox = MagicMock()
+        mock_inbox.id = 100
+        mock_inbox.kind = InboxKind.DEVICE_EVENT
+        mock_inbox.payload_json = {"message_type": "DEVICE_EVENT"}
+
+        orchestrator = OrchestratorService()
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=mock_inbox,
+            devices_by_role={},
+            services=MagicMock(),
+            correlation_id="test-correlation-id",
+        )
+
+        assert result.success is False
+        assert result.error_code == "UNKNOWN"
+        assert result.error_domain == "SYSTEM"
+
     def test_resolve_inbox_type_does_not_guess_command_result_from_device_event_payload(self, orchestrator):
         """DEVICE_EVENT 必须保持 DEVICE_EVENT，不允许根据 payload 猜成 COMMAND_RESULT。"""
         inbox = MagicMock()
@@ -520,7 +676,7 @@ class TestContractVersionMismatch:
     def orchestrator(self):
         from src.workline_runtime.orchestrator import OrchestratorService
 
-        return OrchestratorService()
+        return OrchestratorService(lock_provider=lambda key: make_noop_lock())
 
     @pytest.mark.asyncio
     async def test_process_inbox_contract_mismatch_returns_failure(self, orchestrator):

@@ -17,6 +17,7 @@ from src.app.workline.models.timeline import (
     WorklineTimeline,
 )
 from src.utils.timezone import timezone
+from src.workline_runtime.trace_context import TraceContext
 
 
 class SessionLike(Protocol):
@@ -45,9 +46,9 @@ class TimelineGenerator:
         message: str | None = None,
         related_inbox_id: int | None = None,
         related_command_id: int | None = None,
-        related_external_call_id: int | None = None,
         status: TimelineStatus | None = None,
         failure_domain: str | None = None,
+        trace: TraceContext | None = None,
     ) -> WorklineTimeline:
         """生成 Timeline 记录
 
@@ -63,17 +64,18 @@ class TimelineGenerator:
             message: 消息
             related_inbox_id: 关联的 Inbox ID
             related_command_id: 关联的设备指令 ID
-            related_external_call_id: 关联的外部调用 ID
             status: 条目状态（默认为 SUCCESS）
             failure_domain: 失败域
 
         Returns:
             WorklineTimeline 记录对象（未持久化）
         """
+        resolved_trace = trace or TraceContext.from_runtime(session=session)
+
         return WorklineTimeline(
-            session_id=session.id,
-            workline_id=session.workline_id,
-            correlation_id=session.correlation_id,
+            session_id=resolved_trace.session_id or session.id,
+            workline_id=resolved_trace.workline_id or session.workline_id,
+            correlation_id=resolved_trace.correlation_id or session.correlation_id,
             seq_no=0,  # 由 AtomicWriter 从数据库序列获取并替换
             occurred_at=timezone.now_for_db(),
             stage=stage,
@@ -88,7 +90,6 @@ class TimelineGenerator:
             payload_json=payload,
             related_inbox_id=related_inbox_id,
             related_command_id=related_command_id,
-            related_external_call_id=related_external_call_id,
         )
 
 

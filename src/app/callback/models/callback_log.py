@@ -11,11 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import JSON, Column, Text
 from sqlmodel import Field as SQLField
 
-from src.core.mixins import DataTableMixin, SoftDeleteMixin
+from src.core.mixins import DataTableMixin
 from src.database.schema_conf import SchemaType
 
 
-class CallbackLog(DataTableMixin, SoftDeleteMixin, table=True):
+class CallbackLog(DataTableMixin, table=True):
     """
     回调接收日志数据库表模型
 
@@ -98,6 +98,16 @@ class CallbackLog(DataTableMixin, SoftDeleteMixin, table=True):
         sa_column=Column(Text),
         description="错误消息（如果处理失败）",
     )
+    ingress_outcome: str | None = SQLField(
+        default=None,
+        max_length=50,
+        description="入口结果：ACCEPTED/REJECTED/FAILED/DUPLICATE",
+    )
+    failure_stage: str | None = SQLField(
+        default=None,
+        max_length=100,
+        description="入口失败阶段：REQUEST_PARSE/ENVELOPE_VALIDATE/DEVICE_CONTEXT_RESOLVE/...",
+    )
 
 
 # ==================== Schema ====================
@@ -116,6 +126,8 @@ class CallbackLogCreate(BaseModel):
     response_status: int
     response_time_ms: int
     error_message: str | None = None
+    ingress_outcome: str | None = None
+    failure_stage: str | None = None
 
 
 class CallbackLogResponse(BaseModel):
@@ -132,6 +144,8 @@ class CallbackLogResponse(BaseModel):
     response_status: int
     response_time_ms: int
     error_message: str | None
+    ingress_outcome: str | None
+    failure_stage: str | None
     created_at: datetime
     updated_at: datetime
 

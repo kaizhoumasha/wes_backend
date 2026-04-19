@@ -28,13 +28,11 @@ class FakeCommand:
         command_code: str = "CMD-TEST-001",
         status: CommandStatus = CommandStatus.PENDING,
         retry_count: int = 0,
-        version: int = 0,
     ) -> None:
         self.id = id
         self.command_code = command_code
         self.status = status
         self.retry_count = retry_count
-        self.version = version
 
     def can_retry(self) -> bool:
         return self.status in [CommandStatus.FAILED, CommandStatus.TIMEOUT] and self.retry_count < 3
@@ -63,8 +61,6 @@ class FakeRepo:
     async def update(self, _db: object, id: int, data: dict[str, Any]) -> FakeCommand | None:
         self.update_calls.append((id, dict(data)))
         for key, value in data.items():
-            if key == "version":
-                continue
             setattr(self.command, key, value)
         return self.command
 
@@ -76,45 +72,47 @@ class NullUpdateRepo(FakeRepo):
 
 
 @pytest.mark.asyncio
-async def test_cancel_command_includes_version_for_optimistic_lock() -> None:
-    command = FakeCommand(status=CommandStatus.PENDING, version=7)
+async def test_cancel_command_updates_status_without_optimistic_lock() -> None:
+    command = FakeCommand(status=CommandStatus.PENDING)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
 
-    _ = await service.cancel_command(cast("Any", SimpleNamespace()), command.command_code)
+    db = SimpleNamespace(commit=AsyncMock())
+    _ = await service.cancel_command(cast("Any", db), command.command_code)
 
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
-    assert update_data["status"] == CommandStatus.CANCELLED
-    assert update_data["version"] == 7
+    assert update_data == {"status": CommandStatus.CANCELLED}
 
 
 @pytest.mark.asyncio
-async def test_retry_command_includes_version_for_optimistic_lock() -> None:
-    command = FakeCommand(status=CommandStatus.FAILED, retry_count=1, version=9)
+async def test_retry_command_updates_state_without_optimistic_lock() -> None:
+    command = FakeCommand(status=CommandStatus.FAILED, retry_count=1)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
 
-    _ = await service.retry_command(cast("Any", SimpleNamespace()), command.command_code)
+    db = SimpleNamespace(commit=AsyncMock())
+    _ = await service.retry_command(cast("Any", db), command.command_code)
 
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
     assert update_data["status"] == CommandStatus.PENDING
     assert update_data["retry_count"] == 2
-    assert update_data["version"] == 9
+    assert "version" not in update_data
 
 
 @pytest.mark.asyncio
 async def test_error_detail_dict_is_kept_as_json_object() -> None:
-    command = FakeCommand(status=CommandStatus.ACK_RECEIVED, version=3)
+    command = FakeCommand(status=CommandStatus.ACK_RECEIVED)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
+    db = SimpleNamespace(commit=AsyncMock())
 
     callback = CommandCallbackResult(
         command_code=command.command_code,
@@ -124,24 +122,26 @@ async def test_error_detail_dict_is_kept_as_json_object() -> None:
         error_detail={"code": "E-TIMEOUT", "msg": "timeout"},
     )
 
-    _ = await service.handle_callback_result(cast("Any", SimpleNamespace()), callback)
+    _ = await service.handle_callback_result(cast("Any", db), callback)
 
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
     assert isinstance(update_data["error_detail"], dict)
     assert update_data["error_detail"]["code"] == "E-TIMEOUT"
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_error_detail_string_is_normalized_to_json_object() -> None:
-    command = FakeCommand(status=CommandStatus.SENT, version=5)
+    command = FakeCommand(status=CommandStatus.SENT)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
 
+    db = SimpleNamespace(commit=AsyncMock())
     await service._update_command_status(
-        cast("Any", SimpleNamespace()),
+        cast("Any", db),
         cast("Any", command),
         CommandStatus.FAILED,
         error_detail="network timeout",

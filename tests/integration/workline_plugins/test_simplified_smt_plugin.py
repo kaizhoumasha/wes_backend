@@ -4,12 +4,13 @@ SMT 分类插件集成测试
 验证 SmtClassifierPlugin 功能正确性。
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
+from src.workline_runtime.payloads import SixInOne
 
 
 class TestSmtClassifierPlugin:
@@ -39,76 +40,89 @@ class TestSmtClassifierPlugin:
 
     @pytest.mark.asyncio
     async def test_scan_completed_ok_flow(self, plugin, mock_context):
-        """测试扫码OK流程 - 使用完整的 SixInOne 字段"""
-        # 准备 payload - 使用完整的 SixInOne 字段（无连字符等特殊字符）
+        """测试扫码 OK 流程会进入测量等待态。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "LOTABC123",  # SixInOne: 批次码
-            "DateCode": "20260409",  # SixInOne: 日期码
-            "Qty": "100",  # SixInOne: 数量
-            "ProductNo": "PN001",  # SixInOne: 产品PN码
-            "MfrPN": "MFR002",  # SixInOne: 制造商PN码
-            "PONumber": "PO2026040901",  # SixInOne: 订单码
-            "location": "LOC01",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": "SVYU00125TP4LCR02_2",
+                "location": "LOC01",
+            },
         }
 
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-
-        # 设置状态为 IDLE
         mock_context.session.context_json = {"step_code": "IDLE"}
 
-        # 调用 on_device_event
         result = await plugin.on_device_event(mock_context, inbox)
 
-        # 验证
         assert result.transition == "scan_ok"
+        assert result.failure is None
         assert result.commands is not None
         assert len(result.commands) == 1
-        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].action == "MEASUREMENT_REEL"
         assert result.commands[0].target_device_id == 123
-        assert result.commands[0].parameters["source_type"] == "INPUT_PLATFORM"
-        assert result.commands[0].parameters["target_type"] == "PIPELINE_PLATFORM"
-        assert result.commands[0].parameters["source_loc"] == "LOC01"
-        assert result.commands[0].parameters["target_loc"] == "STATION_PIPELINE1_INPUT1"
-        assert result.context_patch["barcode"] == "LOTABC123"  # first_barcode 优先使用 LotCode
-        assert "barcodes" in result.context_patch  # 包含所有条码列表
-        assert len(result.context_patch["barcodes"]) == 6  # 完整的 6 个条码
+        assert result.commands[0].parameters["pkg_id"] == "SVYU00125TP4LCR02_2"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-MEASUREMENT_REEL-")
+        assert result.wait.deadline_seconds == 300
+        assert result.context_patch["device_code"] == "SCANNER01"
+        assert result.context_patch["location"] == "LOC01"
+        assert result.context_patch["step_code"] == "WAITING_MEASUREMENT"
+        assert len(result.context_patch["barcodes"]) == 6
 
     @pytest.mark.asyncio
-    async def test_scan_completed_ok_flow_multiple_barcodes(self, plugin, mock_context):
-        """测试扫码OK流程 - 使用多个 SixInOne 字段"""
+    async def test_scan_completed_incomplete_barcodes_routes_to_scan_ng(self, plugin, mock_context):
+        """测试条码不完整时会进入 scan_ng，并继续等待 NG 分流结果。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "LOTABC123",
-            "DateCode": "20260409",
-            "ProductNo": "PN001",
-            "location": "LOC01",
+            "data": {
+                "LotCode": "LOTABC123",
+                "DateCode": "20260409",
+                "location": "LOC01",
+            },
         }
 
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-
         mock_context.session.context_json = {"step_code": "IDLE"}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
-        assert result.transition == "scan_ok"
-        assert result.context_patch["barcode"] == "LOTABC123"
-        assert len(result.context_patch["barcodes"]) == 3  # LotCode, DateCode, ProductNo
+        assert result.transition == "scan_ng"
+        assert result.failure is None
+        assert result.commands is not None
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
+        assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_scan_completed_ng_flow(self, plugin, mock_context):
-        """测试扫码NG流程 - 命中业务 NG 规则"""
+        """测试扫码 NG 流程 - 命中业务 NG 规则。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "LOTSIZENG",
-            "location": "LOC01",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": "LOTSIZENG_001",
+                "location": "LOC01",
+            },
         }
 
         inbox = MagicMock()
@@ -123,17 +137,49 @@ class TestSmtClassifierPlugin:
         assert result.commands is not None
         assert len(result.commands) == 1
         assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
         assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
         assert result.context_patch["pick_place_reason"] == "SCAN_NG"
+        assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
-    async def test_scan_invalid_barcode(self, plugin, mock_context):
-        """测试无效条码"""
+    async def test_scan_completed_requires_data(self, plugin, mock_context):
+        """测试扫码事件缺少 data 时返回 MISSING_SCAN_DATA。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "X",  # 太短
-            "location": "LOC01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 11
+        inbox.payload_json = payload
+        mock_context.session.context_json = {"step_code": "IDLE"}
+
+        result = await plugin.on_device_event(mock_context, inbox)
+
+        assert result.transition == "scan_ng"
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "MISSING_SCAN_DATA"
+        assert not result.commands
+
+    @pytest.mark.asyncio
+    async def test_scan_invalid_barcode(self, plugin, mock_context):
+        """测试无效条码时会进入 scan_ng，并继续等待 NG 分流结果。"""
+        payload = {
+            "device_code": "SCANNER01",
+            "event_type": "SCAN_COMPLETED",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": "X",
+                "location": "LOC01",
+            },
         }
 
         inbox = MagicMock()
@@ -143,9 +189,15 @@ class TestSmtClassifierPlugin:
 
         result = await plugin.on_device_event(mock_context, inbox)
 
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "BARCODE_INVALID"
+        assert result.transition == "scan_ng"
+        assert result.failure is None
+        assert result.commands is not None
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
+        assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_pick_success_completes_scan_ng_flow(self, plugin, mock_context):
@@ -195,11 +247,149 @@ class TestSmtClassifierPlugin:
         assert result.failure.domain == "DATA"
         assert result.failure.code == "PAYLOAD_INVALID"
 
+    @pytest.mark.asyncio
+    async def test_scan_completed_accepts_canonical_event_type(self, plugin, mock_context):
+        """测试粗分机插件可按标准化 canonical_event_type 路由扫码事件。"""
+        payload = {
+            "device_code": "SCANNER01",
+            "event_type": "VENDOR_SCAN_DONE",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": "SVYU00125TP4LCR02_2",
+                "location": "LOC01",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 101
+        inbox.payload_json = payload
+        mock_context.session.context_json = {"step_code": "IDLE"}
+        mock_context.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
+
+        result = await plugin.on_device_event(mock_context, inbox)
+
+        assert result.transition == "scan_ok"
+        assert result.commands is not None
+        assert result.commands[0].action == "MEASUREMENT_REEL"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-MEASUREMENT_REEL-")
+
+    @pytest.mark.asyncio
+    async def test_estop_event_returns_hardware_failure(self, plugin, mock_context):
+        """测试急停事件会直接落到硬件失败。"""
+        payload = {
+            "device_code": "ARM01",
+            "event_type": "ESTOP_PRESSED",
+            "data": None,
+        }
+
+        inbox = MagicMock()
+        inbox.id = 102
+        inbox.payload_json = payload
+        mock_context.session.context_json = {"step_code": "WAITING_PICK_PLACE"}
+
+        result = await plugin.on_device_event(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "ESTOP"
+        assert result.failure.message == "急停触发: ARM01"
+
     # ========== 命令结果测试 ==========
 
     @pytest.mark.asyncio
+    async def test_measurement_reel_success(self, plugin, mock_context):
+        """测试测量成功会推进到流水线传输。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_MEASUREMENT",
+        }
+
+        payload = {
+            "command_code": "CMD-MEASURE-001",
+            "command_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "device_code": "ARM01",
+            "data": {
+                "pkg_id": "SVYU00125TP4LCR02_2",
+                "reel_diameter": 178.5,
+                "reel_thickness": 12.3,
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 2
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "pick_ok"
+        assert result.commands is not None
+        assert result.commands[0].action == "MOVE_FORWARD"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-MOVE_FORWARD-")
+        assert result.commands[0].parameters["pkg_id"] == "SVYU00125TP4LCR02_2"
+        assert result.context_patch["pkg_id"] == "SVYU00125TP4LCR02_2"
+        assert result.context_patch["reel_diameter"] == 178.5
+        assert result.context_patch["reel_thickness"] == 12.3
+        assert result.context_patch["step_code"] == "WAITING_CONVEYOR"
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_requires_data(self, plugin, mock_context):
+        """测试测量成功但缺少 data 时会进入 measurement_ng。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_MEASUREMENT",
+        }
+
+        payload = {
+            "command_code": "CMD-MEASURE-002",
+            "command_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "device_code": "ARM01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 22
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "measurement_ng"
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "MEASUREMENT_DATA_MISSING"
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_result_requires_standard_envelope(self, plugin, mock_context):
+        """测试测量结果缺少标准包络时返回 PAYLOAD_INVALID。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_MEASUREMENT",
+        }
+
+        payload = {
+            "command_code": "CMD-MEASURE-003",
+            "command_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 23
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "PAYLOAD_INVALID"
+
+    @pytest.mark.asyncio
     async def test_pick_success(self, plugin, mock_context):
-        """测试抓取成功"""
+        """测试抓取成功。"""
         mock_context.session.context_json = {
             "step_code": "WAITING_PICK_PLACE",  # 正确的初始状态
             "barcode": "LOTABC123",
@@ -210,6 +400,10 @@ class TestSmtClassifierPlugin:
             "command_type": "PICK_AND_PUT",
             "result": "SUCCESS",
             "device_code": "ARM01",
+            "data": {
+                "reel_diameter": "178.5",
+                "reel_thickness": "12.3",
+            },
         }
 
         inbox = MagicMock()
@@ -221,6 +415,12 @@ class TestSmtClassifierPlugin:
         assert result.transition == "pick_ok"
         assert result.commands is not None
         assert result.commands[0].action == "MOVE_FORWARD"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-MOVE_FORWARD-")
+        assert result.context_patch["reel_diameter"] == "178.5"
+        assert result.context_patch["reel_thickness"] == "12.3"
+        assert result.context_patch["step_code"] == "WAITING_CONVEYOR"
 
     @pytest.mark.asyncio
     async def test_pick_failed(self, plugin, mock_context):
@@ -233,9 +433,11 @@ class TestSmtClassifierPlugin:
             "command_code": "CMD-001",
             "command_type": "PICK_AND_PUT",
             "result": "FAILED",
-            "error_code": "ARM_ERROR",
-            "error_message": "机械臂错误",
             "device_code": "ARM01",
+            "error_detail": {
+                "error_code": "ARM_ERROR",
+                "error_message": "机械臂错误",
+            },
         }
 
         inbox = MagicMock()
@@ -247,6 +449,129 @@ class TestSmtClassifierPlugin:
         assert result.failure is not None
         assert result.failure.domain == "HARDWARE"
         assert result.failure.code == "ARM_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_pick_failed_dimension_error_routes_to_inspection_ng(self, plugin, mock_context):
+        """测试尺寸检测异常会进入 inspection_ng 并回送 NG 平台。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_PICK_PLACE",
+            "barcode": "LOTABC123",
+        }
+
+        payload = {
+            "command_code": "CMD-001A",
+            "command_type": "PICK_AND_PUT",
+            "result": "FAILED",
+            "device_code": "ARM01",
+            "error_detail": {
+                "error_code": "1001",
+                "error_message": "料盘尺寸检测异常",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 31
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "inspection_ng"
+        assert result.failure is None
+        assert result.commands is not None
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.commands[0].parameters["barcode"] == "LOTABC123"
+        assert result.commands[0].parameters["source_type"] == "PIPELINE_PLATFORM"
+        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
+        assert result.context_patch["inspection_error"] == "1001"
+        assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
+
+    @pytest.mark.asyncio
+    async def test_pick_failed_accepts_normalized_failure_alias(self, plugin, mock_context):
+        """测试粗分机插件可按标准化失败语义兼容 vendor ERROR 结果。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_PICK_PLACE",
+        }
+        mock_context.normalized_input = MagicMock(
+            command_type="PICK_AND_PUT",
+            source_result="ERROR",
+            normalized_result="TERMINAL_FAILURE",
+        )
+
+        payload = {
+            "command_code": "CMD-001",
+            "command_type": "PICK_AND_PUT",
+            "result": "ERROR",
+            "device_code": "ARM01",
+            "error_detail": {
+                "error_code": "ARM_ERROR",
+                "error_message": "机械臂错误",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 103
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "ARM_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_pick_success_rejects_unexpected_state(self, plugin, mock_context):
+        """测试抓取成功在非法状态下返回 STATE_MISMATCH。"""
+        mock_context.session.context_json = {
+            "step_code": "IDLE",
+        }
+
+        payload = {
+            "command_code": "CMD-010",
+            "command_type": "PICK_AND_PUT",
+            "result": "SUCCESS",
+            "device_code": "ARM01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 104
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "SOFTWARE"
+        assert result.failure.code == "STATE_MISMATCH"
+
+    @pytest.mark.asyncio
+    async def test_pick_failed_rejects_unexpected_state(self, plugin, mock_context):
+        """测试抓取失败在非法状态下返回 STATE_MISMATCH。"""
+        mock_context.session.context_json = {
+            "step_code": "IDLE",
+        }
+
+        payload = {
+            "command_code": "CMD-011",
+            "command_type": "PICK_AND_PUT",
+            "result": "FAILED",
+            "device_code": "ARM01",
+            "error_detail": {
+                "error_code": "ARM_ERROR",
+                "error_message": "机械臂错误",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 105
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "SOFTWARE"
+        assert result.failure.code == "STATE_MISMATCH"
 
     @pytest.mark.asyncio
     async def test_conveyor_success(self, plugin, mock_context):
@@ -272,6 +597,93 @@ class TestSmtClassifierPlugin:
         assert result.transition == "conveyor_ok"
         assert result.commands is not None
         assert result.commands[0].action == "PICK_AND_PUT"  # 输出机械臂
+        assert result.wait is not None
+        assert result.wait.wait_type == "COMMAND_RESULT"
+        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["step_code"] == "WAITING_OUTPUT"
+        assert "bin_location" in result.context_patch
+
+    @pytest.mark.asyncio
+    async def test_conveyor_failed(self, plugin, mock_context):
+        """测试流水线传输失败。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_CONVEYOR",
+        }
+
+        payload = {
+            "command_code": "CMD-003",
+            "command_type": "MOVE_FORWARD",
+            "result": "FAILED",
+            "device_code": "CONVEYOR01",
+            "error_detail": {
+                "error_code": "CONVEYOR_ERROR",
+                "error_message": "流水线卡住",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 5
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "CONVEYOR_ERROR"
+        assert result.failure.message == "流水线卡住"
+
+    @pytest.mark.asyncio
+    async def test_output_success(self, plugin, mock_context):
+        """测试出料机械臂成功后会完成会话。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_OUTPUT",
+        }
+
+        payload = {
+            "command_code": "CMD-004",
+            "command_type": "PICK_AND_PUT",
+            "result": "SUCCESS",
+            "device_code": "ARM02",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 6
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "output_ok"
+        assert result.complete is True
+        assert result.context_patch["step_code"] == "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_output_failed(self, plugin, mock_context):
+        """测试出料机械臂失败会按标准化错误信息返回。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_OUTPUT",
+        }
+
+        payload = {
+            "command_code": "CMD-005",
+            "command_type": "PICK_AND_PUT",
+            "result": "FAILED",
+            "device_code": "ARM02",
+            "error_detail": {
+                "error_code": "OUTPUT_ERROR",
+                "error_message": "出料异常",
+            },
+        }
+
+        inbox = MagicMock()
+        inbox.id = 7
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "HARDWARE"
+        assert result.failure.code == "OUTPUT_ERROR"
+        assert result.failure.message == "出料异常"
 
     @pytest.mark.asyncio
     async def test_pick_result_rejects_legacy_command_id_and_device_id(self, plugin, mock_context):
@@ -316,15 +728,22 @@ class TestSmtClassifierPlugin:
     # ========== 状态迁移测试 ==========
 
     @pytest.mark.asyncio
-    async def test_idle_to_waiting_pick_place(self, plugin, mock_context):
-        """测试 IDLE → WAITING_PICK_PLACE 迁移"""
+    async def test_idle_to_waiting_measurement(self, plugin, mock_context):
+        """测试 IDLE → WAITING_MEASUREMENT 迁移。"""
         mock_context.session.context_json = {"step_code": "IDLE"}
 
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "LOTABC123",  # SixInOne 字段
-            "location": "LOC01",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": "SVYU00125TP4LCR02_2",
+                "location": "LOC01",
+            },
         }
 
         inbox = MagicMock()
@@ -333,9 +752,8 @@ class TestSmtClassifierPlugin:
 
         result = await plugin.on_device_event(mock_context, inbox)
 
-        # 验证状态迁移已设置
         assert result.transition == "scan_ok"
-        assert result.context_patch.get("step_code") == "WAITING_PICK_PLACE"
+        assert result.context_patch.get("step_code") == "WAITING_MEASUREMENT"
 
 
 class TestSmtClassifierPluginPluginRegistration:
@@ -359,29 +777,49 @@ class TestBarcodeDecisionService:
     """条码业务判定服务测试"""
 
     def test_decide_ok_barcode(self):
-        """测试有效条码判定为 OK。"""
-        result = barcode_decision_service.evaluate_scan(
-            lot_code="LOTABC123",
-            date_code="20260409",
-            product_no="PN001",
+        """测试完整六合一码判定为 OK。"""
+        result = barcode_decision_service.evaluate(
+            SixInOne(
+                HHPN="620100L00-011-G",
+                MfrPN="CC0402JRNPO9BN220",
+                Qty="7387",
+                DateCode="122625",
+                LotCode="8904936031",
+                PkgID="SVYU00125TP4LCR02_2",
+            )
         )
 
         assert result.decision == BarcodeDecisionType.OK
-        assert result.barcode == "LOTABC123"
-        assert result.barcodes == ["LOTABC123", "20260409", "PN001"]
+        assert result.pkg_id == "SVYU00125TP4LCR02_2"
+        assert len(result.barcodes) == 6
 
     def test_decide_invalid_barcode(self):
-        """测试无效条码判定为 INVALID。"""
-        result = barcode_decision_service.evaluate_scan(lot_code="AB")
+        """测试无效 PkgID 判定为 INVALID。"""
+        result = barcode_decision_service.evaluate(
+            SixInOne(
+                HHPN="620100L00-011-G",
+                MfrPN="CC0402JRNPO9BN220",
+                Qty="7387",
+                DateCode="122625",
+                LotCode="8904936031",
+                PkgID="AB",
+            )
+        )
 
         assert result.decision == BarcodeDecisionType.INVALID
         assert result.reason_code == "BARCODE_INVALID"
 
     def test_decide_business_ng_barcode(self):
-        """测试命中业务规则的条码判定为 NG。"""
-        result = barcode_decision_service.evaluate_scan(
-            lot_code="LOTSIZENG",
-            date_code="20260409",
+        """测试命中业务规则的 PkgID 判定为 NG。"""
+        result = barcode_decision_service.evaluate(
+            SixInOne(
+                HHPN="620100L00-011-G",
+                MfrPN="CC0402JRNPO9BN220",
+                Qty="7387",
+                DateCode="122625",
+                LotCode="8904936031",
+                PkgID="LOTSIZENG_001",
+            )
         )
 
         assert result.decision == BarcodeDecisionType.NG

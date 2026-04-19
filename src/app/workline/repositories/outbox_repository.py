@@ -108,6 +108,31 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         await db.flush()
         return outbox
 
+    async def mark_as_acked_by_dispatch_key(
+        self,
+        db: AsyncSession,
+        dispatch_key: str,
+    ) -> WorklineOutbox | None:
+        """按 dispatch_key 标记消息为已确认。
+
+        用于设备执行结果通过 callback/result 回到 WES 后，
+        将对应的 DEVICE_COMMAND outbox 从 SENT 闭环到 ACKED。
+        """
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+
+        if outbox.status in {OutboxStatus.FAILED, OutboxStatus.CANCELLED}:
+            return outbox
+
+        outbox.status = OutboxStatus.ACKED
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
     async def mark_as_failed(
         self,
         db: AsyncSession,

@@ -185,29 +185,26 @@ class TestRedisDistributedLockDegradation:
 
     @pytest.mark.asyncio
     async def test_fallback_to_postgres_lock_on_redis_failure(self):
-        """测试 Redis 故障时降级到 PostgreSQL 行锁"""
+        """测试 Redis 故障时降级到 PostgreSQL 事务级 advisory lock。"""
         mock_redis = AsyncMock()
         mock_redis.set = AsyncMock(side_effect=ConnectionError("Redis unavailable"))
 
         mock_db = AsyncMock()
-        # 模拟 PostgreSQL 行锁成功
         mock_db.execute = AsyncMock()
-        mock_db.fetchval = AsyncMock(return_value=True)
 
         lock = RedisDistributedLock(
             redis_client=mock_redis,
             key_prefix="workline:",
             fallback_to_pg=True,
-            pg_lock_func="pg_advisory_lock",
         )
 
         async with lock.acquire("session:789", db=mock_db):
             pass
 
-        # 验证尝试了 Redis 锁
         mock_redis.set.assert_called_once()
-        # 验证降级到 PostgreSQL 锁
-        assert mock_db.execute.call_count >= 1 or mock_db.fetchval.call_count >= 1
+        statements = [str(call.args[0]) for call in mock_db.execute.call_args_list]
+        assert len(statements) == 1
+        assert "pg_advisory_xact_lock" in statements[0]
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_disabled(self):
@@ -224,6 +221,57 @@ class TestRedisDistributedLockDegradation:
         with pytest.raises(LockAcquireError, match="Redis unavailable"):
             async with lock.acquire("session:abc"):
                 pass
+
+    @pytest.mark.asyncio
+    async def test_pg_lock_uses_stable_resource_id(self):
+        """测试 PostgreSQL 回退使用稳定资源 ID，避免跨进程 hash 漂移。"""
+        mock_db = MagicMock()
+        mock_db.execute = AsyncMock()
+
+        lock = RedisDistributedLock(redis_client=AsyncMock(), key_prefix="workline:")
+
+        await lock._pg_lock_acquire(mock_db, "session:stable")
+        await lock._pg_lock_release(mock_db, "session:stable")
+        await lock._pg_lock_acquire(mock_db, "session:stable")
+
+        statements = [str(call.args[0]) for call in mock_db.execute.call_args_list]
+        assert len(statements) == 2
+        assert statements[0] == statements[1]
+        assert "pg_advisory_xact_lock" in statements[0]
+
+    @pytest.mark.asyncio
+    async def test_pg_xact_lock_release_is_noop(self):
+        """事务级 advisory lock 不应再手动发 unlock。"""
+        mock_db = MagicMock()
+        mock_db.execute = AsyncMock()
+
+        lock = RedisDistributedLock(redis_client=AsyncMock(), key_prefix="workline:")
+
+        await lock._pg_lock_release(mock_db, "session:noop")
+
+        mock_db.execute.assert_not_called()
+
+
+class TestOrchestratorPgFallbackProvider:
+    """worker 层 PG fallback provider 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_build_orchestrator_lock_provider_uses_xact_lock_without_unlock(self):
+        """Redis 缺席时，worker provider 应使用事务级 advisory lock，且不再手动 unlock。"""
+        from src.celery_app.tasks.workline import _build_orchestrator_lock_provider
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock()
+
+        with patch("src.celery_app.tasks.workline.get_redis", return_value=None):
+            provider = _build_orchestrator_lock_provider(mock_db)
+            async with provider("session:provider"):
+                pass
+
+        statements = [str(call.args[0]) for call in mock_db.execute.call_args_list]
+        assert len(statements) == 1
+        assert "pg_advisory_xact_lock" in statements[0]
+        assert "pg_advisory_unlock" not in statements[0]
 
 
 class TestRedisDistributedLockContext:

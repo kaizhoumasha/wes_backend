@@ -243,6 +243,7 @@
 | `app.py` | Celery 应用实例 | 📚 参考资料 |
 | `config.py` | Celery 配置 | 📚 参考资料 |
 | `tasks/core.py` | 核心后台任务 | 📚 参考资料 |
+| `tasks/workline.py` | 作业线 Celery 任务入口（Inbox 消费、Outbox 派发、Phase 2 effect handlers；消费 supports_command_types / maintenance_mode / callback_path） | 🔧 架构核心 |
 
 ---
 
@@ -329,12 +330,14 @@
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
 | `models/` | `inbox.py` | WorklineInbox/Outbox 收发件箱模型 | 🔧 架构核心 |
-| | `session.py` | WorklineSession 会话模型 | 🔧 架构核心 |
+| | `session.py` | WorklineSession 会话模型（含等待态、trace 锚点、ingress_count、last_request_id/last_ingress_at） | 🔧 架构核心 |
 | | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
+| | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（inbox_repository） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
-| | `__init__.py` | Service 导出（inbox_service） | 🔧 架构核心 |
+| | `trace_query_service.py` | TraceQueryService（只读 TRACE 聚合查询：callback / inbox / session / command / outbox / timeline） | 🔧 架构核心 |
+| | `__init__.py` | Service 导出（inbox_service / trace_query_service） | 🔧 架构核心 |
 
 **核心设计模式**：
 - **Inbox 模式**：统一编排入口（设备事件、指令结果、超时、人工操作）
@@ -353,14 +356,22 @@
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架） | 🔧 架构核心 |
+| `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架；含标准化命令结果公共 helper，如 envelope / failure 解析） | 🔧 架构核心 |
 | `payloads.py` | 共享 Payload 定义（Pydantic 模型） | 🔄 常用功能 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
-| `plugin_context.py` | 插件上下文（依赖注入） | 🔧 架构核心 |
+| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
+| `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
 | `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
-| `orchestrator.py` | 编排器服务（锁、事务、派发） | 🔧 架构核心 |
+| `orchestrator.py` | 编排器服务（READ 阶段编排、插件执行、错误标准化） | 🔧 架构核心 |
 | `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
-| `state_machine.py` | 状态机基类（SmtClassifierStageMachine 等） | 🔧 架构核心 |
+| `plugin_sdk/` | 插件 SDK（标准化输入、运行时配置、分类器） | 🔧 架构核心 |
+| `diagnostics/` | 统一诊断模型、错误码、软件/硬件问题分类 | 🔧 架构核心 |
+
+#### 🧩 作业线插件实现 (src/workline_plugins/)
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `smt_classifier/plugin.py` | 当前标准化改造样板插件：保留业务状态机与 data parser，本地只承载业务语义 helper，复用 `plugin_base` 的公共标准结果解析能力 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
@@ -383,11 +394,11 @@
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `callback_log.py` | 回调日志模型 | 🔧 架构核心 |
+| `models/` | `callback_log.py` | 回调入口日志模型（ingress audit；记录 request_id、ingress_outcome、failure_stage，不复制 workflow trace 事实） | 🔧 架构核心 |
 | | `event.py` | 回调事件模型 | 🔧 架构核心 |
 | `repositories/` | `callback_log_repository.py` | 回调日志仓库 | 🔧 架构核心 |
 | `services/` | `callback_service.py` | 回调处理服务 | 🔧 架构核心 |
-| `v1/` | `callback.py` | 回调 API 路由 | 🔧 架构核心 |
+| `v1/` | `callback.py` | 回调 API 路由（入口校验、early return logging、request_id 入口锚点） | 🔧 架构核心 |
 
 #### 📡 设备模块 (src/app/device/)
 
@@ -395,7 +406,7 @@
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `device.py` | 设备模型 | 🔧 架构核心 |
+| `models/` | `device.py` | 设备模型（能力声明、通信治理、诊断配置） | 🔧 架构核心 |
 | | `command.py` | 设备指令模型 | 🔧 架构核心 |
 | `repositories/` | `device_repository.py` | 设备仓库 | 🔧 架构核心 |
 | | `command_repository.py` | 指令仓库 | 🔧 架构核心 |

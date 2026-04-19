@@ -16,7 +16,7 @@ from sqlalchemy import JSON, Column, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
-from src.core.mixins import BaseMixin, DataTableMixin, SoftDeleteMixin
+from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -209,21 +209,27 @@ class WorklineSessionBase(BaseMixin):
         description="失败消息",
     )
 
-    retry_count: int = Field(
-        default=0,
-        ge=0,
-        description="重试次数",
+    ingress_count: int = Field(
+        default=1,
+        ge=1,
+        description="入口命中次数（同一 DEVICE_EVENT 命中并复用会话时递增）",
+    )
+
+    last_request_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description="最近一次入口请求 ID（对齐 callback_logs.request_id / inbox.source_message_id）",
+    )
+
+    last_ingress_at: datetime | None = Field(
+        default=None,
+        description="最近一次入口命中时间",
     )
 
     # 追溯辅助字段（不设置外键，避免循环依赖）
     last_inbox_id: int | None = Field(
         default=None,
         description="最后处理的 Inbox ID（便于重放）",
-    )
-
-    last_decision_id: int | None = Field(
-        default=None,
-        description="最后一次决策 ID（便于排障和回溯）",
     )
 
 
@@ -233,7 +239,6 @@ class WorklineSessionBase(BaseMixin):
 class WorklineSession(
     WorklineSessionBase,
     DataTableMixin,
-    SoftDeleteMixin,
     table=True,
 ):
     """
@@ -248,7 +253,7 @@ class WorklineSession(
     - status: 会话状态（由插件状态机管理）
     - context_json: 插件自定义上下文
     - awaiting_command_id: 当前等待的设备指令
-    - last_inbox_id/last_decision_id: 追溯辅助字段
+    - last_inbox_id: 追溯辅助字段
 
     状态机:
         NEW → RUNNING → WAITING_* → COMPLETED

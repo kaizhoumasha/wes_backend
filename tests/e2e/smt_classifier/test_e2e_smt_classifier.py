@@ -222,10 +222,12 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
         assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.code == "BARCODE_INVALID"
+        assert result.failure is None
+        assert result.commands
+        assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_PICK_PLACE
 
-        logger.info(f"✓ 测试通过: 正确识别无效条码, failure={result.failure.message}")
+        logger.info("✓ 测试通过: 无效条码进入 NG 分流并等待设备结果")
 
     @pytest.mark.asyncio
     async def test_scan_incomplete_barcode_stops_forward_flow(
@@ -255,11 +257,11 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         result = await plugin.on_device_event(mock_plugin_context, mock_inbox)
 
         assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.code == "BARCODE_INCOMPLETE"
+        assert result.failure is None
         assert result.commands
         assert result.commands[0].action == "PICK_AND_PUT"
         assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
+        assert result.context_patch["step_code"] == SmtClassifierState.WAITING_PICK_PLACE
 
     @pytest.mark.asyncio
     async def test_pick_success_flow(

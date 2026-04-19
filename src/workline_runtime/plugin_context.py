@@ -9,9 +9,76 @@ PluginContext - 插件上下文
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
+from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
+from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
+from src.workline_runtime.trace_context import TraceContext
+
+
+def _safe_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_workline_for_runtime(workline: Any) -> Any:
+    if workline is None:
+        return None
+
+    line_type = getattr(workline, "line_type", None)
+    line_type_value = getattr(line_type, "value", line_type)
+    return SimpleNamespace(
+        id=_safe_int(getattr(workline, "id", None)),
+        line_code=_safe_str(getattr(workline, "line_code", None)),
+        line_name=_safe_str(getattr(workline, "line_name", None)),
+        line_type=_safe_str(line_type_value),
+        plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
+        contract_version=_safe_str(getattr(workline, "contract_version", None)),
+        config=_safe_dict(getattr(workline, "config", None)),
+        runtime_config_json=_safe_dict(getattr(workline, "runtime_config_json", None)),
+        owner_team=_safe_str(getattr(workline, "owner_team", None)),
+        support_contact=_safe_str(getattr(workline, "support_contact", None)),
+        diagnostic_profile=_safe_dict(getattr(workline, "diagnostic_profile", None)),
+    )
+
+
+def _normalize_device_protocol(device: Any) -> str | None:
+    protocol_value = getattr(device, "protocol", None)
+    return _safe_str(getattr(protocol_value, "value", protocol_value))
+
+
+def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
+    if device is None:
+        return None
+
+    return SimpleNamespace(
+        id=_safe_int(getattr(device, "id", None)),
+        device_code=_safe_str(getattr(device, "device_code", None)),
+        device_name=_safe_str(getattr(device, "device_name", None)),
+        device_role=_safe_str(getattr(device, "device_role", None)),
+        work_line_id=_safe_int(getattr(device, "work_line_id", None)) or _safe_int(getattr(workline, "id", None)),
+        protocol=_normalize_device_protocol(device),
+        host=_safe_str(getattr(device, "host", None)),
+        port=_safe_int(getattr(device, "port", None)),
+        timeout=_safe_int(getattr(device, "timeout", None)),
+        callback_path=_safe_str(getattr(device, "callback_path", None)),
+        maintenance_mode=bool(getattr(device, "maintenance_mode", False)),
+        capabilities_json=_safe_dict(getattr(device, "capabilities_json", None)),
+        diagnostic_profile=_safe_dict(getattr(device, "diagnostic_profile", None)),
+    )
 
 
 class PluginContext(BaseModel):
@@ -22,19 +89,10 @@ class PluginContext(BaseModel):
     - 设备映射
     - 追踪信息
     - 配置
+    - 解析后的运行时快照
+    - 标准化输入与诊断上下文
     - 服务依赖
     - 工具（logger, clock）
-
-    Attributes:
-        workline: 工作线实体
-        session: Session 实体
-        devices_by_role: 按角色分组的设备映射
-        correlation_id: 关联 ID（用于日志串联）
-        config: 工作线配置（由插件模型验证）
-        binding_config: 设备绑定配置
-        services: 领域服务容器
-        logger: 日志器
-        clock: 时钟函数（用于测试注入）
     """
 
     # 核心实体
@@ -43,11 +101,15 @@ class PluginContext(BaseModel):
     devices_by_role: dict[str, list[Any]]  # dict[str, list[Device]]
 
     # 追踪信息
+    trace: TraceContext = Field(default_factory=TraceContext)
     correlation_id: str
 
     # 配置
     config: dict[str, Any]  # 工作线配置（由插件模型验证）
     binding_config: dict[str, Any]  # 设备绑定配置
+    runtime: ResolvedExecutionContext  # 解析后的统一运行时配置
+    normalized_input: Any | None = None  # 标准化后的 inbox 输入
+    diagnostics: DiagnosticContext | None = None  # 统一诊断上下文
 
     # 服务依赖
     services: Any  # DomainServices - 领域服务容器
@@ -59,43 +121,13 @@ class PluginContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def get_device_by_role(self, role: str, index: int = 0) -> Any | None:
-        """按角色和序号获取设备
-
-        Args:
-            role: 设备角色 (SCANNER, CONVEYOR, etc.)
-            index: 设备序号（默认 0）
-
-        Returns:
-            Device 或 None（未找到时）
-
-        Example:
-            scanner = ctx.get_device_by_role("SCANNER")
-            second_scanner = ctx.get_device_by_role("SCANNER", index=1)
-        """
+        """按角色和序号获取设备"""
         devices = self.devices_by_role.get(role, [])
         return devices[index] if index < len(devices) else None
 
 
 class PluginContextBuilder:
-    """PluginContext 构建器
-
-    编排器使用此构建器创建 PluginContext 实例，传递给插件执行。
-
-    构建器负责：
-    - 从 WorkLine 实体提取 config
-    - 提供默认的 logger 和 clock
-    - 组装所有上下文信息
-
-    Example:
-        builder = PluginContextBuilder()
-        ctx = builder.build(
-            session=session,
-            workline=workline,
-            devices_by_role=devices_by_role,
-            services=services,
-            correlation_id="corr-123",
-        )
-    """
+    """PluginContext 构建器"""
 
     def build(
         self,
@@ -107,22 +139,10 @@ class PluginContextBuilder:
         logger: logging.Logger | None = None,
         clock: Callable[[], datetime] | None = None,
         binding_config: dict[str, Any] | None = None,
+        inbox: Any | None = None,
+        trace: TraceContext | None = None,
     ) -> PluginContext:
-        """构建插件上下文
-
-        Args:
-            session: WorklineSession 实体
-            workline: WorkLine 实体
-            devices_by_role: 按角色分组的设备映射
-            services: 领域服务容器
-            correlation_id: 关联 ID（用于日志串联）
-            logger: 日志器（可选，默认使用 workline_runtime logger）
-            clock: 时钟函数（可选，默认使用 datetime.now）
-            binding_config: 设备绑定配置（可选，默认空字典）
-
-        Returns:
-            构建好的 PluginContext 实例
-        """
+        """构建插件上下文"""
         # 只接受真实 dict，避免 MagicMock 等测试替身被错误当作配置对象
         raw_config = getattr(workline, "config", None)
         config = cast("dict[str, Any]", raw_config) if isinstance(raw_config, dict) else {}
@@ -137,13 +157,46 @@ class PluginContextBuilder:
         if binding_config is None:
             binding_config = {}
 
+        resolved_trace = trace or TraceContext.from_runtime(
+            session=session,
+            workline=workline,
+            inbox=inbox,
+            correlation_id=correlation_id,
+        )
+        if inbox is not None:
+            resolved_trace = resolved_trace.with_inbox(inbox)
+
+        runtime_workline = _normalize_workline_for_runtime(workline)
+        runtime_devices_by_role = {
+            role: [_normalize_device_for_runtime(device, runtime_workline) for device in devices]
+            for role, devices in devices_by_role.items()
+        }
+        runtime = resolve_execution_context(runtime_workline, runtime_devices_by_role)
+        normalized_input = None
+        if inbox is not None:
+            normalized_input = normalize_inbox_input(
+                inbox,
+                correlation_id=resolved_trace.correlation_id or correlation_id,
+            )
+        diagnostics = build_diagnostic_context(
+            trace=resolved_trace,
+            session=session,
+            inbox=inbox,
+            workline=workline,
+            canonical_event_type=getattr(normalized_input, "canonical_event_type", None),
+        )
+
         return PluginContext(
             workline=workline,
             session=session,
             devices_by_role=devices_by_role,
-            correlation_id=correlation_id,
+            trace=resolved_trace,
+            correlation_id=resolved_trace.correlation_id or correlation_id or "",
             config=config,
             binding_config=binding_config,
+            runtime=runtime,
+            normalized_input=normalized_input,
+            diagnostics=diagnostics,
             services=services,
             logger=logger,
             clock=clock,

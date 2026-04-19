@@ -21,7 +21,7 @@ from sqlmodel import Field, Relationship
 from src.app.device.models.device import (
     Device,  # noqa: TC001 - runtime import ensures related device/workline metadata loads
 )
-from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
+from src.core.mixins import AuditableMixin, BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
@@ -192,8 +192,7 @@ class CommandAck(BaseMixin):
 
 class DeviceCommand(
     CommandBase,
-    EnterpriseMixin,
-    SoftDeleteMixin,
+    AuditableMixin,
     DataTableMixin,
     table=True,
 ):
@@ -391,7 +390,7 @@ class DeviceCommandCreate(ModelFactory(CommandBase).for_create()):
     correlation_id: str | None = None
 
 
-class DeviceCommandUpdate(ModelFactory(CommandBase).for_optimistic_update()):
+class DeviceCommandUpdate(ModelFactory(CommandBase).for_update()):
     """设备指令更新 Schema"""
 
 

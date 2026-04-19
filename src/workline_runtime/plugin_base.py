@@ -81,6 +81,161 @@ class CommandResultPayload(BaseModel):
     result: str
 
 
+# ==================== 标准化输入辅助 ====================
+
+
+def _non_empty_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_event_route_type(ctx: Any, payload: dict[str, Any]) -> str | None:
+    """优先使用标准化 canonical_event_type，再回退原始 event_type。"""
+
+    normalized_input = getattr(ctx, "normalized_input", None)
+    canonical_event_type = _non_empty_str(getattr(normalized_input, "canonical_event_type", None))
+    if canonical_event_type:
+        return canonical_event_type
+    return _non_empty_str(payload.get("event_type")) or _non_empty_str(payload.get("message_type"))
+
+
+def _command_result_route_keys(ctx: Any, payload: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """生成命令结果分发候选键。
+
+    顺序体现兼容策略：
+    1. 原始供应商结果（保持现有插件行为）
+    2. 标准化结果（便于新插件直接按统一语义编写）
+    3. 标准化失败语义回落到 legacy FAILED（兼容旧插件）
+    4. 无 result 限定兜底
+    """
+
+    normalized_input = getattr(ctx, "normalized_input", None)
+    command_type = (
+        _non_empty_str(getattr(normalized_input, "command_type", None))
+        or _non_empty_str(payload.get("command_type"))
+        or _non_empty_str(payload.get("task_type"))
+    )
+    if not command_type:
+        return []
+
+    source_result = _non_empty_str(getattr(normalized_input, "source_result", None)) or _non_empty_str(
+        payload.get("result")
+    )
+    normalized_result = _non_empty_str(getattr(normalized_input, "normalized_result", None))
+
+    keys: list[tuple[str, str | None]] = []
+
+    def _append(result_value: str | None) -> None:
+        key = (command_type, result_value)
+        if key not in keys:
+            keys.append(key)
+
+    _append(source_result)
+    _append(normalized_result)
+
+    if normalized_result in {"TERMINAL_FAILURE", "RETRYABLE_FAILURE"}:
+        _append("FAILED")
+
+    _append(None)
+    return keys
+
+
+# 下面两个 helper 属于“标准化 runtime 结构规则”，适合放在 plugin_base 复用：
+# - 它们只解析 NormalizedCommandResult 的公共结构，不携带任何插件业务语义
+# - 只有这类跨插件稳定成立的规则才应该上移到基类
+# - 具体业务错误文案、状态机分支、data 解析仍应留在各自插件内部
+
+
+def resolve_normalized_command_envelope(result: Any) -> tuple[str, str] | None:
+    """解析标准化命令结果的最小包络字段。"""
+
+    command_code = _non_empty_str(getattr(result, "command_code", None))
+    device_code = _non_empty_str(getattr(result, "device_code", None))
+    if command_code and device_code:
+        return command_code, device_code
+    return None
+
+
+def resolve_normalized_command_failure(
+    result: Any,
+    *,
+    default_code: str,
+    default_message: str,
+) -> tuple[str, str]:
+    """从标准化命令结果中提取失败错误码与错误信息。"""
+
+    payload = ensure_dict(getattr(result, "payload", None))
+    error_detail = ensure_dict(getattr(result, "error_detail", None))
+    error_code = _non_empty_str(error_detail.get("error_code")) or _non_empty_str(payload.get("error_code"))
+    error_message = _non_empty_str(error_detail.get("error_message")) or _non_empty_str(payload.get("error_message"))
+    return error_code or default_code, error_message or default_message
+
+
+def _merge_handler_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """合并 typed handler 常用的顶层与嵌套 payload 结构。"""
+
+    merged_payload: dict[str, Any] = dict(payload)
+    for nested_key in ("data", "error_detail"):
+        nested_payload = ensure_dict(payload.get(nested_key))
+        if nested_payload:
+            merged_payload.update(nested_payload)
+    return merged_payload
+
+
+def _resolve_handler_param_type(
+    handler: Callable[..., Any],
+    *,
+    param_name: str,
+    annotation: Any,
+) -> Any:
+    """解析 handler 参数类型，兼容字符串前向引用。"""
+
+    if not isinstance(annotation, str):
+        return annotation
+
+    try:
+        handler_module = inspect.getmodule(handler)
+        local_ns = getattr(handler_module, "__dict__", {}) if handler_module else {}
+        type_hints = typing.get_type_hints(handler, localns=local_ns)
+        return type_hints.get(param_name, annotation)
+    except Exception:
+        # get_type_hints 失败（通常是 TYPE_CHECKING 块内的类型）
+        # 尝试从 handler 的全局命名空间直接查找
+        return handler.__globals__.get(annotation, annotation)
+
+
+def _resolve_handler_model_arg(
+    ctx: Any,
+    inbox: Any,
+    payload: dict[str, Any],
+    param_type: type[BaseModel],
+) -> BaseModel:
+    """优先将标准化输入注入给 typed handler，其次回退原始 payload 解析。
+
+    这样可以让现有装饰器插件逐步迁移到标准化输入模型，而不需要一次性重写整套插件框架。
+    即使测试里没有显式构造 `ctx.normalized_input`，也尽量按 inbox 自动补一份标准化输入，
+    保持 typed handler 的调用行为稳定。
+    """
+
+    normalized_input = getattr(ctx, "normalized_input", None)
+    if isinstance(normalized_input, param_type):
+        return normalized_input
+
+    try:
+        from src.workline_runtime.plugin_sdk import normalize_inbox_input
+
+        normalized_candidate = normalize_inbox_input(
+            inbox,
+            correlation_id=_non_empty_str(getattr(ctx, "correlation_id", None)) or "",
+        )
+        if isinstance(normalized_candidate, param_type):
+            return normalized_candidate
+    except Exception:
+        # 标准化输入构建失败时，继续回退到原始 payload 解析。
+        pass
+
+    return param_type.model_validate(_merge_handler_payload(payload))
+
+
 # ==================== 装饰器 ====================
 
 
@@ -336,9 +491,9 @@ class WorklinePlugin:
                 cls._timeout_handler = method
 
     async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """设备事件处理 - 自动路由到标记的方法"""
+        """设备事件处理 - 优先按标准化 canonical_event_type 路由。"""
         payload = inbox.payload_json or {}
-        event_type = payload.get("event_type")
+        event_type = _resolve_event_route_type(ctx, payload)
 
         if event_type and event_type in self._event_handlers:
             handler = self._event_handlers[event_type]
@@ -348,27 +503,21 @@ class WorklinePlugin:
         return PluginResult()
 
     async def on_command_result(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """命令结果处理 - 自动路由到标记的方法"""
+        """命令结果处理 - 兼容原始结果与标准化结果语义。"""
         payload = inbox.payload_json or {}
-        command_type: str | None = payload.get("command_type") or payload.get("task_type")
-        result: str | None = payload.get("result")
+        route_keys = _command_result_route_keys(ctx, payload)
 
-        if not command_type:
+        if not route_keys:
             ctx.logger.warning("No command_type in payload")
             return PluginResult()
 
-        # 精确匹配（command_type + result）
-        key = (command_type, result)
-        if key in self._command_handlers:
-            handler = self._command_handlers[key]
-            return await self._invoke_handler(handler, ctx, inbox, payload)
+        for key in route_keys:
+            if key in self._command_handlers:
+                handler = self._command_handlers[key]
+                return await self._invoke_handler(handler, ctx, inbox, payload)
 
-        # 模糊匹配（command_type + None）
-        key_fuzzy = (command_type, None)
-        if key_fuzzy in self._command_handlers:
-            handler = self._command_handlers[key_fuzzy]
-            return await self._invoke_handler(handler, ctx, inbox, payload)
-
+        command_type = route_keys[0][0]
+        result = _non_empty_str(payload.get("result"))
         ctx.logger.warning(f"No handler for command_type={command_type}, result={result}")
         return PluginResult()
 
@@ -419,28 +568,11 @@ class WorklinePlugin:
         args: list[Any] = [self, ctx]
 
         if len(params) >= 3:
-            param_type = params[2].annotation
-            # 处理 from __future__ import annotations 导致的字符串前向引用
-            if isinstance(param_type, str):
-                # 先尝试 get_type_hints，失败则从 handler.__globals__ 查找
-                try:
-                    handler_module = inspect.getmodule(handler)
-                    local_ns = getattr(handler_module, "__dict__", {}) if handler_module else {}
-                    type_hints = typing.get_type_hints(handler, localns=local_ns)
-                    param_type = type_hints.get(params[2].name, param_type)
-                except Exception:
-                    # get_type_hints 失败（通常是 TYPE_CHECKING 块内的类型）
-                    # 尝试从 handler 的全局命名空间直接查找
-                    param_type = handler.__globals__.get(param_type, param_type)
+            param = params[2]
+            param_type = _resolve_handler_param_type(handler, param_name=param.name, annotation=param.annotation)
             if param_type and inspect.isclass(param_type) and issubclass(param_type, BaseModel):
-                # Pydantic 自动解析
-                # 合并 payload 顶层字段 + data 子对象 + error_detail 子对象，支持嵌套 payload 结构
-                merged_payload: dict[str, Any] = dict(payload)
-                for nested_key in ("data", "error_detail"):
-                    merged_payload.update(ensure_dict(payload.get(nested_key)))
                 try:
-                    parsed = param_type.model_validate(merged_payload)
-                    args.append(parsed)
+                    args.append(_resolve_handler_model_arg(ctx, inbox, payload, param_type))
                 except Exception as e:
                     ctx.logger.exception("Payload validation failed")
                     return PluginResult(
@@ -478,5 +610,7 @@ __all__ = [
     "on_command",
     "on_event",
     "on_timeout",
+    "resolve_normalized_command_envelope",
+    "resolve_normalized_command_failure",
     "step",
 ]
