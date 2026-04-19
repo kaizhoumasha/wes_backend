@@ -70,3 +70,83 @@ def test_to_dict_uses_schema_serialization_to_keep_roles_for_tree_schema() -> No
     assert result["roles"][0]["id"] == 7
     assert result["roles"][0]["name"] == "admin"
     assert result["children"] == []
+
+
+def test_menu_tree_response_preserves_recursive_children() -> None:
+    payload = {
+        "id": 1,
+        "name": "menu:1",
+        "title": "Root",
+        "path": "/root",
+        "component": None,
+        "icon": None,
+        "parent_id": None,
+        "tree_path": "/1/",
+        "level": 1,
+        "sort_order": 10,
+        "has_children": True,
+        "version": 0,
+        "roles": [],
+        "is_hidden": False,
+        "children": [
+            {
+                "id": 2,
+                "name": "menu:2",
+                "title": "Child",
+                "path": "/root/child",
+                "component": None,
+                "icon": None,
+                "parent_id": 1,
+                "tree_path": "/1/2/",
+                "level": 2,
+                "sort_order": 20,
+                "has_children": True,
+                "version": 0,
+                "roles": [],
+                "is_hidden": False,
+                "children": [
+                    {
+                        "id": 3,
+                        "name": "menu:3",
+                        "title": "Grandchild",
+                        "path": "/root/child/grandchild",
+                        "component": None,
+                        "icon": None,
+                        "parent_id": 2,
+                        "tree_path": "/1/2/3/",
+                        "level": 3,
+                        "sort_order": 30,
+                        "has_children": True,
+                        "version": 0,
+                        "roles": [],
+                        "is_hidden": False,
+                        "children": [
+                            {
+                                "id": 4,
+                                "name": "menu:4",
+                                "title": "Great Grandchild",
+                                "path": "/root/child/grandchild/great-grandchild",
+                                "component": None,
+                                "icon": None,
+                                "parent_id": 3,
+                                "tree_path": "/1/2/3/4/",
+                                "level": 4,
+                                "sort_order": 40,
+                                "has_children": False,
+                                "version": 0,
+                                "roles": [],
+                                "is_hidden": False,
+                                "children": [],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = MenuTreeResponse.model_validate(payload)
+    dumped = result.model_dump(mode="json")
+
+    assert result.children[0].children[0].children[0].id == 4
+    assert dumped["children"][0]["children"][0]["children"][0]["id"] == 4
