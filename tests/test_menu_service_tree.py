@@ -47,6 +47,21 @@ def test_build_tree_returns_menu_tree_response_with_children() -> None:
     assert [child.id for child in tree[0].children] == [3, 4]
 
 
+def test_build_tree_uses_id_as_stable_tie_breaker_when_sort_order_matches() -> None:
+    service = MenuService()
+    menus = [
+        _menu(22, parent_id=9, sort_order=0, title="Child B", path="/root/child-b"),
+        _menu(10, parent_id=None, sort_order=0, title="Root B", path="/root-b"),
+        _menu(21, parent_id=9, sort_order=0, title="Child A", path="/root/child-a"),
+        _menu(9, parent_id=None, sort_order=0, title="Root A", path="/root-a"),
+    ]
+
+    tree = service._build_tree(menus)
+
+    assert [node.id for node in tree] == [9, 10]
+    assert [child.id for child in tree[0].children] == [21, 22]
+
+
 def test_build_tree_keeps_orphan_node_visible_as_root() -> None:
     service = MenuService()
     menus = [

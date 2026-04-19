@@ -375,11 +375,12 @@ class TreeRepository[T](BaseRepository[T]):
                 where_clauses.append(cast("FilterClause", is_deleted_attr == False))  # noqa: E712
 
         sort_order_attr = self.model.sort_order  # type: ignore[attr-defined]
+        id_attr = self.model.id  # type: ignore[attr-defined]
         _, children = await self.get_list(
             db,
             limit=1000,
             where_clauses_raw=where_clauses,
-            order_by_raw=[sort_order_attr],
+            order_by_raw=[sort_order_attr, id_attr],
             schema=schema,
             max_depth=relation_max_depth,
         )

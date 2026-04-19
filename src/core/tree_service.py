@@ -38,6 +38,23 @@ class TreeServiceMixin[M]:
     def _exclude_node(items: list[Any], node_id: int) -> list[Any]:
         return [item for item in items if getattr(item, "id", None) != node_id]
 
+    @staticmethod
+    def _tree_sort_key(item: dict[str, Any]) -> tuple[int, int]:
+        sort_order = item.get("sort_order")
+        item_id = item.get("id")
+        return (
+            sort_order if isinstance(sort_order, int) else 0,
+            item_id if isinstance(item_id, int) else 0,
+        )
+
+    def _sort_tree_nodes(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nodes.sort(key=self._tree_sort_key)
+        for node in nodes:
+            children = node.get("children")
+            if isinstance(children, list):
+                self._sort_tree_nodes(children)
+        return nodes
+
     async def get_tree(
         self,
         db: AsyncSession,
@@ -216,7 +233,7 @@ class TreeServiceMixin[M]:
             else:
                 root_nodes.append(item)
 
-        return root_nodes
+        return self._sort_tree_nodes(root_nodes)
 
     async def get_siblings(
         self,

@@ -44,6 +44,27 @@ class _FakeTreeService(TreeServiceMixin[object], BaseService[object, _FakeRepo])
         return {"id": getattr(item, "id", None)}
 
 
+def test_build_tree_optimized_sorts_nodes_by_sort_order_then_id_recursively() -> None:
+    service = _FakeTreeService(_FakeRepo())
+    items = [
+        {"id": 40, "parent_id": 10, "sort_order": 20},
+        {"id": 2, "parent_id": None, "sort_order": 10},
+        {"id": 11, "parent_id": 2, "sort_order": 10},
+        {"id": 1, "parent_id": None, "sort_order": 10},
+        {"id": 12, "parent_id": 2, "sort_order": 10},
+        {"id": 10, "parent_id": 1, "sort_order": 20},
+        {"id": 30, "parent_id": 10, "sort_order": 20},
+        {"id": 20, "parent_id": 1, "sort_order": 20},
+    ]
+
+    tree = service._build_tree_optimized(items)
+
+    assert [node["id"] for node in tree] == [1, 2]
+    assert [child["id"] for child in tree[0]["children"]] == [10, 20]
+    assert [grandchild["id"] for grandchild in tree[0]["children"][0]["children"]] == [30, 40]
+    assert [child["id"] for child in tree[1]["children"]] == [11, 12]
+
+
 @pytest.mark.asyncio
 async def test_move_node_uses_repo_descendant_metadata_for_cache_invalidation() -> None:
     result = SimpleNamespace(id=10, _moved_descendant_ids=[11, 12])

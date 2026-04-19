@@ -26,6 +26,11 @@ def _menu_id(menu: Menu) -> int | None:
     return cast("int | None", getattr(cast("Any", menu), "id", None))
 
 
+def _menu_sort_key(menu: Menu) -> tuple[int, int]:
+    menu_id = _menu_id(menu)
+    return (menu.sort_order, menu_id if menu_id is not None else 0)
+
+
 class MenuRepository(TreeRepository[Menu]):
     """菜单 Repository（继承 TreeRepository 获得树形操作能力）"""
 
@@ -68,7 +73,7 @@ class MenuRepository(TreeRepository[Menu]):
             result = await db.execute(
                 select(Menu)
                 .where(Menu.is_deleted.is_(False))  # type: ignore[arg-type]
-                .order_by(Menu.sort_order)  # type: ignore[arg-type]
+                .order_by(Menu.sort_order, Menu.id)  # type: ignore[arg-type]
             )
             return result.scalars().all()  # type: ignore[return-value]
 
@@ -83,8 +88,7 @@ class MenuRepository(TreeRepository[Menu]):
                     menu_map[menu_id] = menu
 
         menus = list(menu_map.values())
-        # 按 sort_order 排序
-        menus.sort(key=lambda x: x.sort_order)
+        menus.sort(key=_menu_sort_key)
         return menus
 
 

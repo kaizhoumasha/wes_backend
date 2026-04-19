@@ -15,6 +15,9 @@ class _MenuLike(Protocol):
     @property
     def id(self) -> int | None: ...
 
+    @property
+    def sort_order(self) -> int: ...
+
 
 class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
     """菜单 Service（支持树形结构和 CRUD）"""
@@ -37,6 +40,10 @@ class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
 
         # 2. 构建树形结构
         return self._build_tree(menus)
+
+    @staticmethod
+    def _menu_sort_key(menu: _MenuLike) -> tuple[int, int]:
+        return (menu.sort_order, menu.id if menu.id is not None else 0)
 
     def _build_tree(self, menus: Sequence[_MenuLike]) -> list[MenuTreeResponseSimple]:
         """构建菜单树
@@ -69,10 +76,9 @@ class MenuService(TreeServiceMixin[Menu], BaseService[Menu, MenuRepository]):
                     # 兜底：父节点缺失时，避免菜单节点被静默丢弃
                     tree.append(menu_response)
 
-        # 按 sort_order 排序
         for menu_response in menu_map.values():
-            menu_response.children.sort(key=lambda x: x.sort_order)
-        tree.sort(key=lambda x: x.sort_order)
+            menu_response.children.sort(key=self._menu_sort_key)
+        tree.sort(key=self._menu_sort_key)
 
         return tree
 
