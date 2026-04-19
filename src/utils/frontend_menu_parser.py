@@ -14,6 +14,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FRONTEND_ROOT = BACKEND_ROOT.parent / "wes_frontend"
 ROUTE_FILE_RELATIVE_PATH = Path("src/router/index.ts")
+ROUTES_DIRECTORY_RELATIVE_PATH = Path("src/router/routes")
 
 _MENU_NAME_SUFFIXES = {"list", "page", "view", "detail", "form", "screen", "route", "index"}
 
@@ -80,7 +81,12 @@ def load_frontend_router_menus(frontend_path: str | Path | None = None) -> list[
         raise FileNotFoundError(f"前端路由文件不存在: {router_file}")
 
     source = router_file.read_text(encoding="utf-8")
-    return parse_frontend_router_menus(source)
+    try:
+        return parse_frontend_router_menus(source)
+    except ValueError as exc:
+        if "const routes" not in str(exc):
+            raise
+        return _load_frontend_router_menus_from_modules(frontend_root)
 
 
 def parse_frontend_router_menus(source: str) -> list[FrontendMenuDefinition]:
@@ -88,7 +94,41 @@ def parse_frontend_router_menus(source: str) -> list[FrontendMenuDefinition]:
 
     routes_array = _extract_routes_array(source)
     routes = [_parse_route_object(route_source) for route_source in _extract_route_objects_from_array(routes_array)]
+    return _build_menu_definitions(routes)
 
+
+def _load_frontend_router_menus_from_modules(frontend_root: Path) -> list[FrontendMenuDefinition]:
+    routes_dir = frontend_root / ROUTES_DIRECTORY_RELATIVE_PATH
+    if not routes_dir.exists():
+        raise FileNotFoundError(f"前端路由目录不存在: {routes_dir}")
+
+    module_exports = [
+        ("base.ts", ["shellBaseChildren"]),
+        ("admin.ts", ["adminRoutes"]),
+        ("biz.ts", ["bizRoutes"]),
+        ("api-auth.ts", ["apiAuthRoutes"]),
+        ("runtime.ts", ["runtimeRoutes"]),
+        ("logs.ts", ["logRoutes"]),
+    ]
+
+    routes: list[_RouteNode] = []
+    for file_name, export_names in module_exports:
+        module_path = routes_dir / file_name
+        if not module_path.exists():
+            continue
+
+        module_source = module_path.read_text(encoding="utf-8")
+        for export_name in export_names:
+            literal = _extract_exported_literal(module_source, export_name)
+            if literal.startswith("["):
+                routes.extend(_parse_route_object(item) for item in _extract_route_objects_from_array(literal))
+            else:
+                routes.append(_parse_route_object(literal))
+
+    return _build_menu_definitions(routes)
+
+
+def _build_menu_definitions(routes: list[_RouteNode]) -> list[FrontendMenuDefinition]:
     definitions: list[FrontendMenuDefinition] = []
     sort_counter = 0
 
@@ -130,6 +170,30 @@ def parse_frontend_router_menus(source: str) -> list[FrontendMenuDefinition]:
     walk(routes, parent_path="", inherited_auth=False, parent_menu_name=None)
     _validate_menu_definitions(definitions)
     return definitions
+
+
+def _extract_exported_literal(source: str, export_name: str) -> str:
+    match = re.search(rf"\bexport\s+const\s+{re.escape(export_name)}\b", source)
+    if not match:
+        raise ValueError(f"未找到导出常量: {export_name}")
+
+    equals_index = source.find("=", match.end())
+    if equals_index == -1:
+        raise ValueError(f"未找到 {export_name} 的赋值语句")
+
+    object_start = source.find("{", equals_index)
+    array_start = source.find("[", equals_index)
+    candidates = [index for index in (object_start, array_start) if index != -1]
+    if not candidates:
+        raise ValueError(f"未找到 {export_name} 的字面量")
+
+    literal_start = min(candidates)
+    if literal_start == object_start:
+        literal, _ = _extract_balanced(source, literal_start, "{", "}")
+        return literal
+
+    literal, _ = _extract_balanced(source, literal_start, "[", "]")
+    return literal
 
 
 def _extract_routes_array(source: str) -> str:

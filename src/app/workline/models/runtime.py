@@ -1,0 +1,347 @@
+"""运行监控与 Trace 查询响应模型。"""
+
+from __future__ import annotations
+
+from datetime import datetime  # noqa: TC003
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class TraceQueryRequest(BaseModel):
+    """Trace 列表查询请求。"""
+
+    workline_id: int | None = None
+    device_id: int | None = None
+    status: str | None = None
+    step_code: str | None = None
+    keyword: str | None = None
+    only_active: bool = False
+    only_failed: bool = False
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
+class RuntimeTraceListItem(BaseModel):
+    """Trace 列表项。"""
+
+    session_id: int
+    session_code: str
+    correlation_id: str | None = None
+    request_id: str | None = None
+    workline_id: int
+    workline_name: str | None = None
+    workline_code: str | None = None
+    device_id: int | None = None
+    device_name: str | None = None
+    device_code: str | None = None
+    command_code: str | None = None
+    status: str
+    step_code: str | None = None
+    current_wait_type: str | None = None
+    failure_domain: str | None = None
+    failure_code: str | None = None
+    latest_timeline_action: str | None = None
+    latest_timeline_status: str | None = None
+    latest_timeline_message: str | None = None
+    started_at: datetime | None = None
+    last_ingress_at: datetime | None = None
+    deadline_at: datetime | None = None
+    is_timed_out: bool = False
+
+
+class RuntimeTraceListResponse(BaseModel):
+    """Trace 列表响应。"""
+
+    total: int
+    items: list[RuntimeTraceListItem]
+
+
+class TraceOverviewSummary(BaseModel):
+    """Trace 详情页顶部摘要。"""
+
+    callback_logs: int = 0
+    inboxes: int = 0
+    commands: int = 0
+    outboxes: int = 0
+    timelines: int = 0
+    diagnostics: int = 0
+    session_status: str | None = None
+    step_code: str | None = None
+    current_wait_type: str | None = None
+    latest_timeline_action: str | None = None
+    latest_timeline_status: str | None = None
+    latest_timeline_message: str | None = None
+
+
+class TraceContextResponse(BaseModel):
+    request_id: str | None = None
+    correlation_id: str | None = None
+    workline_id: int | None = None
+    session_id: int | None = None
+    inbox_id: int | None = None
+    device_id: int | None = None
+    device_code: str | None = None
+    command_id: int | None = None
+    command_code: str | None = None
+    outbox_id: int | None = None
+    dispatch_key: str | None = None
+    canonical_event_type: str | None = None
+    transition: str | None = None
+    plugin_key: str | None = None
+    contract_version: str | None = None
+
+
+class TraceCallbackLogItem(BaseModel):
+    id: int
+    callback_type: str
+    device_id: str
+    request_id: str | None = None
+    correlation_id: str | None = None
+    response_status: int
+    response_time_ms: int
+    error_message: str | None = None
+    ingress_outcome: str | None = None
+    failure_stage: str | None = None
+    request_body: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class TraceInboxItem(BaseModel):
+    id: int
+    kind: str
+    source_system: str
+    source_message_id: str | None = None
+    workline_id: int | None = None
+    device_id: int | None = None
+    command_id: int | None = None
+    session_id: int | None = None
+    correlation_id: str | None = None
+    status: str
+    received_at: datetime
+    processed_at: datetime | None = None
+    attempt_count: int = 0
+    max_attempts: int = 0
+    next_retry_at: datetime | None = None
+    error_message: str | None = None
+    payload_json: dict[str, Any]
+
+
+class TraceSessionItem(BaseModel):
+    id: int
+    session_code: str
+    workline_id: int
+    plugin_key: str
+    run_mode: str
+    business_key: str | None = None
+    barcode: str | None = None
+    status: str
+    step_code: str | None = None
+    correlation_id: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    current_wait_type: str | None = None
+    current_wait_token: str | None = None
+    waiting_since: datetime | None = None
+    deadline_at: datetime | None = None
+    awaiting_command_id: int | None = None
+    failure_domain: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    ingress_count: int = 0
+    last_request_id: str | None = None
+    last_ingress_at: datetime | None = None
+    last_inbox_id: int | None = None
+    context_json: dict[str, Any]
+
+
+class TraceCommandItem(BaseModel):
+    id: int
+    device_id: int
+    command_code: str
+    correlation_id: str | None = None
+    workline_id: int | None = None
+    session_id: str | None = None
+    task_type: str
+    status: str
+    result: str | None = None
+    retry_count: int = 0
+    sent_at: datetime | None = None
+    ack_received_at: datetime | None = None
+    completed_at: datetime | None = None
+    ack_code: int | None = None
+    ack_message: str | None = None
+    ack_trace_id: str | None = None
+    step_code: str | None = None
+    params: dict[str, Any]
+    result_data: dict[str, Any] | None = None
+    error_detail: dict[str, Any] | None = None
+    duration_ms: int | None = None
+
+
+class TraceOutboxItem(BaseModel):
+    id: int
+    session_id: int | None = None
+    workline_id: int
+    dispatch_type: str
+    dispatch_key: str
+    target_type: str
+    target_code: str
+    status: str
+    attempt_count: int = 0
+    next_retry_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime
+    sent_at: datetime | None = None
+    finished_at: datetime | None = None
+    payload_json: dict[str, Any]
+
+
+class TraceTimelineItem(BaseModel):
+    id: int
+    session_id: int
+    workline_id: int
+    correlation_id: str | None = None
+    seq_no: int
+    occurred_at: datetime
+    stage: str
+    action_type: str
+    actor_type: str
+    actor_code: str | None = None
+    from_status: str | None = None
+    to_status: str | None = None
+    status: str
+    failure_domain: str | None = None
+    message: str | None = None
+    payload_json: dict[str, Any] | None = None
+    related_inbox_id: int | None = None
+    related_command_id: int | None = None
+
+
+class TraceDiagnosticContextItem(BaseModel):
+    request_id: str | None = None
+    correlation_id: str | None = None
+    session_id: int | None = None
+    inbox_id: int | None = None
+    outbox_id: int | None = None
+    command_code: str | None = None
+    device_code: str | None = None
+    workline_id: int | None = None
+    workline_code: str | None = None
+    plugin_key: str | None = None
+    canonical_event_type: str | None = None
+    transition: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class TraceDiagnosticItem(BaseModel):
+    request_id: str | None = None
+    correlation_id: str | None = None
+    session_id: int | None = None
+    inbox_id: int | None = None
+    outbox_id: int | None = None
+    command_code: str | None = None
+    device_code: str | None = None
+    workline_id: int | None = None
+    workline_code: str | None = None
+    plugin_key: str | None = None
+    canonical_event_type: str | None = None
+    transition: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class TraceDetailResponse(BaseModel):
+    trace: TraceContextResponse
+    summary: TraceOverviewSummary
+    session: TraceSessionItem | None = None
+    callback_logs: list[TraceCallbackLogItem] = Field(default_factory=list)
+    inboxes: list[TraceInboxItem] = Field(default_factory=list)
+    commands: list[TraceCommandItem] = Field(default_factory=list)
+    outboxes: list[TraceOutboxItem] = Field(default_factory=list)
+    timelines: list[TraceTimelineItem] = Field(default_factory=list)
+    diagnostics: list[TraceDiagnosticItem] = Field(default_factory=list)
+
+
+class RuntimeStatCard(BaseModel):
+    key: str
+    label: str
+    value: int
+    status: str = "info"
+
+
+class RuntimeOverviewResponse(BaseModel):
+    stats: list[RuntimeStatCard]
+    recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
+    hot_worklines: list[RuntimeWorklineSummary] = Field(default_factory=list)
+    abnormal_devices: list[RuntimeDeviceSummary] = Field(default_factory=list)
+
+
+class RuntimeWorklineSummary(BaseModel):
+    id: int
+    line_code: str
+    line_name: str
+    line_type: str
+    zone_name: str | None = None
+    plugin_key: str | None = None
+    contract_version: str | None = None
+    owner_team: str | None = None
+    support_contact: str | None = None
+    is_active: bool
+    device_count: int = 0
+    active_session_count: int = 0
+    waiting_session_count: int = 0
+    failed_session_count: int = 0
+    error_device_count: int = 0
+    offline_device_count: int = 0
+    maintenance_device_count: int = 0
+    last_activity_at: datetime | None = None
+
+
+class RuntimeWorklineDeviceItem(BaseModel):
+    id: int
+    device_code: str
+    device_name: str
+    device_role: str
+    role_index: int
+    upstream_device_id: int | None = None
+    device_status: str
+    maintenance_mode: bool = False
+    current_command_id: int | None = None
+    last_heartbeat_at: datetime | None = None
+    error_code: str | None = None
+
+
+class RuntimeWorklineDetailResponse(BaseModel):
+    summary: RuntimeWorklineSummary
+    devices: list[RuntimeWorklineDeviceItem] = Field(default_factory=list)
+    active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
+    recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
+
+
+class RuntimeDeviceSummary(BaseModel):
+    id: int
+    device_code: str
+    device_name: str
+    device_role: str
+    role_index: int
+    workline_id: int | None = None
+    workline_name: str | None = None
+    workline_code: str | None = None
+    device_status: str
+    maintenance_mode: bool = False
+    current_command_id: int | None = None
+    pending_command_count: int = 0
+    last_heartbeat_at: datetime | None = None
+    recent_callback_at: datetime | None = None
+    error_code: str | None = None
+
+
+class RuntimeDeviceDetailResponse(BaseModel):
+    summary: RuntimeDeviceSummary
+    recent_commands: list[TraceCommandItem] = Field(default_factory=list)
+    recent_callbacks: list[TraceCallbackLogItem] = Field(default_factory=list)
+    active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
+
+
+RuntimeOverviewResponse.model_rebuild()
