@@ -80,7 +80,7 @@ class TestSmtClassifierPlugin:
 
     @pytest.mark.asyncio
     async def test_scan_completed_incomplete_barcodes_routes_to_scan_ng(self, plugin, mock_context):
-        """测试条码不完整时会进入 scan_ng 并附带失败归因。"""
+        """测试条码不完整时会进入 scan_ng，并继续等待 NG 分流结果。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
@@ -99,14 +99,13 @@ class TestSmtClassifierPlugin:
         result = await plugin.on_device_event(mock_context, inbox)
 
         assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "BARCODE_INCOMPLETE"
+        assert result.failure is None
         assert result.commands is not None
         assert result.commands[0].action == "PICK_AND_PUT"
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
         assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
@@ -168,7 +167,7 @@ class TestSmtClassifierPlugin:
 
     @pytest.mark.asyncio
     async def test_scan_invalid_barcode(self, plugin, mock_context):
-        """测试无效条码。"""
+        """测试无效条码时会进入 scan_ng，并继续等待 NG 分流结果。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
@@ -191,14 +190,14 @@ class TestSmtClassifierPlugin:
         result = await plugin.on_device_event(mock_context, inbox)
 
         assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "BARCODE_INVALID"
+        assert result.failure is None
         assert result.commands is not None
         assert result.commands[0].action == "PICK_AND_PUT"
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
+        assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_pick_success_completes_scan_ng_flow(self, plugin, mock_context):

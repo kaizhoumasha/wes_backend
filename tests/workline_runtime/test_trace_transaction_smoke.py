@@ -23,7 +23,9 @@ from src.app.device.models.command import CommandCallbackResult, CommandResult, 
 from src.app.device.models.device import Device, DeviceProtocol, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.workline.models.inbox import InboxKind, WorklineInbox
+from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.session import SessionStatus, WorklineSession
+from src.app.workline.models.timeline import TimelineActionType, TimelineStage, WorklineTimeline
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.inbox_service import WorklineInboxService
 from src.app.workline.services.trace_query_service import TraceQueryService
@@ -50,6 +52,31 @@ def _build_result_callback(fixture: SmokeFixture) -> CommandCallbackResult:
 async def _load_inboxes_by_correlation(db_session, correlation_id: str) -> list[WorklineInbox]:
     return (
         (await db_session.execute(select(WorklineInbox).where(WorklineInbox.correlation_id == correlation_id)))
+        .scalars()
+        .all()
+    )
+
+
+async def _load_outboxes_by_correlation(db_session, correlation_id: str) -> list[WorklineOutbox]:
+    return (
+        (
+            await db_session.execute(
+                select(WorklineOutbox).where(
+                    WorklineOutbox.dispatch_key == f"device-command:CMD-SMOKE-001",
+                    WorklineOutbox.workline_id == select(WorklineSession.workline_id)
+                    .where(WorklineSession.correlation_id == correlation_id)
+                    .scalar_subquery(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _load_timelines_by_correlation(db_session, correlation_id: str) -> list[WorklineTimeline]:
+    return (
+        (await db_session.execute(select(WorklineTimeline).where(WorklineTimeline.correlation_id == correlation_id)))
         .scalars()
         .all()
     )
@@ -105,6 +132,17 @@ async def _seed_trace_graph(db_session) -> SmokeFixture:
         status=CommandStatus.PENDING,
     )
     db_session.add(command)
+    outbox = WorklineOutbox(
+        session_id=session.id,
+        workline_id=workline.id,
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_key=f"device-command:{command.command_code}",
+        target_type=TargetType.DEVICE,
+        target_code=device.device_code,
+        payload_json={"command_code": command.command_code, "device_code": device.device_code},
+        status=OutboxStatus.SENT,
+    )
+    db_session.add(outbox)
     await db_session.commit()
     await db_session.refresh(workline)
     await db_session.refresh(device)
@@ -155,6 +193,14 @@ class TestTraceTransactionSmoke:
         inbox_rows = await _load_inboxes_by_correlation(db_session, session_correlation_id)
         assert inbox_rows == []
 
+        outbox_rows = await _load_outboxes_by_correlation(db_session, session_correlation_id)
+        assert len(outbox_rows) == 1
+        assert outbox_rows[0].status == OutboxStatus.SENT
+        assert outbox_rows[0].finished_at is None
+
+        timeline_rows = await _load_timelines_by_correlation(db_session, session_correlation_id)
+        assert timeline_rows == []
+
         trace_query = TraceQueryService()
         trace_result = await trace_query.by_correlation_id(db_session, session_correlation_id)
         assert trace_result.session is not None
@@ -200,6 +246,17 @@ class TestTraceTransactionSmoke:
         inbox_rows = await _load_inboxes_by_correlation(db_session, session_correlation_id)
         assert len(inbox_rows) == 1
         assert inbox_rows[0].kind == InboxKind.COMMAND_RESULT
+
+        outbox_rows = await _load_outboxes_by_correlation(db_session, session_correlation_id)
+        assert len(outbox_rows) == 1
+        assert outbox_rows[0].status == OutboxStatus.ACKED
+        assert outbox_rows[0].finished_at is not None
+
+        timeline_rows = await _load_timelines_by_correlation(db_session, session_correlation_id)
+        assert len(timeline_rows) == 1
+        assert timeline_rows[0].stage == TimelineStage.CALLBACK
+        assert timeline_rows[0].action_type == TimelineActionType.COMMAND_ACKED
+        assert timeline_rows[0].related_command_id == command_id
 
         trace_query = TraceQueryService()
         trace_result = await trace_query.by_correlation_id(db_session, session_correlation_id)

@@ -164,6 +164,7 @@ def _scan_ng_context(*, pkg_id: str, barcodes: list[str], location: str, device_
         "barcodes": barcodes,
         "location": location,
         "device_code": device_code,
+        "ng_reason": "SCAN_NG",
         "pick_place_reason": "SCAN_NG",
         "step_code": SmtClassifierState.WAITING_PICK_PLACE,
     }
@@ -277,10 +278,11 @@ class SmtClassifierPlugin(WorklinePlugin):
                         device_code=event.device_code,
                     )
                 )
-                .failure(
-                    domain="DATA",
-                    code=barcode_decision.reason_code or "BARCODE_INVALID",
-                    message=barcode_decision.reason_message or f"条码格式错误: {pkg_id}",
+                .context(
+                    {
+                        "scan_ng_reason_code": barcode_decision.reason_code or "BARCODE_INVALID",
+                        "scan_ng_reason_message": barcode_decision.reason_message or f"条码格式错误: {pkg_id}",
+                    }
                 )
                 .build()
             )
@@ -402,7 +404,9 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         # 路由1: 进料臂完成 → 流水线传输
         if current_step == SmtClassifierState.WAITING_PICK_PLACE:
-            if ctx.session.context_json.get("pick_place_reason") == "SCAN_NG":
+            if ctx.session.context_json.get("pick_place_reason") == "SCAN_NG" or ctx.session.context_json.get(
+                "ng_reason"
+            ) == "SCAN_NG":
                 logger.info(f"NG pick-and-put succeeded: command_code={command_code}")
                 return (
                     PluginResultBuilder(ctx)

@@ -166,7 +166,7 @@ class TestInputNgFlowScanNg:
         assert response.status_code == 200
         logger.info(f"✓ 扫码事件已接收: {response.json()}")
 
-        # 等待会话失败（自动轮询）
+        # 等待扫码 NG 链路完成（自动轮询）
         deadline = time.time() + 10
         while time.time() < deadline:
             session = await db_conn.fetchrow(
@@ -187,12 +187,12 @@ class TestInputNgFlowScanNg:
             f"failure={session['failure_domain']}/{session['failure_code']}"
         )
 
-        # 验证结果
-        assert session["status"] == "FAILED"
-        assert session["failure_domain"] == "DATA"
-        assert session["failure_code"] == "BARCODE_INVALID"
+        # 验证结果：按当前运行时文档，扫码 NG 会进入 NG 分流并在设备回调成功后完成
+        assert session["status"] == "COMPLETED"
+        assert session["failure_domain"] is None
+        assert session["failure_code"] is None
 
-        # 验证无命令生成
+        # 验证已生成进料 NG 命令
         session_id = str(session["id"])
         command_count = await db_conn.fetchval(
             """
@@ -203,7 +203,7 @@ class TestInputNgFlowScanNg:
             session_id,
         )
 
-        assert command_count == 0
+        assert command_count == 1
         logger.info("✓ 扫码 NG 流程验证通过")
 
 

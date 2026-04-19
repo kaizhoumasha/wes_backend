@@ -10,7 +10,12 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy import func, select
+
 from src.app.workline.models.inbox import SourceSystem
+from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus, WorklineTimeline
+from src.app.workline.repositories.outbox_repository import outbox_repository
+from src.workline_runtime.timeline_generator import timeline_generator
 from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
@@ -31,6 +36,10 @@ _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
 
 def _current_timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
+
+
+def _command_dispatch_key(command_code: str) -> str:
+    return f"device-command:{command_code}"
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,59 @@ class CallbackOrchestrationService:
             trace = trace.with_canonical_event_type(canonical_event_type)
         return trace
 
+    async def _load_command_session(self, db: AsyncSession, command: object) -> object | None:
+        from src.app.workline.models.session import WorklineSession
+
+        raw_session_id = getattr(command, "session_id", None)
+        if raw_session_id is None:
+            return None
+
+        try:
+            session_id = int(raw_session_id)
+        except (TypeError, ValueError):
+            return None
+
+        return await db.get(WorklineSession, session_id)
+
+    async def _append_command_acked_timeline(
+        self,
+        db: AsyncSession,
+        *,
+        session: object,
+        inbox: object,
+        command: object,
+        trace: TraceContext,
+        command_type: str | None,
+        device_code: str,
+        command_result: str,
+    ) -> None:
+        query_result = await db.execute(
+            select(func.max(WorklineTimeline.seq_no)).where(WorklineTimeline.session_id == getattr(session, "id", None))
+        )
+        max_seq_no = query_result.scalar_one_or_none()
+        next_seq_no = (max_seq_no or 0) + 1
+
+        resolved_trace = trace.with_session(session).with_inbox(inbox).with_command(command)
+        timeline = timeline_generator.generate(
+            session=cast("Any", session),
+            stage=TimelineStage.CALLBACK,
+            action_type=TimelineActionType.COMMAND_ACKED,
+            payload=resolved_trace.project_timeline_payload(
+                command_code=getattr(command, "command_code", None),
+                command_type=command_type,
+                result=command_result,
+                device_code=device_code,
+            ),
+            actor_type=TimelineActorType.DEVICE,
+            actor_code=device_code,
+            related_inbox_id=getattr(inbox, "id", None),
+            related_command_id=getattr(command, "id", None),
+            status=TimelineStatus.SUCCESS,
+            trace=resolved_trace,
+        )
+        timeline.seq_no = next_seq_no
+        db.add(timeline)
+
     async def _commit_and_enqueue_workline_processing(
         self,
         db: AsyncSession,
@@ -179,8 +241,9 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
+            result_inbox = None
             try:
-                _ = await inbox_service.create_command_result_inbox(
+                result_inbox = await inbox_service.create_command_result_inbox(
                     db=db,
                     command_code=callback.command_code,
                     device_code=callback.device_code,
@@ -206,6 +269,23 @@ class CallbackOrchestrationService:
                 command = await command_service.handle_callback_result(db, callback)
                 if command is None:
                     raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
+                _ = await outbox_repository.mark_as_acked_by_dispatch_key(
+                    db,
+                    _command_dispatch_key(callback.command_code),
+                )
+                if result_inbox is not None:
+                    session = await self._load_command_session(db, command)
+                    if session is not None:
+                        await self._append_command_acked_timeline(
+                            db,
+                            session=session,
+                            inbox=result_inbox,
+                            command=command,
+                            trace=trace,
+                            command_type=command_type,
+                            device_code=callback.device_code,
+                            command_result=callback.result.value,
+                        )
                 trace = trace.with_command(command)
                 inherited_correlation_id = trace.correlation_id or inherited_correlation_id
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
