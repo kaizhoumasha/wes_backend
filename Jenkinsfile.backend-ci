@@ -122,7 +122,7 @@ pipeline {
                     steps {
                         sh '''
                             set -e
-                            docker run --rm "${CI_IMAGE}" sh -c 'ruff format --check .'
+                            docker run --rm "${CI_IMAGE}" sh -c './scripts/git-quality-gate.sh --check format --ci'
                         '''
                     }
                 }
@@ -131,7 +131,7 @@ pipeline {
                     steps {
                         sh '''
                             set -e
-                            docker run --rm "${CI_IMAGE}" sh -c 'ruff check .'
+                            docker run --rm "${CI_IMAGE}" sh -c './scripts/git-quality-gate.sh --check lint --ci'
                         '''
                     }
                 }
@@ -144,11 +144,7 @@ pipeline {
                             docker run --rm \
                                 -v "$WORKSPACE/reports:/artifacts/reports" \
                                 "${CI_IMAGE}" \
-                                sh -c '
-                                    mkdir -p /artifacts/reports &&
-                                    bandit -r src/ -f json -o /artifacts/reports/bandit-report.json &&
-                                    bandit -r src/ -f screen
-                                '
+                                sh -c './scripts/git-quality-gate.sh --check security --bandit-json /artifacts/reports/bandit-report.json --ci'
                         '''
                     }
                     post {

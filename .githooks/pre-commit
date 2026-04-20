@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PROFILE="${WES_GIT_QUALITY_PROFILE:-quality}"
+
+echo "[pre-commit] Running quality gate profile: $PROFILE"
+
+cd "$REPO_ROOT"
+exec ./scripts/git-quality-gate.sh --profile "$PROFILE"
