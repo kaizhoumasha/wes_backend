@@ -23,7 +23,7 @@ from src.app.workline.models.runtime import (
 from src.app.workline.services import runtime_query_service, trace_query_service
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
-from src.database.dependencies import AsyncSessionDep
+from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 
 router = APIRouter(tags=["工作线 Trace"])
 
@@ -224,7 +224,9 @@ def _build_trace_response(result: Any) -> TraceDetailResponse:
 )
 async def get_trace_by_request_id(request_id: str, db: AsyncSessionDep) -> ResponseSchemaModel[TraceDetailResponse]:
     result = await trace_query_service.by_request_id(db, request_id)
-    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result)))
+    return cast(
+        "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
+    )
 
 
 @router.get(
@@ -239,7 +241,9 @@ async def get_trace_by_correlation_id(
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[TraceDetailResponse]:
     result = await trace_query_service.by_correlation_id(db, correlation_id)
-    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result)))
+    return cast(
+        "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
+    )
 
 
 @router.get(
@@ -251,7 +255,9 @@ async def get_trace_by_correlation_id(
 )
 async def get_trace_by_session_id(session_id: int, db: AsyncSessionDep) -> ResponseSchemaModel[TraceDetailResponse]:
     result = await trace_query_service.by_session_id(db, session_id)
-    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result)))
+    return cast(
+        "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
+    )
 
 
 @router.get(
@@ -266,7 +272,9 @@ async def get_trace_by_command_code(
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[TraceDetailResponse]:
     result = await trace_query_service.by_command_code(db, command_code)
-    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result)))
+    return cast(
+        "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
+    )
 
 
 @router.get(
@@ -281,7 +289,9 @@ async def get_trace_by_dispatch_key(
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[TraceDetailResponse]:
     result = await trace_query_service.by_dispatch_key(db, dispatch_key)
-    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result)))
+    return cast(
+        "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
+    )
 
 
 @router.post(

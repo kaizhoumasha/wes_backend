@@ -61,6 +61,32 @@ def _is_timed_out(session: WorklineSession, now: Any) -> bool:
     return status in _WAITING_SESSION_STATUSES and deadline_at is not None and deadline_at < now
 
 
+def _recent_failure_since() -> Any:
+    return timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
+
+
+def _waiting_timeout_clause(columns: Any, now: Any) -> Any:
+    return and_(
+        columns.status.in_(list(_WAITING_SESSION_STATUSES)),
+        columns.deadline_at.isnot(None),
+        columns.deadline_at < now,
+    )
+
+
+def _recent_failed_clause(columns: Any, recent_since: Any) -> Any:
+    return and_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), columns.updated_at >= recent_since)
+
+
+def _parse_session_id(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
 def _command_duration_ms(command: DeviceCommand) -> int | None:
     try:
         return command.get_duration_ms()
@@ -100,9 +126,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if item.pending_command_count > 0 and item.device_status not in _ABNORMAL_DEVICE_STATUSES
         )
         healthy_devices = sum(
-            1
-            for item in devices
-            if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
+            1 for item in devices if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
         )
 
         return RuntimeOverviewResponse(
@@ -143,16 +167,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if payload.only_active:
             query = query.where(columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
         if payload.only_failed:
-            recent_since = timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
+            recent_since = _recent_failure_since()
+            now = timezone.now_for_db()
             query = query.where(
-                or_(
-                    columns.status.in_(list(_FAILURE_SESSION_STATUSES)),
-                    and_(
-                        columns.status.in_(list(_WAITING_SESSION_STATUSES)),
-                        columns.deadline_at.isnot(None),
-                        columns.deadline_at < timezone.now_for_db(),
-                    ),
-                ),
+                or_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), _waiting_timeout_clause(columns, now)),
                 columns.updated_at >= recent_since,
             )
         if payload.keyword:
@@ -334,13 +352,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not workline_ids:
             return {}
         columns = cast("Any", WorklineSession).__table__.c
-        recent_since = timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
+        recent_since = _recent_failure_since()
         result = await db.execute(
             select(WorklineSession).where(
                 columns.workline_id.in_(workline_ids),
                 or_(
                     columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
-                    and_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), columns.updated_at >= recent_since),
+                    _recent_failed_clause(columns, recent_since),
                     and_(columns.status.in_(list(_WAITING_SESSION_STATUSES)), columns.deadline_at.isnot(None)),
                 ),
             )
@@ -352,19 +370,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def _load_recent_failed_sessions(self, db: Any, limit: int) -> list[WorklineSession]:
         columns = cast("Any", WorklineSession).__table__.c
-        recent_since = timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
+        recent_since = _recent_failure_since()
+        now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession)
-            .where(
-                or_(
-                    and_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), columns.updated_at >= recent_since),
-                    and_(
-                        columns.status.in_(list(_WAITING_SESSION_STATUSES)),
-                        columns.deadline_at.isnot(None),
-                        columns.deadline_at < timezone.now_for_db(),
-                    ),
-                )
-            )
+            .where(or_(_recent_failed_clause(columns, recent_since), _waiting_timeout_clause(columns, now)))
             .order_by(columns.updated_at.desc(), columns.id.desc())
             .limit(limit)
         )
@@ -374,19 +384,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         self, db: Any, workline_id: int, limit: int
     ) -> list[WorklineSession]:
         columns = cast("Any", WorklineSession).__table__.c
-        recent_since = timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
+        recent_since = _recent_failure_since()
+        now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession)
             .where(
                 columns.workline_id == workline_id,
-                or_(
-                    and_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), columns.updated_at >= recent_since),
-                    and_(
-                        columns.status.in_(list(_WAITING_SESSION_STATUSES)),
-                        columns.deadline_at.isnot(None),
-                        columns.deadline_at < timezone.now_for_db(),
-                    ),
-                ),
+                or_(_recent_failed_clause(columns, recent_since), _waiting_timeout_clause(columns, now)),
             )
             .order_by(columns.updated_at.desc(), columns.id.desc())
             .limit(limit)
@@ -454,8 +458,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             .limit(50)
         )
         for command in command_result.scalars().all():
-            if command.session_id and str(command.session_id).isdigit():
-                session_ids.add(int(command.session_id))
+            session_id = _parse_session_id(command.session_id)
+            if session_id is not None:
+                session_ids.add(session_id)
 
         inbox_result = await db.execute(
             select(WorklineInbox)
@@ -567,10 +572,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         mapping: dict[int, DeviceCommand] = {}
         for item in result.scalars().all():
-            if item.session_id and item.session_id.isdigit():
-                session_id = int(item.session_id)
-                if session_id not in mapping:
-                    mapping[session_id] = item
+            session_id = _parse_session_id(item.session_id)
+            if session_id is not None and session_id not in mapping:
+                mapping[session_id] = item
         return mapping
 
     async def _load_latest_inbox_by_session(self, db: Any, session_ids: list[int]) -> dict[int, WorklineInbox]:
