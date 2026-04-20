@@ -152,6 +152,8 @@ Use `uv` locally.
 - `uv run uvicorn main:app --reload --host 0.0.0.0 --port 8001`: run the API locally.
 - `uv run celery -A src.celery_app.app worker --loglevel=info --queues=default,celery`: start the async worker used by callback and workline flows.
 - `sh src/celery_app/dev_worker_autoreload.sh`: run the Celery worker with source watching during active backend development.
+- `./scripts/install-git-hooks.sh`: enable the repo-managed `pre-commit` quality gate for the current worktree.
+- `./scripts/git-quality-gate.sh --profile quality`: run the same local quality gate used by the tracked `pre-commit` hook.
 - `uv run pytest tests/`: run the full test suite.
 - `uv run ruff format . && uv run ruff check .`: match the formatter and linter used in CI.
 - `uv run bandit -r src/`: run the same security scan used by Jenkins.
@@ -162,6 +164,7 @@ Each git worktree must keep its own local runtime state. Do not reuse another wo
 - Create a new worktree with `git worktree add ../wes_backend-<branch> -b <branch> develop`
 - Enter the worktree and run `./scripts/init-env.sh dev`
 - Run `uv sync --dev` inside that worktree to create or refresh its own `.venv`
+- Run `./scripts/install-git-hooks.sh` inside that worktree if you want the tracked `pre-commit` quality gate active there
 - Use `uv run ...` for all project commands instead of relying on a previously activated shell
 - If `pyproject.toml`, `uv.lock`, or environment profile files change after switching branches, rerun `./scripts/init-env.sh dev` and `uv sync --dev`
 - When a worktree is no longer needed, remove it with `git worktree remove <path>` and then `git worktree prune`

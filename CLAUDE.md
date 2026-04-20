@@ -95,6 +95,8 @@ uv sync --dev                 # 安装依赖
 uv run uvicorn main:app --reload  # 开发服务器
 
 # 代码质量
+./scripts/install-git-hooks.sh      # 为当前 worktree 启用 repo-managed pre-commit 质量门禁
+./scripts/git-quality-gate.sh --profile quality  # 本地运行默认质量门禁
 uv run ruff format . && uv run ruff check . # 格式化和检查
 uv run pytest --cov=src       # 测试和覆盖率
 ```
@@ -121,6 +123,7 @@ cd ../wes_backend-feature-x
 # 3. 初始化当前 worktree 的环境
 ./scripts/init-env.sh dev
 uv sync --dev
+./scripts/install-git-hooks.sh
 
 # 4. 在当前 worktree 中执行命令
 uv run pytest tests/
