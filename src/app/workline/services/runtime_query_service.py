@@ -105,13 +105,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
         devices = await self.list_devices(db)
         recent_failed_sessions = await self._load_recent_failed_sessions(db, limit=10)
         recent_failed_traces = await self._build_trace_list_items(db, recent_failed_sessions)
+        device_health = self._build_device_health_summary(devices)
 
-        running_sessions = await self._count_sessions_by_status(db, {"RUNNING"})
-        waiting_sessions = await self._count_sessions_by_status(db, _WAITING_SESSION_STATUSES)
+        running_sessions = await self._count_by_status(db, WorklineSession, {"RUNNING"})
+        waiting_sessions = await self._count_by_status(db, WorklineSession, _WAITING_SESSION_STATUSES)
         failed_sessions = len(recent_failed_sessions)
-        inbox_backlog = await self._count_inboxes_by_status(db, _INBOX_BACKLOG_STATUSES)
-        outbox_backlog = await self._count_outboxes_by_status(db, _OUTBOX_BACKLOG_STATUSES)
-        abnormal_devices = sum(1 for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES)
+        inbox_backlog = await self._count_by_status(db, WorklineInbox, _INBOX_BACKLOG_STATUSES)
+        outbox_backlog = await self._count_by_status(db, WorklineOutbox, _OUTBOX_BACKLOG_STATUSES)
+        abnormal_devices = device_health.abnormal
 
         hot_worklines = sorted(
             worklines,
@@ -119,15 +120,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             reverse=True,
         )[:5]
         abnormal_device_items = [item for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES][:10]
-        maintenance_devices = sum(1 for item in devices if item.maintenance_mode)
-        loaded_devices = sum(
-            1
-            for item in devices
-            if item.pending_command_count > 0 and item.device_status not in _ABNORMAL_DEVICE_STATUSES
-        )
-        healthy_devices = sum(
-            1 for item in devices if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
-        )
 
         return RuntimeOverviewResponse(
             stats=[
@@ -145,13 +137,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             recent_failed_traces=recent_failed_traces,
             hot_worklines=hot_worklines,
             abnormal_devices=abnormal_device_items,
-            device_health=RuntimeDeviceHealthSummary(
-                total=len(devices),
-                abnormal=abnormal_devices,
-                maintenance=maintenance_devices,
-                loaded=loaded_devices,
-                healthy=healthy_devices,
-            ),
+            device_health=device_health,
         )
 
     async def get_trace_list(self, db: Any, payload: TraceQueryRequest) -> RuntimeTraceListResponse:
@@ -308,19 +294,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             active_sessions=await self._build_trace_list_items(db, active_sessions),
         )
 
-    async def _count_sessions_by_status(self, db: Any, statuses: set[str]) -> int:
-        columns = cast("Any", WorklineSession).__table__.c
-        result = await db.execute(select(WorklineSession).where(columns.status.in_(list(statuses))))
-        return len(list(result.scalars().all()))
-
-    async def _count_inboxes_by_status(self, db: Any, statuses: set[str]) -> int:
-        columns = cast("Any", WorklineInbox).__table__.c
-        result = await db.execute(select(WorklineInbox).where(columns.status.in_(list(statuses))))
-        return len(list(result.scalars().all()))
-
-    async def _count_outboxes_by_status(self, db: Any, statuses: set[str]) -> int:
-        columns = cast("Any", WorklineOutbox).__table__.c
-        result = await db.execute(select(WorklineOutbox).where(columns.status.in_(list(statuses))))
+    async def _count_by_status(self, db: Any, model: Any, statuses: set[str]) -> int:
+        columns = cast("Any", model).__table__.c
+        result = await db.execute(select(model).where(columns.status.in_(list(statuses))))
         return len(list(result.scalars().all()))
 
     async def _load_workline_map(self, db: Any, workline_ids: list[int | None]) -> dict[int, WorkLine]:
@@ -655,6 +631,29 @@ class RuntimeQueryService(BaseService[Any, Any]):
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
             last_activity_at=last_activity_at,
+        )
+
+    def _build_device_health_summary(
+        self,
+        devices: list[RuntimeDeviceSummary],
+    ) -> RuntimeDeviceHealthSummary:
+        abnormal = sum(1 for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES)
+        maintenance = sum(1 for item in devices if item.maintenance_mode)
+        loaded = sum(
+            1
+            for item in devices
+            if item.pending_command_count > 0 and item.device_status not in _ABNORMAL_DEVICE_STATUSES
+        )
+        healthy = sum(
+            1 for item in devices if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
+        )
+
+        return RuntimeDeviceHealthSummary(
+            total=len(devices),
+            abnormal=abnormal,
+            maintenance=maintenance,
+            loaded=loaded,
+            healthy=healthy,
         )
 
     def _build_workline_device_item(self, device: Device) -> RuntimeWorklineDeviceItem:
