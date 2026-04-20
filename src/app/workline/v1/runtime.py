@@ -74,7 +74,7 @@ async def get_runtime_workline_detail(
 )
 async def get_runtime_devices(
     db: AsyncSessionDep,
-    workline_id: int | None = Query(default=None, alias="worklineId"),
+    workline_id: int = Query(alias="worklineId"),
 ) -> ResponseSchemaModel[list[RuntimeDeviceSummary]]:
     result = await runtime_query_service.list_devices(db, workline_id=workline_id)
     return cast("ResponseSchemaModel[list[RuntimeDeviceSummary]]", response_builder.success(data=result))
@@ -90,12 +90,16 @@ async def get_runtime_devices(
 async def get_runtime_device_detail(
     device_id: int,
     db: AsyncSessionDep,
+    workline_id: int = Query(alias="worklineId"),
 ) -> ResponseSchemaModel[RuntimeDeviceDetailResponse]:
-    result = await runtime_query_service.get_device_detail(db, device_id)
+    result = await runtime_query_service.get_device_detail(db, device_id, workline_id=workline_id)
     if result is None:
         return cast(
             "ResponseSchemaModel[RuntimeDeviceDetailResponse]",
-            response_builder.fail(code=DEFAULT_NOT_FOUND, message=f"设备运行态不存在: {device_id}"),
+            response_builder.fail(
+                code=DEFAULT_NOT_FOUND,
+                message=f"工作线设备运行态不存在: worklineId={workline_id}, deviceId={device_id}",
+            ),
         )
     return cast("ResponseSchemaModel[RuntimeDeviceDetailResponse]", response_builder.success(data=result))
 

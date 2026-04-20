@@ -138,7 +138,7 @@ class TestWorklineRuntimeApi:
         assert response["data"].stats == []
 
     @pytest.mark.asyncio
-    async def test_get_runtime_devices_passes_optional_workline_filter(self) -> None:
+    async def test_get_runtime_devices_requires_workline_filter(self) -> None:
         from src.app.workline.v1.runtime import get_runtime_devices
 
         with patch(
@@ -164,6 +164,39 @@ class TestWorklineRuntimeApi:
         assert response["message"] == "工作线运行态不存在: 404"
 
     @pytest.mark.asyncio
+    async def test_get_runtime_device_detail_passes_workline_scope(self) -> None:
+        from src.app.workline.models.runtime import RuntimeDeviceDetailResponse, RuntimeDeviceSummary
+        from src.app.workline.v1.runtime import get_runtime_device_detail
+
+        result = RuntimeDeviceDetailResponse(
+            summary=RuntimeDeviceSummary(
+                id=39,
+                device_code="ARM03",
+                device_name="右侧进料机械臂",
+                device_role="INPUT_ARM",
+                role_index=1,
+                workline_id=45,
+                workline_name="右侧 SMT 粗分线",
+                workline_code="WL-CONVEYOR-02",
+                device_status="IDLE",
+                maintenance_mode=False,
+                pending_command_count=0,
+            ),
+            recent_commands=[],
+            recent_callbacks=[],
+            active_sessions=[],
+        )
+
+        with patch(
+            "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
+            new=AsyncMock(return_value=result),
+        ) as mock_get_device_detail:
+            response = await get_runtime_device_detail(device_id=39, db=AsyncMock(), workline_id=45)
+
+        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 39, workline_id=45)
+        assert response["data"].summary.workline_id == 45
+
+    @pytest.mark.asyncio
     async def test_get_runtime_device_detail_returns_not_found_when_missing(self) -> None:
         from src.app.workline.v1.runtime import get_runtime_device_detail
 
@@ -171,7 +204,7 @@ class TestWorklineRuntimeApi:
             "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
             new=AsyncMock(return_value=None),
         ) as mock_get_device_detail:
-            response = await get_runtime_device_detail(device_id=404, db=AsyncMock())
+            response = await get_runtime_device_detail(device_id=404, db=AsyncMock(), workline_id=45)
 
-        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 404)
-        assert response["message"] == "设备运行态不存在: 404"
+        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 404, workline_id=45)
+        assert response["message"] == "工作线设备运行态不存在: worklineId=45, deviceId=404"

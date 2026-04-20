@@ -270,11 +270,20 @@ class RuntimeStatCard(BaseModel):
     status: str = "info"
 
 
+class RuntimeDeviceHealthSummary(BaseModel):
+    total: int = 0
+    abnormal: int = 0
+    maintenance: int = 0
+    loaded: int = 0
+    healthy: int = 0
+
+
 class RuntimeOverviewResponse(BaseModel):
     stats: list[RuntimeStatCard]
     recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
     hot_worklines: list[RuntimeWorklineSummary] = Field(default_factory=list)
     abnormal_devices: list[RuntimeDeviceSummary] = Field(default_factory=list)
+    device_health: RuntimeDeviceHealthSummary = Field(default_factory=RuntimeDeviceHealthSummary)
 
 
 class RuntimeWorklineSummary(BaseModel):

@@ -15,6 +15,7 @@ from src.app.device.repositories import device_repository
 from src.app.workline.models import WorkLine, WorklineInbox, WorklineOutbox, WorklineSession, WorklineTimeline
 from src.app.workline.models.runtime import (
     RuntimeDeviceDetailResponse,
+    RuntimeDeviceHealthSummary,
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
     RuntimeStatCard,
@@ -88,16 +89,31 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         hot_worklines = sorted(
             worklines,
-            key=lambda item: (item.active_session_count + item.waiting_session_count + item.failed_session_count),
+            key=lambda item: item.active_session_count + item.waiting_session_count + item.failed_session_count,
             reverse=True,
         )[:5]
         abnormal_device_items = [item for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES][:10]
+        maintenance_devices = sum(1 for item in devices if item.maintenance_mode)
+        loaded_devices = sum(
+            1
+            for item in devices
+            if item.pending_command_count > 0 and item.device_status not in _ABNORMAL_DEVICE_STATUSES
+        )
+        healthy_devices = sum(
+            1
+            for item in devices
+            if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
+        )
 
         return RuntimeOverviewResponse(
             stats=[
-                RuntimeStatCard(key="running_sessions", label="运行中 Session", value=running_sessions, status="warning"),
+                RuntimeStatCard(
+                    key="running_sessions", label="运行中 Session", value=running_sessions, status="warning"
+                ),
                 RuntimeStatCard(key="waiting_sessions", label="等待中 Session", value=waiting_sessions, status="info"),
-                RuntimeStatCard(key="failed_sessions", label="失败 / 超时 Session", value=failed_sessions, status="danger"),
+                RuntimeStatCard(
+                    key="failed_sessions", label="失败 / 超时 Session", value=failed_sessions, status="danger"
+                ),
                 RuntimeStatCard(key="inbox_backlog", label="Inbox 积压", value=inbox_backlog, status="warning"),
                 RuntimeStatCard(key="outbox_backlog", label="Outbox 积压", value=outbox_backlog, status="warning"),
                 RuntimeStatCard(key="abnormal_devices", label="异常设备", value=abnormal_devices, status="danger"),
@@ -105,6 +121,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
             recent_failed_traces=recent_failed_traces,
             hot_worklines=hot_worklines,
             abnormal_devices=abnormal_device_items,
+            device_health=RuntimeDeviceHealthSummary(
+                total=len(devices),
+                abnormal=abnormal_devices,
+                maintenance=maintenance_devices,
+                loaded=loaded_devices,
+                healthy=healthy_devices,
+            ),
         )
 
     async def get_trace_list(self, db: Any, payload: TraceQueryRequest) -> RuntimeTraceListResponse:
@@ -188,7 +211,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         active_sessions = await self._load_active_sessions_for_workline(db, workline_id, limit=20)
         recent_failed_sessions = await self._load_recent_failed_sessions_for_workline(db, workline_id, limit=10)
-        all_sessions = active_sessions + [item for item in recent_failed_sessions if item.id not in {s.id for s in active_sessions}]
+        all_sessions = active_sessions + [
+            item for item in recent_failed_sessions if item.id not in {s.id for s in active_sessions}
+        ]
 
         summary = self._build_workline_summary(workline, devices, all_sessions)
         device_items = [self._build_workline_device_item(device) for device in devices]
@@ -215,7 +240,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         workline_ids = [item.work_line_id for item in devices if item.work_line_id is not None]
         workline_map = await self._load_workline_map(db, workline_ids)
-        pending_command_map = await self._load_pending_command_count_map(db, [item.id for item in devices if item.id is not None])
+        pending_command_map = await self._load_pending_command_count_map(
+            db, [item.id for item in devices if item.id is not None]
+        )
         callback_time_map = await self._load_recent_callback_time_map(db, [item.device_code for item in devices])
 
         return [
@@ -229,9 +256,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if device.id is not None
         ]
 
-    async def get_device_detail(self, db: Any, device_id: int) -> RuntimeDeviceDetailResponse | None:
+    async def get_device_detail(
+        self, db: Any, device_id: int, workline_id: int | None = None
+    ) -> RuntimeDeviceDetailResponse | None:
         device = await device_repository.get_by_id(db, device_id)
         if device is None:
+            return None
+        if workline_id is not None and device.work_line_id != workline_id:
             return None
 
         workline = None
@@ -297,7 +328,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 mapping[item.work_line_id].append(item)
         return mapping
 
-    async def _load_sessions_by_workline_ids(self, db: Any, workline_ids: list[int]) -> dict[int, list[WorklineSession]]:
+    async def _load_sessions_by_workline_ids(
+        self, db: Any, workline_ids: list[int]
+    ) -> dict[int, list[WorklineSession]]:
         if not workline_ids:
             return {}
         columns = cast("Any", WorklineSession).__table__.c
@@ -337,7 +370,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _load_recent_failed_sessions_for_workline(self, db: Any, workline_id: int, limit: int) -> list[WorklineSession]:
+    async def _load_recent_failed_sessions_for_workline(
+        self, db: Any, workline_id: int, limit: int
+    ) -> list[WorklineSession]:
         columns = cast("Any", WorklineSession).__table__.c
         recent_since = timezone.now_for_db() - timedelta(hours=_RECENT_FAILURE_HOURS)
         result = await db.execute(
@@ -373,7 +408,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return {}
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
-            select(DeviceCommand).where(columns.device_id.in_(device_ids), columns.status.in_(list(_PENDING_COMMAND_STATUSES)))
+            select(DeviceCommand).where(
+                columns.device_id.in_(device_ids), columns.status.in_(list(_PENDING_COMMAND_STATUSES))
+            )
         )
         mapping: dict[int, int] = defaultdict(int)
         for item in result.scalars().all():
@@ -436,7 +473,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         session_columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession)
-            .where(session_columns.id.in_(list(session_ids)), session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
+            .where(
+                session_columns.id.in_(list(session_ids)), session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES))
+            )
             .order_by(session_columns.last_ingress_at.desc().nullslast(), session_columns.id.desc())
             .limit(limit)
         )
