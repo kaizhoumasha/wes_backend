@@ -235,20 +235,8 @@ class TraceDiagnosticContextItem(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
-class TraceDiagnosticItem(BaseModel):
-    request_id: str | None = None
-    correlation_id: str | None = None
-    session_id: int | None = None
-    inbox_id: int | None = None
-    outbox_id: int | None = None
-    command_code: str | None = None
-    device_code: str | None = None
-    workline_id: int | None = None
-    workline_code: str | None = None
-    plugin_key: str | None = None
-    canonical_event_type: str | None = None
-    transition: str | None = None
-    extra: dict[str, Any] = Field(default_factory=dict)
+class TraceDiagnosticItem(TraceDiagnosticContextItem):
+    pass
 
 
 class TraceDetailResponse(BaseModel):
