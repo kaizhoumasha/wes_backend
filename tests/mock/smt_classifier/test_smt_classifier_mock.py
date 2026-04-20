@@ -24,7 +24,10 @@ def test_run_all_modules_are_importable() -> None:
 
 
 def test_run_all_uses_shared_ports_for_dual_worklines() -> None:
-    topology = {service["port"]: tuple(service.get("hosted_device_codes", [service["device_code"]])) for service in MOCK_SERVICES}
+    topology = {
+        service["port"]: tuple(service.get("hosted_device_codes", [service["device_code"]]))
+        for service in MOCK_SERVICES
+    }
 
     assert topology[8005] == ("PIPELINE01", "PIPELINE02")
     assert topology[8006] == ("ARM01", "ARM03")

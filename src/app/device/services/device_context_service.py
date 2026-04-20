@@ -89,9 +89,13 @@ class DeviceContextService:
             # 3. 验证工作线启用状态
             is_active = getattr(workline, "is_active", True)
             if not is_active:
-                assert workline.id is not None
-                logger.warning(f"工作线 {workline.id} 未启用")
-                return None, self._build_inactive(workline.id)
+                inactive_workline_id = workline.id if isinstance(workline.id, int) else work_line_id
+                if inactive_workline_id is None:
+                    logger.warning(f"设备 {device_code} 关联的工作线未启用，但缺少有效工作线 ID")
+                    return None, self._build_not_found(f"设备 {device_code} 关联的工作线标识无效")
+
+                logger.warning(f"工作线 {inactive_workline_id} 未启用")
+                return None, self._build_inactive(inactive_workline_id)
 
         # 4. 解析 plugin_key（唯一来源：WorkLine）
         plugin_key = self._resolve_plugin_key(device, workline)

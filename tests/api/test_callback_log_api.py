@@ -54,7 +54,11 @@ class TestCallbackLogApi:
                 new=AsyncMock(return_value=log),
             ) as mock_get_by_request_id,
             patch.object(
-                type(__import__("src.app.callback.v1.callback_log", fromlist=["callback_log_service"]).callback_log_service),
+                type(
+                    __import__(
+                        "src.app.callback.v1.callback_log", fromlist=["callback_log_service"]
+                    ).callback_log_service
+                ),
                 "repo",
                 new_callable=PropertyMock,
                 side_effect=AssertionError("route must not access callback_log_service.repo"),
@@ -82,7 +86,11 @@ class TestCallbackLogApi:
                 new=AsyncMock(return_value=logs),
             ) as mock_get_by_correlation_id,
             patch.object(
-                type(__import__("src.app.callback.v1.callback_log", fromlist=["callback_log_service"]).callback_log_service),
+                type(
+                    __import__(
+                        "src.app.callback.v1.callback_log", fromlist=["callback_log_service"]
+                    ).callback_log_service
+                ),
                 "repo",
                 new_callable=PropertyMock,
                 side_effect=AssertionError("route must not access callback_log_service.repo"),
@@ -112,7 +120,11 @@ class TestCallbackLogApi:
                 new=AsyncMock(return_value=logs),
             ) as mock_get_by_device_id,
             patch.object(
-                type(__import__("src.app.callback.v1.callback_log", fromlist=["callback_log_service"]).callback_log_service),
+                type(
+                    __import__(
+                        "src.app.callback.v1.callback_log", fromlist=["callback_log_service"]
+                    ).callback_log_service
+                ),
                 "repo",
                 new_callable=PropertyMock,
                 side_effect=AssertionError("route must not access callback_log_service.repo"),

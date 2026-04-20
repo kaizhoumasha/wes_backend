@@ -325,7 +325,9 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
                 # 软删除或物理删除（根据模型支持情况）
                 success = await self.service.delete(db, id, cache)
                 if not success:
-                    return response_builder_any.fail(code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id))
+                    return response_builder_any.fail(
+                        code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
+                    )
                 logger.info(f"删除{self.resource_name}成功: id={id}")
                 return response_builder_any.success(data={"message": f"{self.resource_name}删除成功"})
             except ValueError as e:
@@ -462,9 +464,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             )
 
         # 2. 批量永久删除接口
-        batch_permanent_delete_summary = self._build_summary(
-            "permanent_delete", f"批量永久删除{self.resource_name}"
-        )
+        batch_permanent_delete_summary = self._build_summary("permanent_delete", f"批量永久删除{self.resource_name}")
 
         @self.router.delete(
             "/trash/permanent",

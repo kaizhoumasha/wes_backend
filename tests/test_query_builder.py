@@ -25,4 +25,3 @@ def test_query_builder_coerces_datetime_filter_value_for_model_datetime_field() 
     bind_param = clause.right
     assert isinstance(bind_param.value, datetime)
     assert bind_param.value == datetime.fromisoformat("2026-04-13T02:50:25.502")
-

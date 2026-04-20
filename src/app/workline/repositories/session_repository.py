@@ -111,10 +111,13 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         """
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
-            select(WorklineSession).where(
+            select(WorklineSession)
+            .where(
                 columns.workline_id == workline_id,
                 columns.business_key == business_key,
-            ).order_by(columns.id.desc()).limit(1)
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

@@ -1,7 +1,5 @@
 """Device Repository 层"""
 
-from typing import Any
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +45,7 @@ class DeviceRepository(BaseRepository[Device]):
 
     async def after_device_change(
         self,
-        db: AsyncSession,
+        _db: AsyncSession,
         old_work_line_id: int | None,
         new_work_line_id: int | None,
     ) -> None:
@@ -57,7 +55,7 @@ class DeviceRepository(BaseRepository[Device]):
         失效相关工作线的设备缓存。
 
         Args:
-            db: 数据库会话
+            _db: 数据库会话（为保持仓储 Hook 签名一致而保留）
             old_work_line_id: 变更前的工作线 ID（可 None）
             new_work_line_id: 变更后的工作线 ID（可 None）
         """

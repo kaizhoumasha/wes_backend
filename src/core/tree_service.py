@@ -285,8 +285,8 @@ class TreeServiceMixin[M]:
                 instance_before = await self.repo.get_by_id(db, node_id)  # type: ignore[attr-defined]
                 if instance_before:
                     old_parent_id = getattr(instance_before, "parent_id", None)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"读取节点 {node_id} 迁移前父节点失败，继续迁移流程: {exc}")
 
         result = await self.repo.move_node(db, node_id, new_parent_id)
         await db.commit()
@@ -355,9 +355,7 @@ class TreeServiceMixin[M]:
             affected_parent_ids = getattr(result, "affected_parent_ids", None)
             if not isinstance(affected_parent_ids, list):
                 affected_parent_ids = [
-                    parent_id
-                    for item in items
-                    if isinstance((parent_id := item.get("parent_id")), int)
+                    parent_id for item in items if isinstance((parent_id := item.get("parent_id")), int)
                 ]
 
             for parent_id in affected_parent_ids:
@@ -435,8 +433,8 @@ class TreeServiceMixin[M]:
                 instance_before = await self.repo.get_by_id(db, id)  # type: ignore[attr-defined]
                 if instance_before:
                     old_parent_id = getattr(instance_before, "parent_id", None)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"读取节点 {id} 更新前父节点失败，继续更新流程: {exc}")
 
         # 调用 BaseService.update
         result = await super().update(db, id, data, cache)  # type: ignore[misc]
@@ -467,8 +465,8 @@ class TreeServiceMixin[M]:
                 instance_before = await self.repo.get_by_id(db, id)  # type: ignore[attr-defined]
                 if instance_before:
                     parent_id_to_invalidate = getattr(instance_before, "parent_id", None)
-            except Exception:
-                pass  # 获取失败不影响删除流程
+            except Exception as exc:
+                logger.debug(f"读取节点 {id} 删除前父节点失败，继续删除流程: {exc}")
 
         # 调用 BaseService.delete
         success = await super().delete(db, id, cache)  # type: ignore[misc]
@@ -530,8 +528,8 @@ class TreeServiceMixin[M]:
                 instance_before = await self.repo.get_by_id(db, id, include_deleted=True)  # type: ignore[attr-defined]
                 if instance_before:
                     parent_id_to_invalidate = getattr(instance_before, "parent_id", None)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"读取节点 {id} 永久删除前父节点失败，继续永久删除流程: {exc}")
 
         success = await super().permanent_delete(db, id, cache)  # type: ignore[misc]
 

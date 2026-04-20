@@ -226,7 +226,9 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(self, mock_db, mock_session_repo, resolver):
+    async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(
+        self, mock_db, mock_session_repo, resolver
+    ):
         """workline.contract_version 缺失时才回退 registry。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,

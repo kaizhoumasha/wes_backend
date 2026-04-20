@@ -651,7 +651,11 @@ class TreeRepository[T](BaseRepository[T]):
 
             # 新父节点：直接标记为有子节点
             old_parent_id_set = {parent_id for parent_id in old_parent_ids if parent_id is not None}
-            for pid in [parent_id for parent_id in new_parent_ids if parent_id is not None and parent_id not in old_parent_id_set]:
+            for pid in [
+                parent_id
+                for parent_id in new_parent_ids
+                if parent_id is not None and parent_id not in old_parent_id_set
+            ]:
                 parent_obj = nodes.get(pid) or external_parents.get(pid)
                 if parent_obj:
                     parent_obj.has_children = True  # type: ignore[attr-defined]

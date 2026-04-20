@@ -34,12 +34,8 @@ def test_generated_crud_routes_use_api_application_permission_resource() -> None
     assert _permission_names("/applications/{id}", "GET") == ["api-auth:api_application:detail"]
     assert _permission_names("/applications/{id}", "PUT") == ["api-auth:api_application:update"]
     assert _permission_names("/applications/{id}", "DELETE") == ["api-auth:api_application:delete"]
-    assert _permission_names("/applications/trash/permanent", "DELETE") == [
-        "api-auth:api_application:permanent_delete"
-    ]
-    assert _permission_names("/applications/{id}/permanent", "DELETE") == [
-        "api-auth:api_application:permanent_delete"
-    ]
+    assert _permission_names("/applications/trash/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
+    assert _permission_names("/applications/{id}/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
 
 
 @pytest.mark.asyncio
@@ -83,9 +79,7 @@ async def test_reset_validity_route_maps_value_error_to_not_found(monkeypatch: p
 
     response = await route.endpoint(
         id=10,
-        data=api_application_module.ResetValidityPeriodSchema(
-            version=1, validity_period=ValidityPeriod.ONE_YEAR
-        ),
+        data=api_application_module.ResetValidityPeriodSchema(version=1, validity_period=ValidityPeriod.ONE_YEAR),
         db=object(),
         cache=object(),
     )

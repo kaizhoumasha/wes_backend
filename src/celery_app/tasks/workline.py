@@ -1434,12 +1434,13 @@ class WorklineTask(Task):
     def cleanup(self) -> None:
         """清理资源"""
         if self._db:
+            loop = asyncio.new_event_loop()
             try:
-                loop = asyncio.new_event_loop()
                 loop.run_until_complete(self._db.close())
+            except Exception as exc:
+                logger.warning(f"关闭任务数据库会话失败: {exc}")
+            finally:
                 loop.close()
-            except Exception:
-                pass
             self._db = None
 
     def on_failure(

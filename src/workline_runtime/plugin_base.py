@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from src.core.logger import logger
 from src.workline_runtime.types import (
     CommandIntent,
     FailureIntent,
@@ -229,9 +230,9 @@ def _resolve_handler_model_arg(
         )
         if isinstance(normalized_candidate, param_type):
             return normalized_candidate
-    except Exception:
+    except Exception as exc:
         # 标准化输入构建失败时，继续回退到原始 payload 解析。
-        pass
+        logger.debug(f"标准化 Inbox 输入失败，回退到原始 payload 解析: {exc}")
 
     return param_type.model_validate(_merge_handler_payload(payload))
 

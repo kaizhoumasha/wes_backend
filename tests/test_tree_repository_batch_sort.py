@@ -43,7 +43,9 @@ async def test_batch_sort_prefetches_external_parent_once() -> None:
 
     node1 = SimpleNamespace(id=1, parent_id=None, level=1, tree_path="/1/", sort_order=0, has_children=False)
     node2 = SimpleNamespace(id=2, parent_id=None, level=1, tree_path="/2/", sort_order=0, has_children=False)
-    external_parent = SimpleNamespace(id=99, parent_id=None, level=1, tree_path="/99/", sort_order=0, has_children=False)
+    external_parent = SimpleNamespace(
+        id=99, parent_id=None, level=1, tree_path="/99/", sort_order=0, has_children=False
+    )
 
     db = AsyncMock(spec=AsyncSession)
     db.execute = AsyncMock(

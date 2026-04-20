@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import func, select
 
 from src.app.workline.models.inbox import SourceSystem
-from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus, WorklineTimeline
+from src.app.workline.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
 from src.app.workline.repositories.outbox_repository import outbox_repository
 from src.workline_runtime.timeline_generator import timeline_generator
 from src.workline_runtime.trace_context import TraceContext

@@ -62,8 +62,9 @@ async def _load_outboxes_by_correlation(db_session, correlation_id: str) -> list
         (
             await db_session.execute(
                 select(WorklineOutbox).where(
-                    WorklineOutbox.dispatch_key == f"device-command:CMD-SMOKE-001",
-                    WorklineOutbox.workline_id == select(WorklineSession.workline_id)
+                    WorklineOutbox.dispatch_key == "device-command:CMD-SMOKE-001",
+                    WorklineOutbox.workline_id
+                    == select(WorklineSession.workline_id)
                     .where(WorklineSession.correlation_id == correlation_id)
                     .scalar_subquery(),
                 )

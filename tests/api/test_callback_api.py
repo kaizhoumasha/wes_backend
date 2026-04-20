@@ -433,7 +433,9 @@ class TestCallbackResultAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_rejects_invalid_capability_config(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_result_rejects_invalid_capability_config(
+        self, db_session: AsyncSession, build_request
+    ) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.device_context_service.resolve",
@@ -735,7 +737,9 @@ class TestCallbackEventAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_event_rejects_invalid_capability_config(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_event_rejects_invalid_capability_config(
+        self, db_session: AsyncSession, build_request
+    ) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.device_context_service.resolve",

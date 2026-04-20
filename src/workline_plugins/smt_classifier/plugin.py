@@ -13,7 +13,7 @@ SMT 粗分机插件 - 基于装饰器框架
 
 from __future__ import annotations
 
-import random
+import secrets
 from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
@@ -404,9 +404,10 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         # 路由1: 进料臂完成 → 流水线传输
         if current_step == SmtClassifierState.WAITING_PICK_PLACE:
-            if ctx.session.context_json.get("pick_place_reason") == "SCAN_NG" or ctx.session.context_json.get(
-                "ng_reason"
-            ) == "SCAN_NG":
+            if (
+                ctx.session.context_json.get("pick_place_reason") == "SCAN_NG"
+                or ctx.session.context_json.get("ng_reason") == "SCAN_NG"
+            ):
                 logger.info(f"NG pick-and-put succeeded: command_code={command_code}")
                 return (
                     PluginResultBuilder(ctx)
@@ -645,10 +646,10 @@ class SmtClassifierPlugin(WorklinePlugin):
         Returns:
             dict: 料箱位置信息
         """
-        bin_id = f"BIN_{random.randint(100, 999)}"
+        bin_id = f"BIN_{secrets.randbelow(900) + 100}"
         bin_types = ["三格箱", "五格箱", "九格箱"]
-        bin_type = random.choice(bin_types)
-        cell_location = str(random.randint(1, 9))
+        bin_type = bin_types[secrets.randbelow(len(bin_types))]
+        cell_location = str(secrets.randbelow(9) + 1)
 
         logger.info(f"Generated random bin: barcode={barcode}, bin_id={bin_id}, bin_type={bin_type}")
 

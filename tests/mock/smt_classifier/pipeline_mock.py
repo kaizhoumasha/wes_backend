@@ -486,6 +486,7 @@ class PipelineSimulator:
     def get_executions(self, limit: int = 50) -> list[ExecutionRecord]:
         return self._executions[-limit:]
 
+
 PIPELINE_SIMULATORS: dict[str, PipelineSimulator] = {
     code: PipelineSimulator(device_code=code) for code in HOSTED_DEVICE_CONFIGS
 }

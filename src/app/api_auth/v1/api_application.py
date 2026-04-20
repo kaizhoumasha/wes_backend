@@ -117,7 +117,9 @@ def register_custom_route(
         }
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
-            response_builder_any.success(data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"),
+            response_builder_any.success(
+                data=response_data, message="应用创建成功，请妥善保存 app_secret（仅显示一次）"
+            ),
         )
 
     @router.post(
