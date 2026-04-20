@@ -76,7 +76,7 @@ async def get_runtime_devices(
     db: AsyncSessionDep,
     workline_id: int = Query(alias="worklineId"),
 ) -> ResponseSchemaModel[list[RuntimeDeviceSummary]]:
-    result = await runtime_query_service.list_devices(db, workline_id=workline_id)
+    result = await runtime_query_service.list_workline_devices(db, workline_id)
     return cast("ResponseSchemaModel[list[RuntimeDeviceSummary]]", response_builder.success(data=result))
 
 
@@ -92,7 +92,7 @@ async def get_runtime_device_detail(
     db: AsyncSessionDep,
     workline_id: int = Query(alias="worklineId"),
 ) -> ResponseSchemaModel[RuntimeDeviceDetailResponse]:
-    result = await runtime_query_service.get_device_detail(db, device_id, workline_id=workline_id)
+    result = await runtime_query_service.get_workline_device_detail(db, workline_id, device_id)
     if result is None:
         return cast(
             "ResponseSchemaModel[RuntimeDeviceDetailResponse]",

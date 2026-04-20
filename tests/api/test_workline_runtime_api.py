@@ -95,6 +95,26 @@ class TestWorklineTraceApi:
         mock_get_trace_list.assert_awaited_once_with(AnyArgHashable(), payload)
         assert response["data"].total == 1
 
+    @pytest.mark.asyncio
+    async def test_query_trace_list_short_circuits_when_device_has_no_sessions(self) -> None:
+        from src.app.workline.models.runtime import TraceQueryRequest
+        from src.app.workline.v1.trace import query_trace_list
+
+        payload = TraceQueryRequest(device_id=45, limit=10, offset=0)
+        db = AsyncMock()
+        db.execute.side_effect = AssertionError("session query should not run when device has no sessions")
+
+        with patch(
+            "src.app.workline.v1.trace.runtime_query_service._load_session_ids_by_device_id",
+            new=AsyncMock(return_value=set()),
+            create=True,
+        ) as mock_load_session_ids:
+            response = await query_trace_list(payload=payload, db=db)
+
+        mock_load_session_ids.assert_awaited_once_with(AnyArgHashable(), 45)
+        assert response["data"].total == 0
+        assert response["data"].items == []
+
 
 def test_trace_callback_log_item_allows_null_updated_at() -> None:
     from datetime import datetime
@@ -138,16 +158,23 @@ class TestWorklineRuntimeApi:
         assert response["data"].stats == []
 
     @pytest.mark.asyncio
-    async def test_get_runtime_devices_requires_workline_filter(self) -> None:
+    async def test_get_runtime_devices_uses_workline_scoped_service(self) -> None:
         from src.app.workline.v1.runtime import get_runtime_devices
 
-        with patch(
-            "src.app.workline.v1.runtime.runtime_query_service.list_devices",
-            new=AsyncMock(return_value=[]),
-        ) as mock_list_devices:
+        with (
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.list_workline_devices",
+                new=AsyncMock(return_value=[]),
+                create=True,
+            ) as mock_list_devices,
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.list_devices",
+                new=AsyncMock(side_effect=AssertionError("global device query should not be used by the API")),
+            ),
+        ):
             response = await get_runtime_devices(db=AsyncMock(), workline_id=45)
 
-        mock_list_devices.assert_awaited_once_with(AnyArgHashable(), workline_id=45)
+        mock_list_devices.assert_awaited_once_with(AnyArgHashable(), 45)
         assert response["data"] == []
 
     @pytest.mark.asyncio
@@ -164,7 +191,7 @@ class TestWorklineRuntimeApi:
         assert response["message"] == "工作线运行态不存在: 404"
 
     @pytest.mark.asyncio
-    async def test_get_runtime_device_detail_passes_workline_scope(self) -> None:
+    async def test_get_runtime_device_detail_uses_workline_scoped_service(self) -> None:
         from src.app.workline.models.runtime import RuntimeDeviceDetailResponse, RuntimeDeviceSummary
         from src.app.workline.v1.runtime import get_runtime_device_detail
 
@@ -187,24 +214,38 @@ class TestWorklineRuntimeApi:
             active_sessions=[],
         )
 
-        with patch(
-            "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
-            new=AsyncMock(return_value=result),
-        ) as mock_get_device_detail:
+        with (
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_workline_device_detail",
+                new=AsyncMock(return_value=result),
+                create=True,
+            ) as mock_get_device_detail,
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
+                new=AsyncMock(side_effect=AssertionError("unscoped device detail query should not be used by the API")),
+            ),
+        ):
             response = await get_runtime_device_detail(device_id=39, db=AsyncMock(), workline_id=45)
 
-        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 39, workline_id=45)
+        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 45, 39)
         assert response["data"].summary.workline_id == 45
 
     @pytest.mark.asyncio
     async def test_get_runtime_device_detail_returns_not_found_when_missing(self) -> None:
         from src.app.workline.v1.runtime import get_runtime_device_detail
 
-        with patch(
-            "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
-            new=AsyncMock(return_value=None),
-        ) as mock_get_device_detail:
+        with (
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_workline_device_detail",
+                new=AsyncMock(return_value=None),
+                create=True,
+            ) as mock_get_device_detail,
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_device_detail",
+                new=AsyncMock(side_effect=AssertionError("unscoped device detail query should not be used by the API")),
+            ),
+        ):
             response = await get_runtime_device_detail(device_id=404, db=AsyncMock(), workline_id=45)
 
-        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 404, workline_id=45)
+        mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 45, 404)
         assert response["message"] == "工作线设备运行态不存在: worklineId=45, deviceId=404"

@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
@@ -51,8 +51,18 @@ def _enum_str(value: Any) -> str | None:
     return getattr(value, "value", value) if value is not None else None
 
 
+def _status_str(value: Any) -> str:
+    return _enum_str(value) or "UNKNOWN"
+
+
 def _activity_dt(session: WorklineSession) -> Any:
     return session.last_ingress_at or session.waiting_since or session.started_at or session.created_at
+
+
+def _latest_activity_at(sessions: list[WorklineSession]) -> Any:
+    if not sessions:
+        return None
+    return _activity_dt(max(sessions, key=_activity_dt))
 
 
 def _is_timed_out(session: WorklineSession, now: Any) -> bool:
@@ -94,6 +104,18 @@ def _command_duration_ms(command: DeviceCommand) -> int | None:
         return None
 
 
+def _resolve_trace_device(
+    command: DeviceCommand | None,
+    inbox: WorklineInbox | None,
+    device_map: dict[int, Device],
+) -> Device | None:
+    if command is not None and command.device_id is not None:
+        return device_map.get(command.device_id)
+    if inbox is not None and inbox.device_id is not None:
+        return device_map.get(inbox.device_id)
+    return None
+
+
 class RuntimeQueryService(BaseService[Any, Any]):
     """运行监控中心只读聚合查询服务。"""
 
@@ -122,18 +144,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
         abnormal_device_items = [item for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES][:10]
 
         return RuntimeOverviewResponse(
-            stats=[
-                RuntimeStatCard(
-                    key="running_sessions", label="运行中 Session", value=running_sessions, status="warning"
-                ),
-                RuntimeStatCard(key="waiting_sessions", label="等待中 Session", value=waiting_sessions, status="info"),
-                RuntimeStatCard(
-                    key="failed_sessions", label="失败 / 超时 Session", value=failed_sessions, status="danger"
-                ),
-                RuntimeStatCard(key="inbox_backlog", label="Inbox 积压", value=inbox_backlog, status="warning"),
-                RuntimeStatCard(key="outbox_backlog", label="Outbox 积压", value=outbox_backlog, status="warning"),
-                RuntimeStatCard(key="abnormal_devices", label="异常设备", value=abnormal_devices, status="danger"),
-            ],
+            stats=self._build_overview_stats(
+                running_sessions=running_sessions,
+                waiting_sessions=waiting_sessions,
+                failed_sessions=failed_sessions,
+                inbox_backlog=inbox_backlog,
+                outbox_backlog=outbox_backlog,
+                abnormal_devices=abnormal_devices,
+            ),
             recent_failed_traces=recent_failed_traces,
             hot_worklines=hot_worklines,
             abnormal_devices=abnormal_device_items,
@@ -143,6 +161,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
     async def get_trace_list(self, db: Any, payload: TraceQueryRequest) -> RuntimeTraceListResponse:
         columns = cast("Any", WorklineSession).__table__.c
         query = select(WorklineSession)
+
+        if payload.device_id is not None:
+            session_ids = await self._load_session_ids_by_device_id(db, payload.device_id)
+            if not session_ids:
+                return RuntimeTraceListResponse(total=0, items=[])
+            query = query.where(columns.id.in_(sorted(session_ids)))
 
         if payload.workline_id is not None:
             query = query.where(columns.workline_id == payload.workline_id)
@@ -173,9 +197,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         result = await db.execute(query.order_by(columns.last_ingress_at.desc().nullslast(), columns.id.desc()))
         sessions = list(result.scalars().all())
-
-        if payload.device_id is not None:
-            sessions = await self._filter_sessions_by_device_id(db, sessions, payload.device_id)
 
         total = len(sessions)
         page_items = sessions[payload.offset : payload.offset + payload.limit]
@@ -215,9 +236,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         active_sessions = await self._load_active_sessions_for_workline(db, workline_id, limit=20)
         recent_failed_sessions = await self._load_recent_failed_sessions_for_workline(db, workline_id, limit=10)
-        all_sessions = active_sessions + [
-            item for item in recent_failed_sessions if item.id not in {s.id for s in active_sessions}
-        ]
+        active_session_ids = {session.id for session in active_sessions}
+        all_sessions = active_sessions + [item for item in recent_failed_sessions if item.id not in active_session_ids]
 
         summary = self._build_workline_summary(workline, devices, all_sessions)
         device_items = [self._build_workline_device_item(device) for device in devices]
@@ -260,6 +280,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if device.id is not None
         ]
 
+    async def list_workline_devices(self, db: Any, workline_id: int) -> list[RuntimeDeviceSummary]:
+        return await self.list_devices(db, workline_id=workline_id)
+
     async def get_device_detail(
         self, db: Any, device_id: int, workline_id: int | None = None
     ) -> RuntimeDeviceDetailResponse | None:
@@ -294,10 +317,18 @@ class RuntimeQueryService(BaseService[Any, Any]):
             active_sessions=await self._build_trace_list_items(db, active_sessions),
         )
 
+    async def get_workline_device_detail(
+        self,
+        db: Any,
+        workline_id: int,
+        device_id: int,
+    ) -> RuntimeDeviceDetailResponse | None:
+        return await self.get_device_detail(db, device_id, workline_id=workline_id)
+
     async def _count_by_status(self, db: Any, model: Any, statuses: set[str]) -> int:
         columns = cast("Any", model).__table__.c
-        result = await db.execute(select(model).where(columns.status.in_(list(statuses))))
-        return len(list(result.scalars().all()))
+        result = await db.execute(select(func.count()).select_from(model).where(columns.status.in_(list(statuses))))
+        return int(result.scalar_one())
 
     async def _load_workline_map(self, db: Any, workline_ids: list[int | None]) -> dict[int, WorkLine]:
         resolved_ids = [item for item in workline_ids if item is not None]
@@ -462,17 +493,29 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _filter_sessions_by_device_id(
-        self,
-        db: Any,
-        sessions: list[WorklineSession],
-        device_id: int,
-    ) -> list[WorklineSession]:
-        if not sessions:
-            return []
-        trace_items = await self._build_trace_list_items(db, sessions)
-        allowed_session_ids = {item.session_id for item in trace_items if item.device_id == device_id}
-        return [item for item in sessions if item.id in allowed_session_ids]
+    async def _load_session_ids_by_device_id(self, db: Any, device_id: int) -> set[int]:
+        command_columns = cast("Any", DeviceCommand).__table__.c
+        command_result = await db.execute(
+            select(command_columns.session_id).where(
+                command_columns.device_id == device_id,
+                command_columns.session_id.isnot(None),
+            )
+        )
+        session_ids = {
+            session_id
+            for value in command_result.scalars().all()
+            if (session_id := _parse_session_id(value)) is not None
+        }
+
+        inbox_columns = cast("Any", WorklineInbox).__table__.c
+        inbox_result = await db.execute(
+            select(inbox_columns.session_id).where(
+                inbox_columns.device_id == device_id,
+                inbox_columns.session_id.isnot(None),
+            )
+        )
+        session_ids.update(session_id for session_id in inbox_result.scalars().all() if session_id is not None)
+        return session_ids
 
     async def _build_trace_list_items(self, db: Any, sessions: list[WorklineSession]) -> list[RuntimeTraceListItem]:
         if not sessions:
@@ -484,14 +527,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
         latest_inbox_by_session = await self._load_latest_inbox_by_session(db, session_ids)
         latest_timeline_by_session = await self._load_latest_timeline_by_session(db, session_ids)
 
-        device_ids = set()
-        for command in latest_command_by_session.values():
-            if command.device_id is not None:
-                device_ids.add(command.device_id)
-        for inbox in latest_inbox_by_session.values():
-            if inbox.device_id is not None:
-                device_ids.add(inbox.device_id)
-
+        device_ids = {
+            item.device_id
+            for item in [*latest_command_by_session.values(), *latest_inbox_by_session.values()]
+            if item.device_id is not None
+        }
         device_map = await self._load_device_map(db, list(device_ids))
         items: list[RuntimeTraceListItem] = []
         for session in sorted(sessions, key=_activity_dt, reverse=True):
@@ -500,40 +540,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             command = latest_command_by_session.get(session.id)
             inbox = latest_inbox_by_session.get(session.id)
             timeline = latest_timeline_by_session.get(session.id)
-            device = None
-            if command is not None and command.device_id is not None:
-                device = device_map.get(command.device_id)
-            if device is None and inbox is not None and inbox.device_id is not None:
-                device = device_map.get(inbox.device_id)
             workline = workline_map.get(session.workline_id)
-
-            items.append(
-                RuntimeTraceListItem(
-                    session_id=session.id,
-                    session_code=session.session_code,
-                    correlation_id=session.correlation_id,
-                    request_id=session.last_request_id,
-                    workline_id=session.workline_id,
-                    workline_name=workline.line_name if workline is not None else None,
-                    workline_code=workline.line_code if workline is not None else None,
-                    device_id=device.id if device is not None else None,
-                    device_name=device.device_name if device is not None else None,
-                    device_code=device.device_code if device is not None else None,
-                    command_code=command.command_code if command is not None else None,
-                    status=_enum_str(session.status) or "UNKNOWN",
-                    step_code=session.step_code,
-                    current_wait_type=session.current_wait_type,
-                    failure_domain=session.failure_domain,
-                    failure_code=session.failure_code,
-                    latest_timeline_action=_enum_str(timeline.action_type) if timeline is not None else None,
-                    latest_timeline_status=_enum_str(timeline.status) if timeline is not None else None,
-                    latest_timeline_message=timeline.message if timeline is not None else None,
-                    started_at=session.started_at,
-                    last_ingress_at=session.last_ingress_at,
-                    deadline_at=session.deadline_at,
-                    is_timed_out=_is_timed_out(session, now),
-                )
-            )
+            device = _resolve_trace_device(command, inbox, device_map)
+            items.append(self._build_trace_list_item(session, workline, device, command, timeline, now))
         return items
 
     async def _load_latest_command_by_session(self, db: Any, session_ids: list[int]) -> dict[int, DeviceCommand]:
@@ -607,16 +616,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         error_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "ERROR")
         offline_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "OFFLINE")
         maintenance_devices = sum(1 for item in devices if item.maintenance_mode)
-        last_activity_at = None
-        sorted_sessions = sorted(sessions, key=_activity_dt, reverse=True)
-        if sorted_sessions:
-            last_activity_at = _activity_dt(sorted_sessions[0])
 
         return RuntimeWorklineSummary(
             id=workline.id,
             line_code=workline.line_code,
             line_name=workline.line_name,
-            line_type=_enum_str(workline.line_type) or "UNKNOWN",
+            line_type=_status_str(workline.line_type),
             zone_name=workline.zone_name,
             plugin_key=workline.plugin_key,
             contract_version=workline.contract_version,
@@ -630,7 +635,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             error_device_count=error_devices,
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
-            last_activity_at=last_activity_at,
+            last_activity_at=_latest_activity_at(sessions),
         )
 
     def _build_device_health_summary(
@@ -664,7 +669,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_role=device.device_role,
             role_index=device.role_index,
             upstream_device_id=device.upstream_device_id,
-            device_status=_enum_str(device.device_status) or "UNKNOWN",
+            device_status=_status_str(device.device_status),
             maintenance_mode=device.maintenance_mode,
             current_command_id=device.current_command_id,
             last_heartbeat_at=device.last_heartbeat_at,
@@ -687,7 +692,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             workline_id=device.work_line_id,
             workline_name=workline.line_name if workline is not None else None,
             workline_code=workline.line_code if workline is not None else None,
-            device_status=_enum_str(device.device_status) or "UNKNOWN",
+            device_status=_status_str(device.device_status),
             maintenance_mode=device.maintenance_mode,
             current_command_id=device.current_command_id,
             pending_command_count=pending_command_count,
@@ -721,8 +726,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             correlation_id=item.correlation_id,
             workline_id=item.workline_id,
             session_id=item.session_id,
-            task_type=_enum_str(item.task_type) or "UNKNOWN",
-            status=_enum_str(item.status) or "UNKNOWN",
+            task_type=_status_str(item.task_type),
+            status=_status_str(item.status),
             result=_enum_str(item.result),
             retry_count=item.retry_count,
             sent_at=item.sent_at,
@@ -736,6 +741,60 @@ class RuntimeQueryService(BaseService[Any, Any]):
             result_data=item.result_data,
             error_detail=item.error_detail,
             duration_ms=_command_duration_ms(item),
+        )
+
+    def _build_overview_stats(
+        self,
+        *,
+        running_sessions: int,
+        waiting_sessions: int,
+        failed_sessions: int,
+        inbox_backlog: int,
+        outbox_backlog: int,
+        abnormal_devices: int,
+    ) -> list[RuntimeStatCard]:
+        return [
+            RuntimeStatCard(key="running_sessions", label="运行中 Session", value=running_sessions, status="warning"),
+            RuntimeStatCard(key="waiting_sessions", label="等待中 Session", value=waiting_sessions, status="info"),
+            RuntimeStatCard(key="failed_sessions", label="失败 / 超时 Session", value=failed_sessions, status="danger"),
+            RuntimeStatCard(key="inbox_backlog", label="Inbox 积压", value=inbox_backlog, status="warning"),
+            RuntimeStatCard(key="outbox_backlog", label="Outbox 积压", value=outbox_backlog, status="warning"),
+            RuntimeStatCard(key="abnormal_devices", label="异常设备", value=abnormal_devices, status="danger"),
+        ]
+
+    def _build_trace_list_item(
+        self,
+        session: WorklineSession,
+        workline: WorkLine | None,
+        device: Device | None,
+        command: DeviceCommand | None,
+        timeline: WorklineTimeline | None,
+        now: Any,
+    ) -> RuntimeTraceListItem:
+        return RuntimeTraceListItem(
+            session_id=session.id,
+            session_code=session.session_code,
+            correlation_id=session.correlation_id,
+            request_id=session.last_request_id,
+            workline_id=session.workline_id,
+            workline_name=workline.line_name if workline is not None else None,
+            workline_code=workline.line_code if workline is not None else None,
+            device_id=device.id if device is not None else None,
+            device_name=device.device_name if device is not None else None,
+            device_code=device.device_code if device is not None else None,
+            command_code=command.command_code if command is not None else None,
+            status=_status_str(session.status),
+            step_code=session.step_code,
+            current_wait_type=session.current_wait_type,
+            failure_domain=session.failure_domain,
+            failure_code=session.failure_code,
+            latest_timeline_action=_enum_str(timeline.action_type) if timeline is not None else None,
+            latest_timeline_status=_enum_str(timeline.status) if timeline is not None else None,
+            latest_timeline_message=timeline.message if timeline is not None else None,
+            started_at=session.started_at,
+            last_ingress_at=session.last_ingress_at,
+            deadline_at=session.deadline_at,
+            is_timed_out=_is_timed_out(session, now),
         )
 
 
