@@ -52,7 +52,7 @@ class TreeServiceMixin[M]:
         for node in nodes:
             children = node.get("children")
             if isinstance(children, list):
-                self._sort_tree_nodes(children)
+                _ = self._sort_tree_nodes(children)
         return nodes
 
     async def get_tree(

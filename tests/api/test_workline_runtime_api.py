@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -5,6 +6,7 @@ import pytest
 
 from src.app.workline.v1 import runtime as runtime_module
 from src.app.workline.v1 import trace as trace_module
+from src.utils.timezone import timezone
 
 
 class _TraceContextStub:
@@ -94,26 +96,6 @@ class TestWorklineTraceApi:
 
         mock_get_trace_list.assert_awaited_once_with(AnyArgHashable(), payload)
         assert response["data"].total == 1
-
-    @pytest.mark.asyncio
-    async def test_query_trace_list_short_circuits_when_device_has_no_sessions(self) -> None:
-        from src.app.workline.models.runtime import TraceQueryRequest
-        from src.app.workline.v1.trace import query_trace_list
-
-        payload = TraceQueryRequest(device_id=45, limit=10, offset=0)
-        db = AsyncMock()
-        db.execute.side_effect = AssertionError("session query should not run when device has no sessions")
-
-        with patch(
-            "src.app.workline.v1.trace.runtime_query_service._load_session_ids_by_device_id",
-            new=AsyncMock(return_value=set()),
-            create=True,
-        ) as mock_load_session_ids:
-            response = await query_trace_list(payload=payload, db=db)
-
-        mock_load_session_ids.assert_awaited_once_with(AnyArgHashable(), 45)
-        assert response["data"].total == 0
-        assert response["data"].items == []
 
 
 def test_trace_callback_log_item_allows_null_updated_at() -> None:
@@ -249,3 +231,256 @@ class TestWorklineRuntimeApi:
 
         mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 45, 404)
         assert response["message"] == "工作线设备运行态不存在: worklineId=45, deviceId=404"
+
+
+class TestRuntimeQueryService:
+    @pytest.mark.asyncio
+    async def test_get_trace_list_uses_database_count_and_page_query(self) -> None:
+        from src.app.workline.models.runtime import RuntimeTraceListItem, TraceQueryRequest
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        session_a = SimpleNamespace(
+            id=11,
+            session_code="S11",
+            correlation_id=None,
+            last_request_id=None,
+            workline_id=5,
+            status="RUNNING",
+            step_code=None,
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=None,
+            last_ingress_at=None,
+            deadline_at=None,
+        )
+        session_b = SimpleNamespace(
+            id=12,
+            session_code="S12",
+            correlation_id=None,
+            last_request_id=None,
+            workline_id=5,
+            status="RUNNING",
+            step_code=None,
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=None,
+            last_ingress_at=None,
+            deadline_at=None,
+        )
+        count_result = SimpleNamespace(scalar_one=lambda: 50)
+        page_result = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [session_a, session_b]))
+        db = AsyncMock()
+        db.execute.side_effect = [count_result, page_result]
+        service = RuntimeQueryService()
+        payload = TraceQueryRequest(limit=2, offset=4)
+        trace_items = [
+            RuntimeTraceListItem(session_id=11, session_code="S11", workline_id=5, status="RUNNING"),
+            RuntimeTraceListItem(session_id=12, session_code="S12", workline_id=5, status="RUNNING"),
+        ]
+
+        with patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=trace_items)) as mock_items:
+            result = await service.get_trace_list(db, payload)
+
+        assert result.total == 50
+        assert result.items == trace_items
+        mock_items.assert_awaited_once_with(AnyArgHashable(), [session_a, session_b])
+
+    @pytest.mark.asyncio
+    async def test_get_overview_uses_failure_count_query_instead_of_recent_list_length(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        recent_failed_sessions = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+        with (
+            patch.object(service, "list_worklines", new=AsyncMock(return_value=[])),
+            patch.object(service, "list_devices", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions", new=AsyncMock(return_value=recent_failed_sessions)),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch.object(service, "_count_by_status", new=AsyncMock(side_effect=[7, 9, 10])),
+            patch.object(service, "_count_waiting_sessions", new=AsyncMock(return_value=8), create=True),
+            patch.object(
+                service,
+                "_count_failed_or_timed_out_sessions",
+                new=AsyncMock(return_value=42),
+                create=True,
+            ) as mock_failed_count,
+        ):
+            result = await service.get_overview(db)
+
+        mock_failed_count.assert_awaited_once_with(AnyArgHashable())
+        failed_card = next(item for item in result.stats if item.key == "failed_sessions")
+        assert failed_card.value == 42
+
+    def test_build_workline_summary_excludes_timed_out_sessions_from_waiting_count(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        now = timezone.now_for_db()
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=5,
+            line_code="WL-05",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            owner_team=None,
+            support_contact=None,
+            is_active=True,
+        )
+        timed_out_session = SimpleNamespace(
+            status="WAITING_EXTERNAL",
+            deadline_at=now - timedelta(minutes=5),
+            last_ingress_at=None,
+            waiting_since=now - timedelta(minutes=10),
+            started_at=None,
+            created_at=now - timedelta(minutes=20),
+        )
+
+        summary = service._build_workline_summary(workline, [], [timed_out_session])
+
+        assert summary.waiting_session_count == 0
+        assert summary.failed_session_count == 1
+
+    def test_build_workline_summary_requires_persisted_workline(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=None,
+            line_code="WL-05",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            owner_team=None,
+            support_contact=None,
+            is_active=True,
+        )
+
+        with pytest.raises(ValueError, match=r"workline\.id"):
+            service._build_workline_summary(workline, [], [])
+
+    def test_build_workline_device_item_requires_persisted_device(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        device = SimpleNamespace(
+            id=None,
+            device_code="ARM-01",
+            device_name="机械臂",
+            device_role="INPUT_ARM",
+            role_index=1,
+            upstream_device_id=None,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=None,
+            last_heartbeat_at=None,
+            error_code=None,
+        )
+
+        with pytest.raises(ValueError, match=r"device\.id"):
+            service._build_workline_device_item(device)
+
+    def test_build_device_summary_requires_persisted_device(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        device = SimpleNamespace(
+            id=None,
+            device_code="ARM-01",
+            device_name="机械臂",
+            device_role="INPUT_ARM",
+            role_index=1,
+            work_line_id=8,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=None,
+            last_heartbeat_at=None,
+            error_code=None,
+        )
+
+        with pytest.raises(ValueError, match=r"device\.id"):
+            service._build_device_summary(device, None, 0, None)
+
+    def test_build_callback_item_requires_persisted_callback_log(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        callback_log = SimpleNamespace(
+            id=None,
+            callback_type="event",
+            device_id="ARM-01",
+            request_id=None,
+            correlation_id=None,
+            response_status=200,
+            response_time_ms=15,
+            error_message=None,
+            ingress_outcome=None,
+            failure_stage=None,
+            request_body={},
+            created_at=timezone.now_for_db(),
+            updated_at=None,
+        )
+
+        with pytest.raises(ValueError, match=r"callback_log\.id"):
+            service._build_callback_item(callback_log)
+
+    def test_build_command_item_requires_persisted_command(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        command = SimpleNamespace(
+            id=None,
+            device_id=1,
+            command_code="CMD-01",
+            correlation_id=None,
+            workline_id=8,
+            session_id="9",
+            task_type="MOVE",
+            status="SENT",
+            result=None,
+            retry_count=0,
+            sent_at=None,
+            ack_received_at=None,
+            completed_at=None,
+            ack_code=None,
+            ack_message=None,
+            ack_trace_id=None,
+            step_code=None,
+            params={},
+            result_data=None,
+            error_detail=None,
+            get_duration_ms=lambda: None,
+        )
+
+        with pytest.raises(ValueError, match=r"device_command\.id"):
+            service._build_command_item(command)
+
+    def test_build_trace_list_item_requires_persisted_session(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        session = SimpleNamespace(
+            id=None,
+            session_code="S-01",
+            correlation_id=None,
+            last_request_id=None,
+            workline_id=8,
+            status="RUNNING",
+            step_code=None,
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=None,
+            last_ingress_at=None,
+            deadline_at=None,
+        )
+
+        with pytest.raises(ValueError, match=r"session\.id"):
+            service._build_trace_list_item(session, None, None, None, None, timezone.now_for_db())

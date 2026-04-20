@@ -90,10 +90,6 @@ class DeviceContextService:
             is_active = getattr(workline, "is_active", True)
             if not is_active:
                 inactive_workline_id = workline.id if isinstance(workline.id, int) else work_line_id
-                if inactive_workline_id is None:
-                    logger.warning(f"设备 {device_code} 关联的工作线未启用，但缺少有效工作线 ID")
-                    return None, self._build_not_found(f"设备 {device_code} 关联的工作线标识无效")
-
                 logger.warning(f"工作线 {inactive_workline_id} 未启用")
                 return None, self._build_inactive(inactive_workline_id)
 

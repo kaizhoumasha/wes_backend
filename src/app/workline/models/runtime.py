@@ -341,4 +341,4 @@ class RuntimeDeviceDetailResponse(BaseModel):
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
 
 
-RuntimeOverviewResponse.model_rebuild()
+_ = RuntimeOverviewResponse.model_rebuild()

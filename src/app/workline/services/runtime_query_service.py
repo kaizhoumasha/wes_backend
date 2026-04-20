@@ -6,7 +6,8 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, exists, func, or_, select
+from sqlalchemy import cast as sa_cast
 
 from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
@@ -83,8 +84,22 @@ def _waiting_timeout_clause(columns: Any, now: Any) -> Any:
     )
 
 
+def _waiting_not_timed_out_clause(columns: Any, now: Any) -> Any:
+    return and_(
+        columns.status.in_(list(_WAITING_SESSION_STATUSES)),
+        or_(columns.deadline_at.is_(None), columns.deadline_at >= now),
+    )
+
+
 def _recent_failed_clause(columns: Any, recent_since: Any) -> Any:
     return and_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), columns.updated_at >= recent_since)
+
+
+def _recent_failure_or_timeout_clause(columns: Any, now: Any, recent_since: Any) -> Any:
+    return and_(
+        or_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), _waiting_timeout_clause(columns, now)),
+        columns.updated_at >= recent_since,
+    )
 
 
 def _parse_session_id(value: Any) -> int | None:
@@ -104,16 +119,41 @@ def _command_duration_ms(command: DeviceCommand) -> int | None:
         return None
 
 
+def _require_int_id(value: int | None, field_name: str) -> int:
+    if value is None:
+        raise ValueError(f"{field_name} must not be None when building runtime response")
+    return value
+
+
 def _resolve_trace_device(
     command: DeviceCommand | None,
     inbox: WorklineInbox | None,
     device_map: dict[int, Device],
 ) -> Device | None:
-    if command is not None and command.device_id is not None:
+    if command is not None:
         return device_map.get(command.device_id)
     if inbox is not None and inbox.device_id is not None:
         return device_map.get(inbox.device_id)
     return None
+
+
+def _device_session_clause(session_columns: Any, device_id: int) -> Any:
+    command_columns = cast("Any", DeviceCommand).__table__.c
+    inbox_columns = cast("Any", WorklineInbox).__table__.c
+    return or_(
+        exists(
+            select(command_columns.id).where(
+                command_columns.device_id == device_id,
+                command_columns.session_id == sa_cast(session_columns.id, String()),
+            )
+        ),
+        exists(
+            select(inbox_columns.id).where(
+                inbox_columns.device_id == device_id,
+                inbox_columns.session_id == session_columns.id,
+            )
+        ),
+    )
 
 
 class RuntimeQueryService(BaseService[Any, Any]):
@@ -130,8 +170,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         device_health = self._build_device_health_summary(devices)
 
         running_sessions = await self._count_by_status(db, WorklineSession, {"RUNNING"})
-        waiting_sessions = await self._count_by_status(db, WorklineSession, _WAITING_SESSION_STATUSES)
-        failed_sessions = len(recent_failed_sessions)
+        waiting_sessions = await self._count_waiting_sessions(db)
+        failed_sessions = await self._count_failed_or_timed_out_sessions(db)
         inbox_backlog = await self._count_by_status(db, WorklineInbox, _INBOX_BACKLOG_STATUSES)
         outbox_backlog = await self._count_by_status(db, WorklineOutbox, _OUTBOX_BACKLOG_STATUSES)
         abnormal_devices = device_health.abnormal
@@ -160,32 +200,26 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def get_trace_list(self, db: Any, payload: TraceQueryRequest) -> RuntimeTraceListResponse:
         columns = cast("Any", WorklineSession).__table__.c
-        query = select(WorklineSession)
+        filters: list[Any] = []
 
         if payload.device_id is not None:
-            session_ids = await self._load_session_ids_by_device_id(db, payload.device_id)
-            if not session_ids:
-                return RuntimeTraceListResponse(total=0, items=[])
-            query = query.where(columns.id.in_(sorted(session_ids)))
+            filters.append(_device_session_clause(columns, payload.device_id))
 
         if payload.workline_id is not None:
-            query = query.where(columns.workline_id == payload.workline_id)
+            filters.append(columns.workline_id == payload.workline_id)
         if payload.status:
-            query = query.where(columns.status == payload.status)
+            filters.append(columns.status == payload.status)
         if payload.step_code:
-            query = query.where(columns.step_code == payload.step_code)
+            filters.append(columns.step_code == payload.step_code)
         if payload.only_active:
-            query = query.where(columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
+            filters.append(columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
         if payload.only_failed:
             recent_since = _recent_failure_since()
             now = timezone.now_for_db()
-            query = query.where(
-                or_(columns.status.in_(list(_FAILURE_SESSION_STATUSES)), _waiting_timeout_clause(columns, now)),
-                columns.updated_at >= recent_since,
-            )
+            filters.append(_recent_failure_or_timeout_clause(columns, now, recent_since))
         if payload.keyword:
             keyword = f"%{payload.keyword}%"
-            query = query.where(
+            filters.append(
                 or_(
                     columns.session_code.ilike(keyword),
                     columns.correlation_id.ilike(keyword),
@@ -195,11 +229,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 )
             )
 
-        result = await db.execute(query.order_by(columns.last_ingress_at.desc().nullslast(), columns.id.desc()))
-        sessions = list(result.scalars().all())
+        count_query = select(func.count()).select_from(WorklineSession).where(*filters)
+        total_result = await db.execute(count_query)
+        total = int(total_result.scalar_one())
+        if total == 0:
+            return RuntimeTraceListResponse(total=0, items=[])
 
-        total = len(sessions)
-        page_items = sessions[payload.offset : payload.offset + payload.limit]
+        page_query = (
+            select(WorklineSession)
+            .where(*filters)
+            .order_by(columns.last_ingress_at.desc().nullslast(), columns.id.desc())
+            .offset(payload.offset)
+            .limit(payload.limit)
+        )
+        page_result = await db.execute(page_query)
+        page_items = list(page_result.scalars().all())
         items = await self._build_trace_list_items(db, page_items)
         return RuntimeTraceListResponse(total=total, items=items)
 
@@ -330,6 +374,25 @@ class RuntimeQueryService(BaseService[Any, Any]):
         result = await db.execute(select(func.count()).select_from(model).where(columns.status.in_(list(statuses))))
         return int(result.scalar_one())
 
+    async def _count_waiting_sessions(self, db: Any) -> int:
+        columns = cast("Any", WorklineSession).__table__.c
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(func.count()).select_from(WorklineSession).where(_waiting_not_timed_out_clause(columns, now))
+        )
+        return int(result.scalar_one())
+
+    async def _count_failed_or_timed_out_sessions(self, db: Any) -> int:
+        columns = cast("Any", WorklineSession).__table__.c
+        recent_since = _recent_failure_since()
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(func.count())
+            .select_from(WorklineSession)
+            .where(_recent_failure_or_timeout_clause(columns, now, recent_since))
+        )
+        return int(result.scalar_one())
+
     async def _load_workline_map(self, db: Any, workline_ids: list[int | None]) -> dict[int, WorkLine]:
         resolved_ids = [item for item in workline_ids if item is not None]
         if not resolved_ids:
@@ -360,12 +423,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return {}
         columns = cast("Any", WorklineSession).__table__.c
         recent_since = _recent_failure_since()
+        now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession).where(
                 columns.workline_id.in_(workline_ids),
                 or_(
                     columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
-                    _recent_failed_clause(columns, recent_since),
+                    _recent_failure_or_timeout_clause(columns, now, recent_since),
                     and_(columns.status.in_(list(_WAITING_SESSION_STATUSES)), columns.deadline_at.isnot(None)),
                 ),
             )
@@ -381,7 +445,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession)
-            .where(or_(_recent_failed_clause(columns, recent_since), _waiting_timeout_clause(columns, now)))
+            .where(_recent_failure_or_timeout_clause(columns, now, recent_since))
             .order_by(columns.updated_at.desc(), columns.id.desc())
             .limit(limit)
         )
@@ -397,7 +461,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             select(WorklineSession)
             .where(
                 columns.workline_id == workline_id,
-                or_(_recent_failed_clause(columns, recent_since), _waiting_timeout_clause(columns, now)),
+                _recent_failure_or_timeout_clause(columns, now, recent_since),
             )
             .order_by(columns.updated_at.desc(), columns.id.desc())
             .limit(limit)
@@ -493,30 +557,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _load_session_ids_by_device_id(self, db: Any, device_id: int) -> set[int]:
-        command_columns = cast("Any", DeviceCommand).__table__.c
-        command_result = await db.execute(
-            select(command_columns.session_id).where(
-                command_columns.device_id == device_id,
-                command_columns.session_id.isnot(None),
-            )
-        )
-        session_ids = {
-            session_id
-            for value in command_result.scalars().all()
-            if (session_id := _parse_session_id(value)) is not None
-        }
-
-        inbox_columns = cast("Any", WorklineInbox).__table__.c
-        inbox_result = await db.execute(
-            select(inbox_columns.session_id).where(
-                inbox_columns.device_id == device_id,
-                inbox_columns.session_id.isnot(None),
-            )
-        )
-        session_ids.update(session_id for session_id in inbox_result.scalars().all() if session_id is not None)
-        return session_ids
-
     async def _build_trace_list_items(self, db: Any, sessions: list[WorklineSession]) -> list[RuntimeTraceListItem]:
         if not sessions:
             return []
@@ -607,7 +647,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
     ) -> RuntimeWorklineSummary:
         now = timezone.now_for_db()
         active_count = sum(1 for item in sessions if (_enum_str(item.status) or "") in _ACTIVE_SESSION_STATUSES)
-        waiting_count = sum(1 for item in sessions if (_enum_str(item.status) or "") in _WAITING_SESSION_STATUSES)
+        waiting_count = sum(
+            1
+            for item in sessions
+            if (_enum_str(item.status) or "") in _WAITING_SESSION_STATUSES and not _is_timed_out(item, now)
+        )
         failed_count = sum(
             1
             for item in sessions
@@ -618,7 +662,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         maintenance_devices = sum(1 for item in devices if item.maintenance_mode)
 
         return RuntimeWorklineSummary(
-            id=workline.id,
+            id=_require_int_id(workline.id, "workline.id"),
             line_code=workline.line_code,
             line_name=workline.line_name,
             line_type=_status_str(workline.line_type),
@@ -663,7 +707,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     def _build_workline_device_item(self, device: Device) -> RuntimeWorklineDeviceItem:
         return RuntimeWorklineDeviceItem(
-            id=device.id,
+            id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
             device_name=device.device_name,
             device_role=device.device_role,
@@ -684,7 +728,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         recent_callback_at: Any,
     ) -> RuntimeDeviceSummary:
         return RuntimeDeviceSummary(
-            id=device.id,
+            id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
             device_name=device.device_name,
             device_role=device.device_role,
@@ -703,7 +747,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     def _build_callback_item(self, item: CallbackLog) -> TraceCallbackLogItem:
         return TraceCallbackLogItem(
-            id=item.id,
+            id=_require_int_id(item.id, "callback_log.id"),
             callback_type=item.callback_type,
             device_id=item.device_id,
             request_id=item.request_id,
@@ -720,7 +764,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     def _build_command_item(self, item: DeviceCommand) -> TraceCommandItem:
         return TraceCommandItem(
-            id=item.id,
+            id=_require_int_id(item.id, "device_command.id"),
             device_id=item.device_id,
             command_code=item.command_code,
             correlation_id=item.correlation_id,
@@ -772,7 +816,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         now: Any,
     ) -> RuntimeTraceListItem:
         return RuntimeTraceListItem(
-            session_id=session.id,
+            session_id=_require_int_id(session.id, "session.id"),
             session_code=session.session_code,
             correlation_id=session.correlation_id,
             request_id=session.last_request_id,
