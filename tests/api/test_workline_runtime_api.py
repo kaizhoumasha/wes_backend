@@ -103,16 +103,16 @@ def test_trace_callback_log_item_allows_null_updated_at() -> None:
 
     item = TraceCallbackLogItem(
         id=1,
-        callback_type='event',
-        device_id='ARM01',
-        request_id='req-001',
-        correlation_id='corr-001',
+        callback_type="event",
+        device_id="ARM01",
+        request_id="req-001",
+        correlation_id="corr-001",
         response_status=200,
         response_time_ms=12,
         error_message=None,
-        ingress_outcome='ACCEPTED',
+        ingress_outcome="ACCEPTED",
         failure_stage=None,
-        request_body={'foo': 'bar'},
+        request_body={"foo": "bar"},
         created_at=datetime.now(),
         updated_at=None,
     )
@@ -136,6 +136,19 @@ class TestWorklineRuntimeApi:
 
         mock_get_overview.assert_awaited_once_with(AnyArgHashable())
         assert response["data"].stats == []
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_devices_passes_optional_workline_filter(self) -> None:
+        from src.app.workline.v1.runtime import get_runtime_devices
+
+        with patch(
+            "src.app.workline.v1.runtime.runtime_query_service.list_devices",
+            new=AsyncMock(return_value=[]),
+        ) as mock_list_devices:
+            response = await get_runtime_devices(db=AsyncMock(), workline_id=45)
+
+        mock_list_devices.assert_awaited_once_with(AnyArgHashable(), workline_id=45)
+        assert response["data"] == []
 
     @pytest.mark.asyncio
     async def test_get_runtime_workline_detail_returns_not_found_when_missing(self) -> None:

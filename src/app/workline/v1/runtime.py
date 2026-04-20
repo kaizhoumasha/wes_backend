@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from src.app.workline.models.runtime import (
     RuntimeDeviceDetailResponse,
@@ -16,7 +16,7 @@ from src.app.workline.models.runtime import (
 from src.app.workline.services import runtime_query_service
 from src.core.rbac import RequirePermission
 from src.core.response import DEFAULT_NOT_FOUND, ResponseSchemaModel, response_builder
-from src.database.dependencies import AsyncSessionDep
+from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 
 router = APIRouter(tags=["运行监控"])
 
@@ -72,8 +72,11 @@ async def get_runtime_workline_detail(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:device:list"))],
 )
-async def get_runtime_devices(db: AsyncSessionDep) -> ResponseSchemaModel[list[RuntimeDeviceSummary]]:
-    result = await runtime_query_service.list_devices(db)
+async def get_runtime_devices(
+    db: AsyncSessionDep,
+    workline_id: int | None = Query(default=None, alias="worklineId"),
+) -> ResponseSchemaModel[list[RuntimeDeviceSummary]]:
+    result = await runtime_query_service.list_devices(db, workline_id=workline_id)
     return cast("ResponseSchemaModel[list[RuntimeDeviceSummary]]", response_builder.success(data=result))
 
 

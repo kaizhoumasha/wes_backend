@@ -202,13 +202,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
             recent_failed_traces=failed_trace_items,
         )
 
-    async def list_devices(self, db: Any) -> list[RuntimeDeviceSummary]:
+    async def list_devices(self, db: Any, workline_id: int | None = None) -> list[RuntimeDeviceSummary]:
         device_columns = cast("Any", Device).__table__.c
-        device_result = await db.execute(
-            select(Device)
-            .where(device_columns.is_deleted.is_(False))
-            .order_by(device_columns.sort_order.asc(), device_columns.id.asc())
-        )
+        query = select(Device).where(device_columns.is_deleted.is_(False))
+        if workline_id is not None:
+            query = query.where(device_columns.work_line_id == workline_id)
+
+        device_result = await db.execute(query.order_by(device_columns.sort_order.asc(), device_columns.id.asc()))
         devices = list(device_result.scalars().all())
         if not devices:
             return []
