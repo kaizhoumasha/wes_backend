@@ -344,13 +344,13 @@ class TestInboxConsumer:
         mock_inbox_service.mark_as_failed.assert_called_once_with(
             mock_db,
             inbox.id,
-            "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）",
             auto_commit=False,
         )
         mock_log_diagnostic.assert_called_once_with(
             inbox=inbox,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-            message="SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            message="SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）",
         )
 
     @pytest.mark.asyncio
@@ -386,13 +386,13 @@ class TestInboxConsumer:
         mock_inbox_service.mark_as_failed.assert_called_once_with(
             mock_db,
             inbox.id,
-            "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）",
             auto_commit=False,
         )
         mock_log_diagnostic.assert_called_once_with(
             inbox=inbox,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-            message="SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）",
+            message="SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）",
         )
 
     @pytest.mark.asyncio
@@ -423,7 +423,7 @@ class TestInboxConsumer:
 
         assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
         assert inbox.status == InboxStatus.FAILED
-        assert inbox.error_message == "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
+        assert inbox.error_message == "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
         db.commit.assert_awaited_once()
         mock_orchestrator.process_inbox.assert_not_called()
 

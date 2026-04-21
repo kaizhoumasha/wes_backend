@@ -34,7 +34,7 @@ from src.celery_app.constants import (
 from src.core.logger import logger
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_plugin_registry import get_plugin_contract_version, parse_workline_six_in_one
 from src.workline_runtime.diagnostics import (
     ErrorCode,
     build_diagnostic_card,
@@ -45,7 +45,6 @@ from src.workline_runtime.diagnostics import (
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.payloads import SixInOne
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.types import FailureIntent
 
@@ -1538,21 +1537,19 @@ class ProcessInboxMessages:
                 resolved_event_type = _canonical_event_type(payload)
                 data_field: dict[str, Any] = payload.get("data") or {}
 
+                # 加载关联实体
+                entities = await _load_related_entities(db, inbox)
+                session = entities["session"]
+                workline = entities["workline"]
+
                 # SCAN_COMPLETED 事件必须包含条码信息。
                 # 优先使用 canonical_event_type，缺失时回退 event_type，
                 # 保持 vendor event 映射后一致校验。
                 if resolved_event_type == "SCAN_COMPLETED":
-                    # 从 data 字段和 payload 中收集条码
-                    barcode_values: list[Any] = [data_field.get(f) for f in SixInOne.BARCODE_FIELDS]
-                    barcode_values.extend(
-                        [
-                            payload.get("LotCode"),
-                            payload.get("DateCode"),
-                            payload.get("barcode"),
-                        ]
-                    )
-                    if not any(barcode_values):
-                        error_msg = "SCAN_COMPLETED 缺少条码信息（LotCode/DateCode/PONumber/MfrPN/ProductNo/Qty）"
+                    six_in_one = parse_workline_six_in_one(getattr(workline, "plugin_key", None), data_field)
+                    barcode = payload.get("barcode")
+                    if not ((six_in_one and six_in_one.has_any_value) or (isinstance(barcode, str) and barcode)):
+                        error_msg = "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
                         logger.warning(f"Inbox {inbox_pk} {error_msg}")
                         _log_diagnostic(inbox=inbox, error_code=ErrorCode.CALLBACK_SCHEMA_INVALID, message=error_msg)
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
@@ -1560,11 +1557,6 @@ class ProcessInboxMessages:
                         result["failed"] += 1
                         result["processed"] += 1
                         continue
-
-                # 加载关联实体
-                entities = await _load_related_entities(db, inbox)
-                session = entities["session"]
-                workline = entities["workline"]
                 if session is None or workline is None:
                     error_msg = "Inbox processing missing session/workline context"
                     _log_diagnostic(

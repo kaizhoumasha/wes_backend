@@ -13,10 +13,8 @@ Session 归属解析器
 设计参考: 设计文档 phase2-orchestrator
 """
 
-import hashlib
-import json
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +26,10 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version
-from src.workline_runtime.payloads import SixInOne
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import ensure_dict
+from src.workline_plugin_registry import get_plugin_contract_version, parse_workline_six_in_one
+
+from .trace_context import TraceContext
+from .utils import ensure_dict
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
@@ -44,41 +42,18 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
 }
-_SIX_IN_ONE_KEY_ALIASES = SixInOne.BARCODE_FIELDS
 _PENDING_SESSION_INGRESS_METADATA_ATTR = "_pending_session_ingress_metadata"
 
 
-def _generate_six_in_one_business_key(data: dict[str, Any]) -> str | None:
-    """
-    从 Six-In-One 数据生成唯一业务键。
+class SessionIngressMetadata(TypedDict):
+    """复用 session 时的 ingress 元数据补丁。"""
 
-    使用所有非空字段生成 hash，确保相同数据组合生成相同 key，
-    不同组合生成不同 key。
-
-    Args:
-        data: 业务数据字典
-
-    Returns:
-        16位唯一业务键，失败返回 None
-    """
-    # 收集所有非空字段，保持固定顺序
-    fields = []
-    for alias in _SIX_IN_ONE_KEY_ALIASES:
-        value = data.get(alias)
-        if isinstance(value, str) and value:
-            fields.append(value)
-
-    if not fields:
-        return None
-
-    # 生成确定性的 JSON 字符串
-    json_str = json.dumps(fields, ensure_ascii=False)
-
-    # 生成 16 位 hash
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+    ingress_count: int
+    last_ingress_at: Any
+    last_request_id: NotRequired[str]
 
 
-def _resolve_business_key(payload_json: dict[str, Any]) -> str:
+def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
     """从事件 payload 提取业务主键，缺失时生成兜底值。"""
     business_key = payload_json.get("business_key")
     if isinstance(business_key, str) and business_key:
@@ -91,10 +66,11 @@ def _resolve_business_key(payload_json: dict[str, Any]) -> str:
     if isinstance(barcode, str) and barcode:
         return barcode
 
-    # 使用完整的 Six-In-One 组合生成唯一业务键
-    six_in_one_key = _generate_six_in_one_business_key(data)
-    if six_in_one_key:
-        return six_in_one_key
+    # 通过插件自有协议解析入口生成统一 business_key
+    if data:
+        six_in_one = parse_workline_six_in_one(plugin_key, data)
+        if six_in_one and getattr(six_in_one, "business_key", None):
+            return six_in_one.business_key
 
     return f"auto_{uuid.uuid4().hex[:12]}"
 
@@ -104,12 +80,12 @@ def _build_session_ingress_metadata(
     *,
     trace: TraceContext,
     observed_at: Any,
-) -> dict[str, Any]:
+) -> SessionIngressMetadata:
     """为复用已有 session 构造最终应持久化的 ingress 元数据。"""
 
     current = getattr(session, "ingress_count", None)
     ingress_count = current + 1 if isinstance(current, int) and current >= 1 else 2
-    metadata: dict[str, Any] = {
+    metadata: SessionIngressMetadata = {
         "ingress_count": ingress_count,
         "last_ingress_at": observed_at,
     }
@@ -118,7 +94,7 @@ def _build_session_ingress_metadata(
     return metadata
 
 
-def _apply_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+def _apply_session_ingress_metadata(session: WorklineSession, metadata: SessionIngressMetadata) -> None:
     """把 ingress 元数据应用到 session 对象。"""
 
     session.ingress_count = metadata["ingress_count"]
@@ -127,7 +103,7 @@ def _apply_session_ingress_metadata(session: WorklineSession, metadata: dict[str
     session.last_ingress_at = metadata["last_ingress_at"]
 
 
-def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: SessionIngressMetadata) -> None:
     """暂存复用 session 的 ingress 补丁，供锁内 refresh 后重放。"""
 
     setattr(session, _PENDING_SESSION_INGRESS_METADATA_ATTR, dict(metadata))
@@ -140,7 +116,7 @@ def reapply_pending_session_ingress_metadata(session: WorklineSession) -> bool:
     if not isinstance(metadata, dict) or not metadata:
         return False
 
-    _apply_session_ingress_metadata(session, metadata)
+    _apply_session_ingress_metadata(session, cast("SessionIngressMetadata", metadata))
     return True
 
 
@@ -259,7 +235,7 @@ class SessionResolver:
             解析或创建的 Session
         """
         payload_json = ensure_dict(inbox.payload_json)
-        business_key = _resolve_business_key(payload_json)
+        business_key = _resolve_business_key(payload_json, plugin_key=getattr(workline, "plugin_key", None))
         now = timezone.now_for_db()
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
 

@@ -34,9 +34,9 @@ import typing
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.core.logger import logger
 from src.workline_runtime.types import (
@@ -64,6 +64,9 @@ AsyncCommandHandler = Callable[..., Any]
 
 AsyncTimeoutHandler = Callable[..., Any]
 """插件超时处理方法类型"""
+
+
+ParsedModelT = TypeVar("ParsedModelT", bound=BaseModel)
 
 
 # ==================== Payload 基类 ====================
@@ -169,6 +172,39 @@ def resolve_normalized_command_failure(
     error_code = _non_empty_str(error_detail.get("error_code")) or _non_empty_str(payload.get("error_code"))
     error_message = _non_empty_str(error_detail.get("error_message")) or _non_empty_str(payload.get("error_message"))
     return error_code or default_code, error_message or default_message
+
+
+def try_parse_normalized_result_data(result: Any, model: type[ParsedModelT]) -> ParsedModelT | None:
+    """尝试将标准化命令结果中的 `data` 解析为指定模型。"""
+
+    data = getattr(result, "data", None)
+    if not isinstance(data, dict) or not data:
+        return None
+
+    try:
+        return model.model_validate(data)
+    except ValidationError:
+        return None
+
+
+def build_payload_invalid_failure(ctx: Any, message: str):
+    """构造标准 payload 缺失/非法时的统一失败返回。"""
+
+    return PluginResultBuilder(ctx).failure(domain="DATA", code="PAYLOAD_INVALID", message=message).build()
+
+
+def build_state_mismatch_failure(ctx: Any, command_type: str, result_name: str, step_code: str | None):
+    """构造命令结果落在非法状态时的统一失败返回。"""
+
+    return (
+        PluginResultBuilder(ctx)
+        .failure(
+            domain="SOFTWARE",
+            code="STATE_MISMATCH",
+            message=f"{command_type} {result_name} 不期望在状态 {step_code}",
+        )
+        .build()
+    )
 
 
 def _merge_handler_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -608,10 +644,13 @@ __all__ = [
     "EventPayload",
     "PluginResultBuilder",
     "WorklinePlugin",
+    "build_payload_invalid_failure",
+    "build_state_mismatch_failure",
     "on_command",
     "on_event",
     "on_timeout",
     "resolve_normalized_command_envelope",
     "resolve_normalized_command_failure",
     "step",
+    "try_parse_normalized_result_data",
 ]

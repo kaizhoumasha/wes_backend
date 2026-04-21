@@ -15,50 +15,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 from pydantic import BaseModel, Field
-
-# ==================== Six-In-One 公共模型 ====================
-
-
-class SixInOne(BaseModel):
-    """六合一码数据 - SMT物料标签条码定义
-
-    标签结构：
-    - 6个一维条码：H.H.PN, Mfr PN, QTY, D/C, L/C, PKG ID
-
-    业务规则：
-    - 6个条码字段全部有值才算扫码 OK
-    - 任一字段缺失视为扫码 NG，需人工干预或重新扫描
-    """
-
-    # 条码字段列表（对应标签上的6个一维条码）
-    BARCODE_FIELDS: ClassVar[tuple[str, ...]] = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID")
-
-    @classmethod
-    def barcode_fields(cls) -> tuple[str, ...]:
-        """获取条码字段列表"""
-        return cls.BARCODE_FIELDS
-
-    @property
-    def is_complete(self) -> bool:
-        """检查6个条码是否全部有值"""
-        return all(getattr(self, field) is not None and getattr(self, field) != "" for field in self.BARCODE_FIELDS)
-
-    @property
-    def missing_fields(self) -> list[str]:
-        """获取缺失的条码字段列表"""
-        return [field for field in self.BARCODE_FIELDS if getattr(self, field) is None or getattr(self, field) == ""]
-
-    # 6个一维条码字段
-    HHPN: str | None = Field(default=None, description="产品料号 (P) H.H.PN")
-    MfrPN: str | None = Field(default=None, description="制造商PN码 (M) Mfr PN")
-    Qty: str | None = Field(default=None, description="数量 (Q) QTY(PC)")
-    DateCode: str | None = Field(default=None, description="日期码 (D) D/C")
-    LotCode: str | None = Field(default=None, description="批次码 (L) L/C")
-    PkgID: str | None = Field(default=None, description="包装/箱号ID (S) PKG ID")
-
 
 # ==================== 基础Payload ====================
 

@@ -52,6 +52,19 @@ def get_workline_plugin_definition(plugin_key: str | None) -> WorklinePluginDefi
     return WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
 
 
+def parse_workline_six_in_one(plugin_key: str | None, payload: dict[str, Any] | None) -> Any | None:
+    """调用插件提供的 SixInOne 解析入口。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return None
+
+    parser = getattr(definition.plugin_class, "parse_six_in_one_payload", None)
+    if callable(parser):
+        return parser(payload)
+    return None
+
+
 def get_plugin_contract_version(plugin_key: str | None) -> str | None:
     """
     从插件类获取 contract_version。
@@ -94,5 +107,6 @@ __all__ = [
     "WorklinePluginDefinition",
     "get_plugin_contract_version",
     "get_workline_plugin_definition",
+    "parse_workline_six_in_one",
     "validate_workline_plugin_assignment",
 ]

@@ -1,0 +1,21 @@
+"""标准设备错误码定义。"""
+
+from enum import StrEnum
+
+
+class DeviceErrorCode(StrEnum):
+    """设备执行结果统一错误码。"""
+
+    INSPECTION_SIZE_NG = "INSPECTION_SIZE_NG"
+    INSPECTION_THICKNESS_NG = "INSPECTION_THICKNESS_NG"
+    SCAN_CODE_INVALID = "SCAN_CODE_INVALID"
+    SCAN_CODE_INCOMPLETE = "SCAN_CODE_INCOMPLETE"
+    PICK_FAILED = "PICK_FAILED"
+    PLACE_FAILED = "PLACE_FAILED"
+    TARGET_BLOCKED = "TARGET_BLOCKED"
+    BIN_FULL = "BIN_FULL"
+    DEVICE_BUSY = "DEVICE_BUSY"
+    DEVICE_NOT_READY = "DEVICE_NOT_READY"
+
+
+__all__ = ["DeviceErrorCode"]

@@ -195,7 +195,7 @@ class TestSessionResolver:
             source_message_id="req-001",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         workline.contract_version = "wl-2026.04"
         devices_by_role = make_devices_by_role()
 
@@ -214,7 +214,7 @@ class TestSessionResolver:
         # Assert
         assert session is not None
         assert session.workline_id == 1
-        assert session.plugin_key == "smt_coarse"
+        assert session.plugin_key == "smt_classifier"
         assert session.business_key == "ORDER_001"
         assert session.status == SessionStatus.NEW
         assert session.ingress_count == 1
@@ -236,7 +236,7 @@ class TestSessionResolver:
             source_message_id="req-002",
             payload_json={"barcode": "PKG12346", "business_key": "ORDER_003"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         workline.contract_version = None
 
         with patch(
@@ -293,7 +293,7 @@ class TestSessionResolver:
             id=100,
             session_code="SESSION_100",
             workline_id=1,
-            plugin_key="smt_coarse",
+            plugin_key="smt_classifier",
             business_key="ORDER_001",
             status=SessionStatus.RUNNING,
             ingress_count=1,
@@ -311,7 +311,7 @@ class TestSessionResolver:
             source_message_id="req-new",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -353,7 +353,7 @@ class TestSessionResolver:
             id=200,
             session_code="SESSION_200",
             workline_id=1,
-            plugin_key="smt_coarse",
+            plugin_key="smt_classifier",
             business_key="ORDER_002",
             status=SessionStatus.WAITING_DEVICE_RESULT,
             context_json={"step": "waiting_pick"},
@@ -364,7 +364,7 @@ class TestSessionResolver:
             kind=InboxKind.TIMER_TIMEOUT,
             session_id=200,
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -393,7 +393,7 @@ class TestSessionResolver:
             id=300,
             session_code="SESSION_300",
             workline_id=1,
-            plugin_key="smt_coarse",
+            plugin_key="smt_classifier",
             business_key="ORDER_003",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={"wms_order": "WO123"},
@@ -406,7 +406,7 @@ class TestSessionResolver:
             correlation_id="CORR_12345",
             payload_json={"wms_response": "success"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -438,7 +438,7 @@ class TestSessionResolver:
             id=400,
             session_code="SESSION_400",
             workline_id=1,
-            plugin_key="smt_coarse",
+            plugin_key="smt_classifier",
             business_key="ORDER_004",
             status=SessionStatus.MANUAL_HOLD,
             context_json={"manual_reason": "quality_check"},
@@ -450,7 +450,7 @@ class TestSessionResolver:
             session_id=400,
             payload_json={"operator": "user001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -478,7 +478,7 @@ class TestSessionResolver:
             kind=InboxKind.TIMER_TIMEOUT,
             session_id=999,  # 不存在的 Session
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act & Assert
@@ -502,7 +502,7 @@ class TestSessionResolver:
             kind=InboxKind.EXTERNAL_HTTP,
             correlation_id=None,  # 缺失 correlation_id
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act & Assert
@@ -527,7 +527,7 @@ class TestSessionResolver:
             device_id=1,
             payload_json={"barcode": "PKG12345"},  # 无 business_key
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -567,7 +567,7 @@ class TestSessionResolver:
                 }
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
 
         session = await resolver.resolve_or_create(
             db=mock_db,
@@ -620,7 +620,7 @@ class TestSessionResolver:
             {
                 "session_code": "SES_EXISTING",
                 "workline_id": 1,
-                "plugin_key": "smt_coarse",
+                "plugin_key": "smt_classifier",
                 "business_key": expected_hash,
                 "status": SessionStatus.NEW,
                 "ingress_count": 1,
@@ -647,7 +647,7 @@ class TestSessionResolver:
                 }
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_coarse")
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
 
         session = await resolver.resolve_or_create(
             db=mock_db,

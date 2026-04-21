@@ -10,7 +10,7 @@ import pytest
 
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
-from src.workline_runtime.payloads import SixInOne
+from src.workline_runtime.contracts import SixInOne
 
 
 class TestSmtClassifierPlugin:
@@ -464,7 +464,7 @@ class TestSmtClassifierPlugin:
             "result": "FAILED",
             "device_code": "ARM01",
             "error_detail": {
-                "error_code": "1001",
+                "error_code": "INSPECTION_SIZE_NG",
                 "error_message": "料盘尺寸检测异常",
             },
         }
@@ -485,7 +485,7 @@ class TestSmtClassifierPlugin:
         assert result.commands[0].parameters["barcode"] == "LOTABC123"
         assert result.commands[0].parameters["source_type"] == "PIPELINE_PLATFORM"
         assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
-        assert result.context_patch["inspection_error"] == "1001"
+        assert result.context_patch["inspection_error"] == "INSPECTION_SIZE_NG"
         assert result.context_patch["step_code"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
@@ -790,6 +790,7 @@ class TestBarcodeDecisionService:
         )
 
         assert result.decision == BarcodeDecisionType.OK
+        assert result.business_key
         assert result.pkg_id == "SVYU00125TP4LCR02_2"
         assert len(result.barcodes) == 6
 

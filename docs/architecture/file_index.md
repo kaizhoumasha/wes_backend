@@ -367,7 +367,8 @@
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架；含标准化命令结果公共 helper，如 envelope / failure 解析） | 🔧 架构核心 |
-| `payloads.py` | 共享 Payload 定义（Pydantic 模型） | 🔄 常用功能 |
+| `payloads.py` | 共享 Payload 定义（Pydantic 模型；对外继续导出 `SixInOne`） | 🔄 常用功能 |
+| `contracts/` | 运行时统一合同模型（`SixInOne` SSOT、标准设备错误码） | 🔧 架构核心 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
 | `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
 | `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
@@ -381,7 +382,9 @@
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `smt_classifier/plugin.py` | 当前标准化改造样板插件：保留业务状态机与 data parser，本地只承载业务语义 helper，复用 `plugin_base` 的公共标准结果解析能力 | 🔄 常用功能 |
+| `smt_classifier/plugin.py` | 当前标准化改造样板插件：保留业务状态机与流程决策，协议细节下沉到局部模块 | 🔄 常用功能 |
+| `smt_classifier/contract.py` | SMT 粗分机插件协议模型（事件/结果 Payload） | 🔄 常用功能 |
+| `smt_classifier/normalizers.py` | SMT 粗分机插件数据解析与设备错误码兼容辅助 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档

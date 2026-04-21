@@ -16,14 +16,14 @@ from __future__ import annotations
 import secrets
 from typing import TYPE_CHECKING, Any
 
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
-
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
-from src.workline_runtime.payloads import SixInOne
+from src.workline_runtime.contracts import DeviceErrorCode
 from src.workline_runtime.plugin_base import (
     PluginResultBuilder,
     WorklinePlugin,
+    build_payload_invalid_failure,
+    build_state_mismatch_failure,
     on_command,
     on_event,
     on_timeout,
@@ -33,56 +33,12 @@ from src.workline_runtime.plugin_base import (
 )
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 
-
-class ScanEventData(SixInOne, BaseModel):
-    """扫码事件 data 字段 - 包含六合一码 + 扫描位置"""
-
-    location: str = Field(description="扫描位置，如 STATION_INPUT1")
-
-
-class ScanEventPayload(BaseModel):
-    """扫码完成事件 Payload"""
-
-    device_code: str
-    event_type: str = Field(default="SCAN_COMPLETED")
-    timestamp: int | None = Field(default=None)
-    data: ScanEventData | None = Field(default=None)
-
-
-class MeasurementResultData(SixInOne, BaseModel):
-    """测量结果数据"""
-
-    pkg_id: str = Field(..., description="料盘ID")
-    reel_diameter: float | None = Field(default=None, description="料盘直径测量值")
-    reel_thickness: float | None = Field(default=None, description="料盘厚度测量值")
-
-
-class PickPlaceResultData(BaseModel):
-    """机械臂抓取放置执行结果 data 字段
-
-    机械臂执行 PICK_AND_PUT 命令后，通过回调上报的执行结果，
-    包含料盘物理尺寸测量数据（直径、厚度）。
-    """
-
-    actual_qty: int = Field(default=1, description="实际搬运数量")
-    location: str | None = Field(default=None, description="实际放置位置")
-    reel_diameter: str | None = Field(default=None, description="料盘直径测量值")
-    reel_thickness: str | None = Field(default=None, description="料盘厚度测量值")
-    pick_and_place_result: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("pick_and_place_result", "pick_and_put_result"),
-        description="抓取放置具体结果",
-    )
-
-
-class EStopEventPayload(BaseModel):
-    """急停事件 Payload"""
-
-    device_code: str
-    event_type: str = Field(default="ESTOP_PRESSED")
-    timestamp: int | None = Field(default=None)
-    data: dict | None = Field(default=None)
-
+from .contract import (
+    EStopEventPayload,
+    ScanEventPayload,
+    parse_six_in_one_payload,
+)
+from .normalizers import parse_measurement_result_data, parse_pick_place_result_data
 
 if TYPE_CHECKING:
     from src.workline_runtime.plugin_context import PluginContext
@@ -100,55 +56,11 @@ class SmtClassifierState:
     ERROR = "ERROR"
 
 
-def _parse_measurement_result_data(result: NormalizedCommandResult) -> MeasurementResultData | None:
-    """从标准化命令结果中提取测量结果 data。"""
-
-    if not isinstance(result.data, dict) or not result.data:
-        return None
-
-    try:
-        return MeasurementResultData.model_validate(result.data)
-    except ValidationError:
-        return None
-
-
-def _parse_pick_place_result_data(result: NormalizedCommandResult) -> PickPlaceResultData | None:
-    """从标准化命令结果中提取抓取放置结果 data。"""
-
-    if not isinstance(result.data, dict) or not result.data:
-        return None
-
-    try:
-        return PickPlaceResultData.model_validate(result.data)
-    except ValidationError:
-        return None
-
-
-def _build_payload_invalid_failure(ctx: PluginContext, message: str):
-    """构造标准命令结果包络缺失时的统一失败返回。"""
-
-    return PluginResultBuilder(ctx).failure(domain="DATA", code="PAYLOAD_INVALID", message=message).build()
-
-
-def _build_state_mismatch_failure(ctx: PluginContext, command_type: str, result_name: str, step_code: str | None):
-    """构造命令结果落在非法状态时的统一失败返回。"""
-
-    return (
-        PluginResultBuilder(ctx)
-        .failure(
-            domain="SOFTWARE",
-            code="STATE_MISMATCH",
-            message=f"{command_type} {result_name} 不期望在状态 {step_code}",
-        )
-        .build()
-    )
-
-
-def _scan_ng_command_parameters(*, pkg_id: str, location: str) -> dict[str, str]:
+def _build_scan_ng_command_parameters(*, barcode: str, location: str) -> dict[str, str]:
     """统一构造扫码 NG 分流命令参数。"""
 
     return {
-        "barcode": pkg_id,
+        "barcode": barcode,
         "source_type": "INPUT_PLATFORM",
         "target_type": "NG_PLATFORM",
         "source_loc": location,
@@ -156,17 +68,16 @@ def _scan_ng_command_parameters(*, pkg_id: str, location: str) -> dict[str, str]
     }
 
 
-def _scan_ng_context(*, pkg_id: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
+def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
     """统一构造扫码 NG 分流上下文。"""
 
     return {
-        "barcode": pkg_id,
+        "barcode": barcode,
         "barcodes": barcodes,
         "location": location,
         "device_code": device_code,
         "ng_reason": "SCAN_NG",
         "pick_place_reason": "SCAN_NG",
-        "step_code": SmtClassifierState.WAITING_PICK_PLACE,
     }
 
 
@@ -195,6 +106,12 @@ class SmtClassifierPlugin(WorklinePlugin):
     MIN_BARCODE_LENGTH = 3
     VALID_BARCODE_PATTERN = r"^[A-Z0-9]+$"
 
+    @classmethod
+    def parse_six_in_one_payload(cls, payload: dict[str, Any] | None):
+        """为 runtime 提供插件自有的 SixInOne 解析入口。"""
+
+        return parse_six_in_one_payload(payload)
+
     # ========== 事件处理 ==========
 
     @on_event("ESTOP_PRESSED")
@@ -214,7 +131,11 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         return (
             PluginResultBuilder(ctx)
-            .failure(domain="HARDWARE", code="ESTOP", message=f"急停触发: {event.device_code}")
+            .failure(
+                domain="HARDWARE",
+                code="ESTOP",
+                message=f"急停触发: {event.device_code}",
+            )
             .build()
         )
 
@@ -260,24 +181,28 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         logger.info(f"Scan completed: pkg_id={pkg_id}, location={location}")
 
-        if barcode_decision.decision in {BarcodeDecisionType.INVALID, BarcodeDecisionType.INCOMPLETE}:
+        if barcode_decision.decision in {
+            BarcodeDecisionType.INVALID,
+            BarcodeDecisionType.INCOMPLETE,
+        }:
             return (
                 PluginResultBuilder(ctx)
                 .transition("scan_ng")
                 .command(
                     device_role=self.INPUT_ARM,
                     command_type="PICK_AND_PUT",
-                    parameters=_scan_ng_command_parameters(pkg_id=pkg_id, location=location),
+                    parameters=_build_scan_ng_command_parameters(barcode=pkg_id, location=location),
                 )
                 .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
                 .context(
-                    _scan_ng_context(
-                        pkg_id=pkg_id,
+                    _build_scan_ng_context(
+                        barcode=pkg_id,
                         barcodes=barcode_decision.barcodes,
                         location=location,
                         device_code=event.device_code,
                     )
                 )
+                .context({"step_code": SmtClassifierState.WAITING_PICK_PLACE})
                 .context(
                     {
                         "scan_ng_reason_code": barcode_decision.reason_code or "BARCODE_INVALID",
@@ -294,17 +219,18 @@ class SmtClassifierPlugin(WorklinePlugin):
                 .command(
                     device_role=self.INPUT_ARM,
                     command_type="PICK_AND_PUT",
-                    parameters=_scan_ng_command_parameters(pkg_id=pkg_id, location=location),
+                    parameters=_build_scan_ng_command_parameters(barcode=pkg_id, location=location),
                 )
                 .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
                 .context(
-                    _scan_ng_context(
-                        pkg_id=pkg_id,
+                    _build_scan_ng_context(
+                        barcode=pkg_id,
                         barcodes=barcode_decision.barcodes,
                         location=location,
                         device_code=event.device_code,
                     )
                 )
+                .context({"step_code": SmtClassifierState.WAITING_PICK_PLACE})
                 .build()
             )
 
@@ -346,10 +272,10 @@ class SmtClassifierPlugin(WorklinePlugin):
         current_step = ctx.session.context_json.get("step_code")
         envelope = resolve_normalized_command_envelope(result)
         if envelope is None:
-            return _build_payload_invalid_failure(ctx, "测量结果缺少 command_code 或 device_code")
+            return build_payload_invalid_failure(ctx, "测量结果缺少 command_code 或 device_code")
 
         _, device_code = envelope
-        measurement_data = _parse_measurement_result_data(result)
+        measurement_data = parse_measurement_result_data(result)
         if measurement_data is None:
             logger.error(f"扫码完成后，进行厚度和直径测量缺少 data: device_code={device_code}, step={current_step}")
             return (
@@ -369,12 +295,14 @@ class SmtClassifierPlugin(WorklinePlugin):
             PluginResultBuilder(ctx)
             .transition("pick_ok")
             .command(
-                device_role=self.CONVEYOR, command_type="MOVE_FORWARD", parameters={"pkg_id": measurement_data.pkg_id}
+                device_role=self.CONVEYOR,
+                command_type="MOVE_FORWARD",
+                parameters={"pkg_id": measurement_data.PkgID or ""},
             )
             .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
             .context(
                 {
-                    "pkg_id": measurement_data.pkg_id,
+                    "pkg_id": measurement_data.PkgID or "",
                     "reel_diameter": measurement_data.reel_diameter,
                     "reel_thickness": measurement_data.reel_thickness,
                     "step_code": SmtClassifierState.WAITING_CONVEYOR,
@@ -397,7 +325,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         current_step = ctx.session.context_json.get("step_code")
         envelope = resolve_normalized_command_envelope(result)
         if envelope is None:
-            return _build_payload_invalid_failure(ctx, "PICK_AND_PUT 成功回调缺少 command_code 或 device_code")
+            return build_payload_invalid_failure(ctx, "PICK_AND_PUT 成功回调缺少 command_code 或 device_code")
 
         command_code, device_code = envelope
         logger.info(f"PICK_AND_PUT succeeded: device_code={device_code}, step={current_step}")
@@ -418,11 +346,15 @@ class SmtClassifierPlugin(WorklinePlugin):
                 )
 
             barcode = ctx.session.context_json.get("barcode", "")
-            pick_place_data = _parse_pick_place_result_data(result)
+            pick_place_data = parse_pick_place_result_data(result)
             return (
                 PluginResultBuilder(ctx)
                 .transition("pick_ok")
-                .command(device_role=self.CONVEYOR, command_type="MOVE_FORWARD", parameters={"barcode": barcode})
+                .command(
+                    device_role=self.CONVEYOR,
+                    command_type="MOVE_FORWARD",
+                    parameters={"barcode": barcode},
+                )
                 .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
                 .context(
                     {
@@ -447,7 +379,7 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         # 状态不匹配
         logger.error(f"Unexpected step_code for PICK_AND_PUT SUCCESS: {current_step}")
-        return _build_state_mismatch_failure(ctx, "PICK_AND_PUT", "SUCCESS", current_step)
+        return build_state_mismatch_failure(ctx, "PICK_AND_PUT", "SUCCESS", current_step)
 
     @on_command("PICK_AND_PUT", result="FAILED")
     async def handle_pick_and_put_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
@@ -472,17 +404,18 @@ class SmtClassifierPlugin(WorklinePlugin):
             raise TypeError("handle_pick_and_put_failed expects NormalizedCommandResult")
 
         if resolve_normalized_command_envelope(result) is None:
-            return _build_payload_invalid_failure(ctx, "PICK_AND_PUT 失败回调缺少 command_code 或 device_code")
+            return build_payload_invalid_failure(ctx, "PICK_AND_PUT 失败回调缺少 command_code 或 device_code")
 
-        error_code, error_msg = resolve_normalized_command_failure(
+        raw_error_code, error_msg = resolve_normalized_command_failure(
             result,
             default_code="UNKNOWN",
             default_message="未知错误",
         )
+        error_code = raw_error_code
         logger.error(f"PICK_AND_PUT failed: step={current_step}, error_code={error_code}, message={error_msg}")
 
-        is_dimension_error = error_code == "1001"
-        is_thickness_error = error_code == "1002"
+        is_dimension_error = error_code == DeviceErrorCode.INSPECTION_SIZE_NG.value
+        is_thickness_error = error_code == DeviceErrorCode.INSPECTION_THICKNESS_NG.value
 
         # 路由1: 进料臂失败
         if current_step == SmtClassifierState.WAITING_PICK_PLACE:
@@ -502,14 +435,23 @@ class SmtClassifierPlugin(WorklinePlugin):
                         },
                     )
                     .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
-                    .context({"inspection_error": error_code, "step_code": SmtClassifierState.WAITING_PICK_PLACE})
+                    .context(
+                        {
+                            "inspection_error": error_code,
+                            "step_code": SmtClassifierState.WAITING_PICK_PLACE,
+                        }
+                    )
                     .build()
                 )
 
             # 其他错误
             return (
                 PluginResultBuilder(ctx)
-                .failure(domain="HARDWARE", code=error_code, message=f"抓取放置失败: {error_msg}")
+                .failure(
+                    domain="HARDWARE",
+                    code=error_code,
+                    message=f"抓取放置失败: {error_msg}",
+                )
                 .build()
             )
 
@@ -526,7 +468,7 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         # 状态不匹配
         logger.error(f"Unexpected step_code for PICK_AND_PUT FAILED: {current_step}")
-        return _build_state_mismatch_failure(ctx, "PICK_AND_PUT", "FAILED", current_step)
+        return build_state_mismatch_failure(ctx, "PICK_AND_PUT", "FAILED", current_step)
 
     @on_command("MOVE_FORWARD", result="SUCCESS")
     @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.WAITING_OUTPUT)
@@ -543,7 +485,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         当前实现：随机生成料箱位置，待集成真实分配服务
         """
         if resolve_normalized_command_envelope(result) is None:
-            return _build_payload_invalid_failure(ctx, "MOVE_FORWARD 成功回调缺少 command_code 或 device_code")
+            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 成功回调缺少 command_code 或 device_code")
 
         logger.info("Conveyor move succeeded, starting bin allocation")
 
@@ -569,7 +511,12 @@ class SmtClassifierPlugin(WorklinePlugin):
                 },
             )
             .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
-            .context({"step_code": SmtClassifierState.WAITING_OUTPUT, "bin_location": bin_location})
+            .context(
+                {
+                    "step_code": SmtClassifierState.WAITING_OUTPUT,
+                    "bin_location": bin_location,
+                }
+            )
             .build()
         )
 
@@ -580,7 +527,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         流水线传输失败 → 错误
         """
         if resolve_normalized_command_envelope(result) is None:
-            return _build_payload_invalid_failure(ctx, "MOVE_FORWARD 失败回调缺少 command_code 或 device_code")
+            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 失败回调缺少 command_code 或 device_code")
 
         error_code, error_msg = resolve_normalized_command_failure(
             result,
