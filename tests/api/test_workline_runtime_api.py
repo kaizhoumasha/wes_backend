@@ -346,6 +346,46 @@ class TestRuntimeQueryService:
         assert summary.waiting_session_count == 0
         assert summary.failed_session_count == 1
 
+    def test_build_workline_summary_separates_active_and_waiting_sessions(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        now = timezone.now_for_db()
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=5,
+            line_code="WL-05",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            owner_team=None,
+            support_contact=None,
+            is_active=True,
+        )
+        running_session = SimpleNamespace(
+            status="RUNNING",
+            deadline_at=None,
+            last_ingress_at=now - timedelta(minutes=1),
+            waiting_since=None,
+            started_at=now - timedelta(minutes=5),
+            created_at=now - timedelta(minutes=6),
+        )
+        waiting_session = SimpleNamespace(
+            status="WAITING_EXTERNAL",
+            deadline_at=now + timedelta(minutes=10),
+            last_ingress_at=None,
+            waiting_since=now - timedelta(minutes=2),
+            started_at=now - timedelta(minutes=8),
+            created_at=now - timedelta(minutes=9),
+        )
+
+        summary = service._build_workline_summary(workline, [], [running_session, waiting_session])
+
+        assert summary.active_session_count == 1
+        assert summary.waiting_session_count == 1
+        assert summary.failed_session_count == 0
+
     def test_build_workline_summary_requires_persisted_workline(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
@@ -484,3 +524,66 @@ class TestRuntimeQueryService:
 
         with pytest.raises(ValueError, match=r"session\.id"):
             service._build_trace_list_item(session, None, None, None, None, timezone.now_for_db())
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_returns_none_for_soft_deleted_workline(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        deleted_workline = SimpleNamespace(
+            id=45,
+            is_deleted=True,
+            line_code="WL-45",
+            line_name="已删除线体",
+            line_type="AUTO",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            owner_team=None,
+            support_contact=None,
+            is_active=True,
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: deleted_workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_load_active_sessions_for_device_queries_sessions_directly(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        active_session = SimpleNamespace(id=101, status="RUNNING")
+        db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [active_session]))
+
+        result = await service._load_active_sessions_for_device(db, device_id=9, limit=10)
+
+        assert result == [active_session]
+        assert db.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_load_latest_command_by_session_uses_window_query(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        latest_command = SimpleNamespace(id=2, session_id="11")
+        db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [latest_command]))
+
+        result = await service._load_latest_command_by_session(db, [11])
+
+        executed_query = db.execute.await_args.args[0]
+        assert "row_number" in str(executed_query).lower()
+        assert result == {11: latest_command}

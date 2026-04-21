@@ -39,6 +39,7 @@ _ACTIVE_SESSION_STATUSES = {
     "WAITING_EXTERNAL",
     "MANUAL_HOLD",
 }
+_IN_PROGRESS_SESSION_STATUSES = {"NEW", "RUNNING"}
 _WAITING_SESSION_STATUSES = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
 _FAILURE_SESSION_STATUSES = {"FAILED", "CANCELLED"}
 _ABNORMAL_DEVICE_STATUSES = {"ERROR", "OFFLINE"}
@@ -153,6 +154,23 @@ def _device_session_clause(session_columns: Any, device_id: int) -> Any:
                 inbox_columns.session_id == session_columns.id,
             )
         ),
+    )
+
+
+def _latest_rows_subquery(
+    *,
+    columns: Any,
+    partition_by: Any,
+    order_by: tuple[Any, ...],
+    filters: list[Any],
+) -> Any:
+    return (
+        select(
+            columns.id.label("id"),
+            func.row_number().over(partition_by=partition_by, order_by=order_by).label("rn"),
+        )
+        .where(*filters)
+        .subquery()
     )
 
 
@@ -272,9 +290,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         return summaries
 
     async def get_workline_detail(self, db: Any, workline_id: int) -> RuntimeWorklineDetailResponse | None:
-        workline_result = await db.execute(select(WorkLine).where(cast("Any", WorkLine).__table__.c.id == workline_id))
+        workline_columns = cast("Any", WorkLine).__table__.c
+        workline_result = await db.execute(
+            select(WorkLine).where(workline_columns.id == workline_id, workline_columns.is_deleted.is_(False))
+        )
         workline = workline_result.scalar_one_or_none()
-        if workline is None:
+        if workline is None or getattr(workline, "is_deleted", False):
             return None
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
@@ -398,8 +419,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not resolved_ids:
             return {}
         columns = cast("Any", WorkLine).__table__.c
-        result = await db.execute(select(WorkLine).where(columns.id.in_(resolved_ids)))
-        return {item.id: item for item in result.scalars().all() if item.id is not None}
+        result = await db.execute(select(WorkLine).where(columns.id.in_(resolved_ids), columns.is_deleted.is_(False)))
+        return {
+            item.id: item
+            for item in result.scalars().all()
+            if item.id is not None and not getattr(item, "is_deleted", False)
+        }
 
     async def _load_devices_by_workline_ids(self, db: Any, workline_ids: list[int]) -> dict[int, list[Device]]:
         if not workline_ids:
@@ -518,39 +543,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         return list(result.scalars().all())
 
     async def _load_active_sessions_for_device(self, db: Any, device_id: int, limit: int) -> list[WorklineSession]:
-        command_columns = cast("Any", DeviceCommand).__table__.c
-        inbox_columns = cast("Any", WorklineInbox).__table__.c
-        session_ids: set[int] = set()
-
-        command_result = await db.execute(
-            select(DeviceCommand)
-            .where(command_columns.device_id == device_id)
-            .order_by(command_columns.created_at.desc(), command_columns.id.desc())
-            .limit(50)
-        )
-        for command in command_result.scalars().all():
-            session_id = _parse_session_id(command.session_id)
-            if session_id is not None:
-                session_ids.add(session_id)
-
-        inbox_result = await db.execute(
-            select(WorklineInbox)
-            .where(inbox_columns.device_id == device_id)
-            .order_by(inbox_columns.received_at.desc(), inbox_columns.id.desc())
-            .limit(50)
-        )
-        for inbox in inbox_result.scalars().all():
-            if inbox.session_id is not None:
-                session_ids.add(inbox.session_id)
-
-        if not session_ids:
-            return []
-
         session_columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession)
             .where(
-                session_columns.id.in_(list(session_ids)), session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES))
+                _device_session_clause(session_columns, device_id),
+                session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
             )
             .order_by(session_columns.last_ingress_at.desc().nullslast(), session_columns.id.desc())
             .limit(limit)
@@ -590,10 +588,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return {}
         columns = cast("Any", DeviceCommand).__table__.c
         session_id_values = [str(item) for item in session_ids]
+        latest_ids = _latest_rows_subquery(
+            columns=columns,
+            partition_by=columns.session_id,
+            order_by=(columns.created_at.desc(), columns.id.desc()),
+            filters=[columns.session_id.in_(session_id_values)],
+        )
         result = await db.execute(
-            select(DeviceCommand)
-            .where(columns.session_id.in_(session_id_values))
-            .order_by(columns.session_id.asc(), columns.created_at.desc(), columns.id.desc())
+            select(DeviceCommand).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
         )
         mapping: dict[int, DeviceCommand] = {}
         for item in result.scalars().all():
@@ -606,10 +608,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not session_ids:
             return {}
         columns = cast("Any", WorklineInbox).__table__.c
+        latest_ids = _latest_rows_subquery(
+            columns=columns,
+            partition_by=columns.session_id,
+            order_by=(columns.received_at.desc(), columns.id.desc()),
+            filters=[columns.session_id.in_(session_ids)],
+        )
         result = await db.execute(
-            select(WorklineInbox)
-            .where(columns.session_id.in_(session_ids))
-            .order_by(columns.session_id.asc(), columns.received_at.desc(), columns.id.desc())
+            select(WorklineInbox).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
         )
         mapping: dict[int, WorklineInbox] = {}
         for item in result.scalars().all():
@@ -621,10 +627,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not session_ids:
             return {}
         columns = cast("Any", WorklineTimeline).__table__.c
+        latest_ids = _latest_rows_subquery(
+            columns=columns,
+            partition_by=columns.session_id,
+            order_by=(columns.seq_no.desc(), columns.occurred_at.desc(), columns.id.desc()),
+            filters=[columns.session_id.in_(session_ids)],
+        )
         result = await db.execute(
-            select(WorklineTimeline)
-            .where(columns.session_id.in_(session_ids))
-            .order_by(columns.session_id.asc(), columns.seq_no.desc(), columns.occurred_at.desc(), columns.id.desc())
+            select(WorklineTimeline).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
         )
         mapping: dict[int, WorklineTimeline] = {}
         for item in result.scalars().all():
@@ -646,7 +656,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         sessions: list[WorklineSession],
     ) -> RuntimeWorklineSummary:
         now = timezone.now_for_db()
-        active_count = sum(1 for item in sessions if (_enum_str(item.status) or "") in _ACTIVE_SESSION_STATUSES)
+        active_count = sum(1 for item in sessions if (_enum_str(item.status) or "") in _IN_PROGRESS_SESSION_STATUSES)
         waiting_count = sum(
             1
             for item in sessions

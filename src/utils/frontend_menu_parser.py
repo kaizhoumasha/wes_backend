@@ -102,6 +102,19 @@ def _load_frontend_router_menus_from_modules(frontend_root: Path) -> list[Fronte
     if not routes_dir.exists():
         raise FileNotFoundError(f"前端路由目录不存在: {routes_dir}")
 
+    routes_index_path = routes_dir / "index.ts"
+    module_cache: dict[str, str] = {}
+    if routes_index_path.exists():
+        index_source = routes_index_path.read_text(encoding="utf-8")
+        imported_symbols = _parse_route_module_imports(index_source)
+        try:
+            routes_array = _extract_exported_function_return_array(index_source, "createRoutes")
+            routes = _resolve_route_nodes_from_array_literal(routes_array, routes_dir, imported_symbols, module_cache)
+            if routes:
+                return _build_menu_definitions(routes)
+        except ValueError:
+            pass
+
     module_exports = [
         ("base.ts", ["shellBaseChildren"]),
         ("admin.ts", ["adminRoutes"]),
@@ -110,22 +123,226 @@ def _load_frontend_router_menus_from_modules(frontend_root: Path) -> list[Fronte
         ("runtime.ts", ["runtimeRoutes"]),
         ("logs.ts", ["logRoutes"]),
     ]
-
+    imported_symbols = {
+        export_name: file_name for file_name, export_names in module_exports for export_name in export_names
+    }
     routes: list[_RouteNode] = []
     for file_name, export_names in module_exports:
         module_path = routes_dir / file_name
         if not module_path.exists():
             continue
 
-        module_source = module_path.read_text(encoding="utf-8")
+        module_source = _load_route_module_source(routes_dir, file_name, module_cache)
         for export_name in export_names:
-            literal = _extract_exported_literal(module_source, export_name)
-            if literal.startswith("["):
-                routes.extend(_parse_route_object(item) for item in _extract_route_objects_from_array(literal))
-            else:
-                routes.append(_parse_route_object(literal))
+            routes.extend(
+                _resolve_route_nodes_from_expression(
+                    export_name, routes_dir, imported_symbols, module_cache, module_source
+                )
+            )
 
     return _build_menu_definitions(routes)
+
+
+def _parse_route_module_imports(source: str) -> dict[str, str]:
+    imports: dict[str, str] = {}
+    import_pattern = re.compile(r"import\s*{(?P<names>[^}]+)}\s*from\s*['\"](?P<module>\./[^'\"]+)['\"]")
+
+    for match in import_pattern.finditer(source):
+        module_name = match.group("module")[2:]
+        file_name = module_name if module_name.endswith(".ts") else f"{module_name}.ts"
+        for name in (_normalize_import_name(part) for part in match.group("names").split(",")):
+            if name:
+                imports[name] = file_name
+
+    return imports
+
+
+def _normalize_import_name(raw_name: str) -> str | None:
+    stripped = raw_name.strip()
+    if not stripped:
+        return None
+
+    return stripped.split(" as ", 1)[0].strip()
+
+
+def _looks_like_route_export(name: str) -> bool:
+    return name.endswith(("Routes", "Route", "Children"))
+
+
+def _load_route_module_source(routes_dir: Path, file_name: str, module_cache: dict[str, str]) -> str:
+    if file_name not in module_cache:
+        module_cache[file_name] = (routes_dir / file_name).read_text(encoding="utf-8")
+    return module_cache[file_name]
+
+
+def _resolve_route_nodes_from_array_literal(
+    array_literal: str,
+    routes_dir: Path,
+    imported_symbols: dict[str, str],
+    module_cache: dict[str, str],
+) -> list[_RouteNode]:
+    inner = _strip_outer(array_literal, "[", "]")
+    routes: list[_RouteNode] = []
+
+    for item in _split_top_level(inner):
+        stripped = _strip_leading_comments(item)
+        if not stripped:
+            continue
+
+        expression = stripped[3:].strip() if stripped.startswith("...") else stripped
+        routes.extend(_resolve_route_nodes_from_expression(expression, routes_dir, imported_symbols, module_cache))
+
+    return routes
+
+
+def _resolve_route_nodes_from_expression(
+    expression: str,
+    routes_dir: Path,
+    imported_symbols: dict[str, str],
+    module_cache: dict[str, str],
+    module_source: str | None = None,
+) -> list[_RouteNode]:
+    stripped = expression.strip()
+    if not stripped:
+        return []
+
+    if stripped.startswith("{"):
+        return [_build_route_node_from_source(stripped, routes_dir, imported_symbols, module_cache)]
+
+    if stripped.startswith("["):
+        return _resolve_route_nodes_from_array_literal(stripped, routes_dir, imported_symbols, module_cache)
+
+    name = _extract_expression_name(stripped)
+    if not name:
+        return []
+
+    module_file = imported_symbols.get(name)
+    if module_file is None:
+        return []
+
+    source = module_source or _load_route_module_source(routes_dir, module_file, module_cache)
+
+    try:
+        if "(" in stripped and stripped.endswith(")"):
+            literal = _extract_exported_function_return_array(source, name)
+        else:
+            literal = _extract_exported_literal(source, name)
+    except ValueError:
+        return []
+
+    if literal.startswith("["):
+        return _resolve_route_nodes_from_array_literal(literal, routes_dir, imported_symbols, module_cache)
+
+    return [_build_route_node_from_source(literal, routes_dir, imported_symbols, module_cache)]
+
+
+def _extract_expression_name(expression: str) -> str | None:
+    match = re.match(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)", expression.strip())
+    return match.group("name") if match else None
+
+
+def _build_route_node_from_source(
+    route_source: str,
+    routes_dir: Path,
+    imported_symbols: dict[str, str],
+    module_cache: dict[str, str],
+) -> _RouteNode:
+    props = _parse_object_literal_with_spreads(route_source, routes_dir, imported_symbols, module_cache)
+    meta_props = _parse_object_literal(props.get("meta")) if props.get("meta") else {}
+    menu_props = _parse_object_literal(meta_props.get("menu")) if meta_props.get("menu") else {}
+
+    children: list[_RouteNode] = []
+    if children_source := props.get("children"):
+        children = _resolve_route_nodes_from_array_literal(children_source, routes_dir, imported_symbols, module_cache)
+
+    return _RouteNode(
+        path=_parse_string_literal(props.get("path")),
+        name=_parse_string_literal(props.get("name")),
+        title=_parse_string_literal(meta_props.get("title")),
+        requires_auth=_parse_bool_literal(meta_props.get("requiresAuth")),
+        component=_parse_component_path(props.get("component")),
+        permission=_parse_permission(meta_props),
+        menu_name=_parse_string_literal(menu_props.get("name")) or _parse_string_literal(meta_props.get("menuName")),
+        menu_title=_parse_string_literal(menu_props.get("title")),
+        menu_icon=_parse_string_literal(menu_props.get("icon")) or _parse_string_literal(meta_props.get("icon")),
+        menu_parent_name=(
+            _parse_string_literal(menu_props.get("parentName"))
+            or _parse_string_literal(menu_props.get("parent_name"))
+            or _parse_string_literal(meta_props.get("parentName"))
+        ),
+        menu_sort_order=(
+            _parse_int_literal(menu_props.get("sortOrder"))
+            or _parse_int_literal(menu_props.get("sort_order"))
+            or _parse_int_literal(meta_props.get("sortOrder"))
+        ),
+        menu_hidden=_parse_bool_literal(menu_props.get("hidden"))
+        if menu_props.get("hidden") is not None
+        else _parse_bool_literal(meta_props.get("hidden")),
+        children=children,
+    )
+
+
+def _parse_object_literal_with_spreads(
+    source: str,
+    routes_dir: Path,
+    imported_symbols: dict[str, str],
+    module_cache: dict[str, str],
+) -> dict[str, str]:
+    stripped = source.strip()
+    if not stripped.startswith("{"):
+        return {}
+
+    body = _strip_outer(stripped, "{", "}")
+    props: dict[str, str] = {}
+
+    for item in _split_top_level(body):
+        stripped_item = _strip_leading_comments(item)
+        if not stripped_item:
+            continue
+
+        if stripped_item.startswith("..."):
+            spread_literal = _resolve_spread_object_literal(
+                stripped_item[3:].strip(), routes_dir, imported_symbols, module_cache
+            )
+            if spread_literal is not None:
+                props.update(
+                    _parse_object_literal_with_spreads(spread_literal, routes_dir, imported_symbols, module_cache)
+                )
+            continue
+
+        key, value = _split_key_value(stripped_item)
+        if not key:
+            continue
+        props[_normalize_property_key(key)] = value.strip()
+
+    return props
+
+
+def _resolve_spread_object_literal(
+    expression: str,
+    routes_dir: Path,
+    imported_symbols: dict[str, str],
+    module_cache: dict[str, str],
+) -> str | None:
+    stripped = expression.strip()
+    if stripped.startswith("{"):
+        return stripped
+
+    name = _extract_expression_name(stripped)
+    if not name:
+        return None
+
+    module_file = imported_symbols.get(name)
+    if module_file is None:
+        return None
+
+    source = _load_route_module_source(routes_dir, module_file, module_cache)
+    try:
+        literal = _extract_exported_literal(source, name)
+    except ValueError:
+        return None
+
+    return literal if literal.startswith("{") else None
 
 
 def _build_menu_definitions(routes: list[_RouteNode]) -> list[FrontendMenuDefinition]:
@@ -194,6 +411,30 @@ def _extract_exported_literal(source: str, export_name: str) -> str:
 
     literal, _ = _extract_balanced(source, literal_start, "[", "]")
     return literal
+
+
+def _extract_exported_function_return_array(source: str, function_name: str) -> str:
+    match = re.search(rf"\bexport\s+function\s+{re.escape(function_name)}\b", source)
+    if not match:
+        raise ValueError(f"未找到导出函数: {function_name}")
+
+    body_start = source.find("{", match.end())
+    if body_start == -1:
+        raise ValueError(f"未找到函数体: {function_name}")
+
+    function_body, _ = _extract_balanced(source, body_start, "{", "}")
+    return_matches = list(re.finditer(r"\breturn\b", function_body))
+    for return_match in reversed(return_matches):
+        array_start = function_body.find("[", return_match.end())
+        if array_start == -1:
+            continue
+        balanced = _try_extract_balanced(function_body, array_start, "[", "]")
+        if balanced is None:
+            continue
+        array_literal, _ = balanced
+        return array_literal
+
+    raise ValueError(f"未找到 {function_name} 的返回数组")
 
 
 def _extract_routes_array(source: str) -> str:
@@ -677,7 +918,7 @@ def _find_top_level_character(source: str, target: str) -> int:
     return -1
 
 
-def _extract_balanced(source: str, start: int, open_char: str, close_char: str) -> tuple[str, int]:
+def _try_extract_balanced(source: str, start: int, open_char: str, close_char: str) -> tuple[str, int] | None:
     depth = 0
     quote: str | None = None
     line_comment = False
@@ -736,6 +977,14 @@ def _extract_balanced(source: str, start: int, open_char: str, close_char: str) 
                 return source[start : index + 1], index + 1
 
         index += 1
+
+    return None
+
+
+def _extract_balanced(source: str, start: int, open_char: str, close_char: str) -> tuple[str, int]:
+    balanced = _try_extract_balanced(source, start, open_char, close_char)
+    if balanced is not None:
+        return balanced
 
     raise ValueError(f"未找到匹配的 `{close_char}`")
 
