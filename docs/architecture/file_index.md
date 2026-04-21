@@ -329,15 +329,25 @@
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `inbox.py` | WorklineInbox/Outbox 收发件箱模型 | 🔧 架构核心 |
+| `models/` | `inbox.py` | WorklineInbox 收件箱模型（统一编排入口） | 🔧 架构核心 |
+| | `outbox.py` | WorklineOutbox 发件箱模型（统一派发出口） | 🔧 架构核心 |
 | | `session.py` | WorklineSession 会话模型（含等待态、trace 锚点、ingress_count、last_request_id/last_ingress_at） | 🔧 架构核心 |
 | | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
+| | `runtime.py` | 运行监控 / Trace 查询响应模型（overview / workline / device / trace） | 🔧 架构核心 |
 | | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
-| | `__init__.py` | Repository 导出（inbox_repository） | 🔧 架构核心 |
+| | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
+| | `session_repository.py` | Session Repository（按 business_key / correlation_id / awaiting_command_id 查询） | 🔧 架构核心 |
+| | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
+| | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
 | | `trace_query_service.py` | TraceQueryService（只读 TRACE 聚合查询：callback / inbox / session / command / outbox / timeline） | 🔧 架构核心 |
-| | `__init__.py` | Service 导出（inbox_service / trace_query_service） | 🔧 架构核心 |
+| | `runtime_query_service.py` | RuntimeQueryService（运行监控总览、工作线/设备运行态、Trace 列表聚合） | 🔧 架构核心 |
+| | `__init__.py` | Service 导出（inbox_service / trace_query_service / runtime_query_service） | 🔧 架构核心 |
+| `v1/` | `workline.py` | WorkLine CRUD 路由 | 🔧 架构核心 |
+| | `trace.py` | Trace 详情与 Trace 列表查询路由 | 🔧 架构核心 |
+| | `runtime.py` | 运行监控 overview / workline / device 只读路由 | 🔧 架构核心 |
+| | `__init__.py` | v1 路由聚合（workline / trace / runtime） | 🔧 架构核心 |
 
 **核心设计模式**：
 - **Inbox 模式**：统一编排入口（设备事件、指令结果、超时、人工操作）

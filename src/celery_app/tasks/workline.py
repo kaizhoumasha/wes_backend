@@ -14,7 +14,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NoReturn, TypedDict, cast
 
 from celery import Task
 from sqlalchemy import text
@@ -473,7 +473,7 @@ def _raise_device_command_governance_error(
     code: str,
     message: str,
     cause: Exception | None = None,
-) -> None:
+) -> NoReturn:
     error = _DeviceCommandGovernanceError(domain=domain, code=code, message=message)
     if cause is not None:
         raise error from cause
@@ -1605,7 +1605,7 @@ class ProcessInboxMessages:
                             )
                         from src.workline_runtime.session_resolver import reapply_pending_session_ingress_metadata
 
-                        reapply_pending_session_ingress_metadata(_session)
+                        _ = reapply_pending_session_ingress_metadata(_session)
                         await _apply_orchestrator_effects(
                             db,
                             session=_session,

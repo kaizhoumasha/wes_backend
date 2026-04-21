@@ -1,6 +1,6 @@
 from src.app.admin.models import Menu
 from src.app.admin.services.menu_sync_service import MenuSyncService
-from src.utils.frontend_menu_parser import parse_frontend_router_menus
+from src.utils.frontend_menu_parser import load_frontend_router_menus, parse_frontend_router_menus
 
 
 def test_parse_frontend_router_menus_infers_menu_from_current_router_style() -> None:
@@ -156,3 +156,202 @@ def test_menu_sync_service_update_payload_includes_version_when_data_changes() -
 
     assert update_data["icon"] == "ep:user-filled"
     assert update_data["version"] == 7
+
+
+def test_load_frontend_router_menus_discovers_route_modules_from_routes_index(tmp_path) -> None:
+    frontend_root = tmp_path / "frontend"
+    router_dir = frontend_root / "src" / "router"
+    routes_dir = router_dir / "routes"
+    routes_dir.mkdir(parents=True)
+
+    (router_dir / "index.ts").write_text(
+        """
+import { createRouter, createWebHistory } from 'vue-router'
+import { createRoutes } from './routes'
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: createRoutes()
+})
+
+export default router
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "index.ts").write_text(
+        """
+import { futureRoutes } from './future'
+import { shellBaseChildren } from './base'
+
+export function createRoutes() {
+  return [
+    ...shellBaseChildren,
+    futureRoutes
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "base.ts").write_text(
+        """
+export const shellBaseChildren = [
+  {
+    path: 'dashboard',
+    name: 'Dashboard',
+    component: () => import('@/views/dashboard/Dashboard.vue'),
+    meta: { requiresAuth: true, title: '仪表盘' }
+  }
+]
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "future.ts").write_text(
+        """
+export const futureRoutes = {
+  path: 'future',
+  name: 'FutureRoot',
+  meta: {
+    requiresAuth: true,
+    title: '未来模块',
+    menu: {
+      name: 'future:system:menu'
+    }
+  },
+  children: [
+    {
+      path: 'jobs',
+      name: 'FutureJobList',
+      component: () => import('@/views/future/FutureJobsPage.vue'),
+      meta: {
+        requiresAuth: true,
+        title: '未来任务',
+        menu: {
+          name: 'future:job:menu',
+          parentName: 'future:system:menu'
+        }
+      }
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    menus = load_frontend_router_menus(frontend_root)
+
+    assert [menu.name for menu in menus] == [
+        "system:dashboard:menu",
+        "future:system:menu",
+        "future:job:menu",
+    ]
+    assert [menu.sort_order for menu in menus] == [1, 2, 3]
+    assert menus[-1].path == "/future/jobs"
+
+
+def test_load_frontend_router_menus_expands_factory_routes_in_create_routes_order(tmp_path) -> None:
+    frontend_root = tmp_path / "frontend"
+    router_dir = frontend_root / "src" / "router"
+    routes_dir = router_dir / "routes"
+    routes_dir.mkdir(parents=True)
+
+    (router_dir / "index.ts").write_text(
+        """
+import { createRouter, createWebHistory } from 'vue-router'
+import { createRoutes } from './routes'
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: createRoutes()
+})
+
+export default router
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "index.ts").write_text(
+        """
+import { createExtraRoutes } from './extra'
+import { shellBaseChildren, shellRoute } from './base'
+
+export function createRoutes() {
+  return [
+    {
+      ...shellRoute,
+      children: [
+        ...shellBaseChildren,
+        ...createExtraRoutes()
+      ]
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "base.ts").write_text(
+        """
+export const shellBaseChildren = [
+  {
+    path: 'dashboard',
+    name: 'Dashboard',
+    component: () => import('@/views/dashboard/Dashboard.vue'),
+    meta: { requiresAuth: true, title: '仪表盘' }
+  }
+]
+
+export const shellRoute = {
+  path: '/',
+  component: () => import('@/layouts/DefaultLayout.vue'),
+  meta: { requiresAuth: true },
+  children: []
+}
+""",
+        encoding="utf-8",
+    )
+    (routes_dir / "extra.ts").write_text(
+        """
+export function createExtraRoutes() {
+  return [
+    {
+      path: 'ops',
+      name: 'OpsRoot',
+      meta: {
+        requiresAuth: true,
+        title: '运维中心',
+        menu: {
+          name: 'ops:system:menu'
+        }
+      },
+      children: [
+        {
+          path: 'alerts',
+          name: 'OpsAlertList',
+          component: () => import('@/views/ops/AlertsPage.vue'),
+          meta: {
+            requiresAuth: true,
+            title: '告警面板',
+            menu: {
+              name: 'ops:alert:menu',
+              parentName: 'ops:system:menu'
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    menus = load_frontend_router_menus(frontend_root)
+
+    assert [menu.name for menu in menus] == [
+        "system:dashboard:menu",
+        "ops:system:menu",
+        "ops:alert:menu",
+    ]
+    assert [menu.path for menu in menus] == [
+        "/dashboard",
+        "/ops",
+        "/ops/alerts",
+    ]
