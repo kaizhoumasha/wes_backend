@@ -52,6 +52,7 @@ RUN sed -i \
     libc-dev \
     libpq-dev \
     # 工具
+    git \
     curl \
     # 清理缓存
     && rm -rf /var/lib/apt/lists/*

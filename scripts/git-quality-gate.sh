@@ -59,7 +59,22 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+if command -v git >/dev/null 2>&1; then
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+else
+    REPO_ROOT=""
+fi
+
+if [[ -z "$REPO_ROOT" && "$CI_MODE" == "true" ]]; then
+    # CI 测试镜像默认不携带 .git 元数据，回退到脚本所在仓库目录。
+    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+
+if [[ -z "$REPO_ROOT" ]]; then
+    echo "Unable to determine repository root. Run inside a git checkout or pass --ci in containerized CI." >&2
+    exit 2
+fi
+
 cd "$REPO_ROOT"
 
 log_step() {
