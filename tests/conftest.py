@@ -4,7 +4,9 @@ Pytest 配置和共享 fixtures
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
@@ -12,6 +14,12 @@ from src.database.sqlite_schema import configure_sqlite_schemas
 
 # 使用内存数据库进行测试
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type, _compiler, **_kw):
+    """让隔离的 SQLite 单测也能创建带 JSONB 字段的表。"""
+    return "JSON"
 
 
 @pytest.fixture(scope="session")

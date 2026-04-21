@@ -2,12 +2,24 @@
 
 import importlib
 import warnings
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from celery.exceptions import DuplicateNodenameWarning
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
+
+JsonDict = dict[str, object]
+RequestFactory = Callable[..., Request]
+
+
+def _await_kwargs(mock: AsyncMock) -> JsonDict:
+    await_args = mock.await_args
+    assert await_args is not None
+    return cast("JsonDict", await_args.kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +44,7 @@ def mock_fast_fail_check():
             celery_mock.return_value = {"status": "healthy"}
 
             # 返回设备上下文（模拟 DeviceContextService.resolve）
-            def ctx_resolve_side_effect(db, device_code):
+            def ctx_resolve_side_effect(db: object, device_code: str):
                 # 模拟成功返回：返回 (DeviceContextResult, None)
                 return (
                     SimpleNamespace(
@@ -64,22 +76,22 @@ def mock_fast_fail_check():
 
 
 @pytest.fixture
-def db_session():
+def db_session() -> AsyncSession:
     mock = AsyncMock(spec=AsyncSession)
     mock.commit = AsyncMock()
     mock.rollback = AsyncMock()
-    return mock
+    return cast("AsyncSession", mock)
 
 
 @pytest.fixture
-def build_request():
+def build_request() -> RequestFactory:
     def _build_request(
         *,
-        body: dict,
+        body: JsonDict,
         path: str,
         client_ip: str = "192.168.1.100",
         user_agent: str = "TestClient",
-    ):
+    ) -> Request:
         request = MagicMock()
         request.client = MagicMock()
         request.client.host = client_ip
@@ -88,13 +100,13 @@ def build_request():
         request.headers = {"User-Agent": user_agent}
         request.method = "POST"
         request.json = AsyncMock(return_value=body)
-        return request
+        return cast("Request", request)
 
     return _build_request
 
 
-def create_result_payload(**overrides) -> dict:
-    payload = {
+def create_result_payload(**overrides: object) -> JsonDict:
+    payload: JsonDict = {
         "command_code": "CMD-20250317-001",
         "device_code": "ARM_01",
         "result": "SUCCESS",
@@ -105,8 +117,8 @@ def create_result_payload(**overrides) -> dict:
     return payload
 
 
-def create_event_payload(**overrides) -> dict:
-    payload = {
+def create_event_payload(**overrides: object) -> JsonDict:
+    payload: JsonDict = {
         "device_code": "ARM_01",
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1702627300000,
@@ -125,8 +137,8 @@ def create_event_payload(**overrides) -> dict:
     return payload
 
 
-def create_external_payload(**overrides) -> dict:
-    payload = {
+def create_external_payload(**overrides: object) -> JsonDict:
+    payload: JsonDict = {
         "callback_type": "AGV_TASK_RESULT",
         "correlation_id": "corr-agv-001",
         "command_code": "AGV-REQ-001",
@@ -139,7 +151,7 @@ def create_external_payload(**overrides) -> dict:
 
 class TestCallbackResultAPI:
     @pytest.mark.asyncio
-    async def test_callback_result_success(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         existing_command = SimpleNamespace(
             correlation_id="corr-001",
             params={"task_type": "PICK_AND_PUT"},
@@ -152,6 +164,7 @@ class TestCallbackResultAPI:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.correlation_id = "corr-001"
+        handled_command.session_id = None
 
         with (
             patch(
@@ -195,6 +208,10 @@ class TestCallbackResultAPI:
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
             patch(
+                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -216,10 +233,10 @@ class TestCallbackResultAPI:
         assert response["data"]["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
         assert mock_create_inbox.call_args.kwargs["source_message_id"] == "req-001"
-        assert mock_log_callback.await_args is not None
-        assert mock_log_callback.await_args.kwargs["correlation_id"] == "corr-001"
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "ACCEPTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["correlation_id"] == "corr-001"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        assert log_kwargs["failure_stage"] is None
         mock_handle.assert_awaited_once()
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
@@ -230,7 +247,7 @@ class TestCallbackResultAPI:
     async def test_callback_result_rejects_legacy_command_id_and_device_id(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -315,12 +332,15 @@ class TestCallbackResultAPI:
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_rejects_invalid_plugin_result(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_result_rejects_invalid_plugin_result(
+        self, db_session: AsyncSession, build_request: RequestFactory
+    ) -> None:
         existing_command = SimpleNamespace(
             correlation_id="corr-001",
             params={"action": "PICK_AND_PUT"},
@@ -395,12 +415,15 @@ class TestCallbackResultAPI:
         mock_create_inbox.assert_not_called()
         mock_handle.assert_not_called()
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_logs_device_context_failure(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_result_logs_device_context_failure(
+        self, db_session: AsyncSession, build_request: RequestFactory
+    ) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.device_context_service.resolve",
@@ -427,14 +450,15 @@ class TestCallbackResultAPI:
         assert response["message"] == "未找到设备: ARM_01"
         assert response["request_id"] == "req-ctx-001"
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "DEVICE_CONTEXT_RESOLVE"
-        assert mock_log_callback.await_args.kwargs["response_status"] == 404
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "DEVICE_CONTEXT_RESOLVE"
+        assert log_kwargs["response_status"] == 404
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_result_rejects_invalid_capability_config(
-        self, db_session: AsyncSession, build_request
+        self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         with (
             patch(
@@ -480,8 +504,9 @@ class TestCallbackResultAPI:
         assert response["data"]["ack"] is False
         mock_get_command.assert_not_called()
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "CONFIG_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "CONFIG_VALIDATE"
         mock_audit.assert_awaited_once()
 
 
@@ -495,7 +520,7 @@ class TestCallbackContractBoundary:
 
 class TestCallbackEventAPI:
     @pytest.mark.asyncio
-    async def test_callback_event_success(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_event_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.device_service.get_device_by_code",
@@ -563,10 +588,10 @@ class TestCallbackEventAPI:
         assert isinstance(event_correlation_id, str)
         assert event_correlation_id.startswith("corr_")
         assert create_inbox_kwargs["correlation_id"] == event_correlation_id
-        assert mock_log_callback.await_args is not None
-        assert mock_log_callback.await_args.kwargs["correlation_id"] == event_correlation_id
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "ACCEPTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["correlation_id"] == event_correlation_id
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        assert log_kwargs["failure_stage"] is None
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -576,7 +601,7 @@ class TestCallbackEventAPI:
     async def test_callback_event_rejects_legacy_device_id(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -607,12 +632,15 @@ class TestCallbackEventAPI:
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_event_rejects_invalid_plugin_event(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_event_rejects_invalid_plugin_event(
+        self, db_session: AsyncSession, build_request: RequestFactory
+    ) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.device_service.get_device_by_code",
@@ -678,7 +706,7 @@ class TestCallbackEventAPI:
     async def test_callback_event_uses_canonical_event_for_capability_check(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -729,16 +757,16 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "1000"
         assert response["data"]["status"] == "submitted"
-        assert mock_create_inbox.await_args is not None
-        assert mock_create_inbox.await_args.kwargs["event_type"] == "SCAN_FINISH"
-        assert mock_create_inbox.await_args.kwargs["canonical_event_type"] == "SCAN_COMPLETED"
+        inbox_kwargs = _await_kwargs(mock_create_inbox)
+        assert inbox_kwargs["event_type"] == "SCAN_FINISH"
+        assert inbox_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
         mock_enqueue.assert_called_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_event_rejects_invalid_capability_config(
-        self, db_session: AsyncSession, build_request
+        self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         with (
             patch(
@@ -784,14 +812,15 @@ class TestCallbackEventAPI:
         assert response["data"]["ack"] is False
         mock_create_inbox.assert_not_called()
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "CONFIG_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "CONFIG_VALIDATE"
         mock_audit.assert_awaited_once()
 
 
 class TestCallbackExternalAPI:
     @pytest.mark.asyncio
-    async def test_callback_external_success(self, db_session: AsyncSession, build_request) -> None:
+    async def test_callback_external_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
             patch(
                 "src.app.callback.v1.callback.inbox_service.create_external_http_inbox",
@@ -817,14 +846,14 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert response["data"]["status"] == "submitted"
-        assert mock_create_inbox.await_args is not None
-        assert mock_create_inbox.await_args.kwargs["callback_type"] == "AGV_TASK_RESULT"
-        assert mock_create_inbox.await_args.kwargs["correlation_id"] == "corr-agv-001"
-        assert mock_create_inbox.await_args.kwargs["source_message_id"] == "req-ext-001"
-        assert mock_log_callback.await_args is not None
-        assert mock_log_callback.await_args.kwargs["correlation_id"] == "corr-agv-001"
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "ACCEPTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        inbox_kwargs = _await_kwargs(mock_create_inbox)
+        assert inbox_kwargs["callback_type"] == "AGV_TASK_RESULT"
+        assert inbox_kwargs["correlation_id"] == "corr-agv-001"
+        assert inbox_kwargs["source_message_id"] == "req-ext-001"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["correlation_id"] == "corr-agv-001"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        assert log_kwargs["failure_stage"] is None
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -834,7 +863,7 @@ class TestCallbackExternalAPI:
     async def test_callback_external_rejects_missing_correlation_id(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -860,6 +889,7 @@ class TestCallbackExternalAPI:
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         mock_audit.assert_awaited_once()

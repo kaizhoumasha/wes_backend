@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.workline_runtime.plugin_context import PluginContext
+from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
 
 
 class TestPluginContextCreation:
@@ -55,7 +56,12 @@ class TestPluginContextCreation:
         """创建模拟的服务容器"""
         return MagicMock()
 
-    def test_create_plugin_context(self, mock_workline, mock_session, mock_device, mock_services):
+    @pytest.fixture
+    def mock_runtime(self):
+        """创建模拟的运行时上下文"""
+        return ResolvedExecutionContext()
+
+    def test_create_plugin_context(self, mock_workline, mock_session, mock_device, mock_services, mock_runtime):
         """测试创建插件上下文"""
         devices_by_role = {"SCANNER": [mock_device]}
 
@@ -66,6 +72,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={"scan_timeout": 30},
             binding_config={"SCANNER": {"device_id": 1}},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: datetime(2026, 1, 1, 12, 0, 0),
@@ -77,7 +84,7 @@ class TestPluginContextCreation:
         assert ctx.correlation_id == "corr-123"
         assert ctx.config["scan_timeout"] == 30
 
-    def test_get_device_by_role_found(self, mock_workline, mock_session, mock_services):
+    def test_get_device_by_role_found(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试按角色获取设备 - 找到"""
         device1 = MagicMock(id=1, device_role="SCANNER")
         device2 = MagicMock(id=2, device_role="SCANNER")
@@ -90,6 +97,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: datetime.now(),
@@ -103,7 +111,7 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("SCANNER", index=1)
         assert found == device2
 
-    def test_get_device_by_role_not_found(self, mock_workline, mock_session, mock_services):
+    def test_get_device_by_role_not_found(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试按角色获取设备 - 未找到"""
         ctx = PluginContext(
             workline=mock_workline,
@@ -112,6 +120,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: datetime.now(),
@@ -121,7 +130,7 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("CONVEYOR")
         assert found is None
 
-    def test_get_device_by_role_index_out_of_range(self, mock_workline, mock_session, mock_services):
+    def test_get_device_by_role_index_out_of_range(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试按角色获取设备 - 索引越界"""
         device = MagicMock(id=1, device_role="SCANNER")
         devices_by_role = {"SCANNER": [device]}
@@ -133,6 +142,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: datetime.now(),
@@ -142,7 +152,7 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("SCANNER", index=5)
         assert found is None
 
-    def test_logger_is_logging_logger(self, mock_workline, mock_session, mock_services):
+    def test_logger_is_logging_logger(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试 logger 是 logging.Logger 类型"""
         logger = logging.getLogger("test_plugin")
         ctx = PluginContext(
@@ -152,6 +162,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logger,
             clock=lambda: datetime.now(),
@@ -159,7 +170,7 @@ class TestPluginContextCreation:
 
         assert isinstance(ctx.logger, logging.Logger)
 
-    def test_clock_returns_datetime(self, mock_workline, mock_session, mock_services):
+    def test_clock_returns_datetime(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试 clock 返回 datetime"""
         fixed_time = datetime(2026, 1, 1, 12, 0, 0)
         ctx = PluginContext(
@@ -169,6 +180,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: fixed_time,
@@ -178,7 +190,7 @@ class TestPluginContextCreation:
         assert isinstance(result, datetime)
         assert result == fixed_time
 
-    def test_arbitrary_types_allowed(self, mock_workline, mock_session, mock_services):
+    def test_arbitrary_types_allowed(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试 arbitrary_types_allowed 配置允许任意类型"""
         # MagicMock 不是 Pydantic 默认支持的类型
         # 但 Config.arbitrary_types_allowed = True 应该允许
@@ -189,6 +201,7 @@ class TestPluginContextCreation:
             correlation_id="corr-123",
             config={},
             binding_config={},
+            runtime=mock_runtime,
             services=mock_services,  # MagicMock
             logger=logging.getLogger("test"),
             clock=lambda: datetime.now(),

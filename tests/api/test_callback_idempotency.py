@@ -1,23 +1,35 @@
 """Callback API 幂等性专项测试。"""
 
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
+
+JsonDict = dict[str, object]
+RequestFactory = Callable[..., Request]
+
+
+def _await_kwargs(mock: AsyncMock) -> JsonDict:
+    await_args = mock.await_args
+    assert await_args is not None
+    return cast("JsonDict", await_args.kwargs)
 
 
 @pytest.fixture
-def db_session():
+def db_session() -> AsyncSession:
     mock = AsyncMock(spec=AsyncSession)
     mock.commit = AsyncMock()
     mock.rollback = AsyncMock()
-    return mock
+    return cast("AsyncSession", mock)
 
 
 @pytest.fixture
-def build_request():
-    def _build_request(*, body: dict, path: str):
+def build_request() -> RequestFactory:
+    def _build_request(*, body: JsonDict, path: str) -> Request:
         request = MagicMock()
         request.client = MagicMock()
         request.client.host = "192.168.1.100"
@@ -26,12 +38,12 @@ def build_request():
         request.headers = {"User-Agent": "TestClient"}
         request.method = "POST"
         request.json = AsyncMock(return_value=body)
-        return request
+        return cast("Request", request)
 
     return _build_request
 
 
-def create_result_payload() -> dict:
+def create_result_payload() -> JsonDict:
     return {
         "command_code": "CMD-20250317-001",
         "device_code": "ARM_01",
@@ -41,7 +53,7 @@ def create_result_payload() -> dict:
     }
 
 
-def create_event_payload() -> dict:
+def create_event_payload() -> JsonDict:
     return {
         "device_code": "ARM_01",
         "event_type": "SCAN_COMPLETED",
@@ -53,7 +65,7 @@ def create_event_payload() -> dict:
     }
 
 
-def create_external_payload() -> dict:
+def create_external_payload() -> JsonDict:
     return {
         "callback_type": "AGV_TASK_RESULT",
         "correlation_id": "corr-agv-001",
@@ -65,7 +77,9 @@ def create_external_payload() -> dict:
 
 class TestCallbackResultIdempotency:
     @pytest.mark.asyncio
-    async def test_duplicate_result_skips_business_side_effects(self, db_session: AsyncSession, build_request) -> None:
+    async def test_duplicate_result_skips_business_side_effects(
+        self, db_session: AsyncSession, build_request: RequestFactory
+    ) -> None:
         existing_command = SimpleNamespace(
             correlation_id="corr-001",
             params={"action": "PICK_AND_PUT"},
@@ -78,6 +92,7 @@ class TestCallbackResultIdempotency:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.correlation_id = "corr-001"
+        handled_command.session_id = None
 
         with (
             patch(
@@ -111,6 +126,10 @@ class TestCallbackResultIdempotency:
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
             patch(
+                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -141,9 +160,10 @@ class TestCallbackResultIdempotency:
         assert mock_handle.await_count == 1
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
-        assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
 
 
@@ -152,7 +172,7 @@ class TestCallbackEventIdempotency:
     async def test_duplicate_event_requeues_processing_but_skips_audit(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -208,9 +228,10 @@ class TestCallbackEventIdempotency:
         assert mock_enqueue.call_count == 2
         assert mock_create_inbox.await_count == 2
         assert mock_log_callback.await_count == 2
-        assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
 
 
@@ -219,7 +240,7 @@ class TestCallbackExternalIdempotency:
     async def test_duplicate_external_callback_requeues_processing_but_skips_audit(
         self,
         db_session: AsyncSession,
-        build_request,
+        build_request: RequestFactory,
     ) -> None:
         with (
             patch(
@@ -256,7 +277,8 @@ class TestCallbackExternalIdempotency:
         assert response2["data"]["status"] == "duplicate"
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
-        assert mock_log_callback.await_args.kwargs["error_message"] == "幂等重复: 已存在相同事件"
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "DUPLICATE"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] is None
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
