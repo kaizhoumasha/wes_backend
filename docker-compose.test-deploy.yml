@@ -25,7 +25,6 @@ services:
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
     volumes:
       - ./logs:/app/logs:z
-      - ../wes_frontend:/opt/wes_frontend:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s

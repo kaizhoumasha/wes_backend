@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FRONTEND_ROOT = BACKEND_ROOT.parent / "wes_frontend"
+DEFAULT_MENU_MANIFEST_RELATIVE_PATH = Path("artifacts/menu-manifest.json")
 ROUTE_FILE_RELATIVE_PATH = Path("src/router/index.ts")
 ROUTES_DIRECTORY_RELATIVE_PATH = Path("src/router/routes")
 
@@ -31,6 +33,7 @@ class FrontendMenuDefinition:
     parent_name: str | None = None
     icon: str | None = None
     is_hidden: bool = False
+    permission: str | None = None
 
     def to_model_data(self, parent_id: int | None = None) -> dict[str, object]:
         """转换为 Menu 模型需要的数据结构"""
@@ -71,10 +74,20 @@ def resolve_frontend_root(frontend_path: str | Path | None = None) -> Path:
     return Path(raw_path).expanduser()
 
 
-def load_frontend_router_menus(frontend_path: str | Path | None = None) -> list[FrontendMenuDefinition]:
+def load_frontend_router_menus(
+    frontend_path: str | Path | None = None,
+    manifest_path: str | Path | None = None,
+) -> list[FrontendMenuDefinition]:
     """从前端 router 文件加载菜单定义"""
 
+    if manifest_path is not None:
+        return _load_frontend_menu_manifest(Path(manifest_path).expanduser())
+
     frontend_root = resolve_frontend_root(frontend_path)
+    manifest_file = frontend_root / DEFAULT_MENU_MANIFEST_RELATIVE_PATH
+    if manifest_file.exists():
+        return _load_frontend_menu_manifest(manifest_file)
+
     router_file = frontend_root / ROUTE_FILE_RELATIVE_PATH
 
     if not router_file.exists():
@@ -87,6 +100,59 @@ def load_frontend_router_menus(frontend_path: str | Path | None = None) -> list[
         if "const routes" not in str(exc):
             raise
         return _load_frontend_router_menus_from_modules(frontend_root)
+
+
+def _load_frontend_menu_manifest(manifest_path: Path) -> list[FrontendMenuDefinition]:
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"前端菜单清单不存在: {manifest_path}")
+
+    raw_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_payload, list):
+        raise TypeError(f"前端菜单清单格式错误，应为数组: {manifest_path}")
+
+    definitions: list[FrontendMenuDefinition] = []
+    for index, item in enumerate(raw_payload):
+        if not isinstance(item, dict):
+            raise TypeError(f"前端菜单清单第 {index + 1} 项格式错误，应为对象")
+
+        definitions.append(
+            FrontendMenuDefinition(
+                name=_require_manifest_string(item, "name", index),
+                title=_require_manifest_string(item, "title", index),
+                path=_require_manifest_string(item, "path", index),
+                component=_optional_manifest_string(item.get("component")),
+                sort_order=_require_manifest_int(item, "sortOrder", index),
+                parent_name=_optional_manifest_string(item.get("parentName")),
+                icon=_optional_manifest_string(item.get("icon")),
+                is_hidden=_optional_manifest_bool(item.get("isHidden")) or False,
+                permission=_optional_manifest_string(item.get("permission")),
+            )
+        )
+
+    _validate_menu_definitions(definitions)
+    return definitions
+
+
+def _require_manifest_string(item: dict[str, object], key: str, index: int) -> str:
+    value = item.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"前端菜单清单第 {index + 1} 项缺少有效字段 `{key}`")
+    return value
+
+
+def _optional_manifest_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _require_manifest_int(item: dict[str, object], key: str, index: int) -> int:
+    value = item.get(key)
+    if not isinstance(value, int):
+        raise TypeError(f"前端菜单清单第 {index + 1} 项缺少有效字段 `{key}`")
+    return value
+
+
+def _optional_manifest_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def parse_frontend_router_menus(source: str) -> list[FrontendMenuDefinition]:

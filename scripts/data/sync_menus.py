@@ -26,10 +26,10 @@ from src.database.db import get_db_context, init_db
 from src.utils.frontend_menu_parser import resolve_frontend_root
 
 
-def preview_menus(frontend_path: str | None) -> None:
+def preview_menus(frontend_path: str | None, manifest_path: str | None) -> None:
     """预览从前端 router 解析出的菜单数据"""
 
-    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path)
+    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path, manifest_path=manifest_path)
 
     print("\n📋 菜单数据预览:")
     print("=" * 80)
@@ -47,22 +47,29 @@ def preview_menus(frontend_path: str | None) -> None:
 async def main_async(args: argparse.Namespace) -> None:
     """异步主函数"""
 
-    frontend_root = resolve_frontend_root(args.frontend_path)
-
     print("🚀 菜单同步工具")
     print("=" * 80)
-    print(f"📦 前端路径: {frontend_root}")
+    frontend_root = (
+        resolve_frontend_root(args.frontend_path) if (args.frontend_path or not args.manifest_path) else None
+    )
+    if frontend_root is not None:
+        print(f"📦 前端路径: {frontend_root}")
+    if args.manifest_path:
+        print(f"📄 菜单清单: {args.manifest_path}")
 
-    if not frontend_root.exists():
+    if args.manifest_path is None and frontend_root is not None and not frontend_root.exists():
         print(f"\n❌ 前端路径不存在: {frontend_root}")
         sys.exit(1)
 
     try:
         if args.preview:
-            preview_menus(args.frontend_path)
+            preview_menus(args.frontend_path, args.manifest_path)
             return
 
-        menu_definitions = menu_sync_service.load_frontend_menu_definitions(args.frontend_path)
+        menu_definitions = menu_sync_service.load_frontend_menu_definitions(
+            args.frontend_path,
+            manifest_path=args.manifest_path,
+        )
         print(f"🔍 已从前端 router 解析 {len(menu_definitions)} 条菜单")
 
         await init_db()
@@ -112,6 +119,12 @@ def main() -> None:
         type=str,
         default=None,
         help="前端项目路径（默认 ../wes_frontend 或环境变量 WES_FRONTEND_PATH）",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=str,
+        default=None,
+        help="前端生成的菜单清单 JSON 路径（优先于 router 源码解析）",
     )
     parser.add_argument(
         "--dry-run",

@@ -9,6 +9,7 @@
 #   bash scripts/data/sync_menus.sh --dry-run
 #   bash scripts/data/sync_menus.sh --preview
 #   bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
+#   bash scripts/data/sync_menus.sh --manifest-path /path/to/menu-manifest.json
 #
 
 set -e
@@ -35,13 +36,21 @@ while [[ $# -gt 0 ]]; do
             ARGS+=("$1" "$2")
             shift 2
             ;;
+        --manifest-path)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}❌ --manifest-path 缺少文件参数${NC}"
+                exit 1
+            fi
+            ARGS+=("$1" "$2")
+            shift 2
+            ;;
         --dry-run|--preview)
             ARGS+=("$1")
             shift
             ;;
         *)
             echo -e "${RED}未知参数: $1${NC}"
-            echo "使用方式: $0 [--dry-run] [--preview] [--frontend-path /path/to/wes_frontend]"
+            echo "使用方式: $0 [--dry-run] [--preview] [--frontend-path /path/to/wes_frontend] [--manifest-path /path/to/menu-manifest.json]"
             exit 1
             ;;
     esac

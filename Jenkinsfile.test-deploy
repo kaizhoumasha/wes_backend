@@ -140,6 +140,20 @@ pipeline {
                             -f "${DEPLOY_COMPOSE_FILE}" \
                             pull api celery_worker frontend
 
+                        echo "📄 从前端镜像提取菜单清单..."
+                        MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
+                        MANIFEST_FILE="${MANIFEST_DIR}/menu-manifest.json"
+                        mkdir -p "${MANIFEST_DIR}"
+                        docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
+                        docker create --name frontend-manifest-extract "${FRONTEND_IMAGE}" >/dev/null
+                        docker cp frontend-manifest-extract:/opt/wes/menu-manifest.json "${MANIFEST_FILE}"
+                        docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
+
+                        if [ ! -s "${MANIFEST_FILE}" ]; then
+                            echo "❌ 未能从前端镜像提取菜单清单"
+                            exit 1
+                        fi
+
                         echo "🐳 重建测试应用..."
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
@@ -200,11 +214,22 @@ pipeline {
                         echo "✅ TEST 环境权限数量: ${PERMISSION_COUNT}"
 
                         echo "🧭 同步 TEST 环境菜单..."
+                        API_CONTAINER_ID=$(docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            ps -q api)
+
+                        if [ -z "${API_CONTAINER_ID}" ]; then
+                            echo "❌ 未找到 API 容器，无法同步菜单"
+                            exit 1
+                        fi
+
+                        docker cp "${MANIFEST_FILE}" "${API_CONTAINER_ID}:/tmp/menu-manifest.json"
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
                             exec -T api \
-                            /opt/venv/bin/python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend
+                            /opt/venv/bin/python scripts/data/sync_menus.py --manifest-path /tmp/menu-manifest.json
 
                         MENU_COUNT=$(docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
