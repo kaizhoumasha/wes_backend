@@ -355,3 +355,52 @@ export function createExtraRoutes() {
         "/ops",
         "/ops/alerts",
     ]
+
+
+def test_load_frontend_router_menus_prefers_generated_manifest(tmp_path) -> None:
+    frontend_root = tmp_path / "frontend"
+    artifacts_dir = frontend_root / "artifacts"
+    router_dir = frontend_root / "src" / "router"
+    artifacts_dir.mkdir(parents=True)
+    router_dir.mkdir(parents=True)
+
+    (artifacts_dir / "menu-manifest.json").write_text(
+        """
+[
+  {
+    "name": "runtime:system:menu",
+    "title": "运行监控中心",
+    "path": "/runtime",
+    "component": null,
+    "sortOrder": 30,
+    "parentName": null,
+    "icon": "ep:monitor",
+    "isHidden": false,
+    "permission": null
+  },
+  {
+    "name": "runtime:worklines:menu",
+    "title": "工作线监控",
+    "path": "/runtime/worklines",
+    "component": "views/runtime/worklines/WorklineRuntimePage.vue",
+    "sortOrder": 3,
+    "parentName": "runtime:system:menu",
+    "icon": "ep:share",
+    "isHidden": false,
+    "permission": "biz:workline:list"
+  }
+]
+""",
+        encoding="utf-8",
+    )
+
+    (router_dir / "index.ts").write_text("const routes = [", encoding="utf-8")
+
+    menus = load_frontend_router_menus(frontend_root)
+
+    assert [menu.name for menu in menus] == [
+        "runtime:system:menu",
+        "runtime:worklines:menu",
+    ]
+    assert menus[1].path == "/runtime/worklines"
+    assert menus[1].component == "views/runtime/worklines/WorklineRuntimePage.vue"

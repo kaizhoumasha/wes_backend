@@ -94,15 +94,26 @@ class MenuSyncService:
     def __init__(self, repo: MenuRepository = menu_repository):
         self.repo = repo
 
-    def load_frontend_menu_definitions(self, frontend_path: str | Path | None = None) -> list[FrontendMenuDefinition]:
+    def load_frontend_menu_definitions(
+        self,
+        frontend_path: str | Path | None = None,
+        manifest_path: str | Path | None = None,
+    ) -> list[FrontendMenuDefinition]:
         """从前端 router 加载菜单定义"""
 
-        return load_frontend_router_menus(frontend_path)
+        return load_frontend_router_menus(frontend_path, manifest_path=manifest_path)
 
-    def load_frontend_menu_payloads(self, frontend_path: str | Path | None = None) -> list[dict[str, Any]]:
+    def load_frontend_menu_payloads(
+        self,
+        frontend_path: str | Path | None = None,
+        manifest_path: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
         """将前端菜单定义转换为数据库写入载荷"""
 
-        return [definition.to_model_data() for definition in self.load_frontend_menu_definitions(frontend_path)]
+        return [
+            definition.to_model_data()
+            for definition in self.load_frontend_menu_definitions(frontend_path, manifest_path=manifest_path)
+        ]
 
     async def sync_menus(
         self,
