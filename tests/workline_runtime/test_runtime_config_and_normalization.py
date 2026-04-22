@@ -84,3 +84,28 @@ def test_normalize_inbox_input_infers_command_result_when_kind_missing() -> None
         "error_code": "ARM_ERROR",
         "error_message": "机械臂错误",
     }
+
+
+def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="COMMAND_RESULT"),
+        correlation_id="corr-3",
+        payload_json={
+            "command_code": "CMD-3",
+            "result": "FAILED",
+            "command_type": "PICK_AND_PUT",
+            "device_code": "ARM-3",
+            "error_detail": {
+                "code": "BIN_FULL",
+                "msg": "料箱已满",
+            },
+        },
+    )
+
+    normalized = normalize_inbox_input(inbox)
+
+    assert normalized.command_code == "CMD-3"
+    assert normalized.error_detail["code"] == "BIN_FULL"
+    assert normalized.error_detail["msg"] == "料箱已满"
+    assert normalized.error_detail["error_code"] == "BIN_FULL"
+    assert normalized.error_detail["error_message"] == "料箱已满"

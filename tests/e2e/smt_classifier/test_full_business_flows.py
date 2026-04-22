@@ -220,7 +220,7 @@ class TestInputNgFlowSizeNg:
     2. WES 判断条码 OK
     3. WES 下发进料 OK 命令：串杆位置 -> 流水线进料位置
     4. 设备回传结果，携带检测信息
-    5. 若尺寸或厚度 NG，错误码为 1001 或 1002
+    5. 若尺寸或厚度 NG，设备返回语义错误码 `INSPECTION_SIZE_NG` 或 `INSPECTION_THICKNESS_NG`
     6. WES 下发进料 NG 命令：流水线进料位置 -> NG 缓存位
     7. 设备回传进料 NG 结果
 
@@ -235,7 +235,7 @@ class TestInputNgFlowSizeNg:
         db_conn: asyncpg.Connection,
         clean_mock_state: None,
     ) -> None:
-        """测试尺寸检测 NG 流程（错误码 1001）"""
+        """测试尺寸检测 NG 流程（语义码 INSPECTION_SIZE_NG）"""
         logger.info("=" * 60)
         logger.info("开始测试: 进料 NG 流程（尺寸检测 NG）")
         logger.info("=" * 60)

@@ -13,10 +13,8 @@ Session 归属解析器
 设计参考: 设计文档 phase2-orchestrator
 """
 
-import hashlib
-import json
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +26,14 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version
-from src.workline_runtime.payloads import SixInOne
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import ensure_dict
+from src.workline_plugin_registry import (
+    get_plugin_contract_version,
+    parse_workline_six_in_one,
+)
+
+from .contracts import SixInOne
+from .trace_context import TraceContext
+from .utils import ensure_dict
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
@@ -44,59 +46,119 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
 }
-_SIX_IN_ONE_KEY_ALIASES = SixInOne.BARCODE_FIELDS
+
+# 无业务条码但可按设备级单例归属的事件。
+_DEVICE_SCOPED_EVENTS = {
+    "ESTOP_PRESSED",
+}
+
+# 无业务条码、但每次事件实例都必须独立归属的事件。
+_EVENT_INSTANCE_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "MATERIAL_ARRIVED": ("event_id", "vendor_event_id"),
+}
+
+# 待处理 ingress 元数据属性名。
 _PENDING_SESSION_INGRESS_METADATA_ATTR = "_pending_session_ingress_metadata"
 
 
-def _generate_six_in_one_business_key(data: dict[str, Any]) -> str | None:
-    """
-    从 Six-In-One 数据生成唯一业务键。
+class SessionResolveError(ValueError):
+    """Session 归属解析失败。"""
 
-    使用所有非空字段生成 hash，确保相同数据组合生成相同 key，
-    不同组合生成不同 key。
 
-    Args:
-        data: 业务数据字典
+class SessionIngressMetadata(TypedDict):
+    """复用 session 时的 ingress 元数据补丁。"""
 
-    Returns:
-        16位唯一业务键，失败返回 None
-    """
-    # 收集所有非空字段，保持固定顺序
-    fields = []
-    for alias in _SIX_IN_ONE_KEY_ALIASES:
-        value = data.get(alias)
-        if isinstance(value, str) and value:
-            fields.append(value)
+    ingress_count: int
+    last_ingress_at: Any
+    last_request_id: NotRequired[str]
 
-    if not fields:
+
+def _non_empty_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | None:
+    """为无业务条码的设备级事件生成稳定归属键。"""
+
+    event_type = payload_json.get("canonical_event_type") or payload_json.get("event_type")
+    device_code = payload_json.get("device_code")
+    if not isinstance(event_type, str) or not event_type:
+        return None
+    if not isinstance(device_code, str) or not device_code:
         return None
 
-    # 生成确定性的 JSON 字符串
-    json_str = json.dumps(fields, ensure_ascii=False)
+    if event_type in _DEVICE_SCOPED_EVENTS:
+        return f"event:{event_type}:{device_code}"
 
-    # 生成 16 位 hash
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+    data = ensure_dict(payload_json.get("data"))
+    for field_name in _EVENT_INSTANCE_IDENTITY_FIELDS.get(event_type, ()):
+        event_identity = data.get(field_name)
+        if isinstance(event_identity, str) and event_identity:
+            return f"event:{event_type}:{device_code}:{event_identity}"
+
+    return None
 
 
-def _resolve_business_key(payload_json: dict[str, Any]) -> str:
-    """从事件 payload 提取业务主键，缺失时生成兜底值。"""
+def _resolve_payload_barcode(
+    payload_json: dict[str, Any],
+    data: dict[str, Any],
+) -> str | None:
+    """优先从顶层和 `data` 中提取稳定单字段条码。"""
+
+    return _non_empty_str(payload_json.get("barcode")) or _non_empty_str(data.get("barcode"))
+
+
+def _resolve_six_in_one_business_key(
+    data: dict[str, Any],
+    *,
+    plugin_key: str | None,
+) -> str | None:
+    """从插件解析或 canonical Six-In-One 中恢复稳定 business_key。"""
+
+    six_in_one = parse_workline_six_in_one(plugin_key, data)
+    parsed_business_key = _non_empty_str(getattr(six_in_one, "business_key", None))
+    if parsed_business_key:
+        return parsed_business_key
+
+    canonical_six_in_one = SixInOne.model_validate(data)
+    return canonical_six_in_one.business_key
+
+
+def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
+    """从事件 payload 提取业务主键，无法稳定求值时显式失败。
+
+    约束：
+    - 原始外部协议字段映射优先走插件自有解析入口
+    - 只有当 payload `data` 已经是 canonical Six-In-One 字段时，
+      才允许 runtime 直接生成稳定 business_key
+    - 明确允许的设备级事件（如 ESTOP）按 event_type + device_code 稳定归属
+    - 对未知插件的非 canonical 原始 payload，不再返回随机 business_key，
+      而是显式抛出 SessionResolveError，避免重复建单
+    """
     business_key = payload_json.get("business_key")
     if isinstance(business_key, str) and business_key:
         return business_key
 
-    data = ensure_dict(payload_json.get("data"))
+    event_scoped_business_key = _resolve_event_scope_business_key(payload_json)
+    if event_scoped_business_key:
+        return event_scoped_business_key
 
-    # 优先使用 barcode 字段
-    barcode = data.get("barcode")
-    if isinstance(barcode, str) and barcode:
+    data = ensure_dict(payload_json.get("data"))
+    barcode = _resolve_payload_barcode(payload_json, data)
+    if barcode:
         return barcode
 
-    # 使用完整的 Six-In-One 组合生成唯一业务键
-    six_in_one_key = _generate_six_in_one_business_key(data)
-    if six_in_one_key:
-        return six_in_one_key
+    # 通过插件自有协议解析入口生成统一 business_key
+    if data:
+        # 当 plugin_key 缺失/未知，但 data 已经是 canonical Six-In-One 字段时，
+        # 仍需要保证相同业务数据能够收敛到稳定 business_key，避免重复建单。
+        business_key_from_six_in_one = _resolve_six_in_one_business_key(data, plugin_key=plugin_key)
+        if business_key_from_six_in_one:
+            return business_key_from_six_in_one
 
-    return f"auto_{uuid.uuid4().hex[:12]}"
+    raise SessionResolveError(
+        "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"
+    )
 
 
 def _build_session_ingress_metadata(
@@ -104,12 +166,12 @@ def _build_session_ingress_metadata(
     *,
     trace: TraceContext,
     observed_at: Any,
-) -> dict[str, Any]:
+) -> SessionIngressMetadata:
     """为复用已有 session 构造最终应持久化的 ingress 元数据。"""
 
     current = getattr(session, "ingress_count", None)
     ingress_count = current + 1 if isinstance(current, int) and current >= 1 else 2
-    metadata: dict[str, Any] = {
+    metadata: SessionIngressMetadata = {
         "ingress_count": ingress_count,
         "last_ingress_at": observed_at,
     }
@@ -118,7 +180,7 @@ def _build_session_ingress_metadata(
     return metadata
 
 
-def _apply_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+def _apply_session_ingress_metadata(session: WorklineSession, metadata: SessionIngressMetadata) -> None:
     """把 ingress 元数据应用到 session 对象。"""
 
     session.ingress_count = metadata["ingress_count"]
@@ -127,7 +189,7 @@ def _apply_session_ingress_metadata(session: WorklineSession, metadata: dict[str
     session.last_ingress_at = metadata["last_ingress_at"]
 
 
-def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: dict[str, Any]) -> None:
+def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: SessionIngressMetadata) -> None:
     """暂存复用 session 的 ingress 补丁，供锁内 refresh 后重放。"""
 
     setattr(session, _PENDING_SESSION_INGRESS_METADATA_ATTR, dict(metadata))
@@ -140,7 +202,7 @@ def reapply_pending_session_ingress_metadata(session: WorklineSession) -> bool:
     if not isinstance(metadata, dict) or not metadata:
         return False
 
-    _apply_session_ingress_metadata(session, metadata)
+    _apply_session_ingress_metadata(session, cast("SessionIngressMetadata", metadata))
     return True
 
 
@@ -259,7 +321,7 @@ class SessionResolver:
             解析或创建的 Session
         """
         payload_json = ensure_dict(inbox.payload_json)
-        business_key = _resolve_business_key(payload_json)
+        business_key = _resolve_business_key(payload_json, plugin_key=getattr(workline, "plugin_key", None))
         now = timezone.now_for_db()
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
 
@@ -441,3 +503,11 @@ class SessionResolver:
 
 # 创建单例
 session_resolver = SessionResolver()
+
+
+__all__ = [
+    "SessionResolveError",
+    "SessionResolver",
+    "reapply_pending_session_ingress_metadata",
+    "session_resolver",
+]

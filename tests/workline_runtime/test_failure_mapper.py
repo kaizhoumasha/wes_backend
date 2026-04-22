@@ -23,7 +23,23 @@ def test_map_failure_to_diagnostic_handles_hardware_failures() -> None:
     failure = SimpleNamespace(domain=RuntimeFailureDomain.HARDWARE.value, code="MOTOR_OFFLINE")
     error_code, error_domain = map_failure_to_diagnostic(failure=failure)
 
-    assert error_code == ErrorCode.DEVICE_UNREACHABLE
+    assert error_code == ErrorCode.UNKNOWN
+    assert error_domain == ErrorDomain.DEVICE
+
+
+def test_map_failure_to_diagnostic_maps_state_mismatch_to_plugin_transition_invalid() -> None:
+    failure = SimpleNamespace(domain=RuntimeFailureDomain.SOFTWARE.value, code="STATE_MISMATCH")
+    error_code, error_domain = map_failure_to_diagnostic(failure=failure)
+
+    assert error_code == ErrorCode.PLUGIN_TRANSITION_INVALID
+    assert error_domain == ErrorDomain.PLUGIN
+
+
+def test_map_failure_to_diagnostic_preserves_device_domain_for_estop() -> None:
+    failure = SimpleNamespace(domain=RuntimeFailureDomain.HARDWARE.value, code="ESTOP")
+    error_code, error_domain = map_failure_to_diagnostic(failure=failure)
+
+    assert error_code == ErrorCode.UNKNOWN
     assert error_domain == ErrorDomain.DEVICE
 
 

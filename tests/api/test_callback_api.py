@@ -1,14 +1,12 @@
 """Callback API 单元测试。"""
 
 import importlib
-import warnings
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from celery.exceptions import DuplicateNodenameWarning
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,6 +78,8 @@ def db_session() -> AsyncSession:
     mock = AsyncMock(spec=AsyncSession)
     mock.commit = AsyncMock()
     mock.rollback = AsyncMock()
+    mock.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=MagicMock(return_value=None)))
+    mock.add = MagicMock()
     return cast("AsyncSession", mock)
 
 
@@ -188,7 +188,9 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -221,6 +223,10 @@ class TestCallbackResultAPI:
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
+                new=AsyncMock(return_value=1),
+            ) as mock_mark_acked,
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -238,6 +244,7 @@ class TestCallbackResultAPI:
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_handle.assert_awaited_once()
+        mock_mark_acked.assert_awaited_once_with(db_session, "device-command:CMD-20250317-001")
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -279,7 +286,9 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -312,7 +321,10 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-legacy-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-legacy-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -371,7 +383,9 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -437,7 +451,10 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ctx-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-ctx-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -468,7 +485,9 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -491,7 +510,10 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-cap-bad-result-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-cap-bad-result-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -539,7 +561,9 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -598,6 +622,51 @@ class TestCallbackEventAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_callback_event_rejects_missing_event_type_before_device_context(
+        self,
+        db_session: AsyncSession,
+        build_request,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(),
+            ) as mock_resolve,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-envelope-001",
+            ),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(
+                    body={
+                        "device_code": "ARM_01",
+                        "timestamp": 1702627300000,
+                        "data": {"LotCode": "LOTABC123"},
+                    },
+                    path="/api/v1/callback/event",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        mock_resolve.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
+        assert mock_log_callback.await_args.kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_audit.assert_awaited_once()
+
     async def test_callback_event_rejects_legacy_device_id(
         self,
         db_session: AsyncSession,
@@ -612,7 +681,10 @@ class TestCallbackEventAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-legacy-002"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-legacy-002",
+            ),
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -659,7 +731,9 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -743,7 +817,10 @@ class TestCallbackEventAPI:
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-canonical-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-canonical-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -776,7 +853,9 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
                             ),
                             plugin_key="smt_classifier",
                             contract_version="1.0",
@@ -799,7 +878,10 @@ class TestCallbackEventAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-cap-bad-event-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-cap-bad-event-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -835,7 +917,10 @@ class TestCallbackExternalAPI:
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-ext-001",
+            ),
         ):
             from src.app.callback.v1.callback import callback_external
 
@@ -874,7 +959,10 @@ class TestCallbackExternalAPI:
                 "src.app.callback.v1.callback.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-002"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-ext-002",
+            ),
         ):
             from src.app.callback.v1.callback import callback_external
 

@@ -418,7 +418,7 @@ CONVEYOR:
 示例里表现为：
 
 - `result = FAILED`
-- `error_detail.error_code = 1001`
+- `error_detail.error_code = INSPECTION_SIZE_NG`
 - `error_message = 料盘尺寸检测异常`
 
 ### 当前实现

@@ -372,6 +372,41 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         assert result.failure.code == "MEASUREMENT_DATA_MISSING"
         assert result.transition == "measurement_ng"
 
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_missing_pkg_id_returns_payload_invalid(
+        self,
+        plugin: SmtClassifierPlugin,
+        mock_plugin_context: MagicMock,
+        mock_inbox: MagicMock,
+    ) -> None:
+        """测量成功回调缺少 PkgID/pkg_id 时不能继续下发 MOVE_FORWARD。"""
+
+        mock_plugin_context.session.status = "NEW"
+        mock_plugin_context.session.context_json = {
+            "step_code": SmtClassifierState.WAITING_MEASUREMENT,
+        }
+
+        mock_inbox.kind = "COMMAND_RESULT"
+        mock_inbox.payload_json = {
+            "device_code": "ARM01",
+            "command_code": "CMD-003A",
+            "task_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "finish_time": 1702627250000,
+            "data": {
+                "reel_diameter": 180.5,
+                "reel_thickness": 12.3,
+            },
+        }
+
+        result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
+
+        assert result.failure is not None
+        assert result.failure.code == "PAYLOAD_INVALID"
+        assert result.failure.message == "测量成功回调缺少 PkgID/pkg_id"
+        assert result.transition is None
+        assert result.commands == []
+
 
 # ==================== Mock 服务交互测试 ====================
 
@@ -441,6 +476,7 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
     async def test_pipeline_material_arrived_event(
         self,
         wes_client: httpx.AsyncClient,
+        db_conn,
     ) -> None:
         """测试 Pipeline 上报物料到达事件（符合白皮书规范）
 
@@ -456,12 +492,15 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
         logger.info("开始测试: Pipeline 上报物料到达事件")
         logger.info("=" * 60)
 
+        event_timestamp = int(time.time() * 1000)
+
         # Pipeline 作为客户端，调用 WES 的回调接口
         event_payload: dict[str, Any] = {
             "device_code": "PIPELINE01",
             "event_type": "MATERIAL_ARRIVED",
-            "timestamp": int(time.time() * 1000),
+            "timestamp": event_timestamp,
             "data": {
+                "event_id": f"PIPELINE-EVT-{event_timestamp}",
                 "location": "STATION_INPUT1",
             },
         }
@@ -481,8 +520,31 @@ class TestSmtClassifierE2EMockInteractions(TestSmtClassifierE2EBase):
 
         logger.info("✓ 测试通过: 符合白皮书 3.3.1 传感器触发模式规范")
 
-        # 等待扫描完成和回调
-        await asyncio.sleep(2)
+        deadline = asyncio.get_running_loop().time() + 10
+        inbox_row = None
+        while asyncio.get_running_loop().time() < deadline:
+            inbox_row = await db_conn.fetchrow(
+                """
+                SELECT id, status, error_message, session_id
+                FROM wes_biz.workline_inbox
+                WHERE payload_json->>'event_type' = $1
+                  AND payload_json->>'device_code' = $2
+                  AND payload_json->>'timestamp' = $3
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                "MATERIAL_ARRIVED",
+                "PIPELINE01",
+                str(event_timestamp),
+            )
+            if inbox_row and inbox_row["status"] in {"PROCESSED", "FAILED"}:
+                break
+            await asyncio.sleep(0.5)
+
+        assert inbox_row is not None
+        assert inbox_row["status"] == "PROCESSED"
+        assert inbox_row["error_message"] in (None, "")
+        assert inbox_row["session_id"] is not None
 
 
 # ==================== 错误处理测试 ====================
@@ -562,19 +624,19 @@ class TestSmtClassifierE2EErrorHandling(TestSmtClassifierE2EBase):
             "finish_time": 1702627250000,
             # error_detail 会被合并到顶层
             "error_detail": {
-                "error_code": "2002",  # 搬运失败
+                "error_code": "PICK_AND_PUT_FAILED",  # 标准设备错误码：搬运失败
                 "error_message": "机械臂搬运失败",
             },
         }
 
         result = await plugin.on_command_result(mock_plugin_context, mock_inbox)
 
-        # 非尺寸/厚度错误会返回 failure
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "2002"
+        assert result.transition == "manual_hold"
+        assert result.failure is None
+        assert result.context_patch["manual_hold"] is True
+        assert result.context_patch["manual_hold_reason_code"] == "PICK_AND_PUT_FAILED"
 
-        logger.info(f"✓ 测试通过: 正确处理抓取失败, failure={result.failure.message}")
+        logger.info("✓ 测试通过: 标准设备错误码会进入 MANUAL_HOLD")
 
 
 # ==================== 测试标记 ====================

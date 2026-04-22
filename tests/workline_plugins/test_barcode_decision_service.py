@@ -1,7 +1,7 @@
 """BarcodeDecisionService 回归测试。"""
 
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
-from src.workline_runtime.payloads import SixInOne
+from src.workline_runtime.contracts import SixInOne
 
 
 class TestBarcodeDecisionService:
@@ -21,4 +21,5 @@ class TestBarcodeDecisionService:
         result = barcode_decision_service.evaluate(six_in_one)
 
         assert result.decision == BarcodeDecisionType.OK
+        assert result.business_key
         assert result.pkg_id == "PKG001"

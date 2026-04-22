@@ -593,7 +593,7 @@ sequenceDiagram
 
     Note over Device,Outbox: 扫码OK，物料已到流水线进料位
 
-    Device->>API: POST /callback/result<br/>{command_code, device_code, result: FAILED, error_detail.code: "1001"}
+    Device->>API: POST /callback/result<br/>{command_code, device_code, result: FAILED, error_detail.code: "INSPECTION_SIZE_NG"}
     API->>Inbox: 写入 WorklineInbox(kind=COMMAND_RESULT)
 
     Orch->>Session: 恢复 Session(status=WAITING_DETECT_RESULT)
@@ -649,13 +649,13 @@ sequenceDiagram
 
 | 错误码 | 设备含义 | 业务归因 | Session影响 | 恢复策略 |
 |--------|---------|---------|------------|---------|
-| `NONE`/`0` | 无错误 | 正常 | 继续流程 | - |
-| `1001` | 料盘尺寸检测异常 | 检测NG | 触发NG流程 | 自动移到NG位，Session标记FAILED |
-| `1002` | 料盘厚度检测异常 | 检测NG | 触发NG流程 | 自动移到NG位，Session标记FAILED |
-| `2001` | 扫码异常 | 扫码失败 | 重试或人工 | 重试3次，失败后进入MANUAL_HOLD |
-| `2002` | 搬运失败 | 机械臂异常 | 人工介入 | 进入MANUAL_HOLD，人工恢复 |
-| `2003` | 料箱已满 | 出料位满 | 等待更换 | 等待料箱更换，超时告警 |
-| `9999` | 未知错误 | 系统异常 | 人工介入 | 进入MANUAL_HOLD，日志告警 |
+| `NONE` | 无错误 | 正常 | 继续流程 | - |
+| `INSPECTION_SIZE_NG` | 料盘尺寸检测异常 | 检测NG | 触发NG流程 | 自动移到NG位，Session标记FAILED |
+| `INSPECTION_THICKNESS_NG` | 料盘厚度检测异常 | 检测NG | 触发NG流程 | 自动移到NG位，Session标记FAILED |
+| `SCAN_FAILED` | 扫码异常 | 扫码失败 | 人工介入 | 进入MANUAL_HOLD，人工恢复 |
+| `PICK_AND_PUT_FAILED` | 搬运失败 | 机械臂异常 | 人工介入 | 进入MANUAL_HOLD，人工恢复 |
+| `BIN_FULL` | 料箱已满 | 出料位满 | 人工介入 | 进入MANUAL_HOLD，等待更换料箱后人工恢复 |
+| `DEVICE_UNKNOWN_ERROR` | 未知错误 | 系统异常 | 人工介入 | 进入MANUAL_HOLD，日志告警 |
 
 #### 1.10.2 超时场景映射
 
@@ -823,11 +823,11 @@ class SmtClassifierPlugin:
 |------|---------|---------|---------|
 | **扫码OK → 出料** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (LotCode 有效)<br>2. 发送 PICK_AND_PUT 到流水线进料位<br>3. 收到检测结果 OK<br>4. 发送 MOVE_FORWARD<br>5. 发送 PICK_AND_PUT 到料箱 | Session COMPLETED |
 | **扫码NG** | 物料在串杆位置 | 1. 收到 SCAN_COMPLETED (LotCode 缺失)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SCAN_NG |
-| **检测NG (尺寸)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=1001)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SIZE_NG |
-| **检测NG (厚度)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=1002)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=THICKNESS_NG |
+| **检测NG (尺寸)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=INSPECTION_SIZE_NG)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=SIZE_NG |
+| **检测NG (厚度)** | 物料在流水线进料位 | 1. 收到命令结果 (error_code=INSPECTION_THICKNESS_NG)<br>2. 发送 PICK_AND_PUT 到 NG 位 | Session FAILED, ng_reason=THICKNESS_NG |
 | **急停恢复** | Session RUNNING | 1. 收到 ESTOP_PRESSED<br>2. Session → MANUAL_HOLD<br>3. 人工操作 RETRY_LAST_COMMAND<br>4. Session → RUNNING | Session 继续执行 |
 | **超时重试** | Session WAITING_* | 1. 超过超时时间<br>2. 自动重试命令<br>3. 重试3次后人工介入 | Session MANUAL_HOLD 或继续 |
-| **料箱满** | 出料阶段 | 1. 收到命令结果 (error_code=2003)<br>2. 等待料箱更换<br>3. 超时告警 | Session 等待或 MANUAL_HOLD |
+| **料箱满** | 出料阶段 | 1. 收到命令结果 (error_code=BIN_FULL)<br>2. Session → MANUAL_HOLD<br>3. 更换料箱后人工恢复 | Session MANUAL_HOLD |
 | **设备离线** | 任意阶段 | 1. 命令发送失败<br>2. 重试3次<br>3. 告警 | Session MANUAL_HOLD |
 
 #### 1.12.3 边界条件测试
