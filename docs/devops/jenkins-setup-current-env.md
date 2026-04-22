@@ -290,7 +290,7 @@ docker-compose --version
 - API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
 - 部署成功前会执行 `python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend`
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
-- 健康检查为 API 容器内 `http://127.0.0.1:8001/api/v1/admin/performance/health`
+- 健康检查为 API 容器内 `http://127.0.0.1:8001/health`
 - 同时检查 nginx `/health` 和首页
 
 PROD 边界说明：
@@ -365,7 +365,7 @@ git push gitlab develop
 
 ```bash
 # 在任意机器上测试
-curl http://192.168.0.221:8001/api/v1/admin/performance/health
+curl http://192.168.0.221:8001/health
 
 # 预期响应
 {"status": "healthy"}
@@ -425,7 +425,7 @@ docker compose -f docker-compose.deploy.yml --env-file .env.test logs api
 netstat -tuln | grep 8001
 
 # 手动测试健康检查
-docker exec wes_api_test curl -f http://127.0.0.1:8001/api/v1/admin/performance/health
+docker exec wes_api_test curl -f http://127.0.0.1:8001/health
 ```
 
 ## 📊 验证清单

@@ -50,8 +50,8 @@ class ChainVerifier:
         """检查服务是否运行"""
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                # WES Backend 使用 /api/v1/admin/performance/health
-                check_url = f"{url}/api/v1/admin/performance/health" if name == "WES Backend" else f"{url}/"
+                # WES Backend 使用无状态 /health，避免依赖认证与外部组件
+                check_url = f"{url}/health" if name == "WES Backend" else f"{url}/"
                 response = await client.get(check_url)
                 if response.status_code == 200:
                     logger.info(f"✓ {name} 运行中")
@@ -135,7 +135,7 @@ class ChainVerifier:
         # 检查 WES 是否运行
         async with httpx.AsyncClient(timeout=2.0) as client:
             try:
-                response = await client.get(f"{self.wes_base_url}/api/v1/admin/performance/health")
+                response = await client.get(f"{self.wes_base_url}/health")
                 if response.status_code != 200:
                     logger.warning("WES Backend 未运行，跳过此测试")
                     return

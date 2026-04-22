@@ -70,7 +70,7 @@ echo "步骤 2: 检查 WES Backend"
 echo "----------------------------------------"
 
 # 先尝试通过健康检查端点验证
-if curl -sf http://localhost:8001/api/v1/admin/performance/health > /dev/null 2>&1; then
+if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
     echo -e "${GREEN}✓ WES Backend 运行中 (端口 8001)${NC}"
 elif check_port 8001; then
     echo -e "${GREEN}✓ WES Backend 端口监听中 (端口 8001)${NC}"

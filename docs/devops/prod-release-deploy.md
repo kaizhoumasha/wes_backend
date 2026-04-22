@@ -176,7 +176,7 @@ docker compose --env-file .env.prod \
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8001/api/v1/admin/performance/health
+curl http://127.0.0.1:8001/health
 curl http://127.0.0.1/health
 ```
 

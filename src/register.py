@@ -125,8 +125,30 @@ def register_health_route(app: FastAPI) -> None:
     """注册公共健康检查路由。"""
     from src.core.health import system_health
 
+    def _basic_health_payload() -> dict[str, str]:
+        return {
+            "status": "ok",
+            "service": settings.PROJECT_NAME,
+            "version": settings.VERSION,
+        }
+
     @app.get("/health", include_in_schema=False)
     async def health_check() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """
+        基础活性检查（无状态、零 I/O、无鉴权）。
+
+        用于 Docker / 负载均衡 / 外部探针快速确认 API 进程是否存活，
+        不依赖数据库、Redis、Celery 或进程内健康缓存状态。
+        """
+        return JSONResponse(status_code=200, content=_basic_health_payload())
+
+    @app.get("/ready", include_in_schema=False)
+    async def readiness_check() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """
+        就绪检查（基于进程内健康缓存）。
+
+        由 Celery health_check 任务异步更新缓存，适合运维观察和详细排障。
+        """
         is_stale = system_health.is_stale
         is_ready = system_health.is_ready
 

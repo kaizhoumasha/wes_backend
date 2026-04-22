@@ -214,7 +214,7 @@ def wes_running() -> bool:
     """检查 WES 服务是否运行"""
     try:
         with httpx.Client(timeout=2.0) as client:
-            response = client.get(f"{WES_BASE_URL}/api/v1/admin/performance/health")
+            response = client.get(f"{WES_BASE_URL}/health")
             assert response.status_code == 200, "WES not responding"
         return True
     except Exception as e:

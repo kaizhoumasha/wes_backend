@@ -206,7 +206,7 @@ uv run python scripts/data/seed_e2e_test_data.py
 
 ```bash
 # 检查 WES 服务是否运行
-curl http://localhost:8001/api/v1/admin/performance/health
+curl http://localhost:8001/health
 
 # 检查环境变量是否正确加载
 echo $API_APP_ID

@@ -181,7 +181,7 @@ git push gitlab develop
 
 ```bash
 # 测试健康检查
-curl http://192.168.0.221:8001/api/v1/admin/performance/health
+curl http://192.168.0.221:8001/health
 
 # 预期响应
 {"status": "healthy"}

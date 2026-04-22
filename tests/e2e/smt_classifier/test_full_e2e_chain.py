@@ -48,7 +48,7 @@ class TestSMTClassifierFullE2E:
         # 检查 WES Backend 是否可用
         async with httpx.AsyncClient(timeout=5.0) as client:
             try:
-                response = await client.get(f"{self.wes_base_url}/api/v1/admin/performance/health")
+                response = await client.get(f"{self.wes_base_url}/health")
                 self.wes_available = response.status_code == 200
             except Exception:
                 self.wes_available = False
@@ -181,7 +181,7 @@ class TestWESBackendHealth:
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             try:
-                response = await client.get(f"{wes_base_url}/api/v1/admin/performance/health")
+                response = await client.get(f"{wes_base_url}/health")
                 assert response.status_code == 200
                 logger.info(f"✓ WES Backend 健康: {wes_base_url}")
             except Exception as e:

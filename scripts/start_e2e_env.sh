@@ -91,7 +91,7 @@ start_env() {
     echo "  - SMT 出料臂: http://localhost:8007"
     echo ""
     echo "健康检查:"
-    echo "  - API:        curl http://localhost:8001/api/health"
+    echo "  - API:        curl http://localhost:8001/health"
     echo "  - 摄像头:     curl http://localhost:8003/api/v1/device/status"
     echo "  - 机械臂:     curl http://localhost:8004/api/v1/device/status"
     echo "  - SMT 流水线: curl http://localhost:8005/api/v1/device/status"

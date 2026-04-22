@@ -41,7 +41,7 @@ echo ""
 
 # 检查 WES 是否运行
 echo -e "${YELLOW}检查 WES 服务...${NC}"
-if curl -s http://localhost:8001/api/v1/admin/performance/health > /dev/null 2>&1; then
+if curl -s http://localhost:8001/health > /dev/null 2>&1; then
     echo -e "${GREEN}✓ WES 服务运行正常 (localhost:8001)${NC}"
 else
     echo -e "${RED}✗ WES 服务未运行，请先启动:${NC}"
