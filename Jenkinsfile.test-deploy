@@ -16,7 +16,7 @@ pipeline {
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
-        HEALTH_CHECK_URL = 'http://127.0.0.1:8001/api/v1/admin/performance/health'
+        HEALTH_CHECK_URL = 'http://127.0.0.1:8001/health'
         HEALTH_CHECK_RETRIES = '36'
         IMAGE_PULL_RETRIES = '24'
     }
@@ -178,12 +178,33 @@ pipeline {
                             exit 1
                         fi
 
+                        echo "🔐 同步 TEST 环境权限..."
+                        docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            exec -T api \
+                            /opt/venv/bin/python scripts/data/sync_permissions.py
+
+                        PERMISSION_COUNT=$(docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            exec -T db \
+                            sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from wes_sys.permissions"')
+                        PERMISSION_COUNT=$(echo "${PERMISSION_COUNT}" | tr -d '[:space:]')
+
+                        if [ -z "${PERMISSION_COUNT}" ] || [ "${PERMISSION_COUNT}" -le 0 ]; then
+                            echo "❌ TEST 环境权限同步后数量异常: ${PERMISSION_COUNT:-<empty>}"
+                            exit 1
+                        fi
+
+                        echo "✅ TEST 环境权限数量: ${PERMISSION_COUNT}"
+
                         echo "🧭 同步 TEST 环境菜单..."
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
                             exec -T api \
-                            python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend
+                            /opt/venv/bin/python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend
 
                         MENU_COUNT=$(docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \

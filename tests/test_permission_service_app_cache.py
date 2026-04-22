@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -11,6 +11,15 @@ from src.app.api_auth.services.permission_service import get_app_permissions
 from src.core.base_service import BaseService
 from src.core.tree_service import TreeServiceMixin
 from src.database.base_repository import HookContext
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.database.redis_cache import RedisCache
+
+
+def _fake_session() -> AsyncSession:
+    return cast("AsyncSession", object())
 
 
 class _FakeCache:
@@ -55,11 +64,17 @@ class _FakeRepo:
     def add_hook(self, *args: Any, **kwargs: Any) -> None:
         return None
 
+    async def get_by_id(self, db: object, id: int, include_deleted: bool = False) -> object:
+        return SimpleNamespace(id=id, parent_id=None, is_deleted=True)
+
+    async def get_children(self, db: object, parent_id: int | None, **kwargs: Any) -> list[object]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_get_app_permissions_caches_empty_set() -> None:
-    cache = _FakeCache()
-    db = _FakeDB([])
+    cache = cast("RedisCache", _FakeCache())
+    db = cast("AsyncSession", _FakeDB([]))
 
     permissions = await get_app_permissions(db, cache, 101)
 
@@ -75,9 +90,9 @@ async def test_get_app_permissions_caches_empty_set() -> None:
 
 @pytest.mark.asyncio
 async def test_get_app_permissions_deletes_invalid_cached_value() -> None:
-    cache = _FakeCache()
+    cache = cast("RedisCache", _FakeCache())
     cache.storage[CacheKeys.app_permissions(202)] = "{bad-json"
-    db = _FakeDB([SimpleNamespace(name="device:command:send")])
+    db = cast("AsyncSession", _FakeDB([SimpleNamespace(name="device:command:send")]))
 
     permissions = await get_app_permissions(db, cache, 202)
 
@@ -92,9 +107,9 @@ async def test_get_app_permissions_deletes_invalid_cached_value() -> None:
 
 @pytest.mark.asyncio
 async def test_get_app_permissions_rejects_mapping_payloads() -> None:
-    cache = _FakeCache()
+    cache = cast("RedisCache", _FakeCache())
     cache.storage[CacheKeys.app_permissions(203)] = {"*": True}
-    db = _FakeDB([SimpleNamespace(name="device:command:send")])
+    db = cast("AsyncSession", _FakeDB([SimpleNamespace(name="device:command:send")]))
 
     permissions = await get_app_permissions(db, cache, 203)
 
@@ -123,7 +138,7 @@ async def test_after_permission_change_invalidates_related_app_caches() -> None:
     service._invalidate_app_permissions_for_apps = fake_invalidate  # type: ignore[method-assign]
 
     context = HookContext(
-        session=object(),  # type: ignore[arg-type]
+        session=_fake_session(),
         params={"instance": SimpleNamespace(id=11)},
         results={"affected_app_ids_before": {1, 2}},
     )
@@ -162,7 +177,7 @@ async def test_permission_restore_invalidates_related_user_and_app_caches(monkey
     service._invalidate_permissions_for_users = fake_invalidate_users  # type: ignore[method-assign]
     service._invalidate_app_permissions_for_apps = fake_invalidate_apps  # type: ignore[method-assign]
 
-    restored = await service.restore(object(), 21)
+    restored = await service.restore(_fake_session(), 21)
 
     assert restored is not None
     assert invalidated_users == [{2, 7}]
@@ -200,7 +215,7 @@ async def test_permission_permanent_delete_invalidates_related_user_and_app_cach
     service._invalidate_permissions_for_users = fake_invalidate_users  # type: ignore[method-assign]
     service._invalidate_app_permissions_for_apps = fake_invalidate_apps  # type: ignore[method-assign]
 
-    success = await service.permanent_delete(object(), 34)
+    success = await service.permanent_delete(_fake_session(), 34)
 
     assert success is True
     assert invalidated_users == [{4, 6}]
@@ -246,7 +261,7 @@ async def test_permission_update_invalidates_related_user_and_app_caches_after_s
     service._invalidate_permissions_for_users = fake_invalidate_users  # type: ignore[method-assign]
     service._invalidate_app_permissions_for_apps = fake_invalidate_apps  # type: ignore[method-assign]
 
-    updated = await service.update(object(), 55, {"version": 1})
+    updated = await service.update(_fake_session(), 55, {"version": 1})
 
     assert updated is not None
     assert invalidated_users == [{2, 4, 7}]
@@ -285,7 +300,7 @@ async def test_permission_soft_delete_invalidates_related_user_and_app_caches(
     service._invalidate_permissions_for_users = fake_invalidate_users  # type: ignore[method-assign]
     service._invalidate_app_permissions_for_apps = fake_invalidate_apps  # type: ignore[method-assign]
 
-    deleted = await service.soft_delete(object(), 56)
+    deleted = await service.soft_delete(_fake_session(), 56)
 
     assert deleted is not None
     assert invalidated_users == [{1, 8}]

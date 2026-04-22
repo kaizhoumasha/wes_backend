@@ -4,6 +4,8 @@
 测试 JWT 认证和 RBAC 权限控制功能
 """
 
+import fnmatch
+import importlib
 from datetime import timedelta
 
 import pytest
@@ -26,6 +28,112 @@ from src.core.security import (
 )
 from src.database.db import get_db
 from src.utils.timezone import timezone
+
+auth_service_module = importlib.import_module("src.app.auth.services.auth_service")
+security_runtime_module = importlib.import_module("src.core.security_runtime")
+
+
+class _FakeRedisPipeline:
+    """最小 Redis pipeline 实现，满足认证测试所需行为。"""
+
+    def __init__(self, redis: "_FakeRedis") -> None:
+        self._redis = redis
+        self._ops: list[tuple[str, tuple[object, ...]]] = []
+
+    def delete(self, *keys: object) -> "_FakeRedisPipeline":
+        self._ops.append(("delete", keys))
+        return self
+
+    async def execute(self) -> list[object]:
+        results: list[object] = []
+        for operation, args in self._ops:
+            if operation == "delete":
+                results.append(await self._redis.delete(*args))
+        self._ops.clear()
+        return results
+
+
+class _FakeRedis:
+    """认证链路专用的最小内存 Redis。"""
+
+    def __init__(self) -> None:
+        self._values: dict[str, object] = {}
+        self._sets: dict[str, set[object]] = {}
+
+    async def setex(self, key: str, _ttl: int, value: object) -> bool:
+        self._values[key] = value
+        return True
+
+    async def get(self, key: str) -> object | None:
+        return self._values.get(key)
+
+    async def getdel(self, key: str) -> object | None:
+        return self._values.pop(key, None)
+
+    async def delete(self, *keys: object) -> int:
+        deleted = 0
+        for raw_key in keys:
+            if not isinstance(raw_key, str):
+                continue
+            if raw_key in self._values:
+                del self._values[raw_key]
+                deleted += 1
+            if raw_key in self._sets:
+                del self._sets[raw_key]
+                deleted += 1
+        return deleted
+
+    async def exists(self, key: str) -> int:
+        return int(key in self._values or key in self._sets)
+
+    async def sadd(self, key: str, *values: object) -> int:
+        members = self._sets.setdefault(key, set())
+        before = len(members)
+        members.update(values)
+        return len(members) - before
+
+    async def srem(self, key: str, *values: object) -> int:
+        members = self._sets.setdefault(key, set())
+        removed = 0
+        for value in values:
+            if value in members:
+                members.remove(value)
+                removed += 1
+        return removed
+
+    async def smembers(self, key: str) -> set[object]:
+        return set(self._sets.get(key, set()))
+
+    async def expire(self, _key: str, _ttl: int) -> bool:
+        return True
+
+    async def mget(self, keys: list[str]) -> list[object | None]:
+        return [self._values.get(key) for key in keys]
+
+    def scan_iter(self, *, match: str):
+        async def _iterator():
+            for key in [*self._values.keys(), *self._sets.keys()]:
+                if fnmatch.fnmatch(key, match):
+                    yield key
+
+        return _iterator()
+
+    def pipeline(self) -> _FakeRedisPipeline:
+        return _FakeRedisPipeline(self)
+
+
+@pytest.fixture(autouse=True)
+def auth_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
+    """为认证测试提供稳定的内存 Redis，避免受本机服务状态影响。"""
+    fake_redis = _FakeRedis()
+
+    monkeypatch.setattr(security_runtime_module, "is_redis_available", lambda: True)
+    monkeypatch.setattr(security_runtime_module, "get_redis", lambda: fake_redis)
+    monkeypatch.setattr(auth_service_module, "is_redis_available", lambda: True)
+    monkeypatch.setattr(auth_service_module, "get_redis", lambda: fake_redis)
+
+    return fake_redis
+
 
 # ==================== 密码哈希测试 ====================
 
@@ -286,6 +394,7 @@ class TestRBAC:
         await db_session.commit()
 
         # 创建令牌
+        assert superuser.id is not None
         token_data = await create_access_token(superuser.id)
         token = token_data.access_token
 
