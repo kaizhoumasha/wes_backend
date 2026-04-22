@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.workline_runtime.diagnostics import (
     ErrorCode,
+    ErrorDomain,
     ProblemClass,
     build_diagnostic_card,
     build_diagnostic_context,
@@ -45,3 +46,20 @@ def test_build_diagnostic_card_marks_device_timeout_as_hardware() -> None:
     assert card.problem_class == ProblemClass.HARDWARE
     assert card.operator_action == "检查设备网络"
     assert "user_message" in card.model_dump()
+
+
+def test_build_diagnostic_card_preserves_explicit_error_domain_override() -> None:
+    context = build_diagnostic_context(correlation_id="corr-unknown-device")
+    card = build_diagnostic_card(
+        build_diagnostic_event(
+            error_code=ErrorCode.UNKNOWN,
+            error_domain=ErrorDomain.DEVICE,
+            problem_class=ProblemClass.HARDWARE,
+            context=context,
+            message="estop",
+        )
+    )
+
+    assert card.error_code == ErrorCode.UNKNOWN
+    assert card.error_domain == ErrorDomain.DEVICE
+    assert card.problem_class == ProblemClass.HARDWARE

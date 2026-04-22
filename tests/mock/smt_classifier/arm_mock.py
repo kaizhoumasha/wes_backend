@@ -23,9 +23,9 @@ import sys
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from uvicorn import Config, Server
 
@@ -33,6 +33,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.workline_runtime.contracts import DeviceErrorCode
 from tests.mock.smt_classifier.mock_support import (
     WES_EVENT_CALLBACK_URL,
     WES_RESULT_CALLBACK_URL,
@@ -100,7 +101,10 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "locations": {
             "INPUT_PLATFORM": [DeviceLocation(location_id="LEFT_STATION_INPUT", location_type="INPUT_PLATFORM")],
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="LEFT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(
+                    location_id="LEFT_STATION_PIPELINE_INPUT",
+                    location_type="PIPELINE_PLATFORM",
+                )
             ],
             "NG_PLATFORM": [DeviceLocation(location_id="LEFT_STATION_NG", location_type="NG_PLATFORM")],
         },
@@ -119,7 +123,10 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "task_types": ["PICK_AND_PUT", "OUTPUT"],
         "locations": {
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="LEFT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(
+                    location_id="LEFT_STATION_PIPELINE_OUTPUT",
+                    location_type="PIPELINE_PLATFORM",
+                )
             ],
             "BIN": [
                 DeviceLocation(
@@ -152,7 +159,10 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "locations": {
             "INPUT_PLATFORM": [DeviceLocation(location_id="RIGHT_STATION_INPUT", location_type="INPUT_PLATFORM")],
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="RIGHT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(
+                    location_id="RIGHT_STATION_PIPELINE_INPUT",
+                    location_type="PIPELINE_PLATFORM",
+                )
             ],
             "NG_PLATFORM": [DeviceLocation(location_id="RIGHT_STATION_NG", location_type="NG_PLATFORM")],
         },
@@ -171,7 +181,10 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
         "task_types": ["PICK_AND_PUT", "OUTPUT"],
         "locations": {
             "PIPELINE_PLATFORM": [
-                DeviceLocation(location_id="RIGHT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM")
+                DeviceLocation(
+                    location_id="RIGHT_STATION_PIPELINE_OUTPUT",
+                    location_type="PIPELINE_PLATFORM",
+                )
             ],
             "BIN": [
                 DeviceLocation(
@@ -341,7 +354,11 @@ class ScanCompletedDebugRequest(BaseModel):
             "examples": [
                 {"barcode": "TEST-001"},
                 {"barcode": "TEST-NG-001", "result": "NG"},
-                {"barcode": "CUSTOM-001", "result": "OK", "location_id": "STATION_INPUT1"},
+                {
+                    "barcode": "CUSTOM-001",
+                    "result": "OK",
+                    "location_id": "STATION_INPUT1",
+                },
             ]
         }
     }
@@ -471,22 +488,37 @@ class ArmSimulator:
 
         locations = self.device_config["locations"].get(resolved_type, [])
         if not locations:
-            raise HTTPException(status_code=400, detail=f"设备未配置{field_name}位置类型: {resolved_type}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"设备未配置{field_name}位置类型: {resolved_type}",
+            )
         return locations[0]
 
     def _resolve_command_locations_from_params(self, params: JsonDict) -> tuple[DeviceLocation, DeviceLocation]:
         source_payload = cast("JsonDict", params.get("source")) if isinstance(params.get("source"), dict) else {}
         target_payload = cast("JsonDict", params.get("target")) if isinstance(params.get("target"), dict) else {}
         source = self._resolve_location(
-            location_type=cast("str | None", source_payload.get("location_type") or params.get("source_type")),
-            location_id=cast("str | None", source_payload.get("location_id") or params.get("source_loc")),
+            location_type=cast(
+                "str | None",
+                source_payload.get("location_type") or params.get("source_type"),
+            ),
+            location_id=cast(
+                "str | None",
+                source_payload.get("location_id") or params.get("source_loc"),
+            ),
             default_type=self.device_config["default_source_type"],
             allowed_types=self.device_config["source_types"],
             field_name="源",
         )
         target = self._resolve_location(
-            location_type=cast("str | None", target_payload.get("location_type") or params.get("target_type")),
-            location_id=cast("str | None", target_payload.get("location_id") or params.get("target_loc")),
+            location_type=cast(
+                "str | None",
+                target_payload.get("location_type") or params.get("target_type"),
+            ),
+            location_id=cast(
+                "str | None",
+                target_payload.get("location_id") or params.get("target_loc"),
+            ),
             default_type=self.device_config["default_target_type"],
             allowed_types=self.device_config["target_types"],
             field_name="目标",
@@ -668,11 +700,12 @@ class ArmSimulator:
 
             # 错误码映射（硬件约定）
             error_messages = {
-                "1001": "料盘尺寸检测异常",
-                "1002": "料盘厚度检测异常",
-                "2001": "扫码异常",
-                "2002": "搬运失败",
-                "2003": "料箱已满",
+                DeviceErrorCode.INSPECTION_SIZE_NG.value: "料盘尺寸检测异常",
+                DeviceErrorCode.INSPECTION_THICKNESS_NG.value: "料盘厚度检测异常",
+                DeviceErrorCode.SCAN_FAILED.value: "扫码异常",
+                DeviceErrorCode.PICK_AND_PUT_FAILED.value: "搬运失败",
+                DeviceErrorCode.BIN_FULL.value: "料箱已满",
+                DeviceErrorCode.DEVICE_UNKNOWN_ERROR.value: "未知错误",
             }
 
             # 确定错误码和结果
@@ -680,18 +713,27 @@ class ArmSimulator:
                 # 使用指定的错误码
                 result = "FAILED"
                 error_message = error_messages.get(error_code, reason or "未知错误")
-                error_detail = {"error_code": error_code, "error_message": error_message}
+                error_detail = {
+                    "error_code": error_code,
+                    "error_message": error_message,
+                }
                 move_result = "PUT_FAILED"
                 logger.warning(f"[{self.device_name}] 模拟错误: 错误码={error_code}, 错误信息={error_message}")
             elif simulate_failure:
                 # 默认失败
                 result = "FAILED"
-                error_detail = {"error_code": "2002", "error_message": reason or "搬运失败"}
+                error_detail = {
+                    "error_code": DeviceErrorCode.PICK_AND_PUT_FAILED.value,
+                    "error_message": reason or "搬运失败",
+                }
                 move_result = "PUT_FAILED"
             else:
                 # 成功
                 result = "SUCCESS"
-                error_detail = {"error_code": "0", "error_message": ""}
+                error_detail = {
+                    "error_code": DeviceErrorCode.NONE.value,
+                    "error_message": "",
+                }
                 move_result = "PUT_FINISHED"
 
             # 详细日志：执行完成
@@ -731,7 +773,7 @@ class ArmSimulator:
                 self._success_count += 1
             else:
                 self._failure_count += 1
-                self.runtime_status["error_code"] = cast("Literal['NONE']", "2002")
+                self.runtime_status["error_code"] = error_detail["error_code"]
 
             execution_id = f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}"
             record = ExecutionRecord(
@@ -759,14 +801,18 @@ class ArmSimulator:
         smart_error_code = None
 
         if barcode:
-            # 条码包含 "SIZENG" → 尺寸检测异常（错误码 1001）
+            # 条码包含 "SIZENG" → 尺寸检测异常（语义码 INSPECTION_SIZE_NG）
             if "SIZENG" in barcode.upper():
-                smart_error_code = "1001"
-                logger.info(f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（错误码 1001）")
-            # 条码包含 "THICKNESSNG" → 厚度检测异常（错误码 1002）
+                smart_error_code = "INSPECTION_SIZE_NG"
+                logger.info(
+                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（语义码 INSPECTION_SIZE_NG）"
+                )
+            # 条码包含 "THICKNESSNG" → 厚度检测异常（语义码 INSPECTION_THICKNESS_NG）
             elif "THICKNESSNG" in barcode.upper():
-                smart_error_code = "1002"
-                logger.info(f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（错误码 1002）")
+                smart_error_code = "INSPECTION_THICKNESS_NG"
+                logger.info(
+                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（语义码 INSPECTION_THICKNESS_NG）"
+                )
 
         # 从 params 中提取错误码（优先级高于智能模拟）
         error_code = params.get("error_code") or smart_error_code
@@ -793,14 +839,21 @@ class ArmSimulator:
         if self.device_config["device_role"] != "INPUT_ARM":
             raise HTTPException(status_code=400, detail="当前设备不支持扫码事件模拟")
         barcodes = self._build_barcode_fields(request.barcode)
-        event_data = {"location": request.location_id, "result": request.result, **barcodes}
+        event_data = {
+            "location": request.location_id,
+            "result": request.result,
+            **barcodes,
+        }
         await self._post_event_to_wes("SCAN_COMPLETED", event_data)
         now = datetime.now()
         record = ExecutionRecord(
             execution_id=f"EVT-SCAN-{current_millis()}",
             command_code="-",
             task_type="SCAN_COMPLETED",
-            source={"location_id": request.location_id, "location_type": "INPUT_PLATFORM"},
+            source={
+                "location_id": request.location_id,
+                "location_type": "INPUT_PLATFORM",
+            },
             target={},
             result=request.result,
             message="扫码事件已上报",
@@ -832,7 +885,10 @@ class ArmSimulator:
             execution_id=f"EVT-INSPECT-{current_millis()}",
             command_code="-",
             task_type="INSPECTION_COMPLETED",
-            source={"location_id": request.location_id, "location_type": "PIPELINE_PLATFORM"},
+            source={
+                "location_id": request.location_id,
+                "location_type": "PIPELINE_PLATFORM",
+            },
             target={},
             result=request.result,
             message="检测事件已上报",
@@ -1102,12 +1158,21 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
                 "application/json": {
                     "examples": {
                         "minimal": {"summary": "最小化请求", "value": {}},
-                        "with_barcode": {"summary": "指定条码", "value": {"barcode": "TEST-001"}},
+                        "with_barcode": {
+                            "summary": "指定条码",
+                            "value": {"barcode": "TEST-001"},
+                        },
                         "ng_flow": {
                             "summary": "NG 流程",
-                            "value": {"task_type": "PICK_NG", "target_type": "NG_PLATFORM"},
+                            "value": {
+                                "task_type": "PICK_NG",
+                                "target_type": "NG_PLATFORM",
+                            },
                         },
-                        "failure": {"summary": "模拟失败", "value": {"simulate_failure": True, "execution_time": 0.1}},
+                        "failure": {
+                            "summary": "模拟失败",
+                            "value": {"simulate_failure": True, "execution_time": 0.1},
+                        },
                     }
                 }
             }
@@ -1141,7 +1206,10 @@ async def execute_arm_command(request: ManualExecuteRequest) -> ExecutionRecord:
                 "application/json": {
                     "examples": {
                         "ok": {"summary": "OK 结果", "value": {"barcode": "LOTABC123"}},
-                        "ng": {"summary": "NG 结果", "value": {"barcode": "LOTSIZENG", "result": "NG"}},
+                        "ng": {
+                            "summary": "NG 结果",
+                            "value": {"barcode": "LOTSIZENG", "result": "NG"},
+                        },
                     }
                 }
             }
@@ -1170,7 +1238,9 @@ async def debug_scan_completed(request: ScanCompletedDebugRequest) -> ExecutionR
         }
     },
 )
-async def debug_inspection_completed(request: InspectionCompletedDebugRequest) -> ExecutionRecord:
+async def debug_inspection_completed(
+    request: InspectionCompletedDebugRequest,
+) -> ExecutionRecord:
     return await arm_simulator.emit_inspection_completed(request)
 
 
@@ -1218,7 +1288,12 @@ async def root() -> ArmRootResponse:
 
 
 class SmtArmMockServer:
-    def __init__(self, device_code: str = DEVICE_CODE, host: str = "127.0.0.1", port: int | None = None):
+    def __init__(
+        self,
+        device_code: str = DEVICE_CODE,
+        host: str = "127.0.0.1",
+        port: int | None = None,
+    ):
         self.device_code = device_code
         self.host = host
         self.port = port or DEVICE_CONFIGS[device_code]["port"]

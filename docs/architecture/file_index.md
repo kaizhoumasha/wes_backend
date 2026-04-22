@@ -1,6 +1,6 @@
 # P9 WES Backend 项目文件索引
 
-**最后更新**: 2026年4月16日
+**最后更新**: 2026年4月21日
 **同步状态**: ⚠️ 已完成高优先级文档入口修正；其余内容请以实际仓库结构为准
 
 ---
@@ -367,7 +367,7 @@
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架；含标准化命令结果公共 helper，如 envelope / failure 解析） | 🔧 架构核心 |
-| `payloads.py` | 共享 Payload 定义（Pydantic 模型；对外继续导出 `SixInOne`） | 🔄 常用功能 |
+| `payloads.py` | 共享 Payload 定义（Pydantic 模型；`SixInOne` 已迁至 `contracts/` 统一维护） | 🔄 常用功能 |
 | `contracts/` | 运行时统一合同模型（`SixInOne` SSOT、标准设备错误码） | 🔧 架构核心 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
 | `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
@@ -519,11 +519,16 @@
 | `menu-api-usage.md` | 菜单 API 使用指南 | 📚 参考资料 |
 | `REPOSITORY_GUIDE.md` | Repository 使用指南 | 📚 参考资料 |
 | `integration/interact_backend.md` | 后端交互需求草案（历史提案） | 📚 参考资料 |
+| `integration/callback_event_validation_principles.md` | callback/event 前置校验边界说明 | 📖 必读文档 |
+| `integration/workline_device_error_code_standardization.md` | Workline 插件体系硬件错误码统一规划与迁移表 | 📖 必读文档 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
 | `third_party_integration_whitepaper.md` | 第三方集成指南 | 📚 参考资料 |
 | `workline_smt_classifier_runtime_flow.md` | SMT 粗分机插件与 Mock 设备端到端数据流说明 | 📚 参考资料 |
 | `workline_smt_classifier_hardware_gap_analysis.md` | SMT 粗分机当前实现与真实硬件协议偏差分析 | 📚 参考资料 |
+| `hardware/SMT粗分机接口调用说明书20260321-v1.md` | 当前 SMT 粗分机联调协议说明（现行标准） | 📖 必读文档 |
+| `hardware/SMT流水线接口调用说明书20260320-v1.md` | 当前 SMT 流水线联调协议说明（现行标准） | 📖 必读文档 |
+| `hardware/SMT分拣机ECS接口调用说明书V1-20260318.md` | 历史 ECS 协议转写稿，仅用于历史比对与偏差分析，非当前标准 | 📚 参考资料 |
 | `devops/JENKINS.md` | Jenkins 使用指南 | 📚 参考资料 |
 | `devops/jenkins-setup-current-env.md` | Jenkins 环境配置 | 📚 参考资料 |
 | `devops/jenkins-checklist.md` | Jenkins 部署检查清单 | 📚 参考资料 |
@@ -585,6 +590,7 @@
 │   ├───api_authentication_summary.md
 │   ├───devops/database_migration.md
 │   ├───architecture/file_index.md  # 本文档
+│   ├───integration/callback_event_validation_principles.md
 │   ├───integration/interact_backend.md
 │   ├───devops/jenkins-checklist.md
 │   ├───devops/jenkins-setup-current-env.md

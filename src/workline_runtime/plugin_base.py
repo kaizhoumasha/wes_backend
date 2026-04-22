@@ -165,7 +165,15 @@ def resolve_normalized_command_failure(
     default_code: str,
     default_message: str,
 ) -> tuple[str, str]:
-    """从标准化命令结果中提取失败错误码与错误信息。"""
+    """从标准化命令结果中提取失败错误码与错误信息。
+
+    这里只消费标准化后的规范字段：
+    - `error_detail.error_code` / `error_detail.error_message`
+    - 顶层 `payload.error_code` / `payload.error_message`
+
+    外部协议兼容（如白皮书 `code` / `msg`）应在标准化入口完成，
+    不应继续扩散到插件运行时层。
+    """
 
     payload = ensure_dict(getattr(result, "payload", None))
     error_detail = ensure_dict(getattr(result, "error_detail", None))

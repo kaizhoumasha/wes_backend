@@ -34,9 +34,11 @@ from src.celery_app.constants import (
 from src.core.logger import logger
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version, parse_workline_six_in_one
+from src.workline_plugin_registry import get_plugin_contract_version
 from src.workline_runtime.diagnostics import (
     ErrorCode,
+    ErrorDomain,
+    ProblemClass,
     build_diagnostic_card,
     build_diagnostic_context,
     build_diagnostic_event,
@@ -45,6 +47,7 @@ from src.workline_runtime.diagnostics import (
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
+from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.types import FailureIntent
 
@@ -52,6 +55,22 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
 
     from src.workline_runtime.utils import JsonDict
+
+
+def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
+    """SCAN_COMPLETED 的最小通用 gate。
+
+    这里只判断 payload 中是否出现过任何扫码事实，作为入站后的 malformed
+    payload 拦截，不把错误归因绑定到 workline / plugin registry / parser 上。
+    真正的协议映射和 SixInOne 解析仍由各插件/编排路径负责。
+    """
+
+    data_field = payload.get("data")
+    data = data_field if isinstance(data_field, dict) else {}
+    fields = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID", "ProductNo", "PONumber", "barcode")
+    return any(isinstance(data.get(field), str) and data.get(field) for field in fields) or any(
+        isinstance(payload.get(field), str) and payload.get(field) for field in fields
+    )
 
 
 def _enqueue_outbox_dispatch() -> None:
@@ -259,6 +278,8 @@ def _log_diagnostic(
     inbox: Any | None,
     error_code: ErrorCode,
     message: str,
+    error_domain: ErrorDomain | None = None,
+    problem_class: ProblemClass | None = None,
     session: Any | None = None,
     workline: Any | None = None,
     device: Any | None = None,
@@ -296,10 +317,20 @@ def _log_diagnostic(
                 extra=extra,
             ),
             message=message,
+            error_domain=error_domain,
+            problem_class=problem_class,
             technical_summary=message,
         )
     )
     logger.warning(f"[WorklineDiagnostic] {card.model_dump_json(exclude_none=True)}")
+
+
+def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
+    """为 UNKNOWN 等兜底码补充更接近现场语义的问题大类。"""
+
+    if error_domain in {ErrorDomain.DEVICE, ErrorDomain.NETWORK}:
+        return ProblemClass.HARDWARE
+    return None
 
 
 def _session_context(session: Any) -> dict[str, Any]:
@@ -1463,7 +1494,7 @@ class ProcessInboxMessages:
     职责：
     - 批量获取待处理 Inbox 消息
     - 并发控制：防止多 worker 重复处理同一消息
-    - 前置验证：检查 SCAN_COMPLETED 事件必填字段
+    - 入站后 malformed gate：拦截完全空的 SCAN_COMPLETED 扫码 payload
     - 编排执行：调用 OrchestratorService 处理消息
     - 结果应用：执行编排产出的命令/决策/状态转换
     - 状态更新：标记消息为成功/失败/跳过
@@ -1481,7 +1512,7 @@ class ProcessInboxMessages:
         1. 从数据库获取 status='NEW' 的待处理消息（limit 限制数量）
         2. 遍历每个消息：
            a. 尝试加锁标记为 PROCESSING（并发控制）
-           b. 前置验证：SCAN_COMPLETED 事件必须包含条码信息
+           b. 入站后 malformed gate：空的 SCAN_COMPLETED payload 直接失败
            c. 加载关联实体（session/workline/device/devices_by_role）
            d. 调用 OrchestratorService.process_inbox() 执行编排
            e. 成功：应用编排结果，更新状态为 PROCESSED
@@ -1535,28 +1566,26 @@ class ProcessInboxMessages:
                 raw_payload = getattr(inbox, "payload_json", None)
                 payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
                 resolved_event_type = _canonical_event_type(payload)
-                data_field: dict[str, Any] = payload.get("data") or {}
+
+                # SCAN_COMPLETED 事件必须包含条码信息。
+                # 优先使用 canonical_event_type，缺失时回退 event_type。
+                # 这里只做 registry 无关的 payload 最小校验，避免把错误归因绑定到
+                # plugin_key / registry / session 解析结果上。
+                if resolved_event_type == "SCAN_COMPLETED" and not _scan_completed_has_any_barcode_payload(payload):
+                    error_msg = "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
+                    logger.warning(f"Inbox {inbox_pk} {error_msg}")
+                    _log_diagnostic(inbox=inbox, error_code=ErrorCode.CALLBACK_SCHEMA_INVALID, message=error_msg)
+                    _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
+                    await db.commit()
+                    result["failed"] += 1
+                    result["processed"] += 1
+                    continue
 
                 # 加载关联实体
                 entities = await _load_related_entities(db, inbox)
                 session = entities["session"]
                 workline = entities["workline"]
 
-                # SCAN_COMPLETED 事件必须包含条码信息。
-                # 优先使用 canonical_event_type，缺失时回退 event_type，
-                # 保持 vendor event 映射后一致校验。
-                if resolved_event_type == "SCAN_COMPLETED":
-                    six_in_one = parse_workline_six_in_one(getattr(workline, "plugin_key", None), data_field)
-                    barcode = payload.get("barcode")
-                    if not ((six_in_one and six_in_one.has_any_value) or (isinstance(barcode, str) and barcode)):
-                        error_msg = "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
-                        logger.warning(f"Inbox {inbox_pk} {error_msg}")
-                        _log_diagnostic(inbox=inbox, error_code=ErrorCode.CALLBACK_SCHEMA_INVALID, message=error_msg)
-                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
-                        await db.commit()
-                        result["failed"] += 1
-                        result["processed"] += 1
-                        continue
                 if session is None or workline is None:
                     error_msg = "Inbox processing missing session/workline context"
                     _log_diagnostic(
@@ -1643,13 +1672,15 @@ class ProcessInboxMessages:
                     error_msg = orch_result.error or (
                         orch_result.failure.message if orch_result.failure is not None else "Unknown error"
                     )
-                    mapped_error_code, _ = map_failure_to_diagnostic(
+                    mapped_error_code, mapped_error_domain = map_failure_to_diagnostic(
                         failure=orch_result.failure,
                         error_code=orch_result.error_code,
                     )
                     _log_diagnostic(
                         inbox=inbox,
                         error_code=mapped_error_code,
+                        error_domain=mapped_error_domain,
+                        problem_class=_problem_class_for_error_domain(mapped_error_domain),
                         message=error_msg,
                         session=session,
                         workline=workline,
@@ -1662,6 +1693,25 @@ class ProcessInboxMessages:
                     result["failed"] += 1
                     logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
 
+                result["processed"] += 1
+
+            except SessionResolveError as e:
+                logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
+                _log_diagnostic(
+                    inbox=inbox,
+                    error_code=ErrorCode.SESSION_RESOLVE_FAILED,
+                    message=str(e),
+                )
+                with suppress(Exception):
+                    await db.rollback()
+                try:
+                    inbox_pk = _resolve_entity_id(inbox)
+                    if inbox_pk is not None:
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
+                        await db.commit()
+                except Exception as mark_error:
+                    logger.warning(f"Inbox {inbox_pk_text} session resolve 失败补记失败: {mark_error}")
+                result["failed"] += 1
                 result["processed"] += 1
 
             except TimeoutError:
@@ -1806,7 +1856,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
     处理流程（详见 ProcessInboxMessages）：
     1. 批量获取待处理消息（limit 限制）
     2. 并发控制：标记为 PROCESSING，防止重复处理
-    3. 前置验证：检查 SCAN_COMPLETED 事件必填字段
+    3. 入站后 malformed gate：拦截完全空的 SCAN_COMPLETED payload
     4. 加载关联实体：session/workline/device/devices_by_role
     5. 调用 OrchestratorService 执行编排
     6. 应用编排结果：command/outbox/timeline

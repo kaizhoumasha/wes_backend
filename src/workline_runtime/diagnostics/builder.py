@@ -4,7 +4,7 @@ from typing import Any
 
 from src.workline_runtime.trace_context import TraceContext
 
-from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity
+from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity, error_domain_for
 from .models import DiagnosticCard, DiagnosticContext, DiagnosticEvent
 
 
@@ -44,9 +44,8 @@ def _resolve_diagnostic_plugin_key(
     )
 
 
-_DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemClass, str, list[str]]] = {
+_DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, list[str]]] = {
     ErrorCode.CALLBACK_SCHEMA_INVALID: (
-        ErrorDomain.DATA_QUALITY,
         Severity.WARNING,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.HARDWARE,
@@ -54,7 +53,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查回调 payload 关键字段", "确认设备/第三方协议版本与系统约定一致"],
     ),
     ErrorCode.SESSION_CONTEXT_MISSING: (
-        ErrorDomain.WORKFLOW,
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
@@ -62,7 +60,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查 inbox 归属字段是否完整", "检查 SessionResolver 归属规则"],
     ),
     ErrorCode.SESSION_RESOLVE_FAILED: (
-        ErrorDomain.WORKFLOW,
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
@@ -70,7 +67,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查 business_key / correlation_id 归属逻辑", "核对设备与作业线绑定关系"],
     ),
     ErrorCode.PLUGIN_EXECUTION_FAILED: (
-        ErrorDomain.PLUGIN,
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.SOFTWARE,
@@ -78,7 +74,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["回放该 inbox 的 normalized input", "检查插件返回结果与状态迁移逻辑"],
     ),
     ErrorCode.PLUGIN_TRANSITION_INVALID: (
-        ErrorDomain.PLUGIN,
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.SOFTWARE,
@@ -86,7 +81,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查当前 session 状态", "核对 transition 与状态机定义是否匹配"],
     ),
     ErrorCode.CONTRACT_MISMATCH: (
-        ErrorDomain.CONFIG,
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.HARDWARE,
@@ -94,7 +88,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查 workline.contract_version", "检查插件 contract_version 与配置是否一致"],
     ),
     ErrorCode.DEVICE_UNREACHABLE: (
-        ErrorDomain.DEVICE,
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.HARDWARE,
@@ -102,7 +95,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查设备网络连通性", "检查设备服务进程与端口状态"],
     ),
     ErrorCode.DEVICE_TIMEOUT: (
-        ErrorDomain.NETWORK,
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.HARDWARE,
@@ -110,7 +102,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查设备响应耗时", "检查 timeout 配置是否合理"],
     ),
     ErrorCode.OUTBOX_DISPATCH_FAILED: (
-        ErrorDomain.INTEGRATION,
         Severity.ERROR,
         Recoverability.AUTO_RETRYABLE,
         ProblemClass.HARDWARE,
@@ -118,7 +109,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查派发目标配置", "检查最近 outbox 失败记录"],
     ),
     ErrorCode.CONFIG_INVALID: (
-        ErrorDomain.CONFIG,
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.HARDWARE,
@@ -126,7 +116,6 @@ _DEFAULTS: dict[ErrorCode, tuple[ErrorDomain, Severity, Recoverability, ProblemC
         ["检查 Device / Workline 主数据配置", "校验插件绑定与通信配置"],
     ),
     ErrorCode.UNKNOWN: (
-        ErrorDomain.SYSTEM,
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
@@ -189,6 +178,8 @@ def build_diagnostic_event(
     error_code: ErrorCode,
     context: DiagnosticContext,
     message: str,
+    error_domain: ErrorDomain | None = None,
+    problem_class: ProblemClass | None = None,
     technical_summary: str | None = None,
     user_message: str | None = None,
     operator_action: str | None = None,
@@ -196,16 +187,18 @@ def build_diagnostic_event(
 ) -> DiagnosticEvent:
     """按错误码和上下文构建诊断事件。"""
 
-    error_domain, severity, recoverability, problem_class, default_user_message, default_steps = _DEFAULTS.get(
+    severity, recoverability, default_problem_class, default_user_message, default_steps = _DEFAULTS.get(
         error_code,
         _DEFAULTS[ErrorCode.UNKNOWN],
     )
+    resolved_error_domain = error_domain or error_domain_for(error_code)
+    resolved_problem_class = problem_class or default_problem_class
     return DiagnosticEvent(
         error_code=error_code,
-        error_domain=error_domain,
+        error_domain=resolved_error_domain,
         severity=severity,
         recoverability=recoverability,
-        problem_class=problem_class,
+        problem_class=resolved_problem_class,
         message=message,
         technical_summary=technical_summary or message,
         user_message=user_message or default_user_message,

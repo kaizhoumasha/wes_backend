@@ -26,8 +26,12 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version, parse_workline_six_in_one
+from src.workline_plugin_registry import (
+    get_plugin_contract_version,
+    parse_workline_six_in_one,
+)
 
+from .contracts import SixInOne
 from .trace_context import TraceContext
 from .utils import ensure_dict
 
@@ -42,7 +46,23 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
 }
+
+# 无业务条码但可按设备级单例归属的事件。
+_DEVICE_SCOPED_EVENTS = {
+    "ESTOP_PRESSED",
+}
+
+# 无业务条码、但每次事件实例都必须独立归属的事件。
+_EVENT_INSTANCE_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "MATERIAL_ARRIVED": ("event_id", "vendor_event_id"),
+}
+
+# 待处理 ingress 元数据属性名。
 _PENDING_SESSION_INGRESS_METADATA_ATTR = "_pending_session_ingress_metadata"
+
+
+class SessionResolveError(ValueError):
+    """Session 归属解析失败。"""
 
 
 class SessionIngressMetadata(TypedDict):
@@ -53,26 +73,92 @@ class SessionIngressMetadata(TypedDict):
     last_request_id: NotRequired[str]
 
 
+def _non_empty_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | None:
+    """为无业务条码的设备级事件生成稳定归属键。"""
+
+    event_type = payload_json.get("canonical_event_type") or payload_json.get("event_type")
+    device_code = payload_json.get("device_code")
+    if not isinstance(event_type, str) or not event_type:
+        return None
+    if not isinstance(device_code, str) or not device_code:
+        return None
+
+    if event_type in _DEVICE_SCOPED_EVENTS:
+        return f"event:{event_type}:{device_code}"
+
+    data = ensure_dict(payload_json.get("data"))
+    for field_name in _EVENT_INSTANCE_IDENTITY_FIELDS.get(event_type, ()):
+        event_identity = data.get(field_name)
+        if isinstance(event_identity, str) and event_identity:
+            return f"event:{event_type}:{device_code}:{event_identity}"
+
+    return None
+
+
+def _resolve_payload_barcode(
+    payload_json: dict[str, Any],
+    data: dict[str, Any],
+) -> str | None:
+    """优先从顶层和 `data` 中提取稳定单字段条码。"""
+
+    return _non_empty_str(payload_json.get("barcode")) or _non_empty_str(data.get("barcode"))
+
+
+def _resolve_six_in_one_business_key(
+    data: dict[str, Any],
+    *,
+    plugin_key: str | None,
+) -> str | None:
+    """从插件解析或 canonical Six-In-One 中恢复稳定 business_key。"""
+
+    six_in_one = parse_workline_six_in_one(plugin_key, data)
+    parsed_business_key = _non_empty_str(getattr(six_in_one, "business_key", None))
+    if parsed_business_key:
+        return parsed_business_key
+
+    canonical_six_in_one = SixInOne.model_validate(data)
+    return canonical_six_in_one.business_key
+
+
 def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
-    """从事件 payload 提取业务主键，缺失时生成兜底值。"""
+    """从事件 payload 提取业务主键，无法稳定求值时显式失败。
+
+    约束：
+    - 原始外部协议字段映射优先走插件自有解析入口
+    - 只有当 payload `data` 已经是 canonical Six-In-One 字段时，
+      才允许 runtime 直接生成稳定 business_key
+    - 明确允许的设备级事件（如 ESTOP）按 event_type + device_code 稳定归属
+    - 对未知插件的非 canonical 原始 payload，不再返回随机 business_key，
+      而是显式抛出 SessionResolveError，避免重复建单
+    """
     business_key = payload_json.get("business_key")
     if isinstance(business_key, str) and business_key:
         return business_key
 
-    data = ensure_dict(payload_json.get("data"))
+    event_scoped_business_key = _resolve_event_scope_business_key(payload_json)
+    if event_scoped_business_key:
+        return event_scoped_business_key
 
-    # 优先使用 barcode 字段
-    barcode = data.get("barcode")
-    if isinstance(barcode, str) and barcode:
+    data = ensure_dict(payload_json.get("data"))
+    barcode = _resolve_payload_barcode(payload_json, data)
+    if barcode:
         return barcode
 
     # 通过插件自有协议解析入口生成统一 business_key
     if data:
-        six_in_one = parse_workline_six_in_one(plugin_key, data)
-        if six_in_one and getattr(six_in_one, "business_key", None):
-            return six_in_one.business_key
+        # 当 plugin_key 缺失/未知，但 data 已经是 canonical Six-In-One 字段时，
+        # 仍需要保证相同业务数据能够收敛到稳定 business_key，避免重复建单。
+        business_key_from_six_in_one = _resolve_six_in_one_business_key(data, plugin_key=plugin_key)
+        if business_key_from_six_in_one:
+            return business_key_from_six_in_one
 
-    return f"auto_{uuid.uuid4().hex[:12]}"
+    raise SessionResolveError(
+        "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"
+    )
 
 
 def _build_session_ingress_metadata(
@@ -417,3 +503,11 @@ class SessionResolver:
 
 # 创建单例
 session_resolver = SessionResolver()
+
+
+__all__ = [
+    "SessionResolveError",
+    "SessionResolver",
+    "reapply_pending_session_ingress_metadata",
+    "session_resolver",
+]

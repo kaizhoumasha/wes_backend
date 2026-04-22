@@ -6,7 +6,7 @@ from typing import Any
 
 from src.workline_runtime.enums import FailureDomain
 
-from .codes import ErrorCode, ErrorDomain
+from .codes import ErrorCode, ErrorDomain, error_domain_for
 
 
 def _map_failure_to_error_code(*, failure: Any | None = None) -> ErrorCode:
@@ -19,15 +19,30 @@ def _map_failure_to_error_code(*, failure: Any | None = None) -> ErrorCode:
         return ErrorCode.DEVICE_TIMEOUT
     if failure_code == "DEVICE_NOT_FOUND":
         return ErrorCode.DEVICE_UNREACHABLE
+    if failure_code == "STATE_MISMATCH":
+        return ErrorCode.PLUGIN_TRANSITION_INVALID
     if failure_domain == FailureDomain.CONFIG.value:
         return ErrorCode.CONFIG_INVALID
     if failure_domain == FailureDomain.TIMEOUT.value:
         return ErrorCode.DEVICE_TIMEOUT
-    if failure_domain == FailureDomain.HARDWARE.value:
-        return ErrorCode.DEVICE_UNREACHABLE
     if failure_domain in {FailureDomain.SOFTWARE.value, FailureDomain.ORCHESTRATION.value}:
         return ErrorCode.PLUGIN_EXECUTION_FAILED
     return ErrorCode.UNKNOWN
+
+
+def _domain_from_failure(failure: Any | None) -> ErrorDomain:
+    failure_domain = getattr(failure, "domain", None)
+    if failure_domain == FailureDomain.HARDWARE.value:
+        return ErrorDomain.DEVICE
+    if failure_domain == FailureDomain.TIMEOUT.value:
+        return ErrorDomain.NETWORK
+    if failure_domain in {FailureDomain.SOFTWARE.value, FailureDomain.ORCHESTRATION.value}:
+        return ErrorDomain.PLUGIN
+    if failure_domain == FailureDomain.CONFIG.value:
+        return ErrorDomain.CONFIG
+    if failure_domain == FailureDomain.DATA.value:
+        return ErrorDomain.DATA_QUALITY
+    return ErrorDomain.SYSTEM
 
 
 def map_failure_to_diagnostic(
@@ -37,28 +52,12 @@ def map_failure_to_diagnostic(
 
     if error_code and error_code in ErrorCode._value2member_map_:
         mapped = ErrorCode(error_code)
-        return mapped, _domain_from_error_code(mapped)
+        return mapped, error_domain_for(mapped)
 
     mapped = _map_failure_to_error_code(failure=failure)
-    return mapped, _domain_from_error_code(mapped)
-
-
-def _domain_from_error_code(error_code: ErrorCode) -> ErrorDomain:
-    if error_code in {ErrorCode.CONTRACT_MISMATCH, ErrorCode.CONFIG_INVALID}:
-        return ErrorDomain.CONFIG
-    if error_code in {ErrorCode.PLUGIN_EXECUTION_FAILED, ErrorCode.PLUGIN_TRANSITION_INVALID}:
-        return ErrorDomain.PLUGIN
-    if error_code == ErrorCode.DEVICE_UNREACHABLE:
-        return ErrorDomain.DEVICE
-    if error_code == ErrorCode.DEVICE_TIMEOUT:
-        return ErrorDomain.NETWORK
-    if error_code == ErrorCode.CALLBACK_SCHEMA_INVALID:
-        return ErrorDomain.DATA_QUALITY
-    if error_code in {ErrorCode.SESSION_CONTEXT_MISSING, ErrorCode.SESSION_RESOLVE_FAILED}:
-        return ErrorDomain.WORKFLOW
-    if error_code == ErrorCode.OUTBOX_DISPATCH_FAILED:
-        return ErrorDomain.INTEGRATION
-    return ErrorDomain.SYSTEM
+    if mapped == ErrorCode.UNKNOWN:
+        return mapped, _domain_from_failure(failure)
+    return mapped, error_domain_for(mapped)
 
 
 __all__ = ["map_failure_to_diagnostic"]

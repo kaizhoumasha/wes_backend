@@ -20,6 +20,18 @@ def _non_empty_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+_ERROR_CODE_FIELDS = ("error_code", "code")
+_ERROR_MESSAGE_FIELDS = ("error_message", "msg", "message")
+
+
+def _resolve_first_str(payload: dict[str, Any], field_names: tuple[str, ...]) -> str | None:
+    for field_name in field_names:
+        value = _non_empty_str(payload.get(field_name))
+        if value:
+            return value
+    return None
+
+
 def _infer_kind(raw_kind: Any, payload: dict[str, Any]) -> Any:
     """在 kind 缺失时，按 payload 形状做最小推断。
 
@@ -45,11 +57,24 @@ def _infer_kind(raw_kind: Any, payload: dict[str, Any]) -> Any:
 def _normalized_error_detail(payload: dict[str, Any]) -> dict[str, Any]:
     error_detail = _payload_dict(payload.get("error_detail"))
     if error_detail:
-        return error_detail
+        normalized_error_detail = dict(error_detail)
+        resolved_error_code = _resolve_first_str(error_detail, _ERROR_CODE_FIELDS)
+        resolved_error_message = _resolve_first_str(error_detail, _ERROR_MESSAGE_FIELDS)
+        normalized_error_detail.setdefault(
+            "error_code",
+            resolved_error_code,
+        )
+        normalized_error_detail.setdefault(
+            "error_message",
+            resolved_error_message,
+        )
+        return normalized_error_detail
 
+    resolved_error_code = _resolve_first_str(payload, _ERROR_CODE_FIELDS)
+    resolved_error_message = _resolve_first_str(payload, _ERROR_MESSAGE_FIELDS)
     fallback = {
-        "error_code": payload.get("error_code"),
-        "error_message": payload.get("error_message"),
+        "error_code": resolved_error_code,
+        "error_message": resolved_error_message,
     }
     return {key: value for key, value in fallback.items() if value is not None}
 

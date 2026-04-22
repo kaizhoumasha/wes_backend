@@ -311,6 +311,70 @@ class TestInboxConsumer:
         mock_db.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_process_inbox_single_message_failure_preserves_mapped_device_domain(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """设备类 UNKNOWN failure 也应把 mapper 的 DEVICE 诊断域透传到最终诊断链路。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain, ProblemClass
+        from src.workline_runtime.types import FailureIntent
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-estop-001",
+            payload_json={
+                "canonical_event_type": "ESTOP_PRESSED",
+                "device_code": "ARM01",
+                "data": None,
+            },
+        )
+        inbox.source_message_id = "req-estop-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(
+            success=False,
+            error="急停触发: ARM01",
+            failure=FailureIntent(domain="HARDWARE", code="ESTOP", message="急停触发: ARM01"),
+        )
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": MockSession(),
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_log_diagnostic.assert_called_once()
+        assert mock_log_diagnostic.call_args.kwargs["error_code"] == ErrorCode.UNKNOWN
+        assert mock_log_diagnostic.call_args.kwargs["error_domain"] == ErrorDomain.DEVICE
+        assert mock_log_diagnostic.call_args.kwargs["problem_class"] == ProblemClass.HARDWARE
+
+    @pytest.mark.asyncio
     async def test_process_inbox_rejects_scan_finish_when_canonical_scan_completed_missing_barcode(
         self,
         mock_db,
@@ -333,8 +397,14 @@ class TestInboxConsumer:
         mock_inbox_service.get_new_messages.return_value = [inbox]
 
         with (
-            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
-            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
             patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
@@ -375,8 +445,14 @@ class TestInboxConsumer:
         mock_inbox_service.get_new_messages.return_value = [inbox]
 
         with (
-            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
-            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
             patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
@@ -416,7 +492,10 @@ class TestInboxConsumer:
 
         with (
             patch("src.app.workline.services.inbox_service.inbox_service", inbox_service),
-            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
             patch("src.celery_app.tasks.workline._log_diagnostic"),
         ):
             result = await process_inbox_messages._process_batch(db, limit=10)
@@ -428,6 +507,68 @@ class TestInboxConsumer:
         mock_orchestrator.process_inbox.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_process_inbox_scan_completed_without_plugin_key_does_not_mask_orchestrator_failure(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """plugin_key 缺失时，SCAN_COMPLETED 通用 gate 不应抢先覆盖编排失败归因。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "data": {"LotCode": "LOT-NO-PLUGIN-001"},
+            },
+        )
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox.return_value = OrchestratorResult(
+            success=False,
+            error="Processing failed",
+            transition="dispatch_robot",
+        )
+
+        workline = MockWorkline()
+        workline.plugin_key = None
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": MockSession(),
+                        "workline": workline,
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Processing failed",
+            auto_commit=False,
+        )
+        assert mock_log_diagnostic.call_args.kwargs["transition"] == "dispatch_robot"
+
     async def test_process_inbox_missing_session_context_logs_once_with_trace_anchor(
         self,
         mock_db,
@@ -558,6 +699,62 @@ class TestInboxConsumer:
         mock_inbox_service.mark_as_failed.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_process_inbox_session_resolve_failure_maps_to_session_resolve_failed(
+        self,
+        mock_db,
+        mock_inbox_service,
+    ):
+        """session 归属解析失败应明确归因到 SESSION_RESOLVE_FAILED，而不是 UNKNOWN。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+        from src.workline_runtime.diagnostics import ErrorCode
+        from src.workline_runtime.session_resolver import SessionResolveError
+
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            correlation_id="corr-resolve-failed-001",
+            payload_json={
+                "canonical_event_type": "BIN_ARRIVED",
+                "data": {"location": "STATION_INPUT1"},
+            },
+        )
+        inbox.source_message_id = "req-resolve-failed-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    side_effect=SessionResolveError(
+                        "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"
+                    )
+                ),
+            ),
+            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data",
+            auto_commit=False,
+        )
+        mock_log_diagnostic.assert_called_once_with(
+            inbox=inbox,
+            error_code=ErrorCode.SESSION_RESOLVE_FAILED,
+            message="Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data",
+        )
+        mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
     async def test_process_inbox_exception_handling(
         self,
         mock_db,
@@ -657,7 +854,10 @@ class TestInboxConsumer:
                     }
                 ),
             ),
-            patch("src.celery_app.tasks.workline.asyncio.wait_for", new=AsyncMock(side_effect=raise_timeout)),
+            patch(
+                "src.celery_app.tasks.workline.asyncio.wait_for",
+                new=AsyncMock(side_effect=raise_timeout),
+            ),
             patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
@@ -1044,7 +1244,8 @@ class TestInboxConsumer:
         with (
             patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock()),
             patch(
-                "src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                return_value=SimpleNamespace(),
             ),
         ):
             await _apply_orchestrator_effects(
@@ -1099,7 +1300,8 @@ class TestInboxConsumer:
         with (
             patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock()),
             patch(
-                "src.workline_runtime.timeline_generator.timeline_generator.generate", return_value=SimpleNamespace()
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                return_value=SimpleNamespace(),
             ),
         ):
             await _apply_orchestrator_effects(
@@ -1382,9 +1584,13 @@ class TestInboxConsumer:
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
                 side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
             ),
-            patch("src.celery_app.tasks.workline.get_plugin_contract_version", return_value="registry-v1999.01"),
             patch(
-                "src.app.device.repositories.command_repository.DeviceCommandRepository", return_value=mock_command_repo
+                "src.celery_app.tasks.workline.get_plugin_contract_version",
+                return_value="registry-v1999.01",
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
             ),
         ):
             await _apply_orchestrator_effects(
@@ -1671,7 +1877,11 @@ class TestInboxConsumer:
     @pytest.mark.asyncio
     async def test_apply_orchestrator_effects_failure_syncs_trace_to_session_and_timeline(self, mock_db):
         """失败路径也必须保留入口 trace 主链，便于 replay/debug。"""
-        from src.app.workline.models.timeline import TimelineActionType, TimelineStage, TimelineStatus
+        from src.app.workline.models.timeline import (
+            TimelineActionType,
+            TimelineStage,
+            TimelineStatus,
+        )
         from src.celery_app.tasks.workline import _apply_orchestrator_effects
         from src.workline_runtime.types import FailureIntent
 

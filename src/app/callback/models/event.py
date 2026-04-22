@@ -6,7 +6,19 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CallbackEventRequest(BaseModel):
-    """Minimal callback event envelope validated before plugin-specific normalization."""
+    """Minimal callback event envelope.
+
+    该模型只负责 `/callback/event` 的最小包络校验：
+    - `device_code`
+    - `event_type`
+    - `timestamp`
+    - `data`
+
+    它不承担插件私有 payload 语义校验，例如：
+    - `SCAN_COMPLETED` 是否带齐业务字段
+    - `SixInOne` 是否可解析
+    - 插件字段别名是否映射成功
+    """
 
     device_code: str = Field(description="设备编码（device_code，设备标识）")
     event_type: str = Field(description="事件类型（具体合法值由 plugin contract 决定）")

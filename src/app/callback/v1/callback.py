@@ -53,6 +53,18 @@ _CORRELATION_ID_ALIASES = ("correlation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
 
+_CALLBACK_AUDIT_TITLES = {
+    "result": "设备回调结果",
+    "event": "设备事件上报",
+    "external": "外部系统回调",
+}
+
+_CALLBACK_SUBJECT_ALIASES = {
+    "result": _DEVICE_CODE_ALIASES,
+    "event": _DEVICE_CODE_ALIASES,
+    "external": ("callback_type", "source_system"),
+}
+
 # callback 入口结果常量
 _INGRESS_OUTCOME_ACCEPTED = "ACCEPTED"
 _INGRESS_OUTCOME_REJECTED = "REJECTED"
@@ -91,6 +103,19 @@ def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: 
 
 def _response_time_ms(start_time: float) -> int:
     return int((time.time() - start_time) * 1000)
+
+
+def _summarize_validation_error(exc: ValidationError) -> str:
+    """将 Pydantic 校验错误压缩成入口日志/ACK 可读文本。"""
+
+    errors = exc.errors()
+    if not errors:
+        return str(exc)
+
+    first = errors[0]
+    loc = ".".join(str(part) for part in first.get("loc", ())) or "payload"
+    msg = str(first.get("msg", "invalid value"))
+    return f"{loc}: {msg}"
 
 
 def _resolve_callback_correlation_id(payload: JsonDict) -> str | None:
@@ -206,23 +231,14 @@ def _build_not_found_fail(message: str) -> JsonDict:
 
 
 def _resolve_callback_audit_title(callback_type: str) -> str:
-    if callback_type == "result":
-        return "设备回调结果"
-    if callback_type == "event":
-        return "设备事件上报"
-    if callback_type == "external":
-        return "外部系统回调"
-    return callback_type
+    return _CALLBACK_AUDIT_TITLES.get(callback_type, callback_type)
 
 
 def _resolve_callback_subject(callback_type: str, request_body: JsonDict) -> str:
-    if callback_type == "result":
-        return resolve_first_str(request_body, _DEVICE_CODE_ALIASES) or "UNKNOWN"
-    if callback_type == "event":
-        return resolve_first_str(request_body, _DEVICE_CODE_ALIASES) or "UNKNOWN"
-    if callback_type == "external":
-        return resolve_first_str(request_body, ("callback_type", "source_system")) or "UNKNOWN"
-    return "UNKNOWN"
+    subject_aliases = _CALLBACK_SUBJECT_ALIASES.get(callback_type)
+    if subject_aliases is None:
+        return "UNKNOWN"
+    return resolve_first_str(request_body, subject_aliases) or "UNKNOWN"
 
 
 def _log_callback_diagnostic(
@@ -748,12 +764,15 @@ async def callback_event(
         )
 
     try:
-        device_code = _require_first_str(event_data, _DEVICE_CODE_ALIASES, "device_code")
-    except ValueError as exc:
-        logger.error(f"设备事件最小包络校验失败: {exc}")
+        # event 是统一硬件事件入口：这里只做最小包络校验，
+        # 不提前判断插件私有 payload 是否“业务成立”。
+        normalized_event_request = CallbackEventRequest.model_validate(event_data)
+    except ValidationError as exc:
+        message = f"事件上报最小包络校验失败: {_summarize_validation_error(exc)}"
+        logger.error(message)
         _log_callback_diagnostic(
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-            message=f"事件上报最小包络校验失败: {exc}",
+            message=message,
             request_id=request_id,
             callback_type="event",
             payload=event_data,
@@ -763,14 +782,15 @@ async def callback_event(
             request,
             request_id=request_id,
             event_data=event_data,
-            message=f"事件上报最小包络校验失败: {exc}",
+            message=message,
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
         )
 
+    device_code = normalized_event_request.device_code
     logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
 
-    # 使用 DeviceContextService 验证设备和工作线上下文
+    # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
         return await _handle_device_context_failure(
@@ -789,31 +809,9 @@ async def callback_event(
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
-    _plugin_key = ctx_result.plugin_key  # type: ignore[union-attr]
-    _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
 
     try:
-        # 直接用原始 payload 验证（Pydantic 自动处理别名）
-        normalized_event_request = CallbackEventRequest.model_validate(event_data)
         canonical_event_type = canonicalize_event_type(normalized_event_request.event_type, workline=workline)
-    except ValidationError as exc:
-        logger.error(f"设备事件上报模型校验失败: {exc}")
-        _log_callback_diagnostic(
-            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-            message="事件上报模型校验失败",
-            request_id=request_id,
-            callback_type="event",
-            payload=event_data,
-        )
-        return await _handle_event_validation_failure(
-            db,
-            request,
-            request_id=request_id,
-            event_data=event_data,
-            message="事件上报模型校验失败",
-            response_time_ms=_response_time_ms(start_time),
-            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
-        )
     except ValueError as exc:
         logger.error(f"设备事件上报契约校验失败: {exc}")
         _log_callback_diagnostic(

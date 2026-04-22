@@ -22,9 +22,9 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from uvicorn import Config, Server
 
@@ -32,6 +32,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.workline_runtime.contracts import DeviceErrorCode
 from tests.mock.smt_classifier.mock_support import (
     WES_RESULT_CALLBACK_URL,
     CancelRequest,
@@ -77,7 +78,10 @@ DEVICE_CONFIGS: dict[str, PipelineDeviceConfig] = {
         "description": "负责左侧进料位到出料位的传输",
         "task_types": ["MOVE_FORWARD"],
         "source": DeviceLocation(location_id="LEFT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM"),
-        "target": DeviceLocation(location_id="LEFT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM"),
+        "target": DeviceLocation(
+            location_id="LEFT_STATION_PIPELINE_OUTPUT",
+            location_type="PIPELINE_PLATFORM",
+        ),
     },
     "PIPELINE02": {
         "device_code": "PIPELINE02",
@@ -86,8 +90,14 @@ DEVICE_CONFIGS: dict[str, PipelineDeviceConfig] = {
         "port": 8005,
         "description": "负责右侧进料位到出料位的传输",
         "task_types": ["MOVE_FORWARD"],
-        "source": DeviceLocation(location_id="RIGHT_STATION_PIPELINE_INPUT", location_type="PIPELINE_PLATFORM"),
-        "target": DeviceLocation(location_id="RIGHT_STATION_PIPELINE_OUTPUT", location_type="PIPELINE_PLATFORM"),
+        "source": DeviceLocation(
+            location_id="RIGHT_STATION_PIPELINE_INPUT",
+            location_type="PIPELINE_PLATFORM",
+        ),
+        "target": DeviceLocation(
+            location_id="RIGHT_STATION_PIPELINE_OUTPUT",
+            location_type="PIPELINE_PLATFORM",
+        ),
     },
 }
 
@@ -258,14 +268,26 @@ class PipelineSimulator:
         source_payload = cast("JsonDict", params.get("source")) if isinstance(params.get("source"), dict) else {}
         target_payload = cast("JsonDict", params.get("target")) if isinstance(params.get("target"), dict) else {}
         source = self._resolve_location(
-            location_type=cast("str | None", source_payload.get("location_type") or params.get("source_type")),
-            location_id=cast("str | None", source_payload.get("location_id") or params.get("source_loc")),
+            location_type=cast(
+                "str | None",
+                source_payload.get("location_type") or params.get("source_type"),
+            ),
+            location_id=cast(
+                "str | None",
+                source_payload.get("location_id") or params.get("source_loc"),
+            ),
             default_location=cast("DeviceLocation", self.device_config["source"]),
             field_name="源",
         )
         target = self._resolve_location(
-            location_type=cast("str | None", target_payload.get("location_type") or params.get("target_type")),
-            location_id=cast("str | None", target_payload.get("location_id") or params.get("target_loc")),
+            location_type=cast(
+                "str | None",
+                target_payload.get("location_type") or params.get("target_type"),
+            ),
+            location_id=cast(
+                "str | None",
+                target_payload.get("location_id") or params.get("target_loc"),
+            ),
             default_location=cast("DeviceLocation", self.device_config["target"]),
             field_name="目标",
         )
@@ -355,7 +377,14 @@ class PipelineSimulator:
             await asyncio.sleep(execution_time)
 
             result = "FAILED" if simulate_failure else "SUCCESS"
-            error_detail = {"error_code": "2002", "error_message": "流水线传输失败"} if simulate_failure else None
+            error_detail = (
+                {
+                    "error_code": DeviceErrorCode.MOVE_FAILED.value,
+                    "error_message": "流水线传输失败",
+                }
+                if simulate_failure
+                else None
+            )
 
             # ========== 业务流程日志：执行完成 ==========
             logger.info(
@@ -393,7 +422,7 @@ class PipelineSimulator:
                 self._success_count += 1
             else:
                 self._failure_count += 1
-                self.runtime_status["error_code"] = "2002"
+                self.runtime_status["error_code"] = DeviceErrorCode.MOVE_FAILED.value
             return record
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
@@ -588,7 +617,11 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
 
     task = asyncio.create_task(_execute_wes_command_with_cleanup(resolved_device_code, payload))
     _set_current_command_task(resolved_device_code, task)
-    return DeviceCommandAck(code=200, message="Accepted", trace_id=f"{resolved_device_code}-LOG-{payload.command_code}")
+    return DeviceCommandAck(
+        code=200,
+        message="Accepted",
+        trace_id=f"{resolved_device_code}-LOG-{payload.command_code}",
+    )
 
 
 async def _execute_wes_command_with_cleanup(device_code: str, payload: DeviceCommandPayload) -> None:
@@ -639,8 +672,14 @@ async def cancel_command(request: CancelRequest) -> DeviceCommandAck:
                 "application/json": {
                     "examples": {
                         "minimal": {"summary": "最小化请求", "value": {}},
-                        "failure": {"summary": "模拟失败", "value": {"simulate_failure": True}},
-                        "fast": {"summary": "快速执行", "value": {"execution_time": 0.1}},
+                        "failure": {
+                            "summary": "模拟失败",
+                            "value": {"simulate_failure": True},
+                        },
+                        "fast": {
+                            "summary": "快速执行",
+                            "value": {"execution_time": 0.1},
+                        },
                     }
                 }
             }

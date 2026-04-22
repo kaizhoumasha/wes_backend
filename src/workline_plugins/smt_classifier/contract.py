@@ -62,8 +62,12 @@ class ScanEventPayload(BaseModel):
 
 
 class MeasurementResultData(SixInOne, BaseModel):
-    """测量结果数据。"""
+    """测量结果数据。
 
+    测量成功回调后会直接推进到流水线传输，因此这里必须携带可继续路由的业务标识 `PkgID`。
+    """
+
+    PkgID: str = Field(description="业务包裹标识，测量成功后继续推进流程必填")
     reel_diameter: float | None = Field(default=None, description="料盘直径测量值")
     reel_thickness: float | None = Field(default=None, description="料盘厚度测量值")
 

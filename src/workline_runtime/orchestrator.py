@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain
+from src.workline_runtime.diagnostics import ErrorCode, error_domain_for
 from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import NullPlugin
@@ -77,11 +77,21 @@ def _ensure_non_empty_str(value: Any) -> str | None:
 
 
 def _system_error_result(message: str) -> OrchestratorResult:
+    return _error_result(ErrorCode.UNKNOWN, message)
+
+
+def _error_result(
+    error_code: ErrorCode,
+    message: str,
+    *,
+    failure: FailureIntent | None = None,
+) -> OrchestratorResult:
     return OrchestratorResult(
         success=False,
         error=message,
-        error_code=ErrorCode.UNKNOWN.value,
-        error_domain=ErrorDomain.SYSTEM.value,
+        error_code=error_code.value,
+        error_domain=error_domain_for(error_code).value,
+        failure=failure,
     )
 
 
@@ -221,12 +231,7 @@ class OrchestratorService:
         """
         session_id = self._resolve_session_pk(session)
         if session_id is None:
-            return OrchestratorResult(
-                success=False,
-                error="Session missing primary key",
-                error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
-                error_domain=ErrorDomain.WORKFLOW.value,
-            )
+            return _error_result(ErrorCode.SESSION_CONTEXT_MISSING, "Session missing primary key")
 
         lock_key = f"session:{session_id}"
 
@@ -323,11 +328,9 @@ class OrchestratorService:
         session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
         plugin_contract = _ensure_non_empty_str(getattr(plugin, "contract_version", None))
         if session_contract and plugin_contract and session_contract != plugin_contract:
-            return OrchestratorResult(
-                success=False,
-                error=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
-                error_code=ErrorCode.CONTRACT_MISMATCH.value,
-                error_domain=ErrorDomain.CONFIG.value,
+            return _error_result(
+                ErrorCode.CONTRACT_MISMATCH,
+                f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
                 failure=FailureIntent(
                     domain=FailureDomain.SOFTWARE.value,
                     code=FailureCode.CONTRACT_MISMATCH,
@@ -339,12 +342,7 @@ class OrchestratorService:
             result = await self._call_plugin(plugin, ctx, inbox)
         except Exception as e:
             logger.exception("Plugin execution failed")
-            return OrchestratorResult(
-                success=False,
-                error=str(e),
-                error_code=ErrorCode.PLUGIN_EXECUTION_FAILED.value,
-                error_domain=ErrorDomain.PLUGIN.value,
-            )
+            return _error_result(ErrorCode.PLUGIN_EXECUTION_FAILED, str(e))
 
         return self._process_result(result, session, getattr(workline, "state_machine_class", None))
 
@@ -486,12 +484,7 @@ class OrchestratorService:
             )
             if not is_valid:
                 logger.error(f"Invalid transition: {error}")
-                return OrchestratorResult(
-                    success=False,
-                    error=error,
-                    error_code=ErrorCode.PLUGIN_TRANSITION_INVALID.value,
-                    error_domain=ErrorDomain.PLUGIN.value,
-                )
+                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error)
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")

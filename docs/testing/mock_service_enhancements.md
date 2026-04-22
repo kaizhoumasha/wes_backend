@@ -88,11 +88,11 @@ Mock 服务支持多种方式模拟硬件约定的错误码：
 
 | 错误码 | 说明 | 使用场景 |
 |-------|------|---------|
-| `1001` | 料盘尺寸检测异常 | 进料流程尺寸检测失败 |
-| `1002` | 料盘厚度检测异常 | 进料流程厚度检测失败 |
-| `2001` | 扫码异常 | 扫码失败 |
-| `2002` | 搬运失败 | 机械臂搬运失败 |
-| `2003` | 料箱已满 | 出料失败 |
+| `INSPECTION_SIZE_NG` | 料盘尺寸检测异常 | 进料流程尺寸检测失败 |
+| `INSPECTION_THICKNESS_NG` | 料盘厚度检测异常 | 进料流程厚度检测失败 |
+| `SCAN_FAILED` | 扫码异常 | 扫码失败 |
+| `PICK_AND_PUT_FAILED` | 搬运失败 | 机械臂搬运失败 |
+| `BIN_FULL` | 料箱已满 | 出料失败 |
 
 #### 方式 1：智能条码模式（推荐用于测试）
 
@@ -100,8 +100,8 @@ Mock 服务会自动识别特殊条码模式并触发对应错误：
 
 | 条码模式 | 自动触发的错误码 | 说明 |
 |---------|----------------|------|
-| 包含 `SIZENG` | `1001` | 尺寸检测异常 |
-| 包含 `THICKNESSNG` | `1002` | 厚度检测异常 |
+| 包含 `SIZENG` | `INSPECTION_SIZE_NG` | 尺寸检测异常 |
+| 包含 `THICKNESSNG` | `INSPECTION_THICKNESS_NG` | 厚度检测异常 |
 
 **使用示例**：
 
@@ -112,12 +112,12 @@ scan_event = {
     "event_type": "SCAN_COMPLETED",
     "data": {
         "location": "STATION_INPUT1",
-        "LotCode": "LOTSIZENG",  # 自动触发错误码 1001
+        "LotCode": "LOTSIZENG",  # 自动触发错误码 INSPECTION_SIZE_NG
     },
 }
 
 response = await wes_client.post("/api/v1/callback/event", json=scan_event)
-# Mock 会自动返回 error_code=1001
+# Mock 会自动返回 error_code=INSPECTION_SIZE_NG
 ```
 
 #### 方式 2：显式 error_code 参数
@@ -128,7 +128,7 @@ response = await wes_client.post("/api/v1/callback/event", json=scan_event)
 import httpx
 import time
 
-# 模拟尺寸检测失败（错误码 1001）
+# 模拟尺寸检测失败（语义码 INSPECTION_SIZE_NG）
 command_payload = {
     "command_code": f"CMD-{int(time.time())}",
     "task_type": "PICK_AND_PUT",
@@ -140,7 +140,7 @@ command_payload = {
         "target_type": "PIPELINE_PLATFORM",
         "source_loc": "STATION_INPUT1",
         "target_loc": "STATION_PIPELINE1_INPUT1",
-        "error_code": "1001",  # 关键：模拟尺寸检测异常
+        "error_code": "INSPECTION_SIZE_NG",  # 关键：模拟尺寸检测异常
     },
     "timestamp": int(time.time() * 1000),
 }
@@ -163,18 +163,18 @@ async with httpx.AsyncClient() as client:
 
 1. 提取 `params.error_code` 参数
 2. 根据 error_code 映射错误信息：
-   - `"1001"` → `"料盘尺寸检测异常"`
-   - `"1002"` → `"料盘厚度检测异常"`
-   - `"2002"` → `"搬运失败"`
+   - `"INSPECTION_SIZE_NG"` → `"料盘尺寸检测异常"`
+   - `"INSPECTION_THICKNESS_NG"` → `"料盘厚度检测异常"`
+   - `"PICK_AND_PUT_FAILED"` → `"搬运失败"`
 3. 返回 FAILED 结果，携带对应的 error_detail
 
 #### 错误日志示例
 
 ```
-[进料机械臂] 模拟错误码: 1001
+[进料机械臂] 模拟错误码: INSPECTION_SIZE_NG
 [进料机械臂] 执行完成: CMD-20260409-PICK_AND_PLACE-123456
   结果: FAILED
-  错误码: 1001
+  错误码: INSPECTION_SIZE_NG
   耗时: 2.0s
 ============================================================
 [进料机械臂] 回调结果到 WES
@@ -182,7 +182,7 @@ async with httpx.AsyncClient() as client:
   命令编号: CMD-20260409-PICK_AND_PLACE-123456
   设备编号: ARM01
   执行结果: FAILED
-  错误码: 1001
+  错误码: INSPECTION_SIZE_NG
   错误信息: 料盘尺寸检测异常
   回调地址: http://localhost:8001/api/v1/callback/result
 ============================================================
@@ -198,7 +198,7 @@ async def test_size_detection_ng_flow(
     wes_client: httpx.AsyncClient,
     arm01_client: httpx.AsyncClient,
 ) -> None:
-    """测试尺寸检测 NG 流程（错误码 1001）"""
+    """测试尺寸检测 NG 流程（语义码 INSPECTION_SIZE_NG）"""
 
     # 1. 上报扫码事件
     scan_event = {
@@ -218,7 +218,7 @@ async def test_size_detection_ng_flow(
     await asyncio.sleep(8)
 
     # 3. 验证数据库记录
-    # 应该看到：进料命令失败（error_code=1001）→ NG 移料命令
+    # 应该看到：进料命令失败（error_code=INSPECTION_SIZE_NG）→ NG 移料命令
 ```
 
 ## 完整业务流程测试
@@ -249,7 +249,7 @@ uv run pytest tests/e2e/smt_classifier/test_full_business_flows.py -xvs --log-cl
    - 失败原因：DATA/BARCODE_INVALID
 
 3. ⏭️ **进料 NG 流程（尺寸检测/测厚 NG）**
-   - 需要 Mock 返回错误码 1001 或 1002
+   - 需要 Mock 返回语义错误码 `INSPECTION_SIZE_NG` 或 `INSPECTION_THICKNESS_NG`
    - 测试已更新，但需要配置 Mock 参数
 
 ## 调试技巧
