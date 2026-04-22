@@ -423,6 +423,8 @@ services:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - ./docker_data/postgres_${ENV:-prod}:/var/lib/postgresql/data
+      # PostgreSQL 日志基线配置（供各环境配置 include）
+      - ./postgresql/base.conf:/etc/postgresql/base.conf:ro
       # PostgreSQL 配置
       - ${POSTGRES_CONFIG_FILE:-./postgresql/postgresql.conf}:/etc/postgresql/postgresql.conf:ro
       # 备份目录
