@@ -469,6 +469,8 @@ services:
       - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - ./docker_data/redis_${ENV:-prod}:/data
+      # Redis 基线配置（供各环境配置 include）
+      - ./redis/base.conf:/usr/local/etc/redis/base.conf:ro
       # Redis 配置
       - ${REDIS_CONFIG_FILE:-./redis/redis.conf}:/usr/local/etc/redis/redis.conf:ro
     command: ${REDIS_COMMAND:-redis-server /usr/local/etc/redis/redis.conf} --requirepass ${REDIS_PASSWORD}
