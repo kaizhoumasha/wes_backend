@@ -71,10 +71,15 @@
 *   **功能**: 接收 WES 下发的抓取、放置、扫描、加工等指令。
 *   **URL**: `http://<DEVICE_IP>:<PORT>/api/v1/device/command`
 *   **Method**: `POST`
+*   **协议要求**:
+    *   顶层仅允许放置协议控制字段：`device_code`、`command_code`、`task_type`、`priority`、`timeout`、`timestamp`、`params`
+    *   所有业务参数**必须**放入 `params` 对象
+    *   **严禁**将业务参数拍平到顶层；若未遵循该包络，WES 将视为协议不合规
 *   **WES 请求示例**:
     ```json
     {
-      "command_id": "CMD-20251215-1001",   // 全局唯一指令ID (必须用于去重)
+      "device_code": "ARM_01",
+      "command_code": "CMD-20251215-1001", // 全局唯一指令编码 (必须用于去重)
       "task_type": "PUT_INSTRUCTION",      // 指令类型：PUT, PICK, SCAN 等
       "priority": 1,                       // 优先级 (1-10, 10最高)
       "timeout": 30000,                    // 期望完成时间(ms)
@@ -104,9 +109,9 @@
 *   **供应商响应示例**:
     ```json
     {
-      "device_id": "ARM_01",
+      "device_code": "ARM_01",
       "status": "RUNNING",        // IDLE, RUNNING, ERROR, OFFLINE
-      "current_cmd_id": "CMD-20251215-1001",
+      "current_command_code": "CMD-20251215-1001",
       "error_code": "NONE"        // 若 status=ERROR, 填写具体错误码
     }
     ```
@@ -115,7 +120,7 @@
 *   **功能**: WES 强制取消正在执行或排队的任务。
 *   **URL**: `http://<DEVICE_IP>:<PORT>/api/v1/device/cancel`
 *   **Method**: `POST`
-*   **请求**: `{"command_id": "CMD-20251215-1001"}`
+*   **请求**: `{"command_code": "CMD-20251215-1001"}`
 *   **响应**: `{"code": 200, "message": "Cancelled"}`
 
 ---
@@ -128,11 +133,15 @@
 *   **功能**: 物理动作完成后，通知 WES 更新业务状态。
 *   **URL**: `http://<WES_IP>:<PORT>/api/v1/callback/result`
 *   **Method**: `POST`
+*   **协议要求**:
+    *   顶层仅允许放置协议控制字段：`command_code`、`device_code`、`result`、`finish_time`、`data`、`error_detail`
+    *   所有业务回传数据**必须**放入 `data` 对象
+    *   **严禁**将 `actual_qty`、`scan_result`、`pkg_id`、视觉结果等业务字段拍平到顶层
 *   **供应商请求示例**:
     ```json
     {
-      "command_id": "CMD-20251215-1001",   // 必须回传原指令ID
-      "device_id": "ARM_01",
+      "command_code": "CMD-20251215-1001", // 必须回传原指令编码
+      "device_code": "ARM_01",
       "result": "SUCCESS",                 // SUCCESS 或 FAILED
       "finish_time": 1702627250000,
       "data": {                            // 选填，业务回传数据
@@ -151,6 +160,10 @@
 #### 3.2.2 设备事件上报 (Event Push)
 *   **功能**: 设备发生状态变更（如急停、上线）或 **传感器触发业务信号**（如到位、读码完成）。
 *   **URL**: `http://<WES_IP>:<PORT>/api/v1/callback/event`
+*   **协议要求**:
+    *   顶层仅允许放置协议控制字段：`device_code`、`event_type`、`timestamp`、`data`
+    *   所有业务事件数据**必须**放入 `data` 对象
+    *   **严禁**将 `barcode`、`location`、`PkgID` 等业务字段拍平到顶层
 *   **请求示例**:
     ```json
     {
@@ -190,8 +203,8 @@
 ## 4. 业务规则与约束 (Business Rules)
 
 ### 4.1 幂等性要求 (Idempotency)
-*   **场景**: 由于网络波动，WES 可能会重发同一个 `command_id`。
-*   **要求**: 供应商系统必须缓存最近 1 小时内处理过的 `command_id`。
+*   **场景**: 由于网络波动，WES 可能会重发同一个 `command_code`。
+*   **要求**: 供应商系统必须缓存最近 1 小时内处理过的 `command_code`。
     *   如果收到已执行成功的 ID -> 直接返回 200 OK，**不执行物理动作**。
     *   如果收到正在执行的 ID -> 返回 200 OK，继续执行。
     *   **严禁**因为重试导致机械臂重复抓取或设备重复动作。

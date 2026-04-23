@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class SixInOne(BaseModel):
     """六合一码统一语义模型。
 
-    方案 A 统一字段：
     - HHPN
     - MfrPN
     - Qty
@@ -20,93 +20,73 @@ class SixInOne(BaseModel):
     - PkgID
 
     说明：
-    - `business_key` 是统一业务主键，不与任一单字段强绑定
-    - 外部协议字段到本模型的映射，不通过兼容属性暴露，只通过集中解析函数处理
+    - `business_key` 是由 `PkgID` 派生的统一业务主键
     """
 
     model_config = ConfigDict(populate_by_name=True)
+    BUSINESS_FIELD_NAMES: ClassVar[tuple[str, ...]] = (
+        "HHPN",
+        "MfrPN",
+        "Qty",
+        "DateCode",
+        "LotCode",
+        "PkgID",
+    )
 
-    business_key: str | None = None
+    HHPN: str | None = Field(default=None, description="厂内料号")
+    MfrPN: str | None = Field(default=None, description="供应商料号")
+    Qty: str | None = Field(default=None, description="数量")
+    DateCode: str | None = Field(default=None, description="日期")
+    LotCode: str | None = Field(default=None, description="批次号")
+    PkgID: str | None = Field(default=None, description="流水号")
 
-    HHPN: str | None = None
-    MfrPN: str | None = None
-    Qty: str | None = None
-    DateCode: str | None = None
-    LotCode: str | None = None
-    PkgID: str | None = None
-
-    @model_validator(mode="after")
-    def _ensure_business_key(self) -> SixInOne:
-        if not self.business_key and self.has_any_value:
-            self.business_key = self.build_business_key()
-        return self
+    @staticmethod
+    def _is_missing_value(value: str | None) -> bool:
+        return value in (None, "")
 
     def build_business_key(self) -> str | None:
-        """根据当前统一字段生成稳定业务主键。"""
+        """根据当前流水号（PkgID字段）生成稳定业务主键。"""
 
-        values = [value for value in self.barcode_values if value]
-        if not values:
+        if not self.PkgID:
             return None
-        payload = json.dumps(values, ensure_ascii=False)
+        payload = json.dumps(self.PkgID, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @computed_field
+    @property
+    def business_key(self) -> str | None:
+        """由 PkgID 派生的稳定业务主键。"""
+
+        return self.build_business_key()
+
+    def iter_business_fields(self) -> list[tuple[str, str | None]]:
+        """返回统一业务字段及其当前值。"""
+
+        return [(field_name, getattr(self, field_name, None)) for field_name in self.BUSINESS_FIELD_NAMES]
 
     @property
     def barcode_values(self) -> list[str]:
         """返回所有非空条码值。"""
 
-        return [
-            value
-            for value in [
-                self.HHPN,
-                self.MfrPN,
-                self.Qty,
-                self.DateCode,
-                self.LotCode,
-                self.PkgID,
-            ]
-            if value
-        ]
+        return [value for _, value in self.iter_business_fields() if value]
 
     @property
     def has_any_value(self) -> bool:
         """是否至少包含一个有效条码字段。"""
 
-        return any(self.barcode_values)
+        return any(value for _, value in self.iter_business_fields())
 
     @property
     def is_complete(self) -> bool:
         """是否 6 个统一字段均有值。"""
 
-        return all(
-            value not in (None, "")
-            for value in [
-                self.HHPN,
-                self.MfrPN,
-                self.Qty,
-                self.DateCode,
-                self.LotCode,
-                self.PkgID,
-            ]
-        )
+        return all(not self._is_missing_value(value) for _, value in self.iter_business_fields())
 
     @property
     def missing_fields(self) -> list[str]:
         """返回缺失字段名。"""
 
-        missing: list[str] = []
-        if self.HHPN in (None, ""):
-            missing.append("HHPN")
-        if self.MfrPN in (None, ""):
-            missing.append("MfrPN")
-        if self.Qty in (None, ""):
-            missing.append("Qty")
-        if self.DateCode in (None, ""):
-            missing.append("DateCode")
-        if self.LotCode in (None, ""):
-            missing.append("LotCode")
-        if self.PkgID in (None, ""):
-            missing.append("PkgID")
-        return missing
+        return [field_name for field_name, value in self.iter_business_fields() if self._is_missing_value(value)]
 
 
 __all__ = ["SixInOne"]

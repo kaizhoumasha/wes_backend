@@ -69,6 +69,8 @@ def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
         device_code=_safe_str(getattr(device, "device_code", None)),
         device_name=_safe_str(getattr(device, "device_name", None)),
         device_role=_safe_str(getattr(device, "device_role", None)),
+        role_index=_safe_int(getattr(device, "role_index", None)),
+        upstream_device_id=_safe_int(getattr(device, "upstream_device_id", None)),
         work_line_id=_safe_int(getattr(device, "work_line_id", None)) or _safe_int(getattr(workline, "id", None)),
         protocol=_normalize_device_protocol(device),
         host=_safe_str(getattr(device, "host", None)),

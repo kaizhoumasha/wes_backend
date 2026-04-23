@@ -41,6 +41,15 @@ class BarcodeDecisionService:
                 reason_message=f"条码不完整，缺失字段: {missing}",
             )
 
+        invalid_field = self._find_field_containing_comma(six_in_one)
+        if invalid_field is not None:
+            return BarcodeDecision(
+                six_in_one=six_in_one,
+                decision=BarcodeDecisionType.INVALID,
+                reason_code="BARCODE_INVALID",
+                reason_message=f"条码格式错误: {invalid_field}",
+            )
+
         pkg_id = six_in_one.PkgID or ""
         if not self._is_valid_pkg_id(pkg_id):
             return BarcodeDecision(
@@ -82,6 +91,14 @@ class BarcodeDecisionService:
         for keyword, reason in self.NG_RULE_KEYWORDS.items():
             if keyword in normalized_pkg_id:
                 return reason
+        return None
+
+    def _find_field_containing_comma(self, six_in_one: SixInOne) -> str | None:
+        """返回第一个包含逗号的字段名。"""
+
+        for field_name, field_value in six_in_one.iter_business_fields():
+            if isinstance(field_value, str) and "," in field_value:
+                return field_name
         return None
 
 

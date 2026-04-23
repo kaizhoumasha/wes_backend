@@ -452,7 +452,21 @@ class ArmSimulator:
             for location in locations:
                 if location.location_id == location_id:
                     return location
+                # 出料位实际常按 bin_id 回传，mock 需要兼容将其解析回 BIN 位置定义。
+                if location.location_type == "BIN" and location.bin_id == location_id:
+                    return location
         return None
+
+    def _resolve_dynamic_bin_location(self, location_id: str) -> DeviceLocation | None:
+        if not location_id.startswith("BIN_"):
+            return None
+
+        bin_locations = self.device_config["locations"].get("BIN", [])
+        if not bin_locations:
+            return None
+
+        template = bin_locations[0]
+        return template.model_copy(update={"bin_id": location_id})
 
     def _resolve_location(
         self,
@@ -465,6 +479,8 @@ class ArmSimulator:
     ) -> DeviceLocation:
         if location_id:
             location = self._find_location_by_id(location_id)
+            if location is None and "BIN" in allowed_types:
+                location = self._resolve_dynamic_bin_location(location_id)
             if location is None:
                 raise HTTPException(status_code=400, detail=f"无效的{field_name}位置: {location_id}")
             if location.location_type not in allowed_types:
@@ -536,14 +552,13 @@ class ArmSimulator:
             SixInOne 字段字典
         """
         base = barcode_seed or self._generate_barcode_seed()
-        # 使用完整的 SixInOne 字段名（无连字符等特殊字符）
         return {
+            "PkgID": base,  # 流水号（业务主键，对齐 SixInOne.PkgID）
             "LotCode": base,  # 批次码
             "DateCode": "20260409",  # 日期码
             "Qty": "100",  # 数量
-            "ProductNo": "PN001",  # 产品PN码
+            "HHPN": "PN001",  # 产品PN码
             "MfrPN": "MFR002",  # 制造商PN码
-            "PONumber": "PO2026040901",  # 订单码
         }
 
     def _build_result_data(
@@ -558,7 +573,7 @@ class ArmSimulator:
     ) -> JsonDict:
         if task_type == "MEASUREMENT_REEL":
             return {
-                "pkg_id": pkg_id or barcode_seed or "",
+                "PkgID": pkg_id or barcode_seed or "",
                 "reel_diameter": 15.0,
                 "reel_thickness": 20.0,
             }
@@ -647,6 +662,7 @@ class ArmSimulator:
         target_type: str | None = None,
         source_location_id: str | None = None,
         target_location_id: str | None = None,
+        target_bin_type: str | None = None,
         barcode: str | None = None,
         simulate_failure: bool = False,
         execution_time: float = EXECUTION_TIME,
@@ -678,6 +694,13 @@ class ArmSimulator:
                 allowed_types=self.device_config["target_types"],
                 field_name="目标",
             )
+            if target.location_type == "BIN":
+                target = target.model_copy(
+                    update={
+                        "bin_id": target_location_id or target.bin_id,
+                        "bin_type": target_bin_type or target.bin_type,
+                    }
+                )
             resolved_command_code = command_code or self._generate_command_code()
 
             # 详细日志：开始执行
@@ -795,6 +818,13 @@ class ArmSimulator:
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         params = payload.params or {}
         source, target = self._resolve_command_locations_from_params(params)
+        if target.location_type == "BIN":
+            target = target.model_copy(
+                update={
+                    "bin_id": cast("str | None", params.get("target_loc")) or target.bin_id,
+                    "bin_type": cast("str | None", params.get("bin_type")) or target.bin_type,
+                }
+            )
 
         # 智能错误模拟：根据条码模式自动触发错误
         barcode = cast("str | None", params.get("barcode"))
@@ -824,7 +854,8 @@ class ArmSimulator:
             source_type=source.location_type,
             target_type=target.location_type,
             source_location_id=source.location_id,
-            target_location_id=target.location_id,
+            target_location_id=cast("str | None", params.get("target_loc")) or target.location_id,
+            target_bin_type=cast("str | None", params.get("bin_type")),
             barcode=barcode,
             simulate_failure=bool(params.get("simulate_failure", False)),
             execution_time=float(params.get("execution_time", EXECUTION_TIME)),

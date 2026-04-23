@@ -22,4 +22,21 @@ class TestBarcodeDecisionService:
 
         assert result.decision == BarcodeDecisionType.OK
         assert result.business_key
-        assert result.pkg_id == "PKG001"
+        assert result.six_in_one.PkgID == "PKG001"
+
+    def test_evaluate_returns_invalid_when_any_field_contains_comma(self):
+        """任一 SixInOne 字段包含逗号时应判定为格式错误。"""
+        six_in_one = SixInOne(
+            HHPN="HHPN001",
+            MfrPN="MFR,001",
+            Qty="100",
+            DateCode="20260414",
+            LotCode="LOT001",
+            PkgID="PKG001",
+        )
+
+        result = barcode_decision_service.evaluate(six_in_one)
+
+        assert result.decision == BarcodeDecisionType.INVALID
+        assert result.reason_code == "BARCODE_INVALID"
+        assert result.reason_message == "条码格式错误: MfrPN"

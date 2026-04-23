@@ -22,7 +22,11 @@
             return (
                 PluginResultBuilder(ctx)
                 .transition("scan_ok")
-                .command(device_role="ARM", command_type="PICK")
+                .command(
+                command_type="PICK",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="ARM",
+            )
                 .build()
             )
 """
@@ -41,11 +45,12 @@ from pydantic import BaseModel, ValidationError
 from src.core.logger import logger
 from src.workline_runtime.types import (
     CommandIntent,
+    CommandTargetScope,
     FailureIntent,
     PluginResult,
     WaitIntent,
 )
-from src.workline_runtime.utils import ensure_dict
+from src.workline_runtime.utils import ensure_dict, non_empty_str
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -88,18 +93,14 @@ class CommandResultPayload(BaseModel):
 # ==================== 标准化输入辅助 ====================
 
 
-def _non_empty_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
 def _resolve_event_route_type(ctx: Any, payload: dict[str, Any]) -> str | None:
     """优先使用标准化 canonical_event_type，再回退原始 event_type。"""
 
     normalized_input = getattr(ctx, "normalized_input", None)
-    canonical_event_type = _non_empty_str(getattr(normalized_input, "canonical_event_type", None))
+    canonical_event_type = non_empty_str(getattr(normalized_input, "canonical_event_type", None))
     if canonical_event_type:
         return canonical_event_type
-    return _non_empty_str(payload.get("event_type")) or _non_empty_str(payload.get("message_type"))
+    return non_empty_str(payload.get("event_type")) or non_empty_str(payload.get("message_type"))
 
 
 def _command_result_route_keys(ctx: Any, payload: dict[str, Any]) -> list[tuple[str, str | None]]:
@@ -114,17 +115,17 @@ def _command_result_route_keys(ctx: Any, payload: dict[str, Any]) -> list[tuple[
 
     normalized_input = getattr(ctx, "normalized_input", None)
     command_type = (
-        _non_empty_str(getattr(normalized_input, "command_type", None))
-        or _non_empty_str(payload.get("command_type"))
-        or _non_empty_str(payload.get("task_type"))
+        non_empty_str(getattr(normalized_input, "command_type", None))
+        or non_empty_str(payload.get("command_type"))
+        or non_empty_str(payload.get("task_type"))
     )
     if not command_type:
         return []
 
-    source_result = _non_empty_str(getattr(normalized_input, "source_result", None)) or _non_empty_str(
+    source_result = non_empty_str(getattr(normalized_input, "source_result", None)) or non_empty_str(
         payload.get("result")
     )
-    normalized_result = _non_empty_str(getattr(normalized_input, "normalized_result", None))
+    normalized_result = non_empty_str(getattr(normalized_input, "normalized_result", None))
 
     keys: list[tuple[str, str | None]] = []
 
@@ -152,8 +153,8 @@ def _command_result_route_keys(ctx: Any, payload: dict[str, Any]) -> list[tuple[
 def resolve_normalized_command_envelope(result: Any) -> tuple[str, str] | None:
     """解析标准化命令结果的最小包络字段。"""
 
-    command_code = _non_empty_str(getattr(result, "command_code", None))
-    device_code = _non_empty_str(getattr(result, "device_code", None))
+    command_code = non_empty_str(getattr(result, "command_code", None))
+    device_code = non_empty_str(getattr(result, "device_code", None))
     if command_code and device_code:
         return command_code, device_code
     return None
@@ -167,18 +168,13 @@ def resolve_normalized_command_failure(
 ) -> tuple[str, str]:
     """从标准化命令结果中提取失败错误码与错误信息。
 
-    这里只消费标准化后的规范字段：
-    - `error_detail.error_code` / `error_detail.error_message`
-    - 顶层 `payload.error_code` / `payload.error_message`
-
-    外部协议兼容（如白皮书 `code` / `msg`）应在标准化入口完成，
-    不应继续扩散到插件运行时层。
+    这里只消费标准化后的规范字段 `error_detail.error_code` / `error_detail.error_message`。
+    外部协议兼容（如白皮书 `code` / `msg`）应在标准化入口完成，不应继续扩散到插件运行时层。
     """
 
-    payload = ensure_dict(getattr(result, "payload", None))
     error_detail = ensure_dict(getattr(result, "error_detail", None))
-    error_code = _non_empty_str(error_detail.get("error_code")) or _non_empty_str(payload.get("error_code"))
-    error_message = _non_empty_str(error_detail.get("error_message")) or _non_empty_str(payload.get("error_message"))
+    error_code = non_empty_str(error_detail.get("error_code"))
+    error_message = non_empty_str(error_detail.get("error_message"))
     return error_code or default_code, error_message or default_message
 
 
@@ -270,7 +266,7 @@ def _resolve_handler_model_arg(
 
         normalized_candidate = normalize_inbox_input(
             inbox,
-            correlation_id=_non_empty_str(getattr(ctx, "correlation_id", None)) or "",
+            correlation_id=non_empty_str(getattr(ctx, "correlation_id", None)) or "",
         )
         if isinstance(normalized_candidate, param_type):
             return normalized_candidate
@@ -377,7 +373,11 @@ class PluginResultBuilder:
         result = (
             PluginResultBuilder(ctx)
             .transition("scan_ok")
-            .command(device_role="ARM", command_type="PICK")
+            .command(
+                command_type="PICK",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="ARM",
+            )
             .wait(event_type="INSPECTION_COMPLETED", timeout_seconds=300)
             .failure(domain="HARDWARE", code="TIMEOUT", message="超时")
             .context({"last_scan": "ABC123"})
@@ -402,38 +402,26 @@ class PluginResultBuilder:
 
     def command(
         self,
-        device_role: str,
+        *,
         command_type: str,
+        target_scope: CommandTargetScope = CommandTargetScope.CURRENT,
+        device_role: str | None = None,
         parameters: dict[str, Any] | None = None,
     ) -> PluginResultBuilder:
         """添加命令
 
         Args:
-            device_role: 设备角色（如 "INPUT_ARM"），框架自动解析为设备ID
             command_type: 命令类型（如 "PICK_AND_PUT"）
+            target_scope: 目标范围（默认当前设备，也可指定直接下游）
+            device_role: 目标设备角色约束（如 "INPUT_ARM"）
             parameters: 命令参数
         """
-        # 从 ctx.devices_by_role 解析设备ID
-        devices_by_role = getattr(self.ctx, "devices_by_role", {})
-        devices = devices_by_role.get(device_role, [])
-
-        if not devices:
-            raise ValueError(
-                f"Device role '{device_role}' not found in devices_by_role. "
-                f"Available roles: {list(devices_by_role.keys())}"
-            )
-
-        # 取第一个设备（可通过 role_index 排序选择）
-        device = devices[0]
-        target_device_id = getattr(device, "id", None)
-
-        if target_device_id is None:
-            raise ValueError(f"Device {device} has no 'id' attribute")
 
         self._commands.append(
             CommandIntent(
-                target_device_id=target_device_id,
                 action=command_type,
+                target_scope=target_scope,
+                device_role=device_role,
                 parameters=parameters or {},
             )
         )
@@ -562,7 +550,7 @@ class WorklinePlugin:
                 return await self._invoke_handler(handler, ctx, inbox, payload)
 
         command_type = route_keys[0][0]
-        result = _non_empty_str(payload.get("result"))
+        result = non_empty_str(payload.get("result"))
         ctx.logger.warning(f"No handler for command_type={command_type}, result={result}")
         return PluginResult()
 
@@ -637,8 +625,8 @@ class WorklinePlugin:
 
         # ========== 后置：目标状态设置 ==========
         target_step = getattr(handler, "_target_step", None)
-        if target_step:
-            # 自动添加 step_code 到 context_patch
+        if target_step and result.failure is None:
+            # 只有成功结果才自动添加 step_code 到 context_patch
             result.context_patch["step_code"] = target_step
             # 如果没有显式设置 transition，则用 target_step 作为 transition
             if not result.transition:

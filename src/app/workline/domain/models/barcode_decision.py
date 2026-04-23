@@ -16,7 +16,10 @@ class BarcodeDecisionType(StrEnum):
 
     OK = "OK"
     NG = "NG"
+
+    """条码无效。"""
     INVALID = "INVALID"
+    """条码不完整。"""
     INCOMPLETE = "INCOMPLETE"
 
 
@@ -36,12 +39,6 @@ class BarcodeDecision(BaseModel):
         """统一业务主键。"""
 
         return self.six_in_one.business_key or ""
-
-    @property
-    def pkg_id(self) -> str:
-        """当前方案 A 中的包装/箱号字段。"""
-
-        return self.six_in_one.PkgID or ""
 
     @property
     def barcodes(self) -> list[str]:

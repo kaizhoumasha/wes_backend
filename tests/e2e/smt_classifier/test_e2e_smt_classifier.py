@@ -28,7 +28,7 @@ from src.workline_plugins.smt_classifier import (
     SmtClassifierPlugin,
     SmtClassifierState,
 )
-from src.workline_runtime.types import PluginResult
+from src.workline_runtime.types import CommandTargetScope, PluginResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -186,8 +186,9 @@ class TestSmtClassifierE2EFlows(TestSmtClassifierE2EBase):
         assert result.context_patch["step_code"] == SmtClassifierState.WAITING_MEASUREMENT
         assert len(result.commands) == 1
         assert result.commands[0].action == "MEASUREMENT_REEL"
-        # CommandIntent 只有 target_device_id，没有 device_role
-        assert result.commands[0].target_device_id > 0
+        # 粗分机扫码事务由本机处理，测量命令应回到当前设备。
+        assert result.commands[0].target_scope == CommandTargetScope.CURRENT
+        assert result.commands[0].device_role is None
 
         logger.info(f"✓ 测试通过: transition={result.transition}, commands={len(result.commands)}")
 

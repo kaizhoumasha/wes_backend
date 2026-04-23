@@ -50,6 +50,7 @@ from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorSe
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.types import FailureIntent
+from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -60,17 +61,17 @@ if TYPE_CHECKING:
 def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
     """SCAN_COMPLETED 的最小通用 gate。
 
-    这里只判断 payload 中是否出现过任何扫码事实，作为入站后的 malformed
+    这里只判断 payload.data 中是否出现过任何扫码事实，作为入站后的 malformed
     payload 拦截，不把错误归因绑定到 workline / plugin registry / parser 上。
     真正的协议映射和 SixInOne 解析仍由各插件/编排路径负责。
+
+    注意：白皮书已禁止拍平 payload，只接受嵌套 data 结构。
     """
 
     data_field = payload.get("data")
     data = data_field if isinstance(data_field, dict) else {}
     fields = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID", "ProductNo", "PONumber", "barcode")
-    return any(isinstance(data.get(field), str) and data.get(field) for field in fields) or any(
-        isinstance(payload.get(field), str) and payload.get(field) for field in fields
-    )
+    return any(isinstance(data.get(field), str) and data.get(field) for field in fields)
 
 
 def _enqueue_outbox_dispatch() -> None:
@@ -205,10 +206,6 @@ def _resolve_required_pk(entity: Any, entity_name: str, *field_names: str) -> in
     return pk
 
 
-def _payload_dict(raw_payload: Any) -> JsonDict:
-    return cast("JsonDict", raw_payload) if isinstance(raw_payload, dict) else {}
-
-
 def _string_value(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
@@ -288,7 +285,7 @@ def _log_diagnostic(
     transition: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    payload = _payload_dict(getattr(inbox, "payload_json", None)) if inbox is not None else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None)) if inbox is not None else {}
     trace = TraceContext.from_runtime(
         session=session,
         workline=workline,
@@ -432,6 +429,17 @@ def _build_command_code(task_type: str) -> str:
     return f"CMD-{date_str}-{task_type}-{uuid.uuid4().hex[:8].upper()}"
 
 
+_DEVICE_COMMAND_RESERVED_FIELDS = {
+    "device_code",
+    "command_code",
+    "task_type",
+    "priority",
+    "timeout",
+    "params",
+    "timestamp",
+}
+
+
 def _normalize_vendor_command_payload(
     parameters: Any,
     *,
@@ -440,26 +448,40 @@ def _normalize_vendor_command_payload(
 ) -> JsonDict:
     """归一化插件产出的设备协议 payload。
 
-    目标是保留 vendor payload 语义，只补齐派发必须字段。
+    目标是保留 vendor payload 语义，并强制收口到白皮书定义的包络：
+    - 系统字段保留在顶层
+    - 业务参数统一进入 params
     """
 
-    payload = dict(_payload_dict(parameters))
-    payload["command_code"] = _string_value(payload.get("command_code")) or default_command_code
-    payload["task_type"] = _string_value(payload.get("task_type"), action)
+    raw_payload = dict(payload_dict(parameters))
+    nested_params = payload_dict(raw_payload.get("params"))
+    business_params = {key: value for key, value in raw_payload.items() if key not in _DEVICE_COMMAND_RESERVED_FIELDS}
 
-    if not isinstance(payload.get("priority"), int):
-        payload["priority"] = DEFAULT_COMMAND_PRIORITY
-    if not isinstance(payload.get("timeout"), int):
-        payload["timeout"] = DEFAULT_COMMAND_TIMEOUT_MS
-    if not isinstance(payload.get("timestamp"), int):
-        payload["timestamp"] = _utc_timestamp_ms()
+    device_code = _string_value(raw_payload.get("device_code"))
+    priority = raw_payload.get("priority")
+    timeout = raw_payload.get("timeout")
+    timestamp = raw_payload.get("timestamp")
+
+    payload: JsonDict = {
+        "command_code": _string_value(raw_payload.get("command_code")) or default_command_code,
+        "task_type": _string_value(raw_payload.get("task_type"), action),
+        "priority": priority if isinstance(priority, int) else DEFAULT_COMMAND_PRIORITY,
+        "timeout": timeout if isinstance(timeout, int) else DEFAULT_COMMAND_TIMEOUT_MS,
+        "params": {
+            **business_params,
+            **nested_params,
+        },
+        "timestamp": timestamp if isinstance(timestamp, int) else _utc_timestamp_ms(),
+    }
+    if device_code:
+        payload["device_code"] = device_code
 
     return payload
 
 
 def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> dict[str, Any]:
     resolved_device_code = _string_value(device_code)
-    command_params = _payload_dict(getattr(command, "params", None))
+    command_params = payload_dict(getattr(command, "params", None))
     if command_params:
         payload = dict(command_params)
         if resolved_device_code:
@@ -578,6 +600,7 @@ class EffectApplyContext(TypedDict):
     workline: Any
     inbox: Any
     devices_by_role: dict[str, list[Any]]
+    source_device: Any | None
     orch_result: OrchestratorResult
     current_status: str | None
     correlation_id: str | None
@@ -623,6 +646,7 @@ def _build_effect_apply_context(
     workline: Any,
     inbox: Any,
     devices_by_role: dict[str, list[Any]],
+    source_device: Any | None,
     orch_result: OrchestratorResult,
 ) -> EffectApplyContext:
     trace = TraceContext.from_runtime(
@@ -637,6 +661,7 @@ def _build_effect_apply_context(
         "workline": workline,
         "inbox": inbox,
         "devices_by_role": devices_by_role,
+        "source_device": source_device,
         "orch_result": orch_result,
         "current_status": getattr(session, "status", None),
         "correlation_id": trace.correlation_id,
@@ -698,7 +723,7 @@ def _timeline_inbox_id(ctx: EffectApplyContext) -> int | None:
 def _effect_trace_payload(ctx: EffectApplyContext) -> dict[str, Any]:
     """构造跨 effect 共用的追踪字段。"""
 
-    payload = _payload_dict(getattr(ctx["inbox"], "payload_json", None))
+    payload = payload_dict(getattr(ctx["inbox"], "payload_json", None))
     trace = ctx["trace"].with_inbox(ctx["inbox"]) if ctx.get("inbox") is not None else ctx["trace"]
     return trace.project_timeline_payload(canonical_event_type=_canonical_event_type(payload))
 
@@ -817,7 +842,7 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
 
         dispatch_key = _string_value(decision.get("dispatch_key"))
         target_code = _string_value(decision.get("target_code"))
-        payload_json = _payload_dict(decision.get("payload"))
+        payload_json = payload_dict(decision.get("payload"))
         source_system = _string_value(decision.get("source_system"), "EXTERNAL_SYSTEM")
         if not dispatch_key:
             raise ValueError("EXTERNAL_HTTP decision missing dispatch_key")
@@ -851,16 +876,26 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
         )
 
 
-async def _resolve_target_device(ctx: EffectApplyContext, *, device_repo: Any, target_device_id: int) -> Any:
-    """先从 workline 设备映射里取设备，取不到再回库加载。"""
+async def _resolve_target_device(ctx: EffectApplyContext, *, device_repo: Any, command_intent: Any) -> Any:
+    """统一解析命令目标设备。"""
+
+    from src.workline_runtime.device_target_resolver import resolve_command_target
 
     device_by_id = _device_map_from_roles(ctx["devices_by_role"])
-    target_device = device_by_id.get(target_device_id)
-    if target_device is None:
-        target_device = await device_repo.get_by_id(ctx["db"], target_device_id)
-    if target_device is None:
-        raise ValueError(f"Target device not found: {target_device_id}")
-    return target_device
+    target_device_id = getattr(command_intent, "target_device_id", None)
+    if isinstance(target_device_id, int):
+        target_device = device_by_id.get(target_device_id)
+        if target_device is None:
+            target_device = await device_repo.get_by_id(ctx["db"], target_device_id)
+        if target_device is None:
+            raise ValueError(f"Target device not found: {target_device_id}")
+        return target_device
+
+    return resolve_command_target(
+        command_intent=command_intent,
+        source_device=ctx["source_device"],
+        devices=list(device_by_id.values()),
+    )
 
 
 async def _validate_command_effects(ctx: EffectApplyContext) -> None:
@@ -873,7 +908,7 @@ async def _validate_command_effects(ctx: EffectApplyContext) -> None:
         target_device = await _resolve_target_device(
             ctx,
             device_repo=device_repo,
-            target_device_id=command_intent.target_device_id,
+            command_intent=command_intent,
         )
         _enforce_device_command_governance(
             target_device,
@@ -984,8 +1019,8 @@ async def _apply_command_effects(ctx: EffectApplyContext) -> None:
     device_repo = DeviceRepository()
 
     for command_intent in ctx["orch_result"].commands or []:
-        target_device_id = command_intent.target_device_id
-        target_device = await _resolve_target_device(ctx, device_repo=device_repo, target_device_id=target_device_id)
+        target_device = await _resolve_target_device(ctx, device_repo=device_repo, command_intent=command_intent)
+        target_device_id = _resolve_required_pk(target_device, "target_device")
         _enforce_device_command_governance(
             target_device,
             command_type=command_intent.action,
@@ -1202,6 +1237,7 @@ async def _apply_orchestrator_effects(
     workline: Any,
     inbox: Any,
     devices_by_role: dict[str, list[Any]],
+    source_device: Any | None,
     orch_result: OrchestratorResult,
 ) -> None:
     """应用 OrchestratorResult 到 Session / Command / Outbox / Timeline。
@@ -1221,6 +1257,7 @@ async def _apply_orchestrator_effects(
         workline=workline,
         inbox=inbox,
         devices_by_role=devices_by_role,
+        source_device=source_device,
         orch_result=orch_result,
     )
 
@@ -1614,6 +1651,7 @@ class ProcessInboxMessages:
                     _workline: Any = workline,
                     _inbox: Any = inbox,
                     _devices_by_role: dict[str, list[Any]] = entities["devices_by_role"],
+                    _device: Any | None = entities["device"],
                     _inbox_pk: int = inbox_pk,
                     _session_snapshot: tuple[Any, Any, Any] = session_snapshot,
                 ) -> None:
@@ -1633,6 +1671,7 @@ class ProcessInboxMessages:
                             workline=_workline,
                             inbox=_inbox,
                             devices_by_role=_devices_by_role,
+                            source_device=_device,
                             orch_result=write_result,
                         )
                         _ = await inbox_service.mark_as_processed(db, _inbox_pk, auto_commit=False)
@@ -2102,7 +2141,7 @@ class OutboxDispatcher:
                 logger.error(f"设备不存在或通信配置不完整: {outbox.target_code}")
                 return False
 
-            payload = _payload_dict(getattr(outbox, "payload_json", None))
+            payload = payload_dict(getattr(outbox, "payload_json", None))
             _enforce_device_command_governance(
                 device,
                 command_type=_resolve_command_type_for_governance(payload),

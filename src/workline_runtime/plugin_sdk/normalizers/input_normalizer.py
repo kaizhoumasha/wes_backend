@@ -4,21 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.workline_runtime.contracts import SixInOne
 from src.workline_runtime.plugin_sdk.classifiers.result_classifier import classify_result
 from src.workline_runtime.plugin_sdk.contracts import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
-
-
-def _payload_dict(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def _non_empty_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
+from src.workline_runtime.utils import non_empty_str, payload_dict
 
 _ERROR_CODE_FIELDS = ("error_code", "code")
 _ERROR_MESSAGE_FIELDS = ("error_message", "msg", "message")
@@ -26,7 +19,7 @@ _ERROR_MESSAGE_FIELDS = ("error_message", "msg", "message")
 
 def _resolve_first_str(payload: dict[str, Any], field_names: tuple[str, ...]) -> str | None:
     for field_name in field_names:
-        value = _non_empty_str(payload.get(field_name))
+        value = non_empty_str(payload.get(field_name))
         if value:
             return value
     return None
@@ -55,7 +48,7 @@ def _infer_kind(raw_kind: Any, payload: dict[str, Any]) -> Any:
 
 
 def _normalized_error_detail(payload: dict[str, Any]) -> dict[str, Any]:
-    error_detail = _payload_dict(payload.get("error_detail"))
+    error_detail = payload_dict(payload.get("error_detail"))
     if error_detail:
         normalized_error_detail = dict(error_detail)
         resolved_error_code = _resolve_first_str(error_detail, _ERROR_CODE_FIELDS)
@@ -70,35 +63,33 @@ def _normalized_error_detail(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return normalized_error_detail
 
-    resolved_error_code = _resolve_first_str(payload, _ERROR_CODE_FIELDS)
-    resolved_error_message = _resolve_first_str(payload, _ERROR_MESSAGE_FIELDS)
-    fallback = {
-        "error_code": resolved_error_code,
-        "error_message": resolved_error_message,
-    }
-    return {key: value for key, value in fallback.items() if value is not None}
+    return {}
 
 
 def _resolve_correlation_id(inbox: Any, payload: dict[str, Any], *, correlation_id: str = "") -> str | None:
     return (
-        _non_empty_str(correlation_id)
-        or _non_empty_str(payload.get("correlation_id"))
-        or _non_empty_str(getattr(inbox, "correlation_id", None))
+        non_empty_str(correlation_id)
+        or non_empty_str(payload.get("correlation_id"))
+        or non_empty_str(getattr(inbox, "correlation_id", None))
     )
 
 
 def _resolve_device_event_business_key(payload: dict[str, Any], data: dict[str, Any]) -> str | None:
+    canonical_six_in_one = SixInOne.model_validate(data)
+    if canonical_six_in_one.business_key:
+        return canonical_six_in_one.business_key
+
     return (
-        _non_empty_str(payload.get("business_key"))
-        or _non_empty_str(data.get("business_key"))
-        or _non_empty_str(data.get("barcode"))
+        non_empty_str(payload.get("business_key"))
+        or non_empty_str(data.get("business_key"))
+        or non_empty_str(data.get("barcode"))
     )
 
 
 def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
-    payload = _payload_dict(getattr(inbox, "payload_json", None))
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = _infer_kind(getattr(inbox, "kind", None), payload)
 
     if kind == "COMMAND_RESULT":
@@ -107,12 +98,12 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
             command_code=str(payload.get("command_code") or ""),
             source_result=source_result,
             normalized_result=classify_result(source_result),
-            command_type=_non_empty_str(payload.get("command_type")) or _non_empty_str(payload.get("task_type")),
-            device_code=_non_empty_str(payload.get("device_code")),
+            command_type=non_empty_str(payload.get("command_type")) or non_empty_str(payload.get("task_type")),
+            device_code=non_empty_str(payload.get("device_code")),
             correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
             finish_time=payload.get("finish_time"),
             payload=payload,
-            data=_payload_dict(payload.get("data")),
+            data=payload_dict(payload.get("data")),
             error_detail=_normalized_error_detail(payload),
         )
 
@@ -120,24 +111,24 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
         return NormalizedExternalCallback(
             callback_type=str(payload.get("callback_type") or payload.get("message_type") or "EXTERNAL_HTTP"),
             correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
-            source_system=_non_empty_str(payload.get("source_system")),
+            source_system=non_empty_str(payload.get("source_system")),
             payload=payload,
-            attributes=_payload_dict(payload.get("attributes")),
+            attributes=payload_dict(payload.get("attributes")),
         )
 
     source_event_type = str(payload.get("event_type") or payload.get("message_type") or "UNKNOWN")
-    data = _payload_dict(payload.get("data"))
+    data = payload_dict(payload.get("data"))
     canonical_event_type = str(payload.get("canonical_event_type") or source_event_type)
     return NormalizedDeviceEvent(
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
-        device_code=_non_empty_str(payload.get("device_code")),
+        device_code=non_empty_str(payload.get("device_code")),
         business_key=_resolve_device_event_business_key(payload, data),
         correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
         event_time=payload.get("timestamp"),
         payload=payload,
         data=data,
-        attributes=_payload_dict(payload.get("attributes")),
+        attributes=payload_dict(payload.get("attributes")),
     )
 
 

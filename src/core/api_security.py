@@ -24,6 +24,15 @@ class APIAppContext:
 
 
 async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep) -> APIAppContext | None:
+    from src.core.conf import settings
+
+    # 开发/联调环境允许显式跳过 API 认证；即使请求头带签名也不进入验签/解密路径，
+    # 避免 mock 使用旧密钥或旧签名策略时把整条回调链路提前阻断。
+    if settings.SKIP_API_AUTH:
+        if not settings.APP_DEBUG:
+            raise RuntimeError("SKIP_API_AUTH=True is not allowed when APP_DEBUG=False")
+        return None
+
     # 延迟导入以避免循环依赖
     # api_auth 包的 __init__.py 会导入 api_application.py，后者需要从本模块导入
     from src.app.api_auth.services import SignatureService, api_app_service, get_app_permissions
@@ -126,6 +135,8 @@ async def require_api_auth(
     from src.core.conf import settings
 
     if settings.SKIP_API_AUTH:
+        if not settings.APP_DEBUG:
+            raise RuntimeError("SKIP_API_AUTH=True is not allowed when APP_DEBUG=False")
         return APIAppContext(
             app_id="dev_skip",
             app_name="dev_skip",

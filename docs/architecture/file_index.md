@@ -373,6 +373,7 @@
 | `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
 | `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
 | `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
+| `device_target_resolver.py` | 基于 source device + topology + role 解析命令目标设备 | 🔧 架构核心 |
 | `orchestrator.py` | 编排器服务（READ 阶段编排、插件执行、错误标准化） | 🔧 架构核心 |
 | `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
 | `plugin_sdk/` | 插件 SDK（标准化输入、运行时配置、分类器） | 🔧 架构核心 |

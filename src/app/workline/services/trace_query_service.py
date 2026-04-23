@@ -40,6 +40,9 @@ from src.core.base_service import BaseService
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
 from src.workline_runtime.trace_context import TraceContext
 
+# 导入公共工具函数
+from src.workline_runtime.utils import payload_dict
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,10 +81,6 @@ def _safe_str(value: Any) -> str | None:
     return text or None
 
 
-def _payload_dict(value: Any) -> dict[str, Any]:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
-
-
 def _merge_unique_by_id(existing: list[Any], items: list[Any]) -> list[Any]:
     existing_ids = {getattr(item, "id", None) for item in existing if getattr(item, "id", None) is not None}
     return existing + [item for item in items if getattr(item, "id", None) not in existing_ids]
@@ -98,11 +97,11 @@ def _callback_diagnostic_extra(callback: Any) -> dict[str, Any]:
 
 
 def _timeline_trace(trace: TraceContext, timeline: WorklineTimeline) -> TraceContext:
-    payload_dict = _payload_dict(getattr(timeline, "payload_json", None))
+    payload = payload_dict(getattr(timeline, "payload_json", None))
     timeline_trace = TraceContext.from_request(
-        request_id=_safe_str(payload_dict.get("request_id")),
-        correlation_id=_safe_str(payload_dict.get("correlation_id")) or trace.correlation_id,
-        canonical_event_type=_safe_str(payload_dict.get("canonical_event_type")),
+        request_id=_safe_str(payload.get("request_id")),
+        correlation_id=_safe_str(payload.get("correlation_id")) or trace.correlation_id,
+        canonical_event_type=_safe_str(payload.get("canonical_event_type")),
         transition=_safe_str(getattr(timeline, "to_status", None)) or _safe_str(getattr(timeline, "action_type", None)),
     )
     return timeline_trace.with_session(

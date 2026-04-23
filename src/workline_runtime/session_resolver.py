@@ -33,7 +33,7 @@ from src.workline_plugin_registry import (
 
 from .contracts import SixInOne
 from .trace_context import TraceContext
-from .utils import ensure_dict
+from .utils import ensure_dict, non_empty_str
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
@@ -73,10 +73,6 @@ class SessionIngressMetadata(TypedDict):
     last_request_id: NotRequired[str]
 
 
-def _non_empty_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
 def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | None:
     """为无业务条码的设备级事件生成稳定归属键。"""
 
@@ -99,13 +95,13 @@ def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | Non
     return None
 
 
-def _resolve_payload_barcode(
-    payload_json: dict[str, Any],
-    data: dict[str, Any],
-) -> str | None:
-    """优先从顶层和 `data` 中提取稳定单字段条码。"""
+def _resolve_payload_barcode(data: dict[str, Any]) -> str | None:
+    """从 `data` 中提取稳定单字段条码。
 
-    return _non_empty_str(payload_json.get("barcode")) or _non_empty_str(data.get("barcode"))
+    注意：白皮书已禁止拍平 payload，只从嵌套 data 结构提取。
+    """
+
+    return non_empty_str(data.get("barcode"))
 
 
 def _resolve_six_in_one_business_key(
@@ -116,7 +112,7 @@ def _resolve_six_in_one_business_key(
     """从插件解析或 canonical Six-In-One 中恢复稳定 business_key。"""
 
     six_in_one = parse_workline_six_in_one(plugin_key, data)
-    parsed_business_key = _non_empty_str(getattr(six_in_one, "business_key", None))
+    parsed_business_key = non_empty_str(getattr(six_in_one, "business_key", None))
     if parsed_business_key:
         return parsed_business_key
 
@@ -135,6 +131,14 @@ def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | Non
     - 对未知插件的非 canonical 原始 payload，不再返回随机 business_key，
       而是显式抛出 SessionResolveError，避免重复建单
     """
+    data = ensure_dict(payload_json.get("data"))
+    if data:
+        # 当 payload 中存在可解析的 Six-In-One 时，始终以 PkgID 派生出的稳定键为准，
+        # 不再接受外部透传的 business_key 覆盖，避免同一业务对象被错误归属到别的 session。
+        business_key_from_six_in_one = _resolve_six_in_one_business_key(data, plugin_key=plugin_key)
+        if business_key_from_six_in_one:
+            return business_key_from_six_in_one
+
     business_key = payload_json.get("business_key")
     if isinstance(business_key, str) and business_key:
         return business_key
@@ -143,18 +147,9 @@ def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | Non
     if event_scoped_business_key:
         return event_scoped_business_key
 
-    data = ensure_dict(payload_json.get("data"))
-    barcode = _resolve_payload_barcode(payload_json, data)
+    barcode = _resolve_payload_barcode(data)
     if barcode:
         return barcode
-
-    # 通过插件自有协议解析入口生成统一 business_key
-    if data:
-        # 当 plugin_key 缺失/未知，但 data 已经是 canonical Six-In-One 字段时，
-        # 仍需要保证相同业务数据能够收敛到稳定 business_key，避免重复建单。
-        business_key_from_six_in_one = _resolve_six_in_one_business_key(data, plugin_key=plugin_key)
-        if business_key_from_six_in_one:
-            return business_key_from_six_in_one
 
     raise SessionResolveError(
         "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"

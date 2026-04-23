@@ -22,6 +22,7 @@ from src.workline_runtime.plugin_base import (
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult, NormalizedDeviceEvent
 from src.workline_runtime.types import (
     CommandIntent,
+    CommandTargetScope,
     FailureIntent,
     PluginResult,
     WaitIntent,
@@ -59,7 +60,10 @@ class TestPlugin(WorklinePlugin):
     async def handle_scan(self, ctx, event: ScanEventPayload):
         """扫码处理"""
         return (
-            PluginResultBuilder(ctx).transition("scan_ok").command(device_role="INPUT_ARM", command_type="PICK").build()
+            PluginResultBuilder(ctx)
+            .transition("scan_ok")
+            .command(command_type="PICK", target_scope=CommandTargetScope.DOWNSTREAM, device_role="INPUT_ARM")
+            .build()
         )
 
     @on_event("INSPECTION_COMPLETED")
@@ -272,7 +276,7 @@ class TestNormalizedCommandHelpers:
         )
         assert resolve_normalized_command_envelope(missing_device) is None
 
-    def test_resolve_normalized_command_failure_prefers_error_detail_then_payload(self):
+    def test_resolve_normalized_command_failure_only_uses_normalized_error_detail(self):
         with_error_detail = NormalizedCommandResult(
             command_code="CMD-002",
             command_type="PICK",
@@ -300,7 +304,7 @@ class TestNormalizedCommandHelpers:
             payload_only,
             default_code="UNKNOWN",
             default_message="未知错误",
-        ) == ("PAYLOAD_CODE", "payload message")
+        ) == ("UNKNOWN", "未知错误")
 
         no_error_info = NormalizedCommandResult(
             command_code="CMD-004",
@@ -407,32 +411,39 @@ class TestStateValidation:
 class TestPluginResultBuilder:
     """PluginResultBuilder 测试"""
 
-    def test_command_builder_resolves_device_role(self):
-        """验证 Builder.command() 从 devices_by_role 解析设备ID"""
-        # Mock context
+    def test_command_builder_defaults_to_current_scope(self):
+        """验证 Builder.command() 默认指向当前来源设备。"""
         ctx = MagicMock()
-        device = MagicMock()
-        device.id = 123
-        ctx.devices_by_role = {"INPUT_ARM": [device]}
 
-        # Build command
-        result = PluginResultBuilder(ctx).command(device_role="INPUT_ARM", command_type="PICK").build()
+        result = PluginResultBuilder(ctx).command(command_type="PICK").build()
 
-        # Verify device_role resolved to target_device_id
         assert result.commands is not None
         assert len(result.commands) == 1
-        assert result.commands[0].target_device_id == 123
+        assert result.commands[0].target_scope == CommandTargetScope.CURRENT
+        assert result.commands[0].device_role is None
+        assert result.commands[0].target_device_id is None
         assert result.commands[0].action == "PICK"
 
-    def test_command_builder_raises_on_missing_role(self):
-        """验证设备角色缺失时抛出 ValueError"""
-        # Mock context with empty devices_by_role
+    def test_command_builder_records_scope_and_role_constraint(self):
+        """验证 Builder.command() 记录 runtime 侧目标约束，而不是提前解析设备ID。"""
         ctx = MagicMock()
-        ctx.devices_by_role = {}
 
-        # Build command should raise
-        with pytest.raises(ValueError, match=r"Device role.*not found"):
-            PluginResultBuilder(ctx).command(device_role="INPUT_ARM", command_type="PICK").build()
+        result = (
+            PluginResultBuilder(ctx)
+            .command(
+                command_type="PICK",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="INPUT_ARM",
+            )
+            .build()
+        )
+
+        assert result.commands is not None
+        assert len(result.commands) == 1
+        assert result.commands[0].target_scope == CommandTargetScope.DOWNSTREAM
+        assert result.commands[0].device_role == "INPUT_ARM"
+        assert result.commands[0].target_device_id is None
+        assert result.commands[0].action == "PICK"
 
     def test_wait_intent_field_mapping(self):
         """验证 WaitIntent 字段正确映射"""
@@ -495,7 +506,12 @@ class TestPluginResultBuilder:
         result = (
             PluginResultBuilder(ctx)
             .transition("scan_ok")
-            .command(device_role="INPUT_ARM", command_type="PICK", parameters={"barcode": "ABC123"})
+            .command(
+                command_type="PICK",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="INPUT_ARM",
+                parameters={"barcode": "ABC123"},
+            )
             .wait(event_type="INSPECTION_COMPLETED", timeout_seconds=300)
             .context({"last_barcode": "ABC123"})
             .build()

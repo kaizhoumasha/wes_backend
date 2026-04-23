@@ -14,9 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any
 
-
-def _non_empty_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
+from src.workline_runtime.utils import non_empty_str
 
 
 def _resolve_int(value: Any) -> int | None:
@@ -34,11 +32,11 @@ def _attr_int(obj: Any, name: str) -> int | None:
 
 
 def _attr_str(obj: Any, name: str) -> str | None:
-    return _non_empty_str(getattr(obj, name, None))
+    return non_empty_str(getattr(obj, name, None))
 
 
 def _resolve_payload_event_type(payload: dict[str, Any]) -> str | None:
-    return _non_empty_str(payload.get("canonical_event_type")) or _non_empty_str(payload.get("event_type"))
+    return non_empty_str(payload.get("canonical_event_type")) or non_empty_str(payload.get("event_type"))
 
 
 def _enum_value(value: Any) -> Any:
@@ -79,12 +77,12 @@ class TraceContext:
         """从入口请求创建最小 trace 上下文。"""
 
         return cls(
-            request_id=_non_empty_str(request_id),
-            correlation_id=_non_empty_str(correlation_id),
+            request_id=non_empty_str(request_id),
+            correlation_id=non_empty_str(correlation_id),
             device_id=_resolve_int(device_id),
-            device_code=_non_empty_str(device_code),
-            canonical_event_type=_non_empty_str(canonical_event_type),
-            transition=_non_empty_str(transition),
+            device_code=non_empty_str(device_code),
+            canonical_event_type=non_empty_str(canonical_event_type),
+            transition=non_empty_str(transition),
         )
 
     @classmethod
@@ -129,10 +127,10 @@ class TraceContext:
         return replace(self, **current)
 
     def with_request_id(self, request_id: str | None) -> TraceContext:
-        return self._bind(request_id=_non_empty_str(request_id) or self.request_id)
+        return self._bind(request_id=non_empty_str(request_id) or self.request_id)
 
     def with_correlation_id(self, correlation_id: str | None) -> TraceContext:
-        return self._bind(correlation_id=_non_empty_str(correlation_id) or self.correlation_id)
+        return self._bind(correlation_id=non_empty_str(correlation_id) or self.correlation_id)
 
     def with_workline(self, workline: Any) -> TraceContext:
         return self._bind(
@@ -161,8 +159,8 @@ class TraceContext:
             inbox_id=_attr_int(inbox, "id") or self.inbox_id,
             device_id=_attr_int(inbox, "device_id") or self.device_id,
             command_id=_attr_int(inbox, "command_id") or self.command_id,
-            device_code=_non_empty_str(payload.get("device_code")) or self.device_code,
-            command_code=_non_empty_str(payload.get("command_code")) or self.command_code,
+            device_code=non_empty_str(payload.get("device_code")) or self.device_code,
+            command_code=non_empty_str(payload.get("command_code")) or self.command_code,
             canonical_event_type=_resolve_payload_event_type(payload) or self.canonical_event_type,
         )
 
@@ -174,7 +172,7 @@ class TraceContext:
         )
 
     def with_device_code(self, device_code: str | None) -> TraceContext:
-        return self._bind(device_code=_non_empty_str(device_code) or self.device_code)
+        return self._bind(device_code=non_empty_str(device_code) or self.device_code)
 
     def with_command(self, command: Any) -> TraceContext:
         return self._bind(
@@ -188,7 +186,7 @@ class TraceContext:
         )
 
     def with_command_code(self, command_code: str | None) -> TraceContext:
-        return self._bind(command_code=_non_empty_str(command_code) or self.command_code)
+        return self._bind(command_code=non_empty_str(command_code) or self.command_code)
 
     def with_outbox(self, outbox: Any) -> TraceContext:
         return self._bind(
@@ -199,13 +197,13 @@ class TraceContext:
         )
 
     def with_dispatch_key(self, dispatch_key: str | None) -> TraceContext:
-        return self._bind(dispatch_key=_non_empty_str(dispatch_key) or self.dispatch_key)
+        return self._bind(dispatch_key=non_empty_str(dispatch_key) or self.dispatch_key)
 
     def with_canonical_event_type(self, canonical_event_type: str | None) -> TraceContext:
-        return self._bind(canonical_event_type=_non_empty_str(canonical_event_type) or self.canonical_event_type)
+        return self._bind(canonical_event_type=non_empty_str(canonical_event_type) or self.canonical_event_type)
 
     def with_transition(self, transition: str | None) -> TraceContext:
-        return self._bind(transition=_non_empty_str(transition) or self.transition)
+        return self._bind(transition=non_empty_str(transition) or self.transition)
 
     def project_timeline_payload(self, **extra: Any) -> dict[str, Any]:
         """投影成 timeline payload 的统一基础字段。"""

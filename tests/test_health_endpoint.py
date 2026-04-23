@@ -1,4 +1,6 @@
 import time
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -10,7 +12,7 @@ from src.register import register_health_route
 
 
 @pytest.fixture(autouse=True)
-def restore_system_health() -> None:
+def restore_system_health() -> Generator[Any, Any, Any]:
     previous = {
         "db_ok": system_health.db_ok,
         "redis_ok": system_health.redis_ok,
@@ -34,13 +36,24 @@ def _build_client() -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def test_health_endpoint_returns_healthy_when_ready_and_fresh() -> None:
+def test_health_endpoint_returns_basic_liveness_payload() -> None:
+    response = _build_client().get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+    }
+
+
+def test_ready_endpoint_returns_healthy_when_ready_and_fresh() -> None:
     system_health.db_ok = True
     system_health.redis_ok = True
     system_health.celery_ok = True
     system_health.last_check = time.time()
 
-    response = _build_client().get("/health")
+    response = _build_client().get("/ready")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -56,13 +69,13 @@ def test_health_endpoint_returns_healthy_when_ready_and_fresh() -> None:
     }
 
 
-def test_health_endpoint_returns_503_when_unhealthy_and_fresh() -> None:
+def test_ready_endpoint_returns_503_when_unhealthy_and_fresh() -> None:
     system_health.db_ok = False
     system_health.redis_ok = True
     system_health.celery_ok = False
     system_health.last_check = time.time()
 
-    response = _build_client().get("/health")
+    response = _build_client().get("/ready")
 
     assert response.status_code == 503
     assert response.json() == {
@@ -78,13 +91,13 @@ def test_health_endpoint_returns_503_when_unhealthy_and_fresh() -> None:
     }
 
 
-def test_health_endpoint_returns_200_when_status_cache_is_stale() -> None:
+def test_ready_endpoint_returns_200_when_status_cache_is_stale() -> None:
     system_health.db_ok = False
     system_health.redis_ok = False
     system_health.celery_ok = False
     system_health.last_check = time.time() - system_health.ttl - 1
 
-    response = _build_client().get("/health")
+    response = _build_client().get("/ready")
 
     assert response.status_code == 200
     assert response.json() == {

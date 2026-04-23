@@ -34,11 +34,17 @@ class DeviceRepository(BaseRepository[Device]):
         db: AsyncSession,
         work_line_id: int,
     ) -> list[Device]:
-        """根据作业线 ID 查询所有设备"""
+        """根据作业线 ID 查询所有设备。"""
         result = await db.execute(
-            select(Device).where(
+            select(Device)
+            .where(
                 Device.work_line_id == work_line_id,  # type: ignore[arg-type]
                 Device.is_deleted.is_(False),  # type: ignore[arg-type]
+            )
+            .order_by(
+                Device.sort_order.asc(),  # type: ignore[arg-type]
+                Device.role_index.asc(),  # type: ignore[arg-type]
+                Device.id.asc(),  # type: ignore[arg-type]
             )
         )
         return list(result.scalars().all())

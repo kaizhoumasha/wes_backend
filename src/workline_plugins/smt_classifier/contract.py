@@ -9,6 +9,17 @@ from pydantic import AliasChoices, BaseModel, Field, model_validator
 from src.workline_runtime.contracts import SixInOne
 
 
+def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
+    """将设备 data 归一化为插件内部统一字段。"""
+
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = normalize_six_in_one_payload(payload) or {}
+    normalized.update(extra_fields)
+    return normalized
+
+
 def normalize_six_in_one_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     """将 SMT 插件当前设备协议字段映射为方案 A 的 SixInOne 字段。"""
 
@@ -16,7 +27,6 @@ def normalize_six_in_one_payload(payload: dict[str, Any] | None) -> dict[str, An
         return None
 
     return {
-        "business_key": payload.get("business_key"),
         "HHPN": payload.get("HHPN") or payload.get("ProductNo"),
         "MfrPN": payload.get("MfrPN"),
         "Qty": payload.get("Qty"),
@@ -34,7 +44,7 @@ def parse_six_in_one_payload(payload: dict[str, Any] | None) -> SixInOne | None:
         return None
 
     six_in_one = SixInOne.model_validate(normalized)
-    return six_in_one if six_in_one.has_any_value or six_in_one.business_key else None
+    return six_in_one if six_in_one.has_any_value else None
 
 
 class ScanEventData(SixInOne, BaseModel):
@@ -45,11 +55,7 @@ class ScanEventData(SixInOne, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_payload(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        normalized = normalize_six_in_one_payload(data) or {}
-        normalized["location"] = data.get("location")
-        return normalized
+        return _normalize_contract_data(data, location=data.get("location") if isinstance(data, dict) else None)
 
 
 class ScanEventPayload(BaseModel):
@@ -67,7 +73,6 @@ class MeasurementResultData(SixInOne, BaseModel):
     测量成功回调后会直接推进到流水线传输，因此这里必须携带可继续路由的业务标识 `PkgID`。
     """
 
-    PkgID: str = Field(description="业务包裹标识，测量成功后继续推进流程必填")
     reel_diameter: float | None = Field(default=None, description="料盘直径测量值")
     reel_thickness: float | None = Field(default=None, description="料盘厚度测量值")
 
@@ -76,10 +81,11 @@ class MeasurementResultData(SixInOne, BaseModel):
     def _normalize_payload(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        normalized = normalize_six_in_one_payload(data) or {}
-        normalized["reel_diameter"] = data.get("reel_diameter")
-        normalized["reel_thickness"] = data.get("reel_thickness")
-        return normalized
+        return _normalize_contract_data(
+            data,
+            reel_diameter=data.get("reel_diameter"),
+            reel_thickness=data.get("reel_thickness"),
+        )
 
 
 class PickPlaceResultData(BaseModel):

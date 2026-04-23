@@ -182,6 +182,48 @@ async def test_pipeline_auto_trigger_stops_without_self_await(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_pipeline_mock_includes_pkg_id_in_result_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = pipeline_mock.PipelineSimulator()
+    captured: dict[str, object] = {}
+
+    async def fake_callback_result_to_wes(
+        *,
+        command_code: str,
+        result: str,
+        pkg_id: str | None,
+        source: object,
+        target: object,
+        error_detail: dict[str, object] | None,
+    ) -> dict[str, object]:
+        captured["command_code"] = command_code
+        captured["result"] = result
+        captured["pkg_id"] = pkg_id
+        captured["source"] = source
+        captured["target"] = target
+        captured["error_detail"] = error_detail
+        return {"code": 1000}
+
+    monkeypatch.setattr(simulator, "_callback_result_to_wes", fake_callback_result_to_wes)
+
+    payload = pipeline_mock.DeviceCommandPayload(
+        device_code="PIPELINE01",
+        command_code="CMD-PIPE-001",
+        task_type="MOVE_FORWARD",
+        priority=1,
+        timeout=30,
+        params={"pkg_id": "PKG001", "execution_time": 0},
+        timestamp=1,
+    )
+
+    record = await simulator.execute_wes_command(payload)
+
+    assert record.task_type == "MOVE_FORWARD"
+    assert record.pkg_id == "PKG001"
+    assert captured["result"] == "SUCCESS"
+    assert captured["command_code"] == "CMD-PIPE-001"
+    assert captured["pkg_id"] == "PKG001"
+
+
 async def test_pipeline_cancel_command_cancels_background_task(monkeypatch: pytest.MonkeyPatch) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -277,9 +319,65 @@ async def test_arm_input_mock_supports_measurement_reel(monkeypatch: pytest.Monk
     assert captured["result"] == "SUCCESS"
     callback_data = captured["data"]
     assert isinstance(callback_data, dict)
-    assert callback_data["pkg_id"] == "PKG001"
+    assert callback_data["PkgID"] == "PKG001"
     assert callback_data["reel_diameter"] == 15.0
     assert callback_data["reel_thickness"] == 20.0
+
+
+async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        arm_mock.DEVICE_STATUS_BY_CODE,
+        "ARM02",
+        {
+            "device_code": "ARM02",
+            "status": "IDLE",
+            "is_online": True,
+            "error_code": "NONE",
+            "current_command_code": None,
+        },
+    )
+    simulator = arm_mock.ArmSimulator(arm_mock.DEVICE_CONFIGS["ARM02"])
+    captured: dict[str, object] = {}
+
+    async def fake_callback_result_to_wes(
+        *,
+        command_code: str,
+        result: str,
+        data: dict[str, object] | None,
+        error_detail: dict[str, object] | None,
+    ) -> dict[str, object]:
+        captured["command_code"] = command_code
+        captured["result"] = result
+        captured["data"] = data
+        captured["error_detail"] = error_detail
+        return {"code": 1000}
+
+    monkeypatch.setattr(simulator, "_callback_result_to_wes", fake_callback_result_to_wes)
+
+    payload = arm_mock.DeviceCommandPayload(
+        device_code="ARM02",
+        command_code="CMD-OUTPUT-BIN-001",
+        task_type="PICK_AND_PUT",
+        priority=1,
+        timeout=30,
+        params={
+            "barcode": "PKG-OUTPUT-001",
+            "target_type": "BIN",
+            "target_loc": "BIN_249",
+            "bin_type": "九格箱",
+            "execution_time": 0,
+        },
+        timestamp=1,
+    )
+
+    record = await simulator.execute_wes_command(payload)
+
+    assert record.task_type == "PICK_AND_PUT"
+    assert captured["result"] == "SUCCESS"
+    callback_data = captured["data"]
+    assert isinstance(callback_data, dict)
+    assert callback_data["bin_id"] == "BIN_249"
+    assert callback_data["bin_type"] == "九格箱"
 
 
 @pytest.mark.asyncio
@@ -325,7 +423,9 @@ async def test_arm_receive_command_routes_to_matching_device_code(monkeypatch: p
     await asyncio.wait_for(started.wait(), timeout=1)
     assert other_called is False
     assert arm_mock.DEVICE_STATUS_BY_CODE["ARM03"]["status"] == "RUNNING"
-    assert arm_mock.CURRENT_COMMANDS["ARM03"]["command_code"] == "CMD-ARM03-001"
+    current_command = arm_mock.CURRENT_COMMANDS["ARM03"]
+    assert current_command is not None
+    assert current_command["command_code"] == "CMD-ARM03-001"
     assert arm_mock.CURRENT_COMMANDS["ARM01"] is None
 
     result = await arm_mock.cancel_command(arm_mock.CancelRequest(command_code=payload.command_code))
@@ -380,7 +480,9 @@ async def test_pipeline_receive_command_routes_to_matching_device_code(monkeypat
     await asyncio.wait_for(started.wait(), timeout=1)
     assert other_called is False
     assert pipeline_mock.DEVICE_STATUS_BY_CODE["PIPELINE02"]["status"] == "RUNNING"
-    assert pipeline_mock.CURRENT_COMMANDS["PIPELINE02"]["command_code"] == "CMD-PIPELINE02-001"
+    current_command = pipeline_mock.CURRENT_COMMANDS["PIPELINE02"]
+    assert current_command is not None
+    assert current_command["command_code"] == "CMD-PIPELINE02-001"
     assert pipeline_mock.CURRENT_COMMANDS["PIPELINE01"] is None
 
     result = await pipeline_mock.cancel_command(pipeline_mock.CancelRequest(command_code=payload.command_code))

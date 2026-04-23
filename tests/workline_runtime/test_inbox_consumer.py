@@ -21,7 +21,7 @@ import pytest
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.types import CommandIntent, WaitIntent
+from src.workline_runtime.types import CommandIntent, CommandTargetScope, WaitIntent
 
 
 def make_noop_lock():
@@ -1254,6 +1254,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1310,6 +1311,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1371,6 +1373,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1466,6 +1469,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1599,6 +1603,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={"ROBOT": [target_device]},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1651,6 +1656,7 @@ class TestInboxConsumer:
             "dispatch_key": "device-command:VENDOR-CMD-001",
             "parameters": {
                 "command_code": "VENDOR-CMD-001",
+                "params": {},
                 "priority": 9,
                 "task_type": "PICK_AND_PUT",
                 "timeout": 300000,
@@ -1665,6 +1671,117 @@ class TestInboxConsumer:
             "wait_token": "VENDOR-CMD-001",
             "deadline_seconds": 180,
         }
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_resolves_downstream_target_from_topology(self, mock_db):
+        """scope + role 命令应在 runtime 中基于 source device 和拓扑解析目标设备。"""
+        from src.app.workline.models.outbox import DispatchType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        added_models: list[Any] = []
+        created_command_payloads: list[dict[str, Any]] = []
+
+        session = SimpleNamespace(
+            id=223,
+            workline_id=1,
+            status="RUNNING",
+            context_json={"stage": "PREPARE"},
+            correlation_id="corr-session-topology-001",
+            plugin_key=None,
+            contract_version="legacy-0.9",
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin", contract_version="wl-v2026.04")
+        inbox = SimpleNamespace(
+            id=202,
+            correlation_id="corr-inbox-topology-001",
+            source_message_id="req-topology-001",
+            payload_json={"canonical_event_type": "MEASUREMENT_REEL"},
+        )
+        source_device = SimpleNamespace(id=7, device_code="INPUT-ARM-01", device_role="INPUT_ARM")
+        conveyor = SimpleNamespace(
+            id=8,
+            device_code="CONVEYOR-01",
+            device_role="CONVEYOR",
+            upstream_device_id=7,
+            role_index=1,
+            sort_order=1,
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            commands=[
+                CommandIntent(
+                    action="MOVE_FORWARD",
+                    target_scope=CommandTargetScope.DOWNSTREAM,
+                    device_role="CONVEYOR",
+                    parameters={"command_code": "VENDOR-CMD-TOPO-001"},
+                )
+            ],
+        )
+
+        command_model = SimpleNamespace(
+            id=654,
+            command_code="VENDOR-CMD-TOPO-001",
+            params={
+                "command_code": "VENDOR-CMD-TOPO-001",
+                "task_type": "MOVE_FORWARD",
+                "timeout": 300000,
+                "timestamp": 1710000000000,
+            },
+            task_type="MOVE_FORWARD",
+            priority=5,
+            timeout_ms=300000,
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.create = AsyncMock(
+            side_effect=lambda _db, payload: created_command_payloads.append(payload) or command_model
+        )
+        mock_db.add = MagicMock(side_effect=lambda model: added_models.append(model))
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda *_args, **_kwargs: None),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch(
+                "src.celery_app.tasks.workline.get_plugin_contract_version",
+                return_value="registry-v1999.01",
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={"INPUT_ARM": [source_device], "CONVEYOR": [conveyor]},
+                source_device=source_device,
+                orch_result=orch_result,
+            )
+
+        outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
+        assert len(created_command_payloads) == 1
+        assert created_command_payloads[0]["device_id"] == 8
+        assert len(outboxes) == 1
+        assert outboxes[0].dispatch_type == DispatchType.DEVICE_COMMAND
+        assert outboxes[0].target_code == "CONVEYOR-01"
 
     @pytest.mark.asyncio
     async def test_apply_orchestrator_effects_rejects_unsupported_command_type(self, mock_db):
@@ -1749,6 +1866,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={"ROBOT": [target_device]},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1853,6 +1971,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={"ROBOT": [target_device]},
+                source_device=None,
                 orch_result=orch_result,
             )
 
@@ -1939,6 +2058,7 @@ class TestInboxConsumer:
                 workline=workline,
                 inbox=inbox,
                 devices_by_role={},
+                source_device=None,
                 orch_result=orch_result,
             )
 

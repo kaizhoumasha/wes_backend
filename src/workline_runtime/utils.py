@@ -6,6 +6,16 @@ from typing import Any, cast
 JsonDict = dict[str, Any]
 
 
+def non_empty_str(value: Any) -> str | None:
+    """返回非空字符串，否则 None。"""
+    return value if isinstance(value, str) and value else None
+
+
+def payload_dict(value: Any) -> JsonDict:
+    """安全转换为 dict，无效值返回空 dict。"""
+    return cast("JsonDict", value) if isinstance(value, dict) else {}
+
+
 def ensure_dict(value: Any) -> JsonDict:
     """
     将值转换为 JsonDict，非字典返回空字典。
@@ -40,5 +50,7 @@ def resolve_first_str(payload: JsonDict, aliases: tuple[str, ...]) -> str:
 __all__ = [
     "JsonDict",
     "ensure_dict",
+    "non_empty_str",
+    "payload_dict",
     "resolve_first_str",
 ]

@@ -11,6 +11,7 @@ import pytest
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
 from src.workline_runtime.contracts import SixInOne
+from src.workline_runtime.types import CommandTargetScope
 
 
 class TestSmtClassifierPlugin:
@@ -67,7 +68,8 @@ class TestSmtClassifierPlugin:
         assert result.commands is not None
         assert len(result.commands) == 1
         assert result.commands[0].action == "MEASUREMENT_REEL"
-        assert result.commands[0].target_device_id == 123
+        assert result.commands[0].target_scope == CommandTargetScope.CURRENT
+        assert result.commands[0].device_role is None
         assert result.commands[0].parameters["pkg_id"] == "SVYU00125TP4LCR02_2"
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
@@ -154,6 +156,34 @@ class TestSmtClassifierPlugin:
 
         inbox = MagicMock()
         inbox.id = 11
+        inbox.payload_json = payload
+        mock_context.session.context_json = {"step_code": "IDLE"}
+
+        result = await plugin.on_device_event(mock_context, inbox)
+
+        assert result.transition == "scan_ng"
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "MISSING_SCAN_DATA"
+        assert not result.commands
+
+    @pytest.mark.asyncio
+    async def test_scan_completed_rejects_flattened_business_fields(self, plugin, mock_context):
+        """测试扫码事件业务字段必须放在 data 中，不能拍平到顶层。"""
+        payload = {
+            "device_code": "SCANNER01",
+            "event_type": "SCAN_COMPLETED",
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": "SVYU00125TP4LCR02_2",
+            "location": "LOC01",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 12
         inbox.payload_json = payload
         mock_context.session.context_json = {"step_code": "IDLE"}
 
@@ -363,6 +393,35 @@ class TestSmtClassifierPlugin:
         assert result.failure is not None
         assert result.failure.domain == "DATA"
         assert result.failure.code == "MEASUREMENT_DATA_MISSING"
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_rejects_flattened_business_fields(self, plugin, mock_context):
+        """测试测量成功回调业务字段必须放在 data 中，不能拍平到顶层。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_MEASUREMENT",
+        }
+
+        payload = {
+            "command_code": "CMD-MEASURE-002B",
+            "command_type": "MEASUREMENT_REEL",
+            "result": "SUCCESS",
+            "device_code": "ARM01",
+            "pkg_id": "SVYU00125TP4LCR02_2",
+            "reel_diameter": 178.5,
+            "reel_thickness": 12.3,
+        }
+
+        inbox = MagicMock()
+        inbox.id = 223
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.transition == "measurement_ng"
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "MEASUREMENT_DATA_MISSING"
+        assert result.commands == []
 
     @pytest.mark.asyncio
     async def test_measurement_reel_success_requires_pkg_id(self, plugin, mock_context):
@@ -671,7 +730,8 @@ class TestSmtClassifierPlugin:
         """测试流水线传输成功"""
         mock_context.session.context_json = {
             "step_code": "WAITING_CONVEYOR",
-            "barcode": "LOTABC123",
+            "barcode": "LEGACY-BARCODE",
+            "pkg_id": "CTX-PKG-001",
         }
 
         payload = {
@@ -679,6 +739,9 @@ class TestSmtClassifierPlugin:
             "command_type": "MOVE_FORWARD",
             "result": "SUCCESS",
             "device_code": "CONVEYOR01",
+            "data": {
+                "pkg_id": "CALLBACK-PKG-001",
+            },
         }
 
         inbox = MagicMock()
@@ -690,11 +753,42 @@ class TestSmtClassifierPlugin:
         assert result.transition == "conveyor_ok"
         assert result.commands is not None
         assert result.commands[0].action == "PICK_AND_PUT"  # 输出机械臂
+        assert result.commands[0].parameters["barcode"] == "CALLBACK-PKG-001"
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
+        assert result.context_patch["pkg_id"] == "CALLBACK-PKG-001"
         assert result.context_patch["step_code"] == "WAITING_OUTPUT"
         assert "bin_location" in result.context_patch
+
+    @pytest.mark.asyncio
+    async def test_conveyor_success_requires_callback_pkg_id(self, plugin, mock_context):
+        """测试流水线成功回调缺少 data.pkg_id 时必须显式失败，不能回退到 session context。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_CONVEYOR",
+            "barcode": "LEGACY-BARCODE",
+            "pkg_id": "CTX-PKG-001",
+        }
+
+        payload = {
+            "command_code": "CMD-002A",
+            "command_type": "MOVE_FORWARD",
+            "result": "SUCCESS",
+            "device_code": "CONVEYOR01",
+            "data": {},
+        }
+
+        inbox = MagicMock()
+        inbox.id = 41
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "PAYLOAD_INVALID"
+        assert result.failure.message == "MOVE_FORWARD 成功回调缺少 pkg_id"
+        assert result.commands == []
 
     @pytest.mark.asyncio
     async def test_conveyor_failed(self, plugin, mock_context):
@@ -723,7 +817,33 @@ class TestSmtClassifierPlugin:
         assert result.failure is not None
         assert result.failure.domain == "HARDWARE"
         assert result.failure.code == "CONVEYOR_ERROR"
-        assert result.failure.message == "流水线卡住"
+
+    @pytest.mark.asyncio
+    async def test_conveyor_failed_requires_nested_error_detail(self, plugin, mock_context):
+        """测试流水线失败回调不再接受拍平顶层错误字段。"""
+        mock_context.session.context_json = {
+            "step_code": "WAITING_CONVEYOR",
+        }
+
+        payload = {
+            "command_code": "CMD-003A",
+            "command_type": "MOVE_FORWARD",
+            "result": "FAILED",
+            "device_code": "CONVEYOR01",
+            "error_code": "CONVEYOR_ERROR",
+            "error_message": "流水线卡住",
+        }
+
+        inbox = MagicMock()
+        inbox.id = 42
+        inbox.payload_json = payload
+
+        result = await plugin.on_command_result(mock_context, inbox)
+
+        assert result.failure is not None
+        assert result.failure.domain == "DATA"
+        assert result.failure.code == "PAYLOAD_INVALID"
+        assert result.failure.message == "MOVE_FORWARD 失败回调缺少 error_detail 字段"
 
     @pytest.mark.asyncio
     async def test_output_success(self, plugin, mock_context):
@@ -946,7 +1066,7 @@ class TestBarcodeDecisionService:
 
         assert result.decision == BarcodeDecisionType.OK
         assert result.business_key
-        assert result.pkg_id == "SVYU00125TP4LCR02_2"
+        assert result.six_in_one.PkgID == "SVYU00125TP4LCR02_2"
         assert len(result.barcodes) == 6
 
     def test_decide_invalid_barcode(self):

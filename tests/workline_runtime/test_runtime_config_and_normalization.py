@@ -80,10 +80,7 @@ def test_normalize_inbox_input_infers_command_result_when_kind_missing() -> None
 
     assert normalized.command_code == "CMD-2"
     assert normalized.normalized_result == "TERMINAL_FAILURE"
-    assert normalized.error_detail == {
-        "error_code": "ARM_ERROR",
-        "error_message": "机械臂错误",
-    }
+    assert normalized.error_detail == {}
 
 
 def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> None:
@@ -109,3 +106,34 @@ def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> No
     assert normalized.error_detail["msg"] == "料箱已满"
     assert normalized.error_detail["error_code"] == "BIN_FULL"
     assert normalized.error_detail["error_message"] == "料箱已满"
+
+
+def test_normalize_inbox_input_prefers_canonical_six_in_one_business_key() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="DEVICE_EVENT"),
+        correlation_id="corr-4",
+        payload_json={
+            "event_type": "SCAN_COMPLETED",
+            "device_code": "SCANNER01",
+            "business_key": "UPSTREAM-MISMATCH",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "LotCode": "LOTABC123",
+                "DateCode": "20260409",
+                "PkgID": "SVYU00125TP4LCR02_2",
+            },
+        },
+    )
+
+    normalized = normalize_inbox_input(inbox)
+
+    import hashlib
+    import json
+
+    expected_hash = hashlib.sha256(json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")).hexdigest()[
+        :16
+    ]
+
+    assert normalized.business_key == expected_hash

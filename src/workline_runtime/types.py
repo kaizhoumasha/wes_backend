@@ -10,6 +10,7 @@
 设计参考: 设计文档 phase2-orchestrator
 """
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -32,20 +33,36 @@ class WaitIntent(BaseModel):
     deadline_seconds: int
 
 
+class CommandTargetScope(str, Enum):
+    """命令目标范围。
+
+    CURRENT 表示当前消息来源设备；
+    DOWNSTREAM 表示当前消息来源设备的直接下游设备。
+    """
+
+    CURRENT = "CURRENT"
+    DOWNSTREAM = "DOWNSTREAM"
+
+
 class CommandIntent(BaseModel):
     """设备命令意图
 
-    插件返回此意图时，编排器将创建设备命令并写入 Outbox。
+    插件返回此意图时，编排器将在 runtime 中统一解析目标设备，
+    然后创建设备命令并写入 Outbox。
 
     Attributes:
-        target_device_id: 目标设备 ID
         action: 动作类型 (PICK_AND_PUT, MOVE_FORWARD, etc.)
+        target_scope: 目标范围（当前设备 / 直接下游）
+        device_role: 目标设备角色约束
         parameters: 命令参数
+        target_device_id: 显式目标设备 ID（仅限少数直接寻址场景）
     """
 
-    target_device_id: int
     action: str
+    target_scope: CommandTargetScope = CommandTargetScope.CURRENT
+    device_role: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
+    target_device_id: int | None = None
 
 
 class FailureIntent(BaseModel):
@@ -104,6 +121,7 @@ class PluginResult(BaseModel):
 
 __all__ = [
     "CommandIntent",
+    "CommandTargetScope",
     "FailureIntent",
     "PluginResult",
     "WaitIntent",

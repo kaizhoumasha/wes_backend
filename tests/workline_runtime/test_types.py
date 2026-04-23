@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from src.workline_runtime.types import (
     CommandIntent,
+    CommandTargetScope,
     FailureIntent,
     PluginResult,
     WaitIntent,
@@ -57,27 +58,28 @@ class TestCommandIntent:
     def test_create_command_intent_with_parameters(self):
         """测试创建带参数的命令意图"""
         intent = CommandIntent(
-            target_device_id=1,
             action="PICK_AND_PUT",
+            target_scope=CommandTargetScope.DOWNSTREAM,
+            device_role="OUTPUT_ARM",
             parameters={"target_position": "A1", "speed": "fast"},
         )
-        assert intent.target_device_id == 1
+        assert intent.target_scope == CommandTargetScope.DOWNSTREAM
+        assert intent.device_role == "OUTPUT_ARM"
         assert intent.action == "PICK_AND_PUT"
         assert intent.parameters["target_position"] == "A1"
 
     def test_create_command_intent_without_parameters(self):
         """测试创建无参数的命令意图"""
         intent = CommandIntent(
-            target_device_id=2,
             action="MOVE_FORWARD",
         )
-        assert intent.target_device_id == 2
+        assert intent.target_scope == CommandTargetScope.CURRENT
         assert intent.parameters == {}
 
     def test_command_intent_required_fields(self):
         """测试必填字段验证"""
         with pytest.raises(ValidationError):
-            CommandIntent()  # 缺少 target_device_id 和 action
+            CommandIntent()  # 缺少 action
 
 
 class TestFailureIntent:
@@ -144,8 +146,9 @@ class TestPluginResult:
         result = PluginResult(
             commands=[
                 CommandIntent(
-                    target_device_id=1,
                     action="PICK_AND_PUT",
+                    target_scope=CommandTargetScope.DOWNSTREAM,
+                    device_role="OUTPUT_ARM",
                     parameters={"target": "A1"},
                 )
             ]
@@ -188,7 +191,7 @@ class TestPluginResult:
             transition="detect_ok",
             context_patch={"detect_value": 0.95},
             decisions=[{"decision_type": "QUALITY_CHECK", "result": "PASS"}],
-            commands=[CommandIntent(target_device_id=1, action="MOVE_FORWARD")],
+            commands=[CommandIntent(action="MOVE_FORWARD", target_device_id=1)],
             complete=True,
         )
         assert result.transition == "detect_ok"

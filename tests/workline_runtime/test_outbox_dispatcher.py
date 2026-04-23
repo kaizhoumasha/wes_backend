@@ -440,6 +440,34 @@ class TestOutboxDispatcher:
         assert payload["params"] == {}
         assert isinstance(payload["timestamp"], int)
 
+    def test_normalize_vendor_command_payload_wraps_business_fields_into_params(self):
+        """测试插件业务参数会严格收口到 params 中。"""
+        from src.celery_app.tasks.workline import _normalize_vendor_command_payload
+
+        payload = _normalize_vendor_command_payload(
+            {
+                "pkg_id": "PKG001",
+                "target_type": "BIN",
+                "target_loc": "BIN_201",
+            },
+            action="PICK_AND_PUT",
+            default_command_code="CMD-STRICT-001",
+        )
+
+        assert payload == {
+            "command_code": "CMD-STRICT-001",
+            "task_type": "PICK_AND_PUT",
+            "priority": 5,
+            "timeout": 300000,
+            "params": {
+                "pkg_id": "PKG001",
+                "target_type": "BIN",
+                "target_loc": "BIN_201",
+            },
+            "timestamp": payload["timestamp"],
+        }
+        assert isinstance(payload["timestamp"], int)
+
     def test_normalize_vendor_command_payload_does_not_accept_legacy_command_id(self):
         """测试设备派发归一化不再接受 legacy command_id。"""
         from src.celery_app.tasks.workline import _normalize_vendor_command_payload

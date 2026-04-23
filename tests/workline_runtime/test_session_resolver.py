@@ -526,7 +526,7 @@ class TestSessionResolver:
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
-            payload_json={"barcode": "PKG12345"},  # 无 business_key
+            payload_json={"data": {"barcode": "PKG12345"}},  # 无 business_key，barcode 在 data 内
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
@@ -546,9 +546,9 @@ class TestSessionResolver:
         assert session.business_key is not None
         assert len(mock_session_repo.created_sessions) == 1
 
-    def test_resolve_business_key_prefers_top_level_barcode(self):
-        """顶层 barcode 本身是稳定业务标识时，应直接作为 business_key。"""
-        payload = {"barcode": "PKG12345"}
+    def test_resolve_business_key_prefers_data_barcode(self):
+        """data.barcode 是稳定业务标识时，应直接作为 business_key。"""
+        payload = {"data": {"barcode": "PKG12345"}}
 
         key = _resolve_business_key(payload, plugin_key=None)
 
@@ -573,19 +573,37 @@ class TestSessionResolver:
         import hashlib
         import json
 
-        fields = [
-            "620100L00-011-G",
-            "CC0402JRNPO9BN220",
-            "7387",
-            "20260409",
-            "LOTABC123",
-            "SVYU00125TP4LCR02_2",
-        ]
-        json_str = json.dumps(fields, ensure_ascii=False)
-        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+        expected_hash = hashlib.sha256(
+            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
 
         assert key1 == expected_hash
         assert key2 == expected_hash
+
+    def test_resolve_business_key_prefers_canonical_six_in_one_over_upstream_business_key(self):
+        """当 data 中已存在 canonical Six-In-One 时，不应再信任外部透传 business_key。"""
+        payload = {
+            "business_key": "UPSTREAM-MISMATCH",
+            "data": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "LotCode": "LOTABC123",
+                "DateCode": "20260409",
+                "PkgID": "SVYU00125TP4LCR02_2",
+            },
+        }
+
+        key = _resolve_business_key(payload, plugin_key=None)
+
+        import hashlib
+        import json
+
+        expected_hash = hashlib.sha256(
+            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
+
+        assert key == expected_hash
 
     def test_resolve_business_key_uses_event_scope_key_for_estop(self):
         """无业务条码的急停事件应按 event_type + device_code 稳定归属。"""
@@ -796,20 +814,13 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        # Six-In-One 组合生成 16 位 hash
+        # PkgID 生成 16 位稳定业务键
         import hashlib
         import json
 
-        fields = [
-            "620100L00-011-G",
-            "CC0402JRNPO9BN220",
-            "7387",
-            "20260409",
-            "LOTABC123",
-            "SVYU00125TP4LCR02_2",
-        ]
-        json_str = json.dumps(fields, ensure_ascii=False)
-        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+        expected_hash = hashlib.sha256(
+            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
 
         assert session.business_key == expected_hash
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
@@ -825,16 +836,9 @@ class TestSessionResolver:
         import hashlib
         import json
 
-        fields = [
-            "620100L00-011-G",
-            "CC0402JRNPO9BN220",
-            "7387",
-            "20260409",
-            "LOTABC123",
-            "SVYU00125TP4LCR02_2",
-        ]
-        json_str = json.dumps(fields, ensure_ascii=False)
-        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+        expected_hash = hashlib.sha256(
+            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
         _ = await mock_session_repo.create(
             mock_db,
             {
@@ -894,16 +898,9 @@ class TestSessionResolver:
         import hashlib
         import json
 
-        fields = [
-            "620100L00-011-G",
-            "CC0402JRNPO9BN220",
-            "7387",
-            "20260409",
-            "LOTABC123",
-            "SVYU00125TP4LCR02_2",
-        ]
-        json_str = json.dumps(fields, ensure_ascii=False)
-        expected_hash = hashlib.sha256(json_str.encode("utf-8")).hexdigest()[:16]
+        expected_hash = hashlib.sha256(
+            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
         _ = await mock_session_repo.create(
             mock_db,
             {

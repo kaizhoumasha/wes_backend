@@ -120,6 +120,7 @@ class ExecutionRecord(BaseModel):
     execution_id: str
     command_code: str
     task_type: str
+    pkg_id: str | None = None
     source: JsonDict
     target: JsonDict
     result: str
@@ -298,6 +299,7 @@ class PipelineSimulator:
         *,
         command_code: str,
         result: str,
+        pkg_id: str | None,
         source: DeviceLocation,
         target: DeviceLocation,
         error_detail: JsonDict | None,
@@ -309,6 +311,7 @@ class PipelineSimulator:
             "finish_time": current_millis(),
             "data": {
                 "actual_qty": 1,
+                "pkg_id": pkg_id or "",
                 "location": target.location_id,
                 "actual_source": source.location_id,
                 "actual_target": target.location_id,
@@ -345,6 +348,7 @@ class PipelineSimulator:
         simulate_failure: bool = False,
         execution_time: float = EXECUTION_TIME,
         command_code: str | None = None,
+        pkg_id: str | None = None,
         report_result: bool = True,
     ) -> ExecutionRecord:
         if task_type != "MOVE_FORWARD":
@@ -396,6 +400,7 @@ class PipelineSimulator:
                     await self._callback_result_to_wes(
                         command_code=resolved_command_code,
                         result=result,
+                        pkg_id=pkg_id,
                         source=source,
                         target=target,
                         error_detail=error_detail,
@@ -408,6 +413,7 @@ class PipelineSimulator:
                 execution_id=f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{self._execution_count:03d}",
                 command_code=resolved_command_code,
                 task_type=task_type,
+                pkg_id=pkg_id,
                 source=source.to_payload(),
                 target=target.to_payload(),
                 result=result,
@@ -427,15 +433,17 @@ class PipelineSimulator:
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         source, target = self._resolve_command_locations_from_params(payload.params or {})
+        params = payload.params or {}
         return await self.execute_command(
             task_type=payload.task_type,
             source_type=source.location_type,
             target_type=target.location_type,
             source_location_id=source.location_id,
             target_location_id=target.location_id,
-            simulate_failure=bool((payload.params or {}).get("simulate_failure", False)),
-            execution_time=float((payload.params or {}).get("execution_time", EXECUTION_TIME)),
+            simulate_failure=bool(params.get("simulate_failure", False)),
+            execution_time=float(params.get("execution_time", EXECUTION_TIME)),
             command_code=payload.command_code,
+            pkg_id=cast("str | None", params.get("PkgID") or params.get("pkg_id") or params.get("barcode")),
             report_result=True,
         )
 
