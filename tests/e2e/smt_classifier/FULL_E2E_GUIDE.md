@@ -18,9 +18,13 @@
 
 | 测试类型 | 文件 | 覆盖范围 | 说明 |
 |---------|------|---------|------|
-| **Mock 交互** | `test_e2e_smt_classifier.py::TestSmtClassifierE2EMockInteractions` | Mock 服务 ↔ 测试代码 | ⚠️ 不经过 WES |
-| **插件逻辑** | `test_e2e_smt_classifier.py::TestSmtClassifierE2EFlows` | 插件处理逻辑 | ✅ 单元测试 |
+| **Pipeline 事件入口** | `test_pipeline_material_arrived_e2e.py` | WES ↔ Inbox ↔ Worker | ✅ 多组件链路 |
 | **完整链路** | `test_full_e2e_chain.py` (新增) | WES → Mock → WES | ✅ 端到端集成 |
+| **完整业务场景** | `test_full_business_flows.py` | WES → Mock → WES | ✅ 业务流验证 |
+
+插件逻辑测试已移动到 `tests/integration/workline_plugins/test_smt_classifier_plugin_events.py`
+和 `tests/integration/workline_plugins/test_smt_classifier_plugin_command_results.py`。
+Mock 服务合同测试已移动到 `tests/mock/smt_classifier/test_smt_classifier_mock.py`。
 
 ## 运行完整端到端测试
 

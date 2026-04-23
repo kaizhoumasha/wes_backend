@@ -40,3 +40,19 @@ class TestBarcodeDecisionService:
         assert result.decision == BarcodeDecisionType.INVALID
         assert result.reason_code == "BARCODE_INVALID"
         assert result.reason_message == "条码格式错误: MfrPN"
+
+    def test_evaluate_returns_ng_when_pkg_id_hits_business_rule(self):
+        """命中业务规则的 PkgID 应返回 NG 判定。"""
+        six_in_one = SixInOne(
+            HHPN="620100L00-011-G",
+            MfrPN="CC0402JRNPO9BN220",
+            Qty="7387",
+            DateCode="122625",
+            LotCode="8904936031",
+            PkgID="LOTSIZENG_001",
+        )
+
+        result = barcode_decision_service.evaluate(six_in_one)
+
+        assert result.decision == BarcodeDecisionType.NG
+        assert result.reason_code == "SCAN_NG_BY_RULE"

@@ -1,22 +1,29 @@
 # SMT 粗分机 E2E 测试
 
-SMT 粗分机插件的端到端测试，验证插件与 Mock 设备的完整交互流程。
+SMT 粗分机多组件链路测试，验证 WES、Celery、数据库与 Mock 设备的真实交互。
 
 ## 测试覆盖范围
 
 ### 当前测试类型
 
-| 测试类 | 文件 | 说明 | 链路 |
-|--------|------|------|------|
-| `TestSmtClassifierE2EFlows` | `test_e2e_smt_classifier.py` | 插件逻辑单元测试 | 插件内部 |
-| `TestSmtClassifierE2EMockInteractions` | `test_e2e_smt_classifier.py` | Mock 服务交互测试 | 测试代码 ↔ Mock |
-| `TestSmtClassifierE2EErrorHandling` | `test_e2e_smt_classifier.py` | 错误处理测试 | 插件内部 |
-| `TestSMTClassifierFullE2E` | `test_full_e2e_chain.py` | **完整端到端集成** | **WES ↔ Mock ↔ WES** |
+| 测试文件 | 说明 | 链路 |
+|--------|------|------|
+| `test_pipeline_material_arrived_e2e.py` | Pipeline 事件入口与 Inbox 异步消费 | WES ↔ DB ↔ Worker |
+| `test_full_e2e_chain.py` | 完整链路 smoke | WES ↔ Mock ↔ WES |
+| `test_full_business_flows.py` | 完整业务场景 | WES ↔ Mock ↔ WES |
+
+### 相关但不属于 E2E 的测试
+
+| 目录 | 文件 | 说明 |
+|------|------|------|
+| `tests/integration/workline_plugins/` | `test_smt_classifier_plugin_*.py` | 插件逻辑与状态迁移 |
+| `tests/mock/smt_classifier/` | `test_smt_classifier_mock.py` | Mock 服务协议与本地 HTTP 合同 |
 
 ### ⚠️ 重要说明
 
-- `test_e2e_smt_classifier.py` 中的测试**直接调用 Mock 服务**，不经过 WES Backend
-- 要测试完整的端到端链路（包括插件编排、命令生成），请使用 `test_full_e2e_chain.py`
+- 插件逻辑测试已经移动到 `tests/integration/workline_plugins/test_smt_classifier_plugin_*.py`
+- Mock 服务合同测试已经移动到 `tests/mock/smt_classifier/test_smt_classifier_mock.py`
+- 要测试完整的端到端链路（包括插件编排、命令生成），请使用本目录下的 E2E 文件
 - 完整端到端测试需要启动 **WES Backend + Celery Worker + Mock 服务**
 
 ### 完整端到端测试指南
@@ -62,7 +69,7 @@ SMT 粗分机插件的端到端测试，验证插件与 Mock 设备的完整交�
 ### 1. 一键运行（推荐）
 
 ```bash
-# 快速测试（仅插件逻辑和 Mock 交互，不启动 WES）
+# 运行本目录下的 E2E 测试（需要 WES + Celery + Mock）
 ./tests/e2e/smt_classifier/run_e2e_tests.sh
 
 # 完整端到端测试（需要 WES + Celery + Mock）
@@ -113,12 +120,11 @@ uv run pytest tests/e2e/smt_classifier/ -v -m e2e
 
 ### 测试类
 
-| 测试类 | 说明 | 标记 |
+| 测试文件 | 说明 | 标记 |
 |--------|------|------|
-| `TestSmtClassifierE2EFlows` | 完整业务流程测试 | `e2e` |
-| `TestSmtClassifierE2EErrorHandling` | 错误处理测试（急停、超时、重试） | `e2e` |
-| `TestSmtClassifierE2EManualOperations` | 人工操作测试（暂停、恢复、取消） | `e2e` |
-| `TestSmtClassifierE2EMockInteractions` | Mock 服务交互测试 | `e2e` |
+| `test_pipeline_material_arrived_e2e.py` | Pipeline 事件入口与异步消费 | `e2e`, `integration` |
+| `test_full_e2e_chain.py` | 完整链路 smoke | `e2e`, `integration` |
+| `test_full_business_flows.py` | 完整业务场景 | `e2e`, `integration` |
 
 ### 主要测试场景
 
@@ -131,11 +137,8 @@ uv run pytest tests/e2e/smt_classifier/ -v -m e2e
 3. **检测 NG 流程** (`test_inspection_ng_flow`)
    - 扫码 OK → 检测 NG → 放入 NG 缓存位
 
-4. **错误处理** (`test_estop_handling`, `test_timeout_handling`)
-   - 急停、超时、命令失败重试
-
-5. **人工操作** (`test_manual_hold_and_resume`, `test_manual_cancel`)
-   - 人工暂停、恢复、取消
+4. **Pipeline 物料到达入口** (`test_pipeline_material_arrived_event`)
+   - 设备事件 → WES ACK → Inbox 异步消费完成
 
 ## Mock 服务
 
@@ -219,8 +222,9 @@ echo $WES_EVENT_CALLBACK_URL
 tests/e2e/smt_classifier/
 ├── __init__.py                 # 包初始化
 ├── conftest.py                 # Pytest Fixtures 和配置
-├── test_e2e_smt_classifier.py  # 插件逻辑 + Mock 交互测试
+├── test_pipeline_material_arrived_e2e.py  # Pipeline 事件入口 E2E
 ├── test_full_e2e_chain.py      # 完整端到端集成测试 (WES ↔ Mock)
+├── test_full_business_flows.py # 完整业务场景 E2E
 ├── setup_e2e_app.py            # 环境设置脚本
 ├── run_e2e_tests.sh            # 测试运行脚本
 ├── .env.e2e                    # 环境变量文件（自动生成）

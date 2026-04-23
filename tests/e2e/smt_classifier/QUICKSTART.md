@@ -83,7 +83,7 @@ uv run pytest tests/e2e/smt_classifier/test_full_e2e_chain.py -xvs
 
 **原因**: 这说明测试直接调用了 Mock，绕过了 WES
 
-**解决**: 运行 `test_full_e2e_chain.py` 而不是 `test_e2e_smt_classifier.py`
+**解决**: 运行 `test_full_e2e_chain.py` 或 `test_full_business_flows.py`，不要把集成问题归因到插件级或 mock 级测试
 
 ### 没有看到回调日志？
 

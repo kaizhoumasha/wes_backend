@@ -73,6 +73,28 @@ def test_arm_mock_supports_dual_workline_device_codes() -> None:
     assert arm_mock.DEVICE_CONFIGS["ARM04"]["device_role"] == "OUTPUT_ARM"
 
 
+def test_arm_mock_root_endpoint_returns_service_metadata() -> None:
+    with TestClient(arm_mock.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"].startswith("SMT 粗分机机械臂 Mock 服务")
+    assert payload["device_code"] == "ARM01"
+    assert payload["status"] == "running"
+
+
+def test_pipeline_mock_root_endpoint_returns_service_metadata() -> None:
+    with TestClient(pipeline_mock.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"] == "SMT 粗分机流水线 Mock 服务"
+    assert payload["device_code"] == "PIPELINE01"
+    assert payload["status"] == "running"
+
+
 def test_arm_mock_logs_request_validation_error(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.ERROR, logger=arm_mock.__name__)
 
