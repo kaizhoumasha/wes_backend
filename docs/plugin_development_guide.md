@@ -738,6 +738,57 @@ async def handle_scan(self, ctx, event):
 
 ## 进阶话题
 
+### Handler 签名选择规则
+
+框架根据 handler 的第三个参数类型注解自动选择注入内容：
+
+| Handler 签名 | 注入参数 | 适用场景 |
+|-------------|---------|---------|
+| `async def handler(self, ctx, inbox)` | 原始 inbox 实体 | 自定义 payload 解析、DSL 插件 |
+| `async def handler(self, ctx, result: NormalizedCommandResult)` | 标准化输入模型 | 装饰器插件、类型安全、error_code 别名 |
+
+**注入优先级**：
+1. 如果 `ctx.normalized_input` 存在且类型匹配 → 直接返回
+2. 否则调用 `normalize_inbox_input(inbox)` → 返回标准化模型
+3. 标准化失败 → 回退到 `param_type.model_validate(payload)`
+
+**示例**：
+
+```python
+from src.workline_runtime.plugin_sdk import NormalizedCommandResult
+
+# 方式1：原始 inbox（灵活解析）
+@on_command("PICK", result="SUCCESS")
+async def handle_pick_raw(self, ctx, inbox):
+    """使用原始 inbox，自行解析业务数据"""
+    payload = inbox.payload_json
+    device_code = payload.get("device_code")
+    data = MyBusinessData.model_validate(payload.get("data"))
+    # ...
+
+# 方式2：标准化输入（类型安全）
+@on_command("PICK", result="SUCCESS")
+async def handle_pick_normalized(self, ctx, result: NormalizedCommandResult):
+    """使用标准化输入，系统级字段已解析"""
+    # 系统级：error_code 别名已标准化
+    error_code = result.error_detail.get("error_code")
+    # 业务级：自行解析 data
+    data = MyBusinessData.model_validate(result.data)
+    # ...
+```
+
+**系统级 vs 业务级字段**：
+
+| 字段 | 处理方 | 说明 |
+|------|--------|------|
+| `error_code` / `code` | 框架标准化 | vendor 别名统一为 `error_code` |
+| `result` → `SUCCESS/FAILURE/RETRYABLE` | 框架标准化 | classify_result() |
+| `command_code` | 框架标准化 | 提取到顶层字段 |
+| `payload_json["data"]` | 插件解析 | 业务数据，不标准化 |
+| `MeasurementResultData` | 插件解析 | 业务模型，不标准化 |
+
+**推荐**：装饰器插件使用 `NormalizedCommandResult`，获取系统级字段便利；业务数据自行解析保持灵活性。
+
 ### 自定义状态机
 
 ```python
