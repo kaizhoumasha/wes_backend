@@ -14,22 +14,12 @@ class WorklinePluginDefinition:
     plugin_module: str
     plugin_class_name: str
     contract_module: str | None = None
-    state_machine_module: str | None = None
-    state_machine_class_name: str | None = None
 
     @property
     def plugin_class(self) -> type[Any]:
         """惰性解析插件类。"""
 
         return getattr(import_module(self.plugin_module), self.plugin_class_name)
-
-    @property
-    def state_machine_class(self) -> type[Any] | None:
-        """惰性解析状态机类。"""
-
-        if self.state_machine_module is None or self.state_machine_class_name is None:
-            return None
-        return getattr(import_module(self.state_machine_module), self.state_machine_class_name)
 
 
 WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
@@ -38,8 +28,6 @@ WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
         plugin_module="src.workline_plugins.smt_classifier",
         plugin_class_name="SmtClassifierPlugin",
         contract_module=None,
-        state_machine_module=None,
-        state_machine_class_name=None,
     ),
 }
 

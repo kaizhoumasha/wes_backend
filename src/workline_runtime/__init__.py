@@ -47,6 +47,11 @@ from src.workline_runtime.enums import (
     OutboxStatus,
     TimelineStage,
 )
+from src.workline_runtime.exceptions import (
+    PluginNotFoundError,
+    StateMachineError,
+    WorklineRuntimeError,
+)
 from src.workline_runtime.lock import LockAcquireError, LockReleaseError, RedisDistributedLock
 from src.workline_runtime.null_plugin import NullPlugin, null_plugin
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
@@ -97,6 +102,7 @@ __all__ = [
     "OutboxStatus",
     "PluginContext",
     "PluginContextBuilder",
+    "PluginNotFoundError",
     "PluginResult",
     "ProblemClass",
     "Recoverability",
@@ -107,10 +113,12 @@ __all__ = [
     "SessionResolver",
     "SessionStatus",
     "Severity",
+    "StateMachineError",
     "TimelineStage",
     "TraceContext",
     "TransitionValidator",
     "WaitIntent",
+    "WorklineRuntimeError",
     "atomic_writer",
     "build_diagnostic_card",
     "build_diagnostic_context",
