@@ -47,9 +47,11 @@ from src.workline_runtime.diagnostics import (
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
+from src.workline_runtime.plugin_state import project_plugin_state_for_trace
+from src.workline_runtime.run_mode import is_simulation_run_mode, normalize_run_mode
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.types import FailureIntent
+from src.workline_runtime.types import BusinessDecisionIntent, FailureIntent
 from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
@@ -237,6 +239,34 @@ def _outbox_trace_log_suffix(outbox: Any, trace: TraceContext | None = None) -> 
     )
 
 
+def _cached_outbox_session(outbox: Any) -> Any | None:
+    """读取已加载的 outbox.session，避免为判断运行模式触发隐式懒加载。"""
+
+    try:
+        session = vars(outbox).get("session")
+    except TypeError:
+        session = getattr(outbox, "session", None)
+    return session if session is not None else None
+
+
+async def _resolve_outbox_run_mode(db: Any, outbox: Any) -> str:
+    """按 Session 快照解析 Outbox 派发运行模式。"""
+
+    session = _cached_outbox_session(outbox)
+    run_mode = getattr(session, "run_mode", None)
+    if run_mode is not None:
+        return normalize_run_mode(run_mode)
+
+    session_id = getattr(outbox, "session_id", None)
+    if isinstance(session_id, int) and hasattr(db, "get"):
+        from src.app.workline.models.session import WorklineSession
+
+        loaded_session = await db.get(WorklineSession, session_id)
+        return normalize_run_mode(getattr(loaded_session, "run_mode", None))
+
+    return normalize_run_mode(None)
+
+
 def _build_orchestrator_lock_provider(db: Any):
     """为 OrchestratorService 构建生产锁提供者。
 
@@ -361,7 +391,7 @@ def _sync_session_contract_snapshot(session: Any, *, workline: Any, context: dic
     if resolved_contract_version and getattr(session, "contract_version", None) != resolved_contract_version:
         session.contract_version = resolved_contract_version
 
-    step_code = context.get("step_code")
+    step_code = project_plugin_state_for_trace(context)
     if isinstance(step_code, str) and step_code:
         session.step_code = step_code
 
@@ -481,21 +511,14 @@ def _normalize_vendor_command_payload(
 
 def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> dict[str, Any]:
     resolved_device_code = _string_value(device_code)
-    command_params = payload_dict(getattr(command, "params", None))
-    if command_params:
-        payload = dict(command_params)
-        if resolved_device_code:
-            payload["device_code"] = resolved_device_code
-        return payload
-
     normalized_task_type = _normalize_command_task_type(getattr(command, "task_type", None))
-
+    command_params = payload_dict(getattr(command, "params", None))
     payload = {
         "command_code": command.command_code,
         "task_type": normalized_task_type,
         "priority": command.priority,
         "timeout": command.timeout_ms,
-        "params": {},
+        "params": command_params,
         "timestamp": _utc_timestamp_ms(),
     }
     if resolved_device_code:
@@ -678,7 +701,7 @@ def _apply_context_patch(ctx: EffectApplyContext) -> None:
     """先应用 context patch，再执行后续 effect。
 
     顺序很关键：
-    - command effect 需要读取最新的 `step_code`
+    - command effect 需要读取最新的 `plugin_state` 投影
     - session contract snapshot 也依赖最新 context
     - 第三方插件开发者通常会把运行时决策写进 context，这些值应立即对后续 effect 可见
     """
@@ -736,6 +759,26 @@ def _decision_timeline_payload(ctx: EffectApplyContext) -> dict[str, Any]:
         **_effect_trace_payload(ctx),
         "transition": orch_result.transition,
         "context_patch": orch_result.context_patch or {},
+    }
+
+
+def _business_decision_timeline_payload(
+    ctx: EffectApplyContext,
+    *,
+    decision: BusinessDecisionIntent,
+) -> dict[str, Any]:
+    """构造业务判定 timeline payload。
+
+    业务 NG 是插件给出的业务结果，不代表系统失败；这里仅沉淀可检索投影。
+    """
+
+    return {
+        **_effect_trace_payload(ctx),
+        "classification": decision.classification,
+        "reason_code": decision.reason_code,
+        "message": decision.message,
+        "evidence": decision.evidence,
+        "business_key": decision.business_key,
     }
 
 
@@ -819,6 +862,25 @@ async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
         actor_code=getattr(ctx["workline"], "plugin_key", None),
         related_inbox_id=_timeline_inbox_id(ctx),
     )
+
+
+async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
+    """记录插件业务判定，不改变失败归因。"""
+
+    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
+
+    for decision in ctx["orch_result"].business_decisions or []:
+        await _emit_timeline(
+            ctx,
+            stage=TimelineStage.DECISION,
+            action_type=TimelineActionType.DECISION_MADE,
+            payload=_business_decision_timeline_payload(ctx, decision=decision),
+            actor_type=TimelineActorType.PLUGIN,
+            actor_code=getattr(ctx["workline"], "plugin_key", None),
+            message=decision.message,
+            related_inbox_id=_timeline_inbox_id(ctx),
+            status=TimelineStatus.SUCCESS,
+        )
 
 
 async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
@@ -930,6 +992,7 @@ def _build_command_create_payload(
     vendor_task_type = _string_value(vendor_payload.get("task_type"), command_intent.action)
     priority_value = vendor_payload.get("priority")
     timeout_value = vendor_payload.get("timeout")
+    business_params = payload_dict(vendor_payload.get("params"))
     session = ctx["session"]
     workline = ctx["workline"]
 
@@ -939,13 +1002,13 @@ def _build_command_create_payload(
         "task_type": _map_command_task_type(vendor_task_type),
         "priority": priority_value if isinstance(priority_value, int) else DEFAULT_COMMAND_PRIORITY,
         "timeout_ms": timeout_value if isinstance(timeout_value, int) else DEFAULT_COMMAND_TIMEOUT_MS,
-        "params": vendor_payload,
+        "params": business_params,
         "correlation_id": ctx["trace"].correlation_id or ctx["correlation_id"],
         "session_id": str(session.id),
         "workline_id": session.workline_id,
         "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
         "contract_version": getattr(session, "contract_version", None),
-        "step_code": ctx["session_ctx"].get("step_code"),
+        "step_code": project_plugin_state_for_trace(ctx["session_ctx"]),
     }
 
 
@@ -1068,7 +1131,7 @@ async def _apply_command_effects(ctx: EffectApplyContext) -> None:
                 command_code=command.command_code,
                 command_type=command_intent.action,
                 dispatch_key=command_outbox.dispatch_key,
-                parameters=vendor_payload,
+                parameters=payload_dict(vendor_payload.get("params")),
             ),
             actor_type=TimelineActorType.ORCHESTRATOR,
             actor_code=device_code,
@@ -1223,7 +1286,13 @@ def _apply_running_fallback(ctx: EffectApplyContext) -> None:
     orch_result = ctx["orch_result"]
     session = ctx["session"]
 
-    if orch_result.transition or orch_result.context_patch or orch_result.commands or orch_result.decisions:
+    if (
+        orch_result.transition
+        or orch_result.context_patch
+        or orch_result.business_decisions
+        or orch_result.commands
+        or orch_result.decisions
+    ):
         session.status = "RUNNING"
 
     _clear_session_wait(session)
@@ -1247,8 +1316,9 @@ async def _apply_orchestrator_effects(
 
     执行顺序说明：
     1. 先落 context patch 与 trace fields
-    2. 先消费设备治理字段，再创建 decisions / commands（因为 wait 可能依赖 command id）
-    3. 最后应用 failure / cancel / complete / wait / fallback 状态变更
+    2. 记录插件业务判定
+    3. 消费设备治理字段并创建 decisions / commands（因为 wait 可能依赖 command id）
+    4. 最后应用 failure / cancel / complete / wait / fallback 状态变更
     """
 
     ctx = _build_effect_apply_context(
@@ -1264,6 +1334,7 @@ async def _apply_orchestrator_effects(
     _apply_context_patch(ctx)
     _sync_effect_trace_fields(ctx)
     await _apply_transition_timeline(ctx)
+    await _apply_business_decisions(ctx)
 
     try:
         await _validate_command_effects(ctx)
@@ -2119,6 +2190,8 @@ class OutboxDispatcher:
         """
         from src.app.workline.models.outbox import DispatchType
 
+        if await OutboxDispatcher._should_dispatch_to_sandbox(db, outbox):
+            return await OutboxDispatcher._dispatch_sandbox(outbox)
         if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
             return await OutboxDispatcher._dispatch_device_command(db, outbox)
         if outbox.dispatch_type == DispatchType.EXTERNAL_HTTP:
@@ -2127,6 +2200,30 @@ class OutboxDispatcher:
             return await OutboxDispatcher._dispatch_internal_signal(outbox)
         logger.warning(f"未知的派发类型: {outbox.dispatch_type}")
         return False
+
+    @staticmethod
+    async def _should_dispatch_to_sandbox(db: Any, outbox: Any) -> bool:
+        """判断 Outbox 是否应进入沙箱派发出口。"""
+
+        from src.app.workline.models.outbox import DispatchType
+
+        if outbox.dispatch_type not in {DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP}:
+            return False
+        run_mode = await _resolve_outbox_run_mode(db, outbox)
+        return is_simulation_run_mode(run_mode)
+
+    @staticmethod
+    async def _dispatch_sandbox(outbox: Any) -> bool:
+        """派发到沙箱工作台。
+
+        沙箱不改写 payload；Outbox 标记 SENT 后，由调试人员按原 callback/result 协议手工回传。
+        """
+
+        logger.info(
+            "Outbox 沙箱派发完成，等待调试人员手工回调 "
+            f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
+        )
+        return True
 
     @staticmethod
     async def _dispatch_device_command(db: Any, outbox: Any) -> bool:

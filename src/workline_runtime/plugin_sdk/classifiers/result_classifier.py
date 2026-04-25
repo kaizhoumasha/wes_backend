@@ -1,8 +1,23 @@
 """命令结果分类器。"""
 
+from typing import Literal, cast
+
 _SUCCESS = {"SUCCESS", "OK", "DONE", "COMPLETED", "PASS"}
 _RETRYABLE = {"TIMEOUT", "RETRY", "TEMP_FAILURE"}
 _TERMINAL = {"FAILED", "ERROR", "NG", "REJECTED"}
+_BUSINESS_CLASSIFICATIONS = {
+    "business_decision",
+    "hardware_failure",
+    "data_invalid",
+    "system_failure",
+}
+
+ResultClassification = Literal[
+    "business_decision",
+    "hardware_failure",
+    "data_invalid",
+    "system_failure",
+]
 
 
 def classify_result(value: str | None) -> str:
@@ -18,4 +33,40 @@ def classify_result(value: str | None) -> str:
     return normalized or "UNKNOWN"
 
 
-__all__ = ["classify_result"]
+def normalize_result_classification(value: str | None) -> ResultClassification | None:
+    """规范化业务/异常分类。"""
+
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _BUSINESS_CLASSIFICATIONS:
+        raise ValueError(f"Unsupported result classification: {value}")
+    return cast("ResultClassification", normalized)
+
+
+def classify_result_category(
+    value: str | None,
+    *,
+    error_detail: dict | None = None,
+) -> ResultClassification | None:
+    """按通用规则给命令结果增加失败分类。
+
+    业务 NG 不在通用层硬编码，必须由插件 manifest 的 result_classifier 显式覆盖。
+    """
+
+    normalized_result = classify_result(value)
+    if normalized_result == "SUCCESS":
+        return None
+    if normalized_result == "TERMINAL_FAILURE":
+        return "hardware_failure" if error_detail else "system_failure"
+    if normalized_result == "RETRYABLE_FAILURE":
+        return "system_failure"
+    return "system_failure"
+
+
+__all__ = [
+    "ResultClassification",
+    "classify_result",
+    "classify_result_category",
+    "normalize_result_classification",
+]

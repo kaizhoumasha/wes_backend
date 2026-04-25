@@ -181,7 +181,7 @@ class TestPydanticParsing:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
 
         # Mock inbox with payload
         inbox = MagicMock()
@@ -209,7 +209,7 @@ class TestPydanticParsing:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
 
         # Mock inbox with invalid payload (missing required field)
         inbox = MagicMock()
@@ -332,7 +332,7 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
 
         # Mock inbox
         inbox = MagicMock()
@@ -359,7 +359,7 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "COMPLETED"}
+        ctx.session.context_json = {"plugin_state": "COMPLETED"}
 
         # Mock inbox
         inbox = MagicMock()
@@ -388,7 +388,7 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
 
         # Mock inbox
         inbox = MagicMock()
@@ -473,6 +473,27 @@ class TestPluginResultBuilder:
         assert result.failure.code == "TIMEOUT"
         assert result.failure.message == "设备超时"
 
+    def test_business_decision_builder(self):
+        """验证 business_decision() 方法只记录业务判定，不设置失败。"""
+        ctx = MagicMock()
+
+        result = (
+            PluginResultBuilder(ctx)
+            .business_decision(
+                reason_code="SCAN_NG",
+                message="扫码判定 NG",
+                business_key="PKG-001",
+                evidence={"barcode": "PKG-001"},
+            )
+            .build()
+        )
+
+        assert result.failure is None
+        assert len(result.business_decisions) == 1
+        assert result.business_decisions[0].classification == "business_decision"
+        assert result.business_decisions[0].reason_code == "SCAN_NG"
+        assert result.business_decisions[0].business_key == "PKG-001"
+
     def test_complete_builder(self):
         """验证 complete() 方法"""
         ctx = MagicMock()
@@ -512,6 +533,7 @@ class TestPluginResultBuilder:
                 device_role="INPUT_ARM",
                 parameters={"barcode": "ABC123"},
             )
+            .business_decision(reason_code="SCAN_OK", message="扫码判定 OK", business_key="ABC123")
             .wait(event_type="INSPECTION_COMPLETED", timeout_seconds=300)
             .context({"last_barcode": "ABC123"})
             .build()
@@ -521,6 +543,7 @@ class TestPluginResultBuilder:
         assert result.transition == "scan_ok"
         assert result.commands is not None
         assert len(result.commands) == 1
+        assert len(result.business_decisions) == 1
         assert result.wait is not None
         assert result.context_patch is not None
 
@@ -537,7 +560,7 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
 
         # Mock inbox
         inbox = MagicMock()
@@ -564,7 +587,7 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "IDLE"}
+        ctx.session.context_json = {"plugin_state": "IDLE"}
         ctx.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
 
         inbox = MagicMock()
@@ -590,7 +613,7 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "WAITING_INSPECTION"}
+        ctx.session.context_json = {"plugin_state": "WAITING_INSPECTION"}
 
         # Mock inbox
         inbox = MagicMock()
@@ -615,7 +638,7 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"step_code": "WAITING_INSPECTION"}
+        ctx.session.context_json = {"plugin_state": "WAITING_INSPECTION"}
         ctx.normalized_input = MagicMock(
             command_type="PICK", source_result="ERROR", normalized_result="TERMINAL_FAILURE"
         )

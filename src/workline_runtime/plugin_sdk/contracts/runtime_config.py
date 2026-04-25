@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.workline_runtime.run_mode import normalize_run_mode
+
 
 class ResolvedDeviceRuntimeConfig(BaseModel):
     """插件和诊断链路使用的设备运行时快照。"""
@@ -46,6 +48,7 @@ class ResolvedWorklineRuntimeConfig(BaseModel):
     line_code: str | None = None
     line_name: str | None = None
     line_type: str | None = None
+    run_mode: str = "AUTO"
     plugin_key: str | None = None
     contract_version: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
@@ -105,6 +108,7 @@ def resolve_workline_runtime_config(workline: Any | None) -> ResolvedWorklineRun
         line_code=getattr(workline, "line_code", None),
         line_name=getattr(workline, "line_name", None),
         line_type=_enum_str(getattr(workline, "line_type", None)),
+        run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
         plugin_key=getattr(workline, "plugin_key", None),
         contract_version=getattr(workline, "contract_version", None),
         config=_dict_value(getattr(workline, "config", None)),

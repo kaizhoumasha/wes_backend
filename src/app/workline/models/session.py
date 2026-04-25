@@ -46,7 +46,6 @@ class RunMode(str, Enum):
     AUTO = "AUTO"  # 自动模式
     MANUAL = "MANUAL"  # 手动模式
     SIMULATION = "SIMULATION"  # 模拟模式
-    REPLAY = "REPLAY"  # 重放模式
 
 
 # ==================== 基础字段 (用于 Schema 复用) ====================

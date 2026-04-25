@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.app.device.models.device import Device
-from src.app.workline.models import LineType, WorkLine
+from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
-from src.workline_plugins.smt_classifier import SmtClassifierPlugin
+from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin, SmtClassifierStateMachine
 
 
 def make_workline() -> WorkLine:
@@ -49,8 +49,44 @@ def test_workline_model_resolves_runtime_plugin_classes() -> None:
     )
 
     assert workline.plugin_class is SmtClassifierPlugin
-    # 简化插件使用 @step 装饰器，无独立状态机类
-    assert workline.state_machine_class is None
+    assert workline.state_machine_class is SmtClassifierStateMachine
+    assert workline.plugin_definition is not None
+    assert workline.plugin_definition.manifest.plugin_key == "smt_classifier"
+    assert workline.plugin_definition.manifest.contract_version == "1.0"
+    assert workline.plugin_definition.manifest.context_model is SmtClassifierContext
+
+
+def test_workline_run_mode_defaults_to_auto() -> None:
+    """WorkLine 默认运行模式应是 AUTO。"""
+
+    workline = make_workline()
+
+    assert workline.run_mode == WorkLineRunMode.AUTO
+    assert workline.resolved_runtime_config["run_mode"] == WorkLineRunMode.AUTO.value
+
+
+def test_workline_service_rejects_simulation_in_prod() -> None:
+    """生产环境不允许开启 SIMULATION 沙箱模式。"""
+
+    service = WorkLineService()
+
+    with (
+        patch("src.app.workline.services.workline_service.settings.APP_ENV", "prod"),
+        pytest.raises(BadRequestException, match="SIMULATION 运行模式只能在 dev/test 环境启用"),
+    ):
+        service._validate_run_mode({"run_mode": WorkLineRunMode.SIMULATION})
+
+
+def test_workline_service_allows_simulation_in_dev_and_test() -> None:
+    """开发/测试环境允许开启 SIMULATION 沙箱模式。"""
+
+    service = WorkLineService()
+
+    with patch("src.app.workline.services.workline_service.settings.APP_ENV", "dev"):
+        service._validate_run_mode({"run_mode": WorkLineRunMode.SIMULATION})
+
+    with patch("src.app.workline.services.workline_service.settings.APP_ENV", "test"):
+        service._validate_run_mode({"run_mode": WorkLineRunMode.SIMULATION})
 
 
 @pytest.mark.asyncio
@@ -100,6 +136,48 @@ async def test_workline_service_accepts_simplified_plugin(db_session) -> None:
     assert result is not None
     assert result.plugin_key == "smt_classifier"
     assert result.plugin_class is SmtClassifierPlugin
+
+
+@pytest.mark.asyncio
+async def test_workline_service_rejects_plugin_when_required_device_role_missing(db_session) -> None:
+    """插件 manifest 要求的设备角色缺失时，应拒绝绑定。"""
+
+    workline = make_workline()
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    db_session.add_all(
+        [
+            make_device(
+                work_line_id=workline.id,  # type: ignore[arg-type]
+                device_code="ARM01",
+                device_name="进料机械臂",
+                device_role="INPUT_ARM",
+            ),
+            make_device(
+                work_line_id=workline.id,  # type: ignore[arg-type]
+                device_code="PIPELINE01",
+                device_name="流水线",
+                device_role="CONVEYOR",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    service = WorkLineService()
+    with (
+        patch(
+            "src.app.sys.services.audit_service.audit_log_service.create_operation_log",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(BadRequestException, match="角色 OUTPUT_ARM 至少 1 个设备"),
+    ):
+        _ = await service.update(
+            db_session,
+            workline.id,  # type: ignore[arg-type]
+            {"plugin_key": "smt_classifier", "version": workline.version},
+        )
 
 
 @pytest.mark.asyncio

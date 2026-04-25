@@ -62,6 +62,7 @@ from .workline import (
     WorkLineBase,
     WorkLineCreate,
     WorkLineResponse,
+    WorkLineRunMode,
     WorkLineUpdate,
 )
 
@@ -104,6 +105,7 @@ __all__ = [
     "WorkLineBase",
     "WorkLineCreate",
     "WorkLineResponse",
+    "WorkLineRunMode",
     "WorkLineUpdate",
     "WorklineInbox",
     "WorklineInboxBase",

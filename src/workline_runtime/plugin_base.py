@@ -43,7 +43,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from src.core.logger import logger
+from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
 from src.workline_runtime.types import (
+    BusinessDecisionIntent,
     CommandIntent,
     CommandTargetScope,
     FailureIntent,
@@ -390,6 +392,7 @@ class PluginResultBuilder:
     def __post_init__(self):
         self._transition: str | None = None
         self._commands: list[CommandIntent] = []
+        self._business_decisions: list[BusinessDecisionIntent] = []
         self._wait: WaitIntent | None = None
         self._failure: FailureIntent | None = None
         self._complete: bool = False
@@ -423,6 +426,32 @@ class PluginResultBuilder:
                 target_scope=target_scope,
                 device_role=device_role,
                 parameters=parameters or {},
+            )
+        )
+        return self
+
+    def business_decision(
+        self,
+        *,
+        reason_code: str,
+        message: str,
+        evidence: dict[str, Any] | None = None,
+        business_key: str | None = None,
+        classification: str = "business_decision",
+    ) -> PluginResultBuilder:
+        """记录业务判定事实。
+
+        业务 NG 是产线业务结果，不等同于系统异常或设备故障。
+        该意图只进入时间线/查询投影，不触发失败状态。
+        """
+
+        self._business_decisions.append(
+            BusinessDecisionIntent(
+                classification=classification,
+                reason_code=reason_code,
+                message=message,
+                evidence=evidence or {},
+                business_key=business_key,
             )
         )
         return self
@@ -478,6 +507,7 @@ class PluginResultBuilder:
         result = PluginResult()
         result.transition = self._transition
         result.commands = self._commands
+        result.business_decisions = self._business_decisions
         result.wait = self._wait
         result.failure = self._failure
         result.complete = self._complete
@@ -582,7 +612,7 @@ class WorklinePlugin:
         # ========== 前置：状态校验 ==========
         expected_step = getattr(handler, "_expected_step", None)
         if expected_step:
-            current_step = ctx.session.context_json.get("step_code")
+            current_step = get_plugin_state(ctx.session.context_json)
             if current_step != expected_step:
                 ctx.logger.error(f"State mismatch: expected {expected_step}, got {current_step}")
                 return PluginResult(
@@ -626,8 +656,8 @@ class WorklinePlugin:
         # ========== 后置：目标状态设置 ==========
         target_step = getattr(handler, "_target_step", None)
         if target_step and result.failure is None:
-            # 只有成功结果才自动添加 step_code 到 context_patch
-            result.context_patch["step_code"] = target_step
+            # 只有成功结果才自动添加 plugin_state 到 context_patch
+            set_plugin_state(result.context_patch, target_step)
             # 如果没有显式设置 transition，则用 target_step 作为 transition
             if not result.transition:
                 result.transition = target_step

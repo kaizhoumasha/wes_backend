@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.workline_plugin_registry import classify_workline_result, resolve_workline_business_key
 from src.workline_runtime.contracts import SixInOne
-from src.workline_runtime.plugin_sdk.classifiers.result_classifier import classify_result
+from src.workline_runtime.plugin_sdk.classifiers.result_classifier import (
+    classify_result,
+    classify_result_category,
+    normalize_result_classification,
+)
 from src.workline_runtime.plugin_sdk.contracts import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
@@ -74,7 +79,19 @@ def _resolve_correlation_id(inbox: Any, payload: dict[str, Any], *, correlation_
     )
 
 
-def _resolve_device_event_business_key(payload: dict[str, Any], data: dict[str, Any]) -> str | None:
+def _resolve_device_event_business_key(
+    payload: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    plugin_key: str | None = None,
+) -> str | None:
+    try:
+        plugin_business_key = resolve_workline_business_key(plugin_key, payload)
+    except (TypeError, ValueError):
+        plugin_business_key = None
+    if plugin_business_key:
+        return plugin_business_key
+
     canonical_six_in_one = SixInOne.model_validate(data)
     if canonical_six_in_one.business_key:
         return canonical_six_in_one.business_key
@@ -86,7 +103,7 @@ def _resolve_device_event_business_key(payload: dict[str, Any], data: dict[str, 
     )
 
 
-def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
+def normalize_inbox_input(inbox: Any, *, correlation_id: str = "", plugin_key: str | None = None) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
     payload = payload_dict(getattr(inbox, "payload_json", None))
@@ -94,17 +111,24 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
 
     if kind == "COMMAND_RESULT":
         source_result = str(payload.get("result") or "UNKNOWN")
+        error_detail = _normalized_error_detail(payload)
+        plugin_classification = classify_workline_result(plugin_key, payload)
+        result_classification = normalize_result_classification(plugin_classification) or classify_result_category(
+            source_result,
+            error_detail=error_detail,
+        )
         return NormalizedCommandResult(
             command_code=str(payload.get("command_code") or ""),
             source_result=source_result,
             normalized_result=classify_result(source_result),
+            result_classification=result_classification,
             command_type=non_empty_str(payload.get("command_type")) or non_empty_str(payload.get("task_type")),
             device_code=non_empty_str(payload.get("device_code")),
             correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
             finish_time=payload.get("finish_time"),
             payload=payload,
             data=payload_dict(payload.get("data")),
-            error_detail=_normalized_error_detail(payload),
+            error_detail=error_detail,
         )
 
     if kind == "EXTERNAL_HTTP":
@@ -123,7 +147,7 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "") -> Any:
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
-        business_key=_resolve_device_event_business_key(payload, data),
+        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
         correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
         event_time=payload.get("timestamp"),
         payload=payload,

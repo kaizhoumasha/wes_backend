@@ -3,7 +3,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.workline_runtime.plugin_manifest import WorklinePluginManifest
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,38 @@ class WorklinePluginDefinition:
         """惰性解析插件类。"""
 
         return getattr(import_module(self.plugin_module), self.plugin_class_name)
+
+    @property
+    def state_machine_class(self) -> type[Any] | None:
+        """惰性解析插件声明的状态机类。"""
+
+        state_machine_class = self.manifest.state_machine_class
+        return state_machine_class if isinstance(state_machine_class, type) else None
+
+    @property
+    def manifest(self) -> "WorklinePluginManifest":
+        """惰性解析插件 manifest。"""
+
+        manifest = getattr(self.plugin_class, "manifest", None)
+        if not _looks_like_manifest(manifest):
+            raise TypeError(f"工作线插件 {self.plugin_key} 缺少有效 manifest")
+        if getattr(manifest, "plugin_key", None) != self.plugin_key:
+            raise ValueError(
+                f"工作线插件 {self.plugin_key} manifest.plugin_key 不匹配: {getattr(manifest, 'plugin_key', None)}"
+            )
+        return manifest  # type: ignore[return-value]
+
+
+def _looks_like_manifest(value: Any) -> bool:
+    """轻量校验 manifest 形状，避免 registry 顶层导入 runtime 包。"""
+
+    return (
+        value is not None
+        and isinstance(getattr(value, "plugin_key", None), str)
+        and isinstance(getattr(value, "contract_version", None), str)
+        and isinstance(getattr(value, "required_device_roles", None), tuple)
+        and callable(getattr(value, "resolve_business_key", None))
+    )
 
 
 WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
@@ -53,6 +88,24 @@ def parse_workline_six_in_one(plugin_key: str | None, payload: dict[str, Any] | 
     return None
 
 
+def resolve_workline_business_key(plugin_key: str | None, payload_json: dict[str, Any]) -> str | None:
+    """通过插件 manifest 解析业务主键。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return None
+    return definition.manifest.resolve_business_key(payload_json)
+
+
+def classify_workline_result(plugin_key: str | None, payload_json: dict[str, Any]) -> str | None:
+    """通过插件 manifest 解析命令结果分类。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return None
+    return definition.manifest.classify_result(payload_json)
+
+
 def get_plugin_contract_version(plugin_key: str | None) -> str | None:
     """
     从插件类获取 contract_version。
@@ -68,7 +121,7 @@ def get_plugin_contract_version(plugin_key: str | None) -> str | None:
     plugin_def = get_workline_plugin_definition(plugin_key)
     if not plugin_def:
         return None
-    contract_version = getattr(plugin_def.plugin_class, "contract_version", None)
+    contract_version = plugin_def.manifest.contract_version
     return contract_version if isinstance(contract_version, str) and contract_version else None
 
 
@@ -85,6 +138,16 @@ def validate_workline_plugin_assignment(
 
         raise BadRequestException(message=f"不支持的工作线插件: {plugin_key}")
 
+    from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
+
+    topology = WorklineTopologyView.from_devices(list(devices))
+    try:
+        validate_topology_manifest(definition.manifest, topology)
+    except ValueError as exc:
+        from src.core.exceptions import BadRequestException
+
+        raise BadRequestException(message=str(exc)) from exc
+
     validator = getattr(definition.plugin_class, "validate_workline_topology", None)
     if callable(validator):
         _ = validator(workline, devices)
@@ -93,8 +156,10 @@ def validate_workline_plugin_assignment(
 __all__ = [
     "WORKLINE_PLUGIN_REGISTRY",
     "WorklinePluginDefinition",
+    "classify_workline_result",
     "get_plugin_contract_version",
     "get_workline_plugin_definition",
     "parse_workline_six_in_one",
+    "resolve_workline_business_key",
     "validate_workline_plugin_assignment",
 ]

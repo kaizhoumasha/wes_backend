@@ -1,0 +1,76 @@
+"""{{PLUGIN_NAME}} 插件协议边界。"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.workline_runtime.plugin_base import EventPayload
+
+class ItemArrivedData(BaseModel):
+    """事件 data 业务层。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    business_key: str
+    station_code: str
+    expected_value: float = Field(gt=0)
+    tolerance: float = Field(gt=0)
+
+
+class ItemArrivedPayload(EventPayload):
+    """事件包络，业务字段在 data 中。"""
+
+    data: ItemArrivedData
+
+
+class MeasureCompletedData(BaseModel):
+    """命令结果 data 业务层。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    business_key: str
+    actual_value: float = Field(gt=0)
+
+
+class DivertParams(BaseModel):
+    """下发命令 params 业务层。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    business_key: str
+    destination_lane: Literal["PASS_LANE", "HOLD_LANE"]
+    reason_code: str
+
+
+def resolve_business_key(payload: dict[str, Any]) -> str:
+    """从 event.data 解析稳定业务键。"""
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("ITEM_ARRIVED.data is required")
+    business_key = data.get("business_key")
+    if not isinstance(business_key, str) or not business_key:
+        raise ValueError("ITEM_ARRIVED.data.business_key is required")
+    return business_key
+
+
+def classify_result(payload: dict[str, Any]) -> str | None:
+    """区分设备失败和成功结果；业务 NG 由插件 handler 根据 data 判断。"""
+
+    if payload.get("result") == "FAILED":
+        return "hardware_failure"
+    return None
+
+
+def build_measure_params(*, business_key: str, station_code: str) -> dict[str, str]:
+    return {"business_key": business_key, "station_code": station_code}
+
+
+def build_divert_params(*, business_key: str, destination_lane: str, reason_code: str) -> dict[str, str]:
+    return {
+        "business_key": business_key,
+        "destination_lane": destination_lane,
+        "reason_code": reason_code,
+    }

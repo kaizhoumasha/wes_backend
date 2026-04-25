@@ -12,8 +12,10 @@ if str(project_root) not in sys.path:
 
 from src.app.device.models.command import (
     CommandCallbackResult,
+    CommandRequest,
     CommandResult,
     CommandStatus,
+    TaskType,
 )
 from src.app.device.services.device_command_service import (
     DeviceCommandService,
@@ -69,6 +71,38 @@ class NullUpdateRepo(FakeRepo):
     async def update(self, _db: object, id: int, data: dict[str, Any]) -> FakeCommand | None:
         self.update_calls.append((id, dict(data)))
         return None
+
+
+def test_command_request_accepts_plugin_defined_task_type() -> None:
+    request = CommandRequest(device_id=1, task_type="WEIGH_TOTE")
+
+    assert request.task_type == "WEIGH_TOTE"
+
+
+def test_command_request_normalizes_legacy_task_type_enum() -> None:
+    request = CommandRequest(device_id=1, task_type=TaskType.PICK_AND_PUT)
+
+    assert request.task_type == "PICK_AND_PUT"
+
+
+@pytest.mark.asyncio
+async def test_create_command_persists_plugin_defined_task_type() -> None:
+    command = FakeCommand()
+    repo = FakeRepo(command)
+    service = DeviceCommandService()
+    service.repo = repo  # type: ignore[assignment]
+    service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
+
+    db = SimpleNamespace(commit=AsyncMock())
+    request = CommandRequest(device_id=1, task_type="WEIGH_TOTE", params={"tote_id": "TOTE-001"})
+
+    created = await service.create_command(cast("Any", db), request)
+
+    assert created is command
+    assert repo.create_calls
+    command_data = repo.create_calls[0]
+    assert command_data["task_type"] == "WEIGH_TOTE"
+    assert "-WEIGH_TOTE-" in command_data["command_code"]
 
 
 @pytest.mark.asyncio

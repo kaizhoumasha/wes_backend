@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
-from src.workline_runtime.contracts import SixInOne
+from src.workline_runtime.contracts import DeviceErrorCode, SixInOne
 
 
 def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
@@ -45,6 +45,103 @@ def parse_six_in_one_payload(payload: dict[str, Any] | None) -> SixInOne | None:
 
     six_in_one = SixInOne.model_validate(normalized)
     return six_in_one if six_in_one.has_any_value else None
+
+
+def resolve_smt_business_key(payload_json: dict[str, Any]) -> str | None:
+    """从 SMT 事件包络中解析稳定业务键。"""
+
+    data = payload_json.get("data")
+    six_in_one = parse_six_in_one_payload(data if isinstance(data, dict) else None)
+    return six_in_one.business_key if six_in_one and six_in_one.business_key else None
+
+
+def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
+    """按 SMT 插件合同分类命令结果。
+
+    业务检测 NG 是业务判定；设备执行失败、急停等仍由 failure 路径承载。
+    """
+
+    result = str(payload_json.get("result") or "").strip().upper()
+    data = payload_json.get("data") if isinstance(payload_json.get("data"), dict) else {}
+    error_detail = payload_json.get("error_detail") if isinstance(payload_json.get("error_detail"), dict) else {}
+
+    inspection_result = str(data.get("inspection_result") or "").strip().upper()
+    if result == "SUCCESS" and inspection_result == "NG":
+        return "business_decision"
+
+    error_code = error_detail.get("error_code") or error_detail.get("code")
+    if error_code in {
+        DeviceErrorCode.INSPECTION_SIZE_NG.value,
+        DeviceErrorCode.INSPECTION_THICKNESS_NG.value,
+    }:
+        return "business_decision"
+    if error_code:
+        return "hardware_failure"
+
+    return None
+
+
+def build_measurement_reel_params(pkg_id: str) -> dict[str, str]:
+    """构造测量命令业务参数。"""
+
+    return {"pkg_id": pkg_id}
+
+
+def build_move_forward_params(pkg_id: str) -> dict[str, str]:
+    """构造流水线前进命令业务参数。"""
+
+    return {"pkg_id": pkg_id}
+
+
+def build_pick_scan_ng_params(*, barcode: str, location: str) -> dict[str, str]:
+    """构造扫码 NG 分流命令业务参数。"""
+
+    return {
+        "barcode": barcode,
+        "source_type": "INPUT_PLATFORM",
+        "target_type": "NG_PLATFORM",
+        "source_loc": location,
+        "target_loc": "STATION_NG_PLATFORM1",
+    }
+
+
+def build_pick_inspection_ng_params(*, barcode: str) -> dict[str, str]:
+    """构造检测 NG 分流命令业务参数。"""
+
+    return {
+        "barcode": barcode,
+        "source_type": "PIPELINE_PLATFORM",
+        "target_type": "NG_PLATFORM",
+    }
+
+
+def build_output_to_bin_params(
+    *,
+    pkg_id: str,
+    reel_diameter: str,
+    bin_location: dict[str, Any],
+) -> dict[str, Any]:
+    """构造出料到料箱命令业务参数。"""
+
+    return {
+        "barcode": pkg_id,
+        "reel_diameter": reel_diameter,
+        "target_type": "BIN",
+        "target_loc": bin_location["bin_id"],
+        "bin_type": bin_location["bin_type"],
+    }
+
+
+def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
+    """构造无外部分配服务时的确定性料箱分配结果。"""
+
+    checksum = sum(ord(char) for char in pkg_id) or 1
+    bin_types = ("三格箱", "五格箱", "九格箱")
+    return {
+        "bin_id": f"BIN_{checksum % 900 + 100}",
+        "bin_type": bin_types[checksum % len(bin_types)],
+        "bin_cell_location": str(checksum % 9 + 1),
+    }
 
 
 class ScanEventData(SixInOne, BaseModel):
@@ -117,6 +214,14 @@ __all__ = [
     "PickPlaceResultData",
     "ScanEventData",
     "ScanEventPayload",
+    "build_default_bin_allocation",
+    "build_measurement_reel_params",
+    "build_move_forward_params",
+    "build_output_to_bin_params",
+    "build_pick_inspection_ng_params",
+    "build_pick_scan_ng_params",
+    "classify_smt_command_result",
     "normalize_six_in_one_payload",
     "parse_six_in_one_payload",
+    "resolve_smt_business_key",
 ]

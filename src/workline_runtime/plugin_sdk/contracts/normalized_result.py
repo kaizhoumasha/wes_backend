@@ -11,6 +11,7 @@ class NormalizedCommandResult(BaseModel):
     command_code: str
     source_result: str
     normalized_result: str
+    result_classification: str | None = None
     command_type: str | None = None
     device_code: str | None = None
     correlation_id: str | None = None

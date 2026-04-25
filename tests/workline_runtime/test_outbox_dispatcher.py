@@ -369,8 +369,8 @@ class TestOutboxDispatcher:
 
         assert outbox.created_at == fixed_now
 
-    def test_build_outbox_payload_passes_vendor_payload_as_is(self):
-        """测试发往设备的 payload 直接使用命令里保存的 vendor payload。"""
+    def test_build_outbox_payload_wraps_device_command_params(self):
+        """测试 DeviceCommand.params 只作为派发包络 params。"""
         from src.celery_app.tasks.workline import _build_outbox_payload
 
         command = MagicMock()
@@ -379,22 +379,23 @@ class TestOutboxDispatcher:
         command.priority = 5
         command.timeout_ms = 300000
         command.params = {
-            "command_code": "CMD-VENDOR-001",
-            "task_type": "PICK_AND_PUT",
-            "priority": 1,
-            "timeout": 30000,
             "source": {"location_type": "INPUT_PLATFORM", "location_id": "STATION_INPUT1"},
             "target": {"location_type": "NG_PLATFORM", "location_id": "STATION_NG_PLATFORM1"},
-            "params": {
-                "source": {"location_type": "INPUT_PLATFORM", "location_id": "STATION_INPUT1"},
-                "target": {"location_type": "NG_PLATFORM", "location_id": "STATION_NG_PLATFORM1"},
-            },
-            "timestamp": 1743235200000,
         }
 
         payload = _build_outbox_payload(command)
 
-        assert payload == command.params
+        assert "source" not in payload
+        assert "target" not in payload
+        assert payload["command_code"] == "CMD-001"
+        assert payload["task_type"] == "PICK_AND_PLACE"
+        assert payload["priority"] == 5
+        assert payload["timeout"] == 300000
+        assert payload["params"] == {
+            "source": {"location_type": "INPUT_PLATFORM", "location_id": "STATION_INPUT1"},
+            "target": {"location_type": "NG_PLATFORM", "location_id": "STATION_NG_PLATFORM1"},
+        }
+        assert isinstance(payload["timestamp"], int)
 
     def test_build_outbox_payload_injects_device_code_into_vendor_payload(self):
         """测试发往设备的 payload 会补齐 target device_code。"""
@@ -406,18 +407,14 @@ class TestOutboxDispatcher:
         command.priority = 5
         command.timeout_ms = 300000
         command.params = {
-            "command_code": "CMD-VENDOR-DEVICE-001",
-            "task_type": "PICK_AND_PUT",
-            "priority": 1,
-            "timeout": 30000,
-            "params": {},
-            "timestamp": 1743235200000,
+            "barcode": "PKG-001",
         }
 
         payload = _build_outbox_payload(command, device_code="ARM03")
 
         assert payload["device_code"] == "ARM03"
         assert payload["command_code"] == "CMD-VENDOR-DEVICE-001"
+        assert payload["params"] == {"barcode": "PKG-001"}
 
     def test_build_outbox_payload_legacy_command_fallback(self):
         """测试历史命令 params 为空时回退到基础字段组装。"""
@@ -494,7 +491,7 @@ class TestOutboxDispatcher:
             _sync_session_contract_snapshot(
                 session,
                 workline=workline,
-                context={"step_code": "WAITING_PICK_PLACE"},
+                context={"plugin_state": "WAITING_PICK_PLACE"},
             )
 
         assert session.contract_version == "wl-2.0"
@@ -514,7 +511,7 @@ class TestOutboxDispatcher:
             _sync_session_contract_snapshot(
                 session,
                 workline=workline,
-                context={"step_code": "WAITING_PICK_PLACE"},
+                context={"plugin_state": "WAITING_PICK_PLACE"},
             )
 
         assert session.contract_version == "1.0"
@@ -583,6 +580,57 @@ class TestDispatchByType:
 
         assert result is True
         mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "ROBOT_001")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_device_command_routes_to_sandbox_without_payload_flag(self, mock_db):
+        """SIMULATION Session 的设备指令应派发到沙箱出口，且不改写 payload。"""
+        from src.app.workline.models.session import RunMode
+        from src.celery_app.tasks.workline import OutboxDispatcher
+
+        payload = {"command_code": "CMD-SIM-001", "task_type": "PICK_AND_PUT", "params": {"pkg_id": "PKG001"}}
+        outbox = MockOutbox(
+            dispatch_type=DispatchType.DEVICE_COMMAND,
+            target_type=TargetType.DEVICE,
+            target_code="ROBOT_001",
+            payload_json=dict(payload),
+        )
+        outbox.session = SimpleNamespace(run_mode=RunMode.SIMULATION)
+
+        with patch.object(
+            OutboxDispatcher,
+            "_dispatch_device_command",
+            new=AsyncMock(return_value=False),
+        ) as live_dispatch:
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
+
+        assert result is True
+        assert outbox.payload_json == payload
+        assert "sandbox" not in outbox.payload_json
+        live_dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_external_http_routes_to_sandbox(self, mock_db):
+        """SIMULATION Session 的外部 HTTP 请求应进入沙箱出口。"""
+        from src.app.workline.models.session import RunMode
+        from src.celery_app.tasks.workline import OutboxDispatcher
+
+        outbox = MockOutbox(
+            dispatch_type=DispatchType.EXTERNAL_HTTP,
+            target_type=TargetType.HTTP_ENDPOINT,
+            target_code="https://example.test/callback",
+            payload_json={"event": "ready", "data": {"pkg_id": "PKG001"}},
+        )
+        outbox.session = SimpleNamespace(run_mode=RunMode.SIMULATION)
+
+        with patch.object(
+            OutboxDispatcher,
+            "_dispatch_external_http",
+            new=AsyncMock(return_value=False),
+        ) as live_dispatch:
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
+
+        assert result is True
+        live_dispatch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_device_command_logs_response_body_on_http_error(self, mock_db):

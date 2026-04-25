@@ -5,7 +5,7 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.outbox import OutboxStatus, WorklineOutbox
+from src.app.workline.models.outbox import DispatchType, OutboxStatus, WorklineOutbox
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 
@@ -46,6 +46,34 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             .order_by(columns.created_at.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
+        )
+        return list(result.scalars().all())
+
+    async def get_sandbox_pending_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+    ) -> list[WorklineOutbox]:
+        """获取沙箱待处理消息。
+
+        SIMULATION 模式下，Outbox 会正常进入派发链路并标记为 SENT；
+        SENT 但未 ACKED 的消息即等待调试人员手工 callback/result 回传。
+        """
+        from src.app.workline.models.session import RunMode, WorklineSession
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        session_columns = cast("Any", WorklineSession).__table__.c
+
+        result = await db.execute(
+            select(WorklineOutbox)
+            .join(WorklineSession, columns.session_id == session_columns.id)
+            .where(
+                session_columns.run_mode == RunMode.SIMULATION,
+                columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
+                columns.status.in_([OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]),
+            )
+            .order_by(columns.created_at.asc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 

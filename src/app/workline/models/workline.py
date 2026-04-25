@@ -25,6 +25,14 @@ class LineType(str, Enum):
     HYBRID = "HYBRID"  # 混合线
 
 
+class WorkLineRunMode(str, Enum):
+    """作业线运行模式枚举。"""
+
+    AUTO = "AUTO"  # 自动运行，允许真实设备和外部副作用
+    MANUAL = "MANUAL"  # 人工确认/人工介入
+    SIMULATION = "SIMULATION"  # 沙箱模拟，派发到沙箱通道
+
+
 class WorkLineBase(BaseMixin):
     """作业线基础字段 - 用于 Schema 复用"""
 
@@ -75,6 +83,20 @@ class WorkLineBase(BaseMixin):
         default_factory=dict,
         sa_column=Column(JSON),
         description="工作线运行时配置（重试、超时、会话归属等）",
+    )
+    run_mode: WorkLineRunMode = Field(
+        default=WorkLineRunMode.AUTO,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                WorkLineRunMode,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="工作线运行模式",
     )
     owner_team: str | None = Field(default=None, max_length=100, description="工作线主责团队")
     support_contact: str | None = Field(default=None, max_length=100, description="工作线支持联系人")
@@ -137,6 +159,9 @@ class WorkLine(
         merged = dict(self.runtime_config_json or {})
         merged.setdefault("plugin_key", self.plugin_key)
         merged.setdefault("contract_version", self.contract_version)
+        merged.setdefault(
+            "run_mode", self.run_mode.value if isinstance(self.run_mode, WorkLineRunMode) else self.run_mode
+        )
         return merged
 
     @property

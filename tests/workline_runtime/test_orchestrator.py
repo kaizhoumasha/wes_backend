@@ -20,6 +20,7 @@ import pytest
 
 from src.app.workline.models.inbox import InboxKind
 from src.workline_runtime.types import (
+    BusinessDecisionIntent,
     CommandIntent,
     FailureIntent,
     PluginResult,
@@ -337,6 +338,43 @@ class TestOrchestratorServicePhase2:
 
             assert result.success is True
             assert result.transition == "scan_ok"
+
+    @pytest.mark.asyncio
+    async def test_process_result_with_business_decisions(
+        self,
+        mock_session,
+        mock_workline,
+        mock_inbox,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """测试处理包含业务判定的 PluginResult。"""
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        decision = BusinessDecisionIntent(
+            reason_code="SCAN_NG",
+            message="扫码判定 NG",
+            business_key="PKG-001",
+        )
+        orchestrator = OrchestratorService(lock_provider=lambda key: make_noop_lock())
+
+        with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
+            mock_plugin = MagicMock()
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(business_decisions=[decision]))
+            mock_load_plugin.return_value = mock_plugin
+
+            result = await orchestrator.process_inbox(
+                session=mock_session,
+                workline=mock_workline,
+                inbox=mock_inbox,
+                devices_by_role=mock_devices_by_role,
+                services=mock_services,
+                correlation_id="test-correlation-id",
+            )
+
+            assert result.success is True
+            assert result.business_decisions == [decision]
+            assert result.failure is None
 
     @pytest.mark.asyncio
     async def test_process_result_with_commands(

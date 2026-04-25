@@ -52,6 +52,10 @@ router = APIRouter()
 _CORRELATION_ID_ALIASES = ("correlation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
+_EVENT_CALLBACK_TOP_LEVEL_FIELDS = frozenset({"device_code", "event_type", "timestamp", "data"})
+_RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
+    {"command_code", "device_code", "result", "finish_time", "data", "error_detail"}
+)
 
 _CALLBACK_AUDIT_TITLES = {
     "result": "设备回调结果",
@@ -99,6 +103,19 @@ def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: 
     if value:
         return value
     raise ValueError(f"{field_name} is required")
+
+
+def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str], callback_type: str) -> None:
+    """校验 callback 顶层字段，业务字段必须放入 data。"""
+
+    unexpected_fields = sorted(str(field_name) for field_name in payload if field_name not in allowed_fields)
+    if unexpected_fields:
+        allowed_text = ", ".join(sorted(allowed_fields))
+        unexpected_text = ", ".join(unexpected_fields)
+        raise ValueError(
+            f"{callback_type} 顶层字段不符合协议: 不允许 {unexpected_text}; "
+            f"允许字段: {allowed_text}; 业务字段必须放在 data 中"
+        )
 
 
 def _response_time_ms(start_time: float) -> int:
@@ -510,6 +527,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
         )
 
     try:
+        _validate_top_level_fields(callback_data, _RESULT_CALLBACK_TOP_LEVEL_FIELDS, "result")
         device_code = _require_first_str(callback_data, _DEVICE_CODE_ALIASES, "device_code")
         command_code = _require_first_str(callback_data, _COMMAND_CODE_ALIASES, "command_code")
     except ValueError as exc:
@@ -766,9 +784,11 @@ async def callback_event(
     try:
         # event 是统一硬件事件入口：这里只做最小包络校验，
         # 不提前判断插件私有 payload 是否“业务成立”。
+        _validate_top_level_fields(event_data, _EVENT_CALLBACK_TOP_LEVEL_FIELDS, "event")
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
-    except ValidationError as exc:
-        message = f"事件上报最小包络校验失败: {_summarize_validation_error(exc)}"
+    except (ValidationError, ValueError) as exc:
+        detail = _summarize_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
+        message = f"事件上报最小包络校验失败: {detail}"
         logger.error(message)
         _log_callback_diagnostic(
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,

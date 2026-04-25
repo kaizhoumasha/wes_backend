@@ -4,6 +4,7 @@
 定义插件返回结果的领域意图类型：
 - WaitIntent: 等待意图
 - CommandIntent: 设备命令意图
+- BusinessDecisionIntent: 业务判定意图
 - FailureIntent: 失败归因意图
 - PluginResult: 插件返回结果
 
@@ -82,6 +83,27 @@ class FailureIntent(BaseModel):
     message: str
 
 
+class BusinessDecisionIntent(BaseModel):
+    """业务判定意图
+
+    插件返回此意图时，编排器只记录可查询的业务判定事实，
+    不把 Session 标记为失败，也不触发外部副作用。
+
+    Attributes:
+        classification: 判定分类，默认 business_decision
+        reason_code: 业务原因码（如 SCAN_NG、INSPECTION_SIZE_NG）
+        message: 人类可读的业务判定说明
+        evidence: 支撑判定的关键业务事实
+        business_key: 可用于检索的业务主键
+    """
+
+    classification: str = "business_decision"
+    reason_code: str
+    message: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    business_key: str | None = None
+
+
 class PluginResult(BaseModel):
     """插件返回结果 - 领域意图集合
 
@@ -91,6 +113,7 @@ class PluginResult(BaseModel):
         transition: 状态机触发器（由插件状态机定义）
         context_patch: Session 上下文更新
         decisions: 编排决策列表
+        business_decisions: 业务判定列表（不代表系统失败）
         commands: 设备命令列表
         wait: 等待条件
         failure: 失败归因
@@ -106,6 +129,9 @@ class PluginResult(BaseModel):
     # 领域决策
     decisions: list[dict[str, Any]] = Field(default_factory=list)
 
+    # 业务判定
+    business_decisions: list[BusinessDecisionIntent] = Field(default_factory=list)
+
     # 设备命令
     commands: list[CommandIntent] = Field(default_factory=list)
 
@@ -120,6 +146,7 @@ class PluginResult(BaseModel):
 
 
 __all__ = [
+    "BusinessDecisionIntent",
     "CommandIntent",
     "CommandTargetScope",
     "FailureIntent",

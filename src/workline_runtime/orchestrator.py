@@ -26,9 +26,10 @@ from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import null_plugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
+from src.workline_runtime.plugin_state import get_plugin_state
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.transition_validator import TransitionValidator
-from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
+from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 from src.workline_runtime.utils import ensure_dict
 
 # 类型注解用（运行时需要这些类型作为函数签名）
@@ -101,6 +102,7 @@ class OrchestratorResult:
         error: 错误信息（失败时）
         transition: 触发的状态迁移
         decisions: 待派发的外部决策
+        business_decisions: 业务判定事实
         commands: 待派发的命令列表
         wait: 等待条件
         failure: 失败归因
@@ -114,6 +116,7 @@ class OrchestratorResult:
     error_domain: str | None = None
     transition: str | None = None
     decisions: list[dict[str, Any]] | None = None
+    business_decisions: list[BusinessDecisionIntent] | None = None
     commands: list[CommandIntent] | None = None
     wait: WaitIntent | None = None
     failure: FailureIntent | None = None
@@ -161,15 +164,12 @@ class OrchestratorService:
     def _resolve_transition_state(session: Any, state_machine_class: type[Any] | None) -> str:
         """为插件状态机解析当前状态。
 
-        有插件状态机时优先使用 session.context_json['stage']；
+        有插件状态机时使用 session.context_json['plugin_state']；
         否则退回通用 session.status。
         """
 
         if state_machine_class is not None:
-            stage = ensure_dict(getattr(session, "context_json", None)).get("stage")
-            if isinstance(stage, str) and stage:
-                return stage
-            return "IDLE"
+            return get_plugin_state(ensure_dict(getattr(session, "context_json", None)), default="IDLE") or "IDLE"
 
         status = getattr(session, "status", None)
         return status if isinstance(status, str) and status else ""
@@ -485,7 +485,7 @@ class OrchestratorService:
             )
             if not is_valid:
                 logger.error(f"Invalid transition: {error}")
-                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error)
+                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error or "Unknown transition error")
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")
@@ -494,6 +494,7 @@ class OrchestratorService:
             success=True,
             transition=result.transition,
             decisions=result.decisions if result.decisions else None,
+            business_decisions=result.business_decisions if result.business_decisions else None,
             commands=result.commands if result.commands else None,
             wait=result.wait,
             failure=result.failure,
