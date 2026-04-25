@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 移除运行时契约层中重复的 Session/Inbox 状态枚举定义，统一引用模型层枚举。
 - 修复本地 SMT mock 集成测试会通过系统代理误判服务状态的问题。
 - 修复 TimescaleDB 未在 Postgres 启动时预加载导致迁移 DDL 被服务器中断的问题。
+- 修复 SMT mock 链路中插件任务类型被旧映射改写为 `PROCESS` / `PICK_AND_PLACE` 的问题。
 
 ## [0.1.0.0] - 2026-03-23
 

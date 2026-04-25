@@ -118,7 +118,7 @@
 |------|------|
 | `command_code` | 全局唯一命令编码 |
 | `device_id` | 目标设备 |
-| `task_type` | `DeviceCommand` 内部保存的任务类型，如 `PICK_AND_PLACE`、`PROCESS`；对外派发时 `Outbox.payload_json.task_type` 会优先使用供应商协议值 |
+| `task_type` | 保存插件/设备协议任务类型，如 `MEASUREMENT_REEL`、`MOVE_FORWARD`、`PICK_AND_PUT` |
 | `params` | 业务参数 |
 | `status` | 命令状态 |
 | `correlation_id` | 串联链路 |
@@ -406,13 +406,13 @@ sequenceDiagram
 
 #### 5.7.2 DeviceCommand 新记录
 
-`DeviceCommand` 在库内仍会把插件动作 `PICK_AND_PUT` 映射成内部任务类型 `PICK_AND_PLACE`。
+`DeviceCommand` 保留插件动作 `PICK_AND_PUT`，避免设备 mock 和命令结果路由看到旧的通用任务类型。
 
 ```json
 {
-  "command_code": "CMD-20260327-PICK_AND_PLACE-AB12CD34",
+  "command_code": "CMD-20260327-PICK_AND_PUT-AB12CD34",
   "device_id": 101,
-  "task_type": "PICK_AND_PLACE",
+  "task_type": "PICK_AND_PUT",
   "priority": 5,
   "timeout_ms": 300000,
   "params": {
@@ -435,11 +435,11 @@ sequenceDiagram
   "session_id": 5001,
   "workline_id": 88,
   "dispatch_type": "DEVICE_COMMAND",
-  "dispatch_key": "device-command:CMD-20260327-PICK_AND_PLACE-AB12CD34",
+  "dispatch_key": "device-command:CMD-20260327-PICK_AND_PUT-AB12CD34",
   "target_type": "DEVICE",
   "target_code": "ARM01",
   "payload_json": {
-    "command_code": "CMD-20260327-PICK_AND_PLACE-AB12CD34",
+    "command_code": "CMD-20260327-PICK_AND_PUT-AB12CD34",
     "task_type": "PICK_AND_PUT",
     "priority": 5,
     "timeout": 300000,
@@ -472,8 +472,8 @@ sequenceDiagram
 
 ```json
 {
-  "command_code": "CMD-20260327-PICK_AND_PLACE-AB12CD34",
-  "task_type": "PICK_AND_PLACE",
+  "command_code": "CMD-20260327-PICK_AND_PUT-AB12CD34",
+  "task_type": "PICK_AND_PUT",
   "priority": 5,
   "timeout": 300000,
   "params": {
@@ -497,7 +497,7 @@ ARM mock 设备行为：
 
 ```json
 {
-  "command_code": "CMD-20260327-PICK_AND_PLACE-AB12CD34",
+  "command_code": "CMD-20260327-PICK_AND_PUT-AB12CD34",
   "device_code": "ARM01",
   "result": "SUCCESS",
   "finish_time": 1710000005000,
@@ -511,7 +511,7 @@ ARM mock 设备行为：
 `callback_result()` 会：
 
 1. 根据 `command_code` 找 `DeviceCommand`
-2. 从命令参数 `params.action` 推导 `command_type = PICK_AND_PUT`
+2. 从 `DeviceCommand.task_type` 推导 `command_type = PICK_AND_PUT`
 3. 调用 `create_command_result_inbox()`
 4. commit 后再次投递 `process_inbox_batch`
 
@@ -521,7 +521,7 @@ ARM mock 设备行为：
 |------|----|
 | `kind` | `COMMAND_RESULT` |
 | `command_id` | 关联到前一步命令 |
-| `payload_json.command_code` | `CMD-20260327-PICK_AND_PLACE-AB12CD34` |
+| `payload_json.command_code` | `CMD-20260327-PICK_AND_PUT-AB12CD34` |
 | `payload_json.result` | `SUCCESS` |
 | `payload_json.command_type` | `PICK_AND_PUT` |
 | `status` | `NEW` |
@@ -653,8 +653,7 @@ ARM mock 设备行为：
 系统因此会：
 
 - 把 `Session.status` 切到 `WAITING_DEVICE_RESULT`
-- 创建 `DeviceCommand(task_type=PROCESS)`，但对外 `Outbox.payload_json.task_type` 会发送为 `MOVE_FORWARD`
-- 创建目标为 `PIPELINE01` 的 `Outbox`
+- 创建 `DeviceCommand(task_type=MOVE_FORWARD)` 和目标为 `PIPELINE01` 的 `Outbox`
 
 ### 6.3 阶段 3: 流水线命令执行成功
 
@@ -663,7 +662,7 @@ ARM mock 设备行为：
 ```json
 {
   "message_type": "COMMAND_RESULT",
-  "command_code": "CMD-20260327-PROCESS-EEFF0011",
+  "command_code": "CMD-20260327-MOVE_FORWARD-EEFF0011",
   "device_code": "PIPELINE01",
   "result": "SUCCESS",
   "finish_time": 1710000105000,
@@ -832,7 +831,7 @@ IDLE
 | 1 | `SCAN_COMPLETED + OK` | 新增 `DEVICE_EVENT Inbox` |
 | 2 | 插件返回 `scan_ok` | 更新 `Session.context_json.stage = WAITING_INSPECTION` |
 | 3 | `INSPECTION_COMPLETED + OK` | 新增第二条 `DEVICE_EVENT Inbox` |
-| 4 | 插件返回 `inspection_ok + MOVE_FORWARD + wait` | 新增 `DeviceCommand(PROCESS)` + `Outbox(CONVEYOR)` |
+| 4 | 插件返回 `inspection_ok + MOVE_FORWARD + wait` | 新增 `DeviceCommand(MOVE_FORWARD)` + `Outbox(CONVEYOR)` |
 | 5 | 流水线回调 `MOVE_FORWARD SUCCESS` | 新增 `COMMAND_RESULT Inbox` |
 | 6 | WES 同步调用 allocation 正式接口 | 不写 `Outbox`；更新 `Session.context_json.allocation_*` |
 | 7A | allocation = `ALLOCATED` | 插件返回 `conveyor_complete + PICK_AND_PUT + wait`；新增第二条 `DeviceCommand` + 第二条 `Outbox(OUTPUT_ARM)` |

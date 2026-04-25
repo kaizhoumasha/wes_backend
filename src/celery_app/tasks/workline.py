@@ -437,10 +437,8 @@ def _device_map_from_roles(devices_by_role: dict[str, list[Any]]) -> dict[int, A
 
 
 def _map_command_task_type(action: str) -> str:
-    if action == "PICK_AND_PUT":
-        return "PICK_AND_PLACE"
-    if action in {"MEASUREMENT_REEL", "MOVE_FORWARD"}:
-        return "PROCESS"
+    # DeviceCommand.task_type 已允许插件扩展字符串；这里必须保留插件协议值，
+    # 否则下游 mock/设备和命令结果路由会看到旧的通用任务类型。
     return action
 
 

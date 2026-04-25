@@ -1610,14 +1610,14 @@ class TestInboxConsumer:
         assert outboxes[0].target_code == "ROBOT-001"
         assert outboxes[0].payload_json["command_code"] == "VENDOR-CMD-001"
         assert outboxes[0].payload_json["device_code"] == "ROBOT-001"
-        assert outboxes[0].payload_json["task_type"] == "PICK_AND_PLACE"
+        assert outboxes[0].payload_json["task_type"] == "PICK_AND_PUT"
         assert outboxes[0].payload_json["params"] == {"barcode": "BC-001"}
 
         assert len(created_command_payloads) == 1
         assert created_command_payloads[0]["plugin_key"] == "demo_plugin"
         assert created_command_payloads[0]["contract_version"] == "wl-v2026.04"
         assert created_command_payloads[0]["step_code"] == "SCAN_01"
-        assert created_command_payloads[0]["task_type"] == "PICK_AND_PLACE"
+        assert created_command_payloads[0]["task_type"] == "PICK_AND_PUT"
         assert created_command_payloads[0]["correlation_id"] == "corr-inbox-001"
         assert created_command_payloads[0]["params"] == {"barcode": "BC-001"}
 
@@ -1770,6 +1770,7 @@ class TestInboxConsumer:
         outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
         assert len(created_command_payloads) == 1
         assert created_command_payloads[0]["device_id"] == 8
+        assert created_command_payloads[0]["task_type"] == "MOVE_FORWARD"
         assert len(outboxes) == 1
         assert outboxes[0].dispatch_type == DispatchType.DEVICE_COMMAND
         assert outboxes[0].target_code == "CONVEYOR-01"
