@@ -8,6 +8,7 @@
 """
 
 import uuid
+from enum import Enum
 from typing import Any, cast
 
 import httpx
@@ -62,11 +63,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     ) -> DeviceCommand | None:
         """创建设备指令"""
         # 生成 command_code（如果未提供）
+        task_type = self._task_type_value(command_request.task_type)
         command_code = command_request.command_code
         if not command_code:
             command_code = self._generate_command_code(
                 command_request.device_id,
-                command_request.task_type.value,
+                task_type,
             )
 
         # 生成 correlation_id（如果未提供）
@@ -78,7 +80,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         command_data: dict[str, Any] = {
             "command_code": command_code,
             "device_id": command_request.device_id,
-            "task_type": command_request.task_type,
+            "task_type": task_type,
             "priority": command_request.priority,
             "timeout_ms": command_request.timeout_ms,
             "params": cast("dict[str, Any] | None", command_request.params),
@@ -90,7 +92,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if command:
             await db.commit()
             await self._invalidate_command_cache(invalidate_list=True)
-            logger.info(f"创建指令: {command_code} -> {command_request.task_type.value}")
+            logger.info(f"创建指令: {command_code} -> {task_type}")
 
         return command
 
@@ -123,7 +125,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         # 3. 构建请求体（白皮书 3.1.1 格式）
         request_body: dict[str, Any] = {
             "command_code": command.command_code,
-            "task_type": command.task_type.value,
+            "task_type": self._task_type_value(command.task_type),
             "priority": command.priority,
             "timeout": command.timeout_ms,
             "params": cast("dict[str, Any] | None", command.params),
@@ -279,6 +281,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         date_str = timezone.now_for_db().strftime("%Y%m%d")
         unique_id = uuid.uuid4().hex[:8].upper()
         return f"CMD-{date_str}-{task_type}-{unique_id}"
+
+    def _task_type_value(self, task_type: Any) -> str:
+        """兼容历史 TaskType 枚举与插件自定义字符串。"""
+        if isinstance(task_type, Enum):
+            return str(task_type.value)
+        return str(task_type)
 
     async def _get_device_url(self, db: AsyncSession, device_id: int) -> str:
         """

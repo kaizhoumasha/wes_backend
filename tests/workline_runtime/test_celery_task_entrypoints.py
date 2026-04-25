@@ -44,5 +44,6 @@ def test_ensure_non_empty_retry_result_rejects_empty_retry() -> None:
         )
 
 
-def test_map_command_task_type_maps_measurement_reel_to_process() -> None:
-    assert _map_command_task_type("MEASUREMENT_REEL") == "PROCESS"
+@pytest.mark.parametrize("task_type", ["MEASUREMENT_REEL", "MOVE_FORWARD", "PICK_AND_PUT"])
+def test_map_command_task_type_preserves_plugin_task_type(task_type: str) -> None:
+    assert _map_command_task_type(task_type) == task_type

@@ -17,6 +17,7 @@ from pydantic import field_validator
 from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
+from sqlmodel._compat import SQLModelConfig
 
 from src.app.device.models.device import (
     Device,  # noqa: TC001 - runtime import ensures related device/workline metadata loads
@@ -87,17 +88,9 @@ class CommandBase(BaseMixin):
         description="目标设备 ID（关联 Device.id）",
     )
 
-    # 🔥 使用 VARCHAR + CHECK 约束
-    task_type: TaskType = Field(
-        sa_type=cast(
-            "Any",
-            SQLAEnum(
-                TaskType,
-                native_enum=False,
-                create_constraint=True,
-                length=50,
-            ),
-        ),
+    # 插件可扩展任务类型：使用 VARCHAR，不再用中心枚举 CHECK 约束卡住新插件指令。
+    task_type: str = Field(
+        max_length=50,
         description="任务类型",
     )
 
@@ -128,6 +121,18 @@ class CommandBase(BaseMixin):
         if isinstance(v, dict):
             return cast("dict[str, Any]", v)
         raise ValueError("params 必须是字典类型")
+
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def normalize_task_type(cls, v: Any) -> str:
+        """允许内置 TaskType 常量，也允许插件定义自己的任务类型字符串。"""
+        if isinstance(v, Enum):
+            v = v.value
+        if isinstance(v, str):
+            task_type = v.strip()
+            if task_type:
+                return task_type
+        raise ValueError("task_type 必须是非空字符串")
 
 
 # ==================== Pydantic Schema ====================
@@ -167,6 +172,8 @@ class CommandResponse(CommandBase):
 
 class CommandCallbackResult(BaseMixin):
     """指令回调结果 Schema - 设备回调时使用"""
+
+    model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     command_code: str = Field(description="指令编码（必须与原指令一致）")
     device_code: str = Field(description="设备编码（device_code，设备标识）")

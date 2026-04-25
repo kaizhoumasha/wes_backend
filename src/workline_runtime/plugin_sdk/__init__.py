@@ -1,6 +1,11 @@
 """插件开发 SDK 基础导出。"""
 
-from .classifiers.result_classifier import classify_result
+from .classifiers.result_classifier import (
+    ResultClassification,
+    classify_result,
+    classify_result_category,
+    normalize_result_classification,
+)
 from .contracts import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
@@ -22,9 +27,12 @@ __all__ = [
     "ResolvedDeviceRuntimeConfig",
     "ResolvedExecutionContext",
     "ResolvedWorklineRuntimeConfig",
+    "ResultClassification",
     "canonicalize_event_type",
     "classify_result",
+    "classify_result_category",
     "normalize_inbox_input",
+    "normalize_result_classification",
     "resolve_device_runtime_config",
     "resolve_execution_context",
     "resolve_workline_runtime_config",

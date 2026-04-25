@@ -160,6 +160,8 @@ class TestCallbackResultAPI:
             contract_version="1.0",
         )
         handled_command = MagicMock()
+        handled_command.id = 1001
+        handled_command.device_id = 7
         handled_command.status = MagicMock()
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
@@ -227,6 +229,11 @@ class TestCallbackResultAPI:
                 "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
                 new=AsyncMock(return_value=1),
             ) as mock_mark_acked,
+            patch(
+                "src.app.callback.v1.callback.device_service.mark_command_finished",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_mark_finished,
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -238,6 +245,14 @@ class TestCallbackResultAPI:
         assert response["code"] == "1000"
         assert response["data"]["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
+        mock_mark_finished.assert_awaited_once_with(
+            db_session,
+            device_id=7,
+            command_id=1001,
+            success=True,
+            error_code=None,
+            auto_commit=False,
+        )
         assert mock_create_inbox.call_args.kwargs["source_message_id"] == "req-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["correlation_id"] == "corr-001"
@@ -343,6 +358,50 @@ class TestCallbackResultAPI:
 
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_result_rejects_flattened_business_fields_before_device_context(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(),
+            ) as mock_resolve,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-result-extra-001",
+            ),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(
+                    body=create_result_payload(pkg_id="PKG001", reel_diameter=178.5, actual_qty=100),
+                    path="/api/v1/callback/result",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        assert "业务字段必须放在 data 中" in response["message"]
+        mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -703,6 +762,50 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_rejects_flattened_business_fields_before_device_context(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(),
+            ) as mock_resolve,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch(
+                "src.app.callback.v1.callback.get_request_id",
+                return_value="req-event-extra-001",
+            ),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(
+                    body=create_event_payload(PkgID="PKG001", location="STATION_INPUT1"),
+                    path="/api/v1/callback/event",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        assert "业务字段必须放在 data 中" in response["message"]
+        mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"

@@ -1509,3 +1509,148 @@ async def handler(..., db: AsyncSessionDep):
   - src/core/api_security.py
   - src/core/rbac.py
 - Tags: auth-boundary, review, correction
+
+---
+
+## [LRN-20260424-001] correction
+
+**Logged**: 2026-04-24T19:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: correction
+**Area**: backend
+
+### Summary
+删除代码前必须验证实际使用情况，不能仅凭文档或注释判断。
+
+### Details
+在 plugin refactoring 计划中，`transition_validator.py` 被标注为"未使用代码，可以删除"。但 Codex review 发现它实际上正在被 `orchestrator.py` 使用：
+- `orchestrator.py:31` — import
+- `orchestrator.py:151` — instantiate
+- `orchestrator.py:479-484` — validate() call
+
+如果按计划删除，会导致 runtime break + tests fail。
+
+**根本原因**：计划依赖文档/注释判断代码使用情况，而非实际代码验证。
+
+### Suggested Action
+删除代码前的验证步骤：
+1. 使用 `grep -r "from X import" src/` 检查导入
+2. 使用 `grep -r "function_name" src/` 检查调用
+3. 运行相关测试确认删除不会破坏功能
+4. 检查是否有 TYPE_CHECKING 块内的引用
+
+### Metadata
+- Source: user_feedback
+- Related Files:
+  - src/workline_runtime/transition_validator.py
+  - src/workline_runtime/orchestrator.py
+- Tags: code-deletion, verification, review, runtime-dependency
+- Pattern-Key: backend.verify_actual_usage_before_deletion
+
+### Resolution
+- **Resolved**: 2026-04-24T19:40:00+08:00
+- **Commit/PR**: feature/plugin-refactoring
+- **Notes**: 保留 transition_validator.py，只删除 registry 预留字段
+
+---
+
+## [LRN-20260424-002] correction
+
+**Logged**: 2026-04-24T19:40:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: correction
+**Area**: backend
+
+### Summary
+NullPlugin 默认不应静默返回 no-op，配置错误应该显式抛出。
+
+### Details
+原实现中，missing plugin 会 resolves to NullPlugin 并静默返回 no-op。这会 mask 配置错误：
+- 生产环境配置错误被隐藏
+- 插件未注册时，session 不会报错但也不会有业务逻辑
+- 问题只能在事后追溯中发现，而非即时暴露
+
+**修正方案**：
+```python
+_ALLOW_NULL_PLUGIN = False  # 默认不允许
+
+def _load_plugin(plugin_class):
+    if plugin_class is None:
+        if not _ALLOW_NULL_PLUGIN:
+            raise PluginNotFoundError(...)
+        return null_plugin  # 只有显式 opt-in 时才返回
+```
+
+**允许范围**：
+- ✅ Tests — `set_allow_null_plugin(True)`
+- ✅ Explicit disabled lines — registry 中标记 disabled
+- ❌ Missing plugin (生产) — 抛错，不 silent
+
+### Suggested Action
+设计 fallback/singleton 模式时：
+1. 默认行为应暴露配置错误，而非静默处理
+2. opt-in 机制要显式配置，不能依赖隐式行为
+3. singleton 的注释和实现必须一致
+
+### Metadata
+- Source: user_feedback
+- Related Files:
+  - src/workline_runtime/orchestrator.py
+  - src/workline_runtime/null_plugin.py
+  - src/workline_runtime/exceptions.py
+- Tags: null-plugin, config-error, silent-noop, error-handling
+- Pattern-Key: backend.expose_config_errors_not_silent_fallback
+
+### Resolution
+- **Resolved**: 2026-04-24T19:40:00+08:00
+- **Commit/PR**: feature/plugin-refactoring
+- **Notes**: 新增 PluginNotFoundError，默认不允许 NullPlugin
+
+---
+
+## [LRN-20260424-003] best_practice
+
+**Logged**: 2026-04-24T19:40:00+08:00
+**Priority**: medium
+**Status**: promoted
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
+
+### Details
+框架 `_resolve_handler_model_arg()` 根据 handler 的第三个参数类型注解自动选择注入内容：
+
+| Handler 签名 | 注入参数 | 适用场景 |
+|-------------|---------|---------|
+| `async def handler(self, ctx, inbox)` | 原始 inbox 实体 | 自定义 payload 解析、DSL 插件 |
+| `async def handler(self, ctx, result: NormalizedCommandResult)` | 标准化输入模型 | 装饰器插件、类型安全、error_code 别名 |
+
+**注入优先级**：
+1. `ctx.normalized_input` 存在且类型匹配 → 直接返回
+2. 调用 `normalize_inbox_input(inbox)` → 返回标准化模型
+3. 标准化失败 → 回退到 `param_type.model_validate(payload)`
+
+**系统级 vs 业务级字段**：
+- 系统级（框架标准化）：`error_code`, `result`, `command_code`, `correlation_id`
+- 业务级（插件解析）：`payload_json["data"]`, 业务模型
+
+### Suggested Action
+装饰器插件推荐使用 `NormalizedCommandResult`，获取系统级字段便利；业务数据自行解析保持灵活性。
+
+### Metadata
+- Source: investigation
+- Related Files:
+  - src/workline_runtime/plugin_base.py
+  - src/workline_runtime/plugin_sdk/normalizers/input_normalizer.py
+  - tests/workline_runtime/test_handler_signature_selection.py
+- Tags: handler-signature, injection, plugin-framework, normalized-input
+- Pattern-Key: backend.handler_signature_injection_priority
+
+### Resolution
+- **Resolved**: 2026-04-24T19:40:00+08:00
+- **Promoted**: docs/plugin_development_guide.md
+- **Notes**: 文档已新增 Handler 签名选择规则章节

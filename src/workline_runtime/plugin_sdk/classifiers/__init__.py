@@ -1,5 +1,15 @@
 """插件 SDK 分类器。"""
 
-from .result_classifier import classify_result
+from .result_classifier import (
+    ResultClassification,
+    classify_result,
+    classify_result_category,
+    normalize_result_classification,
+)
 
-__all__ = ["classify_result"]
+__all__ = [
+    "ResultClassification",
+    "classify_result",
+    "classify_result_category",
+    "normalize_result_classification",
+]

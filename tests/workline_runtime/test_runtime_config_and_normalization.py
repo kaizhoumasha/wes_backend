@@ -9,6 +9,7 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
         line_code="WL-A",
         line_name="Line A",
         line_type="AUTO",
+        run_mode="SIMULATION",
         plugin_key="smt_classifier",
         contract_version="1.0",
         config={"plugin": "config"},
@@ -37,6 +38,7 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
 
     assert runtime.workline is not None
     assert runtime.workline.plugin_key == "smt_classifier"
+    assert runtime.workline.run_mode == "SIMULATION"
     assert runtime.devices_by_role["SCANNER"][0].plugin_key == "smt_classifier"
     assert runtime.devices_by_role["SCANNER"][0].communication_profile["host"] == "127.0.0.1"
 
@@ -59,6 +61,7 @@ def test_normalize_inbox_input_for_command_result_uses_classifier() -> None:
 
     assert normalized.command_code == "CMD-1"
     assert normalized.normalized_result == "TERMINAL_FAILURE"
+    assert normalized.result_classification == "system_failure"
     assert normalized.data["vendor_code"] == "E100"
 
 
@@ -80,6 +83,7 @@ def test_normalize_inbox_input_infers_command_result_when_kind_missing() -> None
 
     assert normalized.command_code == "CMD-2"
     assert normalized.normalized_result == "TERMINAL_FAILURE"
+    assert normalized.result_classification == "system_failure"
     assert normalized.error_detail == {}
 
 
@@ -106,6 +110,51 @@ def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> No
     assert normalized.error_detail["msg"] == "料箱已满"
     assert normalized.error_detail["error_code"] == "BIN_FULL"
     assert normalized.error_detail["error_message"] == "料箱已满"
+    assert normalized.result_classification == "hardware_failure"
+
+
+def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="COMMAND_RESULT"),
+        correlation_id="corr-4",
+        payload_json={
+            "command_code": "CMD-4",
+            "result": "SUCCESS",
+            "command_type": "MEASUREMENT_REEL",
+            "device_code": "MEASURE-1",
+            "data": {
+                "inspection_result": "NG",
+                "reason_code": "INSPECTION_SIZE_NG",
+            },
+        },
+    )
+
+    normalized = normalize_inbox_input(inbox, plugin_key="smt_classifier")
+
+    assert normalized.normalized_result == "SUCCESS"
+    assert normalized.result_classification == "business_decision"
+
+
+def test_normalize_inbox_input_uses_plugin_result_classifier_for_legacy_inspection_ng() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="COMMAND_RESULT"),
+        correlation_id="corr-5",
+        payload_json={
+            "command_code": "CMD-5",
+            "result": "FAILED",
+            "command_type": "PICK_AND_PUT",
+            "device_code": "ARM-1",
+            "error_detail": {
+                "error_code": "INSPECTION_SIZE_NG",
+                "error_message": "料盘尺寸检测异常",
+            },
+        },
+    )
+
+    normalized = normalize_inbox_input(inbox, plugin_key="smt_classifier")
+
+    assert normalized.normalized_result == "TERMINAL_FAILURE"
+    assert normalized.result_classification == "business_decision"
 
 
 def test_normalize_inbox_input_prefers_canonical_six_in_one_business_key() -> None:

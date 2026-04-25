@@ -42,6 +42,7 @@ class DeviceStatus(str, Enum):
     RUNNING = "RUNNING"  # 忙碌，正在执行任务
     ERROR = "ERROR"  # 故障，需人工介入
     OFFLINE = "OFFLINE"  # 离线（WES 判定）
+    MAINTENANCE = "MAINTENANCE"  # 人工维护中
 
 
 # ==================== 基础字段 (用于 Schema 复用) ====================
@@ -133,7 +134,7 @@ class DeviceBase(BaseMixin):
                 length=50,
             ),
         ),
-        description="设备实时状态（IDLE/RUNNING/ERROR/OFFLINE）",
+        description="设备实时状态（IDLE/RUNNING/ERROR/OFFLINE/MAINTENANCE）",
     )
 
     current_command_id: int | None = Field(default=None, description="当前执行的指令 ID（关联 DeviceCommand.id）")

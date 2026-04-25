@@ -1,0 +1,120 @@
+"""{{PLUGIN_NAME}} 插件测试模板。"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from src.workline_runtime.plugin_state import PluginHandlerKind
+from src.workline_runtime.types import CommandTargetScope
+from src.workline_plugins.{{PLUGIN_MODULE}}.context import {{CONTEXT_CLASS}}
+from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
+    ItemArrivedPayload,
+    build_divert_params,
+    build_measure_params,
+    resolve_business_key,
+)
+from src.workline_plugins.{{PLUGIN_MODULE}}.plugin import {{PLUGIN_CLASS}}
+from src.workline_plugins.{{PLUGIN_MODULE}}.state_machine import {{STATE_ENUM}}, {{STATE_MACHINE_CLASS}}
+
+
+def make_ctx(plugin_state={{STATE_ENUM}}.IDLE):
+    return SimpleNamespace(
+        session=SimpleNamespace(context_json={"plugin_state": plugin_state}),
+        handler_kind=PluginHandlerKind.EVENT,
+        run_mode="SIMULATION",
+    )
+
+
+def test_manifest_contract() -> None:
+    manifest = {{PLUGIN_CLASS}}.manifest
+    assert manifest.plugin_key == "{{PLUGIN_KEY}}"
+    assert manifest.state_machine_class is {{STATE_MACHINE_CLASS}}
+    assert manifest.context_model is {{CONTEXT_CLASS}}
+    assert manifest.event_source_roles["ITEM_ARRIVED"] == ("ENTRY_SENSOR",)
+    assert manifest.command_target_roles["MEASURE_ITEM"] == ("MEASURE_DEVICE",)
+
+
+def test_event_payload_uses_data_boundary() -> None:
+    payload = {
+        "device_code": "ENTRY01",
+        "event_type": "ITEM_ARRIVED",
+        "timestamp": 1777046400000,
+        "data": {
+            "business_key": "ITEM-001",
+            "station_code": "QC01",
+            "expected_value": 10.0,
+            "tolerance": 0.5,
+        },
+    }
+    assert resolve_business_key(payload) == "ITEM-001"
+    assert ItemArrivedPayload.model_validate(payload).data.business_key == "ITEM-001"
+
+
+def test_command_params_helpers() -> None:
+    assert build_measure_params(business_key="ITEM-001", station_code="QC01") == {
+        "business_key": "ITEM-001",
+        "station_code": "QC01",
+    }
+    assert build_divert_params(
+        business_key="ITEM-001",
+        destination_lane="PASS_LANE",
+        reason_code="VALUE_OK",
+    )["destination_lane"] == "PASS_LANE"
+
+
+def test_state_machine_contract() -> None:
+    machine = {{STATE_MACHINE_CLASS}}()
+    assert machine.may_trigger("item_arrived") is True
+    machine.item_arrived()
+    assert machine.state == {{STATE_ENUM}}.WAITING_MEASURE.value
+    assert machine.may_trigger("divert_ok") is False
+
+
+@pytest.mark.asyncio
+async def test_happy_path_event_creates_measure_command() -> None:
+    plugin = {{PLUGIN_CLASS}}()
+    ctx = make_ctx()
+    event = ItemArrivedPayload.model_validate(
+        {
+            "device_code": "ENTRY01",
+            "event_type": "ITEM_ARRIVED",
+            "timestamp": 1777046400000,
+            "data": {
+                "business_key": "ITEM-001",
+                "station_code": "QC01",
+                "expected_value": 10.0,
+                "tolerance": 0.5,
+            },
+        }
+    )
+
+    result = await plugin.handle_item_arrived(ctx, event)
+
+    assert result.transition == "item_arrived"
+    assert len(result.commands) == 1
+    assert result.commands[0].command_type == "MEASURE_ITEM"
+    assert result.commands[0].target_scope is CommandTargetScope.DOWNSTREAM
+    assert result.commands[0].parameters["business_key"] == "ITEM-001"
+    assert result.waits[0].event_type == "MEASURE_ITEM"
+
+
+@pytest.mark.asyncio
+async def test_business_ng_is_decision_not_failure() -> None:
+    plugin = {{PLUGIN_CLASS}}()
+    ctx = make_ctx({{STATE_ENUM}}.WAITING_MEASURE)
+    ctx.session.context_json.update({"expected_value": 10.0, "tolerance": 0.5})
+    command_result = NormalizedCommandResult(
+        command_type="MEASURE_ITEM",
+        command_code="CMD-001",
+        device_code="MEASURE01",
+        result="SUCCESS",
+        data={"business_key": "ITEM-001", "actual_value": 11.0},
+    )
+
+    result = await plugin.handle_measure_success(ctx, command_result)
+
+    assert result.failure is None
+    assert result.business_decisions[0].reason_code == "VALUE_OUT_OF_TOLERANCE"

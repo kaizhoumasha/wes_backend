@@ -1,16 +1,16 @@
 """
 OrchestratorService - 编排器核心服务
 
-负责协调 Session 的处理流程：
+负责协调 Session 的处理流程:
 1. 获取分布式锁
 2. 加载并调用插件
 3. 处理 PluginResult
 4. 触发状态迁移
 5. 派发命令到 Outbox
 
-Phase 2 默认行为：
-- 无插件时使用 NullPlugin
-- 无状态机时允许所有迁移
+Phase 1 简化:
+- 两阶段锁合并为单阶段锁
+- NullPlugin 非 opt-in 时抛错
 
 设计参考: 设计文档 phase2-orchestrator
 """
@@ -19,17 +19,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from src.workline_runtime.diagnostics import ErrorCode, error_domain_for
 from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
-from src.workline_runtime.null_plugin import NullPlugin
+from src.workline_runtime.null_plugin import null_plugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
+from src.workline_runtime.plugin_state import get_plugin_state
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.transition_validator import TransitionValidator
-from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
+from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 from src.workline_runtime.utils import ensure_dict
 
 # 类型注解用（运行时需要这些类型作为函数签名）
@@ -42,21 +42,19 @@ if TYPE_CHECKING:
     from src.app.workline.models.session import WorklineSession
 
 
-class LockStage(str, Enum):
-    """锁阶段枚举
+# NullPlugin 允许配置（用于测试或显式 disabled 的 workline）
+_ALLOW_NULL_PLUGIN = False
 
-    当前仅用于标记 orchestrator 处理阶段。
-    在尚未引入真正 RWLock 之前，READ / WRITE 都复用同一把 session 互斥锁，
-    不提供“共享读 / 独占写”的并发语义。
-    """
 
-    READ = "read"
-    WRITE = "write"
+def set_allow_null_plugin(allow: bool) -> None:
+    """设置是否允许 NullPlugin（仅用于测试或显式 disabled 场景）"""
+    global _ALLOW_NULL_PLUGIN
+    _ALLOW_NULL_PLUGIN = allow
 
 
 logger = logging.getLogger(__name__)
 
-# 插件实例缓存：避免每次处理都新建实例
+# 插件实例缓存:避免每次处理都新建实例
 # key: plugin_class, value: plugin_instance
 _plugin_instance_cache: dict[type, Any] = {}
 
@@ -104,6 +102,7 @@ class OrchestratorResult:
         error: 错误信息（失败时）
         transition: 触发的状态迁移
         decisions: 待派发的外部决策
+        business_decisions: 业务判定事实
         commands: 待派发的命令列表
         wait: 等待条件
         failure: 失败归因
@@ -117,6 +116,7 @@ class OrchestratorResult:
     error_domain: str | None = None
     transition: str | None = None
     decisions: list[dict[str, Any]] | None = None
+    business_decisions: list[BusinessDecisionIntent] | None = None
     commands: list[CommandIntent] | None = None
     wait: WaitIntent | None = None
     failure: FailureIntent | None = None
@@ -127,7 +127,7 @@ class OrchestratorResult:
 class OrchestratorService:
     """编排器服务
 
-    核心职责：
+    核心职责:
     - 协调 Session 处理流程
     - 管理分布式锁
     - 调用插件并处理结果
@@ -164,26 +164,23 @@ class OrchestratorService:
     def _resolve_transition_state(session: Any, state_machine_class: type[Any] | None) -> str:
         """为插件状态机解析当前状态。
 
-        有插件状态机时优先使用 session.context_json['stage']；
+        有插件状态机时使用 session.context_json['plugin_state']；
         否则退回通用 session.status。
         """
 
         if state_machine_class is not None:
-            stage = ensure_dict(getattr(session, "context_json", None)).get("stage")
-            if isinstance(stage, str) and stage:
-                return stage
-            return "IDLE"
+            return get_plugin_state(ensure_dict(getattr(session, "context_json", None)), default="IDLE") or "IDLE"
 
         status = getattr(session, "status", None)
         return status if isinstance(status, str) and status else ""
 
-    def _get_lock(self, lock_key: str, _stage: LockStage = LockStage.WRITE) -> AbstractAsyncContextManager[None]:
+    def _get_lock(self, lock_key: str) -> AbstractAsyncContextManager[None]:
         """获取锁上下文管理器。
+
+        Phase 1: 单阶段锁，不再区分 READ/WRITE。
 
         Args:
             lock_key: 锁的 key
-            stage: 锁阶段标签（READ / WRITE）。当前仅用于表达处理阶段，
-                不会派生出不同锁 key；两阶段统一复用同一个 session 互斥锁。
 
         Returns:
             异步上下文管理器
@@ -207,13 +204,13 @@ class OrchestratorService:
         correlation_id: str,
         write_callback: Callable[[OrchestratorResult], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
-        """处理 Inbox 事件（两阶段串行互斥锁）
+        """处理 Inbox 事件（单阶段互斥锁）
 
-        阶段 1 (READ): 加载插件、构建上下文、契约检测
-        阶段 2 (WRITE): 调用插件、处理结果、状态迁移
+        Phase 1 简化:两阶段锁合并为单阶段。
+        stale-session guard 由 Celery worker 保留（workline.py:1646-1660）。
 
-        注意：当前 READ / WRITE 仍使用同一个 `session:{id}` 互斥锁。
-        这里的 READ / WRITE 只是处理阶段划分，不代表已实现真正的 RWLock。
+        注意:session 锁确保同一 session 的消息串行处理。
+        真实的 session 刷新和 stale 防护在 worker callback 中完成。
 
         Args:
             session: WorklineSession 实体
@@ -222,7 +219,7 @@ class OrchestratorService:
             devices_by_role: 按角色分组的设备映射
             services: 领域服务容器
             correlation_id: 关联 ID
-            write_callback: 可选的写入回调。若提供，则在 WRITE 锁临界区内执行，
+            write_callback: 可选的写入回调。若提供，则在锁临界区内执行，
                 由 Celery worker 负责完成真实持久化写入
                 （session / command / outbox / timeline / inbox）。
 
@@ -235,11 +232,10 @@ class OrchestratorService:
 
         lock_key = f"session:{session_id}"
 
-        # 阶段 1: READ（当前与 WRITE 复用同一把 session 互斥锁）
+        # 单阶段锁:包含插件调用和结果处理
         try:
-            async with self._get_lock(lock_key, LockStage.READ):
-                # 读取阶段：加载插件、构建上下文、契约检测。
-                # 当前仍受同一把 session 互斥锁保护，不提供共享读并发。
+            async with self._get_lock(lock_key):
+                # 加载插件、构建上下文、调用插件、处理结果
                 result = await self._process_read_phase(
                     session=session,
                     workline=workline,
@@ -249,26 +245,15 @@ class OrchestratorService:
                     correlation_id=correlation_id,
                 )
 
-                # 如果读取阶段失败，直接返回
+                # 如果处理失败，直接返回
                 if not result.success:
                     return result
 
-            # 阶段 2: WRITE（与 READ 复用同一把 session 互斥锁）
-            # 若 worker 提供 write_callback，则真实持久化写入也在同一 session 锁临界区内完成。
-            async with self._get_lock(lock_key, LockStage.WRITE):
-                logger.debug(f"Session {session_id} 获得 WRITE 锁")
-                write_result = await self._process_write_phase(
-                    session=session,
-                    workline=workline,
-                    inbox=inbox,
-                    devices_by_role=devices_by_role,
-                    services=services,
-                    correlation_id=correlation_id,
-                    read_result=result,
-                )
-                if write_callback is not None and write_result.success:
-                    await write_callback(write_result)
-                return write_result
+                # 如果提供了 write_callback，执行持久化写入
+                if write_callback is not None and result.success:
+                    await write_callback(result)
+
+                return result
 
         except LockAcquireError:
             logger.exception(f"Failed to acquire lock for session {session_id}")
@@ -289,7 +274,7 @@ class OrchestratorService:
     ) -> OrchestratorResult:
         """阶段 1: READ - 读取阶段（当前非共享读）
 
-        执行：
+        执行:
         - 加载插件
         - 构建上下文
         - 契约版本检测
@@ -358,13 +343,13 @@ class OrchestratorService:
     ) -> OrchestratorResult:
         """阶段 2: WRITE - 写入阶段（独占）
 
-        执行：
+        执行:
         - 状态迁移验证
         - 结果返回（供 Celery 任务使用）
 
-        注意：实际的状态修改默认仍由 Celery 任务的 `_apply_orchestrator_effects` 完成；
+        注意:实际的状态修改默认仍由 Celery 任务的 `_apply_orchestrator_effects` 完成；
         当 `process_inbox(..., write_callback=...)` 提供写回调时，worker 会在同一 WRITE 锁临界区内
-        执行真实持久化写入，从而避免“锁住编排结果、放开真实写入”的并发窗口。
+        执行真实持久化写入，从而避免"锁住编排结果、放开真实写入"的并发窗口。
 
         Args:
             session: WorklineSession 实体
@@ -381,7 +366,7 @@ class OrchestratorService:
         session_id = self._resolve_session_pk(session)
         logger.debug(f"WRITE 阶段开始 for session {session_id}, transition={read_result.transition}")
 
-        # 当前实现：直接返回读取阶段的结果
+        # 当前实现:直接返回读取阶段的结果
         # 状态修改在 Celery 任务 _apply_orchestrator_effects 中完成（不在锁保护下）
         # 占位参数避免 IDE/ruff 警告
         _ = session, workline, inbox, devices_by_role, services, correlation_id
@@ -393,16 +378,32 @@ class OrchestratorService:
         """加载插件实例（带缓存）
 
         优先使用缓存的实例，避免每次处理都新建实例。
-        NullPlugin 是单例，无需缓存。
+        NullPlugin 是单例。
+
+        Phase 1 修正:
+        - 非 opt-in 时，plugin_class is None 抛错（避免 mask 配置错误）
+        - 使用 null_plugin 单例（已导出）
 
         Args:
             plugin_class: 插件类（可选）
 
         Returns:
-            插件实例（无插件时返回 NullPlugin 单例）
+            插件实例
+
+        Raises:
+            PluginNotFoundError: 插件未注册且未显式允许 NullPlugin
         """
         if plugin_class is None:
-            return NullPlugin()
+            # 🔴 非 opt-in 时抛错，避免 silent no-op mask 配置错误
+            if not _ALLOW_NULL_PLUGIN:
+                from src.workline_runtime.exceptions import PluginNotFoundError
+
+                raise PluginNotFoundError(
+                    "Plugin not registered and null plugin not allowed. "
+                    "Set allow_null_plugin=True in config or register the plugin."
+                )
+            # 显式允许时使用单例
+            return null_plugin
 
         # 使用缓存的实例
         if plugin_class not in _plugin_instance_cache:
@@ -484,7 +485,7 @@ class OrchestratorService:
             )
             if not is_valid:
                 logger.error(f"Invalid transition: {error}")
-                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error)
+                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error or "Unknown transition error")
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")
@@ -493,6 +494,7 @@ class OrchestratorService:
             success=True,
             transition=result.transition,
             decisions=result.decisions if result.decisions else None,
+            business_decisions=result.business_decisions if result.business_decisions else None,
             commands=result.commands if result.commands else None,
             wait=result.wait,
             failure=result.failure,

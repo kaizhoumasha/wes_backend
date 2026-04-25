@@ -1,0 +1,177 @@
+"""{{PLUGIN_NAME}} 插件入口。"""
+
+from __future__ import annotations
+
+from src.workline_runtime.plugin_base import (
+    PluginResultBuilder,
+    WorklinePlugin,
+    build_payload_invalid_failure,
+    on_command,
+    on_event,
+    resolve_normalized_command_envelope,
+    resolve_normalized_command_failure,
+    step,
+)
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from src.workline_runtime.types import CommandTargetScope
+
+from .context import {{CONTEXT_CLASS}}, parse_context
+from .contract import (
+    ItemArrivedPayload,
+    MeasureCompletedData,
+    build_divert_params,
+    build_measure_params,
+    classify_result,
+    resolve_business_key,
+)
+from .state_machine import {{STATE_ENUM}}, {{STATE_MACHINE_CLASS}}
+
+
+class {{PLUGIN_CLASS}}(WorklinePlugin):
+    plugin_key = "{{PLUGIN_KEY}}"
+    contract_version = "{{CONTRACT_VERSION}}"
+    manifest = WorklinePluginManifest(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        required_device_roles=(
+            DeviceRoleRequirement("ENTRY_SENSOR", min_count=1, max_count=1, capabilities=frozenset({"scan_item"})),
+            DeviceRoleRequirement("MEASURE_DEVICE", min_count=1, max_count=1, capabilities=frozenset({"measure_item"})),
+            DeviceRoleRequirement("DIVERT_DEVICE", min_count=1, max_count=1, capabilities=frozenset({"divert_item"})),
+        ),
+        business_key_resolver=resolve_business_key,
+        result_classifier=classify_result,
+        state_machine_class={{STATE_MACHINE_CLASS}},
+        context_model={{CONTEXT_CLASS}},
+        event_source_roles={"ITEM_ARRIVED": "ENTRY_SENSOR"},
+        command_target_roles={"MEASURE_ITEM": "MEASURE_DEVICE", "DIVERT_ITEM": "DIVERT_DEVICE"},
+        supported_events=frozenset({"ITEM_ARRIVED"}),
+        supported_commands=frozenset({"MEASURE_ITEM", "DIVERT_ITEM"}),
+    )
+
+    @on_event("ITEM_ARRIVED")
+    async def handle_item_arrived(self, ctx, event: ItemArrivedPayload):
+        return (
+            PluginResultBuilder(ctx)
+            .transition("item_arrived")
+            .command(
+                command_type="MEASURE_ITEM",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="MEASURE_DEVICE",
+                parameters=build_measure_params(
+                    business_key=event.data.business_key,
+                    station_code=event.data.station_code,
+                ),
+            )
+            .wait(event_type="MEASURE_ITEM", timeout_seconds=120)
+            .context(
+                {{CONTEXT_CLASS}}(
+                    plugin_state={{STATE_ENUM}}.WAITING_MEASURE,
+                    business_key=event.data.business_key,
+                    station_code=event.data.station_code,
+                    expected_value=event.data.expected_value,
+                    tolerance=event.data.tolerance,
+                ).to_patch()
+            )
+            .build()
+        )
+
+    @on_command("MEASURE_ITEM", result="SUCCESS")
+    @step({{STATE_ENUM}}.WAITING_MEASURE)
+    async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
+        if resolve_normalized_command_envelope(result) is None:
+            return build_payload_invalid_failure(ctx, "MEASURE_ITEM 成功回调缺少 command_code 或 device_code")
+        try:
+            measure_data = MeasureCompletedData.model_validate(result.data)
+        except Exception:
+            return build_payload_invalid_failure(ctx, "MEASURE_ITEM 成功回调 data 非法")
+
+        business_ctx = parse_context(ctx)
+        if business_ctx.expected_value is None or business_ctx.tolerance is None:
+            return build_payload_invalid_failure(ctx, "缺少业务上下文")
+
+        is_ng = abs(measure_data.actual_value - business_ctx.expected_value) > business_ctx.tolerance
+        destination_lane = "HOLD_LANE" if is_ng else "PASS_LANE"
+        reason_code = "VALUE_OUT_OF_TOLERANCE" if is_ng else "VALUE_OK"
+        builder = (
+            PluginResultBuilder(ctx)
+            .transition("measure_ng" if is_ng else "measure_ok")
+            .command(
+                command_type="DIVERT_ITEM",
+                target_scope=CommandTargetScope.DOWNSTREAM,
+                device_role="DIVERT_DEVICE",
+                parameters=build_divert_params(
+                    business_key=measure_data.business_key,
+                    destination_lane=destination_lane,
+                    reason_code=reason_code,
+                ),
+            )
+            .wait(event_type="DIVERT_ITEM", timeout_seconds=120)
+            .context(
+                {{CONTEXT_CLASS}}(
+                    plugin_state={{STATE_ENUM}}.WAITING_DIVERT,
+                    business_key=measure_data.business_key,
+                    actual_value=measure_data.actual_value,
+                    destination_lane=destination_lane,
+                    reason_code=reason_code,
+                ).to_patch()
+            )
+        )
+        if is_ng:
+            builder.business_decision(
+                reason_code=reason_code,
+                message="业务检测超出允差，分流到异常线",
+                business_key=measure_data.business_key,
+                evidence={
+                    "expected_value": business_ctx.expected_value,
+                    "actual_value": measure_data.actual_value,
+                    "tolerance": business_ctx.tolerance,
+                },
+            )
+        return builder.build()
+
+    @on_command("MEASURE_ITEM", result="FAILED")
+    @step({{STATE_ENUM}}.WAITING_MEASURE)
+    async def handle_measure_failed(self, ctx, result: NormalizedCommandResult):
+        error_code, error_message = resolve_normalized_command_failure(
+            result,
+            default_code="MEASURE_DEVICE_FAILED",
+            default_message="测量设备执行失败",
+        )
+        return PluginResultBuilder(ctx).transition("fail").failure(
+            domain="HARDWARE",
+            code=error_code,
+            message=error_message,
+        ).build()
+
+    @on_command("DIVERT_ITEM", result="SUCCESS")
+    @step({{STATE_ENUM}}.WAITING_DIVERT)
+    async def handle_divert_success(self, ctx, result: NormalizedCommandResult):
+        if resolve_normalized_command_envelope(result) is None:
+            return build_payload_invalid_failure(ctx, "DIVERT_ITEM 成功回调缺少 command_code 或 device_code")
+        return (
+            PluginResultBuilder(ctx)
+            .transition("divert_ok")
+            .context({{CONTEXT_CLASS}}(plugin_state={{STATE_ENUM}}.COMPLETED).to_patch())
+            .complete()
+            .build()
+        )
+
+    @on_command("DIVERT_ITEM", result="FAILED")
+    @step({{STATE_ENUM}}.WAITING_DIVERT)
+    async def handle_divert_failed(self, ctx, result: NormalizedCommandResult):
+        error_code, error_message = resolve_normalized_command_failure(
+            result,
+            default_code="DIVERT_DEVICE_FAILED",
+            default_message="分流设备执行失败",
+        )
+        return (
+            PluginResultBuilder(ctx)
+            .transition("manual_hold")
+            .context({{CONTEXT_CLASS}}(plugin_state={{STATE_ENUM}}.MANUAL_HOLD, reason_code=error_code).to_patch())
+            .failure(domain="HARDWARE", code=error_code, message=error_message)
+            .build()
+        )
+
+
+{{PLUGIN_INSTANCE}} = {{PLUGIN_CLASS}}()

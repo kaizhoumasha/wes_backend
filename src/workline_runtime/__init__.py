@@ -3,7 +3,7 @@ WES 作业线运行时模块
 
 本模块提供作业线插件化编排的核心基础设施：
 - 分布式锁（RedisDistributedLock）
-- 插件类型定义（PluginResult, WaitIntent, CommandIntent, FailureIntent）
+- 插件类型定义（PluginResult, WaitIntent, CommandIntent, BusinessDecisionIntent, FailureIntent）
 - 插件上下文（PluginContext）
 - 默认插件（NullPlugin）
 - 统一输入模型（Inbox）
@@ -47,10 +47,16 @@ from src.workline_runtime.enums import (
     OutboxStatus,
     TimelineStage,
 )
+from src.workline_runtime.exceptions import (
+    PluginNotFoundError,
+    StateMachineError,
+    WorklineRuntimeError,
+)
 from src.workline_runtime.lock import LockAcquireError, LockReleaseError, RedisDistributedLock
 from src.workline_runtime.null_plugin import NullPlugin, null_plugin
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
@@ -60,22 +66,41 @@ from src.workline_runtime.plugin_sdk import (
     ResolvedWorklineRuntimeConfig,
     canonicalize_event_type,
     classify_result,
+    classify_result_category,
     normalize_inbox_input,
+    normalize_result_classification,
     resolve_device_runtime_config,
     resolve_execution_context,
     resolve_workline_runtime_config,
 )
+from src.workline_runtime.plugin_state import (
+    PLUGIN_STATE_KEY,
+    get_plugin_state,
+    project_plugin_state_for_trace,
+    set_plugin_state,
+)
+from src.workline_runtime.run_mode import (
+    SANDBOX_ALLOWED_ENVS,
+    is_sandbox_allowed_environment,
+    is_simulation_run_mode,
+    normalize_run_mode,
+)
 from src.workline_runtime.session_resolver import SessionResolver, session_resolver
+from src.workline_runtime.topology import TopologyDeviceSnapshot, WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.transition_validator import TransitionValidator
-from src.workline_runtime.types import CommandIntent, FailureIntent, PluginResult, WaitIntent
+from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 
 __version__ = "1.0.0"
 
 __all__ = [
+    "PLUGIN_STATE_KEY",
+    "SANDBOX_ALLOWED_ENVS",
     "AtomicWriter",
+    "BusinessDecisionIntent",
     "CommandIntent",
     "DecisionType",
+    "DeviceRoleRequirement",
     "DiagnosticCard",
     "DiagnosticContext",
     "DiagnosticEvent",
@@ -97,6 +122,7 @@ __all__ = [
     "OutboxStatus",
     "PluginContext",
     "PluginContextBuilder",
+    "PluginNotFoundError",
     "PluginResult",
     "ProblemClass",
     "Recoverability",
@@ -107,20 +133,33 @@ __all__ = [
     "SessionResolver",
     "SessionStatus",
     "Severity",
+    "StateMachineError",
     "TimelineStage",
+    "TopologyDeviceSnapshot",
     "TraceContext",
     "TransitionValidator",
     "WaitIntent",
+    "WorklinePluginManifest",
+    "WorklineRuntimeError",
+    "WorklineTopologyView",
     "atomic_writer",
     "build_diagnostic_card",
     "build_diagnostic_context",
     "build_diagnostic_event",
     "canonicalize_event_type",
     "classify_result",
+    "classify_result_category",
+    "get_plugin_state",
+    "is_sandbox_allowed_environment",
+    "is_simulation_run_mode",
     "normalize_inbox_input",
+    "normalize_result_classification",
+    "normalize_run_mode",
     "null_plugin",
+    "project_plugin_state_for_trace",
     "resolve_device_runtime_config",
     "resolve_execution_context",
     "resolve_workline_runtime_config",
     "session_resolver",
+    "set_plugin_state",
 ]

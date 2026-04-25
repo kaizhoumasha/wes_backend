@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.app.workline.models.inbox import InboxKind
-from src.app.workline.models.session import SessionStatus
+from src.app.workline.models.session import RunMode, SessionStatus
 from src.workline_runtime.session_resolver import SessionResolveError, _resolve_business_key
 
 
@@ -147,6 +147,7 @@ def make_workline(
     workline = MagicMock()
     workline.id = workline_id
     workline.plugin_key = plugin_key
+    workline.run_mode = "AUTO"
     return workline
 
 
@@ -198,6 +199,7 @@ class TestSessionResolver:
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         workline.contract_version = "wl-2026.04"
+        workline.run_mode = "SIMULATION"
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -217,6 +219,7 @@ class TestSessionResolver:
         assert session.workline_id == 1
         assert session.plugin_key == "smt_classifier"
         assert session.business_key == "ORDER_001"
+        assert session.run_mode == RunMode.SIMULATION
         assert session.status == SessionStatus.NEW
         assert session.ingress_count == 1
         assert session.last_request_id == "req-001"
@@ -554,8 +557,8 @@ class TestSessionResolver:
 
         assert key == "PKG12345"
 
-    def test_resolve_business_key_uses_canonical_six_in_one_when_plugin_key_missing(self):
-        """plugin_key 缺失时，canonical Six-In-One data 仍应生成稳定 business_key。"""
+    def test_resolve_business_key_uses_plugin_manifest_resolver_for_smt_six_in_one(self):
+        """SMT Six-In-One 业务键由插件 manifest resolver 解析。"""
         payload = {
             "data": {
                 "HHPN": "620100L00-011-G",
@@ -567,8 +570,8 @@ class TestSessionResolver:
             }
         }
 
-        key1 = _resolve_business_key(payload, plugin_key=None)
-        key2 = _resolve_business_key(payload, plugin_key=None)
+        key1 = _resolve_business_key(payload, plugin_key="smt_classifier")
+        key2 = _resolve_business_key(payload, plugin_key="smt_classifier")
 
         import hashlib
         import json
@@ -580,8 +583,8 @@ class TestSessionResolver:
         assert key1 == expected_hash
         assert key2 == expected_hash
 
-    def test_resolve_business_key_prefers_canonical_six_in_one_over_upstream_business_key(self):
-        """当 data 中已存在 canonical Six-In-One 时，不应再信任外部透传 business_key。"""
+    def test_resolve_business_key_prefers_plugin_manifest_key_over_upstream_business_key(self):
+        """插件解析器命中业务键时，不应再信任外部透传 business_key。"""
         payload = {
             "business_key": "UPSTREAM-MISMATCH",
             "data": {
@@ -594,7 +597,7 @@ class TestSessionResolver:
             },
         }
 
-        key = _resolve_business_key(payload, plugin_key=None)
+        key = _resolve_business_key(payload, plugin_key="smt_classifier")
 
         import hashlib
         import json
@@ -826,13 +829,13 @@ class TestSessionResolver:
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_canonical_six_in_one_reuses_existing_session_without_plugin_key(
+    async def test_resolve_device_event_rejects_six_in_one_without_plugin_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """plugin_key 缺失时，相同 canonical Six-In-One 数据仍应复用已有 session。"""
+        """plugin_key 缺失时不再由通用 resolver 解析 SMT Six-In-One。"""
         import hashlib
         import json
 
@@ -873,19 +876,19 @@ class TestSessionResolver:
         )
         workline = make_workline(workline_id=1, plugin_key=None)
 
-        session = await resolver.resolve_or_create(
-            db=mock_db,
-            inbox=inbox,
-            workline=workline,
-            devices_by_role=make_devices_by_role(),
-        )
+        with pytest.raises(
+            SessionResolveError,
+            match="Unable to resolve stable business_key from payload",
+        ):
+            await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=workline,
+                devices_by_role=make_devices_by_role(),
+            )
 
-        assert session.business_key == expected_hash
-        assert session.ingress_count == 2
-        assert session.last_request_id == "req-none-plugin"
-        assert isinstance(session.last_ingress_at, datetime)
         assert len(mock_session_repo.created_sessions) == 1
-        assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
+        assert ("business_key", 1, expected_hash) not in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_new_six_in_one_key_reuses_existing_session(

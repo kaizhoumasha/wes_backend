@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.workline.models.inbox import InboxKind
-from src.app.workline.models.session import SessionStatus, WorklineSession
+from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -28,10 +28,10 @@ from src.app.workline.repositories.session_repository import (
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import (
     get_plugin_contract_version,
-    parse_workline_six_in_one,
+    resolve_workline_business_key,
 )
+from src.workline_runtime.run_mode import normalize_run_mode
 
-from .contracts import SixInOne
 from .trace_context import TraceContext
 from .utils import ensure_dict, non_empty_str
 
@@ -104,40 +104,30 @@ def _resolve_payload_barcode(data: dict[str, Any]) -> str | None:
     return non_empty_str(data.get("barcode"))
 
 
-def _resolve_six_in_one_business_key(
-    data: dict[str, Any],
-    *,
-    plugin_key: str | None,
-) -> str | None:
-    """从插件解析或 canonical Six-In-One 中恢复稳定 business_key。"""
+def _resolve_plugin_business_key(payload_json: dict[str, Any], *, plugin_key: str | None) -> str | None:
+    """通过插件 manifest 恢复稳定 business_key。"""
 
-    six_in_one = parse_workline_six_in_one(plugin_key, data)
-    parsed_business_key = non_empty_str(getattr(six_in_one, "business_key", None))
-    if parsed_business_key:
-        return parsed_business_key
-
-    canonical_six_in_one = SixInOne.model_validate(data)
-    return canonical_six_in_one.business_key
+    try:
+        return resolve_workline_business_key(plugin_key, payload_json)
+    except (TypeError, ValueError) as exc:
+        raise SessionResolveError(f"Plugin business_key resolver failed: {exc}") from exc
 
 
 def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
     """从事件 payload 提取业务主键，无法稳定求值时显式失败。
 
     约束：
-    - 原始外部协议字段映射优先走插件自有解析入口
-    - 只有当 payload `data` 已经是 canonical Six-In-One 字段时，
-      才允许 runtime 直接生成稳定 business_key
+    - 原始外部协议字段映射优先走插件 manifest 的 business_key_resolver
     - 明确允许的设备级事件（如 ESTOP）按 event_type + device_code 稳定归属
-    - 对未知插件的非 canonical 原始 payload，不再返回随机 business_key，
+    - 对未知插件且缺少稳定业务标识的 payload，不再返回随机 business_key，
       而是显式抛出 SessionResolveError，避免重复建单
     """
     data = ensure_dict(payload_json.get("data"))
-    if data:
-        # 当 payload 中存在可解析的 Six-In-One 时，始终以 PkgID 派生出的稳定键为准，
-        # 不再接受外部透传的 business_key 覆盖，避免同一业务对象被错误归属到别的 session。
-        business_key_from_six_in_one = _resolve_six_in_one_business_key(data, plugin_key=plugin_key)
-        if business_key_from_six_in_one:
-            return business_key_from_six_in_one
+    # 插件解析器优先级最高。SMT 等插件可在这里按自身 data 模型派生业务键，
+    # 不再把供应商字段名固化到通用 SessionResolver。
+    business_key_from_plugin = _resolve_plugin_business_key(payload_json, plugin_key=plugin_key)
+    if business_key_from_plugin:
+        return business_key_from_plugin
 
     business_key = payload_json.get("business_key")
     if isinstance(business_key, str) and business_key:
@@ -152,7 +142,7 @@ def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | Non
         return barcode
 
     raise SessionResolveError(
-        "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"
+        "Unable to resolve stable business_key from payload: missing plugin business key, business_key, barcode, and event identity"
     )
 
 
@@ -364,6 +354,7 @@ class SessionResolver:
             "session_code": session_code,
             "workline_id": workline_id,
             "plugin_key": getattr(workline, "plugin_key", None),
+            "run_mode": RunMode(normalize_run_mode(getattr(workline, "run_mode", None))),
             "business_key": business_key,
             "status": SessionStatus.NEW,
             "ingress_count": 1,

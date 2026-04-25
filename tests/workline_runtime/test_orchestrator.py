@@ -20,6 +20,7 @@ import pytest
 
 from src.app.workline.models.inbox import InboxKind
 from src.workline_runtime.types import (
+    BusinessDecisionIntent,
     CommandIntent,
     FailureIntent,
     PluginResult,
@@ -50,6 +51,15 @@ def make_failing_lock(error: Exception):
 
 class TestOrchestratorServicePhase2:
     """OrchestratorService Phase 2 行为测试"""
+
+    @pytest.fixture(autouse=True)
+    def allow_null_plugin(self):
+        """默认允许 NullPlugin（用于 Phase 2 测试）"""
+        from src.workline_runtime.orchestrator import set_allow_null_plugin
+
+        set_allow_null_plugin(True)
+        yield
+        set_allow_null_plugin(False)
 
     @pytest.fixture
     def mock_session(self):
@@ -122,7 +132,7 @@ class TestOrchestratorServicePhase2:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_process_inbox_reuses_same_session_lock_key_for_read_and_write(
+    async def test_process_inbox_uses_single_session_lock(
         self,
         mock_session,
         mock_workline,
@@ -130,7 +140,7 @@ class TestOrchestratorServicePhase2:
         mock_devices_by_role,
         mock_services,
     ):
-        """READ / WRITE 阶段应复用同一个 session 锁 key。"""
+        """Phase 1: 单阶段锁获取 once per session。"""
         from src.workline_runtime.orchestrator import OrchestratorService
 
         lock_keys: list[str] = []
@@ -151,10 +161,11 @@ class TestOrchestratorServicePhase2:
             correlation_id="test-correlation-id",
         )
 
-        assert lock_keys == ["session:12345", "session:12345"]
+        # Phase 1: 单阶段锁，只获取一次
+        assert lock_keys == ["session:12345"]
 
     @pytest.mark.asyncio
-    async def test_process_inbox_write_callback_runs_inside_second_session_lock_acquire(
+    async def test_process_inbox_write_callback_runs_inside_session_lock(
         self,
         mock_session,
         mock_workline,
@@ -162,22 +173,18 @@ class TestOrchestratorServicePhase2:
         mock_devices_by_role,
         mock_services,
     ):
-        """成功结果的真实写回必须发生在第二次 session 锁临界区内。"""
+        """Phase 1: 写回发生在单阶段锁临界区内。"""
         from src.workline_runtime.orchestrator import OrchestratorService
 
         stages: list[str] = []
-        acquire_count = 0
 
         @asynccontextmanager
         async def test_lock(key):
-            nonlocal acquire_count
-            acquire_count += 1
-            phase = "read" if acquire_count == 1 else "write"
-            stages.append(f"enter_{phase}:{key}")
+            stages.append(f"enter:{key}")
             try:
                 yield
             finally:
-                stages.append(f"exit_{phase}:{key}")
+                stages.append(f"exit:{key}")
 
         orchestrator = OrchestratorService(lock_provider=test_lock)
         write_callback = AsyncMock(side_effect=lambda result: stages.append(f"write_callback:{result.success}"))
@@ -193,17 +200,16 @@ class TestOrchestratorServicePhase2:
         )
 
         assert result.success is True
+        # Phase 1: 单阶段锁，callback 在锁内执行
         assert stages == [
-            "enter_read:session:12345",
-            "exit_read:session:12345",
-            "enter_write:session:12345",
+            "enter:session:12345",
             "write_callback:True",
-            "exit_write:session:12345",
+            "exit:session:12345",
         ]
         write_callback.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_same_session_read_waits_for_other_message_write_lock(
+    async def test_same_session_messages_are_serialized(
         self,
         mock_session,
         mock_workline,
@@ -211,14 +217,12 @@ class TestOrchestratorServicePhase2:
         mock_devices_by_role,
         mock_services,
     ):
-        """同一 session 的另一条 READ 在对方 WRITE 持锁期间不得穿透。"""
+        """Phase 1: 同一 session 的消息串行处理（单阶段锁）。"""
         from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 
         locks: dict[str, asyncio.Lock] = {}
-        write_entered = asyncio.Event()
-        release_write = asyncio.Event()
-        second_read_entered = asyncio.Event()
-        read_started = False
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
 
         @asynccontextmanager
         async def keyed_lock(key):
@@ -231,22 +235,12 @@ class TestOrchestratorServicePhase2:
 
         orchestrator = OrchestratorService(lock_provider=keyed_lock)
 
-        async def fake_read_phase(*args, **kwargs):
-            nonlocal read_started
-            if read_started:
-                second_read_entered.set()
-            read_started = True
+        async def fake_process(*args, **kwargs):
+            first_entered.set()
+            await release_first.wait()
             return OrchestratorResult(success=True)
 
-        async def fake_write_phase(*args, **kwargs):
-            write_entered.set()
-            await release_write.wait()
-            return OrchestratorResult(success=True)
-
-        with (
-            patch.object(orchestrator, "_process_read_phase", side_effect=fake_read_phase),
-            patch.object(orchestrator, "_process_write_phase", side_effect=fake_write_phase),
-        ):
+        with patch.object(orchestrator, "_process_read_phase", side_effect=fake_process):
             first_task = asyncio.create_task(
                 orchestrator.process_inbox(
                     session=mock_session,
@@ -257,7 +251,7 @@ class TestOrchestratorServicePhase2:
                     correlation_id="corr-1",
                 )
             )
-            await write_entered.wait()
+            await first_entered.wait()
 
             second_task = asyncio.create_task(
                 orchestrator.process_inbox(
@@ -271,15 +265,15 @@ class TestOrchestratorServicePhase2:
             )
 
             await asyncio.sleep(0.05)
-            assert second_read_entered.is_set() is False
+            # 第二条消息在第一条完成前不应进入
+            assert second_task.done() is False
 
-            release_write.set()
+            release_first.set()
             first_result = await first_task
             second_result = await second_task
 
         assert first_result.success is True
         assert second_result.success is True
-        assert second_read_entered.is_set() is True
 
     @pytest.mark.asyncio
     async def test_process_inbox_lock_failure(
@@ -344,6 +338,43 @@ class TestOrchestratorServicePhase2:
 
             assert result.success is True
             assert result.transition == "scan_ok"
+
+    @pytest.mark.asyncio
+    async def test_process_result_with_business_decisions(
+        self,
+        mock_session,
+        mock_workline,
+        mock_inbox,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """测试处理包含业务判定的 PluginResult。"""
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        decision = BusinessDecisionIntent(
+            reason_code="SCAN_NG",
+            message="扫码判定 NG",
+            business_key="PKG-001",
+        )
+        orchestrator = OrchestratorService(lock_provider=lambda key: make_noop_lock())
+
+        with patch.object(orchestrator, "_load_plugin") as mock_load_plugin:
+            mock_plugin = MagicMock()
+            mock_plugin.on_device_event = AsyncMock(return_value=PluginResult(business_decisions=[decision]))
+            mock_load_plugin.return_value = mock_plugin
+
+            result = await orchestrator.process_inbox(
+                session=mock_session,
+                workline=mock_workline,
+                inbox=mock_inbox,
+                devices_by_role=mock_devices_by_role,
+                services=mock_services,
+                correlation_id="test-correlation-id",
+            )
+
+            assert result.success is True
+            assert result.business_decisions == [decision]
+            assert result.failure is None
 
     @pytest.mark.asyncio
     async def test_process_result_with_commands(
@@ -527,6 +558,15 @@ class TestOrchestratorServicePhase2:
 class TestOrchestratorServicePluginLoading:
     """OrchestratorService 插件加载测试"""
 
+    @pytest.fixture(autouse=True)
+    def allow_null_plugin(self):
+        """默认允许 NullPlugin（用于测试）"""
+        from src.workline_runtime.orchestrator import set_allow_null_plugin
+
+        set_allow_null_plugin(True)
+        yield
+        set_allow_null_plugin(False)
+
     @pytest.fixture
     def orchestrator(self):
         """创建 OrchestratorService 实例"""
@@ -535,7 +575,7 @@ class TestOrchestratorServicePluginLoading:
         return OrchestratorService(lock_provider=lambda key: make_noop_lock())
 
     def test_load_plugin_returns_null_when_no_plugin_class(self, orchestrator):
-        """测试无插件类时返回 NullPlugin"""
+        """测试无插件类时返回 NullPlugin（当允许时）"""
         from src.workline_runtime.null_plugin import NullPlugin
 
         plugin = orchestrator._load_plugin(None)
@@ -556,6 +596,15 @@ class TestOrchestratorServicePluginLoading:
 
 class TestOrchestratorServiceEdgeCases:
     """OrchestratorService 边界情况测试"""
+
+    @pytest.fixture(autouse=True)
+    def allow_null_plugin(self):
+        """默认允许 NullPlugin（用于测试）"""
+        from src.workline_runtime.orchestrator import set_allow_null_plugin
+
+        set_allow_null_plugin(True)
+        yield
+        set_allow_null_plugin(False)
 
     @pytest.fixture
     def orchestrator(self):
@@ -671,6 +720,15 @@ class TestOrchestratorServiceEdgeCases:
 
 class TestContractVersionMismatch:
     """契约版本不兼容检测测试"""
+
+    @pytest.fixture(autouse=True)
+    def allow_null_plugin(self):
+        """默认允许 NullPlugin（用于测试）"""
+        from src.workline_runtime.orchestrator import set_allow_null_plugin
+
+        set_allow_null_plugin(True)
+        yield
+        set_allow_null_plugin(False)
 
     @pytest.fixture
     def orchestrator(self):

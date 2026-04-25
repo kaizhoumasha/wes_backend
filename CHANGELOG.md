@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- (Future changes will be listed here)
+
+## [0.2.0.0] - 2026-04-25
+
+### Added
+
+- 新增 WorkLine 运行模式治理，支持 `AUTO` / `MANUAL` / `SIMULATION`，并限制沙箱模拟模式只能在 dev/test 环境启用。
+- 新增 WorkLine 插件 manifest、拓扑校验、插件状态投影和运行时上下文快照能力。
+- 新增 SMT classifier 的 typed context、状态机、诊断结果和更完整的命令/回调契约测试。
+- 新增 inbound tote QC 第二插件 spike，覆盖 `WEIGH_TOTE` / `DIVERT_TOTE` 命令、手工回调和异常路径。
+- 新增中文插件开发指南、插件模板、沙箱 happy path 和模板资产回归测试。
+- 新增设备运行态治理字段和服务逻辑，维护 `IDLE` / `RUNNING` / `ERROR` / `OFFLINE` / `MAINTENANCE` 以及当前指令、工作线和 Session 占用信息。
+- 新增系统事件流服务和 `/sys/events/stream` SSE 入口，用于推送设备状态、指令和工作线运行事件。
+
+### Changed
+
+- 调整 WorkLine outbox 派发逻辑，`SIMULATION` 会进入沙箱出口并保留真实 payload 供调试。
+- 将设备指令 `task_type` 从中心枚举约束改为可扩展字符串，允许插件定义自己的设备任务类型。
+- 将需要真实 WES、Celery、种子数据和本地 mock 服务的 SMT mock 集成测试改为显式 live gate。
+- 调整真实设备 outbox 派发治理，同一设备上一条硬件任务未完成前不会派发下一条；`PENDING` 仅表示 WES 队列，不再视为设备占用。
+
+### Fixed
+
+- 修复插件模板和开发指南中已不存在的 `ClassificationResult` 示例，避免新插件从错误契约起步。
+- 移除运行时契约层中重复的 Session/Inbox 状态枚举定义，统一引用模型层枚举。
+- 修复本地 SMT mock 集成测试会通过系统代理误判服务状态的问题。
+- 修复 TimescaleDB 未在 Postgres 启动时预加载导致迁移 DDL 被服务器中断的问题。
+- 修复 SMT mock 链路中插件任务类型被旧映射改写为 `PROCESS` / `PICK_AND_PLACE` 的问题。
+- 修复指令结果回调后设备运行态不会按硬件成功/失败释放或转故障的问题。
+- 修复失败 outbox 可能遗留活跃设备指令和 `RUNNING` 设备占用的问题，并通过迁移修复历史数据。
+
 ## [0.1.0.0] - 2026-03-23
 
 ### Added
@@ -109,8 +143,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复软删除模型查询问题
 - 修复 FastAPI 依赖注入类型问题
 - 统一数据脚本入口并修复迁移约束命名
-
-## [Unreleased]
-
-### Added
-- (Future changes will be listed here)

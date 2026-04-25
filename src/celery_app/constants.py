@@ -18,12 +18,17 @@ DEFAULT_COMMAND_TIMEOUT_MS = 300000
 # 单条消息处理最大耗时，超过则标记失败并继续处理下一条
 INBOX_PROCESS_TIMEOUT_SECONDS = 60
 
+# 设备心跳超时（秒）
+# 仅对已有 last_heartbeat_at 的 IDLE/RUNNING 设备生效，避免把未启用心跳的设备误判离线
+DEVICE_HEARTBEAT_TIMEOUT_SECONDS = 120
+
 # Outbox 元数据字段
 OUTBOX_META_FIELDS = ("command_code", "task_type", "priority", "timeout", "timestamp")
 
 __all__ = [
     "DEFAULT_COMMAND_PRIORITY",
     "DEFAULT_COMMAND_TIMEOUT_MS",
+    "DEVICE_HEARTBEAT_TIMEOUT_SECONDS",
     "EXTERNAL_HTTP_DECISION_TYPE",
     "EXTERNAL_HTTP_INBOX_KIND",
     "INBOX_PROCESS_TIMEOUT_SECONDS",

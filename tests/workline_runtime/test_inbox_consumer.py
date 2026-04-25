@@ -1498,7 +1498,7 @@ class TestInboxConsumer:
 
         这个顺序是 Phase 2 拆分后最关键的执行边界：
         - context patch 先写入 session
-        - command create payload 读取更新后的 step_code / plugin snapshot
+        - command create payload 读取更新后的 plugin_state 投影 / plugin snapshot
         - wait transition 再引用首条 awaiting_command_id
         """
         from src.app.workline.models.outbox import DispatchType
@@ -1540,12 +1540,12 @@ class TestInboxConsumer:
         orch_result = OrchestratorResult(
             success=True,
             transition="dispatch_robot",
-            context_patch={"step_code": "SCAN_01", "barcode": "BC-001"},
+            context_patch={"plugin_state": "SCAN_01", "barcode": "BC-001"},
             commands=[
                 CommandIntent(
                     target_device_id=8,
                     action="PICK_AND_PUT",
-                    parameters={"command_code": "VENDOR-CMD-001", "priority": 9},
+                    parameters={"command_code": "VENDOR-CMD-001", "priority": 9, "barcode": "BC-001"},
                 )
             ],
             wait=WaitIntent(
@@ -1555,24 +1555,20 @@ class TestInboxConsumer:
             ),
         )
 
-        command_model = SimpleNamespace(
-            id=321,
-            command_code="VENDOR-CMD-001",
-            params={
-                "command_code": "VENDOR-CMD-001",
-                "task_type": "PICK_AND_PUT",
-                "priority": 9,
-                "timeout": 300000,
-                "timestamp": 1710000000000,
-            },
-            task_type="PICK_AND_PLACE",
-            priority=9,
-            timeout_ms=300000,
-        )
         mock_command_repo = MagicMock()
-        mock_command_repo.create = AsyncMock(
-            side_effect=lambda _db, payload: created_command_payloads.append(payload) or command_model
-        )
+
+        def create_command(_db: Any, payload: dict[str, Any]) -> Any:
+            created_command_payloads.append(payload)
+            return SimpleNamespace(
+                id=321,
+                command_code=payload["command_code"],
+                params=payload["params"],
+                task_type=payload["task_type"],
+                priority=payload["priority"],
+                timeout_ms=payload["timeout_ms"],
+            )
+
+        mock_command_repo.create = AsyncMock(side_effect=create_command)
 
         def capture_add(model: Any) -> None:
             added_models.append(model)
@@ -1615,13 +1611,15 @@ class TestInboxConsumer:
         assert outboxes[0].payload_json["command_code"] == "VENDOR-CMD-001"
         assert outboxes[0].payload_json["device_code"] == "ROBOT-001"
         assert outboxes[0].payload_json["task_type"] == "PICK_AND_PUT"
+        assert outboxes[0].payload_json["params"] == {"barcode": "BC-001"}
 
         assert len(created_command_payloads) == 1
         assert created_command_payloads[0]["plugin_key"] == "demo_plugin"
         assert created_command_payloads[0]["contract_version"] == "wl-v2026.04"
         assert created_command_payloads[0]["step_code"] == "SCAN_01"
-        assert created_command_payloads[0]["task_type"] == "PICK_AND_PLACE"
+        assert created_command_payloads[0]["task_type"] == "PICK_AND_PUT"
         assert created_command_payloads[0]["correlation_id"] == "corr-inbox-001"
+        assert created_command_payloads[0]["params"] == {"barcode": "BC-001"}
 
         assert session.correlation_id == "corr-inbox-001"
         assert session.plugin_key == "demo_plugin"
@@ -1645,7 +1643,7 @@ class TestInboxConsumer:
             "correlation_id": "corr-inbox-001",
             "canonical_event_type": "SCAN_COMPLETED",
             "transition": "dispatch_robot",
-            "context_patch": {"step_code": "SCAN_01", "barcode": "BC-001"},
+            "context_patch": {"plugin_state": "SCAN_01", "barcode": "BC-001"},
         }
         assert captured_timelines[1].payload == {
             "request_id": "req-command-001",
@@ -1654,14 +1652,7 @@ class TestInboxConsumer:
             "command_code": "VENDOR-CMD-001",
             "command_type": "PICK_AND_PUT",
             "dispatch_key": "device-command:VENDOR-CMD-001",
-            "parameters": {
-                "command_code": "VENDOR-CMD-001",
-                "params": {},
-                "priority": 9,
-                "task_type": "PICK_AND_PUT",
-                "timeout": 300000,
-                "timestamp": created_command_payloads[0]["params"]["timestamp"],
-            },
+            "parameters": {"barcode": "BC-001"},
         }
         assert captured_timelines[2].payload == {
             "request_id": "req-command-001",
@@ -1779,6 +1770,7 @@ class TestInboxConsumer:
         outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
         assert len(created_command_payloads) == 1
         assert created_command_payloads[0]["device_id"] == 8
+        assert created_command_payloads[0]["task_type"] == "MOVE_FORWARD"
         assert len(outboxes) == 1
         assert outboxes[0].dispatch_type == DispatchType.DEVICE_COMMAND
         assert outboxes[0].target_code == "CONVEYOR-01"
@@ -1828,7 +1820,7 @@ class TestInboxConsumer:
         orch_result = OrchestratorResult(
             success=True,
             transition="dispatch_robot",
-            context_patch={"step_code": "SCAN_01"},
+            context_patch={"plugin_state": "SCAN_01"},
             commands=[
                 CommandIntent(
                     target_device_id=99,
@@ -2081,6 +2073,104 @@ class TestInboxConsumer:
             "correlation_id": "corr-failure-001",
             "canonical_event_type": "MOVE_FORWARD",
             "message": "device timed out",
+        }
+
+    @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_business_decision_keeps_session_running(self, mock_db):
+        """业务 NG 只记录业务判定 timeline，不写失败归因。"""
+        from src.app.workline.models.timeline import (
+            TimelineActionType,
+            TimelineActorType,
+            TimelineStage,
+            TimelineStatus,
+        )
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+        from src.workline_runtime.types import BusinessDecisionIntent
+
+        captured_timelines: list[Any] = []
+
+        session = SimpleNamespace(
+            id=457,
+            workline_id=1,
+            status="WAITING",
+            context_json={"stage": "WAITING_PICK_PLACE"},
+            correlation_id=None,
+            plugin_key=None,
+            contract_version=None,
+            step_code=None,
+            last_inbox_id=None,
+            current_wait_type="COMMAND_RESULT",
+            current_wait_token="wait-token-002",
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=89,
+            ended_at=None,
+            failure_domain="HARDWARE",
+            failure_code="OLD_FAILURE",
+            failure_message="old failure",
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin")
+        inbox = SimpleNamespace(
+            id=203,
+            correlation_id="corr-business-001",
+            source_message_id="req-business-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            business_decisions=[
+                BusinessDecisionIntent(
+                    reason_code="SCAN_NG",
+                    message="扫码判定 NG",
+                    business_key="PKG-001",
+                    evidence={"barcode": "PKG-001"},
+                )
+            ],
+        )
+
+        with (
+            patch(
+                "src.celery_app.tasks.workline._add_timeline",
+                new=AsyncMock(side_effect=lambda _db, t, **_kwargs: captured_timelines.append(t)),
+            ),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={},
+                source_device=None,
+                orch_result=orch_result,
+            )
+
+        assert session.status == "RUNNING"
+        assert session.current_wait_type is None
+        assert session.current_wait_token is None
+        assert session.awaiting_command_id is None
+        assert session.failure_domain is None
+        assert session.failure_code is None
+        assert session.failure_message is None
+        assert len(captured_timelines) == 1
+        assert captured_timelines[0].stage == TimelineStage.DECISION
+        assert captured_timelines[0].action_type == TimelineActionType.DECISION_MADE
+        assert captured_timelines[0].actor_type == TimelineActorType.PLUGIN
+        assert captured_timelines[0].actor_code == "demo_plugin"
+        assert captured_timelines[0].status == TimelineStatus.SUCCESS
+        assert captured_timelines[0].related_inbox_id == 203
+        assert captured_timelines[0].payload == {
+            "request_id": "req-business-001",
+            "correlation_id": "corr-business-001",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "classification": "business_decision",
+            "reason_code": "SCAN_NG",
+            "message": "扫码判定 NG",
+            "evidence": {"barcode": "PKG-001"},
+            "business_key": "PKG-001",
         }
 
     @pytest.mark.asyncio

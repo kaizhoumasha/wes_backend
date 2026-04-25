@@ -32,11 +32,12 @@ SimplifiedSmtPlugin 集成测试
 └──────────────────────────────────────────────────────────────────────────┘
 
 运行方式:
-    # 1. 先启动 mock 服务
+    # 1. 先启动 WES / Celery / mock 服务，并准备 workline 30 的种子数据
     ./tests/mock/smt_classifier/start_local.sh &
 
     # 2. 运行测试
-    uv run pytest tests/workline_plugins/test_simplified_smt_plugin_mock.py -v
+    RUN_SMT_MOCK_INTEGRATION=1 \
+      uv run pytest tests/workline_plugins/test_simplified_smt_plugin_mock.py -v
 
 测试场景:
     - test_ok_flow: OK 流程完整验证
@@ -68,6 +69,14 @@ MOCK_SERVICES = {
 WES_BASE_URL = os.getenv("WES_BASE_URL", "http://localhost:8001")
 
 WORKLINE_ID = 30  # 测试用的 workline ID
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        os.getenv("RUN_SMT_MOCK_INTEGRATION") != "1",
+        reason="requires live WES, Celery, seeded workline data, and local SMT mock services",
+    ),
+]
 
 
 def run_db_query(query: str) -> list:
@@ -199,7 +208,8 @@ def get_session_status(session_id: int) -> dict | None:
 def mock_services_running() -> bool:
     """检查 mock 服务是否运行"""
     try:
-        with httpx.Client(timeout=2.0) as client:
+        # 本地 mock 服务探测必须绕过系统代理；代理返回的 200/500 会误判服务状态。
+        with httpx.Client(timeout=2.0, trust_env=False) as client:
             for name, config in MOCK_SERVICES.items():
                 response = client.get(f"{config['base_url']}/")
                 assert response.status_code == 200, f"{name} not responding"
@@ -213,7 +223,8 @@ def mock_services_running() -> bool:
 def wes_running() -> bool:
     """检查 WES 服务是否运行"""
     try:
-        with httpx.Client(timeout=2.0) as client:
+        # WES 是本机服务，测试连通性不应经过系统代理。
+        with httpx.Client(timeout=2.0, trust_env=False) as client:
             response = client.get(f"{WES_BASE_URL}/health")
             assert response.status_code == 200, "WES not responding"
         return True
@@ -228,7 +239,7 @@ class MockServiceClient:
     def __init__(self, base_url: str, device_code: str):
         self.base_url = base_url
         self.device_code = device_code
-        self._client = httpx.Client(timeout=10.0)
+        self._client = httpx.Client(timeout=10.0, trust_env=False)
 
     def __enter__(self):
         return self

@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CallbackEventRequest(BaseModel):
@@ -19,6 +19,8 @@ class CallbackEventRequest(BaseModel):
     - `SixInOne` 是否可解析
     - 插件字段别名是否映射成功
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     device_code: str = Field(description="设备编码（device_code，设备标识）")
     event_type: str = Field(description="事件类型（具体合法值由 plugin contract 决定）")

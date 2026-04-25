@@ -17,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
+from src.workline_runtime.run_mode import normalize_run_mode
+from src.workline_runtime.topology import WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
 
 
@@ -47,6 +49,7 @@ def _normalize_workline_for_runtime(workline: Any) -> Any:
         line_type=_safe_str(line_type_value),
         plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
         contract_version=_safe_str(getattr(workline, "contract_version", None)),
+        run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
         config=_safe_dict(getattr(workline, "config", None)),
         runtime_config_json=_safe_dict(getattr(workline, "runtime_config_json", None)),
         owner_team=_safe_str(getattr(workline, "owner_team", None)),
@@ -101,6 +104,7 @@ class PluginContext(BaseModel):
     workline: Any  # WorkLine - 使用 Any 避免 TYPE_CHECKING 问题
     session: Any  # WorklineSession
     devices_by_role: dict[str, list[Any]]  # dict[str, list[Device]]
+    topology: WorklineTopologyView = Field(default_factory=lambda: WorklineTopologyView.from_devices([]))
 
     # 追踪信息
     trace: TraceContext = Field(default_factory=TraceContext)
@@ -110,6 +114,7 @@ class PluginContext(BaseModel):
     config: dict[str, Any]  # 工作线配置（由插件模型验证）
     binding_config: dict[str, Any]  # 设备绑定配置
     runtime: ResolvedExecutionContext  # 解析后的统一运行时配置
+    run_mode: str = "AUTO"  # WORKLINE 运行模式快照，插件只能通过 runtime/context 感知
     normalized_input: Any | None = None  # 标准化后的 inbox 输入
     diagnostics: DiagnosticContext | None = None  # 统一诊断上下文
 
@@ -126,6 +131,11 @@ class PluginContext(BaseModel):
         """按角色和序号获取设备"""
         devices = self.devices_by_role.get(role, [])
         return devices[index] if index < len(devices) else None
+
+    def get_topology_devices_by_role(self, role: str) -> tuple[Any, ...]:
+        """按角色读取运行时拓扑快照。"""
+
+        return self.topology.devices_for_role(role)
 
 
 class PluginContextBuilder:
@@ -173,12 +183,19 @@ class PluginContextBuilder:
             role: [_normalize_device_for_runtime(device, runtime_workline) for device in devices]
             for role, devices in devices_by_role.items()
         }
+        topology = WorklineTopologyView.from_devices(
+            [device for role_devices in devices_by_role.values() for device in role_devices]
+        )
         runtime = resolve_execution_context(runtime_workline, runtime_devices_by_role)
+        session_run_mode = normalize_run_mode(getattr(session, "run_mode", None))
+        if runtime.workline is not None:
+            runtime.workline.run_mode = session_run_mode
         normalized_input = None
         if inbox is not None:
             normalized_input = normalize_inbox_input(
                 inbox,
                 correlation_id=resolved_trace.correlation_id or correlation_id,
+                plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
             )
         diagnostics = build_diagnostic_context(
             trace=resolved_trace,
@@ -192,11 +209,13 @@ class PluginContextBuilder:
             workline=workline,
             session=session,
             devices_by_role=devices_by_role,
+            topology=topology,
             trace=resolved_trace,
             correlation_id=resolved_trace.correlation_id or correlation_id or "",
             config=config,
             binding_config=binding_config,
             runtime=runtime,
+            run_mode=session_run_mode,
             normalized_input=normalized_input,
             diagnostics=diagnostics,
             services=services,

@@ -34,6 +34,7 @@ class TestPluginContextBuilder:
         workline = MagicMock()
         workline.id = 1
         workline.line_code = "SMT-001"
+        workline.run_mode = "SIMULATION"
         workline.config = {"scan_timeout": 30, "retry_count": 3}
         return workline
 
@@ -43,6 +44,7 @@ class TestPluginContextBuilder:
         session = MagicMock()
         session.id = 123
         session.status = "RUNNING"
+        session.run_mode = "SIMULATION"
         session.context_json = {"barcode": "ABC123"}
         return session
 
@@ -81,9 +83,13 @@ class TestPluginContextBuilder:
         assert ctx.workline == mock_workline
         assert ctx.session == mock_session
         assert ctx.devices_by_role == mock_devices_by_role
+        assert ctx.topology.devices_for_role("SCANNER")[0].device_code == "SCAN-001"
 
         # 验证追踪信息
         assert ctx.correlation_id == "corr-123"
+        assert ctx.run_mode == "SIMULATION"
+        assert ctx.runtime.workline is not None
+        assert ctx.runtime.workline.run_mode == "SIMULATION"
 
         # 验证服务依赖
         assert ctx.services == mock_services
@@ -122,6 +128,25 @@ class TestPluginContextBuilder:
 
         # config 应该是空字典
         assert ctx.config == {}
+
+    def test_build_uses_session_run_mode_snapshot(
+        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+    ):
+        """插件上下文运行模式应优先使用 Session 快照。"""
+        mock_workline.run_mode = "AUTO"
+        mock_session.run_mode = "SIMULATION"
+
+        ctx = builder.build(
+            session=mock_session,
+            workline=mock_workline,
+            devices_by_role=mock_devices_by_role,
+            services=mock_services,
+            correlation_id="corr-run-mode",
+        )
+
+        assert ctx.run_mode == "SIMULATION"
+        assert ctx.runtime.workline is not None
+        assert ctx.runtime.workline.run_mode == "SIMULATION"
 
     def test_get_device_by_role_returns_correct_device(
         self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
