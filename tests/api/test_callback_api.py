@@ -160,6 +160,8 @@ class TestCallbackResultAPI:
             contract_version="1.0",
         )
         handled_command = MagicMock()
+        handled_command.id = 1001
+        handled_command.device_id = 7
         handled_command.status = MagicMock()
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
@@ -227,6 +229,11 @@ class TestCallbackResultAPI:
                 "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
                 new=AsyncMock(return_value=1),
             ) as mock_mark_acked,
+            patch(
+                "src.app.callback.v1.callback.device_service.mark_command_finished",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_mark_finished,
         ):
             from src.app.callback.v1.callback import callback_result
 
@@ -238,6 +245,14 @@ class TestCallbackResultAPI:
         assert response["code"] == "1000"
         assert response["data"]["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
+        mock_mark_finished.assert_awaited_once_with(
+            db_session,
+            device_id=7,
+            command_id=1001,
+            success=True,
+            error_code=None,
+            auto_commit=False,
+        )
         assert mock_create_inbox.call_args.kwargs["source_message_id"] == "req-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["correlation_id"] == "corr-001"

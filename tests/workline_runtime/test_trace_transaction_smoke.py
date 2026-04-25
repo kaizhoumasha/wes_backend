@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,6 +21,7 @@ from src.app.callback.services.callback_orchestration_service import CallbackOrc
 from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus, DeviceCommand, TaskType
 from src.app.device.models.device import Device, DeviceProtocol, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.device.services.device_service import device_service as runtime_device_service
 from src.app.workline.models.inbox import InboxKind, WorklineInbox
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.session import SessionStatus, WorklineSession
@@ -133,6 +133,12 @@ async def _seed_trace_graph(db_session) -> SmokeFixture:
         status=CommandStatus.PENDING,
     )
     db_session.add(command)
+    await db_session.flush()
+
+    # 模拟设备命令已下发并 ACK，此时 WES 侧设备投影应处于占用态。
+    device.device_status = DeviceStatus.RUNNING
+    device.current_command_id = command.id
+
     outbox = WorklineOutbox(
         session_id=session.id,
         workline_id=workline.id,
@@ -178,7 +184,7 @@ class TestTraceTransactionSmoke:
                 request_id="req-smoke-rollback",
                 resolved_contract_version=fixture.workline.contract_version,
                 command_service=command_service,
-                device_service=SimpleNamespace(get_device_by_code=AsyncMock()),
+                device_service=runtime_device_service,
                 inbox_service=WorklineInboxService(),
                 enqueue_processing=lambda: None,
             )
@@ -190,6 +196,12 @@ class TestTraceTransactionSmoke:
         assert command_after is not None
         assert command_after.status == CommandStatus.PENDING
         assert command_after.result is None
+
+        device_after = await db_session.get(Device, fixture.device.id)
+        assert device_after is not None
+        assert device_after.device_status == DeviceStatus.RUNNING
+        assert device_after.current_command_id == command_id
+        assert device_after.error_code is None
 
         inbox_rows = await _load_inboxes_by_correlation(db_session, session_correlation_id)
         assert inbox_rows == []
@@ -231,7 +243,7 @@ class TestTraceTransactionSmoke:
             request_id="req-smoke-success",
             resolved_contract_version=fixture.workline.contract_version,
             command_service=command_service,
-            device_service=SimpleNamespace(get_device_by_code=AsyncMock()),
+            device_service=runtime_device_service,
             inbox_service=WorklineInboxService(),
             enqueue_processing=lambda: None,
         )
@@ -243,6 +255,12 @@ class TestTraceTransactionSmoke:
         assert command_after is not None
         assert command_after.status == CommandStatus.COMPLETED
         assert command_after.result == CommandResult.SUCCESS
+
+        device_after = await db_session.get(Device, fixture.device.id)
+        assert device_after is not None
+        assert device_after.device_status == DeviceStatus.IDLE
+        assert device_after.current_command_id is None
+        assert device_after.error_code is None
 
         inbox_rows = await _load_inboxes_by_correlation(db_session, session_correlation_id)
         assert len(inbox_rows) == 1

@@ -35,6 +35,11 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
         "schedule": 30.0,  # 每30秒扫描一次
     },
+    # 设备心跳超时扫描任务
+    "scan-device-heartbeats-batch": {
+        "task": "src.celery_app.tasks.workline.scan_device_heartbeats_batch",
+        "schedule": 300.0,  # 每 5 分钟扫描一次
+    },
 }
 
 # ============================================

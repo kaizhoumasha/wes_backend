@@ -87,6 +87,32 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
         return timeout_commands[:limit]
 
+    async def get_active_commands_for_device(
+        self,
+        db: AsyncSession,
+        device_id: int,
+        *,
+        exclude_command_id: int | None = None,
+        limit: int = 1,
+    ) -> list[DeviceCommand]:
+        """获取设备已进入硬件侧且仍未闭环的指令，用于推导设备占用状态。
+
+        PENDING 只表示 WES 侧排队，不能让设备提前进入 RUNNING。
+        """
+
+        active_statuses = [CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(DeviceCommand).where(
+            columns.device_id == device_id,
+            columns.status.in_(active_statuses),
+        )
+        if exclude_command_id is not None:
+            statement = statement.where(columns.id != exclude_command_id)
+
+        statement = statement.order_by(columns.created_at.desc(), columns.id.desc()).limit(limit)
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
     async def get_commands_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[DeviceCommand]:
         """
         根据关联 ID 查询所有相关指令

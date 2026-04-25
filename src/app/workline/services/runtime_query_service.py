@@ -42,7 +42,7 @@ _ACTIVE_SESSION_STATUSES = {
 _IN_PROGRESS_SESSION_STATUSES = {"NEW", "RUNNING"}
 _WAITING_SESSION_STATUSES = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
 _FAILURE_SESSION_STATUSES = {"FAILED", "CANCELLED"}
-_ABNORMAL_DEVICE_STATUSES = {"ERROR", "OFFLINE"}
+_ABNORMAL_DEVICE_STATUSES = {"ERROR", "OFFLINE", "MAINTENANCE"}
 _PENDING_COMMAND_STATUSES = {"PENDING", "SENT", "ACK_RECEIVED"}
 _INBOX_BACKLOG_STATUSES = {"NEW", "RETRY", "PROCESSING"}
 _OUTBOX_BACKLOG_STATUSES = {"NEW", "DISPATCHING"}
@@ -55,6 +55,12 @@ def _enum_str(value: Any) -> str | None:
 
 def _status_str(value: Any) -> str:
     return _enum_str(value) or "UNKNOWN"
+
+
+def _is_maintenance_device(item: Any) -> bool:
+    return bool(getattr(item, "maintenance_mode", False)) or (
+        _enum_str(getattr(item, "device_status", None)) == "MAINTENANCE"
+    )
 
 
 def _activity_dt(session: WorklineSession) -> Any:
@@ -199,7 +205,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             key=lambda item: item.active_session_count + item.waiting_session_count + item.failed_session_count,
             reverse=True,
         )[:5]
-        abnormal_device_items = [item for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES][:10]
+        abnormal_device_items = [
+            item for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES or _is_maintenance_device(item)
+        ][:10]
 
         return RuntimeOverviewResponse(
             stats=self._build_overview_stats(
@@ -669,7 +677,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         error_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "ERROR")
         offline_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "OFFLINE")
-        maintenance_devices = sum(1 for item in devices if item.maintenance_mode)
+        maintenance_devices = sum(1 for item in devices if _is_maintenance_device(item))
 
         return RuntimeWorklineSummary(
             id=_require_int_id(workline.id, "workline.id"),
@@ -697,14 +705,18 @@ class RuntimeQueryService(BaseService[Any, Any]):
         devices: list[RuntimeDeviceSummary],
     ) -> RuntimeDeviceHealthSummary:
         abnormal = sum(1 for item in devices if item.device_status in _ABNORMAL_DEVICE_STATUSES)
-        maintenance = sum(1 for item in devices if item.maintenance_mode)
+        maintenance = sum(1 for item in devices if _is_maintenance_device(item))
         loaded = sum(
             1
             for item in devices
-            if item.pending_command_count > 0 and item.device_status not in _ABNORMAL_DEVICE_STATUSES
+            if item.pending_command_count > 0
+            and item.device_status not in _ABNORMAL_DEVICE_STATUSES
+            and not _is_maintenance_device(item)
         )
         healthy = sum(
-            1 for item in devices if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not item.maintenance_mode
+            1
+            for item in devices
+            if item.device_status not in _ABNORMAL_DEVICE_STATUSES and not _is_maintenance_device(item)
         )
 
         return RuntimeDeviceHealthSummary(

@@ -20,13 +20,14 @@ from celery import Task
 from sqlalchemy import text
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
-from src.app.device.models import parse_device_capabilities
+from src.app.device.models import DeviceStatus, parse_device_capabilities
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEFAULT_COMMAND_PRIORITY,
     DEFAULT_COMMAND_TIMEOUT_MS,
+    DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
     EXTERNAL_HTTP_DECISION_TYPE,
     EXTERNAL_HTTP_INBOX_KIND,
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -103,6 +104,13 @@ class ScanResult(TypedDict):
     scanned: int
     timeouts_created: int
     errors: int
+
+
+class DeviceHeartbeatScanResult(TypedDict):
+    """设备心跳扫描结果"""
+
+    scanned: int
+    marked_offline: int
 
 
 class DispatchResult(TypedDict):
@@ -553,6 +561,10 @@ def _raise_device_command_governance_error(
     raise error
 
 
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
 def _enforce_device_command_governance(
     device: Any,
     *,
@@ -571,6 +583,39 @@ def _enforce_device_command_governance(
             message=f"设备 {device_code} 处于 maintenance_mode，拒绝{stage_label}: command_type={resolved_command_type}",
         )
 
+    device_status = _enum_value(getattr(device, "device_status", DeviceStatus.IDLE)) or DeviceStatus.IDLE.value
+    if device_status == DeviceStatus.MAINTENANCE.value:
+        _raise_device_command_governance_error(
+            domain=FailureDomain.MANUAL_INTERVENTION.value,
+            code="DEVICE_MAINTENANCE_MODE",
+            message=f"设备 {device_code} 处于 MAINTENANCE，拒绝{stage_label}: command_type={resolved_command_type}",
+        )
+
+    if device_status == DeviceStatus.ERROR.value:
+        _raise_device_command_governance_error(
+            domain=FailureDomain.MANUAL_INTERVENTION.value,
+            code="DEVICE_ERROR_STATE",
+            message=f"设备 {device_code} 处于 ERROR，拒绝{stage_label}: command_type={resolved_command_type}",
+        )
+
+    if device_status == DeviceStatus.OFFLINE.value:
+        _raise_device_command_governance_error(
+            domain=FailureDomain.HARDWARE.value,
+            code="DEVICE_OFFLINE",
+            message=f"设备 {device_code} 处于 OFFLINE，拒绝{stage_label}: command_type={resolved_command_type}",
+        )
+
+    current_command_id = getattr(device, "current_command_id", None)
+    if device_status == DeviceStatus.RUNNING.value or current_command_id is not None:
+        _raise_device_command_governance_error(
+            domain=FailureDomain.ORCHESTRATION.value,
+            code="DEVICE_BUSY",
+            message=(
+                f"设备 {device_code} 正在执行任务，拒绝{stage_label}: "
+                f"current_command_id={current_command_id}, command_type={resolved_command_type}"
+            ),
+        )
+
     try:
         capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
     except (TypeError, ValueError) as exc:
@@ -587,6 +632,94 @@ def _enforce_device_command_governance(
             code="UNSUPPORTED_COMMAND_TYPE",
             message=f"设备 {device_code} 不支持 command_type={resolved_command_type}，拒绝{stage_label}",
         )
+
+
+async def _get_device_for_command_dispatch(db: Any, device_repository: Any, device_code: str) -> Any:
+    """派发真实设备命令前锁定设备行，避免多 worker 同时给同一设备下发任务。"""
+
+    from inspect import iscoroutinefunction
+
+    locked_getter = getattr(device_repository, "get_by_device_code_for_update", None)
+    if iscoroutinefunction(locked_getter):
+        return await locked_getter(db, device_code)
+    return await device_repository.get_by_device_code(db, device_code)
+
+
+async def _release_device_runtime_if_failed_command_was_current(
+    db: Any,
+    *,
+    command: Any,
+    command_id: int,
+) -> None:
+    """派发侧失败只释放设备占用投影，不把设备标记为硬件 ERROR。"""
+
+    device_id = getattr(command, "device_id", None)
+    if not isinstance(device_id, int):
+        return
+
+    from src.app.device.services import device_service
+
+    device = await device_service.repo.get_by_id(db, device_id)
+    if device is None:
+        return
+    if _enum_value(getattr(device, "device_status", None)) != DeviceStatus.RUNNING.value:
+        return
+    if getattr(device, "current_command_id", None) != command_id:
+        return
+
+    # success=True 表示释放派发占用；DeviceCommand 自身已经在调用方标记为 FAILED。
+    _ = await device_service.mark_command_finished(
+        db,
+        device_id=device_id,
+        command_id=command_id,
+        success=True,
+        auto_commit=False,
+    )
+
+
+async def _mark_device_command_failed_if_dispatch_exhausted(
+    db: Any,
+    *,
+    outbox: Any,
+    failed_outbox: Any,
+    error_message: str,
+) -> None:
+    """Outbox 已永久失败时，同步关闭对应 DeviceCommand，避免设备占用投影被旧命令卡住。"""
+
+    from src.app.device.models.command import CommandStatus
+    from src.app.device.repositories.command_repository import DeviceCommandRepository
+    from src.app.workline.models.outbox import DispatchType, OutboxStatus
+
+    if getattr(failed_outbox, "status", None) != OutboxStatus.FAILED:
+        return
+    if getattr(outbox, "dispatch_type", None) != DispatchType.DEVICE_COMMAND:
+        return
+
+    payload = payload_dict(getattr(outbox, "payload_json", None))
+    command_code = _string_value(payload.get("command_code"))
+    if not command_code:
+        return
+
+    command_repo = DeviceCommandRepository()
+    command = await command_repo.get_by_command_code(db, command_code)
+    command_id = _resolve_entity_id(command)
+    active_statuses = {CommandStatus.PENDING.value, CommandStatus.SENT.value, CommandStatus.ACK_RECEIVED.value}
+    if command_id is None or _enum_value(getattr(command, "status", None)) not in active_statuses:
+        return
+
+    _ = await command_repo.update(
+        db,
+        command_id,
+        {
+            "status": CommandStatus.FAILED,
+            "completed_at": timezone.now_for_db(),
+            "error_detail": {
+                "message": error_message,
+                "source": "OUTBOX_DISPATCH",
+            },
+        },
+    )
+    await _release_device_runtime_if_failed_command_was_current(db, command=command, command_id=command_id)
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
@@ -1949,6 +2082,38 @@ class TimeoutScanner:
         return result
 
 
+class DeviceHeartbeatScanner:
+    """设备心跳超时扫描器。
+
+    设备任务状态仍由 DeviceCommand 记录；这里仅维护设备健康/占用投影，
+    将心跳超时的 IDLE/RUNNING 设备标记为 OFFLINE。
+    """
+
+    @staticmethod
+    async def _scan(
+        db: Any,
+        *,
+        threshold_seconds: int = DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
+        limit: int = 100,
+    ) -> DeviceHeartbeatScanResult:
+        from src.app.device.services import device_service
+
+        marked_offline = await device_service.mark_stale_heartbeats_offline(
+            db,
+            threshold_seconds=threshold_seconds,
+            limit=limit,
+            auto_commit=False,
+        )
+        await db.commit()
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
+        return {
+            "scanned": marked_offline,
+            "marked_offline": marked_offline,
+        }
+
+
 @celery_app.task(
     name="src.celery_app.tasks.workline.process_inbox_batch",
     base=WorklineTask,
@@ -2086,6 +2251,41 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_device_heartbeats_batch",
+    base=WorklineTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def scan_device_heartbeats_batch(
+    self: WorklineTask,
+    threshold_seconds: int = DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
+    limit: int = 100,
+) -> DeviceHeartbeatScanResult:
+    """扫描设备心跳超时，将已有心跳且超时的设备标记为 OFFLINE。"""
+
+    logger.info(f"开始扫描设备心跳超时, threshold_seconds={threshold_seconds}, limit={limit}")
+
+    async def _scan() -> DeviceHeartbeatScanResult:
+        async with self.db as db:
+            return await DeviceHeartbeatScanner._scan(db, threshold_seconds=threshold_seconds, limit=limit)
+
+    try:
+        result = _run_async(_scan())
+        _ensure_non_empty_retry_result(
+            "scan_device_heartbeats_batch",
+            result,
+            int(getattr(self.request, "retries", 0) or 0),
+        )
+        logger.info(f"设备心跳扫描完成: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"设备心跳扫描失败: {e}")
+        countdown = 60 * (2**self.request.retries)
+        raise self.retry(exc=e, countdown=countdown) from None
+
+
 class OutboxDispatcher:
     """Outbox 派发器内部类（用于测试）"""
 
@@ -2146,7 +2346,18 @@ class OutboxDispatcher:
                         message="Dispatch failed",
                         extra=trace_extra,
                     )
-                    _ = await outbox_repo.mark_as_failed(db, outbox_pk, "Dispatch failed", OutboxDispatcher.MAX_RETRIES)
+                    failed_outbox = await outbox_repo.mark_as_failed(
+                        db,
+                        outbox_pk,
+                        "Dispatch failed",
+                        OutboxDispatcher.MAX_RETRIES,
+                    )
+                    await _mark_device_command_failed_if_dispatch_exhausted(
+                        db,
+                        outbox=outbox,
+                        failed_outbox=failed_outbox,
+                        error_message="Dispatch failed",
+                    )
                     result["failed"] += 1
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
 
@@ -2164,7 +2375,18 @@ class OutboxDispatcher:
                 try:
                     outbox_pk = _resolve_entity_id(outbox)
                     if outbox_pk is not None:
-                        _ = await outbox_repo.mark_as_failed(db, outbox_pk, str(e), OutboxDispatcher.MAX_RETRIES)
+                        failed_outbox = await outbox_repo.mark_as_failed(
+                            db,
+                            outbox_pk,
+                            str(e),
+                            OutboxDispatcher.MAX_RETRIES,
+                        )
+                        await _mark_device_command_failed_if_dispatch_exhausted(
+                            db,
+                            outbox=outbox,
+                            failed_outbox=failed_outbox,
+                            error_message=str(e),
+                        )
                 except Exception as mark_error:
                     logger.warning(f"Outbox {outbox_pk_text} 异常补记失败: {mark_error}")
                 result["failed"] += 1
@@ -2172,6 +2394,9 @@ class OutboxDispatcher:
 
         # 提交事务
         await db.commit()
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
 
         return result
 
@@ -2231,12 +2456,15 @@ class OutboxDispatcher:
 
             from src.app.device.repositories.device_repository import device_repository
 
-            device = await device_repository.get_by_device_code(db, outbox.target_code)
+            device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
             if device is None or not device.host or not device.port:
                 logger.error(f"设备不存在或通信配置不完整: {outbox.target_code}")
                 return False
 
             payload = payload_dict(getattr(outbox, "payload_json", None))
+            from src.app.device.repositories.command_repository import DeviceCommandRepository
+
+            command_code = _string_value(payload.get("command_code"))
             _enforce_device_command_governance(
                 device,
                 command_type=_resolve_command_type_for_governance(payload),
@@ -2259,6 +2487,25 @@ class OutboxDispatcher:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload)
                 if response.status_code == 200:
+                    from src.app.device.services import device_service
+
+                    command = (
+                        await DeviceCommandRepository().get_by_command_code(db, command_code) if command_code else None
+                    )
+                    command_id = _resolve_entity_id(command)
+                    device_id = _resolve_entity_id(device)
+                    if device_id is not None and command_id is not None:
+                        _ = await device_service.mark_command_dispatched(
+                            db,
+                            device_id=device_id,
+                            command_id=command_id,
+                            auto_commit=False,
+                        )
+                    else:
+                        logger.warning(
+                            "设备指令已 ACK，但 WES 侧设备运行态未更新: "
+                            f"device_code={outbox.target_code}, command_code={command_code or 'UNKNOWN'}"
+                        )
                     logger.info(f"设备指令发送成功: {payload.get('command_code')}")
                     return True
                 response_body = response.text.strip()
@@ -2391,6 +2638,7 @@ dispatch_outbox = _DispatchOutboxCompat()
 # 历史测试/脚本兼容入口
 process_inbox_messages = ProcessInboxMessages
 scan_timeouts = TimeoutScanner
+device_heartbeat_scanner = DeviceHeartbeatScanner
 
 
 # ============================================
@@ -2401,10 +2649,12 @@ __all__ = [
     # 内部辅助函数
     "_load_related_entities",
     # Celery 任务入口（公共 API）
+    "device_heartbeat_scanner",
     "dispatch_outbox",
     "dispatch_outbox_batch",
     "process_inbox_batch",
     "process_inbox_messages",
+    "scan_device_heartbeats_batch",
     "scan_timeouts",
     "scan_timeouts_batch",
     # 内部类（已注释：不导出，仅供 Celery 任务内部使用）

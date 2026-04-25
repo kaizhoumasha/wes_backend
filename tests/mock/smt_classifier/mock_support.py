@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
 JsonDict = dict[str, Any]
-DeviceStatusLiteral = Literal["IDLE", "RUNNING", "ERROR", "OFFLINE"]
+DeviceStatusLiteral = Literal["IDLE", "RUNNING", "ERROR", "OFFLINE", "MAINTENANCE"]
 
 # 默认使用 localhost:8001（本地开发）
 # Docker 环境通过环境变量覆盖为 host.docker.internal:xxxx

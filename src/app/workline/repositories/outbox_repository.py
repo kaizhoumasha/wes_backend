@@ -133,6 +133,8 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
 
         outbox.status = OutboxStatus.SENT
         outbox.sent_at = timezone.now_for_db()
+        outbox.next_retry_at = None
+        outbox.last_error = None
         await db.flush()
         return outbox
 
@@ -158,6 +160,8 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
 
         outbox.status = OutboxStatus.ACKED
         outbox.finished_at = timezone.now_for_db()
+        outbox.next_retry_at = None
+        outbox.last_error = None
         await db.flush()
         return outbox
 

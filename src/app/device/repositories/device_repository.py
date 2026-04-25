@@ -1,9 +1,12 @@
 """Device Repository 层"""
 
+from datetime import datetime
+from typing import Any, cast
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.device.models import Device
+from src.app.device.models import Device, DeviceStatus
 from src.database.base_repository import BaseRepository
 from src.utils.device_cache import workline_device_cache
 
@@ -29,6 +32,23 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_device_code_for_update(
+        self,
+        db: AsyncSession,
+        device_code: str,
+    ) -> Device | None:
+        """根据设备编码查询并锁定设备行，用于真实设备派发前的串行化治理。"""
+
+        result = await db.execute(
+            select(Device)
+            .where(
+                Device.device_code == device_code,  # type: ignore[arg-type]
+                Device.is_deleted.is_(False),  # type: ignore[arg-type]
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_work_line_id(
         self,
         db: AsyncSession,
@@ -46,6 +66,30 @@ class DeviceRepository(BaseRepository[Device]):
                 Device.role_index.asc(),  # type: ignore[arg-type]
                 Device.id.asc(),  # type: ignore[arg-type]
             )
+        )
+        return list(result.scalars().all())
+
+    async def get_heartbeat_stale_devices(
+        self,
+        db: AsyncSession,
+        *,
+        cutoff: datetime,
+        limit: int = 100,
+    ) -> list[Device]:
+        """查询心跳超时且可由 WES 判定为离线的设备。"""
+
+        columns = cast("Any", Device).__table__.c
+        result = await db.execute(
+            select(Device)
+            .where(
+                columns.last_heartbeat_at.is_not(None),
+                columns.last_heartbeat_at < cutoff,
+                columns.device_status.in_([DeviceStatus.IDLE, DeviceStatus.RUNNING]),
+                columns.maintenance_mode.is_(False),
+                columns.is_deleted.is_(False),
+            )
+            .order_by(columns.last_heartbeat_at.asc(), columns.id.asc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 

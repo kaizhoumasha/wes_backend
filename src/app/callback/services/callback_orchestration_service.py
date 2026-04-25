@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.inbox import SourceSystem
 from src.app.workline.models.timeline import (
     TimelineActionType,
@@ -194,6 +195,7 @@ class CallbackOrchestrationService:
         enqueue_processing: Callable[[], None] | None = None,
     ) -> None:
         await db.commit()
+        await publish_deferred_sse_events(db)
         if enqueue_processing is None:
             self._enqueue_workline_processing()
             return
@@ -211,6 +213,39 @@ class CallbackOrchestrationService:
             return True
         device = await device_service.get_device_by_code(db, device_code)
         return self._has_workline_binding(getattr(device, "work_line_id", None))
+
+    @staticmethod
+    def _resolve_callback_error_code(error_detail: JsonDict | None) -> str | None:
+        if not error_detail:
+            return None
+        for key in ("error_code", "code"):
+            value = error_detail.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    async def _mark_callback_device_finished(
+        self,
+        db: AsyncSession,
+        *,
+        command: object,
+        callback: CommandCallbackResult,
+        device_service: DeviceService,
+    ) -> None:
+        command_id = getattr(command, "id", None)
+        device_id = getattr(command, "device_id", None)
+        if not isinstance(command_id, int) or not isinstance(device_id, int):
+            logger.warning(f"回调指令缺少设备状态锚点，跳过设备运行态更新: {callback.command_code}")
+            return
+
+        await device_service.mark_command_finished(
+            db,
+            device_id=device_id,
+            command_id=command_id,
+            success=callback.result.value == "SUCCESS",
+            error_code=self._resolve_callback_error_code(callback.error_detail),
+            auto_commit=False,
+        )
 
     async def process_result(
         self,
@@ -275,6 +310,12 @@ class CallbackOrchestrationService:
                 command = await command_service.handle_callback_result(db, callback)
                 if command is None:
                     raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
+                await self._mark_callback_device_finished(
+                    db,
+                    command=command,
+                    callback=callback,
+                    device_service=device_service,
+                )
                 _ = await outbox_repository.mark_as_acked_by_dispatch_key(
                     db,
                     _command_dispatch_key(callback.command_code),
@@ -305,9 +346,16 @@ class CallbackOrchestrationService:
             command = await command_service.handle_callback_result(db, callback)
             if command is None:
                 raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
+            await self._mark_callback_device_finished(
+                db,
+                command=command,
+                callback=callback,
+                device_service=device_service,
+            )
             trace = trace.with_command(command)
             inherited_correlation_id = trace.correlation_id or inherited_correlation_id
             await db.commit()
+            await publish_deferred_sse_events(db)
             logger.info(
                 f"非 Workline 指令结果已同步处理: {callback.command_code} -> "
                 f"status={command.status.value}, "
