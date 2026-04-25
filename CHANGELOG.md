@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复插件模板和开发指南中已不存在的 `ClassificationResult` 示例，避免新插件从错误契约起步。
 - 移除运行时契约层中重复的 Session/Inbox 状态枚举定义，统一引用模型层枚举。
 - 修复本地 SMT mock 集成测试会通过系统代理误判服务状态的问题。
+- 修复 TimescaleDB 未在 Postgres 启动时预加载导致迁移 DDL 被服务器中断的问题。
 
 ## [0.1.0.0] - 2026-03-23
 
