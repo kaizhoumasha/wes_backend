@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from src.app.workline.services import workline_operation_service
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
+from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 
 router = APIRouter(tags=["工作线诊断操作"])
@@ -58,6 +59,13 @@ def _outbox_response(outbox: Any) -> dict[str, Any]:
     }
 
 
+def _operation_error_response(exc: ValueError) -> dict[str, Any]:
+    message = str(exc)
+    if "不存在" in message:
+        return response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=message)
+    return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
+
+
 def _enqueue_workline_processing() -> None:
     """触发 Workline Inbox 异步处理。"""
 
@@ -95,12 +103,15 @@ async def replay_inbox(
     payload: ReplayInboxRequest,
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[dict[str, Any]]:
-    replay = await workline_operation_service.replay_inbox(
-        db,
-        inbox_id=inbox_id,
-        reason=payload.reason,
-        operator_id=payload.operator_id,
-    )
+    try:
+        replay = await workline_operation_service.replay_inbox(
+            db,
+            inbox_id=inbox_id,
+            reason=payload.reason,
+            operator_id=payload.operator_id,
+        )
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
 
@@ -117,13 +128,16 @@ async def create_manual_operation(
     payload: ManualOperationRequest,
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[dict[str, Any]]:
-    inbox = await workline_operation_service.create_manual_operation(
-        db,
-        session_id=session_id,
-        operation=payload.operation,
-        operator_id=payload.operator_id,
-        reason=payload.reason,
-    )
+    try:
+        inbox = await workline_operation_service.create_manual_operation(
+            db,
+            session_id=session_id,
+            operation=payload.operation,
+            operator_id=payload.operator_id,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
