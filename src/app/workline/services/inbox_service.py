@@ -74,11 +74,15 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         Raises:
             ValueError: 如果消息已存在（幂等检查失败）
         """
-        idempotency_key = self.repo.calculate_device_event_idempotency_key(
-            device_code=device_code,
-            event_type=event_type,
-            timestamp=timestamp,
-            data=data,
+        idempotency_key = (
+            f"device_event:{event_id}"
+            if event_id
+            else self.repo.calculate_device_event_idempotency_key(
+                device_code=device_code,
+                event_type=event_type,
+                timestamp=timestamp,
+                data=data,
+            )
         )
         payload: dict[str, Any] = {
             "message_type": "DEVICE_EVENT",
