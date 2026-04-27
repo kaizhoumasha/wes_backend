@@ -28,10 +28,6 @@ _REDACT_KEYS = {
 }
 
 
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
-
-
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}

@@ -66,7 +66,6 @@ class WorklineOperationService(BaseService[Any, Any]):
     ) -> Any:
         """从历史 inbox 创建一条新的 replay 请求，不修改原 inbox。"""
 
-        _ = reason, operator_id
         original = await self.inbox_repo.get_by_id(db, inbox_id)
         if original is None:
             raise ValueError(f"Inbox 不存在: {inbox_id}")

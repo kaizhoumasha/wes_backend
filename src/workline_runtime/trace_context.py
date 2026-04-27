@@ -126,11 +126,8 @@ class TraceContext:
         return trace
 
     def _bind(self, **updates: Any) -> TraceContext:
-        current = asdict(self)
-        for key, value in updates.items():
-            if value is not None:
-                current[key] = value
-        return replace(self, **current)
+        clean_updates = {key: value for key, value in updates.items() if value is not None}
+        return replace(self, **clean_updates)
 
     def with_request_id(self, request_id: str | None) -> TraceContext:
         return self._bind(request_id=non_empty_str(request_id) or self.request_id)

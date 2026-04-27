@@ -16,6 +16,10 @@ from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 router = APIRouter(tags=["工作线诊断操作"])
 
 
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value) if value is not None else None
+
+
 class ReplayInboxRequest(BaseModel):
     """Replay 请求。"""
 
@@ -34,12 +38,12 @@ class ManualOperationRequest(BaseModel):
 def _inbox_response(inbox: Any) -> dict[str, Any]:
     return {
         "id": inbox.id,
-        "kind": getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None)),
+        "kind": _enum_value(getattr(inbox, "kind", None)),
         "source_message_id": getattr(inbox, "source_message_id", None),
         "trace_id": getattr(inbox, "trace_id", None),
         "session_id": getattr(inbox, "session_id", None),
         "workline_id": getattr(inbox, "workline_id", None),
-        "status": getattr(getattr(inbox, "status", None), "value", getattr(inbox, "status", None)),
+        "status": _enum_value(getattr(inbox, "status", None)),
     }
 
 
@@ -49,12 +53,10 @@ def _outbox_response(outbox: Any) -> dict[str, Any]:
         "session_id": getattr(outbox, "session_id", None),
         "workline_id": getattr(outbox, "workline_id", None),
         "dispatch_key": getattr(outbox, "dispatch_key", None),
-        "dispatch_type": getattr(
-            getattr(outbox, "dispatch_type", None), "value", getattr(outbox, "dispatch_type", None)
-        ),
-        "target_type": getattr(getattr(outbox, "target_type", None), "value", getattr(outbox, "target_type", None)),
+        "dispatch_type": _enum_value(getattr(outbox, "dispatch_type", None)),
+        "target_type": _enum_value(getattr(outbox, "target_type", None)),
         "target_code": getattr(outbox, "target_code", None),
-        "status": getattr(getattr(outbox, "status", None), "value", getattr(outbox, "status", None)),
+        "status": _enum_value(getattr(outbox, "status", None)),
         "payload_json": getattr(outbox, "payload_json", None),
     }
 

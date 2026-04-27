@@ -562,7 +562,6 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
     start_time = time.time()
     request_id = get_request_id()
     callback_data: JsonDict = {}
-    is_duplicate = False
 
     try:
         callback_data = await _read_request_json(request)
@@ -654,7 +653,6 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
     # 安全保证：上面已检查 ctx_error 并提前返回
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
-    _plugin_key = ctx_result.plugin_key  # type: ignore[union-attr]
     _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
 
     try:
@@ -690,10 +688,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
         )
 
     try:
-        # 从已有 command 获取 plugin_key 和 contract_version（覆盖设备上下文）
-        command_plugin_key = getattr(existing_command, "plugin_key", None)
-        if isinstance(command_plugin_key, str) and command_plugin_key:
-            _plugin_key = command_plugin_key
+        # 从已有 command 获取 contract_version（覆盖设备上下文）
         command_contract_version = getattr(existing_command, "contract_version", None)
         if isinstance(command_contract_version, str) and command_contract_version:
             _resolved_contract_version = command_contract_version
@@ -868,7 +863,6 @@ async def callback_event(
     start_time = time.time()
     request_id = get_request_id()
     event_data: JsonDict = {}
-    is_duplicate = False
 
     try:
         event_data = await _read_request_json(request)
@@ -1094,7 +1088,6 @@ async def callback_external(
     start_time = time.time()
     request_id = get_request_id()
     callback_data: JsonDict = {}
-    is_duplicate = False
     callback_type = "UNKNOWN"
 
     try:

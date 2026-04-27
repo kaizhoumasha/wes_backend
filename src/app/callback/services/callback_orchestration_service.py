@@ -131,10 +131,6 @@ class CallbackOrchestrationService:
             trace = trace.with_command(existing_command)
         if command_code is not None:
             trace = trace.with_command_code(command_code)
-        if device_code is not None:
-            trace = trace.with_device_code(device_code)
-        if canonical_event_type is not None:
-            trace = trace.with_canonical_event_type(canonical_event_type)
         return trace
 
     async def _load_command_session(self, db: AsyncSession, command: object) -> object | None:

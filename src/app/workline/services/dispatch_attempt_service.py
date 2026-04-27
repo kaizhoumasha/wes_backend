@@ -24,6 +24,32 @@ def _enum_value(value: Any) -> str | None:
     return raw if isinstance(raw, str) else None
 
 
+async def _flush_if_supported(db: Any) -> None:
+    flush = getattr(db, "flush", None)
+    if not callable(flush):
+        return
+
+    flush_result = flush()
+    if isawaitable(flush_result):
+        await flush_result
+
+
+async def _finalize_attempt(
+    db: Any,
+    *,
+    attempt: WorklineDispatchAttempt,
+    success: bool,
+    response: dict[str, Any] | None = None,
+    error_message: str | None = None,
+) -> WorklineDispatchAttempt:
+    attempt.status = DispatchAttemptStatus.SENT.value if success else DispatchAttemptStatus.FAILED.value
+    attempt.finalized_at = timezone.now_for_db()
+    attempt.response_json = response or {}
+    attempt.error_message = None if success else error_message
+    await _flush_if_supported(db)
+    return attempt
+
+
 class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, WorklineDispatchAttemptRepository]):
     """维护 outbox 派发 attempt 的 lease 与 finalize 语义。"""
 
@@ -63,11 +89,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
             add_result = add(created)
             if isawaitable(add_result):
                 await add_result
-            flush = getattr(db, "flush", None)
-            if callable(flush):
-                flush_result = flush()
-                if isawaitable(flush_result):
-                    await flush_result
+            await _flush_if_supported(db)
         else:
             created = await self.repo.create(db, data)
             if created is None:
@@ -92,15 +114,13 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         if attempt is None:
             raise ValueError(f"派发尝试不存在: {lease_token}")
 
-        attempt.status = DispatchAttemptStatus.SENT.value if success else DispatchAttemptStatus.FAILED.value
-        attempt.finalized_at = timezone.now_for_db()
-        attempt.response_json = response or {}
-        attempt.error_message = None if success else error_message
-        flush = getattr(db, "flush", None)
-        if callable(flush):
-            flush_result = flush()
-            if isawaitable(flush_result):
-                await flush_result
+        attempt = await _finalize_attempt(
+            db,
+            attempt=attempt,
+            success=success,
+            response=response,
+            error_message=error_message,
+        )
         if auto_commit:
             await self._commit_mutation(db)
         return attempt
@@ -117,15 +137,13 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
     ) -> WorklineDispatchAttempt:
         """结束当前事务中已持有的 attempt 实例。"""
 
-        attempt.status = DispatchAttemptStatus.SENT.value if success else DispatchAttemptStatus.FAILED.value
-        attempt.finalized_at = timezone.now_for_db()
-        attempt.response_json = response or {}
-        attempt.error_message = None if success else error_message
-        flush = getattr(db, "flush", None)
-        if callable(flush):
-            flush_result = flush()
-            if isawaitable(flush_result):
-                await flush_result
+        attempt = await _finalize_attempt(
+            db,
+            attempt=attempt,
+            success=success,
+            response=response,
+            error_message=error_message,
+        )
         if auto_commit:
             await self._commit_mutation(db)
         return attempt

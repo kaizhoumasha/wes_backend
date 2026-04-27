@@ -208,9 +208,9 @@ def _run_async(coro: Awaitable[Any]) -> Any:
     return loop.run_until_complete(coro)
 
 
-def _resolve_required_pk(entity: Any, entity_name: str, *field_names: str) -> int:
+def _resolve_required_pk(entity: Any, entity_name: str, *_field_names: str) -> int:
     """提取必需的整型主键，不存在时抛出 ValueError。"""
-    _ = field_names
+
     pk = _resolve_entity_id(entity)
     if pk is None:
         raise ValueError(f"{entity_name} missing primary key")
@@ -232,7 +232,7 @@ def _outbox_trace_extra(outbox: Any, trace: TraceContext | None = None) -> dict[
     resolved_trace = trace.with_outbox(outbox) if trace is not None else TraceContext.from_runtime(outbox=outbox)
     return resolved_trace.project_outbox_trace(
         outbox=outbox,
-        dispatch_type=getattr(getattr(outbox, "dispatch_type", None), "value", getattr(outbox, "dispatch_type", None)),
+        dispatch_type=_enum_value(getattr(outbox, "dispatch_type", None)),
         target_code=getattr(outbox, "target_code", None),
     )
 
@@ -566,6 +566,12 @@ def _resolve_device_command_path(device: Any) -> str:
     if not callback_path.startswith("/"):
         callback_path = f"/{callback_path}"
     return callback_path
+
+
+def _resolve_device_protocol_scheme(device: Any) -> str:
+    raw_protocol = getattr(device, "protocol", None)
+    scheme = str(raw_protocol).lower() if raw_protocol else "http"
+    return scheme if scheme in {"http", "https"} else "http"
 
 
 def _raise_device_command_governance_error(
@@ -2361,7 +2367,6 @@ class OutboxDispatcher:
                 success = await OutboxDispatcher._dispatch_single(db, outbox)
 
                 if success:
-                    trace_extra = _outbox_trace_extra(outbox, trace=trace)
                     if dispatch_attempt is not None:
                         _ = await workline_dispatch_attempt_service.finalize_attempt_record(
                             db,
@@ -2528,15 +2533,8 @@ class OutboxDispatcher:
                 stage_label="命令派发",
             )
 
-            # 确保 scheme 是 http 或 https
-            protocol_value = getattr(device, "protocol", None)
-            if protocol_value:
-                scheme = str(protocol_value).lower()
-                if scheme not in ("http", "https"):
-                    scheme = "http"
-            else:
-                scheme = "http"
-
+            # 确保 scheme 是 http 或 https。
+            scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
             logger.info(f"发送设备指令到 {url}: {payload.get('command_code')}")
