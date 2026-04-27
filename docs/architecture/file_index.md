@@ -337,7 +337,7 @@
 | | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
-| | `session_repository.py` | Session Repository（按 business_key / correlation_id / awaiting_command_id 查询） | 🔧 架构核心 |
+| | `session_repository.py` | Session Repository（按 business_key / trace_id / awaiting_command_id 查询） | 🔧 架构核心 |
 | | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
@@ -370,7 +370,7 @@
 | `payloads.py` | 共享 Payload 定义（Pydantic 模型；`SixInOne` 已迁至 `contracts/` 统一维护） | 🔄 常用功能 |
 | `contracts/` | 运行时统一合同模型（`SixInOne` SSOT、标准设备错误码） | 🔧 架构核心 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
-| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
+| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / trace_id / session / command / outbox 绑定） | 🔧 架构核心 |
 | `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
 | `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
 | `device_target_resolver.py` | 基于 source device + topology + role 解析命令目标设备 | 🔧 架构核心 |
