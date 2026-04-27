@@ -13,6 +13,7 @@ from src.app.workline.models.inbox import (
 )
 from src.app.workline.repositories import inbox_repository
 from src.core.base_service import BaseService
+from src.core.exceptions import ConflictException
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
 @runtime_checkable
 class _SupportsIsoformat(Protocol):
     def isoformat(self) -> str: ...
+
+
+class DuplicateInboxError(ValueError):
+    """Inbox 幂等命中已有消息。"""
+
+    def __init__(self, message: str, *, existing_inbox: WorklineInbox) -> None:
+        super().__init__(message)
+        self.existing_inbox = existing_inbox
 
 
 def _format_deadline(deadline_at: object | None) -> str:
@@ -48,7 +57,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         timestamp: int,
         data: dict[str, Any],
         source_message_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
         canonical_event_type: str | None = None,
         *,
         auto_commit: bool = True,
@@ -63,7 +74,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             timestamp: 时间戳（毫秒）
             data: 事件数据
             source_message_id: 来源消息 ID（可选）
-            correlation_id: 关联 ID（可选）
+            trace_id: Trace ID（可选）
             auto_commit: 是否在创建后立即提交。批处理/编排场景应显式传 False。
 
         Returns:
@@ -72,11 +83,15 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         Raises:
             ValueError: 如果消息已存在（幂等检查失败）
         """
-        idempotency_key = self.repo.calculate_device_event_idempotency_key(
-            device_code=device_code,
-            event_type=event_type,
-            timestamp=timestamp,
-            data=data,
+        idempotency_key = (
+            f"device_event:{event_id}"
+            if event_id
+            else self.repo.calculate_device_event_idempotency_key(
+                device_code=device_code,
+                event_type=event_type,
+                timestamp=timestamp,
+                data=data,
+            )
         )
         payload: dict[str, Any] = {
             "message_type": "DEVICE_EVENT",
@@ -86,6 +101,10 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "timestamp": timestamp,
             "data": data,
         }
+        if event_id:
+            payload["event_id"] = event_id
+        if causation_id:
+            payload["causation_id"] = causation_id
 
         return await self._create_inbox_message(
             db=db,
@@ -94,7 +113,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             kind=InboxKind.DEVICE_EVENT,
             payload=payload,
             source_message_id=source_message_id,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             auto_commit=auto_commit,
         )
 
@@ -109,7 +130,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         command_type: str | None = None,
         error_detail: dict[str, Any] | None = None,
         source_message_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
@@ -124,7 +147,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             finish_time: 完成时间（毫秒）
             data: 结果数据
             source_message_id: 来源消息 ID（可选）
-            correlation_id: 关联 ID（可选）
+            trace_id: Trace ID（可选）
             auto_commit: 是否在创建后立即提交。批处理/编排场景应显式传 False。
 
         Returns:
@@ -152,6 +175,10 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             payload["command_type"] = command_type
         if error_detail:
             payload["error_detail"] = error_detail
+        if event_id:
+            payload["event_id"] = event_id
+        if causation_id:
+            payload["causation_id"] = causation_id
 
         return await self._create_inbox_message(
             db=db,
@@ -160,7 +187,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             kind=InboxKind.COMMAND_RESULT,
             payload=payload,
             source_message_id=source_message_id,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             auto_commit=auto_commit,
         )
 
@@ -169,17 +198,19 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         db: AsyncSession,
         *,
         callback_type: str,
-        correlation_id: str,
+        trace_id: str,
         payload: dict[str, Any],
         source_system: SourceSystem = SourceSystem.SYSTEM,
         source_message_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineInbox:
         """创建外部 HTTP 回调 Inbox 消息。"""
 
         idempotency_key = self.repo.calculate_external_http_idempotency_key(
             callback_type=callback_type,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             payload=payload,
         )
 
@@ -196,7 +227,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             kind=InboxKind.EXTERNAL_HTTP,
             payload=inbox_payload,
             source_message_id=source_message_id,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             source_system=source_system,
             auto_commit=auto_commit,
         )
@@ -336,14 +369,19 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         kind: InboxKind,
         payload: dict[str, Any],
         source_message_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
         source_system: SourceSystem = SourceSystem.DEVICE,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
         existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
         if existing:
-            raise ValueError(f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing.id}")
+            raise DuplicateInboxError(
+                f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing.id}",
+                existing_inbox=existing,
+            )
 
         inbox_data: dict[str, Any] = {
             "kind": kind,
@@ -355,10 +393,23 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "received_at": timezone.now_for_db(),
         }
 
-        if correlation_id:
-            inbox_data["correlation_id"] = correlation_id
+        if trace_id:
+            inbox_data["trace_id"] = trace_id
+        if event_id:
+            inbox_data["event_id"] = event_id
+        if causation_id:
+            inbox_data["causation_id"] = causation_id
 
-        created = await self.repo.create(db, inbox_data)
+        try:
+            created = await self.repo.create(db, inbox_data)
+        except ConflictException as exc:
+            existing_after_conflict = await self.repo.get_by_idempotency_key(db, idempotency_key)
+            if existing_after_conflict is not None:
+                raise DuplicateInboxError(
+                    f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing_after_conflict.id}",
+                    existing_inbox=existing_after_conflict,
+                ) from exc
+            raise
         if created is None:
             raise RuntimeError("创建 Inbox 消息失败")
         await self._commit_inbox_mutation(db, auto_commit=auto_commit)
@@ -388,7 +439,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         session_id: int,
         workline_id: int,
         deadline_at: object | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
@@ -399,7 +450,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             db: 数据库会话
             session_id: 会话 ID
             workline_id: 作业线 ID
-            correlation_id: 关联 ID（可选）
+            trace_id: Trace ID（可选）
             auto_commit: 是否在创建后立即提交。批处理场景应显式传 False。
 
         Returns:
@@ -426,8 +477,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "received_at": timezone.now_for_db(),
         }
 
-        if correlation_id:
-            inbox_data["correlation_id"] = correlation_id
+        if trace_id:
+            inbox_data["trace_id"] = trace_id
 
         created = await self.repo.create(db, inbox_data)
         if created is None:

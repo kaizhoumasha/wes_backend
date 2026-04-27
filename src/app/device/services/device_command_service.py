@@ -71,10 +71,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
                 task_type,
             )
 
-        # 生成 correlation_id（如果未提供）
-        correlation_id = command_request.correlation_id
-        if not correlation_id:
-            correlation_id = str(uuid.uuid4())
+        # 生成 trace_id（如果未提供）
+        trace_id = command_request.trace_id
+        if not trace_id:
+            trace_id = str(uuid.uuid4())
 
         # 创建指令记录
         command_data: dict[str, Any] = {
@@ -84,7 +84,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "priority": command_request.priority,
             "timeout_ms": command_request.timeout_ms,
             "params": cast("dict[str, Any] | None", command_request.params),
-            "correlation_id": correlation_id,
+            "trace_id": trace_id,
             "status": CommandStatus.PENDING,
         }
 

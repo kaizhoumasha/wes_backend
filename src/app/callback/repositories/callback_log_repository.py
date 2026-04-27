@@ -22,12 +22,10 @@ class CallbackLogRepository(BaseRepository[CallbackLog]):
         result = await db.execute(select(CallbackLog).where(CallbackLog.request_id == request_id))
         return result.scalar_one_or_none()
 
-    async def get_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[CallbackLog]:
-        """根据 correlation_id 查询所有相关的回调日志"""
+    async def get_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[CallbackLog]:
+        """根据 trace_id 查询所有相关的回调日志"""
         columns = cast("Any", CallbackLog).__table__.c
-        result = await db.execute(
-            select(CallbackLog).where(columns.correlation_id == correlation_id).order_by(columns.created_at)
-        )
+        result = await db.execute(select(CallbackLog).where(columns.trace_id == trace_id).order_by(columns.created_at))
         return list(result.scalars().all())
 
     async def get_by_device_id(self, db: AsyncSession, device_id: str, limit: int = 100) -> list[CallbackLog]:

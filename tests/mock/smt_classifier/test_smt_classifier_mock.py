@@ -598,7 +598,7 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
         task_type="MOVE_RACK",
         params={"from_location": "A", "to_location": "B", "rack_type": "SMT_BIN_RACK", "execution_time": 0},
         timestamp=1,
-        correlation_id="corr-agv-001",
+        trace_id="trace-agv-001",
         callback_type="AGV_TASK_RESULT",
         callback_url="http://localhost:8001/api/v1/callback/external",
     )
@@ -610,5 +610,5 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
     callback_payload = captured["payload"]
     assert isinstance(callback_payload, dict)
     assert callback_payload["callback_type"] == "AGV_TASK_RESULT"
-    assert callback_payload["correlation_id"] == "corr-agv-001"
+    assert callback_payload["trace_id"] == "trace-agv-001"
     assert callback_payload["command_code"] == "AGV-REQ-001"

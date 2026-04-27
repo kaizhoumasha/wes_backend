@@ -76,7 +76,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         # 验证核心实体
@@ -86,7 +86,7 @@ class TestPluginContextBuilder:
         assert ctx.topology.devices_for_role("SCANNER")[0].device_code == "SCAN-001"
 
         # 验证追踪信息
-        assert ctx.correlation_id == "corr-123"
+        assert ctx.trace_id == "trace-123"
         assert ctx.run_mode == "SIMULATION"
         assert ctx.runtime.workline is not None
         assert ctx.runtime.workline.run_mode == "SIMULATION"
@@ -107,7 +107,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-456",
+            trace_id="trace-456",
         )
 
         # config 应该从 workline.config 提取
@@ -123,7 +123,7 @@ class TestPluginContextBuilder:
             workline=workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-789",
+            trace_id="trace-789",
         )
 
         # config 应该是空字典
@@ -141,7 +141,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-run-mode",
+            trace_id="trace-run-mode",
         )
 
         assert ctx.run_mode == "SIMULATION"
@@ -157,7 +157,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         # 获取第一个 SCANNER
@@ -181,7 +181,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         # 不存在的角色
@@ -201,7 +201,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         # logger 应该是 logging.Logger 实例
@@ -214,19 +214,19 @@ class TestPluginContextBuilder:
         result = ctx.clock()
         assert isinstance(result, datetime)
 
-    def test_build_with_default_correlation_id(
+    def test_build_with_default_trace_id(
         self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
     ):
-        """测试 correlation_id 默认值为空字符串"""
+        """测试 trace_id 默认值为空字符串"""
         ctx = builder.build(
             session=mock_session,
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            # 不传 correlation_id
+            # 不传 trace_id
         )
 
-        assert ctx.correlation_id == ""
+        assert ctx.trace_id == ""
 
     def test_build_binding_config_default_empty(
         self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
@@ -237,7 +237,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         # binding_config 应该默认为空字典
@@ -252,7 +252,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             logger=custom_logger,
         )
 
@@ -267,7 +267,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             clock=lambda: fixed_time,
         )
 
@@ -282,7 +282,7 @@ class TestPluginContextBuilder:
             workline=mock_workline,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
 
         assert isinstance(ctx, PluginContext)

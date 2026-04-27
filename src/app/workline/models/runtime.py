@@ -27,7 +27,7 @@ class RuntimeTraceListItem(BaseModel):
 
     session_id: int
     session_code: str
-    correlation_id: str | None = None
+    trace_id: str | None = None
     request_id: str | None = None
     workline_id: int
     workline_name: str | None = None
@@ -76,7 +76,9 @@ class TraceOverviewSummary(BaseModel):
 
 class TraceContextResponse(BaseModel):
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
+    event_id: str | None = None
+    causation_id: str | None = None
     workline_id: int | None = None
     session_id: int | None = None
     inbox_id: int | None = None
@@ -97,7 +99,9 @@ class TraceCallbackLogItem(BaseModel):
     callback_type: str
     device_id: str
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
+    event_id: str | None = None
+    causation_id: str | None = None
     response_status: int
     response_time_ms: int
     error_message: str | None = None
@@ -113,11 +117,13 @@ class TraceInboxItem(BaseModel):
     kind: str
     source_system: str
     source_message_id: str | None = None
+    trace_id: str | None = None
+    event_id: str | None = None
+    causation_id: str | None = None
     workline_id: int | None = None
     device_id: int | None = None
     command_id: int | None = None
     session_id: int | None = None
-    correlation_id: str | None = None
     status: str
     received_at: datetime
     processed_at: datetime | None = None
@@ -138,7 +144,7 @@ class TraceSessionItem(BaseModel):
     barcode: str | None = None
     status: str
     step_code: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     current_wait_type: str | None = None
@@ -160,7 +166,7 @@ class TraceCommandItem(BaseModel):
     id: int
     device_id: int
     command_code: str
-    correlation_id: str | None = None
+    trace_id: str | None = None
     workline_id: int | None = None
     session_id: str | None = None
     task_type: str
@@ -198,11 +204,27 @@ class TraceOutboxItem(BaseModel):
     payload_json: dict[str, Any]
 
 
+class TraceDispatchAttemptItem(BaseModel):
+    id: int
+    outbox_id: int
+    dispatch_key: str
+    attempt_no: int
+    lease_token: str
+    status: str
+    target_type: str | None = None
+    target_code: str | None = None
+    started_at: datetime
+    finalized_at: datetime | None = None
+    error_message: str | None = None
+    response_json: dict[str, Any] = Field(default_factory=dict)
+    trace_json: dict[str, Any] = Field(default_factory=dict)
+
+
 class TraceTimelineItem(BaseModel):
     id: int
     session_id: int
     workline_id: int
-    correlation_id: str | None = None
+    trace_id: str | None = None
     seq_no: int
     occurred_at: datetime
     stage: str
@@ -221,7 +243,7 @@ class TraceTimelineItem(BaseModel):
 
 class TraceDiagnosticContextItem(BaseModel):
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
     session_id: int | None = None
     inbox_id: int | None = None
     outbox_id: int | None = None
@@ -243,12 +265,41 @@ class TraceDetailResponse(BaseModel):
     trace: TraceContextResponse
     summary: TraceOverviewSummary
     session: TraceSessionItem | None = None
+    sessions: list[TraceSessionItem] = Field(default_factory=list)
     callback_logs: list[TraceCallbackLogItem] = Field(default_factory=list)
     inboxes: list[TraceInboxItem] = Field(default_factory=list)
     commands: list[TraceCommandItem] = Field(default_factory=list)
     outboxes: list[TraceOutboxItem] = Field(default_factory=list)
+    dispatch_attempts: list[TraceDispatchAttemptItem] = Field(default_factory=list)
     timelines: list[TraceTimelineItem] = Field(default_factory=list)
     diagnostics: list[TraceDiagnosticItem] = Field(default_factory=list)
+
+
+class DiagnosticCardResponse(BaseModel):
+    title: str
+    summary: str
+    error_code: str
+    error_domain: str
+    severity: str
+    recoverability: str
+    problem_class: str
+    user_message: str
+    operator_action: str | None = None
+    technical_summary: str | None = None
+    next_steps: list[str] = Field(default_factory=list)
+    context: TraceDiagnosticContextItem
+
+
+class TraceBlockingPointResponse(BaseModel):
+    trace_id: str
+    request_id: str | None = None
+    blocking_point: str
+    owner: str
+    recoverability: str
+    operator_action: str
+    diagnostic_card: DiagnosticCardResponse
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    next_steps: list[str] = Field(default_factory=list)
 
 
 class RuntimeStatCard(BaseModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,7 +23,7 @@ class _ResultStub:
         return SimpleNamespace(all=lambda: self._rows)
 
 
-def _db_with_execute_results(*results: _ResultStub) -> SimpleNamespace:
+def _db_with_execute_results(*results: _ResultStub) -> Any:
     return SimpleNamespace(execute=AsyncMock(side_effect=list(results)))
 
 
@@ -31,7 +32,7 @@ def callback_log_1() -> SimpleNamespace:
     return SimpleNamespace(
         id=1,
         request_id="req-1",
-        correlation_id="corr-1",
+        trace_id="trace-1",
         callback_type="result",
         ingress_outcome="ACCEPTED",
         failure_stage=None,
@@ -45,7 +46,7 @@ def callback_log_2() -> SimpleNamespace:
     return SimpleNamespace(
         id=2,
         request_id="req-2",
-        correlation_id="corr-1",
+        trace_id="trace-1",
         callback_type="event",
         ingress_outcome="ACCEPTED",
         failure_stage=None,
@@ -58,7 +59,7 @@ def callback_log_2() -> SimpleNamespace:
 def session_obj() -> SimpleNamespace:
     return SimpleNamespace(
         id=11,
-        correlation_id="corr-1",
+        trace_id="trace-1",
         workline_id=22,
         status="RUNNING",
         current_wait_type="COMMAND_RESULT",
@@ -74,7 +75,7 @@ def command_obj() -> SimpleNamespace:
     return SimpleNamespace(
         id=33,
         command_code="CMD-1",
-        correlation_id="corr-1",
+        trace_id="trace-1",
         session_id="11",
         device_id=77,
         workline_id=22,
@@ -104,7 +105,7 @@ def inbox_obj() -> SimpleNamespace:
         id=55,
         session_id=11,
         workline_id=22,
-        correlation_id="corr-1",
+        trace_id="trace-1",
         source_message_id="req-1",
         status="PROCESSED",
         received_at=1,
@@ -119,7 +120,7 @@ def timeline_obj() -> SimpleNamespace:
         id=66,
         session_id=11,
         workline_id=22,
-        correlation_id="corr-1",
+        trace_id="trace-1",
         seq_no=1,
         occurred_at=1,
         stage="DECISION",
@@ -129,29 +130,41 @@ def timeline_obj() -> SimpleNamespace:
         status="SUCCESS",
         payload_json={
             "request_id": "req-1",
-            "correlation_id": "corr-1",
+            "trace_id": "trace-1",
             "canonical_event_type": "SCAN_COMPLETED",
         },
     )
 
 
 @pytest.fixture
-def service(callback_log_1, callback_log_2, session_obj, command_obj) -> TraceQueryService:
+def failed_outbox_obj(outbox_obj: SimpleNamespace) -> SimpleNamespace:
+    outbox_obj.status = "FAILED"
+    outbox_obj.last_error = "HTTP 500"
+    return outbox_obj
+
+
+@pytest.fixture
+def service(
+    callback_log_1: SimpleNamespace,
+    callback_log_2: SimpleNamespace,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+) -> TraceQueryService:
     callback_repo = SimpleNamespace(
         get_by_request_id=AsyncMock(return_value=callback_log_1),
-        get_by_correlation_id=AsyncMock(return_value=[callback_log_1, callback_log_2]),
+        get_by_trace_id=AsyncMock(return_value=[callback_log_1, callback_log_2]),
     )
     session_repo = SimpleNamespace(
         get_by_id=AsyncMock(return_value=session_obj),
-        get_by_correlation_id=AsyncMock(return_value=session_obj),
+        get_by_trace_id=AsyncMock(return_value=session_obj),
     )
     command_repo = SimpleNamespace(
         get_by_command_code=AsyncMock(return_value=command_obj),
     )
     return TraceQueryService(
-        callback_log_repo=callback_repo,
-        session_repo=session_repo,
-        command_repo=command_repo,
+        callback_log_repo=cast("Any", callback_repo),
+        session_repo=cast("Any", session_repo),
+        command_repo=cast("Any", command_repo),
     )
 
 
@@ -167,6 +180,7 @@ async def test_by_request_id_aggregates_full_chain(
     db = _db_with_execute_results(
         _ResultStub(rows=[command_obj]),
         _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
     )
@@ -174,7 +188,7 @@ async def test_by_request_id_aggregates_full_chain(
     result = await service.by_request_id(db, "req-1")
 
     assert result.trace.request_id == "req-1"
-    assert result.trace.correlation_id == "corr-1"
+    assert result.trace.trace_id == "trace-1"
     assert result.session is not None and result.session.id == session_obj.id
     assert result.commands and result.commands[0].command_code == "CMD-1"
     assert result.outboxes and result.outboxes[0].dispatch_key == "dispatch-1"
@@ -184,11 +198,11 @@ async def test_by_request_id_aggregates_full_chain(
     assert result.summary["timelines"] == 1
     assert any(d.extra.get("source") == "session_snapshot" for d in result.diagnostics)
     assert any(d.extra.get("source") == "timeline" for d in result.diagnostics)
-    assert db.execute.await_count == 4
+    assert db.execute.await_count == 5
 
 
 @pytest.mark.asyncio
-async def test_by_correlation_id_uses_correlation_anchor(
+async def test_by_trace_id_uses_trace_anchor(
     service: TraceQueryService,
     session_obj: SimpleNamespace,
     outbox_obj: SimpleNamespace,
@@ -198,18 +212,19 @@ async def test_by_correlation_id_uses_correlation_anchor(
     db = _db_with_execute_results(
         _ResultStub(rows=[]),
         _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
     )
 
-    result = await service.by_correlation_id(db, "corr-1")
+    result = await service.by_trace_id(db, "trace-1")
 
-    assert result.trace.correlation_id == "corr-1"
+    assert result.trace.trace_id == "trace-1"
     assert result.trace.request_id == "req-1"
     assert result.session is not None and result.session.id == session_obj.id
     assert result.summary["callback_logs"] == 2
     assert any(d.extra.get("source") == "outbox" for d in result.diagnostics)
-    assert db.execute.await_count == 4
+    assert db.execute.await_count == 5
 
 
 @pytest.mark.asyncio
@@ -224,6 +239,7 @@ async def test_by_session_id_uses_session_anchor(
     db = _db_with_execute_results(
         _ResultStub(rows=[command_obj]),
         _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
     )
@@ -231,11 +247,11 @@ async def test_by_session_id_uses_session_anchor(
     result = await service.by_session_id(db, 11)
 
     assert result.trace.session_id == 11
-    assert result.trace.correlation_id == "corr-1"
+    assert result.trace.trace_id == "trace-1"
     assert result.session is not None and result.session.id == session_obj.id
     assert result.commands and result.commands[0].command_code == "CMD-1"
     assert any(d.extra.get("source") == "session_snapshot" for d in result.diagnostics)
-    assert db.execute.await_count == 4
+    assert db.execute.await_count == 5
 
 
 @pytest.mark.asyncio
@@ -250,6 +266,7 @@ async def test_by_command_code_uses_command_anchor(
     db = _db_with_execute_results(
         _ResultStub(rows=[command_obj]),
         _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
     )
@@ -260,7 +277,7 @@ async def test_by_command_code_uses_command_anchor(
     assert result.trace.session_id == 11
     assert result.session is not None and result.session.id == session_obj.id
     assert any(command.command_code == "CMD-1" for command in result.commands)
-    assert db.execute.await_count == 4
+    assert db.execute.await_count == 5
 
 
 @pytest.mark.asyncio
@@ -272,11 +289,12 @@ async def test_by_dispatch_key_uses_outbox_anchor(
     inbox_obj: SimpleNamespace,
     timeline_obj: SimpleNamespace,
 ) -> None:
-    service.callback_log_repo.get_by_correlation_id = AsyncMock(return_value=[callback_log_1])
+    cast("Any", service.callback_log_repo).get_by_trace_id = AsyncMock(return_value=[callback_log_1])
     db = _db_with_execute_results(
         _ResultStub(scalar=outbox_obj),
         _ResultStub(rows=[]),
         _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
     )
@@ -287,4 +305,32 @@ async def test_by_dispatch_key_uses_outbox_anchor(
     assert result.trace.session_id == 11
     assert result.outboxes and result.outboxes[0].dispatch_key == "dispatch-1"
     assert any(d.extra.get("source") == "outbox" for d in result.diagnostics)
-    assert db.execute.await_count == 5
+    assert db.execute.await_count == 6
+
+
+@pytest.mark.asyncio
+async def test_blocking_point_returns_operable_diagnostic_card(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    failed_outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[failed_outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.get_blocking_point(db, "trace-1")
+
+    assert result.trace_id == "trace-1"
+    assert result.blocking_point == "outbox"
+    assert result.diagnostic_card.error_code == "OUTBOX_DISPATCH_FAILED"
+    assert result.diagnostic_card.recoverability == "auto_retryable"
+    assert result.operator_action
+    assert result.evidence["outbox"]["dispatch_key"] == "dispatch-1"
+    assert result.evidence["outbox"]["last_error"] == "HTTP 500"

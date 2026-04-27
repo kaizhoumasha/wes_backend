@@ -22,7 +22,7 @@ class CallbackLog(DataTableMixin, table=True):
     记录每次设备回调的详细元数据，用于：
     - 问题排查：查看原始请求内容
     - 性能监控：分析响应时间
-    - 链路追踪：通过 request_id/correlation_id 串联调用链
+    - 链路追踪：通过 request_id/trace_id 串联调用链
     - 安全审计：记录调用来源（IP、User-Agent）
 
     字段说明:
@@ -35,7 +35,7 @@ class CallbackLog(DataTableMixin, table=True):
     - response_status: HTTP 响应状态码
     - response_time_ms: 响应时间（毫秒）
     - error_message: 错误消息（如果处理失败）
-    - correlation_id: 关联 ID（串联整个流程）
+    - trace_id: Trace ID（串联整个流程）
     """
 
     __tablename__: ClassVar[str] = "callback_logs"  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -77,11 +77,22 @@ class CallbackLog(DataTableMixin, table=True):
         index=True,
         description="请求 ID（用于链路追踪）",
     )
-    correlation_id: str | None = SQLField(
+    trace_id: str | None = SQLField(
         default=None,
         max_length=100,
         index=True,
-        description="关联 ID（串联整个流程）",
+        description="统一 Trace ID",
+    )
+    event_id: str | None = SQLField(
+        default=None,
+        max_length=200,
+        index=True,
+        description="供应商事件 ID",
+    )
+    causation_id: str | None = SQLField(
+        default=None,
+        max_length=200,
+        description="因果事件 ID",
     )
 
     # 响应信息
@@ -122,7 +133,9 @@ class CallbackLogCreate(BaseModel):
     client_ip: str | None = None
     user_agent: str | None = None
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
+    event_id: str | None = None
+    causation_id: str | None = None
     response_status: int
     response_time_ms: int
     error_message: str | None = None
@@ -140,7 +153,9 @@ class CallbackLogResponse(BaseModel):
     client_ip: str | None
     user_agent: str | None
     request_id: str | None
-    correlation_id: str | None
+    trace_id: str | None
+    event_id: str | None
+    causation_id: str | None
     response_status: int
     response_time_ms: int
     error_message: str | None

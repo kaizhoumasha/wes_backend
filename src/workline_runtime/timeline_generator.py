@@ -23,7 +23,7 @@ from src.workline_runtime.trace_context import TraceContext
 class SessionLike(Protocol):
     id: int
     workline_id: int
-    correlation_id: str | None
+    trace_id: str | None
 
 
 class TimelineGenerator:
@@ -53,7 +53,7 @@ class TimelineGenerator:
         """生成 Timeline 记录
 
         Args:
-            session: WorklineSession 对象，提取 session_id, workline_id, correlation_id
+            session: WorklineSession 对象，提取 session_id, workline_id, trace_id
             stage: 阶段
             action_type: 动作类型
             payload: 负载数据
@@ -75,7 +75,7 @@ class TimelineGenerator:
         return WorklineTimeline(
             session_id=resolved_trace.session_id or session.id,
             workline_id=resolved_trace.workline_id or session.workline_id,
-            correlation_id=resolved_trace.correlation_id or session.correlation_id,
+            trace_id=resolved_trace.trace_id or session.trace_id,
             seq_no=0,  # 由 AtomicWriter 从数据库序列获取并替换
             occurred_at=timezone.now_for_db(),
             stage=stage,

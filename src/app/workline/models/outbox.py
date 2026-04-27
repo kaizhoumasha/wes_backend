@@ -92,6 +92,7 @@ class WorklineOutboxBase(BaseMixin):
 
     dispatch_key: str = Field(
         max_length=200,
+        unique=True,
         index=True,
         description="派发键（用于幂等和去重）",
     )

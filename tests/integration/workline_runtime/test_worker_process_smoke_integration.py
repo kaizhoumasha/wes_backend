@@ -22,7 +22,7 @@ async def test_process_inbox_batch_consumed_by_real_worker(
     test_prefix: str,
 ) -> None:
     celery_app.loader.import_default_modules()
-    correlation_id = f"{test_prefix}_worker_process_inbox"
+    trace_id = f"{test_prefix}_worker_process_inbox"
     line_code = f"{test_prefix}_line"
     device_code = f"{test_prefix}_DEVICE"
 
@@ -52,7 +52,7 @@ async def test_process_inbox_batch_consumed_by_real_worker(
             event_type="MATERIAL_ARRIVED",
             timestamp=1710000000000,
             data={"event_id": f"{test_prefix}_evt"},
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
         await setup_db.commit()
         inbox_id = created.id
@@ -91,7 +91,7 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
     test_prefix: str,
 ) -> None:
     celery_app.loader.import_default_modules()
-    correlation_id = f"{test_prefix}_worker_process_timeout"
+    trace_id = f"{test_prefix}_worker_process_timeout"
     session_code = f"{test_prefix}_session"
     line_code = f"{test_prefix}_line_timeout"
     expired_deadline = timezone.now_for_db() - timedelta(minutes=10)
@@ -111,7 +111,7 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
             plugin_key="smt",
             status=SessionStatus.WAITING_DEVICE_RESULT,
             current_wait_type="DEVICE_CALLBACK",
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             deadline_at=expired_deadline,
         )
         setup_db.add(workline_session)
@@ -134,7 +134,7 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
             (
                 await verify_db.execute(
                     select(WorklineInbox).where(
-                        WorklineInbox.correlation_id == correlation_id,  # type: ignore[arg-type]
+                        WorklineInbox.trace_id == trace_id,  # type: ignore[arg-type]
                         WorklineInbox.kind == InboxKind.TIMER_TIMEOUT,  # type: ignore[arg-type]
                     )
                 )

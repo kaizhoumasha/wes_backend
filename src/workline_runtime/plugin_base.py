@@ -75,6 +75,33 @@ AsyncTimeoutHandler = Callable[..., Any]
 
 ParsedModelT = TypeVar("ParsedModelT", bound=BaseModel)
 
+_MANUAL_OPERATION_TRANSITION = {
+    "HOLD": "manual_hold",
+    "RESUME": "manual_resume",
+    "CANCEL": "manual_cancel",
+}
+_MANUAL_KIND_OPERATION = {
+    "MANUAL_HOLD": "HOLD",
+    "MANUAL_RESUME": "RESUME",
+    "MANUAL_CANCEL": "CANCEL",
+}
+
+
+def _inbox_kind_value(inbox: Any) -> str | None:
+    kind = getattr(inbox, "kind", None)
+    value = getattr(kind, "value", kind)
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_manual_operation(inbox: Any) -> tuple[str | None, dict[str, Any]]:
+    payload = ensure_dict(getattr(inbox, "payload_json", None))
+    operation = non_empty_str(payload.get("operation"))
+    if operation:
+        return operation.upper(), payload
+
+    kind_operation = _MANUAL_KIND_OPERATION.get(_inbox_kind_value(inbox) or "")
+    return kind_operation, payload
+
 
 # ==================== Payload 基类 ====================
 
@@ -268,7 +295,7 @@ def _resolve_handler_model_arg(
 
         normalized_candidate = normalize_inbox_input(
             inbox,
-            correlation_id=non_empty_str(getattr(ctx, "correlation_id", None)) or "",
+            trace_id=non_empty_str(getattr(ctx, "trace_id", None)) or "",
         )
         if isinstance(normalized_candidate, param_type):
             return normalized_candidate
@@ -597,9 +624,34 @@ class WorklinePlugin:
         return PluginResult()
 
     async def on_manual_operation(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """人工操作 - 默认空实现"""
+        """人工操作 - 默认转成 runtime 级 transition。"""
         ctx.logger.info(f"Received manual operation: {inbox.id}")
-        return PluginResult()
+        operation, payload = _resolve_manual_operation(inbox)
+        transition = _MANUAL_OPERATION_TRANSITION.get(operation or "")
+        if transition is None:
+            ctx.logger.warning(f"Unsupported manual operation: {operation}")
+            return PluginResult()
+
+        reason = non_empty_str(payload.get("reason"))
+        operator_id = non_empty_str(payload.get("operator_id"))
+        context_patch: dict[str, Any] = {}
+        if operation == "HOLD":
+            context_patch["manual_hold"] = True
+            if reason:
+                context_patch["manual_hold_reason_message"] = reason
+        elif operation == "RESUME":
+            context_patch["manual_hold"] = False
+            if reason:
+                context_patch["manual_resume_reason"] = reason
+        elif operation == "CANCEL":
+            context_patch["cancelled"] = True
+            if reason:
+                context_patch["cancel_reason"] = reason
+
+        if operator_id:
+            context_patch["manual_operator_id"] = operator_id
+
+        return PluginResult(transition=transition, context_patch=context_patch)
 
     async def _invoke_handler(
         self,

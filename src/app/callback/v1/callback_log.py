@@ -48,25 +48,25 @@ async def get_by_request_id(
 
 
 @router.get(
-    "/correlation/{correlation_id}",
+    "/trace/{trace_id}",
     status_code=status.HTTP_200_OK,
-    summary="根据关联 ID 查询回调日志",
+    summary="根据 Trace ID 查询回调日志",
     dependencies=[Depends(RequirePermission("callback:callback_log:list"))],
-    description="根据 correlation_id 查询所有相关的回调日志（用于串联整个流程）",
+    description="根据 trace_id 查询所有相关的回调日志（用于串联整个流程）",
 )
-async def get_by_correlation_id(
-    correlation_id: str,
+async def get_by_trace_id(
+    trace_id: str,
     db: AsyncSessionDep,
 ) -> dict[str, Any]:
     """
-    根据 correlation_id 查询所有相关的回调日志
+    根据 trace_id 查询所有相关的回调日志
 
     用于追踪整个业务流程的回调链路。
     """
-    logs = await callback_log_service.get_by_correlation_id(db, correlation_id)
+    logs = await callback_log_service.get_by_trace_id(db, trace_id)
     return response_builder.success(
         data={
-            "correlation_id": correlation_id,
+            "trace_id": trace_id,
             "count": len(logs),
             "items": logs,
         }
@@ -123,7 +123,7 @@ async def query_callback_logs(
     - device_id: 设备 ID
     - response_status: 响应状态码
     - request_id: 请求 ID（callback ingress trace 锚点）
-    - correlation_id: 关联 ID
+    - trace_id: Trace ID
     - ingress_outcome: 入口结果（ACCEPTED/REJECTED/FAILED/DUPLICATE）
     - failure_stage: 入口失败阶段（REQUEST_PARSE/ENVELOPE_VALIDATE/...）
 

@@ -67,11 +67,26 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
     "MANUAL_RESUME": "MANUAL_OPERATION",
     "MANUAL_CANCEL": "MANUAL_OPERATION",
 }
+_MANUAL_OPERATION_KINDS = {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}
+_MANUAL_OPERATION_TRANSITIONS = {"manual_hold", "manual_resume", "manual_cancel"}
 
 
 def _ensure_non_empty_str(value: Any) -> str | None:
     """Return value if it's a non-empty string, otherwise None."""
     return value if isinstance(value, str) and value else None
+
+
+def _inbox_kind_value(inbox: Any) -> str | None:
+    kind = getattr(inbox, "kind", None)
+    value = getattr(kind, "value", kind)
+    return value if isinstance(value, str) and value else None
+
+
+def _is_runtime_manual_transition(inbox: Any, transition: str | None) -> bool:
+    if transition not in _MANUAL_OPERATION_TRANSITIONS:
+        return False
+    payload = ensure_dict(getattr(inbox, "payload_json", None))
+    return payload.get("message_type") == "MANUAL_OPERATION" or (_inbox_kind_value(inbox) in _MANUAL_OPERATION_KINDS)
 
 
 def _system_error_result(message: str) -> OrchestratorResult:
@@ -201,7 +216,7 @@ class OrchestratorService:
         inbox: WorklineInbox | None,
         devices_by_role: dict[str, list[Any]],
         services: Any,
-        correlation_id: str,
+        trace_id: str,
         write_callback: Callable[[OrchestratorResult], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
         """处理 Inbox 事件（单阶段互斥锁）
@@ -218,7 +233,7 @@ class OrchestratorService:
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 领域服务容器
-            correlation_id: 关联 ID
+            trace_id: Trace ID
             write_callback: 可选的写入回调。若提供，则在锁临界区内执行，
                 由 Celery worker 负责完成真实持久化写入
                 （session / command / outbox / timeline / inbox）。
@@ -242,7 +257,7 @@ class OrchestratorService:
                     inbox=inbox,
                     devices_by_role=devices_by_role,
                     services=services,
-                    correlation_id=correlation_id,
+                    trace_id=trace_id,
                 )
 
                 # 如果处理失败，直接返回
@@ -270,7 +285,7 @@ class OrchestratorService:
         inbox: Any,
         devices_by_role: dict[str, list[Any]],
         services: Any,
-        correlation_id: str,
+        trace_id: str,
     ) -> OrchestratorResult:
         """阶段 1: READ - 读取阶段（当前非共享读）
 
@@ -285,7 +300,7 @@ class OrchestratorService:
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 领域服务容器
-            correlation_id: 关联 ID
+            trace_id: Trace ID
 
         Returns:
             OrchestratorResult: 处理结果
@@ -297,14 +312,14 @@ class OrchestratorService:
             session=session,
             workline=workline,
             inbox=inbox,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
         ctx = self.context_builder.build(
             session=session,
             workline=workline,
             devices_by_role=devices_by_role,
             services=services,
-            correlation_id=trace.correlation_id or correlation_id,
+            trace_id=trace.trace_id or trace_id,
             logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
             inbox=inbox,
             trace=trace,
@@ -329,7 +344,7 @@ class OrchestratorService:
             logger.exception("Plugin execution failed")
             return _error_result(ErrorCode.PLUGIN_EXECUTION_FAILED, str(e))
 
-        return self._process_result(result, session, getattr(workline, "state_machine_class", None))
+        return self._process_result(result, session, getattr(workline, "state_machine_class", None), inbox=inbox)
 
     async def _process_write_phase(
         self,
@@ -338,7 +353,7 @@ class OrchestratorService:
         inbox: Any,
         devices_by_role: dict[str, list[Any]],
         services: Any,
-        correlation_id: str,
+        trace_id: str,
         read_result: OrchestratorResult,
     ) -> OrchestratorResult:
         """阶段 2: WRITE - 写入阶段（独占）
@@ -357,7 +372,7 @@ class OrchestratorService:
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 领域服务容器
-            correlation_id: 关联 ID
+            trace_id: Trace ID
             read_result: 读取阶段的结果
 
         Returns:
@@ -369,7 +384,7 @@ class OrchestratorService:
         # 当前实现:直接返回读取阶段的结果
         # 状态修改在 Celery 任务 _apply_orchestrator_effects 中完成（不在锁保护下）
         # 占位参数避免 IDE/ruff 警告
-        _ = session, workline, inbox, devices_by_role, services, correlation_id
+        _ = session, workline, inbox, devices_by_role, services, trace_id
 
         logger.debug(f"WRITE 阶段完成 for session {session_id}")
         return read_result
@@ -464,6 +479,8 @@ class OrchestratorService:
         result: PluginResult,
         session: Any,
         state_machine_class: type[Any] | None,
+        *,
+        inbox: Any | None = None,
     ) -> OrchestratorResult:
         """处理 PluginResult
 
@@ -477,7 +494,7 @@ class OrchestratorService:
         """
         current_transition_state = self._resolve_transition_state(session, state_machine_class)
 
-        if result.transition:
+        if result.transition and not _is_runtime_manual_transition(inbox, result.transition):
             is_valid, error = self.validator.validate(
                 current_status=current_transition_state,
                 transition=result.transition,

@@ -108,7 +108,7 @@ class PluginContext(BaseModel):
 
     # 追踪信息
     trace: TraceContext = Field(default_factory=TraceContext)
-    correlation_id: str
+    trace_id: str
 
     # 配置
     config: dict[str, Any]  # 工作线配置（由插件模型验证）
@@ -147,7 +147,7 @@ class PluginContextBuilder:
         workline: Any,
         devices_by_role: dict[str, list[Any]],
         services: Any,
-        correlation_id: str = "",
+        trace_id: str = "",
         logger: logging.Logger | None = None,
         clock: Callable[[], datetime] | None = None,
         binding_config: dict[str, Any] | None = None,
@@ -173,7 +173,7 @@ class PluginContextBuilder:
             session=session,
             workline=workline,
             inbox=inbox,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
         if inbox is not None:
             resolved_trace = resolved_trace.with_inbox(inbox)
@@ -194,7 +194,7 @@ class PluginContextBuilder:
         if inbox is not None:
             normalized_input = normalize_inbox_input(
                 inbox,
-                correlation_id=resolved_trace.correlation_id or correlation_id,
+                trace_id=resolved_trace.trace_id or trace_id,
                 plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
             )
         diagnostics = build_diagnostic_context(
@@ -211,7 +211,7 @@ class PluginContextBuilder:
             devices_by_role=devices_by_role,
             topology=topology,
             trace=resolved_trace,
-            correlation_id=resolved_trace.correlation_id or correlation_id or "",
+            trace_id=resolved_trace.trace_id or trace_id or "",
             config=config,
             binding_config=binding_config,
             runtime=runtime,

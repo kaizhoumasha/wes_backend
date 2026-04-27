@@ -49,6 +49,10 @@ P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框�
 ## Configuration
 Configuration is managed via `.env` file. See `.env.example` for reference.
 
+## WORKLINE Diagnostics
+
+WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)。该文档覆盖 `callback/event`、`callback/result`、Trace blocking point、SANDBOX pending、Replay 和人工操作 API。
+
 ## Production Bootstrap
 
 Production should not use `scripts/data/seed_initial_data.py`. That script is for dev/test/demo data and contains default accounts such as `admin/admin123`.

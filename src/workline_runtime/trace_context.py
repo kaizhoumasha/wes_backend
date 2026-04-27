@@ -2,7 +2,7 @@
 
 只保留当前阶段真正需要的最小字段，用于：
 - 统一 ingress / session / command / outbox / timeline 的 trace 传播语义
-- 避免各层重复拼装 request_id / correlation_id / command_code
+- 避免各层重复拼装 request_id / trace_id / command_code
 - 为 diagnostics / projector 提供轻量、可组合的上下文对象
 
 注意：它不是运行时大对象，不承载配置、服务容器或业务状态。
@@ -48,7 +48,9 @@ class TraceContext:
     """轻量 Trace 传播上下文。"""
 
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
+    event_id: str | None = None
+    causation_id: str | None = None
     workline_id: int | None = None
     session_id: int | None = None
     inbox_id: int | None = None
@@ -68,7 +70,9 @@ class TraceContext:
         cls,
         *,
         request_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
         device_id: int | None = None,
         device_code: str | None = None,
         canonical_event_type: str | None = None,
@@ -78,7 +82,9 @@ class TraceContext:
 
         return cls(
             request_id=non_empty_str(request_id),
-            correlation_id=non_empty_str(correlation_id),
+            trace_id=non_empty_str(trace_id),
+            event_id=non_empty_str(event_id),
+            causation_id=non_empty_str(causation_id),
             device_id=_resolve_int(device_id),
             device_code=non_empty_str(device_code),
             canonical_event_type=non_empty_str(canonical_event_type),
@@ -95,7 +101,7 @@ class TraceContext:
         command: Any | None = None,
         outbox: Any | None = None,
         request_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
         canonical_event_type: str | None = None,
         transition: str | None = None,
     ) -> TraceContext:
@@ -103,7 +109,7 @@ class TraceContext:
 
         trace = cls.from_request(
             request_id=request_id,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             canonical_event_type=canonical_event_type,
             transition=transition,
         )
@@ -129,8 +135,15 @@ class TraceContext:
     def with_request_id(self, request_id: str | None) -> TraceContext:
         return self._bind(request_id=non_empty_str(request_id) or self.request_id)
 
-    def with_correlation_id(self, correlation_id: str | None) -> TraceContext:
-        return self._bind(correlation_id=non_empty_str(correlation_id) or self.correlation_id)
+    def with_trace_id(self, trace_id: str | None) -> TraceContext:
+        resolved = non_empty_str(trace_id) or self.trace_id
+        return self._bind(trace_id=resolved)
+
+    def with_event_identity(self, *, event_id: str | None = None, causation_id: str | None = None) -> TraceContext:
+        return self._bind(
+            event_id=non_empty_str(event_id) or self.event_id,
+            causation_id=non_empty_str(causation_id) or self.causation_id,
+        )
 
     def with_workline(self, workline: Any) -> TraceContext:
         return self._bind(
@@ -142,7 +155,7 @@ class TraceContext:
     def with_session(self, session: Any) -> TraceContext:
         return self._bind(
             request_id=_attr_str(session, "last_request_id") or self.request_id,
-            correlation_id=_attr_str(session, "correlation_id") or self.correlation_id,
+            trace_id=_attr_str(session, "trace_id") or self.trace_id,
             workline_id=_attr_int(session, "workline_id") or self.workline_id,
             session_id=_attr_int(session, "id") or self.session_id,
             plugin_key=_attr_str(session, "plugin_key") or self.plugin_key,
@@ -153,7 +166,11 @@ class TraceContext:
         payload = _as_dict(getattr(inbox, "payload_json", None))
         return self._bind(
             request_id=_attr_str(inbox, "source_message_id") or self.request_id,
-            correlation_id=_attr_str(inbox, "correlation_id") or self.correlation_id,
+            trace_id=_attr_str(inbox, "trace_id") or self.trace_id,
+            event_id=_attr_str(inbox, "event_id") or non_empty_str(payload.get("event_id")) or self.event_id,
+            causation_id=_attr_str(inbox, "causation_id")
+            or non_empty_str(payload.get("causation_id"))
+            or self.causation_id,
             workline_id=_attr_int(inbox, "workline_id") or self.workline_id,
             session_id=_attr_int(inbox, "session_id") or self.session_id,
             inbox_id=_attr_int(inbox, "id") or self.inbox_id,
@@ -178,7 +195,7 @@ class TraceContext:
         return self._bind(
             command_id=_attr_int(command, "id") or self.command_id,
             command_code=_attr_str(command, "command_code") or self.command_code,
-            correlation_id=_attr_str(command, "correlation_id") or self.correlation_id,
+            trace_id=_attr_str(command, "trace_id") or self.trace_id,
             workline_id=_attr_int(command, "workline_id") or self.workline_id,
             device_id=_attr_int(command, "device_id") or self.device_id,
             plugin_key=_attr_str(command, "plugin_key") or self.plugin_key,
@@ -210,7 +227,9 @@ class TraceContext:
 
         payload = {
             "request_id": self.request_id,
-            "correlation_id": self.correlation_id,
+            "trace_id": self.trace_id,
+            "event_id": self.event_id,
+            "causation_id": self.causation_id,
             "canonical_event_type": self.canonical_event_type,
         }
         payload.update({key: value for key, value in extra.items() if value is not None})

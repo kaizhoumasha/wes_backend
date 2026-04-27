@@ -22,7 +22,7 @@ def _make_context(*, plugin_state: str = SmtClassifierState.IDLE) -> MagicMock:
     ctx.session = MagicMock()
     ctx.session.id = 42
     ctx.session.context_json = {"plugin_state": plugin_state}
-    ctx.correlation_id = "corr-diagnostic"
+    ctx.trace_id = "trace-diagnostic"
     ctx.normalized_input = None
     ctx.logger = logging.getLogger("test_smt_diagnostic")
     return ctx

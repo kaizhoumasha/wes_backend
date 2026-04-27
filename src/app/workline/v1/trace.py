@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, status
 
 from src.app.workline.models.runtime import (
     RuntimeTraceListResponse,
+    TraceBlockingPointResponse,
     TraceCallbackLogItem,
     TraceCommandItem,
     TraceContextResponse,
     TraceDetailResponse,
     TraceDiagnosticItem,
+    TraceDispatchAttemptItem,
     TraceInboxItem,
     TraceOutboxItem,
     TraceOverviewSummary,
@@ -69,7 +71,7 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         barcode=session.barcode,
         status=_status_str(session.status),
         step_code=session.step_code,
-        correlation_id=session.correlation_id,
+        trace_id=getattr(session, "trace_id", None),
         started_at=session.started_at,
         ended_at=session.ended_at,
         current_wait_type=session.current_wait_type,
@@ -94,7 +96,9 @@ def _build_callback_log_item(item: Any) -> TraceCallbackLogItem:
         callback_type=item.callback_type,
         device_id=item.device_id,
         request_id=item.request_id,
-        correlation_id=item.correlation_id,
+        trace_id=getattr(item, "trace_id", None),
+        event_id=getattr(item, "event_id", None),
+        causation_id=getattr(item, "causation_id", None),
         response_status=item.response_status,
         response_time_ms=item.response_time_ms,
         error_message=item.error_message,
@@ -112,11 +116,13 @@ def _build_inbox_item(item: Any) -> TraceInboxItem:
         kind=_status_str(item.kind),
         source_system=_status_str(item.source_system),
         source_message_id=item.source_message_id,
+        trace_id=getattr(item, "trace_id", None),
+        event_id=getattr(item, "event_id", None),
+        causation_id=getattr(item, "causation_id", None),
         workline_id=item.workline_id,
         device_id=item.device_id,
         command_id=item.command_id,
         session_id=item.session_id,
-        correlation_id=item.correlation_id,
         status=_status_str(item.status),
         received_at=item.received_at,
         processed_at=item.processed_at,
@@ -133,7 +139,7 @@ def _build_command_item(item: Any) -> TraceCommandItem:
         id=item.id,
         device_id=item.device_id,
         command_code=item.command_code,
-        correlation_id=item.correlation_id,
+        trace_id=getattr(item, "trace_id", None),
         workline_id=item.workline_id,
         session_id=item.session_id,
         task_type=_status_str(item.task_type),
@@ -174,12 +180,30 @@ def _build_outbox_item(item: Any) -> TraceOutboxItem:
     )
 
 
+def _build_dispatch_attempt_item(item: Any) -> TraceDispatchAttemptItem:
+    return TraceDispatchAttemptItem(
+        id=item.id,
+        outbox_id=item.outbox_id,
+        dispatch_key=item.dispatch_key,
+        attempt_no=item.attempt_no,
+        lease_token=item.lease_token,
+        status=_status_str(item.status),
+        target_type=item.target_type,
+        target_code=item.target_code,
+        started_at=item.started_at,
+        finalized_at=item.finalized_at,
+        error_message=item.error_message,
+        response_json=item.response_json,
+        trace_json=item.trace_json,
+    )
+
+
 def _build_timeline_item(item: Any) -> TraceTimelineItem:
     return TraceTimelineItem(
         id=item.id,
         session_id=item.session_id,
         workline_id=item.workline_id,
-        correlation_id=item.correlation_id,
+        trace_id=getattr(item, "trace_id", None),
         seq_no=item.seq_no,
         occurred_at=item.occurred_at,
         stage=_status_str(item.stage),
@@ -200,7 +224,7 @@ def _build_timeline_item(item: Any) -> TraceTimelineItem:
 def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
     return TraceDiagnosticItem(
         request_id=item.request_id,
-        correlation_id=item.correlation_id,
+        trace_id=item.trace_id,
         session_id=item.session_id,
         inbox_id=item.inbox_id,
         outbox_id=item.outbox_id,
@@ -217,15 +241,19 @@ def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
 
 def _build_trace_response(result: Any) -> TraceDetailResponse:
     session = result.session
+    sessions = getattr(result, "sessions", [session] if session is not None else [])
+    dispatch_attempts = getattr(result, "dispatch_attempts", [])
 
     return TraceDetailResponse(
         trace=TraceContextResponse(**result.trace.as_dict()),
         summary=_build_trace_summary(result),
         session=_build_session_item(session),
+        sessions=[item for item in (_build_session_item(session_item) for session_item in sessions) if item],
         callback_logs=[_build_callback_log_item(item) for item in result.callback_logs],
         inboxes=[_build_inbox_item(item) for item in result.inboxes],
         commands=[_build_command_item(item) for item in result.commands],
         outboxes=[_build_outbox_item(item) for item in result.outboxes],
+        dispatch_attempts=[_build_dispatch_attempt_item(item) for item in dispatch_attempts],
         timelines=[_build_timeline_item(item) for item in result.timelines],
         diagnostics=[_build_diagnostic_item(item) for item in result.diagnostics],
     )
@@ -246,20 +274,35 @@ async def get_trace_by_request_id(request_id: str, db: AsyncSessionDep) -> Respo
 
 
 @router.get(
-    "/correlation/{correlation_id}",
-    summary="[biz:workline:list] 根据 correlation_id 查询 Trace",
+    "/trace/{trace_id}",
+    summary="[biz:workline:list] 根据 trace_id 查询 Trace",
     response_model=ResponseSchemaModel[TraceDetailResponse],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
-async def get_trace_by_correlation_id(
-    correlation_id: str,
+async def get_trace_by_trace_id(
+    trace_id: str,
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[TraceDetailResponse]:
-    result = await trace_query_service.by_correlation_id(db, correlation_id)
+    result = await trace_query_service.by_trace_id(db, trace_id)
     return cast(
         "ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=_build_trace_response(result))
     )
+
+
+@router.get(
+    "/{trace_id}/blocking-point",
+    summary="[biz:workline:list] 查询 Trace 阻塞点诊断卡",
+    response_model=ResponseSchemaModel[TraceBlockingPointResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_trace_blocking_point(
+    trace_id: str,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[TraceBlockingPointResponse]:
+    result = await trace_query_service.get_blocking_point(db, trace_id)
+    return cast("ResponseSchemaModel[TraceBlockingPointResponse]", response_builder.success(data=result))
 
 
 @router.get(

@@ -30,10 +30,10 @@ class MockContext:
 
     def __init__(
         self,
-        correlation_id: str = "test-correlation",
+        trace_id: str = "test-trace",
         normalized_input: NormalizedCommandResult | None = None,
     ):
-        self.correlation_id = correlation_id
+        self.trace_id = trace_id
         self.normalized_input = normalized_input
 
 
@@ -103,7 +103,7 @@ class TestHandlerSignatureSelection:
         # 使用 MagicMock 避免类型验证错误
         ctx = MagicMock()
         ctx.normalized_input = MagicMock()  # 不是 NormalizedCommandResult 类型
-        ctx.correlation_id = "test-correlation"
+        ctx.trace_id = "test-trace"
 
         inbox = MockInbox(payload_json={"command_code": "CMD-004", "result": "SUCCESS"})
         payload = inbox.payload_json

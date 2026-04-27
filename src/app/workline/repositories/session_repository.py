@@ -121,16 +121,16 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
-    async def get_by_correlation_id(
+    async def get_by_trace_id(
         self,
         db: AsyncSession,
-        correlation_id: str,
+        trace_id: str,
     ) -> WorklineSession | None:
-        """根据关联 ID 查询会话
+        """根据 Trace ID 查询会话
 
         Args:
             db: 数据库会话
-            correlation_id: 关联 ID（串联业务流程）
+            trace_id: Trace ID（串联业务流程）
 
         Returns:
             匹配的会话（如果有）
@@ -138,7 +138,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession).where(
-                columns.correlation_id == correlation_id,
+                columns.trace_id == trace_id,
             )
         )
         return result.scalar_one_or_none()

@@ -46,7 +46,7 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
 def test_normalize_inbox_input_for_command_result_uses_classifier() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
-        correlation_id="corr-1",
+        trace_id="trace-1",
         payload_json={
             "command_code": "CMD-1",
             "result": "failed",
@@ -68,7 +68,7 @@ def test_normalize_inbox_input_for_command_result_uses_classifier() -> None:
 def test_normalize_inbox_input_infers_command_result_when_kind_missing() -> None:
     inbox = SimpleNamespace(
         kind=None,
-        correlation_id="corr-2",
+        trace_id="trace-2",
         payload_json={
             "command_code": "CMD-2",
             "result": "ERROR",
@@ -90,7 +90,7 @@ def test_normalize_inbox_input_infers_command_result_when_kind_missing() -> None
 def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
-        correlation_id="corr-3",
+        trace_id="trace-3",
         payload_json={
             "command_code": "CMD-3",
             "result": "FAILED",
@@ -116,7 +116,7 @@ def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> No
 def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
-        correlation_id="corr-4",
+        trace_id="trace-4",
         payload_json={
             "command_code": "CMD-4",
             "result": "SUCCESS",
@@ -138,7 +138,7 @@ def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -
 def test_normalize_inbox_input_uses_plugin_result_classifier_for_legacy_inspection_ng() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
-        correlation_id="corr-5",
+        trace_id="trace-5",
         payload_json={
             "command_code": "CMD-5",
             "result": "FAILED",
@@ -160,7 +160,7 @@ def test_normalize_inbox_input_uses_plugin_result_classifier_for_legacy_inspecti
 def test_normalize_inbox_input_prefers_canonical_six_in_one_business_key() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="DEVICE_EVENT"),
-        correlation_id="corr-4",
+        trace_id="trace-4",
         payload_json={
             "event_type": "SCAN_COMPLETED",
             "device_code": "SCANNER01",

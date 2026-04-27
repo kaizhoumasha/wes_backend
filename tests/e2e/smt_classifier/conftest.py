@@ -507,7 +507,7 @@ def mock_plugin_context(mock_devices: dict[str, MagicMock]) -> MagicMock:
     ctx.session.workline_id = 3001
     ctx.session.status = "NEW"
     ctx.session.context_json = {}
-    ctx.session.correlation_id = "test-correlation-001"
+    ctx.session.trace_id = "test-trace-001"
 
     ctx.workline = MagicMock()
     ctx.workline.id = 3001
@@ -523,7 +523,7 @@ def mock_plugin_context(mock_devices: dict[str, MagicMock]) -> MagicMock:
     ctx.get_device_by_role = mock_get_device_by_role
     ctx.logger = logging.getLogger("mock_plugin_context")
     ctx.clock = datetime.now
-    ctx.correlation_id = "test-correlation-001"
+    ctx.trace_id = "test-trace-001"
 
     return ctx
 

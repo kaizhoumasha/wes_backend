@@ -28,7 +28,7 @@ from src.app.device.models.command import CommandCallbackResult
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.workline.services import inbox_service, workline_service  # noqa: F401
+from src.app.workline.services import inbox_service, workline_diagnostic_service, workline_service  # noqa: F401
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
 from src.core.response import response_builder
@@ -49,12 +49,17 @@ from src.workline_runtime.utils import JsonDict, resolve_first_str
 router = APIRouter()
 
 # 字段别名常量
-_CORRELATION_ID_ALIASES = ("correlation_id",)
+_TRACE_ID_ALIASES = ("trace_id",)
+_EVENT_ID_ALIASES = ("event_id",)
+_CAUSATION_ID_ALIASES = ("causation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
-_EVENT_CALLBACK_TOP_LEVEL_FIELDS = frozenset({"device_code", "event_type", "timestamp", "data"})
+_TRACE_TOP_LEVEL_FIELDS = frozenset({"trace_id", "event_id", "causation_id"})
+_EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
+    frozenset({"device_code", "event_type", "timestamp", "data"}) | _TRACE_TOP_LEVEL_FIELDS
+)
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
-    {"command_code", "device_code", "result", "finish_time", "data", "error_detail"}
+    {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
 )
 
 _CALLBACK_AUDIT_TITLES = {
@@ -135,8 +140,16 @@ def _summarize_validation_error(exc: ValidationError) -> str:
     return f"{loc}: {msg}"
 
 
-def _resolve_callback_correlation_id(payload: JsonDict) -> str | None:
-    return _resolve_optional_str(payload, _CORRELATION_ID_ALIASES)
+def _resolve_callback_trace_id(payload: JsonDict) -> str | None:
+    return _resolve_optional_str(payload, _TRACE_ID_ALIASES)
+
+
+def _resolve_callback_event_id(payload: JsonDict) -> str | None:
+    return _resolve_optional_str(payload, _EVENT_ID_ALIASES)
+
+
+def _resolve_callback_causation_id(payload: JsonDict) -> str | None:
+    return _resolve_optional_str(payload, _CAUSATION_ID_ALIASES)
 
 
 def _resolve_payload_command_code(payload: JsonDict) -> str | None:
@@ -178,7 +191,7 @@ def _build_callback_log_payload(
         "client_ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("User-Agent"),
         "request_id": trace.request_id,
-        "correlation_id": trace.correlation_id,
+        "trace_id": trace.trace_id,
         "response_status": response_status,
         "response_time_ms": response_time_ms,
         "error_message": error_message,
@@ -222,11 +235,11 @@ async def _read_request_json(request: Request) -> JsonDict:
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     callback_type = _require_first_str(payload, ("callback_type",), "callback_type")
-    correlation_id = _require_first_str(payload, _CORRELATION_ID_ALIASES, "correlation_id")
+    trace_id = _require_first_str(payload, _TRACE_ID_ALIASES, "trace_id")
 
     return {
         "callback_type": callback_type,
-        "correlation_id": correlation_id,
+        "trace_id": trace_id,
         "payload": payload,
     }
 
@@ -269,10 +282,15 @@ def _log_callback_diagnostic(
     workline: object | None = None,
     command_code: str | None = None,
     canonical_event_type: str | None = None,
-) -> None:
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
+) -> Any:
     trace = TraceContext.from_request(
         request_id=request_id,
-        correlation_id=_resolve_callback_correlation_id(payload),
+        trace_id=trace_id or _resolve_callback_trace_id(payload),
+        event_id=event_id or _resolve_callback_event_id(payload),
+        causation_id=causation_id or _resolve_callback_causation_id(payload),
         canonical_event_type=canonical_event_type,
     )
     if device is not None:
@@ -282,22 +300,37 @@ def _log_callback_diagnostic(
     if command_code is not None:
         trace = trace.with_command_code(command_code)
 
-    card = build_diagnostic_card(
-        build_diagnostic_event(
-            error_code=error_code,
-            context=build_diagnostic_context(
-                trace=trace,
-                command=SimpleNamespace(command_code=command_code) if command_code else None,
-                device=device,
-                workline=workline,
-                canonical_event_type=canonical_event_type,
-                extra={"callback_type": callback_type},
-            ),
-            message=message,
-            technical_summary=message,
-        )
+    event = build_diagnostic_event(
+        error_code=error_code,
+        context=build_diagnostic_context(
+            trace=trace,
+            command=SimpleNamespace(command_code=command_code) if command_code else None,
+            device=device,
+            workline=workline,
+            canonical_event_type=canonical_event_type,
+            extra={"callback_type": callback_type},
+        ),
+        message=message,
+        technical_summary=message,
     )
+    card = build_diagnostic_card(event)
     logger.warning(f"[CallbackDiagnostic] {card.model_dump_json(exclude_none=True)}")
+    return event
+
+
+async def _record_callback_diagnostic(db: AsyncSessionDep, **kwargs: Any) -> None:
+    """记录 callback 诊断日志并尽力持久化诊断卡片。"""
+
+    event = _log_callback_diagnostic(**kwargs)
+    try:
+        _ = await workline_diagnostic_service.record_event(
+            db,
+            event=event,
+            evidence={"payload": kwargs.get("payload")},
+            auto_commit=False,
+        )
+    except Exception as exc:
+        logger.warning(f"Callback 诊断持久化失败: {exc}")
 
 
 async def _log_callback_outcome(
@@ -308,19 +341,23 @@ async def _log_callback_outcome(
     device_id: str,
     request_body: JsonDict,
     request_id: str | None,
-    correlation_id: str | None,
     response_status: int,
     response_time_ms: int,
     success: bool,
     record_audit: bool,
     audit_title: str,
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
     error_message: str | None = None,
     ingress_outcome: str | None = None,
     failure_stage: str | None = None,
 ) -> None:
     trace = TraceContext.from_request(
         request_id=request_id,
-        correlation_id=correlation_id,
+        trace_id=trace_id,
+        event_id=event_id,
+        causation_id=causation_id,
     )
     _ = await callback_log_service.log_callback(
         db,
@@ -371,6 +408,9 @@ async def _handle_validation_failure(
     message: str,
     response_time_ms: int = 0,
     failure_stage: str,
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
 ) -> JsonDict:
     await _log_callback_outcome(
         db,
@@ -379,7 +419,9 @@ async def _handle_validation_failure(
         device_id=_resolve_callback_subject(callback_type, request_body),
         request_body=request_body,
         request_id=request_id,
-        correlation_id=_resolve_callback_correlation_id(request_body),
+        trace_id=trace_id or _resolve_callback_trace_id(request_body),
+        event_id=event_id or _resolve_callback_event_id(request_body),
+        causation_id=causation_id or _resolve_callback_causation_id(request_body),
         response_status=400,
         response_time_ms=response_time_ms,
         success=False,
@@ -401,6 +443,9 @@ async def _handle_result_validation_failure(
     message: str,
     response_time_ms: int = 0,
     failure_stage: str,
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
 ) -> JsonDict:
     return await _handle_validation_failure(
         db,
@@ -411,6 +456,9 @@ async def _handle_result_validation_failure(
         message=message,
         response_time_ms=response_time_ms,
         failure_stage=failure_stage,
+        trace_id=trace_id,
+        event_id=event_id,
+        causation_id=causation_id,
     )
 
 
@@ -466,10 +514,12 @@ async def _handle_device_context_failure(
     device_id: str,
     request_body: JsonDict,
     request_id: str | None,
-    correlation_id: str | None,
     response_time_ms: int,
     error: JsonDict,
     audit_title: str,
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
 ) -> JsonDict:
     message = str(error.get("message") or "设备上下文解析失败")
     await _log_callback_outcome(
@@ -479,7 +529,9 @@ async def _handle_device_context_failure(
         device_id=device_id,
         request_body=request_body,
         request_id=request_id,
-        correlation_id=correlation_id,
+        trace_id=trace_id or _resolve_callback_trace_id(request_body),
+        event_id=event_id or _resolve_callback_event_id(request_body),
+        causation_id=causation_id or _resolve_callback_causation_id(request_body),
         response_status=_resolve_ctx_error_response_status(error),
         response_time_ms=response_time_ms,
         success=False,
@@ -532,7 +584,8 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
         command_code = _require_first_str(callback_data, _COMMAND_CODE_ALIASES, "command_code")
     except ValueError as exc:
         logger.error(f"指令结果回调最小包络校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
             message=f"结果回调最小包络校验失败: {exc}",
             request_id=request_id,
@@ -552,6 +605,33 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
 
     logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
 
+    existing_command = await device_command_service.get_command_by_code(db, command_code)
+    if existing_command is None:
+        message = f"未找到指令: {command_code}"
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="result",
+            device_id=device_code,
+            request_body=callback_data,
+            request_id=request_id,
+            trace_id=_resolve_callback_trace_id(callback_data),
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_status=404,
+            response_time_ms=_response_time_ms(start_time),
+            success=False,
+            record_audit=True,
+            audit_title="设备回调结果",
+            error_message=message,
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_COMMAND_LOOKUP,
+        )
+        return _build_not_found_fail(message)
+
+    command_trace_id = getattr(existing_command, "trace_id", None)
+    resolved_trace_id = _resolve_callback_trace_id(callback_data) or command_trace_id
+
     # 使用 DeviceContextService 验证设备和工作线上下文
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
@@ -562,10 +642,12 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             device_id=device_code,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=_resolve_callback_correlation_id(callback_data),
             response_time_ms=_response_time_ms(start_time),
             error=ctx_error,
             audit_title="设备回调结果",
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
 
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
@@ -580,7 +662,8 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
     except (TypeError, ValidationError, ValueError) as exc:
         message = f"设备能力配置无效: {exc}"
         logger.error(f"指令结果回调能力配置校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CONFIG_INVALID,
             message=message,
             request_id=request_id,
@@ -589,6 +672,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             device=device,
             workline=workline,
             command_code=command_code,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
         return await _handle_result_validation_failure(
             db,
@@ -598,31 +684,12 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             message=message,
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_CONFIG_VALIDATE,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
 
     try:
-        existing_command = await device_command_service.get_command_by_code(db, command_code)
-        if existing_command is None:
-            message = f"未找到指令: {command_code}"
-            await _log_callback_outcome(
-                db,
-                request,
-                callback_type="result",
-                device_id=device_code,
-                request_body=callback_data,
-                request_id=request_id,
-                correlation_id=_resolve_callback_correlation_id(callback_data),
-                response_status=404,
-                response_time_ms=_response_time_ms(start_time),
-                success=False,
-                record_audit=True,
-                audit_title="设备回调结果",
-                error_message=message,
-                ingress_outcome=_INGRESS_OUTCOME_REJECTED,
-                failure_stage=_FAILURE_STAGE_COMMAND_LOOKUP,
-            )
-            return _build_not_found_fail(message)
-
         # 从已有 command 获取 plugin_key 和 contract_version（覆盖设备上下文）
         command_plugin_key = getattr(existing_command, "plugin_key", None)
         if isinstance(command_plugin_key, str) and command_plugin_key:
@@ -635,7 +702,8 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
         callback = CommandCallbackResult.model_validate(callback_data)
         if not capabilities.allows_result_callback():
             message = f"设备 {device_code} 未声明支持结果回调"
-            _log_callback_diagnostic(
+            await _record_callback_diagnostic(
+                db,
                 error_code=ErrorCode.CONFIG_INVALID,
                 message=message,
                 request_id=request_id,
@@ -644,6 +712,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
                 device=device,
                 workline=workline,
                 command_code=callback.command_code,
+                trace_id=resolved_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
             )
             return await _handle_result_validation_failure(
                 db,
@@ -653,6 +724,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
                 message=message,
                 response_time_ms=_response_time_ms(start_time),
                 failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
+                trace_id=resolved_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
             )
         outcome = await callback_orchestration_service.process_result(
             db,
@@ -660,6 +734,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             existing_command=existing_command,
             request_id=request_id,
             resolved_contract_version=_resolved_contract_version,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
             command_service=device_command_service,
             device_service=device_service,
             inbox_service=inbox_service,
@@ -675,7 +752,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             device_id=callback.device_code,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=outcome.correlation_id,
+            trace_id=outcome.trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
@@ -684,17 +763,29 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             error_message="幂等重复: 已存在相同事件" if is_duplicate else None,
             ingress_outcome=_INGRESS_OUTCOME_DUPLICATE if is_duplicate else _INGRESS_OUTCOME_ACCEPTED,
         )
-        return response_builder.success(data={"ack": True, "correlation_id": outcome.correlation_id})
+        return response_builder.success(
+            data={
+                "ack": True,
+                "request_id": request_id,
+                "trace_id": outcome.trace_id,
+                "event_id": _resolve_callback_event_id(callback_data),
+                "causation_id": _resolve_callback_causation_id(callback_data),
+            }
+        )
 
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
             message="结果回调模型校验失败",
             request_id=request_id,
             callback_type="result",
             payload=callback_data,
             command_code=_resolve_payload_command_code(callback_data),
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
         return await _handle_result_validation_failure(
             db,
@@ -704,16 +795,23 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             message="结果回调模型校验失败",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
     except ValueError as exc:
         logger.error(f"指令结果回调契约校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CONFIG_INVALID,
             message=f"结果回调契约校验失败: {exc}",
             request_id=request_id,
             callback_type="result",
             payload=callback_data,
             command_code=_resolve_payload_command_code(callback_data),
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
         return await _handle_result_validation_failure(
             db,
@@ -723,6 +821,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             message=f"结果回调契约校验失败: {exc}",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
         )
     except Exception as exc:
         response_time_ms = _response_time_ms(start_time)
@@ -734,7 +835,9 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             device_id=device_code,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=_resolve_callback_correlation_id(callback_data),
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
             response_status=500,
             response_time_ms=response_time_ms,
             success=False,
@@ -790,7 +893,8 @@ async def callback_event(
         detail = _summarize_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
         message = f"事件上报最小包络校验失败: {detail}"
         logger.error(message)
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
             message=message,
             request_id=request_id,
@@ -820,7 +924,6 @@ async def callback_event(
             device_id=device_code,
             request_body=event_data,
             request_id=request_id,
-            correlation_id=_resolve_callback_correlation_id(event_data),
             response_time_ms=_response_time_ms(start_time),
             error=ctx_error,
             audit_title="设备事件上报",
@@ -834,7 +937,8 @@ async def callback_event(
         canonical_event_type = canonicalize_event_type(normalized_event_request.event_type, workline=workline)
     except ValueError as exc:
         logger.error(f"设备事件上报契约校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CONFIG_INVALID,
             message=f"事件上报契约校验失败: {exc}",
             request_id=request_id,
@@ -856,7 +960,8 @@ async def callback_event(
     except (TypeError, ValidationError, ValueError) as exc:
         message = f"设备能力配置无效: {exc}"
         logger.error(f"设备事件上报能力配置校验失败: {exc}")
-        _log_callback_diagnostic(
+        await _record_callback_diagnostic(
+            db,
             error_code=ErrorCode.CONFIG_INVALID,
             message=message,
             request_id=request_id,
@@ -879,7 +984,8 @@ async def callback_event(
     try:
         if not capabilities.supports_event(canonical_event_type):
             message = f"设备 {device_code} 未声明支持事件: {canonical_event_type}"
-            _log_callback_diagnostic(
+            await _record_callback_diagnostic(
+                db,
                 error_code=ErrorCode.CONFIG_INVALID,
                 message=message,
                 request_id=request_id,
@@ -908,10 +1014,12 @@ async def callback_event(
         outcome = await callback_orchestration_service.process_event(
             db,
             event_request=normalized_event_request,
-            event_data=event_data,
             request_id=request_id,
             is_workline_event=is_workline_event,
             canonical_event_type=canonical_event_type,
+            trace_id=_resolve_callback_trace_id(event_data),
+            event_id=_resolve_callback_event_id(event_data),
+            causation_id=_resolve_callback_causation_id(event_data),
             inbox_service=inbox_service,
             enqueue_processing=_enqueue_workline_processing,
         )
@@ -925,7 +1033,9 @@ async def callback_event(
             device_id=normalized_event_request.device_code,
             request_body=event_data,
             request_id=request_id,
-            correlation_id=outcome.correlation_id,
+            trace_id=outcome.trace_id,
+            event_id=_resolve_callback_event_id(event_data),
+            causation_id=_resolve_callback_causation_id(event_data),
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
@@ -940,7 +1050,10 @@ async def callback_event(
             data={
                 "status": "duplicate" if is_duplicate else "submitted",
                 "device_code": normalized_event_request.device_code,
-                "correlation_id": outcome.correlation_id,
+                "request_id": request_id,
+                "trace_id": outcome.trace_id,
+                "event_id": _resolve_callback_event_id(event_data),
+                "causation_id": _resolve_callback_causation_id(event_data),
             },
         )
 
@@ -954,7 +1067,6 @@ async def callback_event(
             device_id=device_code,
             request_body=event_data,
             request_id=request_id,
-            correlation_id=_resolve_callback_correlation_id(event_data),
             response_status=500,
             response_time_ms=response_time_ms,
             success=False,
@@ -1002,7 +1114,7 @@ async def callback_external(
     try:
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
-        correlation_id = cast("str", normalized_payload["correlation_id"])
+        external_trace_id = cast("str", normalized_payload["trace_id"])
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
         return await _handle_external_validation_failure(
@@ -1021,9 +1133,11 @@ async def callback_external(
         outcome = await callback_orchestration_service.process_external(
             db,
             callback_type=callback_type,
-            correlation_id=correlation_id,
             payload=callback_data,
             request_id=request_id,
+            trace_id=external_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
             inbox_service=inbox_service,
             enqueue_processing=_enqueue_workline_processing,
         )
@@ -1037,7 +1151,9 @@ async def callback_external(
             device_id=callback_type,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=outcome.correlation_id,
+            trace_id=outcome.trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
             response_status=200,
             response_time_ms=response_time_ms,
             success=not is_duplicate,
@@ -1051,6 +1167,10 @@ async def callback_external(
             data={
                 "status": "duplicate" if is_duplicate else "submitted",
                 "callback_type": callback_type,
+                "request_id": request_id,
+                "trace_id": outcome.trace_id,
+                "event_id": _resolve_callback_event_id(callback_data),
+                "causation_id": _resolve_callback_causation_id(callback_data),
             },
         )
 
@@ -1075,7 +1195,7 @@ async def callback_external(
             device_id=callback_type,
             request_body=callback_data,
             request_id=request_id,
-            correlation_id=correlation_id,
+            trace_id=external_trace_id,
             response_status=500,
             response_time_ms=response_time_ms,
             success=False,

@@ -607,6 +607,7 @@ class TestOutboxDispatcher:
         assert payload == {
             "command_code": "CMD-STRICT-001",
             "task_type": "PICK_AND_PUT",
+            "command_type": "PICK_AND_PUT",
             "priority": 5,
             "timeout": 300000,
             "params": {

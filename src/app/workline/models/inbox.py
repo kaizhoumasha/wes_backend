@@ -95,6 +95,7 @@ class WorklineInboxBase(BaseMixin):
     idempotency_key: str | None = Field(
         default=None,
         max_length=200,
+        unique=True,
         index=True,
         description="幂等键（防止重复处理）",
     )
@@ -149,11 +150,22 @@ class WorklineInboxBase(BaseMixin):
         description="会话 ID（关联 WorklineSession.id）",
     )
 
-    correlation_id: str | None = Field(
+    trace_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="关联 ID（串联业务流程）",
+        description="统一 Trace ID（串联业务流程）",
+    )
+    event_id: str | None = Field(
+        default=None,
+        max_length=200,
+        index=True,
+        description="供应商事件 ID",
+    )
+    causation_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description="因果事件 ID",
     )
 
     # 消息内容

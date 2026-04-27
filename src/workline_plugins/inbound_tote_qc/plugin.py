@@ -146,7 +146,7 @@ class InboundToteQcPlugin(WorklinePlugin):
             )
         )
         if not is_ok:
-            builder.business_decision(
+            _ = builder.business_decision(
                 reason_code=reason_code,
                 message="料箱重量超出允差，分流到异常线",
                 business_key=weigh_data.tote_id,
