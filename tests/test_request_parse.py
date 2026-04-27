@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import Request
+from redis.exceptions import MaxConnectionsError
 
 from src.utils.request_parse import (
     IpInfo,
@@ -207,6 +208,63 @@ class TestParseIpInfo:
                 assert result.country is None
                 assert result.region is None
                 assert result.city is None
+
+    @pytest.mark.asyncio
+    async def test_parse_ip_info_redis_get_error_degrades(self):
+        """测试：Redis 读取异常时不影响请求 IP 解析"""
+        request = Mock(spec=Request)
+        request.headers = {}
+        request.client = Mock(host="8.8.8.8")
+
+        mock_redis = AsyncMock()
+        mock_redis.get.side_effect = MaxConnectionsError("Too many connections")
+
+        with patch("src.utils.request_parse.get_redis", return_value=mock_redis):
+            with patch("src.utils.request_parse.ensure_redis_connection", new_callable=AsyncMock) as mock_ensure:
+                with patch("src.utils.request_parse.settings") as mock_settings:
+                    mock_settings.IP_LOCATION_PARSE = "disabled"
+                    mock_settings.IP_LOCATION_REDIS_PREFIX = "ip_location"
+
+                    result = await parse_ip_info(request)
+
+                    assert result.ip == "8.8.8.8"
+                    assert result.country is None
+                    assert result.region is None
+                    assert result.city is None
+                    mock_ensure.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_parse_ip_info_redis_set_error_degrades(self):
+        """测试：Redis 写入异常时仍返回已解析的 IP 信息"""
+        request = Mock(spec=Request)
+        request.headers = {"User-Agent": "test-agent"}
+        request.client = Mock(host="8.8.8.8")
+
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None
+        mock_redis.set.side_effect = MaxConnectionsError("Too many connections")
+
+        with patch("src.utils.request_parse.get_redis", return_value=mock_redis):
+            with patch("src.utils.request_parse.ensure_redis_connection", new_callable=AsyncMock) as mock_ensure:
+                with patch("src.utils.request_parse.settings") as mock_settings:
+                    mock_settings.IP_LOCATION_PARSE = "online"
+                    mock_settings.IP_LOCATION_REDIS_PREFIX = "ip_location"
+                    mock_settings.IP_LOCATION_EXPIRE_SECONDS = 3600
+
+                    with patch("src.utils.request_parse.get_location_online") as mock_online:
+                        mock_online.return_value = {
+                            "country": "美国",
+                            "regionName": "加州",
+                            "city": "旧金山",
+                        }
+
+                        result = await parse_ip_info(request)
+
+                        assert result.ip == "8.8.8.8"
+                        assert result.country == "美国"
+                        assert result.region == "加州"
+                        assert result.city == "旧金山"
+                        mock_ensure.assert_awaited_once()
 
 
 # ==================== parse_user_agent_info 测试 ====================

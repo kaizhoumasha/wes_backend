@@ -13,13 +13,14 @@ import httpx
 from asgiref.sync import sync_to_async
 from fastapi import Request
 from pydantic import dataclasses
+from redis.exceptions import RedisError
 from user_agents import parse  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from XdbSearchIP.xdbSearcher import XdbSearcher  # pyright: ignore[reportMissingTypeStubs]
 
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.path_conf import IP2REGION_XDB
-from src.database.redis_client import get_redis
+from src.database.redis_client import ensure_redis_connection, get_redis
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -127,10 +128,15 @@ async def parse_ip_info(request: Request) -> IpInfo:
     ip = get_request_ip(request)
     redis_client = get_redis()
     if redis_client:
-        location = await redis_client.get(f"{settings.IP_LOCATION_REDIS_PREFIX}:{ip}")
-        if location:
-            country, region, city = location.split(" ")
-            return IpInfo(ip=ip, country=country, region=region, city=city)
+        try:
+            location = await redis_client.get(f"{settings.IP_LOCATION_REDIS_PREFIX}:{ip}")
+            if location:
+                country, region, city = location.split(" ")
+                return IpInfo(ip=ip, country=country, region=region, city=city)
+        except RedisError as exc:
+            # IP 属地缓存是辅助能力，Redis 池异常不能阻断主请求链路。
+            logger.warning(f"读取 IP 属地缓存失败，已降级: {exc}")
+            await ensure_redis_connection()
     user_agent = request.headers.get("User-Agent") or ""
     if settings.IP_LOCATION_PARSE == "online":
         location_info = await get_location_online(ip, user_agent)
@@ -143,11 +149,15 @@ async def parse_ip_info(request: Request) -> IpInfo:
         region = location_info.get("regionName")
         city = location_info.get("city")
         if redis_client:
-            await redis_client.set(
-                f"{settings.IP_LOCATION_REDIS_PREFIX}:{ip}",
-                f"{country} {region} {city}",
-                ex=settings.IP_LOCATION_EXPIRE_SECONDS,
-            )
+            try:
+                await redis_client.set(
+                    f"{settings.IP_LOCATION_REDIS_PREFIX}:{ip}",
+                    f"{country} {region} {city}",
+                    ex=settings.IP_LOCATION_EXPIRE_SECONDS,
+                )
+            except RedisError as exc:
+                logger.warning(f"写入 IP 属地缓存失败，已降级: {exc}")
+                await ensure_redis_connection()
     return IpInfo(ip=ip, country=country, region=region, city=city)
 
 
