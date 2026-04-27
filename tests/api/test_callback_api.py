@@ -35,6 +35,7 @@ def mock_fast_fail_check():
             patch("src.utils.health.check_redis_health", new_callable=AsyncMock) as redis_mock,
             patch("src.utils.health.check_celery_health", new_callable=AsyncMock) as celery_mock,
             patch("src.app.callback.v1.callback.device_context_service.resolve") as ctx_mock,
+            patch("src.app.callback.v1.callback.workline_diagnostic_service.record_event", new_callable=AsyncMock),
         ):
             # 返回健康状态
             db_mock.return_value = {"status": "healthy"}
@@ -140,7 +141,7 @@ def create_event_payload(**overrides: object) -> JsonDict:
 def create_external_payload(**overrides: object) -> JsonDict:
     payload: JsonDict = {
         "callback_type": "AGV_TASK_RESULT",
-        "correlation_id": "corr-agv-001",
+        "trace_id": "trace-agv-001",
         "command_code": "AGV-REQ-001",
         "result": "SUCCESS",
         "data": {"to_location": "STATION_OUTPUT1"},
@@ -153,7 +154,7 @@ class TestCallbackResultAPI:
     @pytest.mark.asyncio
     async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         existing_command = SimpleNamespace(
-            correlation_id="corr-001",
+            trace_id="trace-001",
             params={"task_type": "PICK_AND_PUT"},
             workline_id=1,
             plugin_key="smt_classifier",
@@ -165,7 +166,7 @@ class TestCallbackResultAPI:
         handled_command.status = MagicMock()
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
-        handled_command.correlation_id = "corr-001"
+        handled_command.trace_id = "trace-001"
         handled_command.session_id = None
 
         with (
@@ -255,7 +256,7 @@ class TestCallbackResultAPI:
         )
         assert mock_create_inbox.call_args.kwargs["source_message_id"] == "req-001"
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["correlation_id"] == "corr-001"
+        assert log_kwargs["trace_id"] == "trace-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_handle.assert_awaited_once()
@@ -264,6 +265,121 @@ class TestCallbackResultAPI:
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_result_accepts_trace_id_and_looks_up_command_before_device_context(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        existing_command = SimpleNamespace(
+            id=1001,
+            command_code="CMD-20250317-TRACE",
+            trace_id="trace-vendor-001",
+            params={"task_type": "PICK_AND_PUT"},
+            workline_id=1,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            session_id=None,
+            device_id=7,
+        )
+        handled_command = MagicMock()
+        handled_command.id = 1001
+        handled_command.device_id = 7
+        handled_command.status = MagicMock()
+        handled_command.status.value = "SUCCESS"
+        handled_command.get_duration_ms = MagicMock(return_value=100)
+        handled_command.trace_id = "trace-vendor-001"
+        handled_command.session_id = None
+
+        call_order: list[str] = []
+
+        async def get_command_by_code(_db: object, command_code: str) -> object:
+            call_order.append(f"command:{command_code}")
+            return existing_command
+
+        async def resolve_device_context(_db: object, device_code: str) -> tuple[object, None]:
+            call_order.append(f"device:{device_code}")
+            return (
+                SimpleNamespace(
+                    device=SimpleNamespace(
+                        id=7,
+                        device_code=device_code,
+                        capabilities_json={"supports_result_callback": True},
+                    ),
+                    workline=SimpleNamespace(
+                        id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                        is_active=True,
+                    ),
+                    plugin_key="smt_classifier",
+                    contract_version="1.0",
+                    work_line_id=1,
+                    is_workline_bound=True,
+                ),
+                None,
+            )
+
+        payload = create_result_payload(
+            command_code="CMD-20250317-TRACE",
+            trace_id="trace-vendor-001",
+            event_id="evt-result-001",
+            causation_id="cmd-request-001",
+        )
+
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(side_effect=get_command_by_code),
+            ),
+            patch(
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(side_effect=resolve_device_context),
+            ),
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                new=AsyncMock(return_value=handled_command),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-trace-001"),
+            patch(
+                "src.app.callback.v1.callback.device_service.mark_command_finished",
+                new=AsyncMock(),
+                create=True,
+            ),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(body=payload, path="/api/v1/callback/result"),
+                db=db_session,
+            )
+
+        assert call_order[:2] == ["command:CMD-20250317-TRACE", "device:ARM_01"]
+        assert response["code"] == "1000"
+        assert response["data"]["ack"] is True
+        assert response["data"]["request_id"] == "req-trace-001"
+        assert response["data"]["trace_id"] == "trace-vendor-001"
+        assert response["data"]["event_id"] == "evt-result-001"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["trace_id"] == "trace-vendor-001"
 
     @pytest.mark.asyncio
     async def test_callback_result_rejects_legacy_command_id_and_device_id(
@@ -276,7 +392,7 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.device_command_service.get_command_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
-                        correlation_id="corr-001",
+                        trace_id="trace-001",
                         params={"task_type": "PICK_AND_PUT"},
                         workline_id=1,
                         plugin_key="smt_classifier",
@@ -322,7 +438,7 @@ class TestCallbackResultAPI:
                 "src.app.callback.v1.callback.device_command_service.handle_callback_result",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
-                        correlation_id="corr-001",
+                        trace_id="trace-001",
                         status=SimpleNamespace(value="SUCCESS"),
                         get_duration_ms=MagicMock(return_value=100),
                     )
@@ -413,7 +529,7 @@ class TestCallbackResultAPI:
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         existing_command = SimpleNamespace(
-            correlation_id="corr-001",
+            trace_id="trace-001",
             params={"action": "PICK_AND_PUT"},
             workline_id=1,
             plugin_key="smt_classifier",
@@ -499,6 +615,18 @@ class TestCallbackResultAPI:
     ) -> None:
         with (
             patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        trace_id="trace-ctx-001",
+                        params={"task_type": "PICK_AND_PUT"},
+                        workline_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
+                ),
+            ),
+            patch(
                 "src.app.callback.v1.callback.device_context_service.resolve",
                 new=AsyncMock(return_value=(None, {"code": 404, "message": "未找到设备: ARM_01"})),
             ),
@@ -529,6 +657,7 @@ class TestCallbackResultAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "DEVICE_CONTEXT_RESOLVE"
+        assert log_kwargs["trace_id"] == "trace-ctx-001"
         assert log_kwargs["response_status"] == 404
         mock_audit.assert_awaited_once()
 
@@ -559,7 +688,15 @@ class TestCallbackResultAPI:
             ),
             patch(
                 "src.app.callback.v1.callback.device_command_service.get_command_by_code",
-                new=AsyncMock(),
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        trace_id="trace-cap-bad-001",
+                        params={"task_type": "PICK_AND_PUT"},
+                        workline_id=1,
+                        plugin_key="smt_classifier",
+                        contract_version="1.0",
+                    )
+                ),
             ) as mock_get_command,
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
@@ -583,11 +720,12 @@ class TestCallbackResultAPI:
 
         assert response["code"] == "2004"
         assert response["data"]["ack"] is False
-        mock_get_command.assert_not_called()
+        mock_get_command.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "CONFIG_VALIDATE"
+        assert log_kwargs["trace_id"] == "trace-cap-bad-001"
         mock_audit.assert_awaited_once()
 
 
@@ -658,7 +796,7 @@ class TestCallbackEventAPI:
         assert response["code"] == "1000"
         assert response["data"]["status"] == "submitted"
         create_inbox_kwargs = mock_create_inbox.call_args.kwargs
-        event_correlation_id = create_inbox_kwargs["correlation_id"]
+        event_trace_id = create_inbox_kwargs["trace_id"]
         assert create_inbox_kwargs["event_type"] == "SCAN_COMPLETED"
         assert create_inbox_kwargs["source_message_id"] == "req-003"
         # 验证 data 包含完整的 SixInOne 字段（对齐硬件约定）
@@ -668,11 +806,10 @@ class TestCallbackEventAPI:
         assert create_inbox_kwargs["data"]["ProductNo"] == "PN001"
         assert create_inbox_kwargs["data"]["MfrPN"] == "MFR002"
         assert create_inbox_kwargs["data"]["PONumber"] == "PO2026040901"
-        assert isinstance(event_correlation_id, str)
-        assert event_correlation_id.startswith("corr_")
-        assert create_inbox_kwargs["correlation_id"] == event_correlation_id
+        assert isinstance(event_trace_id, str)
+        assert event_trace_id.startswith("trace_")
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["correlation_id"] == event_correlation_id
+        assert log_kwargs["trace_id"] == event_trace_id
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_enqueue.assert_called_once()
@@ -722,8 +859,9 @@ class TestCallbackEventAPI:
         assert response["data"]["ack"] is False
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
-        assert mock_log_callback.await_args.kwargs["ingress_outcome"] == "REJECTED"
-        assert mock_log_callback.await_args.kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         mock_audit.assert_awaited_once()
 
     async def test_callback_event_rejects_legacy_device_id(
@@ -1036,10 +1174,10 @@ class TestCallbackExternalAPI:
         assert response["data"]["status"] == "submitted"
         inbox_kwargs = _await_kwargs(mock_create_inbox)
         assert inbox_kwargs["callback_type"] == "AGV_TASK_RESULT"
-        assert inbox_kwargs["correlation_id"] == "corr-agv-001"
+        assert inbox_kwargs["trace_id"] == "trace-agv-001"
         assert inbox_kwargs["source_message_id"] == "req-ext-001"
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["correlation_id"] == "corr-agv-001"
+        assert log_kwargs["trace_id"] == "trace-agv-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_enqueue.assert_called_once()
@@ -1048,7 +1186,7 @@ class TestCallbackExternalAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_external_rejects_missing_correlation_id(
+    async def test_callback_external_rejects_missing_trace_id(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -1071,7 +1209,7 @@ class TestCallbackExternalAPI:
 
             response = await callback_external(
                 request=build_request(
-                    body=create_external_payload(correlation_id=""),
+                    body=create_external_payload(trace_id=""),
                     path="/api/v1/callback/external",
                 ),
                 db=db_session,

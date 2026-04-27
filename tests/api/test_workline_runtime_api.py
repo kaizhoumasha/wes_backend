@@ -40,7 +40,7 @@ def _permission_names(module, path: str, method: str) -> list[str]:
 class TestWorklineRuntimeRoutePermissions:
     def test_trace_routes_require_workline_list_permission(self) -> None:
         assert _permission_names(trace_module, "/request/{request_id}", "GET") == ["biz:workline:list"]
-        assert _permission_names(trace_module, "/correlation/{correlation_id}", "GET") == ["biz:workline:list"]
+        assert _permission_names(trace_module, "/trace/{trace_id}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/session/{session_id}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/command/{command_code}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/dispatch/{dispatch_key}", "GET") == ["biz:workline:list"]
@@ -60,7 +60,7 @@ class TestWorklineTraceApi:
         from src.app.workline.v1.trace import get_trace_by_request_id
 
         trace_result = SimpleNamespace(
-            trace=_TraceContextStub(request_id="req-001", correlation_id="corr-001"),
+            trace=_TraceContextStub(request_id="req-001", trace_id="trace-001"),
             callback_logs=[],
             inboxes=[],
             session=None,
@@ -108,7 +108,7 @@ def test_trace_callback_log_item_allows_null_updated_at() -> None:
         callback_type="event",
         device_id="ARM01",
         request_id="req-001",
-        correlation_id="corr-001",
+        trace_id="trace-001",
         response_status=200,
         response_time_ms=12,
         error_message=None,
@@ -242,7 +242,7 @@ class TestRuntimeQueryService:
         session_a = SimpleNamespace(
             id=11,
             session_code="S11",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
@@ -257,7 +257,7 @@ class TestRuntimeQueryService:
         session_b = SimpleNamespace(
             id=12,
             session_code="S12",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
@@ -457,7 +457,7 @@ class TestRuntimeQueryService:
             callback_type="event",
             device_id="ARM-01",
             request_id=None,
-            correlation_id=None,
+            trace_id=None,
             response_status=200,
             response_time_ms=15,
             error_message=None,
@@ -479,7 +479,7 @@ class TestRuntimeQueryService:
             id=None,
             device_id=1,
             command_code="CMD-01",
-            correlation_id=None,
+            trace_id=None,
             workline_id=8,
             session_id="9",
             task_type="MOVE",
@@ -509,7 +509,7 @@ class TestRuntimeQueryService:
         session = SimpleNamespace(
             id=None,
             session_code="S-01",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=8,
             status="RUNNING",

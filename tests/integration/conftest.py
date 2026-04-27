@@ -275,7 +275,7 @@ async def test_prefix(
         await cleanup_session.execute(
             delete(WorklineInbox).where(  # type: ignore[arg-type]
                 or_(
-                    WorklineInbox.correlation_id.like(f"{prefix}%"),
+                    WorklineInbox.trace_id.like(f"{prefix}%"),
                     WorklineInbox.workline_id.in_(prefixed_worklines),
                 )
             )
@@ -288,7 +288,7 @@ async def test_prefix(
                     WorklineOutbox.session_id.in_(
                         select(WorklineSession.id).where(
                             or_(
-                                WorklineSession.correlation_id.like(f"{prefix}%"),
+                                WorklineSession.trace_id.like(f"{prefix}%"),
                                 WorklineSession.workline_id.in_(prefixed_worklines),
                             )
                         )
@@ -303,7 +303,7 @@ async def test_prefix(
                     WorklineTimeline.session_id.in_(
                         select(WorklineSession.id).where(
                             or_(
-                                WorklineSession.correlation_id.like(f"{prefix}%"),
+                                WorklineSession.trace_id.like(f"{prefix}%"),
                                 WorklineSession.workline_id.in_(prefixed_worklines),
                             )
                         )
@@ -314,7 +314,7 @@ async def test_prefix(
         await cleanup_session.execute(
             delete(WorklineSession).where(  # type: ignore[arg-type]
                 or_(
-                    WorklineSession.correlation_id.like(f"{prefix}%"),
+                    WorklineSession.trace_id.like(f"{prefix}%"),
                     WorklineSession.workline_id.in_(prefixed_worklines),
                 )
             )
@@ -322,7 +322,7 @@ async def test_prefix(
         await cleanup_session.execute(
             delete(DeviceCommand).where(  # type: ignore[arg-type]
                 or_(
-                    DeviceCommand.correlation_id.like(f"{prefix}%"),
+                    DeviceCommand.trace_id.like(f"{prefix}%"),
                     DeviceCommand.device_id.in_(
                         select(Device.id).where(
                             or_(

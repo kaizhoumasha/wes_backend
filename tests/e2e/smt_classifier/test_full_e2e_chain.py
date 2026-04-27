@@ -82,7 +82,7 @@ class TestSMTClassifierFullE2E:
                     "target_loc": "STATION_PIPELINE1_INPUT1",
                     "execution_time": 2,
                 },
-                "correlation_id": f"e2e-full-{int(time.time())}",
+                "trace_id": f"e2e-full-{int(time.time())}",
             }
 
             headers = await self.create_signed_headers("POST", "/api/v1/device/command", command_payload)

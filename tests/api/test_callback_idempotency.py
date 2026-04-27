@@ -68,7 +68,7 @@ def create_event_payload() -> JsonDict:
 def create_external_payload() -> JsonDict:
     return {
         "callback_type": "AGV_TASK_RESULT",
-        "correlation_id": "corr-agv-001",
+        "trace_id": "trace-agv-001",
         "command_code": "AGV-REQ-001",
         "result": "SUCCESS",
         "data": {"to_location": "STATION_OUTPUT1"},
@@ -81,7 +81,7 @@ class TestCallbackResultIdempotency:
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         existing_command = SimpleNamespace(
-            correlation_id="corr-001",
+            trace_id="trace-001",
             params={"action": "PICK_AND_PUT"},
             workline_id=1,
             plugin_key="smt_classifier",
@@ -91,7 +91,7 @@ class TestCallbackResultIdempotency:
         handled_command.status = MagicMock()
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
-        handled_command.correlation_id = "corr-001"
+        handled_command.trace_id = "trace-001"
         handled_command.session_id = None
 
         with (

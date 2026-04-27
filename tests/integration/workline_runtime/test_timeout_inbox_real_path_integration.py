@@ -22,7 +22,7 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
     test_prefix: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    correlation_id = f"{test_prefix}_timeout_chain"
+    trace_id = f"{test_prefix}_timeout_chain"
     session_code = f"{test_prefix}_session"
     line_code = f"{test_prefix}_line"
     expired_deadline = timezone.now_for_db() - timedelta(minutes=10)
@@ -42,7 +42,7 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
             plugin_key="smt",
             status=SessionStatus.WAITING_DEVICE_RESULT,
             current_wait_type="DEVICE_CALLBACK",
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             deadline_at=expired_deadline,
         )
         setup_db.add(workline_session)
@@ -58,7 +58,7 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
         query = (
             select(WorklineSession)
             .where(
-                WorklineSession.correlation_id == correlation_id,  # type: ignore[arg-type]
+                WorklineSession.trace_id == trace_id,  # type: ignore[arg-type]
                 WorklineSession.status == SessionStatus.WAITING_DEVICE_RESULT,  # type: ignore[arg-type]
                 WorklineSession.deadline_at.is_not(None),  # type: ignore[arg-type]
                 WorklineSession.deadline_at < now,  # type: ignore[arg-type]
@@ -80,7 +80,7 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
 
     async with integration_session_factory() as verify_db:
         query = select(WorklineInbox).where(
-            WorklineInbox.correlation_id == correlation_id,  # type: ignore[arg-type]
+            WorklineInbox.trace_id == trace_id,  # type: ignore[arg-type]
             WorklineInbox.kind == InboxKind.TIMER_TIMEOUT,  # type: ignore[arg-type]
         )
         created_items = list((await verify_db.execute(query)).scalars().all())

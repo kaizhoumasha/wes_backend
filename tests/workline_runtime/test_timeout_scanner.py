@@ -24,13 +24,13 @@ class MockSession:
         status: str = "WAITING_DEVICE_RESULT",
         deadline_at: datetime | None = None,
         workline_id: int = 1,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
     ):
         self.id = session_id
         self.status = status
         self.deadline_at = deadline_at
         self.workline_id = workline_id
-        self.correlation_id = correlation_id
+        self.trace_id = trace_id
 
 
 class TestTimeoutScanner:
@@ -90,7 +90,7 @@ class TestTimeoutScanner:
             status="WAITING_DEVICE_RESULT",
             deadline_at=expired_time,
             workline_id=1,
-            correlation_id="corr-123",
+            trace_id="trace-123",
         )
         mock_session_repo.get_timed_out_sessions.return_value = [session]
 
@@ -127,7 +127,7 @@ class TestTimeoutScanner:
                 status="WAITING_DEVICE_RESULT",
                 deadline_at=expired_time,
                 workline_id=1,
-                correlation_id=f"corr-{i}",
+                trace_id=f"trace-{i}",
             )
             for i in range(1, 4)
         ]
@@ -221,5 +221,5 @@ class TestTimeoutInboxCreation:
         service = WorklineInboxService()
 
         # 验证 create_timeout_inbox 方法签名
-        # 应包含：session_id, workline_id, correlation_id
+        # 应包含：session_id, workline_id, trace_id
         assert hasattr(service, "create_timeout_inbox")

@@ -313,7 +313,7 @@ async def test_create_command_result_inbox_uses_command_result_kind() -> None:
         command_type="PICK_AND_PUT",
         error_detail={"message": "ok"},
         source_message_id="req-001",
-        correlation_id="corr-001",
+        trace_id="trace-001",
     )
 
     assert result.id == 99
@@ -321,7 +321,7 @@ async def test_create_command_result_inbox_uses_command_result_kind() -> None:
     assert fake_repo.created_data["kind"] == InboxKind.COMMAND_RESULT
     assert fake_repo.created_data["source_system"] == SourceSystem.DEVICE
     assert fake_repo.created_data["source_message_id"] == "req-001"
-    assert fake_repo.created_data["correlation_id"] == "corr-001"
+    assert fake_repo.created_data["trace_id"] == "trace-001"
     assert fake_repo.created_data["payload_json"]["command_type"] == "PICK_AND_PUT"
     assert fake_repo.created_data["payload_json"]["error_detail"] == {"message": "ok"}
 

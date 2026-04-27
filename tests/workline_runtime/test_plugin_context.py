@@ -69,7 +69,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={"scan_timeout": 30},
             binding_config={"SCANNER": {"device_id": 1}},
             runtime=mock_runtime,
@@ -81,7 +81,7 @@ class TestPluginContextCreation:
         assert ctx.workline == mock_workline
         assert ctx.session == mock_session
         assert ctx.devices_by_role["SCANNER"][0] == mock_device
-        assert ctx.correlation_id == "corr-123"
+        assert ctx.trace_id == "trace-123"
         assert ctx.config["scan_timeout"] == 30
 
     def test_get_device_by_role_found(self, mock_workline, mock_session, mock_services, mock_runtime):
@@ -94,7 +94,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -117,7 +117,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -139,7 +139,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -159,7 +159,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -177,7 +177,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -198,7 +198,7 @@ class TestPluginContextCreation:
             workline=mock_workline,  # MagicMock
             session=mock_session,  # MagicMock
             devices_by_role={},  # dict[str, list[MagicMock]]
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,

@@ -125,11 +125,58 @@ class TestOrchestratorServicePhase2:
             inbox=mock_inbox,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result is not None
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_manual_operation_uses_runtime_transition_without_plugin_override(
+        self,
+        orchestrator,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """人工操作 inbox 应由 runtime 默认转成稳定 transition。"""
+        from src.workline_plugins.smt_classifier.state_machine import SmtClassifierStateMachine
+
+        session = MagicMock()
+        session.id = 12345
+        session.status = "MANUAL_HOLD"
+        session.context_json = {"plugin_state": "MANUAL_HOLD"}
+
+        workline = MagicMock()
+        workline.id = 1
+        workline.plugin_class = None
+        workline.state_machine_class = SmtClassifierStateMachine
+
+        inbox = MagicMock()
+        inbox.id = 101
+        inbox.kind = InboxKind.MANUAL_CANCEL
+        inbox.payload_json = {
+            "message_type": "MANUAL_OPERATION",
+            "operation": "CANCEL",
+            "operator_id": "ops-1",
+            "reason": "现场确认取消",
+        }
+
+        result = await orchestrator.process_inbox(
+            session=session,
+            workline=workline,
+            inbox=inbox,
+            devices_by_role=mock_devices_by_role,
+            services=mock_services,
+            trace_id="trace-manual-001",
+        )
+
+        assert result.success is True
+        assert result.transition == "manual_cancel"
+        assert result.context_patch == {
+            "cancelled": True,
+            "cancel_reason": "现场确认取消",
+            "manual_operator_id": "ops-1",
+        }
 
     @pytest.mark.asyncio
     async def test_process_inbox_uses_single_session_lock(
@@ -152,13 +199,13 @@ class TestOrchestratorServicePhase2:
 
         orchestrator = OrchestratorService(lock_provider=test_lock)
 
-        await orchestrator.process_inbox(
+        _ = await orchestrator.process_inbox(
             session=mock_session,
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         # Phase 1: 单阶段锁，只获取一次
@@ -195,7 +242,7 @@ class TestOrchestratorServicePhase2:
             inbox=mock_inbox,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
             write_callback=write_callback,
         )
 
@@ -227,7 +274,7 @@ class TestOrchestratorServicePhase2:
         @asynccontextmanager
         async def keyed_lock(key):
             lock = locks.setdefault(key, asyncio.Lock())
-            await lock.acquire()
+            _ = await lock.acquire()
             try:
                 yield
             finally:
@@ -237,7 +284,7 @@ class TestOrchestratorServicePhase2:
 
         async def fake_process(*args, **kwargs):
             first_entered.set()
-            await release_first.wait()
+            _ = await release_first.wait()
             return OrchestratorResult(success=True)
 
         with patch.object(orchestrator, "_process_read_phase", side_effect=fake_process):
@@ -248,10 +295,10 @@ class TestOrchestratorServicePhase2:
                     inbox=mock_inbox,
                     devices_by_role=mock_devices_by_role,
                     services=mock_services,
-                    correlation_id="corr-1",
+                    trace_id="trace-1",
                 )
             )
-            await first_entered.wait()
+            _ = await first_entered.wait()
 
             second_task = asyncio.create_task(
                 orchestrator.process_inbox(
@@ -260,7 +307,7 @@ class TestOrchestratorServicePhase2:
                     inbox=mock_inbox,
                     devices_by_role=mock_devices_by_role,
                     services=mock_services,
-                    correlation_id="corr-2",
+                    trace_id="trace-2",
                 )
             )
 
@@ -301,7 +348,7 @@ class TestOrchestratorServicePhase2:
             inbox=mock_inbox,
             devices_by_role=mock_devices_by_role,
             services=mock_services,
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result.success is False
@@ -333,7 +380,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -369,7 +416,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -407,10 +454,11 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
+            assert result.commands is not None
             assert len(result.commands) == 1
             assert result.commands[0].target_device_id == 1
 
@@ -445,7 +493,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -483,7 +531,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -515,7 +563,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -548,7 +596,7 @@ class TestOrchestratorServicePhase2:
                 inbox=mock_inbox,
                 devices_by_role=mock_devices_by_role,
                 services=mock_services,
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is True
@@ -640,7 +688,7 @@ class TestOrchestratorServiceEdgeCases:
                 inbox=mock_inbox,
                 devices_by_role={},
                 services=MagicMock(),
-                correlation_id="test-correlation-id",
+                trace_id="test-trace-id",
             )
 
             assert result.success is False
@@ -668,7 +716,7 @@ class TestOrchestratorServiceEdgeCases:
             inbox=mock_inbox,
             devices_by_role={},  # 空设备映射
             services=MagicMock(),
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result.success is True
@@ -698,7 +746,7 @@ class TestOrchestratorServiceEdgeCases:
             inbox=mock_inbox,
             devices_by_role={},
             services=MagicMock(),
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result.success is False
@@ -768,7 +816,7 @@ class TestContractVersionMismatch:
             inbox=mock_inbox,
             devices_by_role={},
             services=MagicMock(),
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result.success is False
@@ -808,7 +856,7 @@ class TestContractVersionMismatch:
             inbox=mock_inbox,
             devices_by_role={},
             services=MagicMock(),
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         assert result.success is True
@@ -838,7 +886,7 @@ class TestContractVersionMismatch:
             inbox=mock_inbox,
             devices_by_role={},
             services=MagicMock(),
-            correlation_id="test-correlation-id",
+            trace_id="test-trace-id",
         )
 
         # 应该正常继续处理，不触发契约检测

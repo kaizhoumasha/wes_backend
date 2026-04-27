@@ -27,14 +27,14 @@ def _make_context(plugin_state: str = InboundToteQcState.IDLE, **context: object
     ctx = MagicMock()
     ctx.session = MagicMock(id=42)
     ctx.session.context_json = {"plugin_state": plugin_state, **context}
-    ctx.correlation_id = "corr-inbound-tote"
+    ctx.trace_id = "trace-inbound-tote"
     ctx.normalized_input = None
     ctx.logger = logging.getLogger("test_inbound_tote_qc")
     return ctx
 
 
 def _make_inbox(payload_json: dict[str, object]) -> SimpleNamespace:
-    return SimpleNamespace(id=1, payload_json=payload_json, kind=None, correlation_id="corr-inbound-tote")
+    return SimpleNamespace(id=1, payload_json=payload_json, kind=None, trace_id="trace-inbound-tote")
 
 
 def test_inbound_tote_manifest_declares_independent_platform_contract() -> None:

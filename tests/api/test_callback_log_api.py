@@ -22,7 +22,7 @@ def _permission_names(path: str, method: str) -> list[str]:
 class TestCallbackLogApi:
     def test_callback_log_routes_require_user_permissions(self) -> None:
         assert _permission_names("/request/{request_id}", "GET") == ["callback:callback_log:detail"]
-        assert _permission_names("/correlation/{correlation_id}", "GET") == ["callback:callback_log:list"]
+        assert _permission_names("/trace/{trace_id}", "GET") == ["callback:callback_log:list"]
         assert _permission_names("/device/{device_id}", "GET") == ["callback:callback_log:list"]
         assert _permission_names("/query", "POST") == ["callback:callback_log:list"]
 
@@ -38,7 +38,7 @@ class TestCallbackLogApi:
             client_ip="127.0.0.1",
             user_agent="pytest",
             request_id="req-001",
-            correlation_id="corr-001",
+            trace_id="trace-001",
             response_status=200,
             response_time_ms=12,
             error_message=None,
@@ -72,19 +72,19 @@ class TestCallbackLogApi:
         assert result["data"].device_id == "ARM01"
 
     @pytest.mark.asyncio
-    async def test_get_by_correlation_id_uses_service_method_not_repo(self) -> None:
-        from src.app.callback.v1.callback_log import get_by_correlation_id
+    async def test_get_by_trace_id_uses_service_method_not_repo(self) -> None:
+        from src.app.callback.v1.callback_log import get_by_trace_id
 
         logs = [
-            SimpleNamespace(id=1, correlation_id="corr-001"),
-            SimpleNamespace(id=2, correlation_id="corr-001"),
+            SimpleNamespace(id=1, trace_id="trace-001"),
+            SimpleNamespace(id=2, trace_id="trace-001"),
         ]
 
         with (
             patch(
-                "src.app.callback.v1.callback_log.callback_log_service.get_by_correlation_id",
+                "src.app.callback.v1.callback_log.callback_log_service.get_by_trace_id",
                 new=AsyncMock(return_value=logs),
-            ) as mock_get_by_correlation_id,
+            ) as mock_get_by_trace_id,
             patch.object(
                 type(
                     __import__(
@@ -96,11 +96,11 @@ class TestCallbackLogApi:
                 side_effect=AssertionError("route must not access callback_log_service.repo"),
             ),
         ):
-            result = await get_by_correlation_id("corr-001", db=AsyncMock())
+            result = await get_by_trace_id("trace-001", db=AsyncMock())
 
-        mock_get_by_correlation_id.assert_awaited_once_with(AnyArgHashable(), "corr-001")
+        mock_get_by_trace_id.assert_awaited_once_with(AnyArgHashable(), "trace-001")
         assert result["data"] == {
-            "correlation_id": "corr-001",
+            "trace_id": "trace-001",
             "count": 2,
             "items": logs,
         }

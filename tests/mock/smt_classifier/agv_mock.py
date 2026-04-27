@@ -66,7 +66,7 @@ class ExecutionRecord(BaseModel):
     task_type: str
     result: str
     callback_url: str
-    correlation_id: str
+    trace_id: str
     started_at: datetime
     finished_at: datetime | None = None
 
@@ -76,7 +76,7 @@ class AgvDebugExecuteRequest(BaseModel):
     task_type: str = "MOVE_RACK"
     callback_url: str = WES_EXTERNAL_CALLBACK_URL
     callback_type: str = "AGV_TASK_RESULT"
-    correlation_id: str = "debug-corr-001"
+    trace_id: str = "debug-trace-001"
     params: JsonDict = Field(default_factory=dict)
 
 
@@ -91,7 +91,7 @@ class AgvCommandPayload(BaseModel):
     timeout: int = 300000
     params: JsonDict = Field(default_factory=dict)
     timestamp: int
-    correlation_id: str
+    trace_id: str
     callback_type: str = "AGV_TASK_RESULT"
     callback_url: str = WES_EXTERNAL_CALLBACK_URL
 
@@ -104,9 +104,9 @@ class AgvSimulator:
     async def execute_command(self, payload: AgvCommandPayload) -> ExecutionRecord:
         callback_url = payload.callback_url
         callback_type = payload.callback_type
-        correlation_id = payload.correlation_id
-        if not correlation_id:
-            raise HTTPException(status_code=400, detail="correlation_id is required")
+        trace_id = payload.trace_id
+        if not trace_id:
+            raise HTTPException(status_code=400, detail="trace_id is required")
 
         record = ExecutionRecord(
             execution_id=f"EXEC-{datetime.now().strftime('%Y%m%d%H%M%S')}-{len(self.executions) + 1:03d}",
@@ -114,7 +114,7 @@ class AgvSimulator:
             task_type=payload.task_type,
             result="PENDING",
             callback_url=callback_url,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             started_at=datetime.now(),
         )
         self.executions.append(record)
@@ -127,7 +127,7 @@ class AgvSimulator:
         await self._callback_to_wes(
             callback_url=callback_url,
             callback_type=callback_type,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
             command_code=payload.command_code,
             result=result,
             params=payload.params or {},
@@ -141,14 +141,14 @@ class AgvSimulator:
         *,
         callback_url: str,
         callback_type: str,
-        correlation_id: str,
+        trace_id: str,
         command_code: str,
         result: str,
         params: JsonDict,
     ) -> None:
         payload: JsonDict = {
             "callback_type": callback_type,
-            "correlation_id": correlation_id,
+            "trace_id": trace_id,
             "command_code": command_code,
             "result": result,
             "finish_time": current_millis(),
@@ -244,7 +244,7 @@ async def debug_execute(request: AgvDebugExecuteRequest) -> ExecutionRecord:
         timeout=300000,
         params=request.params,
         timestamp=current_millis(),
-        correlation_id=request.correlation_id,
+        trace_id=request.trace_id,
         callback_type=request.callback_type,
         callback_url=request.callback_url,
     )

@@ -3,7 +3,7 @@ SessionResolver 单元测试
 
 测试 Session 归属解析器的各种场景：
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
-- EXTERNAL_HTTP: 按 correlation_id 恢复 Session
+- EXTERNAL_HTTP: 按 trace_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
@@ -81,15 +81,15 @@ class MockSessionRepository:
                 return session
         return None
 
-    async def get_by_correlation_id(
+    async def get_by_trace_id(
         self,
         db: object,
-        correlation_id: str,
+        trace_id: str,
     ) -> object | None:
-        self.find_calls.append(("correlation_id", 0, correlation_id))
+        self.find_calls.append(("trace_id", 0, trace_id))
         for session in self.sessions.values():
             s = session if isinstance(session, dict) else session.__dict__
-            if s.get("correlation_id") == correlation_id:
+            if s.get("trace_id") == trace_id:
                 return session
         return None
 
@@ -123,7 +123,7 @@ def make_inbox(
     device_id: int | None = None,
     command_id: int | None = None,
     session_id: int | None = None,
-    correlation_id: str | None = None,
+    trace_id: str | None = None,
     source_message_id: str | None = None,
     payload_json: dict | None = None,
 ) -> MagicMock:
@@ -133,7 +133,7 @@ def make_inbox(
     inbox.device_id = device_id
     inbox.command_id = command_id
     inbox.session_id = session_id
-    inbox.correlation_id = correlation_id
+    inbox.trace_id = trace_id
     inbox.source_message_id = source_message_id
     inbox.payload_json = payload_json or {}
     return inbox
@@ -224,8 +224,9 @@ class TestSessionResolver:
         assert session.ingress_count == 1
         assert session.last_request_id == "req-001"
         assert session.last_ingress_at is not None
-        assert isinstance(session.correlation_id, str)
-        assert session.correlation_id.startswith("corr_")
+        assert isinstance(session.trace_id, str)
+        assert session.trace_id.startswith("trace_")
+        assert inbox.trace_id == session.trace_id
         assert session.contract_version == "wl-2026.04"
         assert len(mock_session_repo.created_sessions) == 1
 
@@ -303,7 +304,7 @@ class TestSessionResolver:
             ingress_count=1,
             last_request_id="req-old",
             last_ingress_at=None,
-            correlation_id="corr-main-001",
+            trace_id="trace-main-001",
             context_json={},
         )
         mock_session_repo.sessions[100] = existing_session
@@ -311,7 +312,7 @@ class TestSessionResolver:
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
-            correlation_id="corr_temp_001",
+            trace_id="trace_temp_001",
             source_message_id="req-new",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
@@ -337,9 +338,12 @@ class TestSessionResolver:
         assert pending_ingress["ingress_count"] == 2
         assert pending_ingress["last_request_id"] == "req-new"
         assert pending_ingress["last_ingress_at"] == session.last_ingress_at
+        assert "trace_id" not in pending_ingress
         assert inbox.session_id == 100
-        assert inbox.correlation_id == "corr-main-001"
-        assert session.correlation_id == "corr-main-001"
+        assert inbox.trace_id == "trace-main-001"
+        assert inbox.trace_id == "trace-main-001"
+        assert session.trace_id == "trace-main-001"
+        assert session.trace_id == "trace-main-001"
         assert len(mock_session_repo.created_sessions) == 0
         # 验证调用了 business_key 查找
         assert ("business_key", 1, "ORDER_001") in mock_session_repo.find_calls
@@ -385,13 +389,13 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
-    async def test_resolve_external_http_by_correlation_id(
+    async def test_resolve_external_http_by_trace_id(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试 EXTERNAL_HTTP 按 correlation_id 恢复 Session"""
+        """测试 EXTERNAL_HTTP 按 trace_id 恢复 Session"""
         # Arrange - 预先创建一个等待外部系统的 Session
         existing_session = SimpleNamespace(
             id=300,
@@ -401,13 +405,13 @@ class TestSessionResolver:
             business_key="ORDER_003",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={"wms_order": "WO123"},
-            correlation_id="CORR_12345",
+            trace_id="trace_12345",
         )
         mock_session_repo.sessions[300] = existing_session
 
         inbox = make_inbox(
             kind=InboxKind.EXTERNAL_HTTP,
-            correlation_id="CORR_12345",
+            trace_id="trace_12345",
             payload_json={"wms_response": "success"},
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
@@ -424,7 +428,7 @@ class TestSessionResolver:
         # Assert
         assert session.id == 300
         assert session.status == SessionStatus.WAITING_EXTERNAL
-        assert session.correlation_id == "CORR_12345"
+        assert session.trace_id == "trace_12345"
         assert inbox.session_id == 300
         assert inbox.workline_id == 1
         assert len(mock_session_repo.created_sessions) == 0
@@ -495,22 +499,22 @@ class TestSessionResolver:
             )
 
     @pytest.mark.asyncio
-    async def test_resolve_external_http_raises_when_correlation_id_missing(
+    async def test_resolve_external_http_raises_when_trace_id_missing(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试 EXTERNAL_HTTP 在 correlation_id 缺失时抛出异常"""
+        """测试 EXTERNAL_HTTP 在 trace_id 缺失时抛出异常"""
         inbox = make_inbox(
             kind=InboxKind.EXTERNAL_HTTP,
-            correlation_id=None,  # 缺失 correlation_id
+            trace_id=None,  # 缺失 trace_id
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
         devices_by_role = make_devices_by_role()
 
         # Act & Assert
-        with pytest.raises(ValueError, match="correlation_id is required for EXTERNAL_HTTP"):
+        with pytest.raises(ValueError, match="trace_id is required for EXTERNAL_HTTP"):
             await resolver.resolve_or_create(
                 db=mock_db,
                 inbox=inbox,
@@ -853,7 +857,7 @@ class TestSessionResolver:
                 "ingress_count": 1,
                 "last_request_id": "req-existing-none-plugin",
                 "last_ingress_at": None,
-                "correlation_id": "corr-canonical-none-plugin",
+                "trace_id": "trace-canonical-none-plugin",
                 "context_json": {},
                 "started_at": None,
             },
@@ -915,7 +919,7 @@ class TestSessionResolver:
                 "ingress_count": 1,
                 "last_request_id": "req-existing",
                 "last_ingress_at": None,
-                "correlation_id": "corr_existing",
+                "trace_id": "trace_existing",
                 "context_json": {},
                 "started_at": None,
             },
@@ -969,14 +973,14 @@ class TestSessionResolver:
             command_code="CMD-001",
             device_id=11,
             workline_id=1,
-            correlation_id="corr-301",
+            trace_id="trace-301",
         )
         resolver.command_repo.commands["CMD-001"] = command
 
         existing_session = SimpleNamespace(
             id=401,
             awaiting_command_id=301,
-            correlation_id="corr-301",
+            trace_id="trace-301",
             status=SessionStatus.WAITING_DEVICE_RESULT,
         )
         mock_session_repo.sessions[401] = existing_session
@@ -998,4 +1002,4 @@ class TestSessionResolver:
         assert inbox.device_id == 11
         assert inbox.workline_id == 1
         assert inbox.session_id == 401
-        assert inbox.correlation_id == "corr-301"
+        assert inbox.trace_id == "trace-301"

@@ -65,7 +65,7 @@ class MockInbox:
         workline_id: int | None = None,
         device_id: int | None = None,
         command_id: int | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
         payload_json: dict[str, Any] | None = None,
     ):
         self.id = inbox_id
@@ -75,7 +75,7 @@ class MockInbox:
         self.workline_id = workline_id
         self.device_id = device_id
         self.command_id = command_id
-        self.correlation_id = correlation_id
+        self.trace_id = trace_id
         self.payload_json = payload_json or {}
         self.processor_token = None
         self.processed_at = None
@@ -260,7 +260,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-failed-001",
+            trace_id="trace-failed-001",
             payload_json={
                 "canonical_event_type": "SCAN_COMPLETED",
                 "data": {"LotCode": "LOT-FAILED-001"},
@@ -325,7 +325,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-estop-001",
+            trace_id="trace-estop-001",
             payload_json={
                 "canonical_event_type": "ESTOP_PRESSED",
                 "device_code": "ARM01",
@@ -582,7 +582,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-missing-001",
+            trace_id="trace-missing-001",
             payload_json={
                 "canonical_event_type": "SCAN_COMPLETED",
                 "data": {"LotCode": "LOT-MISSING-001"},
@@ -712,7 +712,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-resolve-failed-001",
+            trace_id="trace-resolve-failed-001",
             payload_json={
                 "canonical_event_type": "BIN_ARRIVED",
                 "data": {"location": "STATION_INPUT1"},
@@ -766,7 +766,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-exception-001",
+            trace_id="trace-exception-001",
             payload_json={
                 "canonical_event_type": "SCAN_COMPLETED",
                 "data": {"LotCode": "LOT-EXCEPTION-001"},
@@ -818,7 +818,7 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            correlation_id="corr-timeout-001",
+            trace_id="trace-timeout-001",
             payload_json={
                 "canonical_event_type": "SCAN_COMPLETED",
                 "data": {"LotCode": "LOT-TIMEOUT-001"},
@@ -886,10 +886,10 @@ class TestInboxConsumer:
         inbox = SimpleNamespace(
             id=303,
             source_message_id="req-diag-001",
-            correlation_id="corr-diag-001",
+            trace_id="trace-diag-001",
             payload_json={"canonical_event_type": "SCAN_COMPLETED"},
         )
-        session = SimpleNamespace(id=123, correlation_id="corr-diag-001")
+        session = SimpleNamespace(id=123, trace_id="trace-diag-001")
         workline = SimpleNamespace(id=1, line_code="WL-01", plugin_key="smt_classifier")
 
         with patch("src.celery_app.tasks.workline.logger.warning") as mock_warning:
@@ -907,7 +907,7 @@ class TestInboxConsumer:
         assert log_message.startswith("[WorklineDiagnostic] ")
         payload = json.loads(log_message.removeprefix("[WorklineDiagnostic] "))
         assert payload["context"]["request_id"] == "req-diag-001"
-        assert payload["context"]["correlation_id"] == "corr-diag-001"
+        assert payload["context"]["trace_id"] == "trace-diag-001"
         assert payload["context"]["canonical_event_type"] == "SCAN_COMPLETED"
         assert payload["context"]["transition"] == "wait_device_result"
         assert payload["context"]["inbox_id"] == 303
@@ -1187,7 +1187,7 @@ class TestInboxConsumer:
             "devices_by_role": {},
             "orch_result": OrchestratorResult(success=True),
             "current_status": None,
-            "correlation_id": None,
+            "trace_id": None,
             "session_ctx": {},
             "now": datetime.now(),
             "awaiting_command_id": None,
@@ -1221,7 +1221,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="WAITING_DEVICE_RESULT",
             context_json={"stage": "WAITING_PICK_PLACE"},
-            correlation_id=None,
+            trace_id=None,
             last_inbox_id=None,
             current_wait_type="COMMAND_RESULT",
             current_wait_token="wait-token",
@@ -1234,7 +1234,7 @@ class TestInboxConsumer:
             failure_message=None,
         )
         workline = SimpleNamespace(plugin_key="smt_classifier")
-        inbox = SimpleNamespace(id=1, correlation_id="corr-001")
+        inbox = SimpleNamespace(id=1, trace_id="trace-001")
         orch_result = OrchestratorResult(
             success=True,
             transition="manual_hold",
@@ -1278,7 +1278,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="MANUAL_HOLD",
             context_json={"stage": "WAITING_PICK_PLACE", "manual_hold": True},
-            correlation_id=None,
+            trace_id=None,
             last_inbox_id=None,
             current_wait_type="COMMAND_RESULT",
             current_wait_token="wait-token",
@@ -1291,7 +1291,7 @@ class TestInboxConsumer:
             failure_message=None,
         )
         workline = SimpleNamespace(plugin_key="smt_classifier")
-        inbox = SimpleNamespace(id=1, correlation_id="corr-001")
+        inbox = SimpleNamespace(id=1, trace_id="trace-001")
         orch_result = OrchestratorResult(
             success=True,
             transition="manual_resume",
@@ -1334,7 +1334,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={"stage": "WAITING_PICK_PLACE"},
-            correlation_id=None,
+            trace_id=None,
             last_inbox_id=None,
             current_wait_type="COMMAND_RESULT",
             current_wait_token="wait-token",
@@ -1347,7 +1347,7 @@ class TestInboxConsumer:
             failure_message=None,
         )
         workline = SimpleNamespace(plugin_key="smt_classifier")
-        inbox = SimpleNamespace(id=1, correlation_id="corr-001")
+        inbox = SimpleNamespace(id=1, trace_id="trace-001")
         orch_result = OrchestratorResult(
             success=True,
             transition="manual_cancel",
@@ -1409,7 +1409,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={"stage": "WAITING_CONVEYOR"},
-            correlation_id="corr-external-001",
+            trace_id="trace-external-001",
             last_inbox_id=None,
             current_wait_type=None,
             current_wait_token=None,
@@ -1424,7 +1424,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="smt_classifier")
         inbox = SimpleNamespace(
             id=99,
-            correlation_id="corr-external-001",
+            trace_id="trace-external-001",
             source_message_id="req-external-001",
             payload_json={"canonical_event_type": "AGV_REQUESTED"},
         )
@@ -1488,7 +1488,7 @@ class TestInboxConsumer:
             item for item in captured_timelines if item.action_type == TimelineActionType.EXTERNAL_CALL_STARTED
         )
         assert external_timeline.payload["request_id"] == "req-external-001"
-        assert external_timeline.payload["correlation_id"] == "corr-external-001"
+        assert external_timeline.payload["trace_id"] == "trace-external-001"
         assert external_timeline.payload["canonical_event_type"] == "AGV_REQUESTED"
         assert external_timeline.payload["dispatch_key"] == "external-http:AGV-REQ-001"
 
@@ -1514,7 +1514,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={"stage": "PREPARE"},
-            correlation_id="corr-session-legacy-001",
+            trace_id="trace-session-legacy-001",
             plugin_key=None,
             contract_version="legacy-0.9",
             step_code=None,
@@ -1532,7 +1532,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin", contract_version="wl-v2026.04")
         inbox = SimpleNamespace(
             id=101,
-            correlation_id="corr-inbox-001",
+            trace_id="trace-inbox-001",
             source_message_id="req-command-001",
             payload_json={"canonical_event_type": "SCAN_COMPLETED"},
         )
@@ -1618,10 +1618,10 @@ class TestInboxConsumer:
         assert created_command_payloads[0]["contract_version"] == "wl-v2026.04"
         assert created_command_payloads[0]["step_code"] == "SCAN_01"
         assert created_command_payloads[0]["task_type"] == "PICK_AND_PUT"
-        assert created_command_payloads[0]["correlation_id"] == "corr-inbox-001"
+        assert created_command_payloads[0]["trace_id"] == "trace-inbox-001"
         assert created_command_payloads[0]["params"] == {"barcode": "BC-001"}
 
-        assert session.correlation_id == "corr-inbox-001"
+        assert session.trace_id == "trace-inbox-001"
         assert session.plugin_key == "demo_plugin"
         assert session.contract_version == "wl-v2026.04"
         assert session.step_code == "SCAN_01"
@@ -1640,14 +1640,18 @@ class TestInboxConsumer:
         ]
         assert captured_timelines[0].payload == {
             "request_id": "req-command-001",
-            "correlation_id": "corr-inbox-001",
+            "trace_id": "trace-inbox-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "transition": "dispatch_robot",
             "context_patch": {"plugin_state": "SCAN_01", "barcode": "BC-001"},
         }
         assert captured_timelines[1].payload == {
             "request_id": "req-command-001",
-            "correlation_id": "corr-inbox-001",
+            "trace_id": "trace-inbox-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "command_code": "VENDOR-CMD-001",
             "command_type": "PICK_AND_PUT",
@@ -1656,7 +1660,9 @@ class TestInboxConsumer:
         }
         assert captured_timelines[2].payload == {
             "request_id": "req-command-001",
-            "correlation_id": "corr-inbox-001",
+            "trace_id": "trace-inbox-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "wait_type": "COMMAND_RESULT",
             "wait_token": "VENDOR-CMD-001",
@@ -1677,7 +1683,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={"stage": "PREPARE"},
-            correlation_id="corr-session-topology-001",
+            trace_id="trace-session-topology-001",
             plugin_key=None,
             contract_version="legacy-0.9",
             step_code=None,
@@ -1695,7 +1701,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin", contract_version="wl-v2026.04")
         inbox = SimpleNamespace(
             id=202,
-            correlation_id="corr-inbox-topology-001",
+            trace_id="trace-inbox-topology-001",
             source_message_id="req-topology-001",
             payload_json={"canonical_event_type": "MEASUREMENT_REEL"},
         )
@@ -1789,7 +1795,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={},
-            correlation_id=None,
+            trace_id=None,
             plugin_key=None,
             contract_version=None,
             step_code=None,
@@ -1807,7 +1813,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin")
         inbox = SimpleNamespace(
             id=201,
-            correlation_id="corr-unsupported-001",
+            trace_id="trace-unsupported-001",
             source_message_id="req-unsupported-001",
             payload_json={"canonical_event_type": "SCAN_COMPLETED"},
         )
@@ -1878,7 +1884,9 @@ class TestInboxConsumer:
         ]
         assert captured_timelines[-1].payload == {
             "request_id": "req-unsupported-001",
-            "correlation_id": "corr-unsupported-001",
+            "trace_id": "trace-unsupported-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "message": "设备 ROBOT-001 不支持 command_type=PICK_AND_PUT，拒绝命令创建",
         }
@@ -1896,7 +1904,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={},
-            correlation_id=None,
+            trace_id=None,
             plugin_key=None,
             contract_version=None,
             step_code=None,
@@ -1914,7 +1922,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin")
         inbox = SimpleNamespace(
             id=202,
-            correlation_id="corr-maint-001",
+            trace_id="trace-maint-001",
             source_message_id="req-maint-001",
             payload_json={"canonical_event_type": "SCAN_COMPLETED"},
         )
@@ -1980,7 +1988,9 @@ class TestInboxConsumer:
         ]
         assert captured_timelines[-1].payload == {
             "request_id": "req-maint-001",
-            "correlation_id": "corr-maint-001",
+            "trace_id": "trace-maint-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "message": "设备 ROBOT-002 处于 maintenance_mode，拒绝命令创建: command_type=PICK_AND_PUT",
         }
@@ -2003,7 +2013,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="RUNNING",
             context_json={"stage": "WAITING_PICK_PLACE"},
-            correlation_id=None,
+            trace_id=None,
             plugin_key=None,
             contract_version=None,
             step_code=None,
@@ -2021,7 +2031,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin")
         inbox = SimpleNamespace(
             id=202,
-            correlation_id="corr-failure-001",
+            trace_id="trace-failure-001",
             source_message_id="req-failure-001",
             payload_json={"canonical_event_type": "MOVE_FORWARD"},
         )
@@ -2054,7 +2064,7 @@ class TestInboxConsumer:
                 orch_result=orch_result,
             )
 
-        assert session.correlation_id == "corr-failure-001"
+        assert session.trace_id == "trace-failure-001"
         assert session.last_inbox_id == 202
         assert session.status == "FAILED"
         assert session.current_wait_type is None
@@ -2070,7 +2080,9 @@ class TestInboxConsumer:
         assert captured_timelines[0].related_inbox_id == 202
         assert captured_timelines[0].payload == {
             "request_id": "req-failure-001",
-            "correlation_id": "corr-failure-001",
+            "trace_id": "trace-failure-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "MOVE_FORWARD",
             "message": "device timed out",
         }
@@ -2094,7 +2106,7 @@ class TestInboxConsumer:
             workline_id=1,
             status="WAITING",
             context_json={"stage": "WAITING_PICK_PLACE"},
-            correlation_id=None,
+            trace_id=None,
             plugin_key=None,
             contract_version=None,
             step_code=None,
@@ -2112,7 +2124,7 @@ class TestInboxConsumer:
         workline = SimpleNamespace(plugin_key="demo_plugin")
         inbox = SimpleNamespace(
             id=203,
-            correlation_id="corr-business-001",
+            trace_id="trace-business-001",
             source_message_id="req-business-001",
             payload_json={"canonical_event_type": "SCAN_COMPLETED"},
         )
@@ -2164,7 +2176,9 @@ class TestInboxConsumer:
         assert captured_timelines[0].related_inbox_id == 203
         assert captured_timelines[0].payload == {
             "request_id": "req-business-001",
-            "correlation_id": "corr-business-001",
+            "trace_id": "trace-business-001",
+            "event_id": None,
+            "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "classification": "business_decision",
             "reason_code": "SCAN_NG",
@@ -2292,14 +2306,14 @@ class TestLoadRelatedEntities:
         assert len(entities["devices_by_role"]["SCANNER"]) == 1
 
     @pytest.mark.asyncio
-    async def test_load_external_http_entities_from_correlation_id(self, mock_db):
-        """测试 EXTERNAL_HTTP 可先按 correlation_id 恢复 session，再回填 workline 和设备。"""
+    async def test_load_external_http_entities_from_trace_id(self, mock_db):
+        """测试 EXTERNAL_HTTP 可先按 trace_id 恢复 session，再回填 workline 和设备。"""
         from src.celery_app.tasks.workline import _load_related_entities
 
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.EXTERNAL_HTTP,
-            correlation_id="corr-external-001",
+            trace_id="trace-external-001",
             payload_json={"callback_type": "AGV_TASK_RESULT"},
         )
 

@@ -12,9 +12,9 @@ from src.workline_runtime.diagnostics import (
 
 def test_build_diagnostic_card_applies_defaults() -> None:
     context = build_diagnostic_context(
-        correlation_id="corr-123",
-        session=SimpleNamespace(id=1, correlation_id="corr-123", plugin_key="smt_classifier"),
-        inbox=SimpleNamespace(id=2, correlation_id="corr-123"),
+        trace_id="trace-123",
+        session=SimpleNamespace(id=1, trace_id="trace-123", plugin_key="smt_classifier"),
+        inbox=SimpleNamespace(id=2, trace_id="trace-123"),
         workline=SimpleNamespace(id=3, line_code="WL-01", plugin_key="smt_classifier"),
     )
 
@@ -32,7 +32,7 @@ def test_build_diagnostic_card_applies_defaults() -> None:
 
 
 def test_build_diagnostic_card_marks_device_timeout_as_hardware() -> None:
-    context = build_diagnostic_context(correlation_id="corr-123")
+    context = build_diagnostic_context(trace_id="trace-123")
     card = build_diagnostic_card(
         build_diagnostic_event(
             error_code=ErrorCode.DEVICE_TIMEOUT,
@@ -49,7 +49,7 @@ def test_build_diagnostic_card_marks_device_timeout_as_hardware() -> None:
 
 
 def test_build_diagnostic_card_preserves_explicit_error_domain_override() -> None:
-    context = build_diagnostic_context(correlation_id="corr-unknown-device")
+    context = build_diagnostic_context(trace_id="trace-unknown-device")
     card = build_diagnostic_card(
         build_diagnostic_event(
             error_code=ErrorCode.UNKNOWN,
