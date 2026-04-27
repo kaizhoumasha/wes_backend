@@ -14,7 +14,7 @@ class NormalizedCommandResult(BaseModel):
     result_classification: str | None = None
     command_type: str | None = None
     device_code: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
     finish_time: int | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any] = Field(default_factory=dict)

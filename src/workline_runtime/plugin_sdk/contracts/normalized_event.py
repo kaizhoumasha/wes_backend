@@ -12,7 +12,7 @@ class NormalizedDeviceEvent(BaseModel):
     canonical_event_type: str
     device_code: str | None = None
     business_key: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
     event_time: int | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any] = Field(default_factory=dict)

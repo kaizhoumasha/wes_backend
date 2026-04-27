@@ -36,7 +36,9 @@ def _build_callback_log_data(
         "client_ip": client_ip,
         "user_agent": user_agent,
         "request_id": trace.request_id,
-        "correlation_id": trace.correlation_id,
+        "trace_id": trace.trace_id,
+        "event_id": trace.event_id,
+        "causation_id": trace.causation_id,
         "response_status": response_status,
         "response_time_ms": response_time_ms,
         "error_message": error_message,
@@ -61,7 +63,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
         client_ip: str | None = None,
         user_agent: str | None = None,
         request_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
         response_status: int = 200,
         response_time_ms: int = 0,
         error_message: str | None = None,
@@ -80,7 +82,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
             client_ip: 客户端 IP
             user_agent: 客户端 User-Agent
             request_id: 请求 ID（用于链路追踪）
-            correlation_id: 关联 ID（串联整个流程）
+            trace_id: Trace ID（串联整个流程）
             response_status: HTTP 响应状态码
             response_time_ms: 响应时间（毫秒）
             error_message: 错误消息
@@ -93,7 +95,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
         """
         resolved_trace = trace or TraceContext.from_request(
             request_id=request_id,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
 
         log_data = _build_callback_log_data(
@@ -119,10 +121,10 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
 
         return await self.repo.get_by_request_id(db, request_id)
 
-    async def get_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[CallbackLog]:
-        """根据 correlation_id 查询所有相关的回调日志。"""
+    async def get_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[CallbackLog]:
+        """根据 trace_id 查询所有相关的回调日志。"""
 
-        return await self.repo.get_by_correlation_id(db, correlation_id)
+        return await self.repo.get_by_trace_id(db, trace_id)
 
     async def get_by_device_id(self, db: AsyncSession, device_id: str, limit: int = 100) -> list[CallbackLog]:
         """根据 device_id 查询最近的回调日志。"""

@@ -24,12 +24,12 @@ class SmtPluginDiagnosticResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-def _make_inbox(payload_json: dict[str, Any], *, kind: str, correlation_id: str | None = None) -> Any:
+def _make_inbox(payload_json: dict[str, Any], *, kind: str, trace_id: str | None = None) -> Any:
     return SimpleNamespace(
         id=None,
         kind=SimpleNamespace(value=kind),
         payload_json=payload_json,
-        correlation_id=correlation_id,
+        trace_id=trace_id,
     )
 
 
@@ -90,10 +90,10 @@ async def diagnose_smt_payload(
     该入口只覆盖 handler / context / 状态机解释，不替代 WORKLINE 级 sandbox 调试。
     """
 
-    inbox = _make_inbox(payload_json, kind=kind, correlation_id=getattr(ctx, "correlation_id", None))
+    inbox = _make_inbox(payload_json, kind=kind, trace_id=getattr(ctx, "trace_id", None))
     normalized_input = normalize_inbox_input(
         inbox,
-        correlation_id=getattr(ctx, "correlation_id", None) or "",
+        trace_id=getattr(ctx, "trace_id", None) or "",
         plugin_key=getattr(plugin, "plugin_key", None),
     )
     ctx.normalized_input = normalized_input

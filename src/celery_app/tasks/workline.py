@@ -23,6 +23,7 @@ from sqlalchemy import text
 from src.app.device.models import DeviceStatus, parse_device_capabilities
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
+from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEFAULT_COMMAND_PRIORITY,
@@ -172,7 +173,7 @@ def _should_resolve_session(inbox: Any) -> bool:
     if kind == "COMMAND_RESULT":
         return bool(getattr(inbox, "command_id", None) or payload.get("command_code"))
     if kind == EXTERNAL_HTTP_INBOX_KIND:
-        return bool(getattr(inbox, "correlation_id", None))
+        return bool(getattr(inbox, "trace_id", None))
     if kind in {"TIMER_TIMEOUT", "MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL", "REPLAY_REQUEST"}:
         return isinstance(getattr(inbox, "session_id", None), int)
     return False
@@ -322,7 +323,7 @@ def _log_diagnostic(
     outbox: Any | None = None,
     transition: str | None = None,
     extra: dict[str, Any] | None = None,
-) -> None:
+) -> Any:
     payload = payload_dict(getattr(inbox, "payload_json", None)) if inbox is not None else {}
     trace = TraceContext.from_runtime(
         session=session,
@@ -330,34 +331,49 @@ def _log_diagnostic(
         inbox=inbox,
         command=command,
         outbox=outbox,
-        correlation_id=getattr(inbox, "correlation_id", None) or getattr(session, "correlation_id", None),
+        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
         canonical_event_type=_canonical_event_type(payload),
         transition=transition,
     )
     if device is not None:
         trace = trace.with_device(device)
-    card = build_diagnostic_card(
-        build_diagnostic_event(
-            error_code=error_code,
-            context=build_diagnostic_context(
-                trace=trace,
-                session=session,
-                inbox=inbox,
-                command=command,
-                device=device,
-                outbox=outbox,
-                workline=workline,
-                canonical_event_type=trace.canonical_event_type,
-                transition=transition,
-                extra=extra,
-            ),
-            message=message,
-            error_domain=error_domain,
-            problem_class=problem_class,
-            technical_summary=message,
-        )
+    event = build_diagnostic_event(
+        error_code=error_code,
+        context=build_diagnostic_context(
+            trace=trace,
+            session=session,
+            inbox=inbox,
+            command=command,
+            device=device,
+            outbox=outbox,
+            workline=workline,
+            canonical_event_type=trace.canonical_event_type,
+            transition=transition,
+            extra=extra,
+        ),
+        message=message,
+        error_domain=error_domain,
+        problem_class=problem_class,
+        technical_summary=message,
     )
+    card = build_diagnostic_card(event)
     logger.warning(f"[WorklineDiagnostic] {card.model_dump_json(exclude_none=True)}")
+    return event
+
+
+async def _record_diagnostic(db: Any, **kwargs: Any) -> None:
+    """记录诊断日志并尽力持久化诊断卡片。"""
+
+    event = _log_diagnostic(**kwargs)
+    try:
+        _ = await workline_diagnostic_service.record_event(
+            db,
+            event=event,
+            evidence=kwargs.get("extra"),
+            auto_commit=False,
+        )
+    except Exception as exc:
+        logger.warning(f"工作线诊断持久化失败: {exc}")
 
 
 def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
@@ -469,6 +485,7 @@ _DEVICE_COMMAND_RESERVED_FIELDS = {
     "device_code",
     "command_code",
     "task_type",
+    "command_type",
     "priority",
     "timeout",
     "params",
@@ -501,6 +518,8 @@ def _normalize_vendor_command_payload(
     payload: JsonDict = {
         "command_code": _string_value(raw_payload.get("command_code")) or default_command_code,
         "task_type": _string_value(raw_payload.get("task_type"), action),
+        "command_type": _string_value(raw_payload.get("command_type"))
+        or _string_value(raw_payload.get("task_type"), action),
         "priority": priority if isinstance(priority, int) else DEFAULT_COMMAND_PRIORITY,
         "timeout": timeout if isinstance(timeout, int) else DEFAULT_COMMAND_TIMEOUT_MS,
         "params": {
@@ -522,6 +541,7 @@ def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> di
     payload = {
         "command_code": command.command_code,
         "task_type": normalized_task_type,
+        "command_type": normalized_task_type,
         "priority": command.priority,
         "timeout": command.timeout_ms,
         "params": command_params,
@@ -723,21 +743,9 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from sqlalchemy import func, select
+    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 
-    from src.app.workline.models.timeline import WorklineTimeline
-
-    assigned_seq_no = seq_no
-    if assigned_seq_no is None:
-        result = await db.execute(
-            select(func.max(WorklineTimeline.seq_no)).where(WorklineTimeline.session_id == timeline.session_id)  # type: ignore[arg-type]
-        )
-        max_seq_no = result.scalar_one_or_none()
-        assigned_seq_no = (max_seq_no or 0) + 1
-
-    timeline.seq_no = assigned_seq_no
-    db.add(timeline)
-    return assigned_seq_no
+    return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
 
 class EffectApplyContext(TypedDict):
@@ -757,7 +765,7 @@ class EffectApplyContext(TypedDict):
     source_device: Any | None
     orch_result: OrchestratorResult
     current_status: str | None
-    correlation_id: str | None
+    trace_id: str | None
     trace: TraceContext
     session_ctx: dict[str, Any]
     now: Any
@@ -807,7 +815,7 @@ def _build_effect_apply_context(
         session=session,
         workline=workline,
         inbox=inbox,
-        correlation_id=getattr(inbox, "correlation_id", None) or getattr(session, "correlation_id", None),
+        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
     )
     return {
         "db": db,
@@ -818,7 +826,7 @@ def _build_effect_apply_context(
         "source_device": source_device,
         "orch_result": orch_result,
         "current_status": getattr(session, "status", None),
-        "correlation_id": trace.correlation_id,
+        "trace_id": trace.trace_id,
         "trace": trace,
         "session_ctx": _session_context(session),
         "now": timezone.now_for_db(),
@@ -860,10 +868,10 @@ def _sync_effect_trace_fields(ctx: EffectApplyContext) -> None:
     """同步 effect 执行后的基础追踪字段。"""
 
     session = ctx["session"]
-    correlation_id = ctx["correlation_id"]
+    trace_id = ctx["trace_id"]
 
-    if correlation_id and getattr(session, "correlation_id", None) != correlation_id:
-        session.correlation_id = correlation_id
+    if trace_id and getattr(session, "trace_id", None) != trace_id:
+        session.trace_id = trace_id
 
     session.last_inbox_id = _resolve_entity_id(ctx["inbox"])
 
@@ -1134,8 +1142,11 @@ def _build_command_create_payload(
         "priority": priority_value if isinstance(priority_value, int) else DEFAULT_COMMAND_PRIORITY,
         "timeout_ms": timeout_value if isinstance(timeout_value, int) else DEFAULT_COMMAND_TIMEOUT_MS,
         "params": business_params,
-        "correlation_id": ctx["trace"].correlation_id or ctx["correlation_id"],
+        "trace_id": ctx["trace"].trace_id or ctx["trace_id"],
+        "event_id": ctx["trace"].event_id,
+        "causation_id": ctx["trace"].causation_id,
         "session_id": str(session.id),
+        "session_id_int": session.id,
         "workline_id": session.workline_id,
         "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
         "contract_version": getattr(session, "contract_version", None),
@@ -1555,8 +1566,8 @@ def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
         inbox.device_id = command.device_id
     if getattr(inbox, "workline_id", None) is None and command.workline_id is not None:
         inbox.workline_id = command.workline_id
-    if getattr(inbox, "correlation_id", None) is None and command.correlation_id:
-        inbox.correlation_id = command.correlation_id
+    if getattr(inbox, "trace_id", None) is None and command.trace_id:
+        inbox.trace_id = command.trace_id
 
 
 async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | None:
@@ -1813,7 +1824,12 @@ class ProcessInboxMessages:
                 if resolved_event_type == "SCAN_COMPLETED" and not _scan_completed_has_any_barcode_payload(payload):
                     error_msg = "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
                     logger.warning(f"Inbox {inbox_pk} {error_msg}")
-                    _log_diagnostic(inbox=inbox, error_code=ErrorCode.CALLBACK_SCHEMA_INVALID, message=error_msg)
+                    await _record_diagnostic(
+                        db,
+                        inbox=inbox,
+                        error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+                        message=error_msg,
+                    )
                     _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                     await db.commit()
                     result["failed"] += 1
@@ -1827,7 +1843,8 @@ class ProcessInboxMessages:
 
                 if session is None or workline is None:
                     error_msg = "Inbox processing missing session/workline context"
-                    _log_diagnostic(
+                    await _record_diagnostic(
+                        db,
                         inbox=inbox,
                         error_code=ErrorCode.SESSION_CONTEXT_MISSING,
                         message=error_msg,
@@ -1893,7 +1910,7 @@ class ProcessInboxMessages:
                         inbox=inbox,
                         devices_by_role=entities["devices_by_role"],
                         services=entities["services"],
-                        correlation_id=inbox.correlation_id or "",
+                        trace_id=inbox.trace_id or "",
                         write_callback=_write_callback,
                     ),
                     timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -1917,7 +1934,8 @@ class ProcessInboxMessages:
                         failure=orch_result.failure,
                         error_code=orch_result.error_code,
                     )
-                    _log_diagnostic(
+                    await _record_diagnostic(
+                        db,
                         inbox=inbox,
                         error_code=mapped_error_code,
                         error_domain=mapped_error_domain,
@@ -1938,13 +1956,14 @@ class ProcessInboxMessages:
 
             except SessionResolveError as e:
                 logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
-                _log_diagnostic(
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
                     inbox=inbox,
                     error_code=ErrorCode.SESSION_RESOLVE_FAILED,
                     message=str(e),
                 )
-                with suppress(Exception):
-                    await db.rollback()
                 try:
                     inbox_pk = _resolve_entity_id(inbox)
                     if inbox_pk is not None:
@@ -1958,13 +1977,14 @@ class ProcessInboxMessages:
             except TimeoutError:
                 # 处理超时，不阻塞其他消息
                 logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
-                _log_diagnostic(
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
                     inbox=inbox,
                     error_code=ErrorCode.DEVICE_TIMEOUT,
                     message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
                 )
-                with suppress(Exception):
-                    await db.rollback()
                 try:
                     # 使用已解析的 inbox_pk（如果在前面解析成功）
                     pk_to_mark = locals().get("inbox_pk") or _resolve_entity_id(inbox)
@@ -1983,13 +2003,14 @@ class ProcessInboxMessages:
 
             except Exception as e:
                 logger.exception(f"Inbox {inbox_pk_text} 处理异常")
-                _log_diagnostic(
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
                     inbox=inbox,
                     error_code=ErrorCode.UNKNOWN,
                     message=str(e),
                 )
-                with suppress(Exception):
-                    await db.rollback()
                 try:
                     inbox_pk = _resolve_entity_id(inbox)
                     if inbox_pk is not None:
@@ -2024,7 +2045,7 @@ class TimeoutScanner:
         1. 查询 deadline_at < NOW() 的超时 Session
         2. 遍历每个超时会话：
            a. 创建 type='timeout' 的 Inbox 消息
-           b. 继承原 Session 的 correlation_id
+           b. 继承原 Session 的 trace_id
         3. 提交数据库事务
 
         Args:
@@ -2066,7 +2087,7 @@ class TimeoutScanner:
                     session_id=session_pk,
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
-                    correlation_id=session.correlation_id,
+                    trace_id=session.trace_id,
                     auto_commit=False,
                 )
                 result["timeouts_created"] += 1
@@ -2200,7 +2221,7 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
     1. 查询 deadline_at < NOW() 的超时 Session
     2. 遍历每个超时会话：
        a. 创建 type='TIMEOUT' 的 Inbox 消息
-       b. 继承原 Session 的 correlation_id
+       b. 继承原 Session 的 trace_id
     3. 提交数据库事务
 
     执行模式：
@@ -2305,6 +2326,7 @@ class OutboxDispatcher:
         from src.app.workline.repositories.outbox_repository import (
             WorklineOutboxRepository,
         )
+        from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
 
         result: DispatchResult = {
             "dispatched": 0,
@@ -2320,6 +2342,7 @@ class OutboxDispatcher:
         for outbox in messages:
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)
+            dispatch_attempt: Any | None = None
             try:
                 outbox_pk = _resolve_required_pk(outbox, "outbox", "id", "outbox_id")
                 # 尝试标记为派发中（并发控制）
@@ -2328,18 +2351,40 @@ class OutboxDispatcher:
                     # 已被其他 worker 处理
                     result["skipped"] += 1
                     continue
+                dispatch_attempt = await workline_dispatch_attempt_service.create_attempt(
+                    db,
+                    outbox=outbox,
+                    auto_commit=False,
+                )
 
                 # 派发消息
                 success = await OutboxDispatcher._dispatch_single(db, outbox)
 
                 if success:
                     trace_extra = _outbox_trace_extra(outbox, trace=trace)
+                    if dispatch_attempt is not None:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=True,
+                            response={"result": "sent"},
+                            auto_commit=False,
+                        )
                     _ = await outbox_repo.mark_as_sent(db, outbox_pk)
                     result["success"] += 1
                     logger.info(f"Outbox {outbox_pk} 派发成功 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 else:
                     trace_extra = _outbox_trace_extra(outbox, trace=trace)
-                    _log_diagnostic(
+                    if dispatch_attempt is not None:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=False,
+                            error_message="Dispatch failed",
+                            auto_commit=False,
+                        )
+                    await _record_diagnostic(
+                        db,
                         inbox=None,
                         outbox=outbox,
                         error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
@@ -2365,7 +2410,19 @@ class OutboxDispatcher:
 
             except Exception as e:
                 logger.error(f"Outbox {outbox_pk_text} 派发异常: {e} ({_outbox_trace_log_suffix(outbox, trace=trace)})")
-                _log_diagnostic(
+                if dispatch_attempt is not None:
+                    try:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=False,
+                            error_message=str(e),
+                            auto_commit=False,
+                        )
+                    except Exception as attempt_error:
+                        logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
+                await _record_diagnostic(
+                    db,
                     inbox=None,
                     outbox=outbox,
                     error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,

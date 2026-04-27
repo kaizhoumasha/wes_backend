@@ -13,7 +13,7 @@ class DiagnosticContext(BaseModel):
     """贯穿 callback → inbox → orchestrator → outbox 的统一上下文。"""
 
     request_id: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
     session_id: int | None = None
     inbox_id: int | None = None
     outbox_id: int | None = None

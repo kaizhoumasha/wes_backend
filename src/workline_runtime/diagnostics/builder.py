@@ -64,7 +64,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
         "系统无法匹配当前业务会话，请联系支持人员。",
-        ["检查 business_key / correlation_id 归属逻辑", "核对设备与作业线绑定关系"],
+        ["检查 business_key / trace_id 归属逻辑", "核对设备与作业线绑定关系"],
     ),
     ErrorCode.PLUGIN_EXECUTION_FAILED: (
         Severity.ERROR,
@@ -120,7 +120,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
         "系统出现未分类异常，请联系技术支持。",
-        ["检查任务日志", "结合 correlation_id 排查全链路"],
+        ["检查任务日志", "结合 trace_id 排查全链路"],
     ),
 }
 
@@ -128,7 +128,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
 def build_diagnostic_context(
     *,
     request_id: str | None = None,
-    correlation_id: str | None = None,
+    trace_id: str | None = None,
     session: Any | None = None,
     inbox: Any | None = None,
     outbox: Any | None = None,
@@ -149,7 +149,7 @@ def build_diagnostic_context(
         command=command,
         outbox=outbox,
         request_id=request_id,
-        correlation_id=correlation_id,
+        trace_id=trace_id,
         canonical_event_type=canonical_event_type,
         transition=transition,
     )
@@ -158,7 +158,7 @@ def build_diagnostic_context(
 
     return DiagnosticContext(
         request_id=resolved_trace.request_id or _safe_str(request_id),
-        correlation_id=resolved_trace.correlation_id or _safe_str(correlation_id),
+        trace_id=resolved_trace.trace_id or _safe_str(trace_id),
         session_id=resolved_trace.session_id or _safe_int(getattr(session, "id", None)),
         inbox_id=resolved_trace.inbox_id or _safe_int(getattr(inbox, "id", None)),
         outbox_id=resolved_trace.outbox_id or _safe_int(getattr(outbox, "id", None)),

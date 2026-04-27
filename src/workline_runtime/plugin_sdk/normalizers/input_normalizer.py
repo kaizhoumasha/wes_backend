@@ -71,11 +71,11 @@ def _normalized_error_detail(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _resolve_correlation_id(inbox: Any, payload: dict[str, Any], *, correlation_id: str = "") -> str | None:
+def _resolve_trace_id(inbox: Any, payload: dict[str, Any], *, trace_id: str = "") -> str | None:
     return (
-        non_empty_str(correlation_id)
-        or non_empty_str(payload.get("correlation_id"))
-        or non_empty_str(getattr(inbox, "correlation_id", None))
+        non_empty_str(trace_id)
+        or non_empty_str(payload.get("trace_id"))
+        or non_empty_str(getattr(inbox, "trace_id", None))
     )
 
 
@@ -103,7 +103,7 @@ def _resolve_device_event_business_key(
     )
 
 
-def normalize_inbox_input(inbox: Any, *, correlation_id: str = "", plugin_key: str | None = None) -> Any:
+def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | None = None) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
     payload = payload_dict(getattr(inbox, "payload_json", None))
@@ -124,7 +124,7 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "", plugin_key: s
             result_classification=result_classification,
             command_type=non_empty_str(payload.get("command_type")) or non_empty_str(payload.get("task_type")),
             device_code=non_empty_str(payload.get("device_code")),
-            correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
+            trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
             finish_time=payload.get("finish_time"),
             payload=payload,
             data=payload_dict(payload.get("data")),
@@ -134,7 +134,7 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "", plugin_key: s
     if kind == "EXTERNAL_HTTP":
         return NormalizedExternalCallback(
             callback_type=str(payload.get("callback_type") or payload.get("message_type") or "EXTERNAL_HTTP"),
-            correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
+            trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
             source_system=non_empty_str(payload.get("source_system")),
             payload=payload,
             attributes=payload_dict(payload.get("attributes")),
@@ -148,7 +148,7 @@ def normalize_inbox_input(inbox: Any, *, correlation_id: str = "", plugin_key: s
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
         business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
-        correlation_id=_resolve_correlation_id(inbox, payload, correlation_id=correlation_id),
+        trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
         event_time=payload.get("timestamp"),
         payload=payload,
         data=data,

@@ -152,11 +152,11 @@ class WorklineSessionBase(BaseMixin):
         description="会话结束时间",
     )
 
-    correlation_id: str | None = Field(
+    trace_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="关联 ID（串联整个业务流程）",
+        description="统一 Trace ID（串联整个业务流程）",
     )
 
     # 等待状态相关字段

@@ -9,7 +9,7 @@ class NormalizedExternalCallback(BaseModel):
     """标准化外部 HTTP 回调。"""
 
     callback_type: str
-    correlation_id: str | None = None
+    trace_id: str | None = None
     source_system: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     attributes: dict[str, Any] = Field(default_factory=dict)

@@ -248,7 +248,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             filters.append(
                 or_(
                     columns.session_code.ilike(keyword),
-                    columns.correlation_id.ilike(keyword),
+                    columns.trace_id.ilike(keyword),
                     columns.business_key.ilike(keyword),
                     columns.barcode.ilike(keyword),
                     columns.last_request_id.ilike(keyword),
@@ -773,7 +773,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             callback_type=item.callback_type,
             device_id=item.device_id,
             request_id=item.request_id,
-            correlation_id=item.correlation_id,
+            trace_id=item.trace_id,
             response_status=item.response_status,
             response_time_ms=item.response_time_ms,
             error_message=item.error_message,
@@ -789,7 +789,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             id=_require_int_id(item.id, "device_command.id"),
             device_id=item.device_id,
             command_code=item.command_code,
-            correlation_id=item.correlation_id,
+            trace_id=item.trace_id,
             workline_id=item.workline_id,
             session_id=item.session_id,
             task_type=_status_str(item.task_type),
@@ -840,7 +840,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         return RuntimeTraceListItem(
             session_id=_require_int_id(session.id, "session.id"),
             session_code=session.session_code,
-            correlation_id=session.correlation_id,
+            trace_id=session.trace_id,
             request_id=session.last_request_id,
             workline_id=session.workline_id,
             workline_name=workline.line_name if workline is not None else None,

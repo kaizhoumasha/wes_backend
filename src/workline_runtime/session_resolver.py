@@ -5,8 +5,8 @@ Session 归属解析器
 
 规则（按 InboxKind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
-- COMMAND_RESULT: 按 command_code -> awaiting_command_id / correlation_id 恢复 Session
-- EXTERNAL_HTTP: 按 correlation_id 恢复 Session
+- COMMAND_RESULT: 按 command_code -> awaiting_command_id / trace_id 恢复 Session
+- EXTERNAL_HTTP: 按 trace_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
@@ -71,6 +71,7 @@ class SessionIngressMetadata(TypedDict):
     ingress_count: int
     last_ingress_at: Any
     last_request_id: NotRequired[str]
+    trace_id: NotRequired[str]
 
 
 def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | None:
@@ -162,6 +163,8 @@ def _build_session_ingress_metadata(
     }
     if trace.request_id:
         metadata["last_request_id"] = trace.request_id
+    if not non_empty_str(getattr(session, "trace_id", None)) and trace.trace_id:
+        metadata["trace_id"] = trace.trace_id
     return metadata
 
 
@@ -172,6 +175,8 @@ def _apply_session_ingress_metadata(session: WorklineSession, metadata: SessionI
     if "last_request_id" in metadata:
         session.last_request_id = metadata["last_request_id"]
     session.last_ingress_at = metadata["last_ingress_at"]
+    if "trace_id" in metadata:
+        session.trace_id = metadata["trace_id"]
 
 
 def _stash_pending_session_ingress_metadata(session: WorklineSession, metadata: SessionIngressMetadata) -> None:
@@ -198,9 +203,9 @@ def _bind_reused_session_to_inbox(inbox: "WorklineInbox", session: WorklineSessi
     if isinstance(session_id, int):
         inbox.session_id = session_id
 
-    session_correlation_id = getattr(session, "correlation_id", None)
-    if isinstance(session_correlation_id, str) and session_correlation_id:
-        inbox.correlation_id = session_correlation_id
+    session_trace_id = getattr(session, "trace_id", None)
+    if isinstance(session_trace_id, str) and session_trace_id:
+        inbox.trace_id = session_trace_id
 
 
 def _reuse_existing_session(
@@ -324,15 +329,14 @@ class SessionResolver:
         if existing_session:
             return _reuse_existing_session(inbox, existing_session, trace=trace, observed_at=now)
 
-        # 2. 如果没有未结束的 Session，尝试通过 correlation_id 查找
-        correlation_id = trace.correlation_id
-        if correlation_id:
-            session_by_corr = await self.session_repo.get_by_correlation_id(
+        # 2. 如果没有未结束的 Session，尝试通过 trace_id 查找
+        if trace.trace_id:
+            session_by_trace = await self.session_repo.get_by_trace_id(
                 db=db,
-                correlation_id=correlation_id,
+                trace_id=trace.trace_id,
             )
-            if session_by_corr:
-                return _reuse_existing_session(inbox, session_by_corr, trace=trace, observed_at=now)
+            if session_by_trace:
+                return _reuse_existing_session(inbox, session_by_trace, trace=trace, observed_at=now)
 
         # 3. 如果还是没有，查找最新的 Session（处理事件在 session 完成后立即到达的情况）
         latest_session = await self.session_repo.get_latest_session_by_business_key(
@@ -350,6 +354,8 @@ class SessionResolver:
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
 
+        trace_id = trace.trace_id or f"trace_{uuid.uuid4().hex}"
+        inbox.trace_id = trace_id
         session_data: dict[str, Any] = {
             "session_code": session_code,
             "workline_id": workline_id,
@@ -360,7 +366,7 @@ class SessionResolver:
             "ingress_count": 1,
             "last_request_id": trace.request_id,
             "last_ingress_at": now,
-            "correlation_id": trace.correlation_id or f"corr_{uuid.uuid4().hex}",
+            "trace_id": trace_id,
             "context_json": {
                 "device_id": inbox.device_id,
                 "source_message_id": trace.request_id,
@@ -401,16 +407,16 @@ class SessionResolver:
         inbox.device_id = trace.device_id or command.device_id
         if trace.workline_id is not None:
             inbox.workline_id = trace.workline_id
-        if trace.correlation_id:
-            inbox.correlation_id = trace.correlation_id
+        if trace.trace_id:
+            inbox.trace_id = trace.trace_id
 
         session = await self.session_repo.get_open_session_by_awaiting_command_id(db, command.id)
         if session:
             inbox.session_id = session.id
             return session
 
-        if trace.correlation_id:
-            session = await self.session_repo.get_by_correlation_id(db, trace.correlation_id)
+        if trace.trace_id:
+            session = await self.session_repo.get_by_trace_id(db, trace.trace_id)
             if session:
                 inbox.session_id = session.id
                 return session
@@ -424,7 +430,7 @@ class SessionResolver:
     ) -> WorklineSession:
         """处理 EXTERNAL_HTTP 类型的 Session 解析
 
-        按 correlation_id 恢复 Session。
+        按 trace_id 恢复 Session。
 
         Args:
             db: 数据库会话
@@ -434,22 +440,22 @@ class SessionResolver:
             解析的 Session
 
         Raises:
-            ValueError: 当 correlation_id 缺失或 Session 不存在时
+            ValueError: 当 trace_id 缺失或 Session 不存在时
         """
         trace = TraceContext.from_runtime(inbox=inbox)
-        correlation_id = trace.correlation_id
+        trace_id = trace.trace_id
 
-        if not correlation_id:
-            raise ValueError("correlation_id is required for EXTERNAL_HTTP")
+        if not trace_id:
+            raise ValueError("trace_id is required for EXTERNAL_HTTP")
 
-        # 按 correlation_id 查找 Session
-        session = await self.session_repo.get_by_correlation_id(
+        # 按 trace_id 查找 Session
+        session = await self.session_repo.get_by_trace_id(
             db=db,
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
 
         if not session:
-            raise ValueError(f"Session not found for correlation_id: {correlation_id}")
+            raise ValueError(f"Session not found for trace_id: {trace_id}")
 
         inbox.session_id = session.id
         inbox.workline_id = getattr(session, "workline_id", None)

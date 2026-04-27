@@ -28,8 +28,10 @@ from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
 )
+from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.outbox import WorklineOutbox
+from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.repositories import inbox_repository
 from src.app.workline.repositories.session_repository import (
@@ -37,7 +39,14 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.core.base_service import BaseService
-from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
+from src.workline_runtime.diagnostics import (
+    DiagnosticContext,
+    ErrorCode,
+    build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
+    get_diagnostic_code_definition,
+)
 from src.workline_runtime.trace_context import TraceContext
 
 # 导入公共工具函数
@@ -57,8 +66,10 @@ class TraceQueryResult:
     callback_logs: list[Any] = field(default_factory=list)
     inboxes: list[WorklineInbox] = field(default_factory=list)
     session: WorklineSession | None = None
+    sessions: list[WorklineSession] = field(default_factory=list)
     commands: list[DeviceCommand] = field(default_factory=list)
     outboxes: list[WorklineOutbox] = field(default_factory=list)
+    dispatch_attempts: list[WorklineDispatchAttempt] = field(default_factory=list)
     timelines: list[WorklineTimeline] = field(default_factory=list)
     diagnostics: list[DiagnosticContext] = field(default_factory=list)
 
@@ -69,6 +80,7 @@ class TraceQueryResult:
             "inboxes": len(self.inboxes),
             "commands": len(self.commands),
             "outboxes": len(self.outboxes),
+            "dispatch_attempts": len(self.dispatch_attempts),
             "timelines": len(self.timelines),
             "diagnostics": len(self.diagnostics),
         }
@@ -79,6 +91,11 @@ def _safe_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _enum_str(value: Any) -> str | None:
+    raw = getattr(value, "value", value)
+    return str(raw) if raw is not None else None
 
 
 def _merge_unique_by_id(existing: list[Any], items: list[Any]) -> list[Any]:
@@ -100,7 +117,7 @@ def _timeline_trace(trace: TraceContext, timeline: WorklineTimeline) -> TraceCon
     payload = payload_dict(getattr(timeline, "payload_json", None))
     timeline_trace = TraceContext.from_request(
         request_id=_safe_str(payload.get("request_id")),
-        correlation_id=_safe_str(payload.get("correlation_id")) or trace.correlation_id,
+        trace_id=_safe_str(payload.get("trace_id")) or trace.trace_id,
         canonical_event_type=_safe_str(payload.get("canonical_event_type")),
         transition=_safe_str(getattr(timeline, "to_status", None)) or _safe_str(getattr(timeline, "action_type", None)),
     )
@@ -108,7 +125,7 @@ def _timeline_trace(trace: TraceContext, timeline: WorklineTimeline) -> TraceCon
         SimpleNamespace(
             id=getattr(timeline, "session_id", None),
             workline_id=getattr(timeline, "workline_id", None),
-            correlation_id=getattr(timeline, "correlation_id", None),
+            trace_id=getattr(timeline, "trace_id", None),
         )
     )
 
@@ -132,8 +149,8 @@ class TraceQueryService(BaseService[Any, Any]):
     async def by_request_id(self, db: AsyncSession, request_id: str) -> TraceQueryResult:
         return await self.query(db, request_id=request_id)
 
-    async def by_correlation_id(self, db: AsyncSession, correlation_id: str) -> TraceQueryResult:
-        return await self.query(db, correlation_id=correlation_id)
+    async def by_trace_id(self, db: AsyncSession, trace_id: str) -> TraceQueryResult:
+        return await self.query(db, trace_id=trace_id)
 
     async def by_session_id(self, db: AsyncSession, session_id: int) -> TraceQueryResult:
         return await self.query(db, session_id=session_id)
@@ -144,23 +161,25 @@ class TraceQueryService(BaseService[Any, Any]):
     async def by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> TraceQueryResult:
         return await self.query(db, dispatch_key=dispatch_key)
 
-    async def query(  # noqa: PLR0912
+    async def query(
         self,
         db: AsyncSession,
         *,
         request_id: str | None = None,
-        correlation_id: str | None = None,
+        trace_id: str | None = None,
         session_id: int | None = None,
         command_code: str | None = None,
         dispatch_key: str | None = None,
     ) -> TraceQueryResult:
-        trace = TraceContext.from_request(request_id=request_id, correlation_id=correlation_id)
+        trace = TraceContext.from_request(request_id=request_id, trace_id=trace_id)
         request_id = trace.request_id
-        correlation_id = trace.correlation_id
+        trace_id = trace.trace_id
         callback_logs: list[Any] = []
         session: WorklineSession | None = None
+        sessions: list[WorklineSession] = []
         commands: list[DeviceCommand] = []
         outboxes: list[WorklineOutbox] = []
+        dispatch_attempts: list[WorklineDispatchAttempt] = []
         inboxes: list[WorklineInbox] = []
         timelines: list[WorklineTimeline] = []
         diagnostics: list[DiagnosticContext] = []
@@ -170,9 +189,9 @@ class TraceQueryService(BaseService[Any, Any]):
             if callback_log is not None:
                 callback_logs.append(callback_log)
                 trace = trace.with_request_id(getattr(callback_log, "request_id", None))
-                trace = trace.with_correlation_id(getattr(callback_log, "correlation_id", None))
+                trace = trace.with_trace_id(getattr(callback_log, "trace_id", None))
                 request_id = trace.request_id
-                correlation_id = trace.correlation_id
+                trace_id = trace.trace_id
                 diagnostics.append(
                     build_diagnostic_context(
                         trace=trace,
@@ -180,14 +199,14 @@ class TraceQueryService(BaseService[Any, Any]):
                     )
                 )
 
-        if correlation_id:
-            callback_logs = await self.callback_log_repo.get_by_correlation_id(db, correlation_id)
+        if trace_id:
+            callback_logs = await self.callback_log_repo.get_by_trace_id(db, trace_id)
             if callback_logs:
                 first_callback = callback_logs[0]
                 trace = trace.with_request_id(getattr(first_callback, "request_id", None))
-                trace = trace.with_correlation_id(getattr(first_callback, "correlation_id", None))
+                trace = trace.with_trace_id(getattr(first_callback, "trace_id", None))
                 request_id = trace.request_id
-                correlation_id = trace.correlation_id
+                trace_id = trace.trace_id
                 diagnostics.extend(self._diagnostic_from_callbacks(trace, callback_logs))
 
         if command_code:
@@ -195,10 +214,8 @@ class TraceQueryService(BaseService[Any, Any]):
             if command is not None:
                 commands.append(command)
                 trace = trace.with_command(command)
-                if getattr(command, "correlation_id", None):
-                    trace = trace.with_correlation_id(getattr(command, "correlation_id", None))
                 request_id = trace.request_id
-                correlation_id = trace.correlation_id
+                trace_id = trace.trace_id
 
         if session_id is not None and session is None:
             session = await self.session_repo.get_by_id(db, session_id)
@@ -206,12 +223,13 @@ class TraceQueryService(BaseService[Any, Any]):
                 trace = trace.with_session(session)
                 session_id = getattr(session, "id", session_id)
                 request_id = trace.request_id
-                correlation_id = trace.correlation_id
+                trace_id = trace.trace_id
 
-        if session is None and trace.correlation_id:
-            session = await self.session_repo.get_by_correlation_id(db, trace.correlation_id)
+        if session is None and trace.trace_id:
+            session = await self.session_repo.get_by_trace_id(db, trace.trace_id)
             if session is not None:
                 trace = trace.with_session(session)
+                sessions = _merge_unique_by_id(sessions, [session])
 
         if dispatch_key:
             outbox = await self._get_outbox_by_dispatch_key(db, dispatch_key)
@@ -224,22 +242,24 @@ class TraceQueryService(BaseService[Any, Any]):
                     if session is not None:
                         trace = trace.with_session(session)
                         session_id = getattr(session, "id", session_id)
+                        sessions = _merge_unique_by_id(sessions, [session])
                 request_id = trace.request_id
-                correlation_id = trace.correlation_id
+                trace_id = trace.trace_id
 
         if session is not None:
             trace = trace.with_session(session)
-            if trace.correlation_id:
-                correlation_id = trace.correlation_id
-                callback_logs = await self._merge_callbacks_by_correlation_id(db, trace.correlation_id, callback_logs)
+            if trace.trace_id:
+                trace_id = trace.trace_id
+                callback_logs = await self._merge_callbacks_by_trace_id(db, trace.trace_id, callback_logs)
             commands = await self._load_commands_for_session(db, session, commands)
             outboxes = await self._load_outboxes_for_session(db, session, outboxes)
+            dispatch_attempts = await self._load_dispatch_attempts_for_outboxes(db, outboxes)
             inboxes = await self._load_inboxes_for_session(db, session, inboxes)
             timelines = await self._load_timelines_for_session(db, session)
-        elif trace.correlation_id:
-            correlation_id = trace.correlation_id
-            inboxes = await self._load_inboxes_by_correlation_id(db, trace.correlation_id)
-            timelines = await self._load_timelines_by_correlation_id(db, trace.correlation_id)
+        elif trace.trace_id:
+            trace_id = trace.trace_id
+            inboxes = await self._load_inboxes_by_trace_id(db, trace.trace_id)
+            timelines = await self._load_timelines_by_trace_id(db, trace.trace_id)
             if not commands and trace.command_code:
                 command = await self.command_repo.get_by_command_code(db, trace.command_code)
                 if command is not None:
@@ -267,21 +287,29 @@ class TraceQueryService(BaseService[Any, Any]):
             callback_logs=callback_logs,
             inboxes=inboxes,
             session=session,
+            sessions=sessions or ([session] if session is not None else []),
             commands=commands,
             outboxes=outboxes,
+            dispatch_attempts=dispatch_attempts,
             timelines=timelines,
             diagnostics=diagnostics,
         )
+
+    async def get_blocking_point(self, db: AsyncSession, trace_id: str) -> TraceBlockingPointResponse:
+        """返回现场可操作的 blocking point 诊断卡。"""
+
+        result = await self.by_trace_id(db, trace_id)
+        return self._build_blocking_point(result, trace_id=trace_id)
 
     async def _get_outbox_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> WorklineOutbox | None:
         columns = cast("Any", WorklineOutbox).__table__.c
         result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
 
-    async def _load_inboxes_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[WorklineInbox]:
+    async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineInbox]:
         columns = cast("Any", WorklineInbox).__table__.c
         result = await db.execute(
-            select(WorklineInbox).where(columns.correlation_id == correlation_id).order_by(columns.received_at.asc())
+            select(WorklineInbox).where(columns.trace_id == trace_id).order_by(columns.received_at.asc())
         )
         return list(result.scalars().all())
 
@@ -302,7 +330,9 @@ class TraceQueryService(BaseService[Any, Any]):
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
-            select(DeviceCommand).where(columns.session_id == str(session.id)).order_by(columns.created_at.asc())
+            select(DeviceCommand)
+            .where((columns.session_id == str(session.id)) | (columns.session_id_int == session.id))
+            .order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
@@ -318,6 +348,22 @@ class TraceQueryService(BaseService[Any, Any]):
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
+    async def _load_dispatch_attempts_for_outboxes(
+        self,
+        db: AsyncSession,
+        outboxes: list[WorklineOutbox],
+    ) -> list[WorklineDispatchAttempt]:
+        outbox_ids = [getattr(outbox, "id", None) for outbox in outboxes if getattr(outbox, "id", None) is not None]
+        if not outbox_ids:
+            return []
+        columns = cast("Any", WorklineDispatchAttempt).__table__.c
+        result = await db.execute(
+            select(WorklineDispatchAttempt)
+            .where(columns.outbox_id.in_(outbox_ids))
+            .order_by(columns.attempt_no.asc(), columns.created_at.asc())
+        )
+        return list(result.scalars().all())
+
     async def _load_timelines_for_session(self, db: AsyncSession, session: WorklineSession) -> list[WorklineTimeline]:
         columns = cast("Any", WorklineTimeline).__table__.c
         result = await db.execute(
@@ -327,29 +373,29 @@ class TraceQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _load_timelines_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[WorklineTimeline]:
+    async def _load_timelines_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineTimeline]:
         columns = cast("Any", WorklineTimeline).__table__.c
         result = await db.execute(
             select(WorklineTimeline)
-            .where(columns.correlation_id == correlation_id)
+            .where(columns.trace_id == trace_id)
             .order_by(columns.seq_no.asc(), columns.occurred_at.asc())
         )
         return list(result.scalars().all())
 
-    async def _merge_callbacks_by_correlation_id(
+    async def _merge_callbacks_by_trace_id(
         self,
         db: AsyncSession,
-        correlation_id: str,
+        trace_id: str,
         existing: list[Any],
     ) -> list[Any]:
-        items = await self.callback_log_repo.get_by_correlation_id(db, correlation_id)
+        items = await self.callback_log_repo.get_by_trace_id(db, trace_id)
         return _merge_unique_by_id(existing, items)
 
     def _diagnostic_from_callbacks(self, trace: TraceContext, callbacks: list[Any]) -> list[DiagnosticContext]:
         return [
             build_diagnostic_context(
-                trace=trace.with_request_id(getattr(callback, "request_id", None)).with_correlation_id(
-                    getattr(callback, "correlation_id", None)
+                trace=trace.with_request_id(getattr(callback, "request_id", None)).with_trace_id(
+                    getattr(callback, "trace_id", None)
                 ),
                 extra=_callback_diagnostic_extra(callback),
             )
@@ -431,6 +477,143 @@ class TraceQueryService(BaseService[Any, Any]):
             )
             for timeline in timelines
         ]
+
+    def _build_blocking_point(self, result: TraceQueryResult, *, trace_id: str) -> TraceBlockingPointResponse:
+        trace = result.trace
+        failed_outbox = next(
+            (item for item in result.outboxes if _enum_str(getattr(item, "status", None)) == "FAILED"), None
+        )
+        if failed_outbox is not None:
+            context = build_diagnostic_context(
+                trace=trace.with_outbox(failed_outbox),
+                outbox=failed_outbox,
+                extra={"source": "outbox", "last_error": getattr(failed_outbox, "last_error", None)},
+            )
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="outbox",
+                error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+                message=getattr(failed_outbox, "last_error", None) or "Outbox 派发失败",
+                context=context,
+                evidence={
+                    "outbox": {
+                        "id": getattr(failed_outbox, "id", None),
+                        "dispatch_key": getattr(failed_outbox, "dispatch_key", None),
+                        "status": _enum_str(getattr(failed_outbox, "status", None)),
+                        "last_error": getattr(failed_outbox, "last_error", None),
+                    }
+                },
+            )
+
+        dead_letter_inbox = next(
+            (item for item in result.inboxes if _enum_str(getattr(item, "status", None)) == "DEAD_LETTER"),
+            None,
+        )
+        if dead_letter_inbox is not None:
+            context = build_diagnostic_context(
+                trace=trace.with_inbox(dead_letter_inbox),
+                inbox=dead_letter_inbox,
+                extra={"source": "inbox", "error_message": getattr(dead_letter_inbox, "error_message", None)},
+            )
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="inbox",
+                error_code=ErrorCode.INBOX_RETRY_EXHAUSTED,
+                message=getattr(dead_letter_inbox, "error_message", None) or "Inbox 重试耗尽",
+                context=context,
+                evidence={
+                    "inbox": {
+                        "id": getattr(dead_letter_inbox, "id", None),
+                        "status": _enum_str(getattr(dead_letter_inbox, "status", None)),
+                        "error_message": getattr(dead_letter_inbox, "error_message", None),
+                    }
+                },
+            )
+
+        failed_command = next(
+            (item for item in result.commands if _enum_str(getattr(item, "status", None)) == "FAILED"), None
+        )
+        if failed_command is not None:
+            context = build_diagnostic_context(trace=trace.with_command(failed_command), command=failed_command)
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="command",
+                error_code=ErrorCode.DEVICE_TIMEOUT,
+                message="设备指令失败或超时",
+                context=context,
+                evidence={
+                    "command": {
+                        "command_code": getattr(failed_command, "command_code", None),
+                        "status": _enum_str(getattr(failed_command, "status", None)),
+                        "error_detail": getattr(failed_command, "error_detail", None),
+                    }
+                },
+            )
+
+        session = result.session
+        if session is not None and _enum_str(getattr(session, "status", None)) == "FAILED":
+            context = build_diagnostic_context(trace=trace.with_session(session), session=session)
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="session",
+                error_code=ErrorCode.SESSION_RESOLVE_FAILED,
+                message=getattr(session, "failure_message", None) or "会话失败",
+                context=context,
+                evidence={
+                    "session": {
+                        "id": getattr(session, "id", None),
+                        "status": _enum_str(getattr(session, "status", None)),
+                        "failure_code": getattr(session, "failure_code", None),
+                        "failure_message": getattr(session, "failure_message", None),
+                    }
+                },
+            )
+
+        context = build_diagnostic_context(trace=trace, session=session)
+        return self._blocking_response(
+            trace=trace,
+            trace_id=trace_id,
+            blocking_point="none",
+            error_code=ErrorCode.UNKNOWN,
+            message="当前 trace 未发现明确阻塞点",
+            context=context,
+            evidence={"summary": result.summary},
+        )
+
+    def _blocking_response(
+        self,
+        *,
+        trace: TraceContext,
+        trace_id: str,
+        blocking_point: str,
+        error_code: ErrorCode,
+        message: str,
+        context: DiagnosticContext,
+        evidence: dict[str, Any],
+    ) -> TraceBlockingPointResponse:
+        definition = get_diagnostic_code_definition(error_code)
+        event = build_diagnostic_event(
+            error_code=error_code,
+            context=context,
+            message=message,
+            operator_action=definition.fix,
+        )
+        card = build_diagnostic_card(event)
+        return TraceBlockingPointResponse(
+            trace_id=trace.trace_id or trace_id,
+            request_id=trace.request_id,
+            blocking_point=blocking_point,
+            owner=definition.owner,
+            recoverability=card.recoverability.value,
+            operator_action=card.operator_action or definition.fix,
+            diagnostic_card=DiagnosticCardResponse.model_validate(card.model_dump(mode="json")),
+            evidence=evidence,
+            next_steps=list(card.next_steps),
+        )
 
 
 trace_query_service = TraceQueryService()

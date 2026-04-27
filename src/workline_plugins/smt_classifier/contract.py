@@ -62,8 +62,10 @@ def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
     """
 
     result = str(payload_json.get("result") or "").strip().upper()
-    data = payload_json.get("data") if isinstance(payload_json.get("data"), dict) else {}
-    error_detail = payload_json.get("error_detail") if isinstance(payload_json.get("error_detail"), dict) else {}
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    raw_error_detail = payload_json.get("error_detail")
+    error_detail: dict[str, Any] = raw_error_detail if isinstance(raw_error_detail, dict) else {}
 
     inspection_result = str(data.get("inspection_result") or "").strip().upper()
     if result == "SUCCESS" and inspection_result == "NG":

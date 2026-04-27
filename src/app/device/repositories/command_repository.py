@@ -113,19 +113,19 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def get_commands_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[DeviceCommand]:
+    async def get_commands_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[DeviceCommand]:
         """
-        根据关联 ID 查询所有相关指令
+        根据 Trace ID 查询所有相关指令
 
         Args:
             db: 数据库会话
-            correlation_id: 关联 ID
+            trace_id: Trace ID
 
         Returns:
             相关指令列表
         """
         columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(columns.correlation_id == correlation_id).order_by(columns.created_at)
+        statement = select(DeviceCommand).where(columns.trace_id == trace_id).order_by(columns.created_at)
 
         result = await db.execute(statement)
         return list(result.scalars().all())

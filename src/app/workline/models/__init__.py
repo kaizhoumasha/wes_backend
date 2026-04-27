@@ -1,5 +1,17 @@
 """WorkLine 模型导出"""
 
+from .diagnostic import (
+    DiagnosticStatus,
+    WorklineDiagnostic,
+    WorklineDiagnosticBase,
+    WorklineDiagnosticCreate,
+)
+from .dispatch_attempt import (
+    DispatchAttemptStatus,
+    WorklineDispatchAttempt,
+    WorklineDispatchAttemptBase,
+    WorklineDispatchAttemptCreate,
+)
 from .inbox import (
     InboxKind,
     InboxStatus,
@@ -17,6 +29,7 @@ from .outbox import (
     WorklineOutboxCreate,
 )
 from .runtime import (
+    DiagnosticCardResponse,
     RuntimeDeviceDetailResponse,
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
@@ -26,12 +39,14 @@ from .runtime import (
     RuntimeWorklineDetailResponse,
     RuntimeWorklineDeviceItem,
     RuntimeWorklineSummary,
+    TraceBlockingPointResponse,
     TraceCallbackLogItem,
     TraceCommandItem,
     TraceContextResponse,
     TraceDetailResponse,
     TraceDiagnosticContextItem,
     TraceDiagnosticItem,
+    TraceDispatchAttemptItem,
     TraceInboxItem,
     TraceOutboxItem,
     TraceOverviewSummary,
@@ -67,6 +82,9 @@ from .workline import (
 )
 
 __all__ = [
+    "DiagnosticCardResponse",
+    "DiagnosticStatus",
+    "DispatchAttemptStatus",
     "DispatchType",
     "InboxKind",
     "InboxStatus",
@@ -89,12 +107,14 @@ __all__ = [
     "TimelineActorType",
     "TimelineStage",
     "TimelineStatus",
+    "TraceBlockingPointResponse",
     "TraceCallbackLogItem",
     "TraceCommandItem",
     "TraceContextResponse",
     "TraceDetailResponse",
     "TraceDiagnosticContextItem",
     "TraceDiagnosticItem",
+    "TraceDispatchAttemptItem",
     "TraceInboxItem",
     "TraceOutboxItem",
     "TraceOverviewSummary",
@@ -107,6 +127,12 @@ __all__ = [
     "WorkLineResponse",
     "WorkLineRunMode",
     "WorkLineUpdate",
+    "WorklineDiagnostic",
+    "WorklineDiagnosticBase",
+    "WorklineDiagnosticCreate",
+    "WorklineDispatchAttempt",
+    "WorklineDispatchAttemptBase",
+    "WorklineDispatchAttemptCreate",
     "WorklineInbox",
     "WorklineInboxBase",
     "WorklineInboxCreate",
