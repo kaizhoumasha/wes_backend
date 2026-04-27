@@ -98,11 +98,11 @@ class CallbackOrchestrationService:
             kwargs={"limit": 10},
         )
 
-    def _resolve_duplicate_inbox_error(self, error: ValueError, *, duplicate_message: str) -> bool:
+    def _resolve_duplicate_inbox_error(self, error: ValueError, *, duplicate_message: str) -> object | None:
         if not self._is_duplicate_inbox_error(error):
             raise error
         logger.info(duplicate_message)
-        return True
+        return getattr(error, "existing_inbox", None)
 
     def _has_workline_binding(self, value: object) -> bool:
         return isinstance(value, int) and value > 0
@@ -301,10 +301,14 @@ class CallbackOrchestrationService:
                 )
                 logger.info(f"指令结果已写入 Inbox: {callback.command_code}")
             except ValueError as exc:
-                is_duplicate = self._resolve_duplicate_inbox_error(
+                duplicate_inbox = self._resolve_duplicate_inbox_error(
                     exc,
                     duplicate_message=f"指令结果幂等重复，将跳过业务处理: {callback.command_code}",
                 )
+                is_duplicate = True
+                if duplicate_inbox is not None:
+                    trace = trace.with_inbox(duplicate_inbox)
+                    inherited_trace_id = trace.trace_id or inherited_trace_id
 
             if is_duplicate:
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
@@ -418,12 +422,16 @@ class CallbackOrchestrationService:
                 )
                 logger.info(f"设备事件已写入 Inbox: {event_request.device_code} -> {event_request.event_type}")
             except ValueError as exc:
-                is_duplicate = self._resolve_duplicate_inbox_error(
+                duplicate_inbox = self._resolve_duplicate_inbox_error(
                     exc,
                     duplicate_message=(
                         f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type}"
                     ),
                 )
+                is_duplicate = True
+                if duplicate_inbox is not None:
+                    trace = trace.with_inbox(duplicate_inbox)
+                    event_trace_id = trace.trace_id or event_trace_id
 
             await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
 
@@ -471,10 +479,13 @@ class CallbackOrchestrationService:
             )
             logger.info(f"外部回调已写入 Inbox: {callback_type}")
         except ValueError as exc:
-            is_duplicate = self._resolve_duplicate_inbox_error(
+            duplicate_inbox = self._resolve_duplicate_inbox_error(
                 exc,
                 duplicate_message=f"外部回调幂等重复，将跳过业务处理: {callback_type}",
             )
+            is_duplicate = True
+            if duplicate_inbox is not None:
+                trace = trace.with_inbox(duplicate_inbox)
 
         await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
 

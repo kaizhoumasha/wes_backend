@@ -24,6 +24,14 @@ class _SupportsIsoformat(Protocol):
     def isoformat(self) -> str: ...
 
 
+class DuplicateInboxError(ValueError):
+    """Inbox 幂等命中已有消息。"""
+
+    def __init__(self, message: str, *, existing_inbox: WorklineInbox) -> None:
+        super().__init__(message)
+        self.existing_inbox = existing_inbox
+
+
 def _format_deadline(deadline_at: object | None) -> str:
     if deadline_at is None or not isinstance(deadline_at, _SupportsIsoformat):
         return "unknown"
@@ -369,7 +377,10 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
     ) -> WorklineInbox:
         existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
         if existing:
-            raise ValueError(f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing.id}")
+            raise DuplicateInboxError(
+                f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing.id}",
+                existing_inbox=existing,
+            )
 
         inbox_data: dict[str, Any] = {
             "kind": kind,
