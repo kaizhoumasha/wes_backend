@@ -1654,3 +1654,78 @@ Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
 - **Resolved**: 2026-04-24T19:40:00+08:00
 - **Promoted**: docs/plugin_development_guide.md
 - **Notes**: 文档已新增 Handler 签名选择规则章节
+
+---
+
+## [LRN-20260425-001] best_practice
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: high
+**Status**: resolved
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+同一设备硬件任务队列不能只依赖状态字段读值，真实派发前必须锁定设备行。
+
+### Details
+本轮实现 DEVICE 队列语义时，最初通过 `device_status == RUNNING` 或 `current_command_id is not None` 阻止下一条同设备命令。这个逻辑在单 worker 下成立，但多 Celery worker 并发时，两个事务可能同时读到 `IDLE`，从而同时向同一硬件设备下发命令。
+
+正确做法是：真实设备 HTTP 派发前通过 Repository 查询并 `SELECT ... FOR UPDATE` 锁定设备行，再检查 `device_status/current_command_id/maintenance_mode/capabilities`，ACK 后在同一事务内更新占用投影。
+
+### Suggested Action
+后续所有“单资源串行化”的运行态治理遵循：
+1. 先锁定资源行；
+2. 在锁内做状态/能力检查；
+3. 在同一事务内写入占用或释放投影；
+4. 用回归测试证明派发路径使用锁定查询。
+
+### Metadata
+- Source: review
+- Related Files: src/app/device/repositories/device_repository.py, src/celery_app/tasks/workline.py, tests/workline_runtime/test_outbox_dispatcher.py
+- Tags: concurrency, celery, device-queue, row-lock, outbox
+- Pattern-Key: backend.device_dispatch_lock_before_hardware_side_effect
+- Recurrence-Count: 1
+- First-Seen: 2026-04-25
+- Last-Seen: 2026-04-25
+
+### Resolution
+- **Resolved**: 2026-04-25T10:46:30Z
+- **Commit/PR**: 67f506c / #10
+- **Notes**: 新增 `get_by_device_code_for_update()`，派发前锁定设备行，并补充锁定查询回归测试。
+
+---
+
+## [LRN-20260425-002] correction
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: medium
+**Status**: resolved
+**Category**: correction
+**Area**: docs
+
+### Summary
+用户明确要求“使用中文信息”，后续状态更新和最终汇总应使用中文。
+
+### Details
+在 PR 合并/清理流程中，用户提醒“使用中文信息”。本项目文档、业务沟通和多数状态说明以中文为主；当用户明确指定语言时，工具进度说明、PR/merge 结果摘要和后续收尾都应保持中文，避免英文模板化输出。
+
+### Suggested Action
+在该工作区内：
+1. 用户使用中文或明确要求中文时，默认用中文回复；
+2. 命令名、路径、PR 标题等技术标识保留原文；
+3. 汇总要简洁列出结果、提交号、PR 链接和验证状态。
+
+### Metadata
+- Source: user_feedback
+- Related Files: AGENTS.md
+- Tags: communication, language-preference, chinese
+- Pattern-Key: communication.prefer_chinese_when_user_requests_chinese
+- Recurrence-Count: 1
+- First-Seen: 2026-04-25
+- Last-Seen: 2026-04-25
+
+### Resolution
+- **Resolved**: 2026-04-25T10:49:23Z
+- **Commit/PR**: n/a
+- **Notes**: 后续本工作区状态更新和最终答复使用中文。

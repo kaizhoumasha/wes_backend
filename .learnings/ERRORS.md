@@ -147,3 +147,86 @@ nc: connectx to 127.0.0.1 port 8001 (tcp) failed: Operation not permitted
 - **Notes**: 本次已确认无代理 `curl` 和提权 pytest 是当前环境下的稳定验证路径，并拿到了真实接口响应。
 
 ---
+
+## [ERR-20260425-001] github_cli_land_pr_noninteractive_gotchas
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+GitHub CLI 的 PR checks 字段和非交互 merge 参数与预期不一致，导致 land 流程中途失败后重试。
+
+### Error
+```text
+Unknown JSON field: "status"
+Available fields: bucket, completedAt, description, event, link, name, startedAt, state, workflow
+
+--merge, --rebase, or --squash required when not running interactively
+```
+
+### Context
+- Command/operation:
+  - `gh pr checks 10 --json name,state,status,conclusion`
+  - `gh pr merge 10 --auto --delete-branch`
+- Environment: Codex 非交互 shell + GitHub CLI
+- Trigger:
+  - 当前 `gh pr checks` 不支持 `status` / `conclusion` 字段，需使用 `state`、`completedAt`、`description`、`link`、`workflow` 等字段。
+  - 非交互合并时，即使用 `--auto`，该 CLI 版本也要求显式指定 `--merge`、`--rebase` 或 `--squash`。
+
+### Suggested Fix
+Land PR 时使用当前兼容命令：
+
+```bash
+gh pr checks <pr> --json name,state,completedAt,description,link,workflow
+gh pr merge <pr> --squash --delete-branch
+```
+
+如果仓库有强制检查或 merge queue，再根据 `gh pr view --json mergeStateStatus,mergeable,state` 结果决定是否等待。
+
+### Metadata
+- Reproducible: yes
+- Related Files: n/a
+- See Also: none
+
+### Resolution
+- **Resolved**: 2026-04-25T10:46:30Z
+- **Commit/PR**: #10
+- **Notes**: PR #10 已用 `gh pr merge 10 --squash --delete-branch` 成功合并，并通过 `git fetch origin --prune` 清理远端引用。
+
+---
+
+## [ERR-20260425-002] gstack_review_checklist_path_missing
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+`/ship` 文档引用的 gstack review checklist 路径在当前安装中不存在，需要回退读取已安装的 `gstack-review/SKILL.md`。
+
+### Error
+```text
+sed: /Users/kaizhou/SynologyDrive/github/gstack/.agents/skills/gstack-review/checklist.md: No such file or directory
+```
+
+### Context
+- Command/operation: ship pre-landing review 阶段读取 checklist
+- Environment: 当前 gstack skills 安装路径
+- Trigger: skill 文档引用 `.agents/skills/gstack/review/checklist.md`，但实际可用文件是 `gstack-review/SKILL.md` 和相关 agent 配置。
+
+### Suggested Fix
+当 checklist 文件缺失时，不要跳过 pre-landing review；改为读取 `gstack-review/SKILL.md` 中的核心 review 规则，并显式说明 fallback。
+
+### Metadata
+- Reproducible: yes
+- Related Files: /Users/kaizhou/SynologyDrive/github/gstack/.agents/skills/gstack-review/SKILL.md
+
+### Resolution
+- **Resolved**: 2026-04-25T10:35:00Z
+- **Commit/PR**: n/a
+- **Notes**: 本次通过 fallback 完成 review，并发现/修复了设备派发并发风险。
+
+---
