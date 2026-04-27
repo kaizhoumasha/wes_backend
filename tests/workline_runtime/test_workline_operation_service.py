@@ -36,6 +36,8 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
         kind=InboxKind.DEVICE_EVENT,
         payload_json=original_payload,
         trace_id="trace-001",
+        event_id="event-original",
+        causation_id=None,
         workline_id=1,
         session_id=2,
         source_message_id="req-001",
@@ -51,7 +53,10 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
     assert inbox_repo.created is not None
     assert inbox_repo.created["kind"] == InboxKind.DEVICE_EVENT
     assert inbox_repo.created["trace_id"] == "trace-001"
-    assert inbox_repo.created["payload_json"] == original_payload
+    assert inbox_repo.created["event_id"].startswith("replay:event-original:")
+    assert inbox_repo.created["causation_id"] == "event-original"
+    assert inbox_repo.created["payload_json"]["replay_of_event_id"] == "event-original"
+    assert inbox_repo.created["payload_json"]["message_type"] == original_payload["message_type"]
     assert original.payload_json == original_payload
 
 

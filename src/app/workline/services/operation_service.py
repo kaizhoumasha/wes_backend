@@ -73,6 +73,15 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         original_payload = getattr(original, "payload_json", None)
         payload = dict(original_payload) if isinstance(original_payload, dict) else {}
+        original_event_id = getattr(original, "event_id", None)
+        replay_event_id = f"replay:{original_event_id or inbox_id}:{uuid.uuid4().hex}"
+        payload.update(
+            {
+                "replay_of_event_id": original_event_id,
+                "replay_reason": reason,
+                "replay_operator_id": operator_id,
+            }
+        )
         replay = await self.inbox_repo.create(
             db,
             {
@@ -85,8 +94,8 @@ class WorklineOperationService(BaseService[Any, Any]):
                 "command_id": getattr(original, "command_id", None),
                 "session_id": getattr(original, "session_id", None),
                 "trace_id": getattr(original, "trace_id", None),
-                "event_id": getattr(original, "event_id", None),
-                "causation_id": getattr(original, "causation_id", None),
+                "event_id": replay_event_id,
+                "causation_id": original_event_id or getattr(original, "causation_id", None),
                 "payload_json": payload,
                 "received_at": timezone.now_for_db(),
             },

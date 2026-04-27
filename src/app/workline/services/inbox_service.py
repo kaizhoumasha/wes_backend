@@ -13,6 +13,7 @@ from src.app.workline.models.inbox import (
 )
 from src.app.workline.repositories import inbox_repository
 from src.core.base_service import BaseService
+from src.core.exceptions import ConflictException
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -399,7 +400,16 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         if causation_id:
             inbox_data["causation_id"] = causation_id
 
-        created = await self.repo.create(db, inbox_data)
+        try:
+            created = await self.repo.create(db, inbox_data)
+        except ConflictException as exc:
+            existing_after_conflict = await self.repo.get_by_idempotency_key(db, idempotency_key)
+            if existing_after_conflict is not None:
+                raise DuplicateInboxError(
+                    f"{duplicate_message}: {idempotency_key}, 原消息 ID: {existing_after_conflict.id}",
+                    existing_inbox=existing_after_conflict,
+                ) from exc
+            raise
         if created is None:
             raise RuntimeError("创建 Inbox 消息失败")
         await self._commit_inbox_mutation(db, auto_commit=auto_commit)

@@ -5,12 +5,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.workline.models.inbox import InboxKind
-from src.app.workline.services.inbox_service import WorklineInboxService
+from src.app.workline.services.inbox_service import DuplicateInboxError, WorklineInboxService
+from src.core.exceptions import ConflictException
 
 
 class _InboxRepoStub:
-    def __init__(self, existing: object | None = None) -> None:
+    def __init__(self, existing: object | None = None, *, conflict_existing: object | None = None) -> None:
         self.existing = existing
+        self.conflict_existing = conflict_existing
+        self.lookup_count = 0
         self.created: dict[str, Any] | None = None
         self.calculated_with: dict[str, Any] | None = None
 
@@ -31,9 +34,14 @@ class _InboxRepoStub:
         return "device_event:fallback"
 
     async def get_by_idempotency_key(self, _db: object, _idempotency_key: str) -> object | None:
+        self.lookup_count += 1
+        if self.lookup_count > 1 and self.conflict_existing is not None:
+            return self.conflict_existing
         return self.existing
 
     async def create(self, _db: object, data: dict[str, Any]) -> object:
+        if self.conflict_existing is not None:
+            raise ConflictException("数据已存在，请使用其他值")
         self.created = data
         return SimpleNamespace(id=99, **data)
 
@@ -92,3 +100,27 @@ async def test_device_event_inbox_rejects_duplicate_top_level_event_id() -> None
         )
 
     assert repo.created is None
+
+
+@pytest.mark.asyncio
+async def test_device_event_inbox_returns_duplicate_when_db_unique_conflict_wins_race() -> None:
+    """并发请求若在 DB unique 处命中冲突，应回读原 inbox 并按 duplicate 处理。"""
+
+    existing = SimpleNamespace(id=42, trace_id="trace-original")
+    repo = _InboxRepoStub(conflict_existing=existing)
+    service = WorklineInboxService()
+    service.repo = repo  # type: ignore[assignment]
+
+    with pytest.raises(DuplicateInboxError) as exc_info:
+        await service.create_device_event_inbox(
+            db=object(),
+            device_code="ARM01",
+            event_type="SCAN_COMPLETED",
+            timestamp=1777200000000,
+            data={"PkgID": "PKG-001"},
+            trace_id="trace-001",
+            event_id="evt-001",
+            auto_commit=False,
+        )
+
+    assert exc_info.value.existing_inbox is existing
