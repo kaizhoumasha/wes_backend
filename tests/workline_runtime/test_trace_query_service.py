@@ -115,6 +115,16 @@ def inbox_obj() -> SimpleNamespace:
 
 
 @pytest.fixture
+def failed_inbox_obj(inbox_obj: SimpleNamespace) -> SimpleNamespace:
+    inbox_obj.status = "FAILED"
+    inbox_obj.error_message = (
+        "Unable to resolve stable business_key from payload: missing plugin business key, business_key, "
+        "barcode, and event identity"
+    )
+    return inbox_obj
+
+
+@pytest.fixture
 def timeline_obj() -> SimpleNamespace:
     return SimpleNamespace(
         id=66,
@@ -161,10 +171,14 @@ def service(
     command_repo = SimpleNamespace(
         get_by_command_code=AsyncMock(return_value=command_obj),
     )
+    diagnostic_repo = SimpleNamespace(
+        get_active_by_trace_id=AsyncMock(return_value=[]),
+    )
     return TraceQueryService(
         callback_log_repo=cast("Any", callback_repo),
         session_repo=cast("Any", session_repo),
         command_repo=cast("Any", command_repo),
+        diagnostic_repo=cast("Any", diagnostic_repo),
     )
 
 
@@ -334,3 +348,107 @@ async def test_blocking_point_returns_operable_diagnostic_card(
     assert result.operator_action
     assert result.evidence["outbox"]["dispatch_key"] == "dispatch-1"
     assert result.evidence["outbox"]["last_error"] == "HTTP 500"
+
+
+@pytest.mark.asyncio
+async def test_by_trace_id_includes_persisted_workline_diagnostics(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    diagnostic = SimpleNamespace(
+        id=77,
+        request_id="req-1",
+        trace_id="trace-1",
+        session_id=11,
+        inbox_id=55,
+        outbox_id=None,
+        command_code=None,
+        device_code="ARM01",
+        workline_id=22,
+        plugin_key="smt_classifier",
+        diagnostic_code="SESSION_RESOLVE_FAILED",
+        error_domain="SESSION",
+        severity="ERROR",
+        recoverability="manual_retryable",
+        problem_class="SOFTWARE",
+        owner="integration",
+        message="Unable to resolve stable business_key from payload",
+        operator_action="补齐 PkgID 后重试",
+        technical_summary="SMT business_key resolver returned None",
+        next_steps_json=["补齐 PkgID/PONumber/pkg_id"],
+        evidence_json={"payload": {"data": {"PkgID": None}}},
+    )
+    cast("Any", service.diagnostic_repo).get_active_by_trace_id = AsyncMock(return_value=[diagnostic])
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.by_trace_id(db, "trace-1")
+
+    persisted = [item for item in result.diagnostics if item.extra.get("source") == "workline_diagnostic"]
+    assert persisted
+    assert persisted[0].inbox_id == 55
+    assert persisted[0].extra["diagnostic_code"] == "SESSION_RESOLVE_FAILED"
+    assert persisted[0].extra["message"] == "Unable to resolve stable business_key from payload"
+    assert result.summary["diagnostics"] == len(result.diagnostics)
+    cast("Any", service.diagnostic_repo).get_active_by_trace_id.assert_awaited_once_with(db, "trace-1")
+
+
+@pytest.mark.asyncio
+async def test_blocking_point_reports_failed_inbox_with_persisted_diagnostic(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    failed_inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    diagnostic = SimpleNamespace(
+        id=77,
+        request_id="req-1",
+        trace_id="trace-1",
+        session_id=11,
+        inbox_id=55,
+        outbox_id=None,
+        command_code=None,
+        device_code="ARM01",
+        workline_id=22,
+        plugin_key="smt_classifier",
+        diagnostic_code="SESSION_RESOLVE_FAILED",
+        error_domain="SESSION",
+        severity="ERROR",
+        recoverability="manual_retryable",
+        problem_class="SOFTWARE",
+        owner="integration",
+        message="Unable to resolve stable business_key from payload",
+        operator_action="补齐 PkgID 后重试",
+        technical_summary="SMT business_key resolver returned None",
+        next_steps_json=["补齐 PkgID/PONumber/pkg_id"],
+        evidence_json={"payload": {"data": {"PkgID": None}}},
+    )
+    cast("Any", service.diagnostic_repo).get_active_by_trace_id = AsyncMock(return_value=[diagnostic])
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[failed_inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.get_blocking_point(db, "trace-1")
+
+    assert result.blocking_point == "inbox"
+    assert result.diagnostic_card.error_code == "SESSION_RESOLVE_FAILED"
+    assert "Unable to resolve stable business_key" in result.diagnostic_card.summary
+    assert result.operator_action
+    assert result.evidence["inbox"]["id"] == 55
+    assert result.evidence["inbox"]["status"] == "FAILED"
+    assert result.evidence["diagnostic"]["diagnostic_code"] == "SESSION_RESOLVE_FAILED"

@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn, TypedDict, cast
@@ -134,6 +135,23 @@ class LoadedEntities(TypedDict):
     services: Any | None
 
 
+@dataclass(frozen=True, slots=True)
+class _InboxDiagnosticSnapshot:
+    """Inbox 诊断快照，避免 rollback 后访问已过期 ORM 字段。"""
+
+    id: int | None
+    kind: Any | None
+    source_message_id: str | None
+    trace_id: str | None
+    event_id: str | None
+    causation_id: str | None
+    workline_id: int | None
+    session_id: int | None
+    device_id: int | None
+    command_id: int | None
+    payload_json: dict[str, Any]
+
+
 # 常量已提取到 src.celery_app.constants
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
@@ -160,6 +178,34 @@ def _resolve_entity_id(entity: Any) -> int | None:
     if isinstance(value, bool):
         return None
     return value if isinstance(value, int) else None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
+    """在事务回滚前提取诊断需要的 Inbox 字段。"""
+
+    return _InboxDiagnosticSnapshot(
+        id=_resolve_entity_id(inbox),
+        kind=getattr(inbox, "kind", None),
+        source_message_id=_optional_str(getattr(inbox, "source_message_id", None)),
+        trace_id=_optional_str(getattr(inbox, "trace_id", None)),
+        event_id=_optional_str(getattr(inbox, "event_id", None)),
+        causation_id=_optional_str(getattr(inbox, "causation_id", None)),
+        workline_id=_optional_int(getattr(inbox, "workline_id", None)),
+        session_id=_optional_int(getattr(inbox, "session_id", None)),
+        device_id=_optional_int(getattr(inbox, "device_id", None)),
+        command_id=_optional_int(getattr(inbox, "command_id", None)),
+        payload_json=dict(payload_dict(getattr(inbox, "payload_json", None))),
+    )
 
 
 def _should_resolve_session(inbox: Any) -> bool:
@@ -1805,7 +1851,8 @@ class ProcessInboxMessages:
         messages = await inbox_service.get_new_messages(db, limit=limit)
 
         for inbox in messages:
-            inbox_pk_text = str(getattr(inbox, "id", "unknown"))
+            diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
+            inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))
             inbox_pk: int | None = None  # 初始化，避免 basedpyright 警告
             try:
                 inbox_pk = _resolve_required_pk(inbox, "inbox", "id", "inbox_id")
@@ -1966,12 +2013,12 @@ class ProcessInboxMessages:
                     await db.rollback()
                 await _record_diagnostic(
                     db,
-                    inbox=inbox,
+                    inbox=diagnostic_inbox,
                     error_code=ErrorCode.SESSION_RESOLVE_FAILED,
                     message=str(e),
                 )
                 try:
-                    inbox_pk = _resolve_entity_id(inbox)
+                    inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
                         await db.commit()
@@ -1987,13 +2034,13 @@ class ProcessInboxMessages:
                     await db.rollback()
                 await _record_diagnostic(
                     db,
-                    inbox=inbox,
+                    inbox=diagnostic_inbox,
                     error_code=ErrorCode.DEVICE_TIMEOUT,
                     message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
                 )
                 try:
                     # 使用已解析的 inbox_pk（如果在前面解析成功）
-                    pk_to_mark = locals().get("inbox_pk") or _resolve_entity_id(inbox)
+                    pk_to_mark = locals().get("inbox_pk") or diagnostic_inbox.id
                     if pk_to_mark is not None:
                         _ = await inbox_service.mark_as_failed(
                             db,
@@ -2013,12 +2060,12 @@ class ProcessInboxMessages:
                     await db.rollback()
                 await _record_diagnostic(
                     db,
-                    inbox=inbox,
+                    inbox=diagnostic_inbox,
                     error_code=ErrorCode.UNKNOWN,
                     message=str(e),
                 )
                 try:
-                    inbox_pk = _resolve_entity_id(inbox)
+                    inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
                         await db.commit()

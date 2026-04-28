@@ -833,6 +833,49 @@ class TestSessionResolver:
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
+    async def test_resolve_device_event_uses_incomplete_scan_key_when_smt_pkg_id_missing(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """SMT 扫码缺 PkgID 时仍需建会话，让插件生成 NG 分流指令。"""
+
+        payload = {
+            "device_code": "ARM01",
+            "event_type": "SCAN_COMPLETED",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "timestamp": 1777338994000,
+            "data": {
+                "location": "ARM01",
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+            },
+        }
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            source_message_id="req-incomplete-scan",
+            payload_json=payload,
+        )
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.business_key.startswith("incomplete-scan:")
+        assert session.business_key == _resolve_business_key(payload, plugin_key="smt_classifier")
+        assert ("business_key", 1, session.business_key) in mock_session_repo.find_calls
+        assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
     async def test_resolve_device_event_rejects_six_in_one_without_plugin_key(
         self,
         mock_db,

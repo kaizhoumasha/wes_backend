@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from src.workline_runtime.contracts import DeviceErrorCode, SixInOne
+from src.workline_runtime.utils import non_empty_str
+
+_SCAN_COMPLETED_EVENT = "SCAN_COMPLETED"
 
 
 def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
@@ -47,12 +52,46 @@ def parse_six_in_one_payload(payload: dict[str, Any] | None) -> SixInOne | None:
     return six_in_one if six_in_one.has_any_value else None
 
 
+def _build_incomplete_scan_business_key(payload_json: dict[str, Any], six_in_one: SixInOne) -> str | None:
+    """为缺 PkgID 的扫码事件生成稳定会话键，让插件能执行 NG 分流。"""
+
+    event_type = non_empty_str(payload_json.get("canonical_event_type"))
+    if event_type is None:
+        event_type = non_empty_str(payload_json.get("event_type"))
+    if event_type != _SCAN_COMPLETED_EVENT:
+        return None
+
+    device_code = non_empty_str(payload_json.get("device_code"))
+    if device_code is None:
+        return None
+
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    event_identity = payload_json.get("event_id") or data.get("event_id") or data.get("vendor_event_id")
+    business_fields: dict[str, Any] = {field: value for field, value in six_in_one.iter_business_fields() if value}
+    identity_payload: dict[str, Any] = {
+        "device_code": device_code,
+        "event_type": event_type,
+        "event_identity": event_identity,
+        "timestamp": payload_json.get("timestamp"),
+        "fields": business_fields,
+    }
+    serialized = json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    return f"incomplete-scan:{digest}"
+
+
 def resolve_smt_business_key(payload_json: dict[str, Any]) -> str | None:
     """从 SMT 事件包络中解析稳定业务键。"""
 
-    data = payload_json.get("data")
-    six_in_one = parse_six_in_one_payload(data if isinstance(data, dict) else None)
-    return six_in_one.business_key if six_in_one and six_in_one.business_key else None
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] | None = raw_data if isinstance(raw_data, dict) else None
+    six_in_one = parse_six_in_one_payload(data)
+    if six_in_one is None:
+        return None
+    if six_in_one.business_key:
+        return six_in_one.business_key
+    return _build_incomplete_scan_business_key(payload_json, six_in_one)
 
 
 def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
@@ -98,12 +137,12 @@ def build_move_forward_params(pkg_id: str) -> dict[str, str]:
 def build_pick_scan_ng_params(*, barcode: str, location: str) -> dict[str, str]:
     """构造扫码 NG 分流命令业务参数。"""
 
+    # 保留 location 入参兼容插件调用；实际点位由硬件 mock 按平台类型解析。
+    _ = location
     return {
         "barcode": barcode,
         "source_type": "INPUT_PLATFORM",
         "target_type": "NG_PLATFORM",
-        "source_loc": location,
-        "target_loc": "STATION_NG_PLATFORM1",
     }
 
 
@@ -161,7 +200,7 @@ class ScanEventPayload(BaseModel):
     """扫码完成事件 Payload。"""
 
     device_code: str
-    event_type: str = Field(default="SCAN_COMPLETED")
+    event_type: str = Field(default=_SCAN_COMPLETED_EVENT)
     timestamp: int | None = Field(default=None)
     data: ScanEventData | None = Field(default=None)
 

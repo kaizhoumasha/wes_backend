@@ -7,6 +7,7 @@ from src.workline_plugins.smt_classifier.contract import (
     build_output_to_bin_params,
     build_pick_inspection_ng_params,
     build_pick_scan_ng_params,
+    resolve_smt_business_key,
 )
 
 
@@ -19,8 +20,6 @@ def test_command_param_helpers_return_business_params_only() -> None:
         "barcode": "PKG-NG",
         "source_type": "INPUT_PLATFORM",
         "target_type": "NG_PLATFORM",
-        "source_loc": "LOC-1",
-        "target_loc": "STATION_NG_PLATFORM1",
     }
     assert build_pick_inspection_ng_params(barcode="PKG-INSPECT-NG") == {
         "barcode": "PKG-INSPECT-NG",
@@ -55,3 +54,29 @@ def test_default_bin_allocation_is_deterministic() -> None:
 
     assert first == second
     assert set(first) == {"bin_id", "bin_type", "bin_cell_location"}
+
+
+def test_resolve_smt_business_key_uses_stable_incomplete_scan_key_when_pkg_id_missing() -> None:
+    """缺 PkgID 的扫码仍需稳定建会话，让插件能生成 NG 分流指令。"""
+
+    payload = {
+        "device_code": "ARM01",
+        "event_type": "SCAN_COMPLETED",
+        "canonical_event_type": "SCAN_COMPLETED",
+        "timestamp": 1777338994000,
+        "data": {
+            "location": "ARM01",
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+        },
+    }
+
+    key1 = resolve_smt_business_key(payload)
+    key2 = resolve_smt_business_key(payload)
+
+    assert key1 is not None
+    assert key1.startswith("incomplete-scan:")
+    assert key1 == key2

@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import MissingGreenlet
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus
 from src.workline_runtime.orchestrator import OrchestratorResult
@@ -80,6 +81,24 @@ class MockInbox:
         self.processor_token = None
         self.processed_at = None
         self.error_message = None
+
+
+class RollbackExpiredInbox(MockInbox):
+    """模拟 AsyncSession rollback 后 ORM 字段过期的 Inbox。"""
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.expired = False
+
+    @property
+    def payload_json(self) -> dict[str, Any]:
+        if self.expired:
+            raise MissingGreenlet("expired payload_json attempted lazy load")
+        return self._payload_json
+
+    @payload_json.setter
+    def payload_json(self, value: dict[str, Any]) -> None:
+        self._payload_json = value
 
 
 class MockSession:
@@ -734,7 +753,7 @@ class TestInboxConsumer:
                     )
                 ),
             ),
-            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()) as mock_record_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
 
@@ -747,12 +766,79 @@ class TestInboxConsumer:
             "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data",
             auto_commit=False,
         )
-        mock_log_diagnostic.assert_called_once_with(
-            inbox=inbox,
-            error_code=ErrorCode.SESSION_RESOLVE_FAILED,
-            message="Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data",
+        mock_record_diagnostic.assert_awaited_once()
+        assert mock_record_diagnostic.await_args.args[0] is mock_db
+        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        assert diagnostic_kwargs["inbox"].id == inbox.id
+        assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
+        assert diagnostic_kwargs["error_code"] == ErrorCode.SESSION_RESOLVE_FAILED
+        assert (
+            diagnostic_kwargs["message"]
+            == "Unable to resolve stable business_key from payload: missing business_key, barcode, and canonical Six-In-One data"
         )
         mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_session_resolve_failure_uses_snapshot_after_rollback(
+        self,
+        mock_db,
+        mock_inbox_service,
+    ):
+        """rollback 后 ORM 字段可能过期，诊断必须使用事前快照。"""
+        from src.celery_app.tasks.workline import process_inbox_messages, workline_diagnostic_service
+        from src.workline_runtime.diagnostics import ErrorCode
+        from src.workline_runtime.session_resolver import SessionResolveError
+
+        inbox = RollbackExpiredInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            trace_id="trace-expired-rollback-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "device_code": "ARM01",
+                "data": {"LotCode": "LOT-EXPIRED-001"},
+            },
+        )
+        inbox.source_message_id = "req-expired-rollback-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        async def expire_inbox_on_rollback() -> None:
+            inbox.expired = True
+
+        mock_db.rollback = AsyncMock(side_effect=expire_inbox_on_rollback)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    side_effect=SessionResolveError(
+                        "Unable to resolve stable business_key from payload: missing plugin business key"
+                    )
+                ),
+            ),
+            patch.object(workline_diagnostic_service, "record_event", new=AsyncMock()) as mock_record_event,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["failed"] == 1
+        mock_db.rollback.assert_awaited()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Unable to resolve stable business_key from payload: missing plugin business key",
+            auto_commit=False,
+        )
+        mock_record_event.assert_awaited_once()
+        event = mock_record_event.await_args.kwargs["event"]
+        assert event.error_code == ErrorCode.SESSION_RESOLVE_FAILED
+        assert event.context.trace_id == "trace-expired-rollback-001"
+        assert event.context.request_id == "req-expired-rollback-001"
+        assert event.context.canonical_event_type == "SCAN_COMPLETED"
 
     @pytest.mark.asyncio
     async def test_process_inbox_exception_handling(
@@ -784,7 +870,7 @@ class TestInboxConsumer:
                 "src.celery_app.tasks.workline._load_related_entities",
                 AsyncMock(side_effect=ValueError("Entity not found")),
             ),
-            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()) as mock_record_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
 
@@ -798,10 +884,70 @@ class TestInboxConsumer:
             "Entity not found",
             auto_commit=False,
         )
-        mock_log_diagnostic.assert_called_once()
-        assert mock_log_diagnostic.call_args.kwargs["inbox"] is inbox
-        assert mock_log_diagnostic.call_args.kwargs["message"] == "Entity not found"
+        mock_record_diagnostic.assert_awaited_once()
+        assert mock_record_diagnostic.await_args.args[0] is mock_db
+        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        assert diagnostic_kwargs["inbox"].id == inbox.id
+        assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
+        assert diagnostic_kwargs["message"] == "Entity not found"
         mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_generic_exception_uses_snapshot_after_rollback(
+        self,
+        mock_db,
+        mock_inbox_service,
+    ):
+        """通用异常分支 rollback 后也不能访问已过期 ORM 字段。"""
+        from src.celery_app.tasks.workline import process_inbox_messages, workline_diagnostic_service
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = RollbackExpiredInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            trace_id="trace-generic-expired-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "device_code": "ARM01",
+                "data": {"LotCode": "LOT-GENERIC-EXPIRED-001"},
+            },
+        )
+        inbox.source_message_id = "req-generic-expired-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        async def expire_inbox_on_rollback() -> None:
+            inbox.expired = True
+
+        mock_db.rollback = AsyncMock(side_effect=expire_inbox_on_rollback)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(side_effect=ValueError("Entity not found")),
+            ),
+            patch.object(workline_diagnostic_service, "record_event", new=AsyncMock()) as mock_record_event,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["failed"] == 1
+        mock_db.rollback.assert_awaited()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            "Entity not found",
+            auto_commit=False,
+        )
+        mock_record_event.assert_awaited_once()
+        event = mock_record_event.await_args.kwargs["event"]
+        assert event.error_code == ErrorCode.UNKNOWN
+        assert event.context.trace_id == "trace-generic-expired-001"
+        assert event.context.request_id == "req-generic-expired-001"
+        assert event.context.canonical_event_type == "SCAN_COMPLETED"
 
     @pytest.mark.asyncio
     async def test_process_inbox_timeout_logs_diagnostic_with_trace_anchor(
@@ -858,7 +1004,7 @@ class TestInboxConsumer:
                 "src.celery_app.tasks.workline.asyncio.wait_for",
                 new=AsyncMock(side_effect=raise_timeout),
             ),
-            patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
+            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()) as mock_record_diagnostic,
         ):
             result = await process_inbox_messages._process_batch(mock_db, limit=10)
 
@@ -871,12 +1017,95 @@ class TestInboxConsumer:
             f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
             auto_commit=False,
         )
-        mock_log_diagnostic.assert_called_once_with(
-            inbox=inbox,
-            error_code=ErrorCode.DEVICE_TIMEOUT,
-            message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-        )
+        mock_record_diagnostic.assert_awaited_once()
+        assert mock_record_diagnostic.await_args.args[0] is mock_db
+        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        assert diagnostic_kwargs["inbox"].id == inbox.id
+        assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
+        assert diagnostic_kwargs["error_code"] == ErrorCode.DEVICE_TIMEOUT
+        assert diagnostic_kwargs["message"] == f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)"
         mock_db.commit.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_timeout_uses_snapshot_after_rollback(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """timeout 分支 rollback 后也必须使用 Inbox 快照写诊断。"""
+        from src.celery_app.constants import INBOX_PROCESS_TIMEOUT_SECONDS
+        from src.celery_app.tasks.workline import process_inbox_messages, workline_diagnostic_service
+        from src.workline_runtime.diagnostics import ErrorCode
+
+        inbox = RollbackExpiredInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            trace_id="trace-timeout-expired-001",
+            payload_json={
+                "canonical_event_type": "SCAN_COMPLETED",
+                "device_code": "ARM01",
+                "data": {"LotCode": "LOT-TIMEOUT-EXPIRED-001"},
+            },
+        )
+        inbox.source_message_id = "req-timeout-expired-001"
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+
+        async def expire_inbox_on_rollback() -> None:
+            inbox.expired = True
+
+        async def raise_timeout(coro, timeout):
+            _ = timeout
+            coro.close()
+            raise TimeoutError
+
+        mock_db.rollback = AsyncMock(side_effect=expire_inbox_on_rollback)
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value={
+                        "session": MockSession(),
+                        "workline": MockWorkline(),
+                        "device": None,
+                        "command": None,
+                        "devices_by_role": {},
+                        "services": MagicMock(),
+                    }
+                ),
+            ),
+            patch(
+                "src.celery_app.tasks.workline.asyncio.wait_for",
+                new=AsyncMock(side_effect=raise_timeout),
+            ),
+            patch.object(workline_diagnostic_service, "record_event", new=AsyncMock()) as mock_record_event,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["failed"] == 1
+        mock_db.rollback.assert_awaited()
+        mock_inbox_service.mark_as_failed.assert_called_once_with(
+            mock_db,
+            inbox.id,
+            f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+            auto_commit=False,
+        )
+        mock_record_event.assert_awaited_once()
+        event = mock_record_event.await_args.kwargs["event"]
+        assert event.error_code == ErrorCode.DEVICE_TIMEOUT
+        assert event.context.trace_id == "trace-timeout-expired-001"
+        assert event.context.request_id == "req-timeout-expired-001"
+        assert event.context.canonical_event_type == "SCAN_COMPLETED"
 
     def test_log_diagnostic_uses_inbox_trace_fields(self) -> None:
         """Workline diagnostics 应直接复用 inbox trace 字段，而不是重新发明 request 锚点。"""

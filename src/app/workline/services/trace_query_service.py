@@ -7,6 +7,7 @@
 - device_commands
 - workline_outbox
 - workline_timelines
+- workline_diagnostics
 
 注意：不引入任何额外持久化，不做 trace 宽表。
 """
@@ -34,6 +35,7 @@ from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.repositories import inbox_repository
+from src.app.workline.repositories.diagnostic_repository import workline_diagnostic_repository
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -55,7 +57,9 @@ from src.workline_runtime.utils import payload_dict
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.workline.models.diagnostic import WorklineDiagnostic
     from src.app.workline.models.session import WorklineSession
+    from src.app.workline.repositories.diagnostic_repository import WorklineDiagnosticRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,12 +143,14 @@ class TraceQueryService(BaseService[Any, Any]):
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         inbox_repo: Any | None = None,
+        diagnostic_repo: WorklineDiagnosticRepository | None = None,
     ) -> None:
         super().__init__(inbox_repository, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or device_command_repository
         self.inbox_repo = inbox_repo or inbox_repository
+        self.diagnostic_repo = diagnostic_repo or workline_diagnostic_repository
 
     async def by_request_id(self, db: AsyncSession, request_id: str) -> TraceQueryResult:
         return await self.query(db, request_id=request_id)
@@ -270,6 +276,8 @@ class TraceQueryService(BaseService[Any, Any]):
         diagnostics.extend(self._diagnostic_for_commands(trace, commands))
         diagnostics.extend(self._diagnostic_for_outboxes(trace, outboxes))
         diagnostics.extend(self._diagnostic_for_timelines(trace, timelines))
+        persisted_diagnostics = await self._load_persisted_diagnostics(db, trace_id)
+        diagnostics.extend(self._diagnostic_from_persisted(trace, persisted_diagnostics))
 
         if not diagnostics:
             diagnostics.append(
@@ -391,6 +399,11 @@ class TraceQueryService(BaseService[Any, Any]):
         items = await self.callback_log_repo.get_by_trace_id(db, trace_id)
         return _merge_unique_by_id(existing, items)
 
+    async def _load_persisted_diagnostics(self, db: AsyncSession, trace_id: str | None) -> list[WorklineDiagnostic]:
+        if not trace_id:
+            return []
+        return await self.diagnostic_repo.get_active_by_trace_id(db, trace_id)
+
     def _diagnostic_from_callbacks(self, trace: TraceContext, callbacks: list[Any]) -> list[DiagnosticContext]:
         return [
             build_diagnostic_context(
@@ -400,6 +413,39 @@ class TraceQueryService(BaseService[Any, Any]):
                 extra=_callback_diagnostic_extra(callback),
             )
             for callback in callbacks
+        ]
+
+    def _diagnostic_from_persisted(
+        self, trace: TraceContext, persisted_diagnostics: list[WorklineDiagnostic]
+    ) -> list[DiagnosticContext]:
+        return [
+            DiagnosticContext(
+                request_id=_safe_str(getattr(item, "request_id", None)) or trace.request_id,
+                trace_id=_safe_str(getattr(item, "trace_id", None)) or trace.trace_id,
+                session_id=getattr(item, "session_id", None),
+                inbox_id=getattr(item, "inbox_id", None),
+                outbox_id=getattr(item, "outbox_id", None),
+                command_code=_safe_str(getattr(item, "command_code", None)),
+                device_code=_safe_str(getattr(item, "device_code", None)),
+                workline_id=getattr(item, "workline_id", None),
+                plugin_key=_safe_str(getattr(item, "plugin_key", None)),
+                extra={
+                    "source": "workline_diagnostic",
+                    "diagnostic_id": getattr(item, "id", None),
+                    "diagnostic_code": _safe_str(getattr(item, "diagnostic_code", None)),
+                    "error_domain": _safe_str(getattr(item, "error_domain", None)),
+                    "severity": _safe_str(getattr(item, "severity", None)),
+                    "recoverability": _safe_str(getattr(item, "recoverability", None)),
+                    "problem_class": _safe_str(getattr(item, "problem_class", None)),
+                    "owner": _safe_str(getattr(item, "owner", None)),
+                    "message": _safe_str(getattr(item, "message", None)),
+                    "operator_action": _safe_str(getattr(item, "operator_action", None)),
+                    "technical_summary": _safe_str(getattr(item, "technical_summary", None)),
+                    "next_steps": list(getattr(item, "next_steps_json", None) or []),
+                    "evidence": dict(getattr(item, "evidence_json", None) or {}),
+                },
+            )
+            for item in persisted_diagnostics
         ]
 
     def _diagnostic_for_session(self, trace: TraceContext, session: WorklineSession) -> list[DiagnosticContext]:
@@ -532,6 +578,46 @@ class TraceQueryService(BaseService[Any, Any]):
                 },
             )
 
+        failed_inbox = next(
+            (item for item in result.inboxes if _enum_str(getattr(item, "status", None)) == "FAILED"),
+            None,
+        )
+        if failed_inbox is not None:
+            matched_diagnostic = self._diagnostic_for_entity(
+                result.diagnostics, inbox_id=getattr(failed_inbox, "id", None)
+            )
+            error_code = self._diagnostic_error_code(matched_diagnostic) or ErrorCode.SESSION_RESOLVE_FAILED
+            message = (
+                (matched_diagnostic.extra.get("message") if matched_diagnostic is not None else None)
+                or getattr(failed_inbox, "error_message", None)
+                or "Inbox 处理失败"
+            )
+            context = build_diagnostic_context(
+                trace=trace.with_inbox(failed_inbox),
+                inbox=failed_inbox,
+                extra={
+                    "source": "inbox",
+                    "error_message": getattr(failed_inbox, "error_message", None),
+                    "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
+                },
+            )
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="inbox",
+                error_code=error_code,
+                message=str(message),
+                context=context,
+                evidence={
+                    "inbox": {
+                        "id": getattr(failed_inbox, "id", None),
+                        "status": _enum_str(getattr(failed_inbox, "status", None)),
+                        "error_message": getattr(failed_inbox, "error_message", None),
+                    },
+                    "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
+                },
+            )
+
         failed_command = next(
             (item for item in result.commands if _enum_str(getattr(item, "status", None)) == "FAILED"), None
         )
@@ -614,6 +700,39 @@ class TraceQueryService(BaseService[Any, Any]):
             evidence=evidence,
             next_steps=list(card.next_steps),
         )
+
+    @staticmethod
+    def _diagnostic_for_entity(
+        diagnostics: list[DiagnosticContext],
+        *,
+        inbox_id: int | None = None,
+        outbox_id: int | None = None,
+        command_code: str | None = None,
+    ) -> DiagnosticContext | None:
+        matches: list[DiagnosticContext] = []
+        for diagnostic in diagnostics:
+            if inbox_id is not None and diagnostic.inbox_id == inbox_id:
+                matches.append(diagnostic)
+            if outbox_id is not None and diagnostic.outbox_id == outbox_id:
+                matches.append(diagnostic)
+            if command_code is not None and diagnostic.command_code == command_code:
+                matches.append(diagnostic)
+        return next(
+            (diagnostic for diagnostic in matches if diagnostic.extra.get("source") == "workline_diagnostic"),
+            matches[0] if matches else None,
+        )
+
+    @staticmethod
+    def _diagnostic_error_code(diagnostic: DiagnosticContext | None) -> ErrorCode | None:
+        if diagnostic is None:
+            return None
+        value = diagnostic.extra.get("diagnostic_code")
+        if not isinstance(value, str):
+            return None
+        try:
+            return ErrorCode(value)
+        except ValueError:
+            return None
 
 
 trace_query_service = TraceQueryService()

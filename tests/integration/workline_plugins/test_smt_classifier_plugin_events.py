@@ -81,6 +81,11 @@ class TestSmtClassifierPluginEvents:
         assert result.business_decisions[0].reason_code
         assert result.commands is not None
         assert result.commands[0].action == "PICK_AND_PUT"
+        assert result.commands[0].parameters == {
+            "barcode": "",
+            "source_type": "INPUT_PLATFORM",
+            "target_type": "NG_PLATFORM",
+        }
         assert result.wait is not None
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
