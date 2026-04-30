@@ -64,8 +64,10 @@ class TestWorklineTraceApi:
             callback_logs=[],
             inboxes=[],
             session=None,
+            sessions=[],
             commands=[],
             outboxes=[],
+            dispatch_attempts=[],
             timelines=[],
             diagnostics=[],
         )
@@ -331,6 +333,7 @@ class TestRuntimeQueryService:
             owner_team=None,
             support_contact=None,
             is_active=True,
+            run_mode="AUTO",
         )
         timed_out_session = SimpleNamespace(
             status="WAITING_EXTERNAL",
@@ -362,6 +365,7 @@ class TestRuntimeQueryService:
             owner_team=None,
             support_contact=None,
             is_active=True,
+            run_mode="AUTO",
         )
         running_session = SimpleNamespace(
             status="RUNNING",
@@ -524,6 +528,51 @@ class TestRuntimeQueryService:
 
         with pytest.raises(ValueError, match=r"session\.id"):
             service._build_trace_list_item(session, None, None, None, None, timezone.now_for_db())
+
+    def test_build_trace_response_preserves_diagnostic_context(self) -> None:
+        from src.app.workline.services.trace_response_builder import build_trace_response
+        from src.workline_runtime.diagnostics import DiagnosticContext
+
+        result = SimpleNamespace(
+            trace=_TraceContextStub(request_id="req-001", trace_id="trace-001"),
+            session=None,
+            sessions=[],
+            callback_logs=[],
+            inboxes=[],
+            commands=[],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=[],
+            diagnostics=[
+                DiagnosticContext(
+                    request_id="req-001",
+                    trace_id="trace-001",
+                    session_id=21,
+                    inbox_id=31,
+                    command_code="CMD-001",
+                    device_code="ARM01",
+                    workline_id=45,
+                    plugin_key="smt_classifier",
+                    canonical_event_type="SCAN_COMPLETED",
+                    transition="WAITING->RUNNING",
+                    extra={"source": "session_snapshot"},
+                )
+            ],
+        )
+
+        response = build_trace_response(result)
+
+        assert response.diagnostics[0].request_id == "req-001"
+        assert response.diagnostics[0].trace_id == "trace-001"
+        assert response.diagnostics[0].session_id == 21
+        assert response.diagnostics[0].inbox_id == 31
+        assert response.diagnostics[0].command_code == "CMD-001"
+        assert response.diagnostics[0].device_code == "ARM01"
+        assert response.diagnostics[0].workline_id == 45
+        assert response.diagnostics[0].plugin_key == "smt_classifier"
+        assert response.diagnostics[0].canonical_event_type == "SCAN_COMPLETED"
+        assert response.diagnostics[0].transition == "WAITING->RUNNING"
+        assert response.diagnostics[0].extra == {"source": "session_snapshot"}
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_returns_none_for_soft_deleted_workline(self) -> None:

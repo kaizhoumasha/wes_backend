@@ -15,13 +15,17 @@ from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.workline.models import WorkLine, WorklineInbox, WorklineOutbox, WorklineSession, WorklineTimeline
 from src.app.workline.models.runtime import (
+    RuntimeBlockingReason,
     RuntimeDeviceDetailResponse,
     RuntimeDeviceHealthSummary,
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
     RuntimeStatCard,
+    RuntimeTraceDeviceAction,
+    RuntimeTraceDevicePathNode,
     RuntimeTraceListItem,
     RuntimeTraceListResponse,
+    RuntimeTracePathResponse,
     RuntimeWorklineDetailResponse,
     RuntimeWorklineDeviceItem,
     RuntimeWorklineSummary,
@@ -29,6 +33,7 @@ from src.app.workline.models.runtime import (
     TraceCommandItem,
     TraceQueryRequest,
 )
+from src.app.workline.services.trace_response_builder import build_trace_response
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 
@@ -697,6 +702,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             error_device_count=error_devices,
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
+            run_mode=_enum_str(workline.run_mode) or "AUTO",
             last_activity_at=_latest_activity_at(sessions),
         )
 
@@ -861,6 +867,102 @@ class RuntimeQueryService(BaseService[Any, Any]):
             last_ingress_at=session.last_ingress_at,
             deadline_at=session.deadline_at,
             is_timed_out=_is_timed_out(session, now),
+        )
+
+    async def get_session_path(self, db: Any, session_id: int) -> RuntimeTracePathResponse | None:
+        """聚合 Session 粒度的设备路径视图。"""
+        from src.app.workline.services.trace_query_service import trace_query_service
+
+        result = await trace_query_service.by_session_id(db, session_id)
+        if result.session is None:
+            return None
+        return self._build_trace_path(result)
+
+    async def get_trace_path(self, db: Any, trace_id: str) -> RuntimeTracePathResponse | None:
+        """聚合 Trace ID 粒度的设备路径视图。"""
+        from src.app.workline.services.trace_query_service import trace_query_service
+
+        result = await trace_query_service.by_trace_id(db, trace_id)
+        if result.session is None and not result.callback_logs:
+            return None
+        return self._build_trace_path(result)
+
+    def _build_trace_path(self, result: Any) -> RuntimeTracePathResponse:
+        """从 TraceQueryResult 构建设备路径视图。"""
+
+        session = result.session
+        devices_map: dict[int, RuntimeTraceDevicePathNode] = {}
+
+        def _ensure_node(device_id: int | None) -> RuntimeTraceDevicePathNode | None:
+            if device_id is None:
+                return None
+            node = devices_map.get(device_id)
+            if node is None:
+                node = RuntimeTraceDevicePathNode(device_id=device_id)
+                devices_map[device_id] = node
+            return node
+
+        for cmd in result.commands:
+            node = _ensure_node(cmd.device_id)
+            if node is not None:
+                node.actions.append(
+                    RuntimeTraceDeviceAction(
+                        kind="command",
+                        label=_enum_str(cmd.task_type) or cmd.command_code or "COMMAND",
+                        status=_enum_str(cmd.status),
+                        timestamp=cmd.completed_at or cmd.sent_at,
+                        message=f"{cmd.command_code} · {_enum_str(cmd.result) or ''}",
+                    )
+                )
+
+        for inbox in result.inboxes:
+            node = _ensure_node(inbox.device_id)
+            if node is not None:
+                node.actions.append(
+                    RuntimeTraceDeviceAction(
+                        kind="inbox",
+                        label=f"INBOX {_enum_str(inbox.kind) or ''}",
+                        status=_enum_str(inbox.status),
+                        timestamp=inbox.processed_at or inbox.received_at,
+                        message=inbox.error_message,
+                    )
+                )
+
+        for node in devices_map.values():
+            # 按时间戳排序，datetime 转为 ISO 字符串确保类型一致
+            node.actions.sort(key=lambda a: a.timestamp.isoformat() if a.timestamp else "")
+
+        blocking_device_id: int | None = None
+        blocking_reason: RuntimeBlockingReason | None = None
+        if session and session.current_wait_type:
+            awaiting_cmd_id = session.awaiting_command_id
+            if awaiting_cmd_id:
+                cmd = next((c for c in result.commands if c.id == awaiting_cmd_id), None)
+                if cmd:
+                    blocking_device_id = cmd.device_id
+                    blocking_reason = RuntimeBlockingReason(
+                        device_id=cmd.device_id,
+                        reason=f"等待设备响应 {_enum_str(cmd.task_type) or cmd.command_code}",
+                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · step={cmd.step_code}",
+                    )
+            if blocking_device_id is None and session.failure_domain:
+                blocking_reason = RuntimeBlockingReason(
+                    reason=session.failure_domain,
+                    detail=session.failure_message,
+                )
+
+        trace_id = result.trace.trace_id if result.trace else None
+
+        evidence = build_trace_response(result)
+
+        return RuntimeTracePathResponse(
+            workline_id=session.workline_id if session else None,
+            session_id=session.id if session else None,
+            trace_id=trace_id,
+            devices=list(devices_map.values()),
+            current_blocking_device_id=blocking_device_id,
+            blocking_reason=blocking_reason,
+            evidence=evidence,
         )
 
 

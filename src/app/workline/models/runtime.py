@@ -343,6 +343,7 @@ class RuntimeWorklineSummary(BaseModel):
     error_device_count: int = 0
     offline_device_count: int = 0
     maintenance_device_count: int = 0
+    run_mode: str = "AUTO"
     last_activity_at: datetime | None = None
 
 
@@ -365,6 +366,39 @@ class RuntimeWorklineDetailResponse(BaseModel):
     devices: list[RuntimeWorklineDeviceItem] = Field(default_factory=list)
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
     recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
+
+
+class RuntimeTraceDeviceAction(BaseModel):
+    kind: str
+    label: str
+    status: str | None = None
+    timestamp: datetime | None = None
+    message: str | None = None
+
+
+class RuntimeTraceDevicePathNode(BaseModel):
+    device_id: int
+    device_code: str | None = None
+    device_name: str | None = None
+    device_role: str | None = None
+    is_current: bool = False
+    actions: list[RuntimeTraceDeviceAction] = Field(default_factory=list)
+
+
+class RuntimeBlockingReason(BaseModel):
+    device_id: int | None = None
+    reason: str
+    detail: str | None = None
+
+
+class RuntimeTracePathResponse(BaseModel):
+    workline_id: int | None = None
+    session_id: int | None = None
+    trace_id: str | None = None
+    devices: list[RuntimeTraceDevicePathNode] = Field(default_factory=list)
+    current_blocking_device_id: int | None = None
+    blocking_reason: RuntimeBlockingReason | None = None
+    evidence: TraceDetailResponse | None = None
 
 
 class RuntimeDeviceSummary(BaseModel):

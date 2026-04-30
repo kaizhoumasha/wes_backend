@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, WorklineOutbox
@@ -53,28 +53,65 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         self,
         db: AsyncSession,
         limit: int = 50,
+        workline_id: int | None = None,
+        device_id: int | None = None,
     ) -> list[WorklineOutbox]:
         """获取沙箱待处理消息。
 
         SIMULATION 模式下，Outbox 会正常进入派发链路并标记为 SENT；
         SENT 但未 ACKED 的消息即等待调试人员手工 callback/result 回传。
+
+        Args:
+            db: 数据库会话
+            limit: 最大返回数量
+            workline_id: 工作线 ID 过滤（可选）
+            device_id: 设备 ID 过滤（可选）
         """
-        from src.app.workline.models.session import RunMode, WorklineSession
+        from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 
         columns = cast("Any", WorklineOutbox).__table__.c
         session_columns = cast("Any", WorklineSession).__table__.c
 
-        result = await db.execute(
+        # 包含等待派发的 Outbox (NEW, DISPATCHING, SENT)
+        # 以及等待 Result 回传的 ACKED Outbox (session 在 WAITING_DEVICE_RESULT 状态)
+        open_session_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        query = (
             select(WorklineOutbox)
             .join(WorklineSession, columns.session_id == session_columns.id)
             .where(
                 session_columns.run_mode == RunMode.SIMULATION,
+                session_columns.status.in_(open_session_statuses),
                 columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
-                columns.status.in_([OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]),
+                or_(
+                    # 等待派发
+                    columns.status.in_([OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]),
+                    # 已 ACK 但等待 Result 回传
+                    and_(
+                        columns.status == OutboxStatus.ACKED,
+                        session_columns.status == SessionStatus.WAITING_DEVICE_RESULT,
+                    ),
+                ),
             )
-            .order_by(columns.created_at.asc())
-            .limit(limit)
         )
+
+        if workline_id is not None:
+            query = query.where(columns.workline_id == workline_id)
+
+        if device_id is not None:
+            from src.app.device.models import Device
+
+            device_columns = cast("Any", Device).__table__.c
+            query = query.join(Device, columns.target_code == device_columns.device_code).where(
+                device_columns.id == device_id
+            )
+
+        result = await db.execute(query.order_by(columns.created_at.asc()).limit(limit))
         return list(result.scalars().all())
 
     async def mark_as_dispatching(
@@ -164,6 +201,24 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         outbox.last_error = None
         await db.flush()
         return outbox
+
+    async def get_by_dispatch_key(
+        self,
+        db: AsyncSession,
+        dispatch_key: str,
+    ) -> WorklineOutbox | None:
+        """按 dispatch_key 查询 Outbox。
+
+        Args:
+            db: 数据库会话
+            dispatch_key: Dispatch Key
+
+        Returns:
+            Outbox 对象或 None
+        """
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
+        return result.scalar_one_or_none()
 
     async def mark_as_failed(
         self,
