@@ -136,9 +136,9 @@ class TestWorklineRuntimeApi:
             "src.app.workline.v1.runtime.runtime_query_service.get_overview",
             new=AsyncMock(return_value=result),
         ) as mock_get_overview:
-            response = await get_runtime_overview(db=AsyncMock())
+            response = await get_runtime_overview(db=AsyncMock(), include_sim=False)
 
-        mock_get_overview.assert_awaited_once_with(AnyArgHashable())
+        mock_get_overview.assert_awaited_once_with(AnyArgHashable(), include_sim=False)
         assert response["data"].stats == []
 
     @pytest.mark.asyncio
@@ -302,6 +302,7 @@ class TestRuntimeQueryService:
             patch.object(service, "list_devices", new=AsyncMock(return_value=[])),
             patch.object(service, "_load_recent_failed_sessions", new=AsyncMock(return_value=recent_failed_sessions)),
             patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_simulation_workline_ids", new=AsyncMock(return_value=[99])) as mock_sim_ids,
             patch.object(service, "_count_by_status", new=AsyncMock(side_effect=[7, 9, 10])),
             patch.object(service, "_count_waiting_sessions", new=AsyncMock(return_value=8), create=True),
             patch.object(
@@ -313,7 +314,8 @@ class TestRuntimeQueryService:
         ):
             result = await service.get_overview(db)
 
-        mock_failed_count.assert_awaited_once_with(AnyArgHashable())
+        mock_sim_ids.assert_awaited_once_with(AnyArgHashable())
+        mock_failed_count.assert_awaited_once_with(AnyArgHashable(), exclude_workline_ids=[99])
         failed_card = next(item for item in result.stats if item.key == "failed_sessions")
         assert failed_card.value == 42
 
@@ -330,8 +332,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
             run_mode="AUTO",
         )
@@ -362,8 +362,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
             run_mode="AUTO",
         )
@@ -402,8 +400,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
         )
 
@@ -588,8 +584,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
         )
         db = AsyncMock()

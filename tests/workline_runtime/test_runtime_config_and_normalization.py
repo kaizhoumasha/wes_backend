@@ -14,8 +14,6 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
         contract_version="1.0",
         config={"plugin": "config"},
         runtime_config_json={"timeout_policy": {"command": 30}},
-        owner_team="wes",
-        support_contact="oncall",
         diagnostic_profile={"summary_mode": "compact"},
     )
     device = SimpleNamespace(
