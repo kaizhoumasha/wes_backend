@@ -80,6 +80,13 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             db,
             DEVICE_STATUS_CHANGED_EVENT,
             {
+                "domain": "workline_trace",
+                "entity": "device",
+                "action": "updated",
+                "keys": {
+                    "work_line_id": getattr(device, "work_line_id", None),
+                    "device_id": getattr(device, "id", None),
+                },
                 "device_id": getattr(device, "id", None),
                 "device_code": getattr(device, "device_code", None),
                 "work_line_id": getattr(device, "work_line_id", None),

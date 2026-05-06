@@ -1950,6 +1950,25 @@ class ProcessInboxMessages:
                         await db.commit()
                         write_effects_applied = True
                         enqueue_outbox_dispatch = bool(write_result.commands or write_result.decisions)
+                        # 通知前端工作线运行态已变更，key 用于增量刷新定位
+                        from src.app.sys.services.event_stream_service import (
+                            WORKLINE_RUNTIME_CHANGED_EVENT,
+                            defer_sse_event,
+                        )
+
+                        defer_sse_event(
+                            db,
+                            WORKLINE_RUNTIME_CHANGED_EVENT,
+                            {
+                                "domain": "workline_trace",
+                                "entity": "session",
+                                "action": "updated",
+                                "keys": {
+                                    "workline_id": getattr(_workline, "id", None),
+                                    "session_id": getattr(_session, "id", None),
+                                },
+                            },
+                        )
                     except Exception:
                         await db.rollback()
                         raise
@@ -2074,6 +2093,9 @@ class ProcessInboxMessages:
                 result["failed"] += 1
                 result["processed"] += 1
 
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
         return result
 
 
