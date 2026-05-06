@@ -11,6 +11,7 @@ SSE_EVENT_CHANNEL = "events:stream"
 DEFERRED_SSE_EVENTS_KEY = "_deferred_sse_events_after_commit"
 
 DEVICE_STATUS_CHANGED_EVENT = "device.status.changed"
+WORKLINE_RUNTIME_CHANGED_EVENT = "workline.runtime.changed"
 
 
 class EventStreamService:
