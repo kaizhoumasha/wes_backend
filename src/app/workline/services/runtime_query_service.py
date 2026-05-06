@@ -191,16 +191,19 @@ class RuntimeQueryService(BaseService[Any, Any]):
     def __init__(self) -> None:
         super().__init__(device_repository, enable_cache=False)
 
-    async def get_overview(self, db: Any) -> RuntimeOverviewResponse:
-        worklines = await self.list_worklines(db)
+    async def get_overview(self, db: Any, *, include_sim: bool = False) -> RuntimeOverviewResponse:
+        worklines = await self.list_worklines(db, exclude_simulation=not include_sim)
         devices = await self.list_devices(db)
         recent_failed_sessions = await self._load_recent_failed_sessions(db, limit=10)
         recent_failed_traces = await self._build_trace_list_items(db, recent_failed_sessions)
         device_health = self._build_device_health_summary(devices)
 
-        running_sessions = await self._count_by_status(db, WorklineSession, {"RUNNING"})
-        waiting_sessions = await self._count_waiting_sessions(db)
-        failed_sessions = await self._count_failed_or_timed_out_sessions(db)
+        sim_workline_ids = await self._load_simulation_workline_ids(db) if not include_sim else []
+        running_sessions = await self._count_by_status(
+            db, WorklineSession, {"RUNNING"}, exclude_workline_ids=sim_workline_ids
+        )
+        waiting_sessions = await self._count_waiting_sessions(db, exclude_workline_ids=sim_workline_ids)
+        failed_sessions = await self._count_failed_or_timed_out_sessions(db, exclude_workline_ids=sim_workline_ids)
         inbox_backlog = await self._count_by_status(db, WorklineInbox, _INBOX_BACKLOG_STATUSES)
         outbox_backlog = await self._count_by_status(db, WorklineOutbox, _OUTBOX_BACKLOG_STATUSES)
         abnormal_devices = device_health.abnormal
@@ -278,13 +281,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         items = await self._build_trace_list_items(db, page_items)
         return RuntimeTraceListResponse(total=total, items=items)
 
-    async def list_worklines(self, db: Any) -> list[RuntimeWorklineSummary]:
+    async def list_worklines(self, db: Any, *, exclude_simulation: bool = False) -> list[RuntimeWorklineSummary]:
         workline_columns = cast("Any", WorkLine).__table__.c
-        workline_result = await db.execute(
-            select(WorkLine)
-            .where(workline_columns.is_deleted.is_(False))
-            .order_by(workline_columns.sort_order.asc(), workline_columns.id.asc())
-        )
+        query = select(WorkLine).where(workline_columns.is_deleted.is_(False))
+        if exclude_simulation:
+            query = query.where(workline_columns.run_mode != "SIMULATION")
+        workline_result = await db.execute(query.order_by(workline_columns.id.asc()))
         worklines = list(workline_result.scalars().all())
         if not worklines:
             return []
@@ -403,28 +405,47 @@ class RuntimeQueryService(BaseService[Any, Any]):
     ) -> RuntimeDeviceDetailResponse | None:
         return await self.get_device_detail(db, device_id, workline_id=workline_id)
 
-    async def _count_by_status(self, db: Any, model: Any, statuses: set[str]) -> int:
+    async def _load_simulation_workline_ids(self, db: Any) -> list[int]:
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(WorkLine.id).where(columns.is_deleted.is_(False), columns.run_mode == "SIMULATION")
+        )
+        return [row[0] for row in result.all() if row[0] is not None]
+
+    async def _count_by_status(
+        self,
+        db: Any,
+        model: Any,
+        statuses: set[str],
+        *,
+        exclude_workline_ids: list[int] | None = None,
+    ) -> int:
         columns = cast("Any", model).__table__.c
-        result = await db.execute(select(func.count()).select_from(model).where(columns.status.in_(list(statuses))))
+        filters: list[Any] = [columns.status.in_(list(statuses))]
+        if exclude_workline_ids and hasattr(columns, "workline_id"):
+            filters.append(columns.workline_id.not_in(exclude_workline_ids))
+        result = await db.execute(select(func.count()).select_from(model).where(*filters))
         return int(result.scalar_one())
 
-    async def _count_waiting_sessions(self, db: Any) -> int:
+    async def _count_waiting_sessions(self, db: Any, *, exclude_workline_ids: list[int] | None = None) -> int:
         columns = cast("Any", WorklineSession).__table__.c
         now = timezone.now_for_db()
-        result = await db.execute(
-            select(func.count()).select_from(WorklineSession).where(_waiting_not_timed_out_clause(columns, now))
-        )
+        filters: list[Any] = [_waiting_not_timed_out_clause(columns, now)]
+        if exclude_workline_ids:
+            filters.append(columns.workline_id.not_in(exclude_workline_ids))
+        result = await db.execute(select(func.count()).select_from(WorklineSession).where(*filters))
         return int(result.scalar_one())
 
-    async def _count_failed_or_timed_out_sessions(self, db: Any) -> int:
+    async def _count_failed_or_timed_out_sessions(
+        self, db: Any, *, exclude_workline_ids: list[int] | None = None
+    ) -> int:
         columns = cast("Any", WorklineSession).__table__.c
         recent_since = _recent_failure_since()
         now = timezone.now_for_db()
-        result = await db.execute(
-            select(func.count())
-            .select_from(WorklineSession)
-            .where(_recent_failure_or_timeout_clause(columns, now, recent_since))
-        )
+        filters: list[Any] = [_recent_failure_or_timeout_clause(columns, now, recent_since)]
+        if exclude_workline_ids:
+            filters.append(columns.workline_id.not_in(exclude_workline_ids))
+        result = await db.execute(select(func.count()).select_from(WorklineSession).where(*filters))
         return int(result.scalar_one())
 
     async def _load_workline_map(self, db: Any, workline_ids: list[int | None]) -> dict[int, WorkLine]:
@@ -692,8 +713,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             zone_name=workline.zone_name,
             plugin_key=workline.plugin_key,
             contract_version=workline.contract_version,
-            owner_team=workline.owner_team,
-            support_contact=workline.support_contact,
             is_active=workline.is_active,
             device_count=len(devices),
             active_session_count=active_count,

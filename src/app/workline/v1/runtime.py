@@ -29,8 +29,11 @@ router = APIRouter(tags=["运行监控"])
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
-async def get_runtime_overview(db: AsyncSessionDep) -> ResponseSchemaModel[RuntimeOverviewResponse]:
-    result = await runtime_query_service.get_overview(db)
+async def get_runtime_overview(
+    db: AsyncSessionDep,
+    include_sim: bool = Query(default=False, alias="includeSim"),
+) -> ResponseSchemaModel[RuntimeOverviewResponse]:
+    result = await runtime_query_service.get_overview(db, include_sim=include_sim)
     return cast("ResponseSchemaModel[RuntimeOverviewResponse]", response_builder.success(data=result))
 
 
@@ -41,8 +44,11 @@ async def get_runtime_overview(db: AsyncSessionDep) -> ResponseSchemaModel[Runti
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
-async def get_runtime_worklines(db: AsyncSessionDep) -> ResponseSchemaModel[list[RuntimeWorklineSummary]]:
-    result = await runtime_query_service.list_worklines(db)
+async def get_runtime_worklines(
+    db: AsyncSessionDep,
+    exclude_simulation: bool = Query(default=False, alias="excludeSimulation"),
+) -> ResponseSchemaModel[list[RuntimeWorklineSummary]]:
+    result = await runtime_query_service.list_worklines(db, exclude_simulation=exclude_simulation)
     return cast("ResponseSchemaModel[list[RuntimeWorklineSummary]]", response_builder.success(data=result))
 
 
