@@ -108,6 +108,25 @@ async def get_sandbox_pending(
     )
 
 
+@router.get(
+    "/sandbox/completed",
+    summary="[biz:workline:list] 查询沙箱已完成 Outbox",
+    response_model=ResponseSchemaModel[list[dict[str, Any]]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_sandbox_completed(
+    db: AsyncSessionDep,
+    limit: int = 50,
+    workline_id: int | None = None,
+    device_id: int | None = None,
+) -> ResponseSchemaModel[list[dict[str, Any]]]:
+    items = await workline_operation_service.get_sandbox_completed(
+        db, limit=limit, workline_id=workline_id, device_id=device_id
+    )
+    return cast("ResponseSchemaModel[list[dict[str, Any]]]", response_builder.success(data=items))
+
+
 @router.post(
     "/replay/inboxes/{inbox_id}",
     summary="[biz:workline:update] Replay 历史 Inbox",

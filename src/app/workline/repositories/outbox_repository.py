@@ -114,6 +114,122 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         result = await db.execute(query.order_by(columns.created_at.asc()).limit(limit))
         return list(result.scalars().all())
 
+    async def get_sandbox_completed_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """获取沙箱已完成的 outbox，按 Session 分组。
+
+        SIMULATION 模式下，Session 进入终端态（COMPLETED/FAILED/CANCELLED）且
+        Outbox 状态为 ACKED 的记录。按 Session 分组返回，用于 Sandbox 页面
+        以 Event 为维度展示用户已处理过的命令。
+
+        同时关联触发该 Session 的 DEVICE_EVENT inbox，返回 event_payload。
+
+        Args:
+            db: 数据库会话
+            limit: 最大返回 Session 数量
+            workline_id: 工作线 ID 过滤（可选）
+            device_id: 设备 ID 过滤（可选）
+        """
+        from src.app.workline.models.inbox import InboxKind, WorklineInbox
+        from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        session_columns = cast("Any", WorklineSession).__table__.c
+        inbox_columns = cast("Any", WorklineInbox).__table__.c
+
+        terminal_session_statuses = [
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+        ]
+
+        query = (
+            select(WorklineOutbox, WorklineSession, WorklineInbox)
+            .join(WorklineSession, columns.session_id == session_columns.id)
+            .outerjoin(
+                WorklineInbox,
+                (columns.session_id == inbox_columns.session_id) & (inbox_columns.kind == InboxKind.DEVICE_EVENT),
+            )
+            .where(
+                session_columns.run_mode == RunMode.SIMULATION,
+                session_columns.status.in_(terminal_session_statuses),
+                columns.status == OutboxStatus.ACKED,
+                columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
+            )
+        )
+
+        if workline_id is not None:
+            query = query.where(columns.workline_id == workline_id)
+
+        if device_id is not None:
+            from src.app.device.models import Device
+
+            device_columns = cast("Any", Device).__table__.c
+            query = query.join(Device, columns.target_code == device_columns.device_code).where(
+                device_columns.id == device_id
+            )
+
+        query = query.order_by(session_columns.created_at.desc(), columns.created_at.asc()).limit(limit * 3)
+        result = await db.execute(query)
+        rows = result.all()
+
+        # Group by session
+        sessions: dict[int, dict[str, Any]] = {}
+        for outbox, session, inbox in rows:
+            sid = session.id
+            if sid not in sessions:
+                # Extract event payload from the first matching inbox
+                event_payload: dict[str, Any] | None = None
+                event_type: str | None = None
+                if inbox is not None:
+                    raw = inbox.payload_json
+                    if isinstance(raw, dict):
+                        event_payload = dict(raw)
+                        event_type = raw.get("event_type")
+
+                sessions[sid] = {
+                    "session": {
+                        "id": session.id,
+                        "session_code": session.session_code,
+                        "status": session.status.value if hasattr(session.status, "value") else session.status,
+                        "step_code": session.step_code,
+                        "barcode": session.barcode,
+                        "created_at": session.created_at.isoformat() if session.created_at else None,
+                        "started_at": session.started_at.isoformat() if session.started_at else None,
+                        "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+                        "event_type": event_type,
+                        "event_payload": event_payload,
+                    },
+                    "outbox_items": [],
+                }
+            raw_payload = outbox.payload_json
+            payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+            sessions[sid]["outbox_items"].append(
+                {
+                    "id": outbox.id,
+                    "session_id": outbox.session_id,
+                    "workline_id": outbox.workline_id,
+                    "dispatch_key": outbox.dispatch_key,
+                    "dispatch_type": (
+                        outbox.dispatch_type.value if hasattr(outbox.dispatch_type, "value") else outbox.dispatch_type
+                    ),
+                    "target_type": (
+                        outbox.target_type.value if hasattr(outbox.target_type, "value") else outbox.target_type
+                    ),
+                    "target_code": outbox.target_code,
+                    "status": (outbox.status.value if hasattr(outbox.status, "value") else outbox.status),
+                    "payload_json": payload,
+                    "source_device": None,
+                }
+            )
+
+        return list(sessions.values())[:limit]
+
     async def mark_as_dispatching(
         self,
         db: AsyncSession,

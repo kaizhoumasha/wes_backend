@@ -128,6 +128,20 @@ class WorklineOperationService(BaseService[Any, Any]):
             db, limit=limit, workline_id=workline_id, device_id=device_id
         )
 
+    async def get_sandbox_completed(
+        self,
+        db: Any,
+        *,
+        limit: int = 50,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """查询 SIMULATION 模式下已完成的 outbox，按 Session 分组。"""
+
+        return await self.outbox_repo.get_sandbox_completed_messages(
+            db, limit=limit, workline_id=workline_id, device_id=device_id
+        )
+
     async def replay_inbox(
         self,
         db: Any,
