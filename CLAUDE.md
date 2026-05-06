@@ -67,6 +67,29 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
+## 5. Planning Document Readability
+
+**计划文档用于对齐方向，不用于承载大段实现代码。**
+
+规划/计划文档应优先表达：
+
+- 目标和非目标
+- 架构决策和业务约定
+- 模块边界和文件职责
+- 状态流、错误码、数据字段
+- 验收标准、测试场景、验证命令
+- 风险、取舍和迁移影响
+
+严格禁止：
+
+- 在计划文档中粘贴完整类实现、完整函数实现或大段测试代码
+- 把计划文档写成可复制执行的代码脚本
+- 用实现细节替代架构决策和验收标准
+
+允许少量简短伪代码或极短示例，但只用于说明约定。实现细节应在编码阶段通过 TDD、diff、测试和提交体现。
+
+---
+
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
 ## 项目概述

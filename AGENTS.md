@@ -75,6 +75,24 @@ __all__ = ["XxxService", "xxx_service"]
 
 ---
 
+## Planning Document Readability
+
+规划/计划文档应优先表达**目标、架构决策、业务约定、任务边界、验收标准、风险和验证方式**。
+
+**STRICTLY FORBIDDEN**:
+- ❌ 在规划文档中粘贴完整类实现、完整函数实现或大段测试代码
+- ❌ 把计划文档写成可复制执行的代码脚本
+- ❌ 用代码细节替代架构决策和验收标准
+
+**Allowed**:
+- ✅ 关键接口名、文件职责、状态流、错误码、数据字段
+- ✅ 简短伪代码或极短示例，用于说明约定
+- ✅ 验证命令、测试场景和通过标准
+
+实现细节应在编码阶段通过 TDD、diff、测试和提交体现，而不是塞进规划文档。
+
+---
+
 ## Zero-Code Development Pattern
 
 Inherit base classes to auto-generate full CRUD capabilities:

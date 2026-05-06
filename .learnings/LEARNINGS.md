@@ -1729,3 +1729,73 @@ Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
 - **Resolved**: 2026-04-25T10:49:23Z
 - **Commit/PR**: n/a
 - **Notes**: 后续本工作区状态更新和最终答复使用中文。
+
+---
+
+## [LRN-20260506-001] correction
+
+**Logged**: 2026-05-06T14:27:29+08:00
+**Priority**: high
+**Status**: promoted
+**Category**: correction
+**Area**: docs
+
+### Summary
+计划/规划文档应保持可读性，不能塞入大段实现代码。
+
+### Details
+用户纠正：`docs/superpowers/plans/2026-05-06-workline-emergency-stop.md` 中填入了太多完整代码和测试代码，破坏了计划文档可读性。正确做法是让计划文档承载目标、架构决策、业务约定、任务边界、验收标准、风险和验证方式；实现细节应在编码阶段通过 TDD、diff、测试和提交体现。
+
+### Suggested Action
+后续编写计划文档时，只保留关键接口名、文件职责、状态流、错误码、数据字段、测试场景和验证命令。避免完整类实现、完整函数实现和大段测试代码。该规则已提升到 `AGENTS.md` 和 `CLAUDE.md`。
+
+### Metadata
+- Source: user_feedback
+- Related Files: AGENTS.md, CLAUDE.md, docs/superpowers/plans/2026-05-06-workline-emergency-stop.md
+- Tags: planning, documentation, readability
+- Pattern-Key: docs.planning_readability
+- Recurrence-Count: 1
+- First-Seen: 2026-05-06
+- Last-Seen: 2026-05-06
+
+### Resolution
+- **Resolved**: 2026-05-06T14:27:29+08:00
+- **Promoted**: AGENTS.md, CLAUDE.md
+- **Notes**: 已在两个根级协作文件中加入 Planning Document Readability 规则。
+
+---
+
+## [LRN-20260506-002] correction
+
+**Logged**: 2026-05-06T14:31:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: correction
+**Area**: docs
+
+### Summary
+`.learnings` 只能追加记录，初始化或记录学习时不得覆盖既有内容。
+
+### Details
+用户纠正：`.learnings` 里的内容应该是追加，而不是覆盖。此前初始化命令对已存在的 `LEARNINGS.md`、`ERRORS.md`、`FEATURE_REQUESTS.md` 写入了默认头部，导致既有学习和错误记录被替换。正确做法是先检测文件是否存在；已存在时只追加新的学习条目，不重写文件头或历史内容。
+
+### Suggested Action
+后续使用 self-improvement 时：
+1. 先检查 `.learnings` 文件是否存在；
+2. 已存在的文件不写默认模板；
+3. 新学习只追加到对应文件末尾；
+4. 若误覆盖，立即用 git diff 确认并恢复，再重新追加。
+
+### Metadata
+- Source: user_feedback
+- Related Files: .learnings/LEARNINGS.md, .learnings/ERRORS.md, .learnings/FEATURE_REQUESTS.md
+- Tags: self-improvement, learnings, append-only, data-preservation
+- Pattern-Key: learnings.append_not_overwrite
+- Recurrence-Count: 1
+- First-Seen: 2026-05-06
+- Last-Seen: 2026-05-06
+
+### Resolution
+- **Resolved**: 2026-05-06T14:31:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已恢复被覆盖的 `.learnings` 文件内容，并改为仅追加本次学习记录。
