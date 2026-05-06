@@ -52,8 +52,6 @@ def _normalize_workline_for_runtime(workline: Any) -> Any:
         run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
         config=_safe_dict(getattr(workline, "config", None)),
         runtime_config_json=_safe_dict(getattr(workline, "runtime_config_json", None)),
-        owner_team=_safe_str(getattr(workline, "owner_team", None)),
-        support_contact=_safe_str(getattr(workline, "support_contact", None)),
         diagnostic_profile=_safe_dict(getattr(workline, "diagnostic_profile", None)),
     )
 

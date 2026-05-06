@@ -333,8 +333,6 @@ class RuntimeWorklineSummary(BaseModel):
     zone_name: str | None = None
     plugin_key: str | None = None
     contract_version: str | None = None
-    owner_team: str | None = None
-    support_contact: str | None = None
     is_active: bool
     device_count: int = 0
     active_session_count: int = 0
