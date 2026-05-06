@@ -75,6 +75,12 @@ def get_workline_plugin_definition(plugin_key: str | None) -> WorklinePluginDefi
     return WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
 
 
+def list_workline_plugin_definitions() -> list[WorklinePluginDefinition]:
+    """按插件标识稳定导出已注册插件定义。"""
+
+    return [WORKLINE_PLUGIN_REGISTRY[key] for key in sorted(WORKLINE_PLUGIN_REGISTRY)]
+
+
 def parse_workline_six_in_one(plugin_key: str | None, payload: dict[str, Any] | None) -> Any | None:
     """调用插件提供的 SixInOne 解析入口。"""
 
@@ -159,6 +165,7 @@ __all__ = [
     "classify_workline_result",
     "get_plugin_contract_version",
     "get_workline_plugin_definition",
+    "list_workline_plugin_definitions",
     "parse_workline_six_in_one",
     "resolve_workline_business_key",
     "validate_workline_plugin_assignment",
