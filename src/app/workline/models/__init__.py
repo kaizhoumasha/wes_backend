@@ -62,6 +62,10 @@ from .safety import (
 )
 from .session import (
     RunMode,
+    RuntimeReconciliationReason,
+    RuntimeReconciliationResolution,
+    RuntimeReconciliationSourceKind,
+    RuntimeReconciliationState,
     SessionStatus,
     WorklineSession,
     WorklineSessionBase,
@@ -102,6 +106,10 @@ __all__ = [
     "RuntimeDeviceDetailResponse",
     "RuntimeDeviceSummary",
     "RuntimeOverviewResponse",
+    "RuntimeReconciliationReason",
+    "RuntimeReconciliationResolution",
+    "RuntimeReconciliationSourceKind",
+    "RuntimeReconciliationState",
     "RuntimeStatCard",
     "RuntimeTraceListItem",
     "RuntimeTraceListResponse",

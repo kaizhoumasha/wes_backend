@@ -10,6 +10,7 @@ from src.app.sys.services.event_stream_service import publish_deferred_sse_event
 from src.app.workline.models.operation import (
     ManualOperationRequest,
     ReplayInboxRequest,
+    ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
     SandboxEventRequest,
     SandboxResultRequest,
@@ -158,6 +159,32 @@ async def replay_inbox(
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
+
+
+@router.post(
+    "/reconciliations/sessions/{session_id}/resolve",
+    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不调用 timeout 插件处理、释放安全停靠队列",
+    response_model=ResponseSchemaModel[dict[str, Any]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
+)
+async def resolve_runtime_reconciliation(
+    session_id: int,
+    payload: ResolveRuntimeReconciliationRequest,
+    db: AsyncSessionDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
+) -> ResponseSchemaModel[dict[str, Any]]:
+    try:
+        result = await workline_operation_service.resolve_runtime_reconciliation(
+            db,
+            session_id=session_id,
+            request=payload,
+            operator_id=current_user_id,
+        )
+        await publish_deferred_sse_events(db)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
 
 
 @router.post(

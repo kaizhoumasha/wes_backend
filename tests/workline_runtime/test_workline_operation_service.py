@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -40,7 +40,7 @@ class _OutboxRepoStub:
     def __init__(self, outbox: object | None = None) -> None:
         self.outbox = outbox
         self.get_by_dispatch_key = AsyncMock(return_value=outbox)
-        self.mark_as_acked_by_dispatch_key = AsyncMock(return_value=outbox)
+        self.get_sandbox_pending_messages = AsyncMock(return_value=[outbox] if outbox is not None else [])
 
 
 @pytest.mark.asyncio
@@ -62,7 +62,11 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
         source_message_id="req-001",
     )
     inbox_repo = _InboxRepoStub(original)
-    service = WorklineOperationService(inbox_repo=cast("Any", inbox_repo))
+    session = SimpleNamespace(id=2, reconciliation_state=None)
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+    )
 
     replay = await service.replay_inbox(
         object(), inbox_id=10, reason="重新诊断", operator_id="ops-1", auto_commit=False
@@ -135,8 +139,6 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
             auto_commit=False,
         )
 
-    outbox_repo.mark_as_acked_by_dispatch_key.assert_not_awaited()
-
 
 @pytest.mark.asyncio
 async def test_sandbox_ack_requires_current_awaiting_command() -> None:
@@ -173,7 +175,149 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
             auto_commit=False,
         )
 
-    outbox_repo.mark_as_acked_by_dispatch_key.assert_not_awaited()
+    outbox_repo.get_by_dispatch_key.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        status=OutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(
+        id=9,
+        command_code="CMD-001",
+        session_id_int=530,
+        sent_at=None,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+    )
+    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    outbox_repo = _OutboxRepoStub(outbox)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", outbox_repo),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with patch(
+        "src.app.workline.services.runtime_reconciliation_service."
+        "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+        new=AsyncMock(return_value=session),
+    ) as activate_deadline:
+        returned = await service.submit_sandbox_ack(
+            object(),
+            dispatch_key="device-command:CMD-001",
+            auto_commit=False,
+        )
+
+    assert returned is outbox
+    assert outbox.status == OutboxStatus.SENT
+    assert command.status == CommandStatus.ACK_RECEIVED
+    assert command.sent_at is command.ack_received_at
+    assert command.ack_code == 200
+    assert command.ack_message == "SANDBOX_ACK"
+    activate_deadline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() -> None:
+    from datetime import datetime
+
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    ack_received_at = datetime(2026, 5, 8, 9, 0, 0)
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        status=OutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(
+        id=9,
+        command_code="CMD-001",
+        session_id_int=530,
+        status=CommandStatus.ACK_RECEIVED,
+        sent_at=ack_received_at,
+        ack_received_at=ack_received_at,
+        ack_code=200,
+        ack_message="SANDBOX_ACK",
+    )
+    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with patch(
+        "src.app.workline.services.runtime_reconciliation_service."
+        "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+        new=AsyncMock(),
+    ) as activate_deadline:
+        with pytest.raises(ValueError, match="Command 已 ACK"):
+            await service.submit_sandbox_ack(
+                object(),
+                dispatch_key="device-command:CMD-001",
+                auto_commit=False,
+            )
+
+    assert command.ack_received_at == ack_received_at
+    activate_deadline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_pending_projects_ack_received_command_as_acked() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="ARM01",
+        status=OutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(status=CommandStatus.ACK_RECEIVED)
+    outbox_repo = _OutboxRepoStub(outbox)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", outbox_repo),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+    )
+    db = object()
+
+    result = await service.get_sandbox_pending(db, workline_id=45)
+
+    assert len(result) == 1
+    assert result[0].status == "ACKED"
+    assert outbox.status == OutboxStatus.SENT
+    outbox_repo.get_sandbox_pending_messages.assert_awaited_once_with(
+        db,
+        limit=50,
+        workline_id=45,
+        device_id=None,
+    )
 
 
 @pytest.mark.asyncio

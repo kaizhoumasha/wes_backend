@@ -41,6 +41,16 @@ class ManualOperationRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class ResolveRuntimeReconciliationRequest(BaseModel):
+    """人工运行时对账解除请求。"""
+
+    resolution: str = Field(pattern="^(COMPLETED|FAILED|CANCELLED)$", description="人工对账决议")
+    checks: dict[str, bool] = Field(description="按 reconciliation_reason 要求确认的 checklist")
+    operator_note: str = Field(min_length=1, max_length=1000, description="现场确认说明")
+    result_payload: dict[str, Any] | None = Field(default=None, description="COMPLETED 时可补录业务结果摘要")
+    confirmed_at: datetime = Field(description="现场确认时间")
+
+
 class SandboxResultRequest(BaseModel):
     """沙箱 Command Result 模拟请求。"""
 
@@ -80,6 +90,7 @@ class SandboxTemplatesResponse(BaseModel):
 __all__ = [
     "ManualOperationRequest",
     "ReplayInboxRequest",
+    "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
     "SandboxEventRequest",
     "SandboxEventTemplate",

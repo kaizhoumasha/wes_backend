@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any, cast
 
+from src.app.device.models.command import CommandStatus
 from src.app.device.repositories import (
     DeviceCommandRepository,
     DeviceRepository,
@@ -13,12 +15,13 @@ from src.app.device.repositories import (
 )
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.operation import (
+    ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
     SandboxResultTemplate,
     SandboxTemplatesResponse,
 )
 from src.app.workline.models.outbox import DispatchType, OutboxStatus
-from src.app.workline.models.session import SessionStatus
+from src.app.workline.models.session import RuntimeReconciliationResolution, SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
 from src.app.workline.repositories import (
     inbox_repository,
@@ -124,9 +127,10 @@ class WorklineOperationService(BaseService[Any, Any]):
     ) -> list[Any]:
         """查询 SIMULATION 模式下等待调试人员处理的 outbox。"""
 
-        return await self.outbox_repo.get_sandbox_pending_messages(
+        outboxes = await self.outbox_repo.get_sandbox_pending_messages(
             db, limit=limit, workline_id=workline_id, device_id=device_id
         )
+        return [await self._project_sandbox_pending_outbox(db, outbox) for outbox in outboxes]
 
     async def get_sandbox_completed(
         self,
@@ -140,6 +144,39 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         return await self.outbox_repo.get_sandbox_completed_messages(
             db, limit=limit, workline_id=workline_id, device_id=device_id
+        )
+
+    async def _project_sandbox_pending_outbox(self, db: Any, outbox: Any) -> Any:
+        """将沙箱 outbox 投影为前端动作状态。
+
+        Outbox 的持久状态保持 `SENT`，ACK 事实在 DeviceCommand 上。
+        前端已有 `ACKED -> 模拟 Result` 流程，这里按 command 状态给出只读投影。
+        """
+
+        raw_payload = outbox.payload_json
+        payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+        status = _enum_value(outbox.status)
+        if (
+            _enum_value(outbox.dispatch_type) == DispatchType.DEVICE_COMMAND.value
+            and _enum_value(outbox.status) == OutboxStatus.SENT.value
+        ):
+            command_code = payload.get("command_code")
+            if isinstance(command_code, str) and command_code:
+                command = await self.command_repo.get_by_command_code(db, command_code)
+                if command is not None and _enum_value(command.status) == CommandStatus.ACK_RECEIVED.value:
+                    status = "ACKED"
+
+        return SimpleNamespace(
+            id=outbox.id,
+            session_id=outbox.session_id,
+            workline_id=outbox.workline_id,
+            dispatch_key=outbox.dispatch_key,
+            dispatch_type=_enum_value(outbox.dispatch_type),
+            target_type=_enum_value(outbox.target_type),
+            target_code=outbox.target_code,
+            status=status,
+            payload_json=payload,
+            source_device=None,
         )
 
     async def replay_inbox(
@@ -156,6 +193,14 @@ class WorklineOperationService(BaseService[Any, Any]):
         original = await self.inbox_repo.get_by_id(db, inbox_id)
         if original is None:
             raise ValueError(f"Inbox 不存在: {inbox_id}")
+        if original.session_id is not None:
+            session = await self.session_repo.get_by_id(db, original.session_id)
+            if session is not None:
+                from src.app.workline.services.runtime_reconciliation_service import (
+                    workline_runtime_reconciliation_service,
+                )
+
+                workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
 
         original_payload = original.payload_json
         payload = dict(original_payload) if isinstance(original_payload, dict) else {}
@@ -213,6 +258,9 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(f"会话不存在: {session_id}")
         if session.status not in _OPEN_SESSION_STATUSES:
             raise ValueError(f"当前会话状态不允许人工操作: session_id={session_id}")
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
 
         normalized_operation = operation.upper()
         kind = _MANUAL_OPERATION_KIND.get(normalized_operation)
@@ -307,7 +355,7 @@ class WorklineOperationService(BaseService[Any, Any]):
     ) -> Any:
         """沙箱模式模拟 Command ACK。
 
-        将 SENT 状态的 Outbox 标记为 ACKED，表示设备已收到命令。
+        ACK 事实只写 DeviceCommand.status/ack_received_at，并触发 execution deadline 激活。
         """
 
         outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
@@ -320,13 +368,65 @@ class WorklineOperationService(BaseService[Any, Any]):
         self._require_simulation_workline(workline)
         await self._validate_ack_target(db, outbox)
 
-        acked = await self.outbox_repo.mark_as_acked_by_dispatch_key(db, dispatch_key)
-        if acked is None:
-            raise RuntimeError(f"标记 ACK 失败: {dispatch_key}")
+        raw_payload = outbox.payload_json
+        outbox_payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+        command_code = outbox_payload.get("command_code")
+        if not isinstance(command_code, str) or not command_code:
+            raise ValueError(f"Outbox 缺少 command_code: dispatch_key={dispatch_key}")
+        command = await self.command_repo.get_by_command_code(db, command_code)
+        if command is None or command.id is None:
+            raise ValueError(f"Command 不存在: {command_code}")
+        if (
+            _enum_value(getattr(command, "status", None)) == CommandStatus.ACK_RECEIVED.value
+            or command.ack_received_at is not None
+        ):
+            raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
+
+        ack_received_at = timezone.now_for_db()
+        command.status = CommandStatus.ACK_RECEIVED
+        command.sent_at = command.sent_at or ack_received_at
+        command.ack_received_at = ack_received_at
+        command.ack_code = 200
+        command.ack_message = "SANDBOX_ACK"
+
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+            db,
+            command_id=command.id,
+            ack_received_at=ack_received_at,
+        )
 
         if auto_commit:
             await self._commit_mutation(db)
-        return acked
+        return outbox
+
+    async def resolve_runtime_reconciliation(
+        self,
+        db: Any,
+        *,
+        session_id: int,
+        request: ResolveRuntimeReconciliationRequest,
+        operator_id: int,
+        auto_commit: bool = True,
+    ) -> dict[str, Any]:
+        """解除 runtime reconciliation 隔离并释放对应 parked outbox。"""
+
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        result = await workline_runtime_reconciliation_service.resolve_runtime_reconciliation(
+            db,
+            session_id=session_id,
+            resolution=RuntimeReconciliationResolution(request.resolution),
+            checks=request.checks,
+            operator_note=request.operator_note,
+            confirmed_at=request.confirmed_at,
+            operator_id=operator_id,
+            result_payload=request.result_payload,
+        )
+        if auto_commit:
+            await self._commit_mutation(db)
+        return result
 
     async def submit_sandbox_result(
         self,

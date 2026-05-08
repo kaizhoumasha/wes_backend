@@ -2,8 +2,8 @@ from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafety
 from src.app.workline.models.workline import LineType, WorkLine, WorkLineBase
 
 
-def test_workline_runtime_status_values_are_minimal_v1() -> None:
-    assert [status.value for status in WorkLineRuntimeStatus] == ["READY", "ESTOPPED"]
+def test_workline_runtime_status_values_include_reconciliation() -> None:
+    assert [status.value for status in WorkLineRuntimeStatus] == ["READY", "RECONCILING", "ESTOPPED"]
 
 
 def test_workline_table_has_safety_projection_but_base_schema_does_not() -> None:

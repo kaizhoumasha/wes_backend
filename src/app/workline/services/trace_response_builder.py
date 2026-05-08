@@ -50,6 +50,8 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
     if session is None:
         return None
 
+    reconciliation_state = _enum_str(getattr(session, "reconciliation_state", None))
+
     return TraceSessionItem(
         id=session.id,
         session_code=session.session_code,
@@ -65,9 +67,25 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         ended_at=session.ended_at,
         current_wait_type=session.current_wait_type,
         current_wait_token=session.current_wait_token,
+        current_wait_timeout_seconds=getattr(session, "current_wait_timeout_seconds", None),
         waiting_since=session.waiting_since,
         deadline_at=session.deadline_at,
         awaiting_command_id=session.awaiting_command_id,
+        reconciliation_state=reconciliation_state,
+        reconciliation_reason=_enum_str(getattr(session, "reconciliation_reason", None)),
+        reconciliation_source_kind=_enum_str(getattr(session, "reconciliation_source_kind", None)),
+        reconciliation_source_inbox_id=getattr(session, "reconciliation_source_inbox_id", None),
+        reconciliation_source_outbox_id=getattr(session, "reconciliation_source_outbox_id", None),
+        reconciliation_command_id=getattr(session, "reconciliation_command_id", None),
+        reconciliation_device_id=getattr(session, "reconciliation_device_id", None),
+        reconciliation_wait_token=getattr(session, "reconciliation_wait_token", None),
+        reconciliation_ack_received_at=getattr(session, "reconciliation_ack_received_at", None),
+        reconciliation_deadline_at=getattr(session, "reconciliation_deadline_at", None),
+        reconciliation_occurred_at=getattr(session, "reconciliation_occurred_at", None),
+        reconciliation_late_evidence_received=getattr(session, "reconciliation_late_evidence_received", False),
+        reconciliation_resolution=_enum_str(getattr(session, "reconciliation_resolution", None)),
+        reconciliation_resolved_at=getattr(session, "reconciliation_resolved_at", None),
+        required_operator_action=("RESOLVE_RUNTIME_RECONCILIATION" if reconciliation_state == "PENDING" else None),
         failure_domain=session.failure_domain,
         failure_code=session.failure_code,
         failure_message=session.failure_message,
@@ -162,6 +180,10 @@ def _build_outbox_item(item: Any) -> TraceOutboxItem:
         attempt_count=item.attempt_count,
         next_retry_at=item.next_retry_at,
         last_error=item.last_error,
+        blocked_by_reconciliation_session_id=getattr(item, "blocked_by_reconciliation_session_id", None),
+        blocked_device_id=getattr(item, "blocked_device_id", None),
+        blocked_workline_id=getattr(item, "blocked_workline_id", None),
+        blocked_reason=getattr(item, "blocked_reason", None),
         created_at=item.created_at,
         sent_at=item.sent_at,
         finished_at=item.finished_at,

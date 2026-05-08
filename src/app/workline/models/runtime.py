@@ -151,9 +151,25 @@ class TraceSessionItem(BaseModel):
     ended_at: datetime | None = None
     current_wait_type: str | None = None
     current_wait_token: str | None = None
+    current_wait_timeout_seconds: int | None = None
     waiting_since: datetime | None = None
     deadline_at: datetime | None = None
     awaiting_command_id: int | None = None
+    reconciliation_state: str | None = None
+    reconciliation_reason: str | None = None
+    reconciliation_source_kind: str | None = None
+    reconciliation_source_inbox_id: int | None = None
+    reconciliation_source_outbox_id: int | None = None
+    reconciliation_command_id: int | None = None
+    reconciliation_device_id: int | None = None
+    reconciliation_wait_token: str | None = None
+    reconciliation_ack_received_at: datetime | None = None
+    reconciliation_deadline_at: datetime | None = None
+    reconciliation_occurred_at: datetime | None = None
+    reconciliation_late_evidence_received: bool = False
+    reconciliation_resolution: str | None = None
+    reconciliation_resolved_at: datetime | None = None
+    required_operator_action: str | None = None
     failure_domain: str | None = None
     failure_code: str | None = None
     failure_message: str | None = None
@@ -200,6 +216,10 @@ class TraceOutboxItem(BaseModel):
     attempt_count: int = 0
     next_retry_at: datetime | None = None
     last_error: str | None = None
+    blocked_by_reconciliation_session_id: int | None = None
+    blocked_device_id: int | None = None
+    blocked_workline_id: int | None = None
+    blocked_reason: str | None = None
     created_at: datetime
     sent_at: datetime | None = None
     finished_at: datetime | None = None

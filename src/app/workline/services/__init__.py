@@ -5,6 +5,10 @@ from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_d
 from .inbox_service import WorklineInboxService, inbox_service
 from .operation_service import WorklineOperationService, workline_operation_service
 from .runtime_query_service import RuntimeQueryService, runtime_query_service
+from .runtime_reconciliation_service import (
+    WorklineRuntimeReconciliationService,
+    workline_runtime_reconciliation_service,
+)
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .timeline_sequence_service import add_timeline_with_sequence, allocate_timeline_seq_no
 from .trace_query_service import TraceQueryResult, TraceQueryService, trace_query_service
@@ -21,6 +25,7 @@ __all__ = [
     "WorklineDispatchAttemptService",
     "WorklineInboxService",
     "WorklineOperationService",
+    "WorklineRuntimeReconciliationService",
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
     "inbox_service",
@@ -29,6 +34,7 @@ __all__ = [
     "workline_diagnostic_service",
     "workline_dispatch_attempt_service",
     "workline_operation_service",
+    "workline_runtime_reconciliation_service",
     "workline_safety_service",
     "workline_service",
 ]

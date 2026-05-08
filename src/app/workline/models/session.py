@@ -48,6 +48,36 @@ class RunMode(str, Enum):
     SIMULATION = "SIMULATION"  # 模拟模式
 
 
+class RuntimeReconciliationState(str, Enum):
+    """运行时对账状态。"""
+
+    PENDING = "PENDING"
+    RESOLVED = "RESOLVED"
+
+
+class RuntimeReconciliationReason(str, Enum):
+    """运行时对账原因。"""
+
+    CALLBACK_DEADLINE_EXPIRED = "CALLBACK_DEADLINE_EXPIRED"
+    COMMAND_ACK_EXHAUSTED = "COMMAND_ACK_EXHAUSTED"
+    OUTBOX_DISPATCH_FAILED = "OUTBOX_DISPATCH_FAILED"
+
+
+class RuntimeReconciliationSourceKind(str, Enum):
+    """运行时对账来源类型。"""
+
+    TIMER_TIMEOUT = "TIMER_TIMEOUT"
+    DISPATCH_ACK_EXHAUSTED = "DISPATCH_ACK_EXHAUSTED"
+
+
+class RuntimeReconciliationResolution(str, Enum):
+    """运行时对账人工决议。"""
+
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
 # ==================== 基础字段 (用于 Schema 复用) ====================
 
 
@@ -182,6 +212,12 @@ class WorklineSessionBase(BaseMixin):
         description="超时截止时间",
     )
 
+    current_wait_timeout_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description="当前等待声明的业务完成窗口秒数；COMMAND_RESULT 等待在 ACK 后据此激活 deadline_at",
+    )
+
     awaiting_command_id: int | None = Field(
         default=None,
         index=True,
@@ -230,6 +266,75 @@ class WorklineSessionBase(BaseMixin):
         default=None,
         description="最后处理的 Inbox ID（便于重放）",
     )
+
+    # runtime reconciliation 一等字段；guard/CAS/resolve 只读取这些字段，
+    # 不从 context_json 推断控制状态。
+    reconciliation_state: RuntimeReconciliationState | None = Field(
+        default=None,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                RuntimeReconciliationState,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="运行时对账状态",
+    )
+    reconciliation_reason: RuntimeReconciliationReason | None = Field(
+        default=None,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                RuntimeReconciliationReason,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="运行时对账原因",
+    )
+    reconciliation_source_kind: RuntimeReconciliationSourceKind | None = Field(
+        default=None,
+        max_length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                RuntimeReconciliationSourceKind,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="运行时对账来源类型",
+    )
+    reconciliation_source_inbox_id: int | None = Field(default=None, index=True, description="触发对账的 Inbox ID")
+    reconciliation_source_outbox_id: int | None = Field(default=None, index=True, description="触发对账的 Outbox ID")
+    reconciliation_command_id: int | None = Field(default=None, index=True, description="触发对账的设备指令 ID")
+    reconciliation_device_id: int | None = Field(default=None, index=True, description="触发对账的设备 ID")
+    reconciliation_wait_token: str | None = Field(default=None, max_length=200, description="触发对账的等待令牌")
+    reconciliation_ack_received_at: datetime | None = Field(default=None, description="触发对账时的 ACK 接收时间")
+    reconciliation_deadline_at: datetime | None = Field(default=None, description="触发对账时的执行等待截止时间")
+    reconciliation_occurred_at: datetime | None = Field(default=None, index=True, description="运行时对账发生时间")
+    reconciliation_late_evidence_received: bool = Field(default=False, description="是否已收到迟到 callback 证据")
+    reconciliation_resolution: RuntimeReconciliationResolution | None = Field(
+        default=None,
+        max_length=50,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                RuntimeReconciliationResolution,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="运行时对账人工决议",
+    )
+    reconciliation_resolved_at: datetime | None = Field(default=None, index=True, description="运行时对账解除时间")
 
 
 # ==================== 数据库表模型 ====================
@@ -290,6 +395,10 @@ class WorklineSessionUpdate(ModelFactory(WorklineSessionBase).for_update()):
 
 __all__ = [
     "RunMode",
+    "RuntimeReconciliationReason",
+    "RuntimeReconciliationResolution",
+    "RuntimeReconciliationSourceKind",
+    "RuntimeReconciliationState",
     "SessionStatus",
     "WorklineSession",
     "WorklineSessionBase",
