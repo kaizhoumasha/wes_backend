@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.inbox import SourceSystem
 from src.app.workline.models.timeline import (
@@ -18,7 +19,6 @@ from src.app.workline.models.timeline import (
     TimelineStage,
     TimelineStatus,
 )
-from src.app.workline.repositories.outbox_repository import outbox_repository
 from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 from src.workline_runtime.timeline_generator import timeline_generator
 from src.workline_runtime.trace_context import TraceContext
@@ -41,10 +41,6 @@ _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
 
 def _current_timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
-
-
-def _command_dispatch_key(command_code: str) -> str:
-    return f"device-command:{command_code}"
 
 
 @dataclass(frozen=True)
@@ -103,6 +99,11 @@ class CallbackOrchestrationService:
             raise error
         logger.info(duplicate_message)
         return getattr(error, "existing_inbox", None)
+
+    def _unpack_command_callback_result(self, handled: object) -> tuple[object, bool]:
+        if isinstance(handled, DeviceCallbackResultOutcome):
+            return handled.command, handled.late_callback_recorded
+        return handled, False
 
     def _has_workline_binding(self, value: object) -> bool:
         return isinstance(value, int) and value > 0
@@ -278,6 +279,20 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
+            from src.app.workline.services.runtime_reconciliation_service import (
+                workline_runtime_reconciliation_service,
+            )
+
+            if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
+                db,
+                command=cast("Any", existing_command),
+                callback_payload=callback.model_dump(mode="json"),
+            ):
+                await db.commit()
+                await publish_deferred_sse_events(db)
+                logger.warning(f"迟到指令结果已记录为 runtime reconciliation evidence: {callback.command_code}")
+                return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=False)
+
             result_inbox = None
             try:
                 result_inbox = await inbox_service.create_command_result_inbox(
@@ -309,7 +324,13 @@ class CallbackOrchestrationService:
             if is_duplicate:
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
             else:
-                command = await command_service.handle_callback_result(db, callback)
+                handled = await command_service.handle_callback_result(db, callback)
+                command, late_callback_recorded = self._unpack_command_callback_result(handled)
+                if late_callback_recorded:
+                    await db.commit()
+                    await publish_deferred_sse_events(db)
+                    logger.warning(f"迟到指令结果已记录为 runtime reconciliation evidence: {callback.command_code}")
+                    return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=False)
                 if command is None:
                     raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
                 await self._mark_callback_device_finished(
@@ -317,10 +338,6 @@ class CallbackOrchestrationService:
                     command=command,
                     callback=callback,
                     device_service=device_service,
-                )
-                _ = await outbox_repository.mark_as_acked_by_dispatch_key(
-                    db,
-                    _command_dispatch_key(callback.command_code),
                 )
                 if result_inbox is not None:
                     session = await self._load_command_session(db, command)
@@ -345,7 +362,15 @@ class CallbackOrchestrationService:
                     f"contract_version={resolved_contract_version}"
                 )
         else:
-            command = await command_service.handle_callback_result(db, callback)
+            handled = await command_service.handle_callback_result(db, callback)
+            command, late_callback_recorded = self._unpack_command_callback_result(handled)
+            if late_callback_recorded:
+                await db.commit()
+                await publish_deferred_sse_events(db)
+                logger.warning(
+                    f"迟到非 Workline 指令结果已记录为 runtime reconciliation evidence: {callback.command_code}"
+                )
+                return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=False)
             if command is None:
                 raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
             await self._mark_callback_device_finished(

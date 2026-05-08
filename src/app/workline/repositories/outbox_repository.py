@@ -60,7 +60,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         """获取沙箱待处理消息。
 
         SIMULATION 模式下，Outbox 会正常进入派发链路并标记为 SENT；
-        SENT 但未 ACKED 的消息即等待调试人员手工 callback/result 回传。
+        ACK 事实只写 DeviceCommand，Outbox 保持 SENT 等待调试人员手工 callback/result 回传。
 
         Args:
             db: 数据库会话
@@ -74,7 +74,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         session_columns = cast("Any", WorklineSession).__table__.c
 
         # 包含等待派发的 Outbox (NEW, DISPATCHING, SENT)
-        # 以及等待 Result 回传的 ACKED Outbox (session 在 WAITING_DEVICE_RESULT 状态)
+        # 以及已 ACK 但等待 Result 回传的 SENT Outbox (ACK 事实在 DeviceCommand 上)
         open_session_statuses = [
             SessionStatus.NEW,
             SessionStatus.RUNNING,
@@ -92,9 +92,8 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                 or_(
                     # 等待派发
                     columns.status.in_([OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]),
-                    # 已 ACK 但等待 Result 回传
                     and_(
-                        columns.status == OutboxStatus.ACKED,
+                        columns.status == OutboxStatus.SENT,
                         session_columns.status == SessionStatus.WAITING_DEVICE_RESULT,
                     ),
                 ),
@@ -125,7 +124,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         """获取沙箱已完成的 outbox，按 Session 分组。
 
         SIMULATION 模式下，Session 进入终端态（COMPLETED/FAILED/CANCELLED）且
-        Outbox 状态为 ACKED 的记录。按 Session 分组返回，用于 Sandbox 页面
+        Outbox 已派发或已终止的记录。按 Session 分组返回，用于 Sandbox 页面
         以 Event 为维度展示用户已处理过的命令。
 
         同时关联触发该 Session 的 DEVICE_EVENT inbox，返回 event_payload。
@@ -159,7 +158,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             .where(
                 session_columns.run_mode == RunMode.SIMULATION,
                 session_columns.status.in_(terminal_session_statuses),
-                columns.status.in_([OutboxStatus.ACKED, OutboxStatus.CANCELLED, OutboxStatus.FAILED]),
+                columns.status.in_([OutboxStatus.SENT, OutboxStatus.CANCELLED, OutboxStatus.FAILED]),
                 columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
             )
         )
@@ -289,6 +288,42 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         await db.flush()
         return outbox
 
+    async def mark_as_blocked_by_workline_state(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        owner_session_id: int,
+        reason: str,
+        blocked_device_id: int | None = None,
+        blocked_workline_id: int | None = None,
+    ) -> WorklineOutbox | None:
+        """因 WorkLine runtime reconciliation 暂停派发 outbox。
+
+        等待 owner session resolve 后释放。
+        """
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+
+        if outbox.status not in {OutboxStatus.NEW, OutboxStatus.DISPATCHING}:
+            return None
+
+        outbox.status = OutboxStatus.BLOCKED_RESOURCE
+        outbox.blocked_by_reconciliation_session_id = owner_session_id
+        outbox.blocked_device_id = blocked_device_id
+        outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
+        outbox.blocked_reason = reason
+        outbox.last_error = reason
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
     async def cancel_active_by_workline(
         self,
         db: AsyncSession,
@@ -303,7 +338,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             OutboxStatus.NEW,
             OutboxStatus.DISPATCHING,
             OutboxStatus.SENT,
-            OutboxStatus.ACKED,
+            OutboxStatus.BLOCKED_RESOURCE,
         ]
         result = await db.execute(
             select(WorklineOutbox)
@@ -335,11 +370,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         """取消指定 Session 尚未 ACK 的 outbox，避免终态会话残留可操作项。"""
 
         columns = cast("Any", WorklineOutbox).__table__.c
-        active_statuses = [
-            OutboxStatus.NEW,
-            OutboxStatus.DISPATCHING,
-            OutboxStatus.SENT,
-        ]
+        active_statuses = [OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]
         result = await db.execute(
             select(WorklineOutbox)
             .where(
@@ -370,41 +401,18 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         Returns:
             更新后的消息
         """
-        result = await db.execute(select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id))
+        result = await db.execute(
+            select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id).with_for_update()
+        )
         outbox = result.scalar_one_or_none()
 
         if not outbox:
+            return None
+        if outbox.status != OutboxStatus.DISPATCHING:
             return None
 
         outbox.status = OutboxStatus.SENT
         outbox.sent_at = timezone.now_for_db()
-        outbox.next_retry_at = None
-        outbox.last_error = None
-        await db.flush()
-        return outbox
-
-    async def mark_as_acked_by_dispatch_key(
-        self,
-        db: AsyncSession,
-        dispatch_key: str,
-    ) -> WorklineOutbox | None:
-        """按 dispatch_key 标记消息为已确认。
-
-        用于设备执行结果通过 callback/result 回到 WES 后，
-        将对应的 DEVICE_COMMAND outbox 从 SENT 闭环到 ACKED。
-        """
-        columns = cast("Any", WorklineOutbox).__table__.c
-        result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
-        outbox = result.scalar_one_or_none()
-
-        if not outbox:
-            return None
-
-        if outbox.status in {OutboxStatus.FAILED, OutboxStatus.CANCELLED}:
-            return outbox
-
-        outbox.status = OutboxStatus.ACKED
-        outbox.finished_at = timezone.now_for_db()
         outbox.next_retry_at = None
         outbox.last_error = None
         await db.flush()
@@ -448,27 +456,65 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         """
         from datetime import timedelta
 
-        result = await db.execute(select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id))
+        result = await db.execute(
+            select(WorklineOutbox).where(cast("Any", WorklineOutbox).__table__.c.id == outbox_id).with_for_update()
+        )
         outbox = result.scalar_one_or_none()
 
         if not outbox:
+            return None
+        if outbox.status not in {OutboxStatus.NEW, OutboxStatus.DISPATCHING}:
             return None
 
         outbox.attempt_count += 1
         outbox.last_error = error
 
-        if outbox.attempt_count >= max_retries:
+        if outbox.attempt_count > max_retries:
             # 达到最大重试次数，标记为失败
             outbox.status = OutboxStatus.FAILED
+            outbox.next_retry_at = None
             outbox.finished_at = timezone.now_for_db()
         else:
-            # 设置重试时间（指数退避）
-            retry_delay = timedelta(seconds=30 * (2**outbox.attempt_count))
+            # 白皮书通信 ACK 重试退避：1s, 2s, 4s；max_retries 不含首次尝试。
+            retry_delay = timedelta(seconds=2 ** (outbox.attempt_count - 1))
             outbox.next_retry_at = timezone.now_for_db() + retry_delay
             outbox.status = OutboxStatus.NEW  # 重置为 NEW 以便重试
 
         await db.flush()
         return outbox
+
+    async def release_blocked_by_reconciliation_session(
+        self,
+        db: AsyncSession,
+        owner_session_id: int,
+    ) -> int:
+        """释放指定 runtime reconciliation owner 暂停的 outbox。
+
+        保持原 outbox/command/dispatch_key 不变。
+        """
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+                columns.blocked_by_reconciliation_session_id == owner_session_id,
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        for outbox in outboxes:
+            outbox.status = OutboxStatus.NEW
+            outbox.attempt_count = 0
+            outbox.next_retry_at = None
+            outbox.last_error = None
+            outbox.finished_at = None
+            outbox.blocked_by_reconciliation_session_id = None
+            outbox.blocked_device_id = None
+            outbox.blocked_workline_id = None
+            outbox.blocked_reason = None
+        await db.flush()
+        return len(outboxes)
 
 
 # 创建单例

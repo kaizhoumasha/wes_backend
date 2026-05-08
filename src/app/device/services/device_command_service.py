@@ -8,6 +8,7 @@
 """
 
 import uuid
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, cast
 
@@ -30,6 +31,14 @@ from src.core.exceptions import NotFoundException
 from src.core.logger import logger
 from src.database.redis_cache import get_cache
 from src.utils.timezone import timezone
+
+
+@dataclass(frozen=True)
+class DeviceCallbackResultOutcome:
+    """设备结果回调处理结果。"""
+
+    command: DeviceCommand
+    late_callback_recorded: bool = False
 
 
 class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
@@ -163,16 +172,27 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         self,
         db: AsyncSession,
         callback: CommandCallbackResult,
-    ) -> DeviceCommand | None:
+    ) -> DeviceCallbackResultOutcome:
         """处理设备回调结果（更新指令状态）"""
         # 1. 获取指令
         command = await self.repo.get_by_command_code(db, callback.command_code)
         if not command or not command.id:
             raise NotFoundException(f"回调指令不存在: {callback.command_code}")
 
-        # 2. 解析完成时间（使用 UTC 时区，转换为 naive 用于数据库）
-        aware_dt = timezone.to_utc(int(callback.finish_time / 1000))
-        completed_at = aware_dt.replace(tzinfo=None)
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload=callback.model_dump(mode="json"),
+        ):
+            logger.warning(f"迟到 callback 已记录为对账证据，跳过自动更新指令状态: {callback.command_code}")
+            return DeviceCallbackResultOutcome(command=command, late_callback_recorded=True)
+
+        # 2. 解析完成时间（finish_time 为 Unix 毫秒，数据库存 UTC naive）
+        completed_at = timezone.to_db_datetime(callback.finish_time / 1000)
+        if completed_at is None:
+            raise ValueError(f"无效的回调完成时间: {callback.finish_time}")
 
         # 3. 更新指令状态
         update_data: dict[str, Any] = {
@@ -195,7 +215,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
                 f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
             )
 
-        return updated_command
+        if updated_command is None:
+            raise RuntimeError(f"更新回调指令状态失败: {callback.command_code}")
+        return DeviceCallbackResultOutcome(command=updated_command)
 
     # ==================== 指令状态管理 ====================
 
@@ -341,14 +363,27 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             "ack_trace_id": trace_id,
         }
 
+        ack_received_at = None
         if ack_code == 200:
+            ack_received_at = timezone.now_for_db()
             update_data["status"] = CommandStatus.ACK_RECEIVED
-            update_data["ack_received_at"] = timezone.now_for_db()
+            update_data["ack_received_at"] = ack_received_at
 
         updated_command = await self.repo.update(db, command.id, update_data)
-        if updated_command:
-            await db.commit()
-            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
+        if updated_command is None or not isinstance(updated_command.id, int):
+            return
+
+        updated_command_id = updated_command.id
+        if ack_received_at is not None:
+            from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+                db,
+                command_id=updated_command_id,
+                ack_received_at=ack_received_at,
+            )
+        await db.commit()
+        await self._invalidate_command_cache(updated_command_id, invalidate_list=True)
 
     async def _update_command_status(
         self,
@@ -384,6 +419,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
 # 创建单例
 device_command_service = DeviceCommandService()
+
+
+__all__ = ["DeviceCallbackResultOutcome", "DeviceCommandService", "device_command_service"]
 
 
 __all__ = [

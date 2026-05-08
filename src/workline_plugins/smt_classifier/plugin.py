@@ -26,7 +26,6 @@ from src.workline_runtime.plugin_base import (
     build_state_mismatch_failure,
     on_command,
     on_event,
-    on_timeout,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
     step,
@@ -625,24 +624,6 @@ class SmtClassifierPlugin(WorklinePlugin):
         logger.error(f"Conveyor move failed: {error_code}")
 
         return PluginResultBuilder(ctx).failure(domain="HARDWARE", code=error_code, message=error_msg).build()
-
-    # ========== 超时处理 ==========
-
-    @on_timeout()
-    async def handle_timeout(self, ctx: PluginContext, _inbox: Any):
-        """
-        超时处理 → 错误
-
-        注意：使用 Any 类型避免 Pydantic 自动解析（inbox 应该是原始对象，不是从 payload 解析）
-        """
-        logger.warning(f"Timeout: session_id={ctx.session.id}")
-
-        return (
-            PluginResultBuilder(ctx)
-            .transition("timeout")
-            .failure(domain="TIMEOUT", code="DEVICE_TIMEOUT", message="设备响应超时")
-            .build()
-        )
 
     # ========== 辅助方法 ==========
 

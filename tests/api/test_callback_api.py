@@ -159,6 +159,7 @@ class TestCallbackResultAPI:
             workline_id=1,
             plugin_key="smt_classifier",
             contract_version="1.0",
+            device_id=7,
         )
         handled_command = MagicMock()
         handled_command.id = 1001
@@ -189,7 +190,11 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -213,10 +218,6 @@ class TestCallbackResultAPI:
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
             patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -226,10 +227,6 @@ class TestCallbackResultAPI:
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
-            patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=1),
-            ) as mock_mark_acked,
             patch(
                 "src.app.callback.v1.callback.device_service.mark_command_finished",
                 new=AsyncMock(),
@@ -260,7 +257,6 @@ class TestCallbackResultAPI:
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_handle.assert_awaited_once()
-        mock_mark_acked.assert_awaited_once_with(db_session, "device-command:CMD-20250317-001")
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -346,10 +342,6 @@ class TestCallbackResultAPI:
                 new=AsyncMock(return_value=handled_command),
             ),
             patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -380,6 +372,93 @@ class TestCallbackResultAPI:
         assert response["data"]["event_id"] == "evt-result-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-vendor-001"
+
+    @pytest.mark.asyncio
+    async def test_callback_result_rejects_command_device_mismatch(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        existing_command = SimpleNamespace(
+            id=1001,
+            command_code="CMD-20250317-MISMATCH",
+            trace_id="trace-mismatch-001",
+            params={"task_type": "PICK_AND_PUT"},
+            workline_id=1,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            session_id=None,
+            device_id=8,
+        )
+
+        with (
+            patch(
+                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch(
+                "src.app.callback.v1.callback.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
+                            workline=SimpleNamespace(
+                                id=1,
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
+                            ),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                new=AsyncMock(),
+            ) as mock_handle,
+            patch(
+                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-mismatch-001"),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(
+                    body=create_result_payload(command_code="CMD-20250317-MISMATCH"),
+                    path="/api/v1/callback/result",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert response["data"]["ack"] is False
+        assert "不匹配" in response["message"]
+        mock_handle.assert_not_awaited()
+        mock_create_inbox.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_result_rejects_legacy_command_id_and_device_id(
@@ -415,7 +494,11 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -534,6 +617,7 @@ class TestCallbackResultAPI:
             workline_id=1,
             plugin_key="smt_classifier",
             contract_version="1.0",
+            device_id=7,
         )
 
         with (
@@ -556,7 +640,11 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -671,7 +759,7 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=SimpleNamespace(capabilities_json=[]),
+                            device=SimpleNamespace(id=7, device_code="ARM_01", capabilities_json=[]),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -695,6 +783,7 @@ class TestCallbackResultAPI:
                         workline_id=1,
                         plugin_key="smt_classifier",
                         contract_version="1.0",
+                        device_id=7,
                     )
                 ),
             ) as mock_get_command,

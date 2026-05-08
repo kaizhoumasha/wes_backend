@@ -10,7 +10,7 @@ NullPlugin - Phase 2 默认插件
 import logging
 from typing import TYPE_CHECKING
 
-from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event, on_timeout
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
 from src.workline_runtime.types import PluginResult
 
 if TYPE_CHECKING:
@@ -74,14 +74,6 @@ class NullPlugin(WorklinePlugin):
     async def handle_output_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
         """出料成功"""
         ctx.logger.info(f"NullPlugin received OUTPUT SUCCESS: {inbox.id}")
-        return PluginResult()
-
-    # ========== 超时处理 ==========
-
-    @on_timeout()
-    async def handle_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """超时处理"""
-        ctx.logger.warning(f"NullPlugin received timeout: {inbox.id}")
         return PluginResult()
 
 

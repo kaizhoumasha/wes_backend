@@ -73,16 +73,6 @@ class SmtClassifierStateMachine:
             "dest": SmtClassifierState.MANUAL_HOLD,
         },
         {
-            "trigger": "timeout",
-            "source": (
-                SmtClassifierState.WAITING_MEASUREMENT,
-                SmtClassifierState.WAITING_CONVEYOR,
-                SmtClassifierState.WAITING_OUTPUT,
-                SmtClassifierState.WAITING_PICK_PLACE,
-            ),
-            "dest": SmtClassifierState.ERROR,
-        },
-        {
             "trigger": "fail",
             "source": (
                 SmtClassifierState.IDLE,

@@ -118,6 +118,21 @@ def test_clear_estop_route_uses_dedicated_permission() -> None:
     assert "biz:workline:update" not in permissions
 
 
+def test_resolve_runtime_reconciliation_route_uses_dedicated_permission() -> None:
+    route = next(
+        route
+        for route in operation_api.router.routes
+        if getattr(route, "path", None) == "/reconciliations/sessions/{session_id}/resolve"
+    )
+    permissions = [
+        getattr(getattr(dependency, "dependency", None), "permission_required", None)
+        for dependency in getattr(route, "dependencies", [])
+    ]
+
+    assert "biz:workline:resolve-reconciliation" in permissions
+    assert "biz:workline:update" not in permissions
+
+
 def test_clear_estop_request_does_not_accept_operator_id() -> None:
     assert "operator_id" not in operation_api.ClearWorkLineEstopRequest.model_fields
 

@@ -53,7 +53,7 @@ async def test_diagnostic_service_upserts_card_with_registry_and_redacted_eviden
     assert repo.created is not None
     assert repo.created["diagnostic_key"] == "OUTBOX_DISPATCH_FAILED:trace-001:CMD-001:req-001"
     assert repo.created["owner"] == "integration"
-    assert repo.created["recoverability"] == "auto_retryable"
+    assert repo.created["recoverability"] == "manual_intervention_required"
     evidence = cast("dict[str, Any]", repo.created["evidence_json"])
     assert evidence == {"headers": {"Authorization": "***"}, "body": {"password": "***", "ok": True}}
     card = cast("dict[str, Any]", repo.created["card_json"])

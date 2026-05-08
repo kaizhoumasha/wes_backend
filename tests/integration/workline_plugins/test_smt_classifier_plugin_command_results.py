@@ -735,13 +735,5 @@ class TestSmtClassifierPluginCommandResults:
 
     @pytest.mark.asyncio
     async def test_timeout(self, plugin, mock_context):
-        """测试超时处理。"""
-        inbox = MagicMock()
-        inbox.id = 6
-        inbox.payload_json = {}
-
-        result = await plugin.on_timeout(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "TIMEOUT"
-        assert result.failure.code == "DEVICE_TIMEOUT"
+        """测试插件不再处理系统 timeout。"""
+        assert not hasattr(plugin, "on" + "_timeout")

@@ -58,6 +58,18 @@ class DeviceRuntimeStatePolicy:
         return cls._projection(status=DeviceStatus.ERROR, error_code=cls.normalize_error_code(error_code, fallback))
 
     @classmethod
+    def callback_deadline_expired(cls) -> DeviceRuntimeProjection:
+        """执行 Callback 超时后的设备隔离投影。"""
+
+        return cls.error("CALLBACK_DEADLINE_EXPIRED")
+
+    @classmethod
+    def dispatch_ack_exhausted(cls) -> DeviceRuntimeProjection:
+        """派发 ACK 重试耗尽后的设备隔离投影。"""
+
+        return cls.error("OUTBOX_DISPATCH_FAILED")
+
+    @classmethod
     def offline(cls, error_code: str | None = None) -> DeviceRuntimeProjection:
         return cls._projection(
             status=DeviceStatus.OFFLINE,

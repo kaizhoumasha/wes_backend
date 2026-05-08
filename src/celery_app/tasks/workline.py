@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models import DeviceStatus, parse_device_capabilities
-from src.app.device.models.command import DeviceCommand  # noqa: F401
+from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device  # noqa: F401
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -77,7 +77,7 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
     """
 
     data_field = payload.get("data")
-    data = data_field if isinstance(data_field, dict) else {}
+    data = cast("dict[str, Any]", data_field) if isinstance(data_field, dict) else {}
     fields = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID", "ProductNo", "PONumber", "barcode")
     return any(isinstance(data.get(field), str) and data.get(field) for field in fields)
 
@@ -214,8 +214,7 @@ def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
 
 def _should_resolve_session(inbox: Any) -> bool:
     """仅在具备足够归属信息时才触发 SessionResolver。"""
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
     if _canonical_event_type(payload) in RESERVED_RUNTIME_EVENTS:
         return False
@@ -304,7 +303,8 @@ def _cached_outbox_session(outbox: Any) -> Any | None:
     """读取已加载的 outbox.session，避免为判断运行模式触发隐式懒加载。"""
 
     try:
-        session = vars(outbox).get("session")
+        state = cast("dict[str, Any]", vars(outbox))
+        session = state.get("session")
     except TypeError:
         session = getattr(outbox, "session", None)
     return session if session is not None else None
@@ -477,6 +477,7 @@ def _clear_session_wait(session: Any) -> None:
     session.current_wait_token = None
     session.waiting_since = None
     session.deadline_at = None
+    session.current_wait_timeout_seconds = None
     session.awaiting_command_id = None
 
 
@@ -590,7 +591,7 @@ def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> di
     resolved_device_code = _string_value(device_code)
     normalized_task_type = _normalize_command_task_type(getattr(command, "task_type", None))
     command_params = payload_dict(getattr(command, "params", None))
-    payload = {
+    payload: dict[str, Any] = {
         "command_code": command.command_code,
         "task_type": normalized_task_type,
         "command_type": normalized_task_type,
@@ -762,11 +763,11 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     failed_outbox: Any,
     error_message: str,
 ) -> None:
-    """Outbox 已永久失败时，同步关闭对应 DeviceCommand，避免设备占用投影被旧命令卡住。"""
+    """Outbox 已永久失败时，进入通信 ACK runtime reconciliation。"""
 
-    from src.app.device.models.command import CommandStatus
     from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.workline.models.outbox import DispatchType, OutboxStatus
+    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
     if getattr(failed_outbox, "status", None) != OutboxStatus.FAILED:
         return
@@ -781,23 +782,97 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     command_repo = DeviceCommandRepository()
     command = await command_repo.get_by_command_code(db, command_code)
     command_id = _resolve_entity_id(command)
-    active_statuses = {CommandStatus.PENDING.value, CommandStatus.SENT.value, CommandStatus.ACK_RECEIVED.value}
-    if command_id is None or _enum_value(getattr(command, "status", None)) not in active_statuses:
+    if command_id is None:
         return
 
-    _ = await command_repo.update(
+    _ = await workline_runtime_reconciliation_service.handle_dispatch_ack_exhausted(
         db,
-        command_id,
-        {
-            "status": CommandStatus.FAILED,
-            "completed_at": timezone.now_for_db(),
-            "error_detail": {
-                "message": error_message,
-                "source": "OUTBOX_DISPATCH",
-            },
-        },
+        outbox=failed_outbox,
+        command=command,
+        error_message=error_message,
     )
-    await _release_device_runtime_if_failed_command_was_current(db, command=command, command_id=command_id)
+
+
+async def _mark_outbox_blocked_by_workline_state(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    safety_error: Exception,
+) -> str:
+    """按 WorkLine 运行态阻断 outbox；RECONCILING 进入 parked 队列，ESTOP 保持本地失败。"""
+
+    reason = str(safety_error)
+    if "WORKLINE_RECONCILING" in reason:
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        _ = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
+            db,
+            outbox=outbox,
+            reason="CALLBACK_DEADLINE_EXPIRED",
+        )
+        return "blocked_resource"
+
+    _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_id)
+    return "failed"
+
+
+def _count_workline_safety_block_result(result: DispatchResult, block_state: str) -> None:
+    if block_state == "blocked_resource":
+        result["skipped"] += 1
+    else:
+        result["failed"] += 1
+    result["dispatched"] += 1
+
+
+def _dispatch_failure_diagnostic_code(failed_outbox: Any) -> ErrorCode:
+    if _enum_value(getattr(failed_outbox, "status", None)) == "FAILED":
+        return ErrorCode.OUTBOX_DISPATCH_FAILED
+    return ErrorCode.OUTBOX_ACK_TIMEOUT
+
+
+async def _block_outbox_for_workline_safety(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    safety_error: WorkLineSafetyBlocked,
+    trace: TraceContext,
+    dispatch_attempt: Any | None = None,
+    attempt_service: Any | None = None,
+    final_guard: bool = False,
+) -> str:
+    await _record_diagnostic(
+        db,
+        inbox=None,
+        outbox=outbox,
+        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+        message=str(safety_error),
+        extra=_outbox_trace_extra(outbox, trace=trace),
+    )
+    if dispatch_attempt is not None and attempt_service is not None:
+        _ = await attempt_service.finalize_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            success=False,
+            error_message=str(safety_error),
+            auto_commit=False,
+        )
+    block_state = await _mark_outbox_blocked_by_workline_state(
+        db,
+        outbox_repo=outbox_repo,
+        outbox=outbox,
+        outbox_id=outbox_id,
+        safety_error=safety_error,
+    )
+    await db.commit()
+    guard_label = "最终安全状态" if final_guard else "安全状态"
+    logger.warning(
+        f"Outbox {outbox_id} 因 WorkLine {guard_label}阻断派发 ({_outbox_trace_log_suffix(outbox, trace=trace)})"
+    )
+    return block_state
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
@@ -1444,8 +1519,12 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
     session.current_wait_type = wait.wait_type
     session.current_wait_token = resolved_wait_token
     session.waiting_since = ctx["now"]
-    session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
     session.awaiting_command_id = ctx["awaiting_command_id"]
+    session.current_wait_timeout_seconds = wait.deadline_seconds
+    if wait.wait_type == "COMMAND_RESULT":
+        session.deadline_at = None
+    else:
+        session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
     session.ended_at = None
     await _emit_timeline(
         ctx,
@@ -1615,8 +1694,7 @@ async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | 
         cache = get_cache()
         return await device_command_service.get_by_id(db, cache, command_id)
 
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     command_code = payload.get("command_code")
     if not command_code:
         return None
@@ -1651,8 +1729,7 @@ async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | No
         cache = get_cache()
         return await device_service.get_by_id(db, cache, device_id)
 
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     device_code = payload.get("device_code")
     if not device_code:
         return None
@@ -1915,8 +1992,7 @@ class ProcessInboxMessages:
                     continue
 
                 # ========== 前置验证：检查必填字段 ==========
-                raw_payload = getattr(inbox, "payload_json", None)
-                payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+                payload = payload_dict(getattr(inbox, "payload_json", None))
                 resolved_event_type = _canonical_event_type(payload)
 
                 # SCAN_COMPLETED 事件必须包含条码信息。
@@ -1979,6 +2055,19 @@ class ProcessInboxMessages:
                     result["success"] += 1
                     result["processed"] += 1
                     logger.warning(f"Inbox {inbox_pk} 已处理 WorkLine 急停: incident_id={incident.id}")
+                    continue
+
+                inbox_kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
+                if inbox_kind == "TIMER_TIMEOUT":
+                    from src.app.workline.services.runtime_reconciliation_service import (
+                        workline_runtime_reconciliation_service,
+                    )
+
+                    _ = await workline_runtime_reconciliation_service.handle_timer_timeout(db, inbox=inbox)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(f"Inbox {inbox_pk} 已处理系统级 TIMER_TIMEOUT 对账")
                     continue
 
                 if not entities.get("safety_checked", True):
@@ -2167,7 +2256,7 @@ class ProcessInboxMessages:
                 await _record_diagnostic(
                     db,
                     inbox=diagnostic_inbox,
-                    error_code=ErrorCode.DEVICE_TIMEOUT,
+                    error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT,
                     message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
                 )
                 try:
@@ -2213,12 +2302,12 @@ class ProcessInboxMessages:
 
 
 class TimeoutScanner:
-    """超时扫描器内部类
+    """系统 timeout inbox 扫描器内部类
 
     职责：
-    - 扫描超时的 Session（deadline_at < now）
-    - 为超时 Session 创建 timeout 类型的 Inbox 消息
-    - 触发后续编排流程处理超时
+    - 扫描 ACK 后执行等待超时的 Session（deadline_at < now）
+    - 为超时 Session 幂等创建系统 TIMER_TIMEOUT Inbox
+    - 后续由 runtime reconciliation handler 处理，不进入插件 timeout 编排
 
     调用方式：
     - 通过 Celery 任务 scan_timeouts_batch 间接调用
@@ -2258,7 +2347,9 @@ class TimeoutScanner:
             "errors": 0,
         }
 
-        # 获取超时 Session
+        from src.app.device.repositories.device_repository import device_repository
+
+        # 获取 ACK 后执行等待超时 Session
         session_repo = WorklineSessionRepository()
         sessions = await session_repo.get_timed_out_sessions(db, limit=limit)
         result["scanned"] = len(sessions)
@@ -2269,13 +2360,30 @@ class TimeoutScanner:
                 if session_pk is None:
                     raise ValueError("Timed out session missing primary key")
 
-                # 创建超时 Inbox
+                awaiting_command_id = getattr(session, "awaiting_command_id", None)
+                command = (
+                    await db.get(DeviceCommand, awaiting_command_id) if isinstance(awaiting_command_id, int) else None
+                )
+                if _enum_value(getattr(session, "status", None)) == "WAITING_DEVICE_RESULT" and command is None:
+                    raise ValueError(f"Timed out session awaiting command missing: session_id={session_pk}")
+                command_device_id = getattr(command, "device_id", None)
+                device = await device_repository.get_by_id(db, command_device_id) if command_device_id else None
+
+                # 幂等创建系统 timeout Inbox
                 _ = await inbox_service.create_timeout_inbox(
                     db=db,
                     session_id=session_pk,
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
                     trace_id=session.trace_id,
+                    wait_token=session.current_wait_token,
+                    wait_type=getattr(session, "current_wait_type", None),
+                    awaiting_command_id=awaiting_command_id,
+                    command_code=getattr(command, "command_code", None),
+                    device_id=command_device_id,
+                    device_code=getattr(device, "device_code", None),
+                    command_status=_enum_value(getattr(command, "status", None)) if command is not None else None,
+                    ack_received_at=getattr(command, "ack_received_at", None),
                     auto_commit=False,
                 )
                 result["timeouts_created"] += 1
@@ -2539,29 +2647,21 @@ class OutboxDispatcher:
                     try:
                         await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
                     except WorkLineSafetyBlocked as safety_error:
-                        await _record_diagnostic(
+                        block_state = await _block_outbox_for_workline_safety(
                             db,
-                            inbox=None,
+                            outbox_repo=outbox_repo,
                             outbox=outbox,
-                            error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                            message=str(safety_error),
-                            extra=_outbox_trace_extra(outbox, trace=trace),
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
                         )
-                        _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_pk)
-                        await db.commit()
-                        result["failed"] += 1
-                        result["dispatched"] += 1
-                        logger.warning(
-                            f"Outbox {outbox_pk} 因 WorkLine 安全状态阻断派发 "
-                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
-                        )
+                        _count_workline_safety_block_result(result, block_state)
                         continue
 
                 # 尝试标记为派发中（并发控制）。前置 WorkLine 锁已释放前按统一锁序完成。
                 updated = await outbox_repo.mark_as_dispatching(db, outbox_pk)
                 if updated is None:
-                    if outbox_workline_id is not None:
-                        await db.commit()
+                    await db.commit()
                     # 已被其他 worker 处理
                     result["skipped"] += 1
                     continue
@@ -2571,22 +2671,15 @@ class OutboxDispatcher:
                     try:
                         await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
                     except WorkLineSafetyBlocked as safety_error:
-                        await _record_diagnostic(
+                        block_state = await _block_outbox_for_workline_safety(
                             db,
-                            inbox=None,
+                            outbox_repo=outbox_repo,
                             outbox=outbox,
-                            error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                            message=str(safety_error),
-                            extra=_outbox_trace_extra(outbox, trace=trace),
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
                         )
-                        _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_pk)
-                        await db.commit()
-                        result["failed"] += 1
-                        result["dispatched"] += 1
-                        logger.warning(
-                            f"Outbox {outbox_pk} 因 WorkLine 安全状态阻断派发 "
-                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
-                        )
+                        _count_workline_safety_block_result(result, block_state)
                         continue
                     await db.commit()
 
@@ -2597,24 +2690,61 @@ class OutboxDispatcher:
                 )
                 await db.commit()
 
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        block_state = await _block_outbox_for_workline_safety(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox=outbox,
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
+                            dispatch_attempt=dispatch_attempt,
+                            attempt_service=workline_dispatch_attempt_service,
+                            final_guard=True,
+                        )
+                        _count_workline_safety_block_result(result, block_state)
+                        continue
+                    await db.commit()
+
                 # 派发消息
                 success = await OutboxDispatcher._dispatch_single(db, outbox)
 
                 if success:
+                    sent_outbox = await outbox_repo.mark_as_sent(db, outbox_pk)
                     if dispatch_attempt is not None:
                         _ = await workline_dispatch_attempt_service.finalize_attempt_record(
                             db,
                             attempt=dispatch_attempt,
                             success=True,
-                            response={"result": "sent"},
+                            response={
+                                "result": "sent",
+                                "outbox_finalization": "sent" if sent_outbox is not None else "fenced",
+                            },
                             auto_commit=False,
                         )
-                    _ = await outbox_repo.mark_as_sent(db, outbox_pk)
+                    if sent_outbox is None:
+                        await db.commit()
+                        result["skipped"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 物理派发成功但终态更新被 fencing 拒绝，保留当前安全状态 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        result["dispatched"] += 1
+                        continue
                     await db.commit()
                     result["success"] += 1
                     logger.info(f"Outbox {outbox_pk} 派发成功 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 else:
                     trace_extra = _outbox_trace_extra(outbox, trace=trace)
+                    failed_outbox = await outbox_repo.mark_as_failed(
+                        db,
+                        outbox_pk,
+                        "Dispatch failed",
+                        OutboxDispatcher.MAX_RETRIES,
+                    )
                     if dispatch_attempt is not None:
                         _ = await workline_dispatch_attempt_service.finalize_attempt_record(
                             db,
@@ -2623,19 +2753,22 @@ class OutboxDispatcher:
                             error_message="Dispatch failed",
                             auto_commit=False,
                         )
+                    if failed_outbox is None:
+                        await db.commit()
+                        result["skipped"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 物理派发失败但失败更新被 fencing 拒绝，保留当前安全状态 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        result["dispatched"] += 1
+                        continue
                     await _record_diagnostic(
                         db,
                         inbox=None,
                         outbox=outbox,
-                        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+                        error_code=_dispatch_failure_diagnostic_code(failed_outbox),
                         message="Dispatch failed",
                         extra=trace_extra,
-                    )
-                    failed_outbox = await outbox_repo.mark_as_failed(
-                        db,
-                        outbox_pk,
-                        "Dispatch failed",
-                        OutboxDispatcher.MAX_RETRIES,
                     )
                     await _mark_device_command_failed_if_dispatch_exhausted(
                         db,
@@ -2662,14 +2795,6 @@ class OutboxDispatcher:
                         )
                     except Exception as attempt_error:
                         logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
-                await _record_diagnostic(
-                    db,
-                    inbox=None,
-                    outbox=outbox,
-                    error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                    message=str(e),
-                    extra=_outbox_trace_extra(outbox, trace=trace),
-                )
                 try:
                     outbox_pk = _resolve_entity_id(outbox)
                     if outbox_pk is not None:
@@ -2678,6 +2803,23 @@ class OutboxDispatcher:
                             outbox_pk,
                             str(e),
                             OutboxDispatcher.MAX_RETRIES,
+                        )
+                        if failed_outbox is None:
+                            await db.commit()
+                            result["skipped"] += 1
+                            logger.warning(
+                                f"Outbox {outbox_pk} 物理派发异常但失败更新被 fencing 拒绝，保留当前安全状态 "
+                                f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                            )
+                            result["dispatched"] += 1
+                            continue
+                        await _record_diagnostic(
+                            db,
+                            inbox=None,
+                            outbox=outbox,
+                            error_code=_dispatch_failure_diagnostic_code(failed_outbox),
+                            message=str(e),
+                            extra=_outbox_trace_extra(outbox, trace=trace),
                         )
                         await _mark_device_command_failed_if_dispatch_exhausted(
                             db,
@@ -2800,9 +2942,10 @@ class OutboxDispatcher:
     @staticmethod
     async def _dispatch_device_command(db: Any, outbox: Any) -> bool:
         """派发设备指令。"""
-        try:
-            import httpx
+        import httpx
 
+        payload: dict[str, Any] = {}
+        try:
             from src.app.device.repositories.device_repository import device_repository
 
             device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
@@ -2811,6 +2954,7 @@ class OutboxDispatcher:
                 return False
 
             payload = payload_dict(getattr(outbox, "payload_json", None))
+            from src.app.device.models.command import CommandStatus
             from src.app.device.repositories.command_repository import DeviceCommandRepository
 
             command_code = _string_value(payload.get("command_code"))
@@ -2825,23 +2969,37 @@ class OutboxDispatcher:
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
             logger.info(f"发送设备指令到 {url}: {payload.get('command_code')}")
-            timeout = (device.timeout or 10000) / 1000
+            timeout = 10.0
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload)
                 if response.status_code == 200:
                     from src.app.device.services import device_service
+                    from src.app.workline.services.runtime_reconciliation_service import (
+                        workline_runtime_reconciliation_service,
+                    )
 
                     command = (
                         await DeviceCommandRepository().get_by_command_code(db, command_code) if command_code else None
                     )
                     command_id = _resolve_entity_id(command)
                     device_id = _resolve_entity_id(device)
-                    if device_id is not None and command_id is not None:
+                    if command is not None and device_id is not None and command_id is not None:
+                        ack_received_at = timezone.now_for_db()
+                        command.status = CommandStatus.ACK_RECEIVED
+                        command.sent_at = command.sent_at or ack_received_at
+                        command.ack_received_at = ack_received_at
+                        command.ack_code = response.status_code
+                        command.ack_message = "HTTP 200"
                         _ = await device_service.mark_command_dispatched(
                             db,
                             device_id=device_id,
                             command_id=command_id,
                             auto_commit=False,
+                        )
+                        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+                            db,
+                            command_id=command_id,
+                            ack_received_at=ack_received_at,
                         )
                     else:
                         logger.warning(
@@ -2856,6 +3014,9 @@ class OutboxDispatcher:
                 else:
                     logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
                 return False
+        except httpx.TimeoutException as e:
+            logger.warning(f"设备指令 ACK 通信超时: {payload.get('command_code')}")
+            raise RuntimeError("OUTBOX_ACK_TIMEOUT") from e
         except _DeviceCommandGovernanceError as e:
             logger.warning(str(e))
             raise RuntimeError(str(e)) from e

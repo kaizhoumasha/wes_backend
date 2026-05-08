@@ -344,7 +344,7 @@ async def test_blocking_point_returns_operable_diagnostic_card(
     assert result.trace_id == "trace-1"
     assert result.blocking_point == "outbox"
     assert result.diagnostic_card.error_code == "OUTBOX_DISPATCH_FAILED"
-    assert result.diagnostic_card.recoverability == "auto_retryable"
+    assert result.diagnostic_card.recoverability == "manual_intervention_required"
     assert result.operator_action
     assert result.evidence["outbox"]["dispatch_key"] == "dispatch-1"
     assert result.evidence["outbox"]["last_error"] == "HTTP 500"

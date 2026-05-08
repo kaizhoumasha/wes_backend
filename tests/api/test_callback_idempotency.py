@@ -86,6 +86,7 @@ class TestCallbackResultIdempotency:
             workline_id=1,
             plugin_key="smt_classifier",
             contract_version="1.0",
+            device_id=7,
         )
         handled_command = MagicMock()
         handled_command.status = MagicMock()
@@ -104,7 +105,11 @@ class TestCallbackResultIdempotency:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier", contract_version="1.0", is_active=True
                             ),
@@ -125,10 +130,6 @@ class TestCallbackResultIdempotency:
                 "src.app.callback.v1.callback.device_command_service.handle_callback_result",
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
-            patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=None),
-            ),
             patch(
                 "src.app.callback.v1.callback.callback_log_service.log_callback",
                 new=AsyncMock(),

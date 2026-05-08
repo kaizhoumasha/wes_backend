@@ -1,6 +1,7 @@
 """Device Service 导出"""
 
 from .device_command_service import (
+    DeviceCallbackResultOutcome,
     DeviceCommandService,
     device_command_service,
 )
@@ -13,6 +14,7 @@ from .device_service import DeviceService, device_service
 from .runtime_state_policy import DeviceRuntimeProjection, DeviceRuntimeStatePolicy
 
 __all__ = [
+    "DeviceCallbackResultOutcome",
     "DeviceCommandService",
     "DeviceContextResult",
     "DeviceContextService",

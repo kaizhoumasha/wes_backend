@@ -452,8 +452,6 @@ class OrchestratorService:
             return await plugin.on_command_result(ctx, inbox)
         if inbox_type == "EXTERNAL_HTTP":
             return await plugin.on_external_http(ctx, inbox)
-        if inbox_type == "TIMEOUT":
-            return await plugin.on_timeout(ctx, inbox)
         if inbox_type == "MANUAL_OPERATION":
             return await plugin.on_manual_operation(ctx, inbox)
         # 默认调用 on_device_event

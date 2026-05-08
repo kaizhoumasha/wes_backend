@@ -4,7 +4,6 @@ NullPlugin 单元测试
 测试 Phase 2 默认插件的空实现：
 - on_device_event: 设备事件处理
 - on_command_result: 命令结果处理
-- on_timeout: 超时处理
 - on_manual_operation: 人工操作处理
 
 设计参考:
@@ -85,18 +84,9 @@ class TestNullPlugin:
         await plugin.on_command_result(mock_context, mock_command_inbox)
         mock_context.logger.info.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_on_timeout_returns_empty_result(self, plugin, mock_context, mock_inbox):
-        """测试超时处理返回空结果"""
-        result = await plugin.on_timeout(mock_context, mock_inbox)
-        assert isinstance(result, PluginResult)
-        assert result.transition is None
-
-    @pytest.mark.asyncio
-    async def test_on_timeout_logs_warning(self, plugin, mock_context, mock_inbox):
-        """测试超时处理记录警告日志"""
-        await plugin.on_timeout(mock_context, mock_inbox)
-        mock_context.logger.warning.assert_called_once()
+    def test_timeout_is_not_null_plugin_contract(self, plugin):
+        """测试 timeout 不再通过插件默认实现处理。"""
+        assert not hasattr(plugin, "on" + "_timeout")
 
     @pytest.mark.asyncio
     async def test_on_external_http_returns_empty_result(self, plugin, mock_context, mock_inbox):
@@ -140,7 +130,6 @@ class TestNullPluginIntegration:
         results = [
             await plugin.on_device_event(context, inbox),
             await plugin.on_command_result(context, inbox),
-            await plugin.on_timeout(context, inbox),
             await plugin.on_external_http(context, inbox),
             await plugin.on_manual_operation(context, inbox),
         ]
@@ -178,13 +167,6 @@ class TestNullPluginIntegration:
         await plugin.on_command_result(context, command_inbox)
         context.logger.info.assert_called_once()
         assert "42" in context.logger.info.call_args[0][0]
-
-        # 测试 on_timeout 记录 warning 日志
-        context = MagicMock()
-        context.logger = MagicMock()
-        await plugin.on_timeout(context, event_inbox)
-        context.logger.warning.assert_called_once()
-        assert "42" in context.logger.warning.call_args[0][0]
 
         # 测试 on_external_http 记录 info 日志
         context = MagicMock()

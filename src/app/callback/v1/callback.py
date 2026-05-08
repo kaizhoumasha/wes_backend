@@ -157,6 +157,20 @@ def _resolve_payload_command_code(payload: JsonDict) -> str | None:
     return command_code if isinstance(command_code, str) else None
 
 
+def _resolve_entity_id(entity: object | None) -> int | None:
+    value = getattr(entity, "id", None)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _resolve_command_device_id(command: object | None) -> int | None:
+    value = getattr(command, "device_id", None)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
 def _enqueue_workline_processing() -> None:
     """兼容旧测试 patch 点：触发 Workline Inbox 异步处理。"""
     from src.celery_app.app import celery_app
@@ -654,6 +668,37 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
     _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
+
+    command_device_id = _resolve_command_device_id(existing_command)
+    callback_device_id = _resolve_entity_id(device)
+    if command_device_id is None or callback_device_id is None or command_device_id != callback_device_id:
+        message = f"结果回调设备与指令归属不匹配: command_code={command_code}, callback_device_code={device_code}"
+        await _record_callback_diagnostic(
+            db,
+            error_code=ErrorCode.CONTRACT_MISMATCH,
+            message=message,
+            request_id=request_id,
+            callback_type="result",
+            payload=callback_data,
+            device=device,
+            workline=workline,
+            command_code=command_code,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+        )
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=message,
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+        )
 
     try:
         capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))

@@ -10,6 +10,7 @@ TimeoutScanner 单元测试
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,12 +26,18 @@ class MockSession:
         deadline_at: datetime | None = None,
         workline_id: int = 1,
         trace_id: str | None = None,
+        current_wait_token: str | None = None,
+        current_wait_type: str = "COMMAND_RESULT",
+        awaiting_command_id: int | None = 9,
     ):
         self.id = session_id
         self.status = status
         self.deadline_at = deadline_at
         self.workline_id = workline_id
         self.trace_id = trace_id
+        self.current_wait_token = current_wait_token or "CMD-001"
+        self.current_wait_type = current_wait_type
+        self.awaiting_command_id = awaiting_command_id
 
 
 class TestTimeoutScanner:
@@ -42,6 +49,15 @@ class TestTimeoutScanner:
         db = AsyncMock()
         db.commit = AsyncMock()
         db.rollback = AsyncMock()
+        db.get = AsyncMock(
+            return_value=SimpleNamespace(
+                id=9,
+                command_code="CMD-001",
+                device_id=7,
+                status="ACK_RECEIVED",
+                ack_received_at=datetime.now(UTC) - timedelta(minutes=4),
+            )
+        )
         return db
 
     @pytest.fixture
@@ -57,6 +73,12 @@ class TestTimeoutScanner:
         service = MagicMock()
         service.create_timeout_inbox = AsyncMock()
         return service
+
+    @pytest.fixture
+    def mock_device_repo(self):
+        repo = MagicMock()
+        repo.get_by_id = AsyncMock(return_value=SimpleNamespace(id=7, device_code="ARM01"))
+        return repo
 
     @pytest.mark.asyncio
     async def test_scan_no_timed_out_sessions(self, mock_db, mock_session_repo):
@@ -79,6 +101,7 @@ class TestTimeoutScanner:
         mock_db,
         mock_session_repo,
         mock_inbox_service,
+        mock_device_repo,
     ):
         """测试单个超时 Session 处理"""
         from src.celery_app.tasks.workline import scan_timeouts
@@ -103,12 +126,74 @@ class TestTimeoutScanner:
                 "src.app.workline.services.inbox_service.inbox_service",
                 mock_inbox_service,
             ),
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
+            ),
         ):
             result = await scan_timeouts._scan(mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 1
         mock_inbox_service.create_timeout_inbox.assert_called_once()
+        call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
+        assert call_kwargs["wait_token"] == "CMD-001"
+        assert call_kwargs["awaiting_command_id"] == 9
+        assert call_kwargs["command_code"] == "CMD-001"
+        assert call_kwargs["command_status"] == "ACK_RECEIVED"
+        assert call_kwargs["ack_received_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_scan_external_wait_creates_timeout_inbox_without_command(
+        self,
+        mock_db,
+        mock_session_repo,
+        mock_inbox_service,
+        mock_device_repo,
+    ):
+        """WAITING_EXTERNAL 没有关联 DeviceCommand 时也必须生成 TIMER_TIMEOUT。"""
+        from src.celery_app.tasks.workline import scan_timeouts
+
+        expired_time = datetime.now(UTC) - timedelta(minutes=5)
+        session = MockSession(
+            session_id=200,
+            status="WAITING_EXTERNAL",
+            deadline_at=expired_time,
+            workline_id=1,
+            trace_id="trace-external",
+            current_wait_token="agv:task:001",
+            current_wait_type="EXTERNAL_HTTP",
+            awaiting_command_id=None,
+        )
+        mock_session_repo.get_timed_out_sessions.return_value = [session]
+        mock_db.get = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "src.app.workline.repositories.session_repository.WorklineSessionRepository",
+                return_value=mock_session_repo,
+            ),
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
+            ),
+        ):
+            result = await scan_timeouts._scan(mock_db)
+
+        assert result["scanned"] == 1
+        assert result["timeouts_created"] == 1
+        assert result["errors"] == 0
+        mock_db.get.assert_not_awaited()
+        mock_device_repo.get_by_id.assert_not_awaited()
+        call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
+        assert call_kwargs["wait_token"] == "agv:task:001"
+        assert call_kwargs["wait_type"] == "EXTERNAL_HTTP"
+        assert call_kwargs["awaiting_command_id"] is None
+        assert call_kwargs["command_code"] is None
 
     @pytest.mark.asyncio
     async def test_scan_multiple_timed_out_sessions(
@@ -116,6 +201,7 @@ class TestTimeoutScanner:
         mock_db,
         mock_session_repo,
         mock_inbox_service,
+        mock_device_repo,
     ):
         """测试批量扫描多个超时 Session"""
         from src.celery_app.tasks.workline import scan_timeouts
@@ -141,6 +227,10 @@ class TestTimeoutScanner:
             patch(
                 "src.app.workline.services.inbox_service.inbox_service",
                 mock_inbox_service,
+            ),
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
         ):
             result = await scan_timeouts._scan(mock_db)
@@ -177,6 +267,7 @@ class TestTimeoutScanner:
         mock_db,
         mock_session_repo,
         mock_inbox_service,
+        mock_device_repo,
     ):
         """测试 Inbox 创建失败时的错误处理"""
         from src.celery_app.tasks.workline import scan_timeouts
@@ -201,6 +292,10 @@ class TestTimeoutScanner:
             patch(
                 "src.app.workline.services.inbox_service.inbox_service",
                 mock_inbox_service,
+            ),
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
             ),
         ):
             result = await scan_timeouts._scan(mock_db)

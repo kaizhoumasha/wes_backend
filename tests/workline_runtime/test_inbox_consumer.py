@@ -303,6 +303,45 @@ class TestInboxConsumer:
         mock_db.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_process_timer_timeout_short_circuits_plugin_orchestration(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """TIMER_TIMEOUT 由 runtime reconciliation 处理，不进入插件编排。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        inbox = MockInbox(inbox_id=6, kind=InboxKind.TIMER_TIMEOUT)
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        runtime_service = SimpleNamespace(handle_timer_timeout=AsyncMock(return_value=MockSession()))
+
+        with (
+            patch(
+                "src.app.workline.services.inbox_service.inbox_service",
+                mock_inbox_service,
+            ),
+            patch(
+                "src.celery_app.tasks.workline.OrchestratorService",
+                return_value=mock_orchestrator,
+            ),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(return_value=_loaded_entities(session=MockSession(), workline=MockWorkline())),
+            ),
+            patch(
+                "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
+                runtime_service,
+            ),
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 1
+        runtime_service.handle_timer_timeout.assert_awaited_once_with(mock_db, inbox=inbox)
+        mock_orchestrator.process_inbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_process_inbox_single_message_failure(
         self,
         mock_db,
@@ -1179,7 +1218,7 @@ class TestInboxConsumer:
         diagnostic_kwargs = await_args.kwargs
         assert diagnostic_kwargs["inbox"].id == inbox.id
         assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
-        assert diagnostic_kwargs["error_code"] == ErrorCode.DEVICE_TIMEOUT
+        assert diagnostic_kwargs["error_code"] == ErrorCode.INBOX_PROCESSING_TIMEOUT
         assert diagnostic_kwargs["message"] == f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)"
         mock_db.commit.assert_called()
 
@@ -1259,7 +1298,7 @@ class TestInboxConsumer:
         )
         mock_record_event.assert_awaited_once()
         event = _required_await_args(mock_record_event).kwargs["event"]
-        assert event.error_code == ErrorCode.DEVICE_TIMEOUT
+        assert event.error_code == ErrorCode.INBOX_PROCESSING_TIMEOUT
         assert event.context.trace_id == "trace-timeout-expired-001"
         assert event.context.request_id == "req-timeout-expired-001"
         assert event.context.canonical_event_type == "SCAN_COMPLETED"
@@ -2018,6 +2057,8 @@ class TestInboxConsumer:
         assert session.status == "WAITING_DEVICE_RESULT"
         assert session.current_wait_type == "COMMAND_RESULT"
         assert session.current_wait_token == "VENDOR-CMD-001"
+        assert session.current_wait_timeout_seconds == 180
+        assert session.deadline_at is None
         assert session.awaiting_command_id == 321
         assert session.failure_domain is None
         assert session.failure_code is None

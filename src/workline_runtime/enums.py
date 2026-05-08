@@ -109,8 +109,8 @@ class OutboxStatus(str, Enum):
     属性:
         NEW: 新创建的 Outbox 记录，等待派发
         DISPATCHING: 正在派发（已锁定，防止重复派发）
-        SENT: 已发送（等待 ACK）
-        ACKED: 已确认（对方已接收）
+        SENT: 已发送
+        BLOCKED_RESOURCE: 因运行时资源隔离暂缓派发
         FAILED: 派发失败（可重试）
         CANCELLED: 已取消（不再派发）
     """
@@ -118,7 +118,7 @@ class OutboxStatus(str, Enum):
     NEW = "NEW"
     DISPATCHING = "DISPATCHING"
     SENT = "SENT"
-    ACKED = "ACKED"
+    BLOCKED_RESOURCE = "BLOCKED_RESOURCE"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 

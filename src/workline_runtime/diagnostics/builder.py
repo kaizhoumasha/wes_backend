@@ -101,12 +101,33 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "设备响应超时，请检查设备状态和通信链路。",
         ["检查设备响应耗时", "检查 timeout 配置是否合理"],
     ),
-    ErrorCode.OUTBOX_DISPATCH_FAILED: (
-        Severity.ERROR,
+    ErrorCode.OUTBOX_ACK_TIMEOUT: (
+        Severity.WARNING,
         Recoverability.AUTO_RETRYABLE,
         ProblemClass.HARDWARE,
-        "系统向设备或外部系统派发失败。",
-        ["检查派发目标配置", "检查最近 outbox 失败记录"],
+        "设备派发 ACK 未在通信窗口内返回，系统将按同一 command_code 自动重试。",
+        ["检查设备服务网络", "查看 outbox dispatch attempt 失败证据"],
+    ),
+    ErrorCode.CALLBACK_DEADLINE_EXPIRED: (
+        Severity.CRITICAL,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.HARDWARE,
+        "设备已 ACK 但执行结果未按时回传，物理状态未知，需人工对账。",
+        ["现场确认设备动作状态", "通过 runtime reconciliation resolve 解除隔离"],
+    ),
+    ErrorCode.OUTBOX_DISPATCH_FAILED: (
+        Severity.ERROR,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.HARDWARE,
+        "设备派发重试耗尽，无法确认设备是否收到命令，需人工对账。",
+        ["核对 command_code 是否被设备接收", "现场确认物理状态后解除隔离"],
+    ),
+    ErrorCode.INBOX_PROCESSING_TIMEOUT: (
+        Severity.ERROR,
+        Recoverability.MANUAL_RETRYABLE,
+        ProblemClass.SOFTWARE,
+        "Inbox worker 处理超时，未完成本次编排事务。",
+        ["检查 worker 日志和锁等待", "修复后重试或 replay inbox"],
     ),
     ErrorCode.CONFIG_INVALID: (
         Severity.ERROR,

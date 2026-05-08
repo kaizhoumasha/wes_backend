@@ -14,7 +14,6 @@ from src.workline_runtime.plugin_base import (
     WorklinePlugin,
     on_command,
     on_event,
-    on_timeout,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
     step,
@@ -85,13 +84,6 @@ class TestPlugin(WorklinePlugin):
         """抓取失败"""
         return PluginResultBuilder(ctx).failure(domain="HARDWARE", code="PICK_FAILED", message="抓取失败").build()
 
-    # ========== 超时处理 ==========
-
-    @on_timeout()
-    async def handle_timeout(self, ctx, inbox):
-        """超时处理"""
-        return PluginResultBuilder(ctx).failure(domain="TIMEOUT", code="TIMEOUT", message="超时").build()
-
 
 class NormalizedInputPlugin(WorklinePlugin):
     """验证标准化输入可直接注入到装饰器插件。"""
@@ -147,10 +139,10 @@ class TestDecoratorRouting:
         handler = TestPlugin._command_handlers[key]
         assert handler.__name__ == "handle_pick_success"
 
-    def test_on_timeout_decorator_registers_handler(self):
-        """验证 @on_timeout 标记超时处理器"""
-        assert TestPlugin._timeout_handler is not None
-        assert TestPlugin._timeout_handler.__name__ == "handle_timeout"
+    def test_timeout_is_not_plugin_contract(self):
+        """验证 timeout 不再属于插件处理契约。"""
+        assert not hasattr(WorklinePlugin, "on" + "_timeout")
+        assert not hasattr(TestPlugin, "_timeout" + "_handler")
 
 
 class TestStepDecorator:
@@ -687,23 +679,3 @@ class TestEventRouting:
         assert result.failure.domain == "HARDWARE"
         assert result.failure.code == "ARM_ERROR"
         assert result.failure.message == "TERMINAL_FAILURE"
-
-    @pytest.mark.asyncio
-    async def test_on_timeout_routes_to_timeout_handler(self):
-        """验证 on_timeout 自动路由到 @on_timeout 标记的方法"""
-        plugin = TestPlugin()
-
-        # Mock context
-        ctx = MagicMock()
-        ctx.logger = MagicMock()
-
-        # Mock inbox
-        inbox = MagicMock()
-        inbox.id = 3
-
-        # Call on_timeout
-        result = await plugin.on_timeout(ctx, inbox)
-
-        # Verify routed to handle_timeout
-        assert result.failure is not None
-        assert result.failure.code == "TIMEOUT"

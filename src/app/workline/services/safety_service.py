@@ -41,6 +41,10 @@ _SENSITIVE_KEY_PARTS = (
 )
 
 
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
 def _is_sensitive_key(key: object) -> bool:
     normalized = str(key).lower().replace("-", "_")
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
@@ -135,8 +139,9 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")
-        if workline.runtime_status == WorkLineRuntimeStatus.ESTOPPED:
-            raise WorkLineSafetyBlocked(f"WORKLINE_ESTOPPED: workline_id={workline_id}")
+        runtime_status = _enum_value(workline.runtime_status)
+        if runtime_status != WorkLineRuntimeStatus.READY.value:
+            raise WorkLineSafetyBlocked(f"WORKLINE_{runtime_status}: workline_id={workline_id}")
 
     async def handle_estop(
         self,
@@ -274,7 +279,7 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {workline_id}")
-        if workline.runtime_status != WorkLineRuntimeStatus.ESTOPPED:
+        if _enum_value(workline.runtime_status) != WorkLineRuntimeStatus.ESTOPPED.value:
             raise ValueError("工作线当前不处于急停状态")
 
         incident = await self.incident_repository.get_active_for_workline(db, workline_id)

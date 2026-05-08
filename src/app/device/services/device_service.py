@@ -69,10 +69,6 @@ class DeviceService(BaseService[Device, DeviceRepository]):
     def _runtime_state_after_update(self, device: Device, data: dict[str, Any]) -> dict[str, Any]:
         state = self._runtime_old_state(device)
         state.update(data)
-        state.setdefault("device_status", DeviceStatus.IDLE)
-        state.setdefault("maintenance_mode", False)
-        state.setdefault("current_command_id", None)
-        state.setdefault("error_code", None)
         return state
 
     @staticmethod
@@ -373,6 +369,68 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             db,
             devices,
             DeviceRuntimeStatePolicy.error("WORKLINE_ESTOPPED").data,
+            auto_commit=auto_commit,
+        )
+
+    async def mark_callback_deadline_expired(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """执行 Callback 超时后，将受影响设备投影为需人工对账的错误态。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        return await self._update_runtime_state(
+            db,
+            device,
+            DeviceRuntimeStatePolicy.callback_deadline_expired().data,
+            auto_commit=auto_commit,
+        )
+
+    async def mark_dispatch_ack_exhausted(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """派发 ACK 重试耗尽后，将设备投影为通信 ACK 对账错误态。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        return await self._update_runtime_state(
+            db,
+            device,
+            DeviceRuntimeStatePolicy.dispatch_ack_exhausted().data,
+            auto_commit=auto_commit,
+        )
+
+    async def clear_reconciliation_error(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        expected_error_code: str,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """只清除当前 runtime reconciliation reason 对应的设备错误。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        if self._event_value(getattr(device, "device_status", None)) != DeviceStatus.ERROR.value:
+            return device
+        if getattr(device, "error_code", None) != expected_error_code:
+            return device
+        return await self._update_runtime_state(
+            db,
+            device,
+            DeviceRuntimeStatePolicy.idle().data,
             auto_commit=auto_commit,
         )
 

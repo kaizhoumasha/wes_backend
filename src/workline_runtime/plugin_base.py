@@ -353,23 +353,6 @@ def on_command(command_type: str, result: str | None = None) -> Callable[..., An
     return decorator
 
 
-def on_timeout() -> Callable[..., Any]:
-    """
-    标记方法处理超时事件
-
-    Example:
-        @on_timeout()
-        async def handle_timeout(self, ctx, inbox):
-            ...
-    """
-
-    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
-        method._is_timeout_handler = True  # type: ignore[attr-defined]
-        return method
-
-    return decorator
-
-
 def step(expected: str | None = None, target: str | None = None) -> Callable[..., Any]:
     """
     声明状态迁移
@@ -561,7 +544,7 @@ class WorklinePlugin:
     - 事件路由（根据 payload 类型分发）
     - Payload 解析（Pydantic 自动验证）
     - 状态迁移校验（前置状态检查）
-    - 默认实现（on_timeout, on_manual_operation 等）
+    - 默认实现（on_manual_operation 等）
     """
 
     plugin_key: str = "base"
@@ -571,7 +554,6 @@ class WorklinePlugin:
         """子类初始化时建立路由表"""
         cls._event_handlers: dict[str, Callable[..., Any]] = {}
         cls._command_handlers: dict[tuple[str, str | None], Callable[..., Any]] = {}
-        cls._timeout_handler: Callable[..., Any] | None = None
 
         for _, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if hasattr(method, "_event_type"):
@@ -584,8 +566,6 @@ class WorklinePlugin:
             if hasattr(method, "_command_type"):
                 key = (method._command_type, method._command_result)  # type: ignore[attr-defined]
                 cls._command_handlers[key] = method
-            if getattr(method, "_is_timeout_handler", False):
-                cls._timeout_handler = method
 
     async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
         """设备事件处理 - 优先按标准化 canonical_event_type 路由。"""
@@ -616,13 +596,6 @@ class WorklinePlugin:
         command_type = route_keys[0][0]
         result = non_empty_str(payload.get("result"))
         ctx.logger.warning(f"No handler for command_type={command_type}, result={result}")
-        return PluginResult()
-
-    async def on_timeout(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """超时处理 - 调用标记的方法或返回默认"""
-        handler = type(self)._timeout_handler
-        if handler:
-            return await self._invoke_handler(handler, ctx, inbox, inbox.payload_json or {})
         return PluginResult()
 
     async def on_external_http(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
@@ -733,7 +706,6 @@ __all__ = [
     "build_state_mismatch_failure",
     "on_command",
     "on_event",
-    "on_timeout",
     "resolve_normalized_command_envelope",
     "resolve_normalized_command_failure",
     "step",

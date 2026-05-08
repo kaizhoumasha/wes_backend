@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -294,8 +295,8 @@ class TestTraceTransactionSmoke:
 
         outbox_rows = await _load_outboxes_by_trace(db_session, session_trace_id)
         assert len(outbox_rows) == 1
-        assert outbox_rows[0].status == OutboxStatus.ACKED
-        assert outbox_rows[0].finished_at is not None
+        assert outbox_rows[0].status == OutboxStatus.SENT
+        assert outbox_rows[0].finished_at is None
 
         timeline_rows = await _load_timelines_by_trace(db_session, session_trace_id)
         assert len(timeline_rows) == 1
@@ -311,3 +312,54 @@ class TestTraceTransactionSmoke:
         assert trace_result.commands[0].command_code == fixture.command.command_code
         assert trace_result.commands[0].status == CommandStatus.COMPLETED
         assert trace_result.trace.trace_id == session_trace_id
+
+    @pytest.mark.asyncio
+    async def test_late_callback_race_records_evidence_without_clearing_device(self, db_session: AsyncSession) -> None:
+        """第一次 late guard 后进入对账时，command service 的 outcome 必须阻止清设备运行态。"""
+        from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
+
+        fixture = await _seed_trace_graph(db_session)
+        command_id = fixture.command.id
+        device_id = fixture.device.id
+        assert command_id is not None
+        assert device_id is not None
+
+        callback = _build_result_callback(fixture)
+        existing_command = await db_session.get(DeviceCommand, command_id)
+        assert existing_command is not None
+        orchestration = CallbackOrchestrationService()
+        command_service = SimpleNamespace(
+            handle_callback_result=AsyncMock(
+                return_value=DeviceCallbackResultOutcome(
+                    command=existing_command,
+                    late_callback_recorded=True,
+                )
+            )
+        )
+        device_service = SimpleNamespace(mark_command_finished=AsyncMock())
+
+        with patch(
+            "src.app.workline.services.runtime_reconciliation_service."
+            "workline_runtime_reconciliation_service.record_late_callback_if_pending",
+            new=AsyncMock(return_value=False),
+        ):
+            outcome = await orchestration.process_result(
+                db_session,
+                callback=callback,
+                existing_command=existing_command,
+                request_id="req-late-race",
+                resolved_contract_version=fixture.workline.contract_version,
+                command_service=command_service,
+                device_service=device_service,
+                inbox_service=WorklineInboxService(),
+                enqueue_processing=lambda: None,
+            )
+
+        assert outcome.is_duplicate is False
+        device_service.mark_command_finished.assert_not_awaited()
+        command_after = await db_session.get(DeviceCommand, command_id)
+        assert command_after is not None
+        assert command_after.status == CommandStatus.PENDING
+        device_after = await db_session.get(Device, device_id)
+        assert device_after is not None
+        assert device_after.device_status == DeviceStatus.RUNNING
