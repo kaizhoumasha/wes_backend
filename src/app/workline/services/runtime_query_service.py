@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
@@ -26,6 +27,7 @@ from src.app.workline.models.runtime import (
     RuntimeTraceListItem,
     RuntimeTraceListResponse,
     RuntimeTracePathResponse,
+    RuntimeTraceTimelineGroup,
     RuntimeWorklineDetailResponse,
     RuntimeWorklineDeviceItem,
     RuntimeWorklineSummary,
@@ -33,9 +35,11 @@ from src.app.workline.models.runtime import (
     TraceCommandItem,
     TraceQueryRequest,
 )
-from src.app.workline.services.trace_response_builder import build_trace_response
+from src.app.workline.services.trace_response_builder import build_trace_response, build_trace_timeline_item
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.workline_runtime.business_identity import resolve_payload_display_identity
+from src.workline_runtime.utils import ensure_dict
 
 _ACTIVE_SESSION_STATUSES = {
     "NEW",
@@ -47,11 +51,32 @@ _ACTIVE_SESSION_STATUSES = {
 _IN_PROGRESS_SESSION_STATUSES = {"NEW", "RUNNING"}
 _WAITING_SESSION_STATUSES = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
 _FAILURE_SESSION_STATUSES = {"FAILED", "CANCELLED"}
+_COMPLETED_SESSION_STATUSES = {"COMPLETED"}
 _ABNORMAL_DEVICE_STATUSES = {"ERROR", "OFFLINE", "MAINTENANCE"}
 _PENDING_COMMAND_STATUSES = {"PENDING", "SENT", "ACK_RECEIVED"}
 _INBOX_BACKLOG_STATUSES = {"NEW", "RETRY", "PROCESSING"}
 _OUTBOX_BACKLOG_STATUSES = {"NEW", "DISPATCHING"}
 _RECENT_FAILURE_HOURS = 24
+_ORCHESTRATOR_TIMELINE_ACTIONS = {
+    "SESSION_CREATED",
+    "SESSION_STARTED",
+    "SESSION_RESUMED",
+    "SESSION_COMPLETED",
+    "SESSION_FAILED",
+    "SESSION_CANCELLED",
+    "STATUS_CHANGED",
+    "WAIT_STARTED",
+    "WAIT_RESUMED",
+    "WAIT_TIMEOUT",
+    "DECISION_MADE",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _DeviceIdentity:
+    device_id: int
+    device_code: str | None = None
+    device_name: str | None = None
 
 
 def _enum_str(value: Any) -> str | None:
@@ -69,7 +94,9 @@ def _is_maintenance_device(item: Any) -> bool:
 
 
 def _activity_dt(session: WorklineSession) -> Any:
-    return session.last_ingress_at or session.waiting_since or session.started_at or session.created_at
+    return (
+        session.last_ingress_at or session.waiting_since or session.ended_at or session.started_at or session.created_at
+    )
 
 
 def _latest_activity_at(sessions: list[WorklineSession]) -> Any:
@@ -122,6 +149,54 @@ def _parse_session_id(value: Any) -> int | None:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return None
+
+
+def _payload_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_payload_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _session_initial_payload_display_identity(session: WorklineSession) -> str | None:
+    context = ensure_dict(getattr(session, "context_json", None))
+    initial_payload = ensure_dict(context.get("initial_payload"))
+    return resolve_payload_display_identity(initial_payload)
+
+
+def _build_device_identity_maps(devices: list[Any]) -> tuple[dict[int, _DeviceIdentity], dict[str, _DeviceIdentity]]:
+    by_id: dict[int, _DeviceIdentity] = {}
+    by_code: dict[str, _DeviceIdentity] = {}
+    for device in devices:
+        device_id = getattr(device, "id", None)
+        if device_id is None:
+            continue
+        identity = _DeviceIdentity(
+            device_id=device_id,
+            device_code=getattr(device, "device_code", None),
+            device_name=getattr(device, "device_name", None),
+        )
+        by_id[device_id] = identity
+        if identity.device_code:
+            by_code[identity.device_code] = identity
+    return by_id, by_code
+
+
+def _device_identity_from_source(source: Any) -> _DeviceIdentity | None:
+    device_id = getattr(source, "device_id", None)
+    if device_id is None:
+        return None
+    device = getattr(source, "device", None)
+    return _DeviceIdentity(
+        device_id=device_id,
+        device_code=getattr(source, "device_code", None) or getattr(device, "device_code", None),
+        device_name=getattr(source, "device_name", None) or getattr(device, "device_name", None),
+    )
 
 
 def _command_duration_ms(command: DeviceCommand) -> int | None:
@@ -316,19 +391,25 @@ class RuntimeQueryService(BaseService[Any, Any]):
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         active_sessions = await self._load_active_sessions_for_workline(db, workline_id, limit=20)
         recent_failed_sessions = await self._load_recent_failed_sessions_for_workline(db, workline_id, limit=10)
+        recent_completed_sessions = await self._load_recent_completed_sessions_for_workline(db, workline_id, limit=10)
         active_session_ids = {session.id for session in active_sessions}
-        all_sessions = active_sessions + [item for item in recent_failed_sessions if item.id not in active_session_ids]
+        visible_terminal_sessions = [
+            item for item in [*recent_failed_sessions, *recent_completed_sessions] if item.id not in active_session_ids
+        ]
+        all_sessions = active_sessions + visible_terminal_sessions
 
         summary = self._build_workline_summary(workline, devices, all_sessions)
         device_items = [self._build_workline_device_item(device) for device in devices]
         active_trace_items = await self._build_trace_list_items(db, active_sessions)
         failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
+        completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
 
         return RuntimeWorklineDetailResponse(
             summary=summary,
             devices=device_items,
             active_sessions=active_trace_items,
             recent_failed_traces=failed_trace_items,
+            recent_completed_traces=completed_trace_items,
         )
 
     async def list_devices(self, db: Any, workline_id: int | None = None) -> list[RuntimeDeviceSummary]:
@@ -523,6 +604,18 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 _recent_failure_or_timeout_clause(columns, now, recent_since),
             )
             .order_by(columns.updated_at.desc(), columns.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def _load_recent_completed_sessions_for_workline(
+        self, db: Any, workline_id: int, limit: int
+    ) -> list[WorklineSession]:
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession)
+            .where(columns.workline_id == workline_id, columns.status.in_(list(_COMPLETED_SESSION_STATUSES)))
+            .order_by(columns.ended_at.desc().nullslast(), columns.updated_at.desc(), columns.id.desc())
             .limit(limit)
         )
         return list(result.scalars().all())
@@ -722,6 +815,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
             run_mode=_enum_str(workline.run_mode) or "AUTO",
+            runtime_status=_enum_str(workline.runtime_status) or "READY",
+            active_safety_incident_id=workline.active_safety_incident_id,
+            stopped_at=workline.stopped_at,
+            stopped_reason=workline.stopped_reason,
+            resumed_at=workline.resumed_at,
             last_activity_at=_latest_activity_at(sessions),
         )
 
@@ -867,6 +965,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             session_code=session.session_code,
             trace_id=session.trace_id,
             request_id=session.last_request_id,
+            business_key=session.business_key,
+            barcode=session.barcode or _session_initial_payload_display_identity(session),
             workline_id=session.workline_id,
             workline_name=workline.line_name if workline is not None else None,
             workline_code=workline.line_code if workline is not None else None,
@@ -895,7 +995,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         result = await trace_query_service.by_session_id(db, session_id)
         if result.session is None:
             return None
-        return self._build_trace_path(result)
+        devices = await device_repository.get_by_work_line_id(db, result.session.workline_id)
+        return self._build_trace_path(result, devices=devices)
 
     async def get_trace_path(self, db: Any, trace_id: str) -> RuntimeTracePathResponse | None:
         """聚合 Trace ID 粒度的设备路径视图。"""
@@ -904,22 +1005,43 @@ class RuntimeQueryService(BaseService[Any, Any]):
         result = await trace_query_service.by_trace_id(db, trace_id)
         if result.session is None and not result.callback_logs:
             return None
-        return self._build_trace_path(result)
+        devices = (
+            await device_repository.get_by_work_line_id(db, result.session.workline_id)
+            if result.session is not None
+            else []
+        )
+        return self._build_trace_path(result, devices=devices)
 
-    def _build_trace_path(self, result: Any) -> RuntimeTracePathResponse:
+    def _build_trace_path(self, result: Any, *, devices: list[Any] | None = None) -> RuntimeTracePathResponse:
         """从 TraceQueryResult 构建设备路径视图。"""
 
         session = result.session
         devices_map: dict[int, RuntimeTraceDevicePathNode] = {}
+        device_identity_by_id, device_identity_by_code = _build_device_identity_maps(devices or [])
 
         def _ensure_node(device_id: int | None) -> RuntimeTraceDevicePathNode | None:
             if device_id is None:
                 return None
             node = devices_map.get(device_id)
             if node is None:
-                node = RuntimeTraceDevicePathNode(device_id=device_id)
+                identity = device_identity_by_id.get(device_id)
+                node = RuntimeTraceDevicePathNode(
+                    device_id=device_id,
+                    device_code=identity.device_code if identity is not None else None,
+                    device_name=identity.device_name if identity is not None else None,
+                )
                 devices_map[device_id] = node
             return node
+
+        for source in [*result.commands, *result.inboxes]:
+            identity = _device_identity_from_source(source)
+            if identity is None:
+                continue
+            existing = device_identity_by_id.get(identity.device_id)
+            if existing is None or (not existing.device_name and identity.device_name):
+                device_identity_by_id[identity.device_id] = identity
+            if identity.device_code:
+                device_identity_by_code[identity.device_code] = device_identity_by_id[identity.device_id]
 
         for cmd in result.commands:
             node = _ensure_node(cmd.device_id)
@@ -970,18 +1092,210 @@ class RuntimeQueryService(BaseService[Any, Any]):
                     detail=session.failure_message,
                 )
 
+        if blocking_device_id is not None and blocking_device_id in devices_map:
+            devices_map[blocking_device_id].is_current = True
+
         trace_id = result.trace.trace_id if result.trace else None
 
         evidence = build_trace_response(result)
+        timeline_groups = self._build_trace_timeline_groups(
+            result.timelines,
+            commands_by_id={cmd.id: cmd for cmd in result.commands if cmd.id is not None},
+            inboxes_by_id={inbox.id: inbox for inbox in result.inboxes if inbox.id is not None},
+            device_identity_by_id=device_identity_by_id,
+            device_identity_by_code=device_identity_by_code,
+            blocking_device_id=blocking_device_id,
+        )
 
         return RuntimeTracePathResponse(
             workline_id=session.workline_id if session else None,
             session_id=session.id if session else None,
             trace_id=trace_id,
             devices=list(devices_map.values()),
+            timeline_groups=timeline_groups,
             current_blocking_device_id=blocking_device_id,
             blocking_reason=blocking_reason,
             evidence=evidence,
+        )
+
+    def _build_trace_timeline_groups(
+        self,
+        timelines: list[Any],
+        *,
+        commands_by_id: dict[int, Any],
+        inboxes_by_id: dict[int, Any],
+        device_identity_by_id: dict[int, _DeviceIdentity],
+        device_identity_by_code: dict[str, _DeviceIdentity],
+        blocking_device_id: int | None,
+    ) -> list[RuntimeTraceTimelineGroup]:
+        groups: dict[str, RuntimeTraceTimelineGroup] = {}
+
+        for timeline in sorted(
+            timelines,
+            key=lambda item: (
+                getattr(item, "seq_no", 0),
+                getattr(item, "occurred_at", None) or "",
+                getattr(item, "id", 0),
+            ),
+        ):
+            event = build_trace_timeline_item(timeline)
+            group = self._resolve_timeline_group(
+                timeline,
+                commands_by_id=commands_by_id,
+                inboxes_by_id=inboxes_by_id,
+                device_identity_by_id=device_identity_by_id,
+                device_identity_by_code=device_identity_by_code,
+                blocking_device_id=blocking_device_id,
+            )
+            if group.group_key not in groups:
+                groups[group.group_key] = group
+            groups[group.group_key].events.append(event)
+
+        for group in groups.values():
+            group.events.sort(key=lambda item: (item.seq_no, item.occurred_at, item.id))
+
+        return sorted(
+            groups.values(),
+            key=lambda group: (
+                group.events[0].seq_no if group.events else 0,
+                group.events[0].occurred_at if group.events else "",
+                group.group_key,
+            ),
+        )
+
+    def _resolve_timeline_group(
+        self,
+        timeline: Any,
+        *,
+        commands_by_id: dict[int, Any],
+        inboxes_by_id: dict[int, Any],
+        device_identity_by_id: dict[int, _DeviceIdentity],
+        device_identity_by_code: dict[str, _DeviceIdentity],
+        blocking_device_id: int | None,
+    ) -> RuntimeTraceTimelineGroup:
+        command = commands_by_id.get(getattr(timeline, "related_command_id", None))
+        if command is not None:
+            return self._device_timeline_group(
+                command.device_id,
+                source=command,
+                device_identity_by_id=device_identity_by_id,
+                blocking_device_id=blocking_device_id,
+            )
+
+        inbox = inboxes_by_id.get(getattr(timeline, "related_inbox_id", None))
+        if inbox is not None:
+            return self._device_timeline_group(
+                inbox.device_id,
+                source=inbox,
+                device_identity_by_id=device_identity_by_id,
+                blocking_device_id=blocking_device_id,
+            )
+
+        action_type = _status_str(getattr(timeline, "action_type", None))
+        actor_type = _status_str(getattr(timeline, "actor_type", None))
+        actor_code = getattr(timeline, "actor_code", None)
+        payload = _payload_dict(getattr(timeline, "payload_json", None))
+        sandbox_trigger = _first_payload_str(payload, ("trigger", "source", "submitted_by"))
+
+        if actor_type == "MANUAL_OPERATOR" or (sandbox_trigger and "sandbox" in sandbox_trigger.lower()):
+            code = actor_code or sandbox_trigger or "sandbox"
+            return RuntimeTraceTimelineGroup(
+                group_key=f"operator:{code}",
+                group_type="operator",
+                display_name="Sandbox 操作员" if "sandbox" in code.lower() else f"操作员 {code}",
+            )
+
+        if actor_type == "EXTERNAL_SYSTEM" or action_type.startswith("EXTERNAL_CALL_"):
+            code = actor_code or "external"
+            return RuntimeTraceTimelineGroup(
+                group_key=f"external:{code}",
+                group_type="external",
+                display_name=f"外部系统 {code}",
+            )
+
+        if action_type in _ORCHESTRATOR_TIMELINE_ACTIONS or actor_type in {"ORCHESTRATOR", "PLUGIN"}:
+            return RuntimeTraceTimelineGroup(
+                group_key="orchestrator:session",
+                group_type="orchestrator",
+                display_name="编排 / Session",
+            )
+
+        if actor_type == "DEVICE" and actor_code:
+            return self._device_code_timeline_group(
+                actor_code,
+                device_identity_by_code=device_identity_by_code,
+                blocking_device_id=blocking_device_id,
+            )
+
+        device_code = _first_payload_str(
+            payload,
+            ("device_code", "target_code", "source_device_code", "source_device", "target_device_code"),
+        )
+        if device_code:
+            return self._device_code_timeline_group(
+                device_code,
+                device_identity_by_code=device_identity_by_code,
+                blocking_device_id=blocking_device_id,
+            )
+
+        return RuntimeTraceTimelineGroup(
+            group_key="unknown:timeline",
+            group_type="unknown",
+            display_name="未归属事件",
+        )
+
+    def _device_timeline_group(
+        self,
+        device_id: int | None,
+        *,
+        source: Any,
+        device_identity_by_id: dict[int, _DeviceIdentity],
+        blocking_device_id: int | None,
+    ) -> RuntimeTraceTimelineGroup:
+        if device_id is None:
+            return RuntimeTraceTimelineGroup(
+                group_key="unknown:timeline",
+                group_type="unknown",
+                display_name="未归属事件",
+            )
+        identity = device_identity_by_id.get(device_id) or _device_identity_from_source(source)
+        device_code = identity.device_code if identity is not None else None
+        device_name = identity.device_name if identity is not None else None
+        return RuntimeTraceTimelineGroup(
+            group_key=f"device:{device_id}",
+            group_type="device",
+            display_name=device_name or device_code or f"设备 #{device_id}",
+            device_id=device_id,
+            device_code=device_code,
+            is_current=device_id == blocking_device_id,
+            is_blocked=device_id == blocking_device_id,
+        )
+
+    def _device_code_timeline_group(
+        self,
+        device_code: str,
+        *,
+        device_identity_by_code: dict[str, _DeviceIdentity],
+        blocking_device_id: int | None,
+    ) -> RuntimeTraceTimelineGroup:
+        identity = device_identity_by_code.get(device_code)
+        if identity is not None:
+            return RuntimeTraceTimelineGroup(
+                group_key=f"device:{identity.device_id}",
+                group_type="device",
+                display_name=identity.device_name or identity.device_code or f"设备 #{identity.device_id}",
+                device_id=identity.device_id,
+                device_code=identity.device_code,
+                is_current=identity.device_id == blocking_device_id,
+                is_blocked=identity.device_id == blocking_device_id,
+            )
+        return RuntimeTraceTimelineGroup(
+            group_key=f"device-code:{device_code}",
+            group_type="device",
+            display_name=device_code,
+            device_code=device_code,
+            is_current=False,
+            is_blocked=False,
         )
 
 

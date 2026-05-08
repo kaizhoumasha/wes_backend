@@ -273,8 +273,8 @@ class TestSmtClassifierPluginEvents:
         assert result.wait.wait_token.startswith("42-MEASUREMENT_REEL-")
 
     @pytest.mark.asyncio
-    async def test_estop_event_returns_hardware_failure(self, plugin, mock_context):
-        """测试急停事件会直接落到硬件失败。"""
+    async def test_estop_event_is_not_handled_by_plugin_flow(self, plugin, mock_context):
+        """急停是平台保留安全事件，不由 SMT 插件普通事件流处理。"""
         payload = {
             "device_code": "ARM01",
             "event_type": "ESTOP_PRESSED",
@@ -288,10 +288,9 @@ class TestSmtClassifierPluginEvents:
 
         result = await plugin.on_device_event(mock_context, inbox)
 
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "ESTOP"
-        assert result.failure.message == "急停触发: ARM01"
+        assert result.failure is None
+        assert result.transition is None
+        assert result.commands == []
 
     @pytest.mark.asyncio
     async def test_idle_to_waiting_measurement(self, plugin, mock_context):

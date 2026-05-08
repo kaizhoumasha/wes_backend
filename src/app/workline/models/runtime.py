@@ -29,6 +29,8 @@ class RuntimeTraceListItem(BaseModel):
     session_code: str
     trace_id: str | None = None
     request_id: str | None = None
+    business_key: str | None = None
+    barcode: str | None = None
     workline_id: int
     workline_name: str | None = None
     workline_code: str | None = None
@@ -342,6 +344,11 @@ class RuntimeWorklineSummary(BaseModel):
     offline_device_count: int = 0
     maintenance_device_count: int = 0
     run_mode: str = "AUTO"
+    runtime_status: str = "READY"
+    active_safety_incident_id: int | None = None
+    stopped_at: datetime | None = None
+    stopped_reason: str | None = None
+    resumed_at: datetime | None = None
     last_activity_at: datetime | None = None
 
 
@@ -364,6 +371,7 @@ class RuntimeWorklineDetailResponse(BaseModel):
     devices: list[RuntimeWorklineDeviceItem] = Field(default_factory=list)
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
     recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
+    recent_completed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)
 
 
 class RuntimeTraceDeviceAction(BaseModel):
@@ -383,6 +391,17 @@ class RuntimeTraceDevicePathNode(BaseModel):
     actions: list[RuntimeTraceDeviceAction] = Field(default_factory=list)
 
 
+class RuntimeTraceTimelineGroup(BaseModel):
+    group_key: str
+    group_type: str
+    display_name: str
+    device_id: int | None = None
+    device_code: str | None = None
+    is_current: bool = False
+    is_blocked: bool = False
+    events: list[TraceTimelineItem] = Field(default_factory=list)
+
+
 class RuntimeBlockingReason(BaseModel):
     device_id: int | None = None
     reason: str
@@ -394,6 +413,7 @@ class RuntimeTracePathResponse(BaseModel):
     session_id: int | None = None
     trace_id: str | None = None
     devices: list[RuntimeTraceDevicePathNode] = Field(default_factory=list)
+    timeline_groups: list[RuntimeTraceTimelineGroup] = Field(default_factory=list)
     current_blocking_device_id: int | None = None
     blocking_reason: RuntimeBlockingReason | None = None
     evidence: TraceDetailResponse | None = None

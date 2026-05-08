@@ -210,6 +210,10 @@ def _build_timeline_item(item: Any) -> TraceTimelineItem:
     )
 
 
+def build_trace_timeline_item(item: Any) -> TraceTimelineItem:
+    return _build_timeline_item(item)
+
+
 def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
     return TraceDiagnosticItem(
         request_id=item.request_id,
@@ -248,4 +252,4 @@ def build_trace_response(result: Any) -> TraceDetailResponse:
     )
 
 
-__all__ = ["build_trace_response"]
+__all__ = ["build_trace_response", "build_trace_timeline_item"]

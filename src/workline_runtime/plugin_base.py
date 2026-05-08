@@ -44,6 +44,7 @@ from pydantic import BaseModel, ValidationError
 
 from src.core.logger import logger
 from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
+from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 from src.workline_runtime.types import (
     BusinessDecisionIntent,
     CommandIntent,
@@ -321,6 +322,7 @@ def on_event(event_type: str) -> Callable[..., Any]:
         async def handle_scan(self, ctx, event: ScanEventPayload):
             ...
     """
+    assert_not_reserved_runtime_event(event_type, owner="@on_event", declaration_surface="@on_event")
 
     def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._event_type = event_type  # type: ignore[attr-defined]
@@ -573,6 +575,11 @@ class WorklinePlugin:
 
         for _, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if hasattr(method, "_event_type"):
+                assert_not_reserved_runtime_event(
+                    method._event_type,  # type: ignore[attr-defined]
+                    owner=f"{cls.__name__}.{method.__name__}",
+                    declaration_surface="@on_event",
+                )
                 cls._event_handlers[method._event_type] = method  # type: ignore[attr-defined]
             if hasattr(method, "_command_type"):
                 key = (method._command_type, method._command_result)  # type: ignore[attr-defined]

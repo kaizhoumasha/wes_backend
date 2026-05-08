@@ -128,7 +128,7 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
         workline_repo=cast("Any", _SingleItemRepoStub(workline)),
     )
 
-    with pytest.raises(ValueError, match="当前会话状态不允许提交 Result"):
+    with pytest.raises(ValueError, match="当前会话状态不允许模拟 ACK"):
         await service.submit_sandbox_ack(
             object(),
             dispatch_key="device-command:CMD-001",

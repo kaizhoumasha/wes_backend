@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.workline_runtime.runtime_events import assert_no_reserved_runtime_events
+
 BusinessKeyResolver = Callable[[dict[str, Any]], str | None]
 ResultClassifier = Callable[[dict[str, Any]], str | None]
 
@@ -87,8 +89,21 @@ class WorklinePluginManifest:
         if self.result_classifier is not None and not callable(self.result_classifier):
             raise TypeError("manifest.result_classifier must be callable")
 
-        object.__setattr__(self, "event_source_roles", _normalize_role_map(self.event_source_roles))
+        normalized_event_source_roles = _normalize_role_map(self.event_source_roles)
+        object.__setattr__(self, "event_source_roles", normalized_event_source_roles)
         object.__setattr__(self, "command_target_roles", _normalize_role_map(self.command_target_roles))
+
+        owner = f"manifest {self.plugin_key}"
+        assert_no_reserved_runtime_events(
+            self.supported_events,
+            owner=owner,
+            declaration_surface="supported_events",
+        )
+        assert_no_reserved_runtime_events(
+            normalized_event_source_roles.keys(),
+            owner=owner,
+            declaration_surface="event_source_roles",
+        )
 
     def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
         """调用插件声明的业务键解析器。"""

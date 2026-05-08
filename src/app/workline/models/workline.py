@@ -4,6 +4,7 @@
 包含 WorkLine 数据库表模型和相关的 Pydantic Schemas
 """
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
@@ -12,6 +13,7 @@ from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -128,6 +130,29 @@ class WorkLine(
 
     __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+
+    runtime_status: WorkLineRuntimeStatus = Field(
+        default=WorkLineRuntimeStatus.READY,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                WorkLineRuntimeStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="WorkLine 运行安全状态",
+    )
+    active_safety_incident_id: int | None = Field(
+        default=None,
+        index=True,
+        description="当前生效的安全事件 ID",
+    )
+    stopped_at: datetime | None = Field(default=None, index=True, description="进入急停冻结的时间")
+    stopped_reason: str | None = Field(default=None, max_length=200, description="进入急停冻结的原因")
+    resumed_at: datetime | None = Field(default=None, index=True, description="恢复 READY 的时间")
 
     @property
     def plugin_definition(self) -> WorklinePluginDefinition | None:

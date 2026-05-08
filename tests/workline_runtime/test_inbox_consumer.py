@@ -43,6 +43,7 @@ def _loaded_entities(
     command: Any | None = None,
     devices_by_role: dict[str, list[Any]] | None = None,
     services: Any | None = None,
+    safety_checked: bool = True,
 ) -> dict[str, Any]:
     return {
         "session": session,
@@ -51,7 +52,14 @@ def _loaded_entities(
         "command": command,
         "devices_by_role": devices_by_role or {},
         "services": services or MagicMock(),
+        "safety_checked": safety_checked,
     }
+
+
+def _required_await_args(mock: Any) -> Any:
+    await_args = mock.await_args
+    assert await_args is not None
+    return await_args
 
 
 class MockInbox:
@@ -69,18 +77,29 @@ class MockInbox:
         trace_id: str | None = None,
         payload_json: dict[str, Any] | None = None,
     ):
-        self.id = inbox_id
-        self.kind = kind
-        self.status = status
-        self.session_id = session_id
-        self.workline_id = workline_id
-        self.device_id = device_id
-        self.command_id = command_id
-        self.trace_id = trace_id
-        self.payload_json = payload_json or {}
-        self.processor_token = None
-        self.processed_at = None
-        self.error_message = None
+        self.id: int = inbox_id
+        self.kind: InboxKind = kind
+        self.status: InboxStatus = status
+        self.session_id: int | None = session_id
+        self.workline_id: int | None = workline_id
+        self.device_id: int | None = device_id
+        self.command_id: int | None = command_id
+        self.trace_id: str | None = trace_id
+        self.source_message_id: str | None = None
+        self.event_id: str | None = None
+        self.causation_id: str | None = None
+        self._payload_json: dict[str, Any] = payload_json or {}
+        self.processor_token: str | None = None
+        self.processed_at: datetime | None = None
+        self.error_message: str | None = None
+
+    @property
+    def payload_json(self) -> dict[str, Any]:
+        return self._payload_json
+
+    @payload_json.setter
+    def payload_json(self, value: dict[str, Any]) -> None:
+        self._payload_json = value
 
 
 class RollbackExpiredInbox(MockInbox):
@@ -110,9 +129,19 @@ class MockSession:
         status: str = "RUNNING",
         context: dict[str, Any] | None = None,
     ):
-        self.id = session_id
-        self.status = status
-        self.context = context or {}
+        self.id: int = session_id
+        self.workline_id: int | None = None
+        self.status: str = status
+        self.context: dict[str, Any] = context or {}
+        self.trace_id: str | None = None
+        self.plugin_key: str | None = None
+        self.contract_version: str | None = None
+        self.step_code: str | None = None
+        self.awaiting_command_id: int | None = None
+        self.ingress_count: int | None = None
+        self.last_request_id: str | None = None
+        self.last_ingress_at: datetime | None = None
+        self._pending_session_ingress_metadata: dict[str, Any] | None = None
 
 
 class MockWorkline:
@@ -124,9 +153,11 @@ class MockWorkline:
         plugin_class: type[Any] | None = None,
         state_machine_class: type[Any] | None = None,
     ):
-        self.id = workline_id
-        self.plugin_class = plugin_class
-        self.state_machine_class = state_machine_class
+        self.id: int = workline_id
+        self.plugin_key: str | None = None
+        self.contract_version: str | None = None
+        self.plugin_class: type[Any] | None = plugin_class
+        self.state_machine_class: type[Any] | None = state_machine_class
 
 
 class CommitAwareDb:
@@ -344,19 +375,19 @@ class TestInboxConsumer:
         inbox = MockInbox(
             inbox_id=1,
             kind=InboxKind.DEVICE_EVENT,
-            trace_id="trace-estop-001",
+            trace_id="trace-device-fault-001",
             payload_json={
-                "canonical_event_type": "ESTOP_PRESSED",
+                "canonical_event_type": "SCAN_COMPLETED",
                 "device_code": "ARM01",
-                "data": None,
+                "data": {"barcode": "BC-DEVICE-FAULT-001"},
             },
         )
-        inbox.source_message_id = "req-estop-001"
+        inbox.source_message_id = "req-device-fault-001"
         mock_inbox_service.get_new_messages.return_value = [inbox]
         mock_orchestrator.process_inbox.return_value = OrchestratorResult(
             success=False,
-            error="急停触发: ARM01",
-            failure=FailureIntent(domain="HARDWARE", code="ESTOP", message="急停触发: ARM01"),
+            error="设备故障: ARM01",
+            failure=FailureIntent(domain="HARDWARE", code="DEVICE_FAULT", message="设备故障: ARM01"),
         )
 
         with (
@@ -392,6 +423,124 @@ class TestInboxConsumer:
         assert mock_log_diagnostic.call_args.kwargs["error_code"] == ErrorCode.UNKNOWN
         assert mock_log_diagnostic.call_args.kwargs["error_domain"] == ErrorDomain.DEVICE
         assert mock_log_diagnostic.call_args.kwargs["problem_class"] == ProblemClass.HARDWARE
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_estop_short_circuits_to_safety_service(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """ESTOP_PRESSED 不进入 SessionResolver/插件编排，直接触发 WorkLine 安全服务。"""
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        payload = {
+            "canonical_event_type": "ESTOP_PRESSED",
+            "device_code": "ARM01",
+            "data": None,
+        }
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            workline_id=7,
+            device_id=11,
+            command_id=22,
+            trace_id="trace-estop-001",
+            payload_json=payload,
+        )
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        safety_service = MagicMock()
+        safety_service.handle_estop = AsyncMock(return_value=SimpleNamespace(id=99))
+
+        with (
+            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
+            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value=_loaded_entities(
+                        session=None,
+                        workline=MockWorkline(workline_id=7),
+                        device=SimpleNamespace(id=11),
+                        command=SimpleNamespace(id=22),
+                    )
+                ),
+            ),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 1
+        assert result["failed"] == 0
+        safety_service.handle_estop.assert_awaited_once_with(
+            mock_db,
+            workline_id=7,
+            source_inbox_id=1,
+            source_device_id=11,
+            source_command_id=22,
+            trigger_payload=payload,
+        )
+        mock_inbox_service.mark_as_processed.assert_called_once()
+        mock_orchestrator.process_inbox.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_rejects_non_estop_when_workline_is_estopped(
+        self,
+        mock_db,
+        mock_inbox_service,
+        mock_orchestrator,
+    ):
+        """WorkLine 急停冻结后，非 ESTOP 事件不能再进入插件编排。"""
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+        from src.celery_app.tasks.workline import process_inbox_messages
+
+        payload = {
+            "canonical_event_type": "SCAN_COMPLETED",
+            "data": {"PkgID": "PKG-001"},
+        }
+        inbox = MockInbox(
+            inbox_id=1,
+            kind=InboxKind.DEVICE_EVENT,
+            workline_id=7,
+            trace_id="trace-estop-blocked-001",
+            payload_json=payload,
+        )
+        mock_inbox_service.get_new_messages.return_value = [inbox]
+        mock_orchestrator.process_inbox = AsyncMock(
+            return_value=OrchestratorResult(success=False, error="should not orchestrate")
+        )
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(
+            side_effect=WorkLineSafetyBlocked("WORKLINE_ESTOPPED: workline_id=7")
+        )
+
+        with (
+            patch("src.app.workline.services.inbox_service.inbox_service", mock_inbox_service),
+            patch("src.celery_app.tasks.workline.OrchestratorService", return_value=mock_orchestrator),
+            patch(
+                "src.celery_app.tasks.workline._load_related_entities",
+                AsyncMock(
+                    return_value=_loaded_entities(
+                        session=MockSession(),
+                        workline=MockWorkline(workline_id=7),
+                        safety_checked=False,
+                    )
+                ),
+            ),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()) as mock_record_diagnostic,
+        ):
+            result = await process_inbox_messages._process_batch(mock_db, limit=10)
+
+        assert result["processed"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 1
+        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=7)
+        mock_orchestrator.process_inbox.assert_not_called()
+        mock_record_diagnostic.assert_awaited_once()
+        mock_inbox_service.mark_as_failed.assert_awaited_once()
+        assert "WORKLINE_ESTOPPED" in mock_inbox_service.mark_as_failed.await_args.args[2]
 
     @pytest.mark.asyncio
     async def test_process_inbox_rejects_scan_finish_when_canonical_scan_completed_missing_barcode(
@@ -767,8 +916,9 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_diagnostic.assert_awaited_once()
-        assert mock_record_diagnostic.await_args.args[0] is mock_db
-        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        await_args = _required_await_args(mock_record_diagnostic)
+        assert await_args.args[0] is mock_db
+        diagnostic_kwargs = await_args.kwargs
         assert diagnostic_kwargs["inbox"].id == inbox.id
         assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
         assert diagnostic_kwargs["error_code"] == ErrorCode.SESSION_RESOLVE_FAILED
@@ -834,7 +984,7 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_event.assert_awaited_once()
-        event = mock_record_event.await_args.kwargs["event"]
+        event = _required_await_args(mock_record_event).kwargs["event"]
         assert event.error_code == ErrorCode.SESSION_RESOLVE_FAILED
         assert event.context.trace_id == "trace-expired-rollback-001"
         assert event.context.request_id == "req-expired-rollback-001"
@@ -885,8 +1035,9 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_diagnostic.assert_awaited_once()
-        assert mock_record_diagnostic.await_args.args[0] is mock_db
-        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        await_args = _required_await_args(mock_record_diagnostic)
+        assert await_args.args[0] is mock_db
+        diagnostic_kwargs = await_args.kwargs
         assert diagnostic_kwargs["inbox"].id == inbox.id
         assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
         assert diagnostic_kwargs["message"] == "Entity not found"
@@ -943,7 +1094,7 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_event.assert_awaited_once()
-        event = mock_record_event.await_args.kwargs["event"]
+        event = _required_await_args(mock_record_event).kwargs["event"]
         assert event.error_code == ErrorCode.UNKNOWN
         assert event.context.trace_id == "trace-generic-expired-001"
         assert event.context.request_id == "req-generic-expired-001"
@@ -1018,8 +1169,9 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_diagnostic.assert_awaited_once()
-        assert mock_record_diagnostic.await_args.args[0] is mock_db
-        diagnostic_kwargs = mock_record_diagnostic.await_args.kwargs
+        await_args = _required_await_args(mock_record_diagnostic)
+        assert await_args.args[0] is mock_db
+        diagnostic_kwargs = await_args.kwargs
         assert diagnostic_kwargs["inbox"].id == inbox.id
         assert diagnostic_kwargs["inbox"].trace_id == inbox.trace_id
         assert diagnostic_kwargs["error_code"] == ErrorCode.DEVICE_TIMEOUT
@@ -1101,7 +1253,7 @@ class TestInboxConsumer:
             auto_commit=False,
         )
         mock_record_event.assert_awaited_once()
-        event = mock_record_event.await_args.kwargs["event"]
+        event = _required_await_args(mock_record_event).kwargs["event"]
         assert event.error_code == ErrorCode.DEVICE_TIMEOUT
         assert event.context.trace_id == "trace-timeout-expired-001"
         assert event.context.request_id == "req-timeout-expired-001"
@@ -1399,6 +1551,7 @@ class TestInboxConsumer:
     async def test_emit_timeline_assigns_monotonic_seq_no_within_same_batch(self, mock_db):
         """同一批 effect 内的多条 timeline 必须共享同一条递增序列。"""
         from src.celery_app.tasks.workline import EffectApplyContext, _emit_timeline
+        from src.workline_runtime.trace_context import TraceContext
 
         session = SimpleNamespace(id=123, workline_id=1)
         captured_timelines: list[Any] = []
@@ -1414,9 +1567,11 @@ class TestInboxConsumer:
             "workline": None,
             "inbox": None,
             "devices_by_role": {},
+            "source_device": None,
             "orch_result": OrchestratorResult(success=True),
             "current_status": None,
             "trace_id": None,
+            "trace": TraceContext.from_runtime(session=session),
             "session_ctx": {},
             "now": datetime.now(),
             "awaiting_command_id": None,
@@ -2272,6 +2427,8 @@ class TestInboxConsumer:
                 message="device timed out",
             ),
         )
+        mock_outbox_repo = MagicMock()
+        mock_outbox_repo.cancel_active_by_session = AsyncMock(return_value=1)
 
         with (
             patch(
@@ -2281,6 +2438,10 @@ class TestInboxConsumer:
             patch(
                 "src.workline_runtime.timeline_generator.timeline_generator.generate",
                 side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch(
+                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                return_value=mock_outbox_repo,
             ),
         ):
             await _apply_orchestrator_effects(
@@ -2302,6 +2463,11 @@ class TestInboxConsumer:
         assert session.failure_domain == "HARDWARE"
         assert session.failure_code == "DEVICE_TIMEOUT"
         assert session.failure_message == "device timed out"
+        mock_outbox_repo.cancel_active_by_session.assert_awaited_once_with(
+            mock_db,
+            session_id=456,
+            reason="DEVICE_TIMEOUT",
+        )
         assert len(captured_timelines) == 1
         assert captured_timelines[0].action_type == TimelineActionType.SESSION_FAILED
         assert captured_timelines[0].stage == TimelineStage.FAIL
@@ -2533,6 +2699,52 @@ class TestLoadRelatedEntities:
         assert "SCANNER" in entities["devices_by_role"]
         assert "ROBOT_ARM" in entities["devices_by_role"]
         assert len(entities["devices_by_role"]["SCANNER"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_load_related_entities_checks_safety_before_session_resolver(self, mock_db):
+        """非 ESTOP 事件在冻结 WorkLine 上不能先创建 Session。"""
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+        from src.celery_app.tasks.workline import _load_related_entities
+
+        inbox = MockInbox(
+            inbox_id=1,
+            workline_id=7,
+            payload_json={"canonical_event_type": "SCAN_COMPLETED", "data": {"PkgID": "PKG-001"}},
+        )
+        mock_workline = MockWorkline(workline_id=7)
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(
+            side_effect=WorkLineSafetyBlocked("WORKLINE_ESTOPPED: workline_id=7")
+        )
+
+        with (
+            patch("src.app.workline.repositories.WorkLineRepository") as MockWorklineRepo,
+            patch("src.app.device.repositories.DeviceRepository") as MockDeviceRepo,
+            patch("src.app.workline.repositories.session_repository.WorklineSessionRepository") as MockSessionRepo,
+            patch(
+                "src.workline_runtime.session_resolver.session_resolver.resolve_or_create",
+                new=AsyncMock(return_value=MockSession()),
+            ) as mock_resolve_or_create,
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+        ):
+            mock_session_repo_instance = AsyncMock()
+            mock_session_repo_instance.get_by_id = AsyncMock(return_value=None)
+            MockSessionRepo.return_value = mock_session_repo_instance
+
+            mock_workline_repo_instance = AsyncMock()
+            mock_workline_repo_instance.get_by_id = AsyncMock(return_value=mock_workline)
+            MockWorklineRepo.return_value = mock_workline_repo_instance
+
+            mock_device_repo_instance = AsyncMock()
+            mock_device_repo_instance.get_by_id = AsyncMock(return_value=None)
+            mock_device_repo_instance.get_by_work_line_id = AsyncMock(return_value=[])
+            MockDeviceRepo.return_value = mock_device_repo_instance
+
+            with pytest.raises(WorkLineSafetyBlocked, match="WORKLINE_ESTOPPED"):
+                await _load_related_entities(mock_db, inbox, resolved_event_type="SCAN_COMPLETED")
+
+        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=7)
+        mock_resolve_or_create.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_load_external_http_entities_from_trace_id(self, mock_db):

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, status
 
+from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.operation import (
     ManualOperationRequest,
     ReplayInboxRequest,
@@ -14,10 +15,15 @@ from src.app.workline.models.operation import (
     SandboxResultRequest,
     SandboxTemplatesResponse,
 )
-from src.app.workline.services import workline_operation_service
+from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runtime annotation
+    ClearWorkLineEstopRequest,
+    SimulateWorkLineEstopRequest,
+)
+from src.app.workline.services import WorkLineSafetyBlocked, workline_operation_service, workline_safety_service
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
+from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 
 router = APIRouter(tags=["工作线诊断操作"])
@@ -56,9 +62,24 @@ def _outbox_response(outbox: Any) -> dict[str, Any]:
     }
 
 
-def _operation_error_response(exc: ValueError) -> dict[str, Any]:
+def _safety_incident_response(incident: Any) -> dict[str, Any]:
+    return {
+        "id": incident.id,
+        "workline_id": incident.workline_id,
+        "status": _enum_value(incident.status),
+        "event_type": incident.event_type,
+        "reason": incident.reason,
+        "drain_status": incident.drain_status,
+        "evidence_json": incident.evidence_json,
+        "recovery_check_json": incident.recovery_check_json,
+        "cleared_at": incident.cleared_at.isoformat() if incident.cleared_at else None,
+        "cleared_by": incident.cleared_by,
+    }
+
+
+def _operation_error_response(exc: Exception) -> dict[str, Any]:
     message = str(exc)
-    if "不存在" in message:
+    if "不存在" in message or "NOT_FOUND" in message:
         return response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=message)
     return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
 
@@ -72,19 +93,6 @@ def _enqueue_workline_processing() -> None:
         "src.celery_app.tasks.workline.process_inbox_batch",
         kwargs={"limit": 10},
     )
-
-
-@router.post(
-    "/sandbox/process",
-    summary="[biz:workline:update] 手动触发编排处理",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
-)
-async def trigger_sandbox_process() -> ResponseSchemaModel[dict[str, Any]]:
-    """手动触发工作线编排处理（用于沙箱调试，Celery worker 未启动时）"""
-    _enqueue_workline_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data={"triggered": True}))
 
 
 @router.get(
@@ -146,7 +154,7 @@ async def replay_inbox(
             reason=payload.reason,
             operator_id=payload.operator_id,
         )
-    except ValueError as exc:
+    except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
@@ -172,10 +180,73 @@ async def create_manual_operation(
             operator_id=payload.operator_id,
             reason=payload.reason,
         )
-    except ValueError as exc:
+    except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
+
+
+@router.post(
+    "/sandbox/worklines/{workline_id}/simulate-estop",
+    summary="[biz:workline:update] 沙箱模拟 WorkLine 软件急停冻结",
+    response_model=ResponseSchemaModel[dict[str, Any]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+)
+async def simulate_workline_estop(
+    workline_id: int,
+    payload: SimulateWorkLineEstopRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[dict[str, Any]]:
+    """沙箱专用安全模拟入口；不通过普通 sandbox event 流。"""
+
+    try:
+        incident = await workline_safety_service.simulate_estop(
+            db,
+            workline_id=workline_id,
+            reason=payload.reason,
+            source_device_id=payload.source_device_id,
+            payload=payload.payload,
+        )
+        await db.commit()
+        await publish_deferred_sse_events(db)
+    except (ValueError, WorkLineSafetyBlocked) as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    return cast(
+        "ResponseSchemaModel[dict[str, Any]]",
+        response_builder.success(data=_safety_incident_response(incident)),
+    )
+
+
+@router.post(
+    "/safety/worklines/{workline_id}/clear-estop",
+    summary="[biz:workline:clear-estop] 人工确认 checklist 后清除工作线急停",
+    response_model=ResponseSchemaModel[dict[str, Any]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:clear-estop"))],
+)
+async def clear_workline_estop(
+    workline_id: int,
+    payload: ClearWorkLineEstopRequest,
+    db: AsyncSessionDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
+) -> ResponseSchemaModel[dict[str, Any]]:
+    try:
+        incident = await workline_safety_service.clear_estop(
+            db,
+            workline_id=workline_id,
+            checks=payload.checks,
+            reason=payload.reason,
+            operator_id=current_user_id,
+        )
+        await db.commit()
+        await publish_deferred_sse_events(db)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    return cast(
+        "ResponseSchemaModel[dict[str, Any]]",
+        response_builder.success(data=_safety_incident_response(incident)),
+    )
 
 
 @router.post(

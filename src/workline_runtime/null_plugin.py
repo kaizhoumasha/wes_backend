@@ -50,12 +50,6 @@ class NullPlugin(WorklinePlugin):
         ctx.logger.info(f"NullPlugin received MATERIAL_ARRIVED: {inbox.id}")
         return PluginResult()
 
-    @on_event("ESTOP_PRESSED")
-    async def handle_estop_pressed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
-        """急停事件"""
-        ctx.logger.warning(f"NullPlugin received ESTOP_PRESSED: {inbox.id}")
-        return PluginResult()
-
     # ========== 命令结果处理 ==========
 
     @on_command("PICK_AND_PUT", result="SUCCESS")

@@ -371,7 +371,12 @@ class WorklineOperationService(BaseService[Any, Any]):
                 f"expected_device_id={command.device_id}, actual_device_id={device.id}"
             )
 
-        session = await self._load_session_waiting_for_command(db, command, command_code)
+        session = await self._load_session_waiting_for_command(
+            db,
+            command,
+            command_code,
+            action_label="提交 Result",
+        )
 
         command_type = _enum_value(command.task_type)
         result_payload: dict[str, Any] = {
@@ -417,7 +422,14 @@ class WorklineOperationService(BaseService[Any, Any]):
                 f"仅允许 SIMULATION 工作线使用沙箱功能: workline_id={workline.id}, run_mode={workline.run_mode}"
             )
 
-    async def _load_session_waiting_for_command(self, db: Any, command: Any, command_code: str) -> Any:
+    async def _load_session_waiting_for_command(
+        self,
+        db: Any,
+        command: Any,
+        command_code: str,
+        *,
+        action_label: str,
+    ) -> Any:
         session_id = command.session_id_int
         if session_id is None:
             raise ValueError(f"Command 未关联会话: {command_code}")
@@ -428,7 +440,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if session.status != _RESULT_WAIT_SESSION_STATUS:
             raise ValueError(
-                f"当前会话状态不允许提交 Result: session_id={session_id}, status={_enum_value(session.status)}"
+                f"当前会话状态不允许{action_label}: session_id={session_id}, status={_enum_value(session.status)}"
             )
         if session.awaiting_command_id != command.id:
             raise ValueError(
@@ -456,7 +468,12 @@ class WorklineOperationService(BaseService[Any, Any]):
         if command is None:
             raise ValueError(f"Command 不存在: {command_code}")
 
-        session = await self._load_session_waiting_for_command(db, command, command_code)
+        session = await self._load_session_waiting_for_command(
+            db,
+            command,
+            command_code,
+            action_label="模拟 ACK",
+        )
         if outbox.session_id != session.id:
             raise ValueError(
                 f"Outbox 会话与 Command 会话不匹配: dispatch_key={outbox.dispatch_key}, "

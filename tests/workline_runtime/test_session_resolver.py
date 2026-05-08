@@ -612,17 +612,19 @@ class TestSessionResolver:
 
         assert key == expected_hash
 
-    def test_resolve_business_key_uses_event_scope_key_for_estop(self):
-        """无业务条码的急停事件应按 event_type + device_code 稳定归属。"""
+    def test_resolve_business_key_rejects_estop_as_normal_session_event(self):
+        """急停是平台保留安全事件，不应进入普通 Session 归属。"""
         payload = {
             "device_code": "ARM01",
             "event_type": "ESTOP_PRESSED",
             "data": None,
         }
 
-        key = _resolve_business_key(payload, plugin_key="smt_classifier")
-
-        assert key == "event:ESTOP_PRESSED:ARM01"
+        with pytest.raises(
+            SessionResolveError,
+            match="Unable to resolve stable business_key from payload",
+        ):
+            _resolve_business_key(payload, plugin_key="smt_classifier")
 
     def test_resolve_business_key_uses_event_id_for_material_arrived(self):
         """无业务条码的传感器事件应优先使用 event_id 形成稳定归属键。"""
@@ -694,13 +696,13 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_uses_event_scope_key_for_estop(
+    async def test_resolve_device_event_rejects_estop_as_normal_session_event(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """急停事件无业务条码时，仍应稳定归属到设备级 session。"""
+        """急停事件应在 SessionResolver 之前由安全事件入口短路处理。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -712,16 +714,18 @@ class TestSessionResolver:
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
 
-        session = await resolver.resolve_or_create(
-            db=mock_db,
-            inbox=inbox,
-            workline=workline,
-            devices_by_role=make_devices_by_role(),
-        )
+        with pytest.raises(
+            SessionResolveError,
+            match="Unable to resolve stable business_key from payload",
+        ):
+            await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=workline,
+                devices_by_role=make_devices_by_role(),
+            )
 
-        assert session.business_key == "event:ESTOP_PRESSED:ARM01"
-        assert session.workline_id == 1
-        assert len(mock_session_repo.created_sessions) == 1
+        assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_event_scope_key_for_material_arrived(
@@ -830,6 +834,7 @@ class TestSessionResolver:
         ).hexdigest()[:16]
 
         assert session.business_key == expected_hash
+        assert session.barcode == "SVYU00125TP4LCR02_2"
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio

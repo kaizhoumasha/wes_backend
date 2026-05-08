@@ -25,6 +25,7 @@ from src.app.device.models import DeviceStatus, parse_device_capabilities
 from src.app.device.models.command import DeviceCommand  # noqa: F401
 from src.app.device.models.device import Device  # noqa: F401
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEFAULT_COMMAND_PRIORITY,
@@ -52,6 +53,7 @@ from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 from src.workline_runtime.plugin_state import project_plugin_state_for_trace
 from src.workline_runtime.run_mode import is_simulation_run_mode, normalize_run_mode
+from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.types import BusinessDecisionIntent, FailureIntent
@@ -133,6 +135,7 @@ class LoadedEntities(TypedDict):
     command: Any | None
     devices_by_role: dict[str, list[Any]]
     services: Any | None
+    safety_checked: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +216,8 @@ def _should_resolve_session(inbox: Any) -> bool:
     raw_payload = getattr(inbox, "payload_json", None)
     payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
     kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
+    if _canonical_event_type(payload) in RESERVED_RUNTIME_EVENTS:
+        return False
 
     if kind == "DEVICE_EVENT":
         return bool(getattr(inbox, "device_id", None) or payload.get("device_code") or payload.get("business_key"))
@@ -1343,12 +1348,25 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
         return False
 
     session = ctx["session"]
+    should_cancel_pending_outboxes = bool(
+        getattr(session, "awaiting_command_id", None) is not None
+        or getattr(session, "current_wait_type", None) == "COMMAND_RESULT"
+    )
     session.status = "FAILED"
     _clear_session_wait(session)
     session.ended_at = ctx["now"]
     session.failure_domain = failure.domain
     session.failure_code = failure.code
     session.failure_message = failure.message
+    session_id = _resolve_entity_id(session)
+    if should_cancel_pending_outboxes and session_id is not None:
+        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+
+        _ = await WorklineOutboxRepository().cancel_active_by_session(
+            ctx["db"],
+            session_id=session_id,
+            reason=failure.code,
+        )
     await _emit_timeline(
         ctx,
         stage=TimelineStage.FAIL,
@@ -1676,7 +1694,31 @@ async def _load_devices_by_role(db: Any, workline: Any, device_repo: Any) -> dic
     return devices_by_role
 
 
-async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
+async def _assert_workline_accepting_runtime_event(
+    db: Any,
+    *,
+    workline: Any | None,
+    resolved_event_type: str | None,
+) -> bool:
+    if resolved_event_type is None or resolved_event_type == "ESTOP_PRESSED":
+        return True
+
+    workline_pk = _resolve_entity_id(workline)
+    if workline_pk is None:
+        return False
+
+    from src.app.workline.services.safety_service import workline_safety_service
+
+    await workline_safety_service.assert_accepting_work(db, workline_id=workline_pk)
+    return True
+
+
+async def _load_related_entities(
+    db: Any,
+    inbox: Any,
+    *,
+    resolved_event_type: str | None = None,
+) -> LoadedEntities:
     """加载关联实体
 
     Args:
@@ -1708,6 +1750,10 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
     if workline is None and device is not None:
         workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
 
+    safety_checked = await _assert_workline_accepting_runtime_event(
+        db, workline=workline, resolved_event_type=resolved_event_type
+    )
+
     devices_by_role = await _load_devices_by_role(db, workline, device_repo)
 
     if session is None and _should_resolve_session(inbox):
@@ -1725,6 +1771,10 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
             if workline is None and device is not None:
                 workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
             devices_by_role = await _load_devices_by_role(db, workline, device_repo)
+            if not safety_checked:
+                safety_checked = await _assert_workline_accepting_runtime_event(
+                    db, workline=workline, resolved_event_type=resolved_event_type
+                )
 
     # 服务容器（Phase 2 简化实现）
     services: dict[str, Any] = {}
@@ -1736,6 +1786,7 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
         "command": command,
         "devices_by_role": devices_by_role,
         "services": services,
+        "safety_checked": safety_checked,
     }
 
 
@@ -1807,7 +1858,7 @@ class ProcessInboxMessages:
     """
 
     @staticmethod
-    async def _process_batch(db: Any, limit: int = 10) -> ProcessResult:
+    async def _process_batch(db: Any, limit: int = 10) -> ProcessResult:  # noqa: PLR0912
         """批量处理 Inbox 消息
 
         处理流程：
@@ -1890,9 +1941,52 @@ class ProcessInboxMessages:
                     continue
 
                 # 加载关联实体
-                entities = await _load_related_entities(db, inbox)
+                entities = await _load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
                 session = entities["session"]
                 workline = entities["workline"]
+
+                if resolved_event_type == "ESTOP_PRESSED":
+                    from src.app.workline.services.safety_service import workline_safety_service
+
+                    workline_pk = _resolve_entity_id(workline)
+                    if workline_pk is None:
+                        error_msg = "ESTOP_PRESSED missing workline context"
+                        await _record_diagnostic(
+                            db,
+                            inbox=inbox,
+                            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+                            message=error_msg,
+                            session=session,
+                            workline=workline,
+                            device=entities["device"],
+                            command=entities["command"],
+                        )
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
+                        await db.commit()
+                        result["failed"] += 1
+                        result["processed"] += 1
+                        logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
+                        continue
+
+                    incident = await workline_safety_service.handle_estop(
+                        db,
+                        workline_id=workline_pk,
+                        source_inbox_id=inbox_pk,
+                        source_device_id=_resolve_entity_id(entities["device"]) or getattr(inbox, "device_id", None),
+                        source_command_id=_resolve_entity_id(entities["command"]) or getattr(inbox, "command_id", None),
+                        trigger_payload=payload,
+                    )
+                    _ = await inbox_service.mark_as_processed(db, inbox_pk, auto_commit=False)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(f"Inbox {inbox_pk} 已处理 WorkLine 急停: incident_id={incident.id}")
+                    continue
+
+                if not entities.get("safety_checked", True):
+                    await _assert_workline_accepting_runtime_event(
+                        db, workline=workline, resolved_event_type=resolved_event_type
+                    )
 
                 if session is None or workline is None:
                     error_msg = "Inbox processing missing session/workline context"
@@ -2043,6 +2137,27 @@ class ProcessInboxMessages:
                         await db.commit()
                 except Exception as mark_error:
                     logger.warning(f"Inbox {inbox_pk_text} session resolve 失败补记失败: {mark_error}")
+                result["failed"] += 1
+                result["processed"] += 1
+
+            except WorkLineSafetyBlocked as e:
+                logger.warning(f"Inbox {inbox_pk_text} blocked by WorkLine safety state: {e}")
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
+                    error_code=ErrorCode.UNKNOWN,
+                    error_domain=ErrorDomain.WORKFLOW,
+                    message=str(e),
+                )
+                try:
+                    inbox_pk = diagnostic_inbox.id
+                    if inbox_pk is not None:
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
+                        await db.commit()
+                except Exception as mark_error:
+                    logger.warning(f"Inbox {inbox_pk_text} safety blocked 补记失败: {mark_error}")
                 result["failed"] += 1
                 result["processed"] += 1
 
@@ -2402,6 +2517,7 @@ class OutboxDispatcher:
             WorklineOutboxRepository,
         )
         from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked, workline_safety_service
 
         result: DispatchResult = {
             "dispatched": 0,
@@ -2420,17 +2536,68 @@ class OutboxDispatcher:
             dispatch_attempt: Any | None = None
             try:
                 outbox_pk = _resolve_required_pk(outbox, "outbox", "id", "outbox_id")
-                # 尝试标记为派发中（并发控制）
+                outbox_workline_id = getattr(outbox, "workline_id", None)
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        await _record_diagnostic(
+                            db,
+                            inbox=None,
+                            outbox=outbox,
+                            error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+                            message=str(safety_error),
+                            extra=_outbox_trace_extra(outbox, trace=trace),
+                        )
+                        _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_pk)
+                        await db.commit()
+                        result["failed"] += 1
+                        result["dispatched"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 因 WorkLine 安全状态阻断派发 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        continue
+
+                # 尝试标记为派发中（并发控制）。前置 WorkLine 锁已释放前按统一锁序完成。
                 updated = await outbox_repo.mark_as_dispatching(db, outbox_pk)
                 if updated is None:
+                    if outbox_workline_id is not None:
+                        await db.commit()
                     # 已被其他 worker 处理
                     result["skipped"] += 1
                     continue
+                await db.commit()
+
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        await _record_diagnostic(
+                            db,
+                            inbox=None,
+                            outbox=outbox,
+                            error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+                            message=str(safety_error),
+                            extra=_outbox_trace_extra(outbox, trace=trace),
+                        )
+                        _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_pk)
+                        await db.commit()
+                        result["failed"] += 1
+                        result["dispatched"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 因 WorkLine 安全状态阻断派发 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        continue
+                    await db.commit()
+
                 dispatch_attempt = await workline_dispatch_attempt_service.create_attempt(
                     db,
                     outbox=outbox,
                     auto_commit=False,
                 )
+                await db.commit()
 
                 # 派发消息
                 success = await OutboxDispatcher._dispatch_single(db, outbox)
@@ -2445,6 +2612,7 @@ class OutboxDispatcher:
                             auto_commit=False,
                         )
                     _ = await outbox_repo.mark_as_sent(db, outbox_pk)
+                    await db.commit()
                     result["success"] += 1
                     logger.info(f"Outbox {outbox_pk} 派发成功 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 else:
@@ -2477,6 +2645,7 @@ class OutboxDispatcher:
                         failed_outbox=failed_outbox,
                         error_message="Dispatch failed",
                     )
+                    await db.commit()
                     result["failed"] += 1
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
 
@@ -2518,12 +2687,13 @@ class OutboxDispatcher:
                             failed_outbox=failed_outbox,
                             error_message=str(e),
                         )
+                        await db.commit()
                 except Exception as mark_error:
                     logger.warning(f"Outbox {outbox_pk_text} 异常补记失败: {mark_error}")
                 result["failed"] += 1
                 result["dispatched"] += 1
 
-        # 提交事务
+        # 前面的领取、派发账本和终态更新都按消息提交；这里保留空提交兼容无消息路径。
         await db.commit()
         from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 
@@ -2545,7 +2715,7 @@ class OutboxDispatcher:
         from src.app.workline.models.outbox import DispatchType
 
         if await OutboxDispatcher._should_dispatch_to_sandbox(db, outbox):
-            return await OutboxDispatcher._dispatch_sandbox(outbox)
+            return await OutboxDispatcher._dispatch_sandbox(db, outbox)
         if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
             return await OutboxDispatcher._dispatch_device_command(db, outbox)
         if outbox.dispatch_type == DispatchType.EXTERNAL_HTTP:
@@ -2567,15 +2737,65 @@ class OutboxDispatcher:
         return is_simulation_run_mode(run_mode)
 
     @staticmethod
-    async def _dispatch_sandbox(outbox: Any) -> bool:
+    async def _dispatch_sandbox(db: Any, outbox: Any) -> bool:
         """派发到沙箱工作台。
 
         沙箱不改写 payload；Outbox 标记 SENT 后，由调试人员按原 callback/result 协议手工回传。
+        对设备命令，SENT 已代表硬件侧待完成任务，必须同步占用设备运行态，避免沙箱假并发。
         """
 
+        from src.app.workline.models.outbox import DispatchType
+
+        if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
+            reserved = await OutboxDispatcher._reserve_sandbox_device_command(db, outbox)
+            if not reserved:
+                return False
         logger.info(
             "Outbox 沙箱派发完成，等待调试人员手工回调 "
             f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
+        )
+        return True
+
+    @staticmethod
+    async def _reserve_sandbox_device_command(db: Any, outbox: Any) -> bool:
+        """沙箱设备命令进入待回传队列时，占用 WES 侧设备运行态。"""
+
+        from src.app.device.repositories.command_repository import DeviceCommandRepository
+        from src.app.device.repositories.device_repository import device_repository
+        from src.app.device.services import device_service
+
+        device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
+        if device is None:
+            logger.error(f"沙箱设备不存在: {outbox.target_code}")
+            return False
+
+        payload = payload_dict(getattr(outbox, "payload_json", None))
+        command_code = _string_value(payload.get("command_code"))
+        if not command_code:
+            logger.error(f"沙箱设备指令缺少 command_code: outbox_id={getattr(outbox, 'id', None)}")
+            return False
+
+        _enforce_device_command_governance(
+            device,
+            command_type=_resolve_command_type_for_governance(payload),
+            stage_label="沙箱命令派发",
+        )
+
+        command = await DeviceCommandRepository().get_by_command_code(db, command_code)
+        command_id = _resolve_entity_id(command)
+        device_id = _resolve_entity_id(device)
+        if device_id is None or command_id is None:
+            logger.warning(
+                "沙箱设备指令已进入待回传，但 WES 侧设备运行态未更新: "
+                f"device_code={outbox.target_code}, command_code={command_code}"
+            )
+            return False
+
+        _ = await device_service.mark_command_dispatched(
+            db,
+            device_id=device_id,
+            command_id=command_id,
+            auto_commit=False,
         )
         return True
 

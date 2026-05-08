@@ -22,9 +22,11 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         db: AsyncSession,
         limit: int = 50,
     ) -> list[WorklineOutbox]:
-        """获取待派发的消息
+        """获取待派发候选消息
 
-        只查询 NEW 状态且未到重试时间或重试时间已过的消息。
+        只查询 NEW 状态且未到重试时间或重试时间已过的消息。这里不加行锁；
+        真正的并发领取由 mark_as_dispatching 完成，避免 dispatcher 在外部 I/O 前
+        长时间持有候选 outbox 锁。
 
         Args:
             db: 数据库会话
@@ -45,7 +47,6 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             )
             .order_by(columns.created_at.asc())
             .limit(limit)
-            .with_for_update(skip_locked=True)
         )
         return list(result.scalars().all())
 
@@ -158,7 +159,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             .where(
                 session_columns.run_mode == RunMode.SIMULATION,
                 session_columns.status.in_(terminal_session_statuses),
-                columns.status == OutboxStatus.ACKED,
+                columns.status.in_([OutboxStatus.ACKED, OutboxStatus.CANCELLED, OutboxStatus.FAILED]),
                 columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
             )
         )
@@ -263,6 +264,97 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         outbox.status = OutboxStatus.DISPATCHING
         await db.flush()
         return outbox
+
+    async def mark_as_blocked_by_workline_estop(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+    ) -> WorklineOutbox | None:
+        """因 WorkLine ESTOP 本地终止待派发 outbox，不进入普通重试路径。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+
+        if outbox.status not in {OutboxStatus.NEW, OutboxStatus.DISPATCHING}:
+            return None
+
+        outbox.status = OutboxStatus.FAILED
+        outbox.last_error = "BLOCKED_BY_WORKLINE_ESTOP"
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
+    async def cancel_active_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        incident_id: int,
+    ) -> int:
+        """取消 WorkLine 尚未闭环的 outbox 消息。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        active_statuses = [
+            OutboxStatus.NEW,
+            OutboxStatus.DISPATCHING,
+            OutboxStatus.SENT,
+            OutboxStatus.ACKED,
+        ]
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(active_statuses),
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for outbox in outboxes:
+            outbox.status = OutboxStatus.CANCELLED
+            outbox.last_error = "CANCELLED_BY_ESTOP"
+            outbox.finished_at = now
+            outbox.payload_json = {
+                **(outbox.payload_json or {}),
+                "cancelled_by_safety_incident_id": incident_id,
+            }
+        return len(outboxes)
+
+    async def cancel_active_by_session(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        reason: str,
+    ) -> int:
+        """取消指定 Session 尚未 ACK 的 outbox，避免终态会话残留可操作项。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        active_statuses = [
+            OutboxStatus.NEW,
+            OutboxStatus.DISPATCHING,
+            OutboxStatus.SENT,
+        ]
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.session_id == session_id,
+                columns.status.in_(active_statuses),
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for outbox in outboxes:
+            outbox.status = OutboxStatus.CANCELLED
+            outbox.last_error = reason
+            outbox.finished_at = now
+        return len(outboxes)
 
     async def mark_as_sent(
         self,

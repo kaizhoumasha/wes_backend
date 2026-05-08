@@ -30,6 +30,7 @@ from src.workline_plugin_registry import (
     get_plugin_contract_version,
     resolve_workline_business_key,
 )
+from src.workline_runtime.business_identity import resolve_payload_display_identity
 from src.workline_runtime.run_mode import normalize_run_mode
 
 from .trace_context import TraceContext
@@ -45,11 +46,6 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_RESUME,
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
-}
-
-# 无业务条码但可按设备级单例归属的事件。
-_DEVICE_SCOPED_EVENTS = {
-    "ESTOP_PRESSED",
 }
 
 # 无业务条码、但每次事件实例都必须独立归属的事件。
@@ -83,9 +79,6 @@ def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | Non
         return None
     if not isinstance(device_code, str) or not device_code:
         return None
-
-    if event_type in _DEVICE_SCOPED_EVENTS:
-        return f"event:{event_type}:{device_code}"
 
     data = ensure_dict(payload_json.get("data"))
     for field_name in _EVENT_INSTANCE_IDENTITY_FIELDS.get(event_type, ()):
@@ -362,6 +355,7 @@ class SessionResolver:
             "plugin_key": getattr(workline, "plugin_key", None),
             "run_mode": RunMode(normalize_run_mode(getattr(workline, "run_mode", None))),
             "business_key": business_key,
+            "barcode": resolve_payload_display_identity(payload_json),
             "status": SessionStatus.NEW,
             "ingress_count": 1,
             "last_request_id": trace.request_id,

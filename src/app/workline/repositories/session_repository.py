@@ -5,7 +5,7 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.session import WorklineSession
+from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 
@@ -199,6 +199,41 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def fail_open_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        incident_id: int,
+    ) -> int:
+        """将 WorkLine 未完成 Session 终止为失败。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+            )
+            .with_for_update()
+        )
+        sessions = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for session in sessions:
+            session.status = SessionStatus.FAILED
+            session.failure_domain = "SAFETY"
+            session.failure_code = "WORKLINE_ESTOPPED"
+            session.failure_message = f"WorkLine 急停冻结，incident_id={incident_id}"
+            session.ended_at = now
+        return len(sessions)
 
 
 # 创建单例

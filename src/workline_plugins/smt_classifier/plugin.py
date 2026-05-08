@@ -37,7 +37,6 @@ from src.workline_runtime.types import CommandTargetScope
 
 from .context import SmtClassifierContext, parse_smt_context
 from .contract import (
-    EStopEventPayload,
     ScanEventPayload,
     build_default_bin_allocation,
     build_measurement_reel_params,
@@ -195,14 +194,13 @@ class SmtClassifierPlugin(WorklinePlugin):
         result_classifier=classify_smt_command_result,
         event_source_roles={
             "SCAN_COMPLETED": "INPUT_ARM",
-            "ESTOP_PRESSED": ("INPUT_ARM", "OUTPUT_ARM", "CONVEYOR"),
         },
         command_target_roles={
             "MEASUREMENT_REEL": "INPUT_ARM",
             "MOVE_FORWARD": "CONVEYOR",
             "PICK_AND_PUT": ("INPUT_ARM", "OUTPUT_ARM"),
         },
-        supported_events=frozenset({"SCAN_COMPLETED", "ESTOP_PRESSED"}),
+        supported_events=frozenset({"SCAN_COMPLETED"}),
         supported_commands=frozenset({"MEASUREMENT_REEL", "MOVE_FORWARD", "PICK_AND_PUT"}),
     )
 
@@ -228,32 +226,6 @@ class SmtClassifierPlugin(WorklinePlugin):
         return parse_six_in_one_payload(payload)
 
     # ========== 事件处理 ==========
-
-    @on_event("ESTOP_PRESSED")
-    async def handle_estop(self, ctx: PluginContext, event: EStopEventPayload):
-        """
-        急停事件 → 错误状态
-
-        硬件商约定 payload:
-        {
-            "device_code": "ARM01",
-            "event_type": "ESTOP_PRESSED",
-            "timestamp": 1702627300000,
-            "data": null
-        }
-        """
-        logger.error(f"E-STOP pressed: device_code={event.device_code}")
-
-        return (
-            PluginResultBuilder(ctx)
-            .transition("fail")
-            .failure(
-                domain="HARDWARE",
-                code="ESTOP",
-                message=f"急停触发: {event.device_code}",
-            )
-            .build()
-        )
 
     @on_event("SCAN_COMPLETED")
     async def handle_scan_completed(self, ctx: PluginContext, event: ScanEventPayload):
