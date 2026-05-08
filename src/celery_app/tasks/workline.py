@@ -54,6 +54,7 @@ from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorSe
 from src.workline_runtime.plugin_state import project_plugin_state_for_trace
 from src.workline_runtime.run_mode import is_simulation_run_mode, normalize_run_mode
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
+from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.types import BusinessDecisionIntent, FailureIntent
@@ -134,7 +135,7 @@ class LoadedEntities(TypedDict):
     device: Any | None
     command: Any | None
     devices_by_role: dict[str, list[Any]]
-    services: Any | None
+    services: WorklineRuntimeServices
     safety_checked: bool
 
 
@@ -1776,16 +1777,13 @@ async def _load_related_entities(
                     db, workline=workline, resolved_event_type=resolved_event_type
                 )
 
-    # 服务容器（Phase 2 简化实现）
-    services: dict[str, Any] = {}
-
     return {
         "session": session,
         "workline": workline,
         "device": device,
         "command": command,
         "devices_by_role": devices_by_role,
-        "services": services,
+        "services": build_workline_runtime_services(),
         "safety_checked": safety_checked,
     }
 
@@ -1984,7 +1982,7 @@ class ProcessInboxMessages:
                     continue
 
                 if not entities.get("safety_checked", True):
-                    await _assert_workline_accepting_runtime_event(
+                    _ = await _assert_workline_accepting_runtime_event(
                         db, workline=workline, resolved_event_type=resolved_event_type
                     )
 

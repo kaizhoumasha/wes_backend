@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from src.app.workline.models import WorkLine
     from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.session import WorklineSession
+    from src.workline_runtime.services import WorklineRuntimeServices
 
 
 # NullPlugin 允许配置（用于测试或显式 disabled 的 workline）
@@ -215,7 +216,7 @@ class OrchestratorService:
         workline: WorkLine | None,
         inbox: WorklineInbox | None,
         devices_by_role: dict[str, list[Any]],
-        services: Any,
+        services: WorklineRuntimeServices,
         trace_id: str,
         write_callback: Callable[[OrchestratorResult], Awaitable[None]] | None = None,
     ) -> OrchestratorResult:
@@ -232,7 +233,7 @@ class OrchestratorService:
             workline: WorkLine 实体
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
-            services: 领域服务容器
+            services: 运行时领域服务容器
             trace_id: Trace ID
             write_callback: 可选的写入回调。若提供，则在锁临界区内执行，
                 由 Celery worker 负责完成真实持久化写入
@@ -284,7 +285,7 @@ class OrchestratorService:
         workline: Any,
         inbox: Any,
         devices_by_role: dict[str, list[Any]],
-        services: Any,
+        services: WorklineRuntimeServices,
         trace_id: str,
     ) -> OrchestratorResult:
         """阶段 1: READ - 读取阶段（当前非共享读）
@@ -299,7 +300,7 @@ class OrchestratorService:
             workline: WorkLine 实体
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
-            services: 领域服务容器
+            services: 运行时领域服务容器
             trace_id: Trace ID
 
         Returns:
@@ -352,7 +353,7 @@ class OrchestratorService:
         workline: Any,
         inbox: Any,
         devices_by_role: dict[str, list[Any]],
-        services: Any,
+        services: WorklineRuntimeServices,
         trace_id: str,
         read_result: OrchestratorResult,
     ) -> OrchestratorResult:
@@ -371,7 +372,7 @@ class OrchestratorService:
             workline: WorkLine 实体
             inbox: WorklineInbox 实体
             devices_by_role: 按角色分组的设备映射
-            services: 领域服务容器
+            services: 运行时领域服务容器
             trace_id: Trace ID
             read_result: 读取阶段的结果
 

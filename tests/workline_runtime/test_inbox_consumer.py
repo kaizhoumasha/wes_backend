@@ -22,6 +22,7 @@ from sqlalchemy.exc import MissingGreenlet
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus
 from src.workline_runtime.orchestrator import OrchestratorResult
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.types import CommandIntent, CommandTargetScope, WaitIntent
 
 
@@ -35,6 +36,10 @@ def make_noop_lock():
     return noop_lock()
 
 
+def _runtime_services() -> WorklineRuntimeServices:
+    return WorklineRuntimeServices()
+
+
 def _loaded_entities(
     *,
     session: Any | None = None,
@@ -42,7 +47,7 @@ def _loaded_entities(
     device: Any | None = None,
     command: Any | None = None,
     devices_by_role: dict[str, list[Any]] | None = None,
-    services: Any | None = None,
+    services: WorklineRuntimeServices | None = None,
     safety_checked: bool = True,
 ) -> dict[str, Any]:
     return {
@@ -51,7 +56,7 @@ def _loaded_entities(
         "device": device,
         "command": command,
         "devices_by_role": devices_by_role or {},
-        "services": services or MagicMock(),
+        "services": services or _runtime_services(),
         "safety_checked": safety_checked,
     }
 
@@ -342,7 +347,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -408,7 +413,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -720,7 +725,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -778,7 +783,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -848,7 +853,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1147,7 +1152,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1231,7 +1236,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1325,7 +1330,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1391,7 +1396,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1479,7 +1484,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),
@@ -1531,7 +1536,7 @@ class TestInboxConsumer:
                         "device": None,
                         "command": None,
                         "devices_by_role": {},
-                        "services": MagicMock(),
+                        "services": _runtime_services(),
                     }
                 ),
             ),

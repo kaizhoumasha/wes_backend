@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.app.workline.models.inbox import InboxKind
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.types import (
     BusinessDecisionIntent,
     CommandIntent,
@@ -99,7 +100,7 @@ class TestOrchestratorServicePhase2:
     @pytest.fixture
     def mock_services(self):
         """创建模拟领域服务容器"""
-        return MagicMock()
+        return WorklineRuntimeServices()
 
     @pytest.fixture
     def orchestrator(self):
@@ -687,7 +688,7 @@ class TestOrchestratorServiceEdgeCases:
                 workline=mock_workline,
                 inbox=mock_inbox,
                 devices_by_role={},
-                services=MagicMock(),
+                services=WorklineRuntimeServices(),
                 trace_id="test-trace-id",
             )
 
@@ -715,7 +716,7 @@ class TestOrchestratorServiceEdgeCases:
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role={},  # 空设备映射
-            services=MagicMock(),
+            services=WorklineRuntimeServices(),
             trace_id="test-trace-id",
         )
 
@@ -745,7 +746,7 @@ class TestOrchestratorServiceEdgeCases:
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role={},
-            services=MagicMock(),
+            services=WorklineRuntimeServices(),
             trace_id="test-trace-id",
         )
 
@@ -815,7 +816,7 @@ class TestContractVersionMismatch:
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role={},
-            services=MagicMock(),
+            services=WorklineRuntimeServices(),
             trace_id="test-trace-id",
         )
 
@@ -855,7 +856,7 @@ class TestContractVersionMismatch:
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role={},
-            services=MagicMock(),
+            services=WorklineRuntimeServices(),
             trace_id="test-trace-id",
         )
 
@@ -885,7 +886,7 @@ class TestContractVersionMismatch:
             workline=mock_workline,
             inbox=mock_inbox,
             devices_by_role={},
-            services=MagicMock(),
+            services=WorklineRuntimeServices(),
             trace_id="test-trace-id",
         )
 

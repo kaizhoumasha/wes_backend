@@ -18,6 +18,7 @@ from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
 from src.workline_runtime.run_mode import normalize_run_mode
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.topology import WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
 
@@ -117,7 +118,7 @@ class PluginContext(BaseModel):
     diagnostics: DiagnosticContext | None = None  # 统一诊断上下文
 
     # 服务依赖
-    services: Any  # DomainServices - 领域服务容器
+    services: WorklineRuntimeServices
 
     # 工具
     logger: logging.Logger
@@ -144,7 +145,7 @@ class PluginContextBuilder:
         session: Any,
         workline: Any,
         devices_by_role: dict[str, list[Any]],
-        services: Any,
+        services: WorklineRuntimeServices,
         trace_id: str = "",
         logger: logging.Logger | None = None,
         clock: Callable[[], datetime] | None = None,

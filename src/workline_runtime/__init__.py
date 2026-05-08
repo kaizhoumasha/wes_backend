@@ -85,6 +85,7 @@ from src.workline_runtime.run_mode import (
     is_simulation_run_mode,
     normalize_run_mode,
 )
+from src.workline_runtime.services import BinAllocator, WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolver, session_resolver
 from src.workline_runtime.topology import TopologyDeviceSnapshot, WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
@@ -97,6 +98,7 @@ __all__ = [
     "PLUGIN_STATE_KEY",
     "SANDBOX_ALLOWED_ENVS",
     "AtomicWriter",
+    "BinAllocator",
     "BusinessDecisionIntent",
     "CommandIntent",
     "DecisionType",
@@ -141,11 +143,13 @@ __all__ = [
     "WaitIntent",
     "WorklinePluginManifest",
     "WorklineRuntimeError",
+    "WorklineRuntimeServices",
     "WorklineTopologyView",
     "atomic_writer",
     "build_diagnostic_card",
     "build_diagnostic_context",
     "build_diagnostic_event",
+    "build_workline_runtime_services",
     "canonicalize_event_type",
     "classify_result",
     "classify_result_category",

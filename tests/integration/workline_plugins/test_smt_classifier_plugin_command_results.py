@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+from src.workline_runtime.services import WorklineRuntimeServices
 
 
 class TestSmtClassifierPluginCommandResults:
@@ -484,7 +485,7 @@ class TestSmtClassifierPluginCommandResults:
                     "bin_cell_location": "6",
                 }
 
-        mock_context.services = SimpleNamespace(bin_allocator=BinAllocator())
+        mock_context.services = WorklineRuntimeServices(bin_allocator=BinAllocator())
         mock_context.session.context_json = {
             "plugin_state": "WAITING_CONVEYOR",
             "pkg_id": "CTX-PKG-002",

@@ -666,13 +666,7 @@ class SmtClassifierPlugin(WorklinePlugin):
 
     @staticmethod
     def _resolve_bin_allocator(ctx: PluginContext) -> Any | None:
-        services = getattr(ctx, "services", None)
-        if services is None:
-            return None
-        if isinstance(services, dict):
-            return services.get("bin_allocator") or services.get("bin_allocation_service")
-        service_attrs = vars(services) if hasattr(services, "__dict__") else {}
-        return service_attrs.get("bin_allocator") or service_attrs.get("bin_allocation_service")
+        return ctx.services.bin_allocator
 
 
 # ==================== 导出插件实例 ====================

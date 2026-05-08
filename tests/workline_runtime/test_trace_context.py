@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from src.workline_runtime.diagnostics import build_diagnostic_context
 from src.workline_runtime.plugin_context import PluginContextBuilder
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.trace_context import TraceContext
 
 
@@ -85,7 +86,7 @@ class TestTraceContext:
             payload_json={"device_code": "DEV-CTX-01", "event_type": "SCAN_COMPLETED"},
         )
         devices_by_role = {"SCANNER": [SimpleNamespace(id=8, device_code="DEV-CTX-01", device_role="SCANNER")]}
-        services = SimpleNamespace()
+        services = WorklineRuntimeServices()
 
         trace = TraceContext.from_runtime(session=session, workline=workline, inbox=inbox)
         diagnostic = build_diagnostic_context(trace=trace, session=session, inbox=inbox, workline=workline)
