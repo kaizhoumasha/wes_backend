@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.app.device.models import Device, DeviceStatus, parse_device_capabilities
 from src.app.device.repositories import DeviceCommandRepository, DeviceRepository, device_repository
+from src.app.device.services.runtime_state_policy import DeviceRuntimeStatePolicy
 from src.app.sys.services.event_stream_service import (
     DEVICE_STATUS_CHANGED_EVENT,
     defer_sse_event,
@@ -12,6 +13,7 @@ from src.app.sys.services.event_stream_service import (
 )
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
+from src.core.exceptions import BusinessException
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -20,6 +22,17 @@ if TYPE_CHECKING:
 
 class DeviceService(BaseService[Device, DeviceRepository]):
     """设备业务逻辑层"""
+
+    RUNTIME_FIELDS = frozenset(
+        {
+            "device_status",
+            "current_command_id",
+            "last_heartbeat_at",
+            "error_code",
+            "maintenance_mode",
+            "max_concurrent_tasks",
+        }
+    )
 
     def __init__(self) -> None:
         super().__init__(
@@ -35,16 +48,6 @@ class DeviceService(BaseService[Device, DeviceRepository]):
     @staticmethod
     def _resolve_work_line_id(device: Device | None) -> int | None:
         return getattr(device, "work_line_id", None) if device else None
-
-    @staticmethod
-    def _supports_single_current_command(device: Device) -> bool:
-        return int(getattr(device, "max_concurrent_tasks", 1) or 1) <= 1
-
-    @staticmethod
-    def _normalize_error_code(error_code: str | None, fallback: str) -> str:
-        if isinstance(error_code, str) and error_code.strip():
-            return error_code.strip()
-        return fallback
 
     async def _commit_if_requested(self, db: "AsyncSession", *, auto_commit: bool) -> None:
         if auto_commit:
@@ -62,6 +65,25 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             "error_code": getattr(device, "error_code", None),
             "maintenance_mode": getattr(device, "maintenance_mode", None),
         }
+
+    def _runtime_state_after_update(self, device: Device, data: dict[str, Any]) -> dict[str, Any]:
+        state = self._runtime_old_state(device)
+        state.update(data)
+        state.setdefault("device_status", DeviceStatus.IDLE)
+        state.setdefault("maintenance_mode", False)
+        state.setdefault("current_command_id", None)
+        state.setdefault("error_code", None)
+        return state
+
+    @staticmethod
+    def _runtime_field_value(device: Device, key: str) -> Any:
+        defaults: dict[str, Any] = {
+            "device_status": DeviceStatus.IDLE,
+            "maintenance_mode": False,
+            "current_command_id": None,
+            "error_code": None,
+        }
+        return getattr(device, key, defaults.get(key))
 
     def _defer_device_status_event(
         self,
@@ -115,10 +137,15 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         if not isinstance(device_id, int):
             return None
 
-        update_data = {key: value for key, value in data.items() if getattr(device, key, None) != value}
+        update_data = {key: value for key, value in data.items() if self._runtime_field_value(device, key) != value}
         if not update_data:
             await self._commit_if_requested(db, auto_commit=auto_commit)
             return device
+
+        DeviceRuntimeStatePolicy.validate(
+            self._runtime_state_after_update(device, update_data),
+            reason="device_runtime_update",
+        )
 
         changed_fields = sorted(update_data)
         old_state = self._runtime_old_state(device)
@@ -131,6 +158,23 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             self._defer_device_status_event(db, device=updated, old_state=old_state, changed_fields=changed_fields)
         await self._commit_if_requested(db, auto_commit=auto_commit)
         return updated
+
+    async def _update_runtime_state_batch(
+        self,
+        db: "AsyncSession",
+        devices: list[Device],
+        data: dict[str, Any],
+        *,
+        auto_commit: bool,
+    ) -> int:
+        updated_count = 0
+        for device in devices:
+            updated = await self._update_runtime_state(db, device, data, auto_commit=False)
+            if updated is not None:
+                updated_count += 1
+
+        await self._commit_if_requested(db, auto_commit=auto_commit)
+        return updated_count
 
     async def get_device_by_code(self, db: "AsyncSession", device_code: str) -> Device | None:
         """根据 device_code 查询设备。"""
@@ -150,16 +194,9 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         if device is None:
             return None
 
-        data: dict[str, Any] = {
-            "device_status": DeviceStatus.RUNNING,
-            "error_code": None,
-        }
-        if self._supports_single_current_command(device):
-            data["current_command_id"] = command_id
-        else:
-            data["current_command_id"] = None
-
-        return await self._update_runtime_state(db, device, data, auto_commit=auto_commit)
+        projection = DeviceRuntimeStatePolicy.running(command_id)
+        DeviceRuntimeStatePolicy.validate(projection.data, reason="command_dispatched")
+        return await self._update_runtime_state(db, device, projection.data, auto_commit=auto_commit)
 
     async def mark_command_finished(
         self,
@@ -178,29 +215,20 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             return None
 
         if self._is_maintenance_state(device):
-            update_data: dict[str, Any] = {
-                "device_status": DeviceStatus.MAINTENANCE,
-                "maintenance_mode": True,
-                "current_command_id": None,
-            }
-            if success:
-                update_data["error_code"] = self._normalize_error_code(
-                    getattr(device, "error_code", None),
-                    "MAINTENANCE",
-                )
-            else:
-                update_data["error_code"] = self._normalize_error_code(error_code, "COMMAND_FAILED")
+            reason = (
+                DeviceRuntimeStatePolicy.normalize_error_code(getattr(device, "error_code", None), "MAINTENANCE")
+                if success
+                else DeviceRuntimeStatePolicy.normalize_error_code(error_code, "COMMAND_FAILED")
+            )
+            update_data = DeviceRuntimeStatePolicy.maintenance(reason).data
             return await self._update_runtime_state(db, device, update_data, auto_commit=auto_commit)
 
         if not success:
+            projection = DeviceRuntimeStatePolicy.error(error_code, fallback="COMMAND_FAILED")
             return await self._update_runtime_state(
                 db,
                 device,
-                {
-                    "device_status": DeviceStatus.ERROR,
-                    "current_command_id": None,
-                    "error_code": self._normalize_error_code(error_code, "COMMAND_FAILED"),
-                },
+                projection.data,
                 auto_commit=auto_commit,
             )
 
@@ -212,25 +240,18 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         )
         if not active_commands:
             return await self._update_runtime_state(
-                db,
-                device,
-                {
-                    "device_status": DeviceStatus.IDLE,
-                    "current_command_id": None,
-                    "error_code": None,
-                },
-                auto_commit=auto_commit,
+                db, device, DeviceRuntimeStatePolicy.idle().data, auto_commit=auto_commit
             )
 
         next_command_id = getattr(active_commands[0], "id", None)
+        if not isinstance(next_command_id, int):
+            return await self._update_runtime_state(
+                db, device, DeviceRuntimeStatePolicy.idle().data, auto_commit=auto_commit
+            )
         return await self._update_runtime_state(
             db,
             device,
-            {
-                "device_status": DeviceStatus.RUNNING,
-                "current_command_id": next_command_id if self._supports_single_current_command(device) else None,
-                "error_code": None,
-            },
+            DeviceRuntimeStatePolicy.running(next_command_id).data,
             auto_commit=auto_commit,
         )
 
@@ -256,6 +277,8 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             "last_heartbeat_at": timezone.now_for_db(),
             "device_status": getattr(device, "device_status", DeviceStatus.IDLE),
             "error_code": getattr(device, "error_code", None),
+            "maintenance_mode": getattr(device, "maintenance_mode", False),
+            "current_command_id": getattr(device, "current_command_id", None),
         }
         return await self._update_runtime_state(db, device, data, auto_commit=auto_commit)
 
@@ -271,23 +294,104 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
         cutoff = timezone.now_for_db() - timedelta(seconds=threshold_seconds)
         devices = await self.repo.get_heartbeat_stale_devices(db, cutoff=cutoff, limit=limit)
-        updated_count = 0
-        for device in devices:
-            updated = await self._update_runtime_state(
-                db,
-                device,
-                {
-                    "device_status": DeviceStatus.OFFLINE,
-                    "current_command_id": None,
-                    "error_code": "HEARTBEAT_TIMEOUT",
-                },
-                auto_commit=False,
-            )
-            if updated is not None:
-                updated_count += 1
+        return await self._update_runtime_state_batch(
+            db,
+            devices,
+            DeviceRuntimeStatePolicy.offline().data,
+            auto_commit=auto_commit,
+        )
 
-        await self._commit_if_requested(db, auto_commit=auto_commit)
-        return updated_count
+    async def enter_maintenance(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        reason: str | None = None,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """进入维护态，释放当前硬件占用投影。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        return await self._update_runtime_state(
+            db,
+            device,
+            DeviceRuntimeStatePolicy.maintenance(reason).data,
+            auto_commit=auto_commit,
+        )
+
+    async def exit_maintenance(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """退出维护态并回到可派发的 IDLE 投影。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        if not self._is_maintenance_state(device):
+            return device
+        return await self._update_runtime_state(
+            db, device, DeviceRuntimeStatePolicy.idle().data, auto_commit=auto_commit
+        )
+
+    async def clear_fault(
+        self,
+        db: "AsyncSession",
+        *,
+        device_id: int,
+        auto_commit: bool = True,
+    ) -> Device | None:
+        """清除设备故障投影；维护态不能通过清故障绕过。"""
+
+        device = await self.repo.get_by_id(db, device_id)
+        if device is None:
+            return None
+        if self._is_maintenance_state(device):
+            raise BusinessException("维护态设备必须先退出维护，不能通过清除故障绕过维护投影")
+        if self._event_value(getattr(device, "device_status", None)) != DeviceStatus.ERROR.value:
+            return device
+        return await self._update_runtime_state(
+            db, device, DeviceRuntimeStatePolicy.idle().data, auto_commit=auto_commit
+        )
+
+    async def mark_workline_safety_error(
+        self,
+        db: "AsyncSession",
+        *,
+        workline_id: int,
+        auto_commit: bool = True,
+    ) -> int:
+        """将 WorkLine 下可运行设备投影为急停错误。"""
+
+        devices = await self.repo.get_non_maintenance_by_workline_for_update(db, workline_id)
+        return await self._update_runtime_state_batch(
+            db,
+            devices,
+            DeviceRuntimeStatePolicy.error("WORKLINE_ESTOPPED").data,
+            auto_commit=auto_commit,
+        )
+
+    async def clear_workline_safety_error(
+        self,
+        db: "AsyncSession",
+        *,
+        workline_id: int,
+        auto_commit: bool = True,
+    ) -> int:
+        """只清除 WorkLine 急停派生的设备错误。"""
+
+        devices = await self.repo.get_safety_error_by_workline_for_update(db, workline_id)
+        return await self._update_runtime_state_batch(
+            db,
+            devices,
+            DeviceRuntimeStatePolicy.idle().data,
+            auto_commit=auto_commit,
+        )
 
     async def create(
         self,
@@ -313,7 +417,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         old_work_line_id = self._resolve_work_line_id(old_device)
         old_state = self._runtime_old_state(old_device)
 
-        data = self._normalize_runtime_update(data, current=old_device)
+        self._reject_runtime_update(data)
         self._validate_capabilities(data, current=old_device)
 
         # 执行更新
@@ -337,32 +441,15 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
         return updated_device
 
-    def _normalize_runtime_update(self, data: dict[str, Any], *, current: Device | None) -> dict[str, Any]:
-        """将人工维护开关归一到运行态字段，保持 device_status 是单一状态投影。"""
+    def _reject_runtime_update(self, data: dict[str, Any]) -> None:
+        """普通 CRUD 不允许修改运行态字段。"""
 
-        normalized = dict(data)
-        requested_status = self._event_value(normalized.get("device_status"))
-        if requested_status == DeviceStatus.MAINTENANCE.value:
-            normalized["maintenance_mode"] = True
-            normalized["current_command_id"] = None
-            normalized["error_code"] = self._normalize_error_code(normalized.get("error_code"), "MAINTENANCE")
-            return normalized
-
-        if "maintenance_mode" not in normalized:
-            return normalized
-
-        if bool(normalized["maintenance_mode"]):
-            normalized.setdefault("device_status", DeviceStatus.MAINTENANCE)
-            normalized["current_command_id"] = None
-            normalized["error_code"] = self._normalize_error_code(normalized.get("error_code"), "MAINTENANCE")
-            return normalized
-
-        current_status = self._event_value(getattr(current, "device_status", None))
-        if "device_status" not in normalized and current_status == DeviceStatus.MAINTENANCE.value:
-            normalized["device_status"] = DeviceStatus.IDLE
-            normalized.setdefault("current_command_id", None)
-            normalized.setdefault("error_code", None)
-        return normalized
+        submitted_runtime_fields = sorted(self.RUNTIME_FIELDS.intersection(data))
+        if submitted_runtime_fields:
+            raise BusinessException(
+                message=f"设备运行态字段只能通过专用操作修改: {', '.join(submitted_runtime_fields)}",
+                detail={"fields": submitted_runtime_fields},
+            )
 
     def _changed_runtime_fields(
         self,

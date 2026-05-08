@@ -142,8 +142,8 @@ class DeviceBase(BaseMixin):
     error_code: str | None = Field(default=None, max_length=50, description="错误代码（status=ERROR 时）")
     maintenance_mode: bool = Field(default=False, description="是否处于维护模式（维护中不参与正常编排）")
 
-    # ===== 能力配置（白皮书 5.1 节）=====
-    max_concurrent_tasks: int = Field(default=1, ge=1, le=10, description="最大并发任务数")
+    # ===== 能力配置（单硬件任务治理）=====
+    max_concurrent_tasks: int = Field(default=1, ge=1, le=1, description="固定为 1：单设备同一时间只允许一个硬件任务")
 
     # ===== 幂等性配置（白皮书 4.1 节）=====
     idempotency_ttl: int = Field(
@@ -244,12 +244,40 @@ class Device(
 # ==================== 自动生成的 Schema ====================
 
 
+class DeviceEditableBase(BaseMixin):
+    """普通设备编辑字段；不包含运行态投影字段。"""
+
+    device_code: str = Field(min_length=1, max_length=50, description="设备编码（业务主键）")
+    device_name: str = Field(min_length=1, max_length=100, description="设备名称")
+    work_line_id: int | None = Field(default=None, description="所属作业线 ID")
+    description: str | None = Field(default=None, max_length=500, description="设备用途说明")
+    is_active: bool = Field(default=True, description="是否启用")
+    sort_order: int = Field(default=0, description="排序顺序")
+    device_role: str = Field(max_length=50, description="设备业务角色（SCANNER, ROBOT_ARM, XRAY, CONVEYOR）")
+    role_index: int = Field(default=1, ge=1, description="同角色序号（1, 2, 3...）")
+    upstream_device_id: int | None = Field(default=None, description="上游设备ID（线性拓扑）")
+    vendor_type: str | None = Field(default=None, max_length=50, description="厂商类型（ECS, KEYENCE, FANUC...）")
+    capabilities_json: dict[str, Any] = Field(
+        default_factory=dict, description="设备能力声明（支持事件、命令、回调等）"
+    )
+    host: str | None = Field(default=None, max_length=100, description="设备 IP 地址")
+    port: int | None = Field(default=None, ge=1, le=65535, description="服务端口")
+    protocol: DeviceProtocol = Field(default=DeviceProtocol.HTTP, description="通信协议")
+    auth_token: str | None = Field(default=None, max_length=500, description="认证 Token（Bearer Token）")
+    timeout: int = Field(default=10000, ge=1000, le=300000, description="请求超时时间（毫秒，默认 10s）")
+    callback_path: str | None = Field(default=None, max_length=255, description="设备侧回调/命令接收路径覆盖")
+    idempotency_ttl: int = Field(default=3600, ge=60, le=86400, description="指令去重缓存时间（秒，默认 1 小时）")
+    diagnostic_profile: dict[str, Any] = Field(
+        default_factory=dict, description="设备诊断配置（责任角色、显示偏好、扩展属性）"
+    )
+
+
 class DeviceCreate(ModelFactory(DeviceBase).for_create()):
     """设备创建 Schema - 接收客户端输入"""
 
 
-class DeviceUpdate(ModelFactory(DeviceBase).for_optimistic_update()):
-    """设备更新 Schema - 所有字段可选"""
+class DeviceUpdate(ModelFactory(DeviceEditableBase).for_optimistic_update()):
+    """设备更新 Schema - 只允许主数据与通信配置，运行态走专用操作"""
 
 
 class DeviceResponse(DeviceBase):
@@ -266,6 +294,7 @@ __all__ = [
     "Device",
     "DeviceBase",
     "DeviceCreate",
+    "DeviceEditableBase",
     "DeviceProtocol",
     "DeviceResponse",
     "DeviceStatus",

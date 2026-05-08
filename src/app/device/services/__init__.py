@@ -10,11 +10,14 @@ from .device_context_service import (
     device_context_service,
 )
 from .device_service import DeviceService, device_service
+from .runtime_state_policy import DeviceRuntimeProjection, DeviceRuntimeStatePolicy
 
 __all__ = [
     "DeviceCommandService",
     "DeviceContextResult",
     "DeviceContextService",
+    "DeviceRuntimeProjection",
+    "DeviceRuntimeStatePolicy",
     "DeviceService",
     "device_command_service",
     "device_context_service",

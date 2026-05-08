@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 
 class DeviceCommandRepository(BaseRepository[DeviceCommand]):
@@ -152,6 +153,37 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
         result = await db.execute(statement)
         return result.scalar_one() or 0
+
+    async def cancel_active_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        incident_id: int,
+    ) -> int:
+        """取消 WorkLine 尚未闭环的设备指令。"""
+
+        active_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(active_statuses),
+            )
+            .with_for_update()
+        )
+        commands = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for command in commands:
+            command.status = CommandStatus.CANCELLED
+            command.completed_at = now
+            command.error_detail = {
+                "error_code": "CANCELLED_BY_ESTOP",
+                "error_message": "WorkLine 急停冻结，指令已取消",
+                "safety_incident_id": incident_id,
+            }
+        return len(commands)
 
 
 # 创建单例
