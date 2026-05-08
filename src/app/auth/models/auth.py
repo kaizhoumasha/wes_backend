@@ -16,6 +16,14 @@ from sqlmodel._compat import SQLModelConfig
 
 from src.app.admin.models import MenuTreeResponseSimple, UserResponse
 from src.core.mixins import BaseMixin
+from src.utils.timezone import timezone
+
+
+def _seconds_until(expire_time: datetime) -> int:
+    """按 UTC 计算剩余秒数；naive datetime 按项目约定视为 UTC。"""
+    delta = timezone.to_utc(expire_time) - timezone.now_utc()
+    return max(0, int(delta.total_seconds()))
+
 
 # ==================== 请求 Schema ====================
 
@@ -58,15 +66,13 @@ class LoginResponse(BaseMixin):
     @property
     def expires_in(self) -> int:
         """访问令牌过期时间（秒）- OAuth 2.0 标准字段"""
-        delta = self.access_token_expire_time - datetime.now(self.access_token_expire_time.tzinfo)
-        return max(0, int(delta.total_seconds()))
+        return _seconds_until(self.access_token_expire_time)
 
     @computed_field
     @property
     def refresh_expires_in(self) -> int:
         """刷新令牌过期时间（秒）"""
-        delta = self.refresh_token_expire_time - datetime.now(self.refresh_token_expire_time.tzinfo)
-        return max(0, int(delta.total_seconds()))
+        return _seconds_until(self.refresh_token_expire_time)
 
 
 class RefreshTokenResponse(BaseMixin):
@@ -87,15 +93,13 @@ class RefreshTokenResponse(BaseMixin):
     @property
     def expires_in(self) -> int:
         """访问令牌过期时间（秒）- OAuth 2.0 标准字段"""
-        delta = self.access_token_expire_time - datetime.now(self.access_token_expire_time.tzinfo)
-        return max(0, int(delta.total_seconds()))
+        return _seconds_until(self.access_token_expire_time)
 
     @computed_field
     @property
     def refresh_expires_in(self) -> int:
         """刷新令牌过期时间（秒）"""
-        delta = self.refresh_token_expire_time - datetime.now(self.refresh_token_expire_time.tzinfo)
-        return max(0, int(delta.total_seconds()))
+        return _seconds_until(self.refresh_token_expire_time)
 
 
 class SessionInfo(BaseMixin):

@@ -55,6 +55,53 @@ class TimeZone:
         """
         return datetime.now(UTC).replace(tzinfo=None)
 
+    @staticmethod
+    def parse_datetime(t: object) -> datetime | None:
+        """
+        将 datetime 或 ISO 字符串解析为 datetime。
+
+        Args:
+            t: datetime 对象、ISO 时间字符串或 None
+
+        Returns:
+            datetime 对象；无法解析时返回 None。
+        """
+        if t is None:
+            return None
+        if isinstance(t, datetime):
+            return t
+        if not isinstance(t, str):
+            return None
+
+        value = t.strip()
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def to_db_datetime(t: object) -> datetime | None:
+        """
+        将 datetime、ISO 字符串或 Unix 秒时间戳转换为 UTC naive datetime，用于数据库存储。
+
+        Args:
+            t: datetime 对象、ISO 时间字符串、Unix 秒时间戳或 None
+
+        Returns:
+            UTC naive datetime；无法解析时返回 None。
+        """
+        if t is None or isinstance(t, bool):
+            return None
+        if isinstance(t, (int, float)):
+            return TimeZone.to_utc(t).replace(tzinfo=None)
+
+        parsed = TimeZone.parse_datetime(t)
+        if parsed is None:
+            return None
+        return TimeZone.to_utc(parsed).replace(tzinfo=None)
+
     def from_datetime(self, t: datetime) -> datetime:
         """
         将 datetime 对象转换为当前时区时间
@@ -104,7 +151,7 @@ class TimeZone:
         return t.strftime(format_str)
 
     @staticmethod
-    def to_utc(t: datetime | int) -> datetime:
+    def to_utc(t: datetime | float) -> datetime:
         """
         将 datetime 对象或时间戳转换为 UTC 时区时间
 
