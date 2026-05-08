@@ -92,22 +92,24 @@
 
 ---
 
-## P2 - Timeout 默认 failure 独立实现
+## P2 - Runtime reconciliation 系统级处理
 
-**What**: 将普通 runtime 等待 timeout 默认 failure 收敛到插件基础设施，避免每个插件写样板 timeout handler。
+**What**: 按 `docs/superpowers/plans/2026-05-08-workline-timeout-system-handling.md` 实现系统级 runtime reconciliation，移除插件 `on_timeout()` 默认 failure 路径。
 
-**Why**: timeout 是普通等待治理，不属于急停安全流；拆出后能降低本次 ESTOP 计划的风险面。
+**Why**: execution Callback timeout 和 dispatch ACK exhausted 都是物理状态未知/通信接受状态未知，不能由插件默认 failure 处理，也不能自动重发物理命令。
 
-**Context**: 用户在 `/autoplan` 前提 gate 确认从急停计划拆出。
+**Context**: 已由 `2026-05-08-workline-timeout-system-handling.md` 取代原“Timeout 默认 failure 独立实现”方向。
 
 **Scope**:
-- `WorklinePlugin.on_timeout()` 默认返回 runtime failure
-- stale timeout identity 校验
-- 插件文档说明默认 timeout 合约
-- focused timeout tests
+- 删除 `@on_timeout()` / `WorklinePlugin.on_timeout()` 兼容路径
+- `WorklineRuntimeReconciliationService`
+- ACK 后激活 execution deadline
+- dispatch ACK exhausted reconciliation
+- `BLOCKED_RESOURCE` parked outbox release
+- focused runtime reconciliation tests
 
 **Dependencies**: WorkLine 软件侧急停冻结计划完成或独立排期。
 
-**Effort**: S (human: 0.5 day / CC: ~1-2 hours)
+**Effort**: M
 
 **Priority**: P2

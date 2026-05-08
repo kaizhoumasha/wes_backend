@@ -991,7 +991,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `NEW`
 * `DISPATCHING`
 * `SENT`
-* `ACKED`
+* `BLOCKED_RESOURCE`
 * `FAILED`
 * `CANCELLED`
 
@@ -1077,7 +1077,6 @@ class WorklinePlugin(Protocol):
     async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
     async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
     async def on_external_callback(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
-    async def on_timeout(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
     async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
 ```
 
@@ -2080,7 +2079,7 @@ scripts/
 * ✅ **NullPlugin** - Phase 2 默认插件 (`src/workline_runtime/null_plugin.py`)
   * 空实现插件，用于测试编排流程
   * 所有方法返回空的 PluginResult
-  * 支持 on_device_event, on_command_result, on_timeout, on_external_http
+  * 支持 on_device_event, on_command_result, on_external_http, on_manual_operation
   * 单元测试：10 个测试全部通过
 
 * ✅ **TransitionValidator** - 状态迁移校验器 (`src/workline_runtime/transition_validator.py`)

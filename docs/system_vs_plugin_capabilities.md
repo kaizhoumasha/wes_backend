@@ -59,7 +59,7 @@ flowchart TB
         subgraph BusinessLogic["业务逻辑"]
             B1["事件处理<br/>on_device_event()"]
             B2["命令结果处理<br/>on_command_result()"]
-            B3["超时处理<br/>on_timeout()"]
+            B3["等待声明<br/>WaitIntent"]
             B4["人工操作处理<br/>on_manual_operation()"]
         end
         

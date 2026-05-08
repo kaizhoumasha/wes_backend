@@ -33,8 +33,8 @@ Device Submit Event
   -> Session 进入 WAITING_DEVICE_RESULT
   -> Dispatcher 派发 Outbox 到目标设备
   -> Outbox 进入 SENT
-  -> Device ACK
-  -> Outbox 进入 ACKED
+  -> Device ACK 写入 DeviceCommand
+  -> ACK 激活 Session 执行等待 deadline
   -> Device 执行命令
   -> Device Submit Result Callback
   -> 写入 COMMAND_RESULT Inbox
@@ -102,8 +102,8 @@ Device Event -> Inbox -> Runtime Decision
 | --- | --- |
 | `NEW` | 已创建，等待 Dispatcher 拉取。 |
 | `DISPATCHING` | Dispatcher 正在派发。 |
-| `SENT` | 已发送到目标，但尚未收到设备 ACK。 |
-| `ACKED` | 目标已确认收到，仍可能等待 Result。 |
+| `SENT` | 已发送到目标；设备 ACK 与 Result 事实记录在 DeviceCommand，不复制到 Outbox。 |
+| `BLOCKED_RESOURCE` | WorkLine runtime reconciliation 隔离中，暂缓派发。 |
 | `FAILED` | 派发失败。 |
 | `CANCELLED` | 已取消。 |
 
@@ -112,7 +112,7 @@ Device Event -> Inbox -> Runtime Decision
 - `target_code` 是目标设备编码或目标地址。
 - `payload_json.device_code` 在设备命令里也是目标设备，不是来源设备。
 - Pending Outbox 展示的是 WES 等待外部处理的副作用，不代表设备之间互相发消息。
-- `ACKED` 且 Session 仍为 `WAITING_DEVICE_RESULT` 时，仍属于 Pending，因为业务还在等待 Result。
+- `SENT` 且 Session 仍为 `WAITING_DEVICE_RESULT` 时，仍属于 Pending，因为业务还在等待 Result。
 - 终态 Session 的 Outbox 不再属于 Pending。
 
 ### 4.3 DeviceCommand
@@ -224,7 +224,7 @@ Sandbox Event
   -> DeviceCommand + Outbox
   -> Pending Outbox 展示
   -> Sandbox ACK
-  -> Outbox ACKED
+  -> DeviceCommand ACK_RECEIVED
   -> Sandbox Result
   -> COMMAND_RESULT Inbox
   -> Worker
@@ -236,7 +236,7 @@ SANDBOX 特殊点：
 - 工作线必须是 `run_mode=SIMULATION`。
 - Pending Outbox 来源显示为 `系统`，目标显示为 `target_code`。
 - `payload_json.device_code` 是目标设备，不是来源设备。
-- ACK 后如果 Session 仍在 `WAITING_DEVICE_RESULT`，Pending Outbox 仍应展示，等待 Result。
+- ACK 后如果 Session 仍在 `WAITING_DEVICE_RESULT`，`SENT` Outbox 仍应展示，等待 Result。
 - 如果 Session 已超时或失败，旧 ACK / 旧 Result 应返回业务错误。
 
 ## 7. 常见误解
@@ -253,9 +253,9 @@ SANDBOX 特殊点：
 
 Outbox 是待派发副作用记录。Dispatcher 成功发送后，Outbox 才进入 `SENT`。
 
-### 7.3 Device ACK 后为什么还在 Pending？
+### 7.3 Device ACK 后为什么 Outbox 还在 Pending？
 
-因为 ACK 只代表设备收到了命令。只要 Session 仍在等待 Result，`ACKED` Outbox 仍是待处理项。
+因为 ACK 只代表设备收到了命令。只要 Session 仍在等待 Result，`SENT` Outbox 仍是待处理项；ACK 事实以 DeviceCommand 为准。
 
 ### 7.4 Pending Outbox 为什么显示“系统 -> 设备”？
 
