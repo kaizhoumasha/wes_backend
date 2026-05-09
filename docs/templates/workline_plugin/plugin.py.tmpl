@@ -8,9 +8,9 @@ from src.workline_runtime.plugin_base import (
     build_payload_invalid_failure,
     on_command,
     on_event,
+    requires_state,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
-    step,
 )
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
@@ -66,7 +66,6 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
             .wait(event_type="MEASURE_ITEM", timeout_seconds=120)
             .context(
                 {{CONTEXT_CLASS}}(
-                    plugin_state={{STATE_ENUM}}.WAITING_MEASURE,
                     business_key=event.data.business_key,
                     station_code=event.data.station_code,
                     expected_value=event.data.expected_value,
@@ -77,7 +76,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
         )
 
     @on_command("MEASURE_ITEM", result="SUCCESS")
-    @step({{STATE_ENUM}}.WAITING_MEASURE)
+    @requires_state({{STATE_ENUM}}.WAITING_MEASURE)
     async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
         if resolve_normalized_command_envelope(result) is None:
             return build_payload_invalid_failure(ctx, "MEASURE_ITEM 成功回调缺少 command_code 或 device_code")
@@ -109,7 +108,6 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
             .wait(event_type="DIVERT_ITEM", timeout_seconds=120)
             .context(
                 {{CONTEXT_CLASS}}(
-                    plugin_state={{STATE_ENUM}}.WAITING_DIVERT,
                     business_key=measure_data.business_key,
                     actual_value=measure_data.actual_value,
                     destination_lane=destination_lane,
@@ -131,7 +129,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
         return builder.build()
 
     @on_command("MEASURE_ITEM", result="FAILED")
-    @step({{STATE_ENUM}}.WAITING_MEASURE)
+    @requires_state({{STATE_ENUM}}.WAITING_MEASURE)
     async def handle_measure_failed(self, ctx, result: NormalizedCommandResult):
         error_code, error_message = resolve_normalized_command_failure(
             result,
@@ -145,20 +143,19 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
         ).build()
 
     @on_command("DIVERT_ITEM", result="SUCCESS")
-    @step({{STATE_ENUM}}.WAITING_DIVERT)
+    @requires_state({{STATE_ENUM}}.WAITING_DIVERT)
     async def handle_divert_success(self, ctx, result: NormalizedCommandResult):
         if resolve_normalized_command_envelope(result) is None:
             return build_payload_invalid_failure(ctx, "DIVERT_ITEM 成功回调缺少 command_code 或 device_code")
         return (
             PluginResultBuilder(ctx)
             .transition("divert_ok")
-            .context({{CONTEXT_CLASS}}(plugin_state={{STATE_ENUM}}.COMPLETED).to_patch())
             .complete()
             .build()
         )
 
     @on_command("DIVERT_ITEM", result="FAILED")
-    @step({{STATE_ENUM}}.WAITING_DIVERT)
+    @requires_state({{STATE_ENUM}}.WAITING_DIVERT)
     async def handle_divert_failed(self, ctx, result: NormalizedCommandResult):
         error_code, error_message = resolve_normalized_command_failure(
             result,
@@ -168,8 +165,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
         return (
             PluginResultBuilder(ctx)
             .transition("manual_hold")
-            .context({{CONTEXT_CLASS}}(plugin_state={{STATE_ENUM}}.MANUAL_HOLD, reason_code=error_code).to_patch())
-            .failure(domain="HARDWARE", code=error_code, message=error_message)
+            .context({{CONTEXT_CLASS}}(reason_code=error_code).to_patch())
             .build()
         )
 

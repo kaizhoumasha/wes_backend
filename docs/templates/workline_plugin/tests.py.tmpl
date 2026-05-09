@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
-from src.workline_runtime.plugin_state import PluginHandlerKind
 from src.workline_runtime.types import CommandTargetScope
 from src.workline_plugins.{{PLUGIN_MODULE}}.context import {{CONTEXT_CLASS}}
 from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
@@ -22,8 +21,8 @@ from src.workline_plugins.{{PLUGIN_MODULE}}.state_machine import {{STATE_ENUM}},
 
 def make_ctx(plugin_state={{STATE_ENUM}}.IDLE):
     return SimpleNamespace(
-        session=SimpleNamespace(context_json={"plugin_state": plugin_state}),
-        handler_kind=PluginHandlerKind.EVENT,
+        session=SimpleNamespace(id=1, plugin_state=plugin_state, context_json={}),
+        plugin_state=plugin_state,
         run_mode="SIMULATION",
     )
 

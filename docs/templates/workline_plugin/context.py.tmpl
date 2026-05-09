@@ -12,11 +12,13 @@ from .state_machine import {{STATE_ENUM}}
 
 
 class {{CONTEXT_CLASS}}(BaseModel):
-    """Session context_json 的插件视图。"""
+    """Session context_json 的插件业务数据视图。
+
+    `plugin_state` 由 WorklineSession.plugin_state 持有，不属于插件 context。
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    plugin_state: {{STATE_ENUM}} = {{STATE_ENUM}}.IDLE
     business_key: str | None = None
     station_code: str | None = None
     expected_value: float | None = None
@@ -34,7 +36,9 @@ class {{CONTEXT_CLASS}}(BaseModel):
         return cls.from_mapping(ctx.session.context_json)
 
     def to_patch(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        patch = self.model_dump(exclude_none=True)
+        patch.pop("plugin_state", None)
+        return patch
 
 
 def parse_context(ctx: PluginContext) -> {{CONTEXT_CLASS}}:

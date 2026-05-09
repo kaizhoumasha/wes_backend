@@ -147,7 +147,6 @@ from src.workline_runtime.plugin_context import PluginContext
 class ExampleContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    plugin_state: str = "IDLE"
     business_key: str | None = None
     expected_value: float | None = None
     tolerance: float | None = None
@@ -162,7 +161,9 @@ class ExampleContext(BaseModel):
         return cls.from_mapping(ctx.session.context_json)
 
     def to_patch(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        patch = self.model_dump(exclude_none=True)
+        patch.pop("plugin_state", None)
+        return patch
 ```
 
 ## state_machine.py
@@ -179,9 +180,6 @@ class ExampleState(StrEnum):
     IDLE = "IDLE"
     WAITING_MEASURE = "WAITING_MEASURE"
     WAITING_DIVERT = "WAITING_DIVERT"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
 
 
 class ExampleStateMachine:
@@ -198,17 +196,16 @@ class ExampleStateMachine:
             "source": ExampleState.WAITING_MEASURE.value,
             "dest": ExampleState.WAITING_DIVERT.value,
         },
-        {"trigger": "divert_ok", "source": ExampleState.WAITING_DIVERT.value, "dest": ExampleState.COMPLETED.value},
-        {"trigger": "manual_hold", "source": ExampleState.WAITING_DIVERT.value, "dest": ExampleState.MANUAL_HOLD.value},
+        {"trigger": "divert_ok", "source": ExampleState.WAITING_DIVERT.value, "dest": None},
+        {"trigger": "manual_hold", "source": ExampleState.WAITING_DIVERT.value, "dest": None},
         {
             "trigger": "fail",
             "source": [
                 ExampleState.IDLE.value,
                 ExampleState.WAITING_MEASURE.value,
                 ExampleState.WAITING_DIVERT.value,
-                ExampleState.MANUAL_HOLD.value,
             ],
-            "dest": ExampleState.ERROR.value,
+            "dest": None,
         },
     ]
 
@@ -232,7 +229,7 @@ class ExampleStateMachine:
 插件入口必须把 manifest、handler 和业务结果写清楚。
 
 ```python
-from src.workline_runtime.plugin_base import PluginResultBuilder, WorklinePlugin, on_command, on_event, step
+from src.workline_runtime.plugin_base import PluginResultBuilder, WorklinePlugin, on_command, on_event, requires_state
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.types import CommandTargetScope
@@ -277,7 +274,6 @@ class ExamplePlugin(WorklinePlugin):
             .wait(event_type="MEASURE_ITEM", timeout_seconds=120)
             .context(
                 ExampleContext(
-                    plugin_state=ExampleState.WAITING_MEASURE,
                     business_key=event.data.business_key,
                     expected_value=event.data.expected_value,
                     tolerance=event.data.tolerance,
@@ -287,7 +283,7 @@ class ExamplePlugin(WorklinePlugin):
         )
 
     @on_command("MEASURE_ITEM", result="SUCCESS")
-    @step(ExampleState.WAITING_MEASURE)
+    @requires_state(ExampleState.WAITING_MEASURE)
     async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
         data = MeasureCompletedData.model_validate(result.data)
         business_ctx = ExampleContext.from_session(ctx)

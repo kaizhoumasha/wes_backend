@@ -71,7 +71,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
   SELECT
     s.id,
     s.status,
-    s.context_json->>'step_code' as step_code,
+    s.plugin_state,
     s.context_json->>'barcode' as barcode
   FROM wes_biz.workline_sessions s
   ORDER BY s.id DESC
@@ -81,7 +81,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
 
 预期输出（简化插件处理成功）：
 ```
-  id  | status | step_code           | barcode
+  id  | status | plugin_state           | barcode
 ------+--------+---------------------+--------
   456 | RUNNING| WAITING_INSPECTION  | ABC123
 ```
@@ -140,7 +140,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
   SELECT
     s.id,
     s.status,
-    s.context_json->>'step_code' as step_code
+    s.plugin_state
   FROM wes_biz.workline_sessions s
   ORDER BY s.id DESC
   LIMIT 1;
@@ -149,9 +149,9 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
 
 预期输出（会话完成）：
 ```
-  id  | status   | step_code
-------+----------+------------
-  456 | RUNNING  | COMPLETED
+  id  | status    | plugin_state
+------+-----------+----------------
+  456 | COMPLETED | WAITING_OUTPUT
 ```
 
 ### 步骤7: 恢复原插件
@@ -192,7 +192,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
 ```
  seq_no |   stage    |    action_type     | transition | context_patch
 --------+------------+--------------------+------------+---------------
-      1 | DECISION   | DECISION_MADE      | scan_ok    | {"barcode": "ABC123", "step_code": "WAITING_INSPECTION"}
+      1 | DECISION   | DECISION_MADE      | scan_ok    | {"barcode": "ABC123"}
       2 | WAIT       | WAIT_STARTED       |            | ...
       3 | DECISION   | DECISION_MADE      | pick_ok    | ...
 ```

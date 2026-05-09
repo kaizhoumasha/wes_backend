@@ -11,9 +11,6 @@ class {{STATE_ENUM}}(StrEnum):
     IDLE = "IDLE"
     WAITING_MEASURE = "WAITING_MEASURE"
     WAITING_DIVERT = "WAITING_DIVERT"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
 
 
 class {{STATE_MACHINE_CLASS}}:
@@ -33,12 +30,12 @@ class {{STATE_MACHINE_CLASS}}:
         {
             "trigger": "divert_ok",
             "source": {{STATE_ENUM}}.WAITING_DIVERT.value,
-            "dest": {{STATE_ENUM}}.COMPLETED.value,
+            "dest": None,
         },
         {
             "trigger": "manual_hold",
             "source": {{STATE_ENUM}}.WAITING_DIVERT.value,
-            "dest": {{STATE_ENUM}}.MANUAL_HOLD.value,
+            "dest": None,
         },
         {
             "trigger": "fail",
@@ -46,9 +43,8 @@ class {{STATE_MACHINE_CLASS}}:
                 {{STATE_ENUM}}.IDLE.value,
                 {{STATE_ENUM}}.WAITING_MEASURE.value,
                 {{STATE_ENUM}}.WAITING_DIVERT.value,
-                {{STATE_ENUM}}.MANUAL_HOLD.value,
             ],
-            "dest": {{STATE_ENUM}}.ERROR.value,
+            "dest": None,
         },
     ]
 
