@@ -15,6 +15,7 @@ from src.app.callback.repositories.callback_log_repository import callback_log_r
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.workline.models import WorkLine, WorklineInbox, WorklineOutbox, WorklineSession, WorklineTimeline
+from src.app.workline.models.outbox import OutboxStatus
 from src.app.workline.models.runtime import (
     RuntimeBlockingReason,
     RuntimeDeviceDetailResponse,
@@ -35,6 +36,7 @@ from src.app.workline.models.runtime import (
     TraceCommandItem,
     TraceQueryRequest,
 )
+from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.services.trace_response_builder import build_trace_response, build_trace_timeline_item
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
@@ -77,6 +79,12 @@ class _DeviceIdentity:
     device_id: int
     device_code: str | None = None
     device_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BlockedOutboxProjection:
+    count_by_device_id: dict[int, int]
+    command_codes_by_device_id: dict[int, set[str]]
 
 
 def _enum_str(value: Any) -> str | None:
@@ -224,6 +232,28 @@ def _resolve_trace_device(
     return None
 
 
+def _trace_current_action(command: DeviceCommand | None, timeline: WorklineTimeline | None) -> str | None:
+    if command is not None:
+        return _enum_str(command.task_type) or command.command_code
+    if timeline is not None:
+        return _enum_str(timeline.action_type)
+    return None
+
+
+def _trace_action_source(
+    awaiting_command: DeviceCommand | None,
+    latest_command: DeviceCommand | None,
+    timeline: WorklineTimeline | None,
+) -> str:
+    if awaiting_command is not None:
+        return "AWAITING_COMMAND"
+    if latest_command is not None:
+        return "LATEST_COMMAND"
+    if timeline is not None:
+        return "TIMELINE"
+    return "NONE"
+
+
 def _device_session_clause(session_columns: Any, device_id: int) -> Any:
     command_columns = cast("Any", DeviceCommand).__table__.c
     inbox_columns = cast("Any", WorklineInbox).__table__.c
@@ -318,8 +348,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             filters.append(columns.workline_id == payload.workline_id)
         if payload.status:
             filters.append(columns.status == payload.status)
-        if payload.step_code:
-            filters.append(columns.step_code == payload.step_code)
+        if payload.plugin_state:
+            filters.append(columns.plugin_state == payload.plugin_state)
         if payload.only_active:
             filters.append(columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
         if payload.only_failed:
@@ -398,8 +428,25 @@ class RuntimeQueryService(BaseService[Any, Any]):
         ]
         all_sessions = active_sessions + visible_terminal_sessions
 
+        blocked_outbox_projection = await self._load_blocked_outbox_projection(db, devices)
+        open_command_map = await self._load_open_command_count_map(
+            db,
+            [item.id for item in devices if item.id is not None],
+            blocked_command_codes_by_device=blocked_outbox_projection.command_codes_by_device_id,
+        )
+        active_hold_ids_map = await self._load_active_runtime_hold_ids_map(
+            db, [item.id for item in devices if item.id is not None]
+        )
         summary = self._build_workline_summary(workline, devices, all_sessions)
-        device_items = [self._build_workline_device_item(device) for device in devices]
+        device_items = [
+            self._build_workline_device_item(
+                device,
+                open_command_count=open_command_map.get(device.id or 0, 0),
+                blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
+                active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
+            )
+            for device in devices
+        ]
         active_trace_items = await self._build_trace_list_items(db, active_sessions)
         failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
         completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
@@ -425,7 +472,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         workline_ids = [item.work_line_id for item in devices if item.work_line_id is not None]
         workline_map = await self._load_workline_map(db, workline_ids)
-        pending_command_map = await self._load_pending_command_count_map(
+        blocked_outbox_projection = await self._load_blocked_outbox_projection(db, devices)
+        open_command_map = await self._load_open_command_count_map(
+            db,
+            [item.id for item in devices if item.id is not None],
+            blocked_command_codes_by_device=blocked_outbox_projection.command_codes_by_device_id,
+        )
+        active_hold_ids_map = await self._load_active_runtime_hold_ids_map(
             db, [item.id for item in devices if item.id is not None]
         )
         callback_time_map = await self._load_recent_callback_time_map(db, [item.device_code for item in devices])
@@ -434,8 +487,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             self._build_device_summary(
                 device,
                 workline_map.get(device.work_line_id),
-                pending_command_map.get(device.id or 0, 0),
+                open_command_map.get(device.id or 0, 0),
                 callback_time_map.get(device.device_code),
+                blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
+                active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
             )
             for device in devices
             if device.id is not None
@@ -458,13 +513,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
             workline_map = await self._load_workline_map(db, [device.work_line_id])
             workline = workline_map.get(device.work_line_id)
 
-        pending_command_map = await self._load_pending_command_count_map(db, [device_id])
+        blocked_outbox_projection = await self._load_blocked_outbox_projection(db, [device])
+        open_command_map = await self._load_open_command_count_map(
+            db,
+            [device_id],
+            blocked_command_codes_by_device=blocked_outbox_projection.command_codes_by_device_id,
+        )
+        active_hold_ids_map = await self._load_active_runtime_hold_ids_map(db, [device_id])
         callback_time_map = await self._load_recent_callback_time_map(db, [device.device_code])
         summary = self._build_device_summary(
             device,
             workline,
-            pending_command_map.get(device_id, 0),
+            open_command_map.get(device_id, 0),
             callback_time_map.get(device.device_code),
+            blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device_id, 0),
+            active_runtime_hold_ids=active_hold_ids_map.get(device_id, []),
         )
 
         recent_commands = await self._load_recent_commands_for_device(db, device_id, limit=20)
@@ -630,7 +693,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _load_pending_command_count_map(self, db: Any, device_ids: list[int]) -> dict[int, int]:
+    async def _load_open_command_count_map(
+        self,
+        db: Any,
+        device_ids: list[int],
+        *,
+        blocked_command_codes_by_device: dict[int, set[str]] | None = None,
+    ) -> dict[int, int]:
         if not device_ids:
             return {}
         columns = cast("Any", DeviceCommand).__table__.c
@@ -641,8 +710,61 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         mapping: dict[int, int] = defaultdict(int)
         for item in result.scalars().all():
+            blocked_codes = blocked_command_codes_by_device or {}
+            if item.command_code in blocked_codes.get(item.device_id, set()):
+                continue
             mapping[item.device_id] += 1
         return mapping
+
+    async def _load_pending_command_count_map(self, db: Any, device_ids: list[int]) -> dict[int, int]:
+        """Compatibility wrapper: pending_command_count now equals open_command_count."""
+
+        return await self._load_open_command_count_map(db, device_ids)
+
+    async def _load_blocked_outbox_projection(self, db: Any, devices: list[Device]) -> _BlockedOutboxProjection:
+        device_ids = [item.id for item in devices if item.id is not None]
+        if not device_ids:
+            return _BlockedOutboxProjection(count_by_device_id={}, command_codes_by_device_id={})
+
+        by_id, by_code = _build_device_identity_maps(devices)
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox).where(
+                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+                or_(
+                    columns.blocked_device_id.in_(device_ids),
+                    columns.target_code.in_([item.device_code for item in devices]),
+                ),
+            )
+        )
+        count_by_device_id: dict[int, int] = defaultdict(int)
+        command_codes_by_device_id: dict[int, set[str]] = defaultdict(set)
+        for outbox in result.scalars().all():
+            device_id = outbox.blocked_device_id
+            if device_id is None:
+                target_identity = by_code.get(outbox.target_code)
+                device_id = target_identity.device_id if target_identity is not None else None
+            if device_id is None or device_id not in by_id:
+                continue
+            count_by_device_id[device_id] += 1
+            payload = _payload_dict(outbox.payload_json)
+            command_code = payload.get("command_code")
+            if isinstance(command_code, str) and command_code:
+                command_codes_by_device_id[device_id].add(command_code)
+
+        return _BlockedOutboxProjection(
+            count_by_device_id=dict(count_by_device_id),
+            command_codes_by_device_id={key: set(value) for key, value in command_codes_by_device_id.items()},
+        )
+
+    async def _load_active_runtime_hold_ids_map(self, db: Any, device_ids: list[int]) -> dict[int, list[int]]:
+        if not device_ids:
+            return {}
+        holds_by_device = await runtime_hold_repository.list_active_by_device_ids(db, device_ids=device_ids)
+        return {
+            device_id: [cast("int", hold.id) for hold in holds if hold.id is not None]
+            for device_id, holds in holds_by_device.items()
+        }
 
     async def _load_recent_callback_time_map(self, db: Any, device_codes: list[str]) -> dict[str, Any]:
         if not device_codes:
@@ -689,12 +811,20 @@ class RuntimeQueryService(BaseService[Any, Any]):
         session_ids = [item.id for item in sessions if item.id is not None]
         workline_map = await self._load_workline_map(db, [item.workline_id for item in sessions])
         latest_command_by_session = await self._load_latest_command_by_session(db, session_ids)
+        awaiting_command_ids = [
+            session.awaiting_command_id for session in sessions if isinstance(session.awaiting_command_id, int)
+        ]
+        awaiting_command_by_id = await self._load_command_map_by_ids(db, awaiting_command_ids)
         latest_inbox_by_session = await self._load_latest_inbox_by_session(db, session_ids)
         latest_timeline_by_session = await self._load_latest_timeline_by_session(db, session_ids)
 
         device_ids = {
             item.device_id
-            for item in [*latest_command_by_session.values(), *latest_inbox_by_session.values()]
+            for item in [
+                *latest_command_by_session.values(),
+                *awaiting_command_by_id.values(),
+                *latest_inbox_by_session.values(),
+            ]
             if item.device_id is not None
         }
         device_map = await self._load_device_map(db, list(device_ids))
@@ -702,13 +832,35 @@ class RuntimeQueryService(BaseService[Any, Any]):
         for session in sorted(sessions, key=_activity_dt, reverse=True):
             if session.id is None:
                 continue
-            command = latest_command_by_session.get(session.id)
+            latest_command = latest_command_by_session.get(session.id)
+            awaiting_command = awaiting_command_by_id.get(session.awaiting_command_id)
+            command = awaiting_command or latest_command
             inbox = latest_inbox_by_session.get(session.id)
             timeline = latest_timeline_by_session.get(session.id)
             workline = workline_map.get(session.workline_id)
             device = _resolve_trace_device(command, inbox, device_map)
-            items.append(self._build_trace_list_item(session, workline, device, command, timeline, now))
+            latest_device = _resolve_trace_device(latest_command, inbox, device_map)
+            items.append(
+                self._build_trace_list_item(
+                    session,
+                    workline,
+                    device,
+                    command,
+                    timeline,
+                    now,
+                    latest_device=latest_device,
+                    action_source=_trace_action_source(awaiting_command, latest_command, timeline),
+                )
+            )
         return items
+
+    async def _load_command_map_by_ids(self, db: Any, command_ids: list[int]) -> dict[int, DeviceCommand]:
+        command_ids = [item for item in command_ids if isinstance(item, int)]
+        if not command_ids:
+            return {}
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(select(DeviceCommand).where(columns.id.in_(command_ids)))
+        return {item.id: item for item in result.scalars().all() if item.id is not None}
 
     async def _load_latest_command_by_session(self, db: Any, session_ids: list[int]) -> dict[int, DeviceCommand]:
         if not session_ids:
@@ -850,7 +1002,15 @@ class RuntimeQueryService(BaseService[Any, Any]):
             healthy=healthy,
         )
 
-    def _build_workline_device_item(self, device: Device) -> RuntimeWorklineDeviceItem:
+    def _build_workline_device_item(
+        self,
+        device: Device,
+        *,
+        open_command_count: int = 0,
+        blocked_outbox_count: int = 0,
+        active_runtime_hold_ids: list[int] | None = None,
+    ) -> RuntimeWorklineDeviceItem:
+        hold_ids = active_runtime_hold_ids or []
         return RuntimeWorklineDeviceItem(
             id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
@@ -861,6 +1021,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_status=_status_str(device.device_status),
             maintenance_mode=device.maintenance_mode,
             current_command_id=device.current_command_id,
+            open_command_count=open_command_count,
+            pending_command_count=open_command_count,
+            blocked_outbox_count=blocked_outbox_count,
+            open_issue_count=len(hold_ids),
+            active_runtime_hold_ids=hold_ids,
             last_heartbeat_at=device.last_heartbeat_at,
             error_code=device.error_code,
         )
@@ -869,9 +1034,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         self,
         device: Device,
         workline: WorkLine | None,
-        pending_command_count: int,
+        open_command_count: int,
         recent_callback_at: Any,
+        *,
+        blocked_outbox_count: int = 0,
+        active_runtime_hold_ids: list[int] | None = None,
     ) -> RuntimeDeviceSummary:
+        hold_ids = active_runtime_hold_ids or []
         return RuntimeDeviceSummary(
             id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
@@ -884,7 +1053,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_status=_status_str(device.device_status),
             maintenance_mode=device.maintenance_mode,
             current_command_id=device.current_command_id,
-            pending_command_count=pending_command_count,
+            open_command_count=open_command_count,
+            pending_command_count=open_command_count,
+            blocked_outbox_count=blocked_outbox_count,
+            open_issue_count=len(hold_ids),
+            active_runtime_hold_ids=hold_ids,
             last_heartbeat_at=device.last_heartbeat_at,
             recent_callback_at=recent_callback_at,
             error_code=device.error_code,
@@ -925,7 +1098,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             ack_code=item.ack_code,
             ack_message=item.ack_message,
             ack_trace_id=item.ack_trace_id,
-            step_code=item.step_code,
+            issued_plugin_state=item.issued_plugin_state,
             params=item.params,
             result_data=item.result_data,
             error_detail=item.error_detail,
@@ -959,6 +1132,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         command: DeviceCommand | None,
         timeline: WorklineTimeline | None,
         now: Any,
+        *,
+        latest_device: Device | None,
+        action_source: str,
     ) -> RuntimeTraceListItem:
         return RuntimeTraceListItem(
             session_id=_require_int_id(session.id, "session.id"),
@@ -974,8 +1150,16 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_name=device.device_name if device is not None else None,
             device_code=device.device_code if device is not None else None,
             command_code=command.command_code if command is not None else None,
+            current_device_id=device.id if device is not None else None,
+            current_device_name=device.device_name if device is not None else None,
+            current_device_code=device.device_code if device is not None else None,
+            current_action=_trace_current_action(command, timeline),
+            current_action_source=action_source,
+            last_device_id=latest_device.id if latest_device is not None else None,
+            last_device_name=latest_device.device_name if latest_device is not None else None,
+            last_device_code=latest_device.device_code if latest_device is not None else None,
             status=_status_str(session.status),
-            step_code=session.step_code,
+            plugin_state=session.plugin_state,
             current_wait_type=session.current_wait_type,
             failure_domain=session.failure_domain,
             failure_code=session.failure_code,
@@ -1084,7 +1268,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                     blocking_reason = RuntimeBlockingReason(
                         device_id=cmd.device_id,
                         reason=f"等待设备响应 {_enum_str(cmd.task_type) or cmd.command_code}",
-                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · step={cmd.step_code}",
+                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · state={cmd.issued_plugin_state}",
                     )
             if blocking_device_id is None and session.failure_domain:
                 blocking_reason = RuntimeBlockingReason(

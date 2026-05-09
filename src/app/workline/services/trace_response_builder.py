@@ -17,6 +17,7 @@ from src.app.workline.models.runtime import (
     TraceSessionItem,
     TraceTimelineItem,
 )
+from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
 
 
 def _enum_str(value: Any) -> str | None:
@@ -38,7 +39,7 @@ def _build_trace_summary(result: Any) -> TraceOverviewSummary:
         timelines=len(result.timelines),
         diagnostics=len(result.diagnostics),
         session_status=_enum_str(session.status) if session is not None else None,
-        step_code=session.step_code if session is not None else None,
+        plugin_state=session.plugin_state if session is not None else None,
         current_wait_type=session.current_wait_type if session is not None else None,
         latest_timeline_action=_enum_str(latest_timeline.action_type) if latest_timeline else None,
         latest_timeline_status=_enum_str(latest_timeline.status) if latest_timeline else None,
@@ -61,7 +62,7 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         business_key=session.business_key,
         barcode=session.barcode,
         status=_status_str(session.status),
-        step_code=session.step_code,
+        plugin_state=session.plugin_state,
         trace_id=session.trace_id,
         started_at=session.started_at,
         ended_at=session.ended_at,
@@ -159,7 +160,7 @@ def _build_command_item(item: Any) -> TraceCommandItem:
         ack_code=item.ack_code,
         ack_message=item.ack_message,
         ack_trace_id=item.ack_trace_id,
-        step_code=item.step_code,
+        issued_plugin_state=item.issued_plugin_state,
         params=item.params,
         result_data=item.result_data,
         error_detail=item.error_detail,
@@ -180,6 +181,7 @@ def _build_outbox_item(item: Any) -> TraceOutboxItem:
         attempt_count=item.attempt_count,
         next_retry_at=item.next_retry_at,
         last_error=item.last_error,
+        blocked_by_runtime_hold_id=getattr(item, "blocked_by_runtime_hold_id", None),
         blocked_by_reconciliation_session_id=getattr(item, "blocked_by_reconciliation_session_id", None),
         blocked_device_id=getattr(item, "blocked_device_id", None),
         blocked_workline_id=getattr(item, "blocked_workline_id", None),
@@ -236,6 +238,21 @@ def build_trace_timeline_item(item: Any) -> TraceTimelineItem:
     return _build_timeline_item(item)
 
 
+def build_failed_command_evidence(command: Any | None) -> FailedCommandEvidence | None:
+    """Build the RuntimeHold failed-command evidence from the trace command projection."""
+
+    if command is None:
+        return None
+    return FailedCommandEvidence(
+        command_id=command.id,
+        command_code=command.command_code,
+        status=_enum_str(command.status),
+        result=_enum_str(command.result),
+        error_detail=cast("dict[str, Any] | None", command.error_detail),
+        result_data=cast("dict[str, Any] | None", command.result_data),
+    )
+
+
 def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
     return TraceDiagnosticItem(
         request_id=item.request_id,
@@ -274,4 +291,4 @@ def build_trace_response(result: Any) -> TraceDetailResponse:
     )
 
 
-__all__ = ["build_trace_response", "build_trace_timeline_item"]
+__all__ = ["build_failed_command_evidence", "build_trace_response", "build_trace_timeline_item"]

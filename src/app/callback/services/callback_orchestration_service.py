@@ -94,6 +94,14 @@ class CallbackOrchestrationService:
             kwargs={"limit": 10},
         )
 
+    def _enqueue_outbox_dispatch(self) -> None:
+        from src.celery_app.app import celery_app
+
+        cast("Any", celery_app).send_task(
+            "src.celery_app.tasks.workline.dispatch_outbox_batch",
+            kwargs={"limit": 50},
+        )
+
     def _resolve_duplicate_inbox_error(self, error: ValueError, *, duplicate_message: str) -> object | None:
         if not self._is_duplicate_inbox_error(error):
             raise error
@@ -223,14 +231,14 @@ class CallbackOrchestrationService:
         command: object,
         callback: CommandCallbackResult,
         device_service: DeviceService,
-    ) -> None:
+    ) -> int:
         command_id = getattr(command, "id", None)
         device_id = getattr(command, "device_id", None)
         if not isinstance(command_id, int) or not isinstance(device_id, int):
             logger.warning(f"回调指令缺少设备状态锚点，跳过设备运行态更新: {callback.command_code}")
-            return
+            return 0
 
-        _ = await device_service.mark_command_finished(
+        updated_device = await device_service.mark_command_finished(
             db,
             device_id=device_id,
             command_id=command_id,
@@ -238,6 +246,19 @@ class CallbackOrchestrationService:
             error_code=self._resolve_callback_error_code(callback.error_detail),
             auto_commit=False,
         )
+        if updated_device is None:
+            return 0
+        device_status = getattr(getattr(updated_device, "device_status", None), "value", None) or getattr(
+            updated_device,
+            "device_status",
+            None,
+        )
+        if device_status != "IDLE" or getattr(updated_device, "current_command_id", None) is not None:
+            return 0
+
+        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+
+        return await WorklineOutboxRepository().release_blocked_by_device(db, device_id=device_id)
 
     async def process_result(
         self,
@@ -333,7 +354,7 @@ class CallbackOrchestrationService:
                     return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=False)
                 if command is None:
                     raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-                await self._mark_callback_device_finished(
+                released_outboxes = await self._mark_callback_device_finished(
                     db,
                     command=command,
                     callback=callback,
@@ -355,6 +376,8 @@ class CallbackOrchestrationService:
                 trace = trace.with_command(command)
                 inherited_trace_id = trace.trace_id or inherited_trace_id
                 await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+                if released_outboxes:
+                    self._enqueue_outbox_dispatch()
                 logger.info(
                     f"指令结果处理完成: {callback.command_code} -> "
                     f"status={command.status.value}, "
@@ -373,7 +396,7 @@ class CallbackOrchestrationService:
                 return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=False)
             if command is None:
                 raise RuntimeError(f"回调指令处理失败: {callback.command_code}")
-            await self._mark_callback_device_finished(
+            released_outboxes = await self._mark_callback_device_finished(
                 db,
                 command=command,
                 callback=callback,
@@ -383,6 +406,8 @@ class CallbackOrchestrationService:
             inherited_trace_id = trace.trace_id or inherited_trace_id
             await db.commit()
             await publish_deferred_sse_events(db)
+            if released_outboxes:
+                self._enqueue_outbox_dispatch()
             logger.info(
                 f"非 Workline 指令结果已同步处理: {callback.command_code} -> "
                 f"status={command.status.value}, "

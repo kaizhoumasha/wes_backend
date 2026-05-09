@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
+from src.app.workline.models.outbox import OutboxStatus
+from src.app.workline.models.runtime_hold import RuntimeHoldType
+from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import (
     RuntimeReconciliationReason,
@@ -26,10 +29,25 @@ from src.app.workline.models.timeline import (
     WorklineTimeline,
 )
 from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+from src.app.workline.repositories.runtime_hold_repository import (
+    RuntimeHoldRepository,
+)
+from src.app.workline.repositories.runtime_hold_repository import (
+    runtime_hold_repository as default_runtime_hold_repository,
+)
 from src.app.workline.repositories.session_repository import WorklineSessionRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.app.workline.services.inbox_service import inbox_service
+from src.app.workline.services.runtime_hold_creation_service import (
+    runtime_hold_creation_service as default_runtime_hold_creation_service,
+)
+from src.app.workline.services.runtime_hold_release_service import (
+    RuntimeHoldReleaseService,
+)
+from src.app.workline.services.runtime_hold_release_service import (
+    runtime_hold_release_service as default_runtime_hold_release_service,
+)
 from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -40,18 +58,18 @@ if TYPE_CHECKING:
     from src.app.workline.models.outbox import WorklineOutbox
 
 
-_CALLBACK_TIMEOUT_CHECKS = {
+_CALLBACK_TIMEOUT_CHECKS = [
     "device_inspected",
     "physical_state_confirmed",
     "inventory_or_position_reconciled",
     "late_callback_reviewed",
-}
-_DISPATCH_ACK_CHECKS = {
+]
+_DISPATCH_ACK_CHECKS = [
     "device_reachable_checked",
     "command_code_checked",
     "physical_state_confirmed",
     "safe_to_release_blocked_work",
-}
+]
 _LATE_CALLBACK_EVIDENCE_REASONS = {
     RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
     RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED,
@@ -113,11 +131,17 @@ class WorklineRuntimeReconciliationService:
         workline_repository: WorkLineRepository | None = None,
         outbox_repository: WorklineOutboxRepository | None = None,
         device_service: DeviceService | None = None,
+        runtime_hold_creation_service: Any | None = None,
+        runtime_hold_repository: RuntimeHoldRepository | None = None,
+        runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or WorkLineRepository()
         self.outbox_repository = outbox_repository or WorklineOutboxRepository()
         self.device_service = device_service or DeviceService()
+        self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
+        self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
+        self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
 
     async def activate_execution_deadline_after_ack(
         self,
@@ -207,6 +231,14 @@ class WorklineRuntimeReconciliationService:
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             )
 
+        runtime_hold = await self.runtime_hold_creation_service.create_for_callback_deadline_expired(
+            db,
+            session=session,
+            inbox=inbox,
+            command=command,
+        )
+        runtime_hold_id = _resolve_id(runtime_hold)
+
         await self._append_reconciliation_timeline(
             db,
             session=session,
@@ -221,6 +253,7 @@ class WorklineRuntimeReconciliationService:
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,
+                "runtime_hold_id": runtime_hold_id,
             },
             inbox=inbox,
             command=command,
@@ -237,6 +270,7 @@ class WorklineRuntimeReconciliationService:
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,
+                "runtime_hold_id": runtime_hold_id,
             },
         )
 
@@ -261,13 +295,39 @@ class WorklineRuntimeReconciliationService:
         session = await self.session_repository.get_for_update(db, session_id)
         if session is None:
             return None
+        now = timezone.now_for_db()
+        hold_source_reason = self._dispatch_ack_hold_source_reason(error_message)
+        outbox.status = OutboxStatus.FAILED
+        outbox.last_error = error_message
+        outbox.next_retry_at = None
+        outbox.finished_at = outbox.finished_at or now
+
         if session.reconciliation_state == RuntimeReconciliationState.PENDING:
+            if command is not None and _enum_value(command.status) in {
+                CommandStatus.PENDING.value,
+                CommandStatus.SENT.value,
+            }:
+                command.status = CommandStatus.FAILED
+                command.completed_at = command.completed_at or now
+                command.error_detail = {
+                    **_as_dict(command.error_detail),
+                    "error_code": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
+                    "error_message": error_message,
+                    "outbox_id": _resolve_id(outbox),
+                }
+            _ = await self.runtime_hold_creation_service.create_for_dispatch_ack_exhausted(
+                db,
+                session=session,
+                outbox=outbox,
+                command=command,
+                source_reason=hold_source_reason,
+            )
+            await db.flush()
             return session
 
-        now = timezone.now_for_db()
         session.status = SessionStatus.MANUAL_HOLD
         session.reconciliation_state = RuntimeReconciliationState.PENDING
-        session.reconciliation_reason = RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED
+        session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
         session.reconciliation_source_kind = RuntimeReconciliationSourceKind.DISPATCH_ACK_EXHAUSTED
         session.reconciliation_source_outbox_id = _resolve_id(outbox)
         session.reconciliation_command_id = _resolve_id(command)
@@ -291,11 +351,20 @@ class WorklineRuntimeReconciliationService:
         if workline is not None:
             workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
             workline.stopped_at = workline.stopped_at or now
-            workline.stopped_reason = RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value
+            workline.stopped_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
 
         device_id = getattr(command, "device_id", None)
         if isinstance(device_id, int):
             _ = await self.device_service.mark_dispatch_ack_exhausted(db, device_id=device_id, auto_commit=False)
+
+        runtime_hold = await self.runtime_hold_creation_service.create_for_dispatch_ack_exhausted(
+            db,
+            session=session,
+            outbox=outbox,
+            command=command,
+            source_reason=hold_source_reason,
+        )
+        runtime_hold_id = _resolve_id(runtime_hold)
 
         await self._append_reconciliation_timeline(
             db,
@@ -305,11 +374,12 @@ class WorklineRuntimeReconciliationService:
             status=TimelineStatus.FAILED,
             from_status=SessionStatus.WAITING_DEVICE_RESULT.value,
             to_status=SessionStatus.MANUAL_HOLD.value,
-            message="Outbox dispatch failed; runtime reconciliation started.",
+            message="Command ACK exhausted; runtime reconciliation started.",
             payload={
-                "reason": RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value,
+                "reason": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
                 "error_message": error_message,
                 "outbox_id": _resolve_id(outbox),
+                "runtime_hold_id": runtime_hold_id,
             },
             outbox=outbox,
             command=command,
@@ -326,6 +396,7 @@ class WorklineRuntimeReconciliationService:
                 "outbox_id": _resolve_id(outbox),
                 "command_id": _resolve_id(command),
                 "error_message": error_message,
+                "runtime_hold_id": runtime_hold_id,
             },
         )
 
@@ -348,6 +419,26 @@ class WorklineRuntimeReconciliationService:
         outbox_id = _resolve_id(outbox)
         if outbox_id is None:
             return None
+        active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, outbox.workline_id)
+        runtime_hold = next(
+            (
+                hold
+                for hold in active_holds
+                if hold.session_id == owner_id and hold.hold_type == RuntimeHoldType.RUNTIME_RECONCILIATION
+            ),
+            None,
+        )
+        runtime_hold_id = _resolve_id(runtime_hold)
+        if runtime_hold_id is not None:
+            return await self.outbox_repository.block_by_runtime_hold(
+                db,
+                outbox_id,
+                runtime_hold_id=runtime_hold_id,
+                owner_session_id=owner_id,
+                reason=reason,
+                blocked_device_id=getattr(owner, "reconciliation_device_id", None),
+                blocked_workline_id=outbox.workline_id,
+            )
         return await self.outbox_repository.mark_as_blocked_by_workline_state(
             db,
             outbox_id,
@@ -424,7 +515,7 @@ class WorklineRuntimeReconciliationService:
         operator_id: int,
         result_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """人工对账后决议 owner session / command，并释放对应 parked outbox。"""
+        """兼容入口：校验旧 reconciliation 请求，然后委托 RuntimeHoldReleaseService。"""
 
         session = await self.session_repository.get_for_update(db, session_id)
         if session is None:
@@ -440,44 +531,38 @@ class WorklineRuntimeReconciliationService:
 
         now = timezone.now_for_db()
         confirmed_at_for_db = timezone.to_db_datetime(confirmed_at) or confirmed_at
-        session.status = SessionStatus(resolution.value)
-        session.ended_at = confirmed_at_for_db
-        session.reconciliation_state = RuntimeReconciliationState.RESOLVED
-        session.reconciliation_resolution = resolution
-        session.reconciliation_resolved_at = now
-        context = _as_dict(session.context_json)
-        context["runtime_reconciliation_resolution"] = {
-            "operator_id": operator_id,
-            "operator_note": operator_note,
-            "checks": checks,
-            "confirmed_at": confirmed_at_for_db.isoformat(),
-            "result_payload": result_payload or {},
-        }
-        session.context_json = context
+        active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, session.workline_id)
+        runtime_hold = next(
+            (
+                hold
+                for hold in active_holds
+                if hold.session_id == session_id and hold.hold_type == RuntimeHoldType.RUNTIME_RECONCILIATION
+            ),
+            None,
+        )
+        runtime_hold_id = _resolve_id(runtime_hold)
+        if runtime_hold is None or runtime_hold_id is None:
+            raise ValueError(f"未找到 active RuntimeHold: session_id={session_id}")
 
+        release_request = ResolveRuntimeHoldRequest(
+            resolution=resolution.value,
+            checks=checks,
+            operator_note=operator_note,
+            material_disposition="CONTINUE",
+            result_payload=result_payload,
+            hold_version=runtime_hold.version,
+            latest_evidence_hash=self.runtime_hold_release_service.build_latest_evidence_hash(
+                runtime_hold,
+                session=session,
+            ),
+        )
+        result = await self.runtime_hold_release_service.resolve_hold(
+            db,
+            runtime_hold_id,
+            release_request,
+            operator_id,
+        )
         command = await self._load_reconciliation_command(db, session)
-        self._resolve_command(
-            command, resolution=resolution, confirmed_at=confirmed_at_for_db, result_payload=result_payload
-        )
-
-        device_error = self._device_error_for_reason(session.reconciliation_reason)
-        if session.reconciliation_device_id is not None and device_error is not None:
-            _ = await self.device_service.clear_reconciliation_error(
-                db,
-                device_id=session.reconciliation_device_id,
-                expected_error_code=device_error,
-                auto_commit=False,
-            )
-
-        released_outbox_count = await self.outbox_repository.release_blocked_by_reconciliation_session(db, session_id)
-        remaining_holds = await self.session_repository.count_pending_reconciliations_for_workline(
-            db, session.workline_id
-        )
-        workline = await self.workline_repository.get_for_update(db, session.workline_id)
-        if workline is not None and remaining_holds == 0:
-            workline.runtime_status = WorkLineRuntimeStatus.READY
-            workline.resumed_at = now
-            workline.stopped_reason = None
 
         await self._append_reconciliation_timeline(
             db,
@@ -496,8 +581,9 @@ class WorklineRuntimeReconciliationService:
                 "operator_note": operator_note,
                 "checks": checks,
                 "confirmed_at": confirmed_at_for_db.isoformat(),
-                "released_outbox_count": released_outbox_count,
-                "remaining_pending_reconciliations": remaining_holds,
+                "runtime_hold_id": runtime_hold_id,
+                "released_outbox_count": result["released_outbox_count"],
+                "remaining_pending_reconciliations": result["remaining_active_blocking_holds"],
             },
             command=command,
             occurred_at=now,
@@ -507,8 +593,9 @@ class WorklineRuntimeReconciliationService:
         return {
             "session_id": session_id,
             "resolution": resolution.value,
-            "released_outbox_count": released_outbox_count,
-            "remaining_pending_reconciliations": remaining_holds,
+            "runtime_hold_id": runtime_hold_id,
+            "released_outbox_count": result["released_outbox_count"],
+            "remaining_pending_reconciliations": result["remaining_active_blocking_holds"],
         }
 
     def assert_not_pending_reconciliation(self, session: WorklineSession) -> None:
@@ -671,6 +758,11 @@ class WorklineRuntimeReconciliationService:
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
         session.awaiting_command_id = None
+
+    def _dispatch_ack_hold_source_reason(self, error_message: str) -> str:
+        if error_message == RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value:
+            return RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value
+        return RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
 
     def _validate_checks(
         self,
