@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
+from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
 from src.app.workline.models.outbox import OutboxStatus
 from src.app.workline.models.runtime_hold import RuntimeHoldType
@@ -58,18 +58,11 @@ if TYPE_CHECKING:
     from src.app.workline.models.outbox import WorklineOutbox
 
 
-_CALLBACK_TIMEOUT_CHECKS = [
-    "device_inspected",
-    "physical_state_confirmed",
-    "inventory_or_position_reconciled",
-    "late_callback_reviewed",
-]
-_DISPATCH_ACK_CHECKS = [
-    "device_reachable_checked",
-    "command_code_checked",
-    "physical_state_confirmed",
-    "safe_to_release_blocked_work",
-]
+from src.app.workline.services.runtime_hold_query_service import (
+    _CALLBACK_TIMEOUT_CHECKS,
+    _DISPATCH_ACK_CHECKS,
+)
+
 _LATE_CALLBACK_EVIDENCE_REASONS = {
     RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
     RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED,
@@ -778,39 +771,6 @@ class WorklineRuntimeReconciliationService:
         missing = sorted(item for item in required if checks.get(item) is not True)
         if missing:
             raise ValueError(f"runtime reconciliation checklist 未全部确认: {', '.join(missing)}")
-
-    def _resolve_command(
-        self,
-        command: DeviceCommand | None,
-        *,
-        resolution: RuntimeReconciliationResolution,
-        confirmed_at: datetime,
-        result_payload: dict[str, Any] | None,
-    ) -> None:
-        if command is None:
-            return
-        command.completed_at = confirmed_at
-        if resolution == RuntimeReconciliationResolution.COMPLETED:
-            command.status = CommandStatus.COMPLETED
-            command.result = CommandResult.SUCCESS
-            command.result_data = result_payload or {}
-            command.error_detail = None
-            return
-        if resolution == RuntimeReconciliationResolution.FAILED:
-            command.status = CommandStatus.FAILED
-            command.result = CommandResult.FAILED
-            command.error_detail = {
-                **_as_dict(command.error_detail),
-                "error_code": "RUNTIME_RECONCILIATION_FAILED",
-                "operator_resolution": resolution.value,
-            }
-            return
-        command.status = CommandStatus.CANCELLED
-        command.error_detail = {
-            **_as_dict(command.error_detail),
-            "error_code": "RUNTIME_RECONCILIATION_CANCELLED",
-            "operator_resolution": resolution.value,
-        }
 
     def _device_error_for_reason(self, reason: RuntimeReconciliationReason | None) -> str | None:
         if reason == RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED:

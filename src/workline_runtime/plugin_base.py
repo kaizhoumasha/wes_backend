@@ -89,6 +89,7 @@ _MANUAL_KIND_OPERATION = {
 
 
 def _inbox_kind_value(inbox: Any) -> str | None:
+    """Extract kind.value from inbox object if present."""
     kind = getattr(inbox, "kind", None)
     value = getattr(kind, "value", kind)
     return value if isinstance(value, str) and value else None
