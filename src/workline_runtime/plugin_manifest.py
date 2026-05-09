@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from src.workline_runtime.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    MaterialIdentityResolver,
+    material_identity_input_to_hash,
+)
 from src.workline_runtime.runtime_events import assert_no_reserved_runtime_events
+
+if TYPE_CHECKING:
+    from src.workline_runtime.ng_reason import NgReasonDefinition
 
 BusinessKeyResolver = Callable[[dict[str, Any]], str | None]
 ResultClassifier = Callable[[dict[str, Any]], str | None]
@@ -76,6 +86,8 @@ class WorklinePluginManifest:
     command_target_roles: Mapping[str, str | tuple[str, ...] | list[str] | set[str]] | None = None
     supported_events: frozenset[str] = field(default_factory=frozenset)
     supported_commands: frozenset[str] = field(default_factory=frozenset)
+    material_identity_resolver: MaterialIdentityResolver | None = None
+    ng_reason_catalog: Sequence[NgReasonDefinition] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not _non_empty_str(self.plugin_key):
@@ -88,10 +100,13 @@ class WorklinePluginManifest:
             raise TypeError("manifest.business_key_resolver must be callable")
         if self.result_classifier is not None and not callable(self.result_classifier):
             raise TypeError("manifest.result_classifier must be callable")
+        if self.material_identity_resolver is not None and not callable(self.material_identity_resolver):
+            raise TypeError("manifest.material_identity_resolver must be callable")
 
         normalized_event_source_roles = _normalize_role_map(self.event_source_roles)
         object.__setattr__(self, "event_source_roles", normalized_event_source_roles)
         object.__setattr__(self, "command_target_roles", _normalize_role_map(self.command_target_roles))
+        object.__setattr__(self, "ng_reason_catalog", tuple(self.ng_reason_catalog))
 
         owner = f"manifest {self.plugin_key}"
         assert_no_reserved_runtime_events(
@@ -117,10 +132,26 @@ class WorklinePluginManifest:
             return None
         return _non_empty_str(self.result_classifier(payload_json))
 
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        """调用插件声明的物料身份解析器；缺省时显式返回 MISSING。"""
+
+        if self.material_identity_resolver is None:
+            return MaterialIdentity(
+                resolution_status=MaterialIdentityResolutionStatus.MISSING,
+                raw_evidence_hash=material_identity_input_to_hash(input_value),
+            )
+        return self.material_identity_resolver(input_value)
+
+    def list_ng_reasons(self) -> Sequence[NgReasonDefinition]:
+        """返回插件声明的 NG 原因目录。"""
+
+        return self.ng_reason_catalog
+
 
 __all__ = [
     "BusinessKeyResolver",
     "DeviceRoleRequirement",
+    "MaterialIdentityResolver",
     "ResultClassifier",
     "WorklinePluginManifest",
 ]

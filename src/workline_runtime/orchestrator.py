@@ -26,9 +26,9 @@ from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import null_plugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
-from src.workline_runtime.plugin_state import get_plugin_state
+from src.workline_runtime.plugin_state import assert_context_patch_has_no_reserved_key, get_plugin_state
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.transition_validator import TransitionValidator
+from src.workline_runtime.transition_validator import TransitionDecision, TransitionValidator
 from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 from src.workline_runtime.utils import ensure_dict
 
@@ -138,6 +138,7 @@ class OrchestratorResult:
     failure: FailureIntent | None = None
     complete: bool = False
     context_patch: dict[str, Any] | None = None
+    transition_decision: TransitionDecision | None = None
 
 
 class OrchestratorService:
@@ -180,12 +181,12 @@ class OrchestratorService:
     def _resolve_transition_state(session: Any, state_machine_class: type[Any] | None) -> str:
         """为插件状态机解析当前状态。
 
-        有插件状态机时使用 session.context_json['plugin_state']；
+        有插件状态机时使用 session.plugin_state；
         否则退回通用 session.status。
         """
 
         if state_machine_class is not None:
-            return get_plugin_state(ensure_dict(getattr(session, "context_json", None)), default="IDLE") or "IDLE"
+            return get_plugin_state(session, default="IDLE") or "IDLE"
 
         status = getattr(session, "status", None)
         return status if isinstance(status, str) and status else ""
@@ -491,17 +492,34 @@ class OrchestratorService:
         Returns:
             OrchestratorResult: 编排器结果
         """
-        current_transition_state = self._resolve_transition_state(session, state_machine_class)
+        try:
+            assert_context_patch_has_no_reserved_key(result.context_patch)
+        except ValueError as exc:
+            logger.exception("Plugin attempted to write reserved runtime state")
+            return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, str(exc))
 
+        current_transition_state = self._resolve_transition_state(session, state_machine_class)
+        transition_decision: TransitionDecision | None = None
         if result.transition and not _is_runtime_manual_transition(inbox, result.transition):
-            is_valid, error = self.validator.validate(
-                current_status=current_transition_state,
+            transition_decision = self.validator.resolve(
+                current_state=current_transition_state,
                 transition=result.transition,
                 state_machine_class=state_machine_class,
             )
-            if not is_valid:
-                logger.error(f"Invalid transition: {error}")
-                return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, error or "Unknown transition error")
+            if not transition_decision.valid:
+                logger.error(f"Invalid transition: {transition_decision.error}")
+                return _error_result(
+                    ErrorCode.PLUGIN_TRANSITION_INVALID,
+                    transition_decision.error or "Unknown transition error",
+                )
+        elif result.transition:
+            transition_decision = TransitionDecision(
+                valid=True,
+                transition=result.transition,
+                from_plugin_state=current_transition_state,
+                to_plugin_state=current_transition_state,
+                applied=False,
+            )
 
         if result.failure:
             logger.warning(f"Plugin returned failure intent: {result.failure}")
@@ -516,6 +534,7 @@ class OrchestratorService:
             failure=result.failure,
             complete=result.complete,
             context_patch=result.context_patch if result.context_patch else None,
+            transition_decision=transition_decision,
         )
 
 

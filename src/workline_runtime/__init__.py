@@ -75,9 +75,11 @@ from src.workline_runtime.plugin_sdk import (
 )
 from src.workline_runtime.plugin_state import (
     PLUGIN_STATE_KEY,
+    RESERVED_RUNTIME_CONTEXT_KEYS,
+    assert_context_patch_has_no_reserved_key,
+    context_patch_has_reserved_key,
     get_plugin_state,
-    project_plugin_state_for_trace,
-    set_plugin_state,
+    project_issued_plugin_state,
 )
 from src.workline_runtime.run_mode import (
     SANDBOX_ALLOWED_ENVS,
@@ -89,13 +91,14 @@ from src.workline_runtime.services import BinAllocator, WorklineRuntimeServices,
 from src.workline_runtime.session_resolver import SessionResolver, session_resolver
 from src.workline_runtime.topology import TopologyDeviceSnapshot, WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.transition_validator import TransitionValidator
+from src.workline_runtime.transition_validator import TransitionDecision, TransitionValidator
 from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 
 __version__ = "1.0.0"
 
 __all__ = [
     "PLUGIN_STATE_KEY",
+    "RESERVED_RUNTIME_CONTEXT_KEYS",
     "SANDBOX_ALLOWED_ENVS",
     "AtomicWriter",
     "BinAllocator",
@@ -139,12 +142,14 @@ __all__ = [
     "TimelineStage",
     "TopologyDeviceSnapshot",
     "TraceContext",
+    "TransitionDecision",
     "TransitionValidator",
     "WaitIntent",
     "WorklinePluginManifest",
     "WorklineRuntimeError",
     "WorklineRuntimeServices",
     "WorklineTopologyView",
+    "assert_context_patch_has_no_reserved_key",
     "atomic_writer",
     "build_diagnostic_card",
     "build_diagnostic_context",
@@ -153,6 +158,7 @@ __all__ = [
     "canonicalize_event_type",
     "classify_result",
     "classify_result_category",
+    "context_patch_has_reserved_key",
     "get_plugin_state",
     "is_sandbox_allowed_environment",
     "is_simulation_run_mode",
@@ -160,10 +166,9 @@ __all__ = [
     "normalize_result_classification",
     "normalize_run_mode",
     "null_plugin",
-    "project_plugin_state_for_trace",
+    "project_issued_plugin_state",
     "resolve_device_runtime_config",
     "resolve_execution_context",
     "resolve_workline_runtime_config",
     "session_resolver",
-    "set_plugin_state",
 ]

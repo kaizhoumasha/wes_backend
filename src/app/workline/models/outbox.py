@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -179,6 +179,20 @@ class WorklineOutboxBase(BaseMixin):
         default=None,
         index=True,
         description="阻断该 outbox 的 runtime reconciliation owner session ID",
+    )
+    blocked_by_runtime_hold_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger,
+            ForeignKey(
+                "wes_biz.runtime_holds.id",
+                name="fk_workline_outbox_blocked_by_runtime_hold_id",
+                use_alter=True,
+            ),
+            nullable=True,
+            index=True,
+        ),
+        description="阻断该 outbox 的 RuntimeHold.id",
     )
     blocked_device_id: int | None = Field(default=None, index=True, description="阻断相关设备 ID")
     blocked_workline_id: int | None = Field(default=None, index=True, description="阻断相关工作线 ID")

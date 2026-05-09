@@ -164,11 +164,11 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="执行时绑定的协议版本",
     )
-    step_code: str | None = Field(
+    plugin_state: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="当前会话所处的步骤语义编码",
+        description="插件业务进度阶段（Session 当前业务态唯一事实源）",
     )
 
     started_at: datetime | None = Field(

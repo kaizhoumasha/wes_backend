@@ -14,7 +14,7 @@ class TraceQueryRequest(BaseModel):
     workline_id: int | None = None
     device_id: int | None = None
     status: str | None = None
-    step_code: str | None = None
+    plugin_state: str | None = None
     keyword: str | None = None
     only_active: bool = False
     only_failed: bool = False
@@ -38,8 +38,16 @@ class RuntimeTraceListItem(BaseModel):
     device_name: str | None = None
     device_code: str | None = None
     command_code: str | None = None
+    current_device_id: int | None = None
+    current_device_name: str | None = None
+    current_device_code: str | None = None
+    current_action: str | None = None
+    current_action_source: str | None = None
+    last_device_id: int | None = None
+    last_device_name: str | None = None
+    last_device_code: str | None = None
     status: str
-    step_code: str | None = None
+    plugin_state: str | None = None
     current_wait_type: str | None = None
     failure_domain: str | None = None
     failure_code: str | None = None
@@ -69,7 +77,7 @@ class TraceOverviewSummary(BaseModel):
     timelines: int = 0
     diagnostics: int = 0
     session_status: str | None = None
-    step_code: str | None = None
+    plugin_state: str | None = None
     current_wait_type: str | None = None
     latest_timeline_action: str | None = None
     latest_timeline_status: str | None = None
@@ -145,7 +153,7 @@ class TraceSessionItem(BaseModel):
     business_key: str | None = None
     barcode: str | None = None
     status: str
-    step_code: str | None = None
+    plugin_state: str | None = None
     trace_id: str | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
@@ -197,7 +205,7 @@ class TraceCommandItem(BaseModel):
     ack_code: int | None = None
     ack_message: str | None = None
     ack_trace_id: str | None = None
-    step_code: str | None = None
+    issued_plugin_state: str | None = None
     params: dict[str, Any]
     result_data: dict[str, Any] | None = None
     error_detail: dict[str, Any] | None = None
@@ -216,6 +224,7 @@ class TraceOutboxItem(BaseModel):
     attempt_count: int = 0
     next_retry_at: datetime | None = None
     last_error: str | None = None
+    blocked_by_runtime_hold_id: int | None = None
     blocked_by_reconciliation_session_id: int | None = None
     blocked_device_id: int | None = None
     blocked_workline_id: int | None = None
@@ -382,6 +391,11 @@ class RuntimeWorklineDeviceItem(BaseModel):
     device_status: str
     maintenance_mode: bool = False
     current_command_id: int | None = None
+    open_command_count: int = 0
+    pending_command_count: int = 0
+    blocked_outbox_count: int = 0
+    open_issue_count: int = 0
+    active_runtime_hold_ids: list[int] = Field(default_factory=list)
     last_heartbeat_at: datetime | None = None
     error_code: str | None = None
 
@@ -451,7 +465,11 @@ class RuntimeDeviceSummary(BaseModel):
     device_status: str
     maintenance_mode: bool = False
     current_command_id: int | None = None
+    open_command_count: int = 0
     pending_command_count: int = 0
+    blocked_outbox_count: int = 0
+    open_issue_count: int = 0
+    active_runtime_hold_ids: list[int] = Field(default_factory=list)
     last_heartbeat_at: datetime | None = None
     recent_callback_at: datetime | None = None
     error_code: str | None = None

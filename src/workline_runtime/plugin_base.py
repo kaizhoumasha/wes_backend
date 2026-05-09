@@ -15,7 +15,7 @@
         contract_version = "1.0"
 
         @on_event("SCAN_COMPLETED")
-        @step("IDLE", "WAITING_INSPECTION")
+        @requires_state("IDLE")
         async def handle_scan(
             self, ctx: PluginContext, event: ScanEventPayload
         ) -> PluginResult:
@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from src.core.logger import logger
-from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
+from src.workline_runtime.plugin_state import get_plugin_state
 from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 from src.workline_runtime.types import (
     BusinessDecisionIntent,
@@ -227,7 +227,7 @@ def build_payload_invalid_failure(ctx: Any, message: str):
     return PluginResultBuilder(ctx).failure(domain="DATA", code="PAYLOAD_INVALID", message=message).build()
 
 
-def build_state_mismatch_failure(ctx: Any, command_type: str, result_name: str, step_code: str | None):
+def build_state_mismatch_failure(ctx: Any, command_type: str, result_name: str, plugin_state: str | None):
     """构造命令结果落在非法状态时的统一失败返回。"""
 
     return (
@@ -235,7 +235,7 @@ def build_state_mismatch_failure(ctx: Any, command_type: str, result_name: str, 
         .failure(
             domain="SOFTWARE",
             code="STATE_MISMATCH",
-            message=f"{command_type} {result_name} 不期望在状态 {step_code}",
+            message=f"{command_type} {result_name} 不期望在状态 {plugin_state}",
         )
         .build()
     )
@@ -353,26 +353,34 @@ def on_command(command_type: str, result: str | None = None) -> Callable[..., An
     return decorator
 
 
+def requires_state(*expected: str | None) -> Callable[..., Any]:
+    """声明 handler 允许执行的前置插件业务阶段。
+
+    目标状态只能由 `.transition(...)` 和插件状态机推导，decorator 不写状态。
+    """
+
+    expected_states = tuple(state for state in expected if state)
+
+    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
+        method._expected_states = expected_states  # type: ignore[attr-defined]
+        return method
+
+    return decorator
+
+
 def step(expected: str | None = None, target: str | None = None) -> Callable[..., Any]:
     """
-    声明状态迁移
-
-    Args:
-        expected: 期望的前置状态（None 表示任意状态）
-        target: 目标状态（None 表示保持当前状态）
+    兼容单参前置状态声明；两参旧写法已禁止。
 
     Example:
-        @step("IDLE", "WAITING_INSPECTION")
+        @step("IDLE")
         async def handle_scan(self, ctx, event):
             ...
     """
 
-    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
-        method._expected_step = expected  # type: ignore[attr-defined]
-        method._target_step = target  # type: ignore[attr-defined]
-        return method
-
-    return decorator
+    if target is not None:
+        raise ValueError("@step(expected, target) is removed; use @requires_state(expected) and .transition(...)")
+    return requires_state(expected)
 
 
 # ==================== 响应构建器 ====================
@@ -537,7 +545,7 @@ class WorklinePlugin:
     子类只需要：
     1. 定义 plugin_key 和 contract_version
     2. 用 @on_event / @on_command 标记处理方法
-    3. 用 @step 声明状态迁移
+    3. 用 @requires_state 声明前置业务阶段
     4. 用 PluginResultBuilder 构建响应
 
     框架自动处理：
@@ -642,16 +650,17 @@ class WorklinePlugin:
     ) -> PluginResult:
         """调用处理方法（支持 Pydantic 自动解析 + 状态校验）"""
         # ========== 前置：状态校验 ==========
-        expected_step = getattr(handler, "_expected_step", None)
-        if expected_step:
-            current_step = get_plugin_state(ctx.session.context_json)
-            if current_step != expected_step:
-                ctx.logger.error(f"State mismatch: expected {expected_step}, got {current_step}")
+        expected_states = tuple(getattr(handler, "_expected_states", ()) or ())
+        if expected_states:
+            current_step = get_plugin_state(ctx.session, default=getattr(ctx, "plugin_state", None))
+            if current_step not in expected_states:
+                expected_label = ", ".join(expected_states)
+                ctx.logger.error(f"State mismatch: expected {expected_label}, got {current_step}")
                 return PluginResult(
                     failure=FailureIntent(
                         domain="SOFTWARE",
                         code="STATE_MISMATCH",
-                        message=f"Expected state {expected_step}, current is {current_step}",
+                        message=f"Expected state {expected_label}, current is {current_step}",
                     )
                 )
 
@@ -685,15 +694,6 @@ class WorklinePlugin:
         if not isinstance(result, PluginResult):
             result = PluginResult()
 
-        # ========== 后置：目标状态设置 ==========
-        target_step = getattr(handler, "_target_step", None)
-        if target_step and result.failure is None:
-            # 只有成功结果才自动添加 plugin_state 到 context_patch
-            set_plugin_state(result.context_patch, target_step)
-            # 如果没有显式设置 transition，则用 target_step 作为 transition
-            if not result.transition:
-                result.transition = target_step
-
         return result
 
 
@@ -706,6 +706,7 @@ __all__ = [
     "build_state_mismatch_failure",
     "on_command",
     "on_event",
+    "requires_state",
     "resolve_normalized_command_envelope",
     "resolve_normalized_command_failure",
     "step",

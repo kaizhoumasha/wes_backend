@@ -1,43 +1,48 @@
 """插件业务态 helper。
 
-`plugin_state` 是插件业务状态在 runtime context 中的唯一写入 key。
-`WorklineSession.status` 继续表示平台生命周期状态；`step_code` 只作为查询/追踪投影保留。
+`WorklineSession.plugin_state` 是插件业务进度的唯一当前事实源。
+插件自己的 `context_json` 不允许再写入 `plugin_state`。
 """
 
 from typing import Any
 
 PLUGIN_STATE_KEY = "plugin_state"
+RESERVED_RUNTIME_CONTEXT_KEYS = frozenset({PLUGIN_STATE_KEY})
 
 
-def _context_dict(value: Any) -> dict[str, Any]:
-    """将未知 context 视作只读字典输入。"""
+def get_plugin_state(session: Any, default: str | None = None) -> str | None:
+    """从 Session 读取插件业务状态。"""
 
-    return value if isinstance(value, dict) else {}
-
-
-def get_plugin_state(context: Any, default: str | None = None) -> str | None:
-    """从 context 读取插件业务状态。"""
-
-    value = _context_dict(context).get(PLUGIN_STATE_KEY)
+    value = getattr(session, PLUGIN_STATE_KEY, None)
     return value if isinstance(value, str) and value else default
 
 
-def set_plugin_state(context_patch: dict[str, Any], plugin_state: str | None) -> None:
-    """将插件业务状态写入 context patch。"""
+def context_patch_has_reserved_key(context_patch: dict[str, Any] | None) -> bool:
+    """检测插件 context patch 是否尝试写 runtime-owned 字段。"""
 
-    if isinstance(plugin_state, str) and plugin_state:
-        context_patch[PLUGIN_STATE_KEY] = plugin_state
+    if not context_patch:
+        return False
+    return any(key in RESERVED_RUNTIME_CONTEXT_KEYS for key in context_patch)
 
 
-def project_plugin_state_for_trace(context: Any) -> str | None:
-    """将插件业务状态投影到 `step_code` 等查询/追踪字段。"""
+def assert_context_patch_has_no_reserved_key(context_patch: dict[str, Any] | None) -> None:
+    """插件 context patch 只能写业务数据，不能写 runtime-owned 字段。"""
 
-    return get_plugin_state(context)
+    if context_patch_has_reserved_key(context_patch):
+        raise ValueError("plugin_state is runtime-owned; use .transition(...) and the plugin state machine")
+
+
+def project_issued_plugin_state(session: Any) -> str | None:
+    """投影命令创建时的插件业务阶段快照。"""
+
+    return get_plugin_state(session)
 
 
 __all__ = [
     "PLUGIN_STATE_KEY",
+    "RESERVED_RUNTIME_CONTEXT_KEYS",
+    "assert_context_patch_has_no_reserved_key",
+    "context_patch_has_reserved_key",
     "get_plugin_state",
-    "project_plugin_state_for_trace",
-    "set_plugin_state",
+    "project_issued_plugin_state",
 ]

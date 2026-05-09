@@ -291,11 +291,11 @@ class DeviceCommand(
         max_length=50,
         description="命令生成时绑定的协议版本",
     )
-    step_code: str | None = Field(
+    issued_plugin_state: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="命令生成时的步骤语义编码",
+        description="命令生成时的 Session 插件业务阶段快照",
     )
 
     # 🔥 状态字段：使用 VARCHAR + CHECK 约束

@@ -88,6 +88,26 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
         return timeout_commands[:limit]
 
+    async def get_ack_timed_out_commands(self, db: AsyncSession, limit: int = 100) -> list[DeviceCommand]:
+        """获取已发送但一直没有收到 ACK 的超时指令。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = (
+            select(DeviceCommand)
+            .where(
+                columns.status == CommandStatus.SENT,
+                columns.sent_at.is_not(None),
+                columns.ack_received_at.is_(None),
+                columns.session_id_int.is_not(None),
+                columns.workline_id.is_not(None),
+            )
+            .order_by(columns.sent_at.asc(), columns.id.asc())
+        )
+
+        result = await db.execute(statement)
+        commands = list(result.scalars().all())
+        return [command for command in commands if command.is_timeout()][:limit]
+
     async def get_active_commands_for_device(
         self,
         db: AsyncSession,

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
+from src.workline_runtime.plugin_state import get_plugin_state
 from src.workline_runtime.run_mode import normalize_run_mode
 from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.topology import WorklineTopologyView
@@ -114,6 +115,7 @@ class PluginContext(BaseModel):
     binding_config: dict[str, Any]  # 设备绑定配置
     runtime: ResolvedExecutionContext  # 解析后的统一运行时配置
     run_mode: str = "AUTO"  # WORKLINE 运行模式快照，插件只能通过 runtime/context 感知
+    plugin_state: str | None = None  # Session 当前插件业务阶段，只读
     normalized_input: Any | None = None  # 标准化后的 inbox 输入
     diagnostics: DiagnosticContext | None = None  # 统一诊断上下文
 
@@ -215,6 +217,7 @@ class PluginContextBuilder:
             binding_config=binding_config,
             runtime=runtime,
             run_mode=session_run_mode,
+            plugin_state=get_plugin_state(session, default="IDLE"),
             normalized_input=normalized_input,
             diagnostics=diagnostics,
             services=services,

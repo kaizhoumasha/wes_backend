@@ -59,8 +59,9 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
     ) -> list[WorklineOutbox]:
         """获取沙箱待处理消息。
 
-        SIMULATION 模式下，Outbox 会正常进入派发链路并标记为 SENT；
-        ACK 事实只写 DeviceCommand，Outbox 保持 SENT 等待调试人员手工 callback/result 回传。
+        SIMULATION 模式下，NEW/DISPATCHING/SENT/BLOCKED_RESOURCE 的设备指令都属于调试队列；
+        FAILED 保留为开放会话里的只读历史项，避免人工对账时看不到刚失败的命令。
+        OperationService 会把未派发设备指令投影成待 ACK 动作。
 
         Args:
             db: 数据库会话
@@ -73,7 +74,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         columns = cast("Any", WorklineOutbox).__table__.c
         session_columns = cast("Any", WorklineSession).__table__.c
 
-        # 包含等待派发的 Outbox (NEW, DISPATCHING, SENT)
+        # 包含等待派发的 Outbox (NEW, DISPATCHING, SENT, BLOCKED_RESOURCE)
         # 以及已 ACK 但等待 Result 回传的 SENT Outbox (ACK 事实在 DeviceCommand 上)
         open_session_statuses = [
             SessionStatus.NEW,
@@ -91,7 +92,15 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                 columns.dispatch_type.in_([DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP]),
                 or_(
                     # 等待派发
-                    columns.status.in_([OutboxStatus.NEW, OutboxStatus.DISPATCHING, OutboxStatus.SENT]),
+                    columns.status.in_(
+                        [
+                            OutboxStatus.NEW,
+                            OutboxStatus.DISPATCHING,
+                            OutboxStatus.SENT,
+                            OutboxStatus.BLOCKED_RESOURCE,
+                            OutboxStatus.FAILED,
+                        ]
+                    ),
                     and_(
                         columns.status == OutboxStatus.SENT,
                         session_columns.status == SessionStatus.WAITING_DEVICE_RESULT,
@@ -193,17 +202,21 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                         event_type = raw.get("event_type")
 
                 sessions[sid] = {
+                    "history_group_key": f"session:{sid}",
                     "session": {
                         "id": session.id,
                         "session_code": session.session_code,
                         "status": session.status.value if hasattr(session.status, "value") else session.status,
-                        "step_code": session.step_code,
+                        "plugin_state": session.plugin_state,
                         "barcode": session.barcode,
                         "created_at": session.created_at.isoformat() if session.created_at else None,
                         "started_at": session.started_at.isoformat() if session.started_at else None,
                         "ended_at": session.ended_at.isoformat() if session.ended_at else None,
                         "event_type": event_type,
                         "event_payload": event_payload,
+                        "failure_domain": session.failure_domain,
+                        "failure_code": session.failure_code,
+                        "failure_message": session.failure_message,
                     },
                     "outbox_items": [],
                 }
@@ -223,6 +236,17 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                     ),
                     "target_code": outbox.target_code,
                     "status": (outbox.status.value if hasattr(outbox.status, "value") else outbox.status),
+                    "last_error": outbox.last_error,
+                    "is_actionable": False,
+                    "runtime_hold_id": outbox.blocked_by_runtime_hold_id,
+                    "failure_summary": {
+                        "code": session.failure_code or outbox.last_error,
+                        "message": session.failure_message or outbox.last_error,
+                        "runtime_hold_id": outbox.blocked_by_runtime_hold_id,
+                    }
+                    if session.failure_code or session.failure_message or outbox.last_error
+                    else None,
+                    "history_group_key": f"session:{sid}",
                     "payload_json": payload,
                     "source_device": None,
                 }
@@ -319,6 +343,77 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
         outbox.blocked_reason = reason
         outbox.last_error = reason
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
+    async def block_by_runtime_hold(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        runtime_hold_id: int,
+        reason: str,
+        owner_session_id: int | None = None,
+        blocked_device_id: int | None = None,
+        blocked_workline_id: int | None = None,
+    ) -> WorklineOutbox | None:
+        """因 RuntimeHold 暂停待派发 outbox。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+
+        if outbox.status not in {OutboxStatus.NEW, OutboxStatus.DISPATCHING}:
+            return None
+
+        outbox.status = OutboxStatus.BLOCKED_RESOURCE
+        outbox.blocked_by_runtime_hold_id = runtime_hold_id
+        outbox.blocked_by_reconciliation_session_id = owner_session_id
+        outbox.blocked_device_id = blocked_device_id
+        outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
+        outbox.blocked_reason = reason
+        outbox.last_error = reason
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
+    async def mark_as_blocked_by_device_busy(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        blocked_device_id: int | None,
+        blocked_workline_id: int | None = None,
+        reason: str = "DEVICE_BUSY",
+        last_error: str | None = None,
+    ) -> WorklineOutbox | None:
+        """因目标设备仍在执行上一条硬件任务，暂停派发 outbox。
+
+        设备忙是下游资源背压，不是业务失败；等待设备释放后再把 outbox 放回 NEW 队列。
+        """
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+
+        if outbox.status not in {OutboxStatus.NEW, OutboxStatus.DISPATCHING}:
+            return None
+
+        outbox.status = OutboxStatus.BLOCKED_RESOURCE
+        outbox.blocked_by_reconciliation_session_id = None
+        outbox.blocked_device_id = blocked_device_id
+        outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
+        outbox.blocked_reason = reason
+        outbox.last_error = last_error or reason
         outbox.next_retry_at = None
         outbox.finished_at = timezone.now_for_db()
         await db.flush()
@@ -504,15 +599,115 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         )
         outboxes = list(result.scalars().all())
         for outbox in outboxes:
-            outbox.status = OutboxStatus.NEW
-            outbox.attempt_count = 0
-            outbox.next_retry_at = None
-            outbox.last_error = None
-            outbox.finished_at = None
-            outbox.blocked_by_reconciliation_session_id = None
-            outbox.blocked_device_id = None
-            outbox.blocked_workline_id = None
-            outbox.blocked_reason = None
+            self._release_blocked_outbox(outbox)
+        await db.flush()
+        return len(outboxes)
+
+    async def release_blocked_by_runtime_hold(
+        self,
+        db: AsyncSession,
+        runtime_hold_id: int,
+    ) -> int:
+        """释放指定 RuntimeHold 暂停的 outbox。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+                columns.blocked_by_runtime_hold_id == runtime_hold_id,
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        for outbox in outboxes:
+            self._release_blocked_outbox(outbox)
+        await db.flush()
+        return len(outboxes)
+
+    async def release_blocked_by_runtime_hold_or_workline(
+        self,
+        db: AsyncSession,
+        *,
+        runtime_hold_id: int,
+        workline_id: int,
+        release_workline_scope: bool,
+    ) -> int:
+        """释放当前 Hold 暂停的 outbox；最后一个 Hold 释放时兼容释放旧 WorkLine 停靠数据。"""
+
+        released_count = await self.release_blocked_by_runtime_hold(db, runtime_hold_id)
+        if release_workline_scope:
+            released_count += await self.release_blocked_by_workline(db, workline_id)
+        return released_count
+
+    async def release_blocked_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> int:
+        """释放 WorkLine 维度兼容停靠的 outbox。
+
+        仅处理没有 RuntimeHold 外键的旧路径 parked outbox，例如
+        blocked_by_reconciliation_session_id 或 blocked_workline_id 写入路径。
+        """
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+                columns.workline_id == workline_id,
+                columns.blocked_by_runtime_hold_id.is_(None),
+                or_(
+                    columns.blocked_workline_id == workline_id,
+                    columns.blocked_by_reconciliation_session_id.isnot(None),
+                ),
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        for outbox in outboxes:
+            self._release_blocked_outbox(outbox)
+        await db.flush()
+        return len(outboxes)
+
+    @staticmethod
+    def _release_blocked_outbox(outbox: WorklineOutbox) -> None:
+        """将 parked outbox 放回 NEW 队列并清空阻断事实。"""
+
+        outbox.status = OutboxStatus.NEW
+        outbox.attempt_count = 0
+        outbox.next_retry_at = None
+        outbox.last_error = None
+        outbox.finished_at = None
+        outbox.blocked_by_runtime_hold_id = None
+        outbox.blocked_by_reconciliation_session_id = None
+        outbox.blocked_device_id = None
+        outbox.blocked_workline_id = None
+        outbox.blocked_reason = None
+
+    async def release_blocked_by_device(
+        self,
+        db: AsyncSession,
+        *,
+        device_id: int,
+        workline_id: int | None = None,
+    ) -> int:
+        """目标设备空闲后，释放等待该设备的 parked outbox。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        statement = select(WorklineOutbox).where(
+            columns.status == OutboxStatus.BLOCKED_RESOURCE,
+            columns.blocked_device_id == device_id,
+            columns.blocked_reason == "DEVICE_BUSY",
+        )
+        if workline_id is not None:
+            statement = statement.where(columns.workline_id == workline_id)
+
+        result = await db.execute(statement.with_for_update())
+        outboxes = list(result.scalars().all())
+        for outbox in outboxes:
+            self._release_blocked_outbox(outbox)
         await db.flush()
         return len(outboxes)
 
