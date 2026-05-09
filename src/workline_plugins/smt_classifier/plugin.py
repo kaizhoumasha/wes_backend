@@ -26,9 +26,9 @@ from src.workline_runtime.plugin_base import (
     build_state_mismatch_failure,
     on_command,
     on_event,
+    requires_state,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
-    step,
 )
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult  # noqa: TC001
@@ -47,6 +47,8 @@ from .contract import (
     normalize_six_in_one_payload,
     parse_six_in_one_payload,
     resolve_smt_business_key,
+    resolve_smt_material_identity,
+    smt_ng_reason_catalog,
 )
 from .normalizers import parse_measurement_result_data, parse_pick_place_result_data
 from .state_machine import SmtClassifierState, SmtClassifierStateMachine
@@ -59,7 +61,6 @@ def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, 
     """统一构造扫码 NG 分流上下文。"""
 
     return SmtClassifierContext(
-        plugin_state=SmtClassifierState.WAITING_PICK_PLACE,
         barcode=barcode,
         barcodes=barcodes,
         location=location,
@@ -73,11 +74,10 @@ def _build_manual_hold_context(*, current_step: Any, error_code: str, error_mess
     """统一构造设备失败转人工介入的上下文。"""
 
     return SmtClassifierContext(
-        plugin_state=str(current_step or SmtClassifierState.MANUAL_HOLD),
         manual_hold=True,
         manual_hold_reason_code=error_code,
         manual_hold_reason_message=error_message,
-    ).to_patch(plugin_state=SmtClassifierState.MANUAL_HOLD)
+    ).to_patch()
 
 
 def _build_scan_ng_result(
@@ -191,6 +191,8 @@ class SmtClassifierPlugin(WorklinePlugin):
         context_model=SmtClassifierContext,
         business_key_resolver=resolve_smt_business_key,
         result_classifier=classify_smt_command_result,
+        material_identity_resolver=resolve_smt_material_identity,
+        ng_reason_catalog=smt_ng_reason_catalog(),
         event_source_roles={
             "SCAN_COMPLETED": "INPUT_ARM",
         },
@@ -293,7 +295,6 @@ class SmtClassifierPlugin(WorklinePlugin):
             .wait(event_type="MEASUREMENT_REEL", timeout_seconds=300)
             .context(
                 SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_MEASUREMENT,
                     device_code=event.device_code,
                     barcodes=barcode_decision.barcodes,
                     location=location,
@@ -305,14 +306,13 @@ class SmtClassifierPlugin(WorklinePlugin):
 
     # ========== 命令结果处理 ==========
     @on_command("MEASUREMENT_REEL", result="SUCCESS")
-    @step(SmtClassifierState.WAITING_MEASUREMENT)
+    @requires_state(SmtClassifierState.WAITING_MEASUREMENT)
     async def handle_measurement_reel_success(self, ctx: PluginContext, result: NormalizedCommandResult):
         """测量成功后推进到流水线传输。
 
         这里直接消费标准化命令结果，并从 `result.data` 中恢复测量业务字段。
         """
-        smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
+        current_step = ctx.plugin_state
         envelope = resolve_normalized_command_envelope(result)
         if envelope is None:
             return build_payload_invalid_failure(ctx, "测量结果缺少 command_code 或 device_code")
@@ -357,7 +357,6 @@ class SmtClassifierPlugin(WorklinePlugin):
             .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
             .context(
                 SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_CONVEYOR,
                     pkg_id=measurement_data.PkgID,
                     reel_diameter=measurement_data.reel_diameter,
                     reel_thickness=measurement_data.reel_thickness,
@@ -378,7 +377,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         - WAITING_OUTPUT: 出料臂完成 → 结束
         """
         smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
+        current_step = ctx.plugin_state
         envelope = resolve_normalized_command_envelope(result)
         if envelope is None:
             return build_payload_invalid_failure(ctx, "PICK_AND_PUT 成功回调缺少 command_code 或 device_code")
@@ -395,7 +394,6 @@ class SmtClassifierPlugin(WorklinePlugin):
                     .transition("pick_ng")
                     .context(
                         SmtClassifierContext(
-                            plugin_state=SmtClassifierState.COMPLETED,
                             ng_handled=True,
                         ).to_patch()
                     )
@@ -417,7 +415,6 @@ class SmtClassifierPlugin(WorklinePlugin):
                 .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
                 .context(
                     SmtClassifierContext(
-                        plugin_state=SmtClassifierState.WAITING_CONVEYOR,
                         reel_diameter=pick_place_data.reel_diameter if pick_place_data else None,
                         reel_thickness=pick_place_data.reel_thickness if pick_place_data else None,
                     ).to_patch()
@@ -428,13 +425,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         # 路由2: 出料臂完成 → 结束
         if current_step == SmtClassifierState.WAITING_OUTPUT:
             logger.info(f"Output succeeded: command_code={result.command_code}")
-            return (
-                PluginResultBuilder(ctx)
-                .transition("output_ok")
-                .context(SmtClassifierContext(plugin_state=SmtClassifierState.COMPLETED).to_patch())
-                .complete()
-                .build()
-            )
+            return PluginResultBuilder(ctx).transition("output_ok").complete().build()
 
         # 状态不匹配
         logger.error(f"Unexpected plugin_state for PICK_AND_PUT SUCCESS: {current_step}")
@@ -460,7 +451,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         - BIN_FULL: 料箱已满
         """
         smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
+        current_step = ctx.plugin_state
         if resolve_normalized_command_envelope(result) is None:
             return build_payload_invalid_failure(ctx, "PICK_AND_PUT 失败回调缺少 command_code 或 device_code")
         if not isinstance(getattr(result, "error_detail", None), dict) or not getattr(result, "error_detail", None):
@@ -502,7 +493,6 @@ class SmtClassifierPlugin(WorklinePlugin):
                     .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
                     .context(
                         SmtClassifierContext(
-                            plugin_state=SmtClassifierState.WAITING_PICK_PLACE,
                             inspection_error=error_code,
                         ).to_patch()
                     )
@@ -551,7 +541,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         return build_state_mismatch_failure(ctx, "PICK_AND_PUT", "FAILED", current_step)
 
     @on_command("MOVE_FORWARD", result="SUCCESS")
-    @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.WAITING_OUTPUT)
+    @requires_state(SmtClassifierState.WAITING_CONVEYOR)
     async def handle_conveyor_success(self, ctx: PluginContext, result: NormalizedCommandResult):
         """
         流水线传输成功 → 料箱分配 → 最终出料
@@ -596,7 +586,6 @@ class SmtClassifierPlugin(WorklinePlugin):
             .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
             .context(
                 SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_OUTPUT,
                     pkg_id=pkg_id,
                     bin_location=bin_location,
                 ).to_patch()
@@ -605,7 +594,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         )
 
     @on_command("MOVE_FORWARD", result="FAILED")
-    @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.ERROR)
+    @requires_state(SmtClassifierState.WAITING_CONVEYOR)
     async def handle_conveyor_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
         """
         流水线传输失败 → 错误

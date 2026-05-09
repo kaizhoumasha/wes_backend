@@ -15,9 +15,6 @@ class SmtClassifierState:
     WAITING_CONVEYOR = "WAITING_CONVEYOR"
     WAITING_OUTPUT = "WAITING_OUTPUT"
     WAITING_PICK_PLACE = "WAITING_PICK_PLACE"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
 
     ALL: ClassVar[tuple[str, ...]] = (
         IDLE,
@@ -25,9 +22,6 @@ class SmtClassifierState:
         WAITING_CONVEYOR,
         WAITING_OUTPUT,
         WAITING_PICK_PLACE,
-        MANUAL_HOLD,
-        COMPLETED,
-        ERROR,
     )
 
 
@@ -40,7 +34,7 @@ class SmtClassifierStateMachine:
         {
             "trigger": "measurement_ng",
             "source": SmtClassifierState.WAITING_MEASUREMENT,
-            "dest": SmtClassifierState.ERROR,
+            "dest": None,
         },
         {
             "trigger": "pick_ok",
@@ -50,7 +44,7 @@ class SmtClassifierStateMachine:
         {
             "trigger": "pick_ng",
             "source": SmtClassifierState.WAITING_PICK_PLACE,
-            "dest": SmtClassifierState.COMPLETED,
+            "dest": None,
         },
         {
             "trigger": "inspection_ng",
@@ -65,12 +59,12 @@ class SmtClassifierStateMachine:
         {
             "trigger": "output_ok",
             "source": SmtClassifierState.WAITING_OUTPUT,
-            "dest": SmtClassifierState.COMPLETED,
+            "dest": None,
         },
         {
             "trigger": "manual_hold",
             "source": (SmtClassifierState.WAITING_PICK_PLACE, SmtClassifierState.WAITING_OUTPUT),
-            "dest": SmtClassifierState.MANUAL_HOLD,
+            "dest": None,
         },
         {
             "trigger": "fail",
@@ -80,9 +74,8 @@ class SmtClassifierStateMachine:
                 SmtClassifierState.WAITING_CONVEYOR,
                 SmtClassifierState.WAITING_OUTPUT,
                 SmtClassifierState.WAITING_PICK_PLACE,
-                SmtClassifierState.MANUAL_HOLD,
             ),
-            "dest": SmtClassifierState.ERROR,
+            "dest": None,
         },
     ]
 

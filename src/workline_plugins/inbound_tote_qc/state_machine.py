@@ -13,11 +13,8 @@ class InboundToteQcState:
     IDLE = "IDLE"
     WAITING_WEIGH = "WAITING_WEIGH"
     WAITING_DIVERT = "WAITING_DIVERT"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
 
-    ALL: ClassVar[tuple[str, ...]] = (IDLE, WAITING_WEIGH, WAITING_DIVERT, MANUAL_HOLD, COMPLETED, ERROR)
+    ALL: ClassVar[tuple[str, ...]] = (IDLE, WAITING_WEIGH, WAITING_DIVERT)
 
 
 class InboundToteQcStateMachine:
@@ -38,12 +35,12 @@ class InboundToteQcStateMachine:
         {
             "trigger": "divert_ok",
             "source": InboundToteQcState.WAITING_DIVERT,
-            "dest": InboundToteQcState.COMPLETED,
+            "dest": None,
         },
         {
             "trigger": "manual_hold",
             "source": (InboundToteQcState.WAITING_WEIGH, InboundToteQcState.WAITING_DIVERT),
-            "dest": InboundToteQcState.MANUAL_HOLD,
+            "dest": None,
         },
         {
             "trigger": "fail",
@@ -51,9 +48,8 @@ class InboundToteQcStateMachine:
                 InboundToteQcState.IDLE,
                 InboundToteQcState.WAITING_WEIGH,
                 InboundToteQcState.WAITING_DIVERT,
-                InboundToteQcState.MANUAL_HOLD,
             ),
-            "dest": InboundToteQcState.ERROR,
+            "dest": None,
         },
     ]
 

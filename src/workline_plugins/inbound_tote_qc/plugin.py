@@ -10,9 +10,9 @@ from src.workline_runtime.plugin_base import (
     build_payload_invalid_failure,
     on_command,
     on_event,
+    requires_state,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
-    step,
 )
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult  # noqa: TC001
@@ -87,7 +87,6 @@ class InboundToteQcPlugin(WorklinePlugin):
             .wait(event_type="WEIGH_TOTE", timeout_seconds=120)
             .context(
                 InboundToteQcContext(
-                    plugin_state=InboundToteQcState.WAITING_WEIGH,
                     tote_id=event.data.tote_id,
                     station_code=event.data.station_code,
                     expected_weight_kg=event.data.expected_weight_kg,
@@ -98,7 +97,7 @@ class InboundToteQcPlugin(WorklinePlugin):
         )
 
     @on_command("WEIGH_TOTE", result="SUCCESS")
-    @step(InboundToteQcState.WAITING_WEIGH)
+    @requires_state(InboundToteQcState.WAITING_WEIGH)
     async def handle_weigh_success(self, ctx: PluginContext, result: NormalizedCommandResult):
         """称重成功后按重量判定放行或分流。"""
 
@@ -137,7 +136,6 @@ class InboundToteQcPlugin(WorklinePlugin):
             .wait(event_type="DIVERT_TOTE", timeout_seconds=120)
             .context(
                 InboundToteQcContext(
-                    plugin_state=InboundToteQcState.WAITING_DIVERT,
                     tote_id=weigh_data.tote_id,
                     actual_weight_kg=weigh_data.actual_weight_kg,
                     destination_lane=destination_lane,
@@ -159,7 +157,7 @@ class InboundToteQcPlugin(WorklinePlugin):
         return builder.build()
 
     @on_command("WEIGH_TOTE", result="FAILED")
-    @step(InboundToteQcState.WAITING_WEIGH)
+    @requires_state(InboundToteQcState.WAITING_WEIGH)
     async def handle_weigh_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
         """称重设备失败属于系统/硬件异常。"""
 
@@ -178,26 +176,20 @@ class InboundToteQcPlugin(WorklinePlugin):
         )
 
     @on_command("DIVERT_TOTE", result="SUCCESS")
-    @step(InboundToteQcState.WAITING_DIVERT)
+    @requires_state(InboundToteQcState.WAITING_DIVERT)
     async def handle_divert_success(self, ctx: PluginContext, result: NormalizedCommandResult):
         """分流成功后完成 Session。"""
 
         if resolve_normalized_command_envelope(result) is None:
             return build_payload_invalid_failure(ctx, "DIVERT_TOTE 成功回调缺少 command_code 或 device_code")
-        return (
-            PluginResultBuilder(ctx)
-            .transition("divert_ok")
-            .context(InboundToteQcContext(plugin_state=InboundToteQcState.COMPLETED).to_patch())
-            .complete()
-            .build()
-        )
+        return PluginResultBuilder(ctx).transition("divert_ok").complete().build()
 
     @on_command("DIVERT_TOTE", result="FAILED")
-    @step(InboundToteQcState.WAITING_DIVERT)
+    @requires_state(InboundToteQcState.WAITING_DIVERT)
     async def handle_divert_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
         """分流设备失败进入人工介入。"""
 
-        error_code, error_message = resolve_normalized_command_failure(
+        error_code, _error_message = resolve_normalized_command_failure(
             result,
             default_code="DIVERT_FAILED",
             default_message="料箱分流失败",
@@ -207,11 +199,9 @@ class InboundToteQcPlugin(WorklinePlugin):
             .transition("manual_hold")
             .context(
                 InboundToteQcContext(
-                    plugin_state=InboundToteQcState.MANUAL_HOLD,
                     reason_code=error_code,
                 ).to_patch()
             )
-            .failure(domain="HARDWARE", code=error_code, message=error_message)
             .build()
         )
 
