@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -60,8 +62,12 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     )
     db_session.add_all([outbox, command])
     await db_session.flush()
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_safety_estop=AsyncMock(return_value=SimpleNamespace(id=1))
+    )
+    service = WorkLineSafetyService(runtime_hold_creation_service=runtime_hold_creation_service)
 
-    incident = await workline_safety_service.handle_estop(
+    incident = await service.handle_estop(
         db_session,
         workline_id=cast("int", workline.id),
         source_inbox_id=100,
@@ -86,6 +92,7 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     assert command.status == CommandStatus.CANCELLED
     assert command.error_detail["error_code"] == "CANCELLED_BY_ESTOP"  # type: ignore[reportOptionalMemberAccess]
     assert device.device_status == DeviceStatus.ERROR
+    runtime_hold_creation_service.create_for_safety_estop.assert_awaited_once_with(db_session, incident=incident)
 
 
 class _FailingOutboxRepository:

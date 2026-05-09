@@ -26,7 +26,9 @@ from src.workline_runtime.types import CommandTargetScope
 def _make_context(plugin_state: str = InboundToteQcState.IDLE, **context: object) -> MagicMock:
     ctx = MagicMock()
     ctx.session = MagicMock(id=42)
-    ctx.session.context_json = {"plugin_state": plugin_state, **context}
+    ctx.plugin_state = plugin_state
+    ctx.session.plugin_state = plugin_state
+    ctx.session.context_json = context
     ctx.trace_id = "trace-inbound-tote"
     ctx.normalized_input = None
     ctx.logger = logging.getLogger("test_inbound_tote_qc")
@@ -127,7 +129,6 @@ async def test_tote_arrived_creates_weigh_command() -> None:
         "tote_id": "TOTE-20260425-001",
         "station_code": "INBOUND_QC_01",
     }
-    assert result.context_patch["plugin_state"] == InboundToteQcState.WAITING_WEIGH
     assert result.wait is not None
 
 
@@ -158,7 +159,6 @@ async def test_weigh_success_in_tolerance_diverts_to_pass_lane() -> None:
     assert result.business_decisions == []
     assert result.commands[0].action == "DIVERT_TOTE"
     assert result.commands[0].parameters["destination_lane"] == "PASS_LANE"
-    assert result.context_patch["plugin_state"] == InboundToteQcState.WAITING_DIVERT
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,6 @@ async def test_weigh_success_out_of_tolerance_records_business_decision() -> Non
     assert result.business_decisions[0].reason_code == "WEIGHT_OUT_OF_TOLERANCE"
     assert result.business_decisions[0].business_key == "TOTE-20260425-001"
     assert result.commands[0].parameters["destination_lane"] == "HOLD_LANE"
-    assert result.context_patch["plugin_state"] == InboundToteQcState.WAITING_DIVERT
 
 
 @pytest.mark.asyncio
@@ -236,4 +235,3 @@ async def test_divert_success_completes_session() -> None:
 
     assert result.transition == "divert_ok"
     assert result.complete is True
-    assert result.context_patch["plugin_state"] == InboundToteQcState.COMPLETED

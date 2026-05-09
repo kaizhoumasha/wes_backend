@@ -77,8 +77,10 @@ def test_code_templates_do_not_use_legacy_step_code() -> None:
         assert "step_code" not in content
         assert "ClassificationResult" not in content
 
-    for name in ("context.py.tmpl", "plugin.py.tmpl", "tests.py.tmpl"):
+    for name in ("context.py.tmpl", "tests.py.tmpl"):
         assert "plugin_state" in (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+    assert "plugin_state=" not in plugin_template
 
 
 def test_plugin_guide_uses_current_result_classifier_contract() -> None:

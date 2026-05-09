@@ -23,6 +23,7 @@ from sqlalchemy.exc import MissingGreenlet
 from src.app.workline.models.inbox import InboxKind, InboxStatus
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.services import WorklineRuntimeServices
+from src.workline_runtime.transition_validator import TransitionDecision
 from src.workline_runtime.types import CommandIntent, CommandTargetScope, WaitIntent
 
 
@@ -141,7 +142,7 @@ class MockSession:
         self.trace_id: str | None = None
         self.plugin_key: str | None = None
         self.contract_version: str | None = None
-        self.step_code: str | None = None
+        self.plugin_state: str | None = None
         self.awaiting_command_id: int | None = None
         self.ingress_count: int | None = None
         self.last_request_id: str | None = None
@@ -1409,7 +1410,7 @@ class TestInboxConsumer:
         mock_inbox_service.get_new_messages.return_value = [inbox]
         mock_orchestrator.process_inbox.return_value = OrchestratorResult(success=True)
         session = MockSession(status="RUNNING")
-        session.step_code = "WAITING_DEVICE_RESULT"
+        session.plugin_state = "WAITING_DEVICE_RESULT"
         session.awaiting_command_id = None
 
         async def refresh_session(target):
@@ -1478,7 +1479,7 @@ class TestInboxConsumer:
 
         observed_at = datetime.now()
         session = MockSession(status="RUNNING")
-        session.step_code = "WAITING_DEVICE_RESULT"
+        session.plugin_state = "WAITING_DEVICE_RESULT"
         session.awaiting_command_id = None
         session.ingress_count = 2
         session.last_request_id = "req-new"
@@ -1491,7 +1492,7 @@ class TestInboxConsumer:
 
         async def refresh_session(target):
             target.status = "RUNNING"
-            target.step_code = "WAITING_DEVICE_RESULT"
+            target.plugin_state = "WAITING_DEVICE_RESULT"
             target.awaiting_command_id = None
             target.ingress_count = 1
             target.last_request_id = "req-old"
@@ -1945,7 +1946,7 @@ class TestInboxConsumer:
             trace_id="trace-session-legacy-001",
             plugin_key=None,
             contract_version="legacy-0.9",
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type=None,
             current_wait_token=None,
@@ -1968,7 +1969,14 @@ class TestInboxConsumer:
         orch_result = OrchestratorResult(
             success=True,
             transition="dispatch_robot",
-            context_patch={"plugin_state": "SCAN_01", "barcode": "BC-001"},
+            transition_decision=TransitionDecision(
+                valid=True,
+                transition="dispatch_robot",
+                from_plugin_state="IDLE",
+                to_plugin_state="SCAN_01",
+                applied=True,
+            ),
+            context_patch={"barcode": "BC-001"},
             commands=[
                 CommandIntent(
                     target_device_id=8,
@@ -2044,7 +2052,7 @@ class TestInboxConsumer:
         assert len(created_command_payloads) == 1
         assert created_command_payloads[0]["plugin_key"] == "demo_plugin"
         assert created_command_payloads[0]["contract_version"] == "wl-v2026.04"
-        assert created_command_payloads[0]["step_code"] == "SCAN_01"
+        assert created_command_payloads[0]["issued_plugin_state"] == "SCAN_01"
         assert created_command_payloads[0]["task_type"] == "PICK_AND_PUT"
         assert created_command_payloads[0]["trace_id"] == "trace-inbox-001"
         assert created_command_payloads[0]["params"] == {"barcode": "BC-001"}
@@ -2052,7 +2060,7 @@ class TestInboxConsumer:
         assert session.trace_id == "trace-inbox-001"
         assert session.plugin_key == "demo_plugin"
         assert session.contract_version == "wl-v2026.04"
-        assert session.step_code == "SCAN_01"
+        assert session.plugin_state == "SCAN_01"
         assert session.barcode == "BC-001"
         assert session.status == "WAITING_DEVICE_RESULT"
         assert session.current_wait_type == "COMMAND_RESULT"
@@ -2075,7 +2083,9 @@ class TestInboxConsumer:
             "causation_id": None,
             "canonical_event_type": "SCAN_COMPLETED",
             "transition": "dispatch_robot",
-            "context_patch": {"plugin_state": "SCAN_01", "barcode": "BC-001"},
+            "from_plugin_state": "IDLE",
+            "to_plugin_state": "SCAN_01",
+            "context_patch": {"barcode": "BC-001"},
         }
         assert captured_timelines[1].payload == {
             "request_id": "req-command-001",
@@ -2116,7 +2126,7 @@ class TestInboxConsumer:
             trace_id="trace-session-topology-001",
             plugin_key=None,
             contract_version="legacy-0.9",
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type=None,
             current_wait_token=None,
@@ -2228,7 +2238,7 @@ class TestInboxConsumer:
             trace_id=None,
             plugin_key=None,
             contract_version=None,
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type=None,
             current_wait_token=None,
@@ -2256,7 +2266,13 @@ class TestInboxConsumer:
         orch_result = OrchestratorResult(
             success=True,
             transition="dispatch_robot",
-            context_patch={"plugin_state": "SCAN_01"},
+            transition_decision=TransitionDecision(
+                valid=True,
+                transition="dispatch_robot",
+                from_plugin_state="IDLE",
+                to_plugin_state="SCAN_01",
+                applied=True,
+            ),
             commands=[
                 CommandIntent(
                     target_device_id=99,
@@ -2322,6 +2338,107 @@ class TestInboxConsumer:
         }
 
     @pytest.mark.asyncio
+    async def test_apply_orchestrator_effects_allows_command_creation_when_target_device_busy(self, mock_db):
+        """设备忙是派发侧资源背压，命令创建应进入队列而不是失败 Session。"""
+        from src.app.device.models.device import DeviceStatus
+        from src.app.workline.models.outbox import DispatchType
+        from src.celery_app.tasks.workline import _apply_orchestrator_effects
+
+        added_models: list[Any] = []
+        session = SimpleNamespace(
+            id=458,
+            workline_id=1,
+            status="RUNNING",
+            context_json={},
+            trace_id=None,
+            plugin_key=None,
+            contract_version=None,
+            plugin_state=None,
+            last_inbox_id=None,
+            current_wait_type=None,
+            current_wait_token=None,
+            waiting_since=None,
+            deadline_at=None,
+            awaiting_command_id=None,
+            ended_at=None,
+            failure_domain=None,
+            failure_code=None,
+            failure_message=None,
+        )
+        workline = SimpleNamespace(plugin_key="demo_plugin")
+        inbox = SimpleNamespace(
+            id=203,
+            trace_id="trace-busy-001",
+            source_message_id="req-busy-001",
+            payload_json={"canonical_event_type": "SCAN_COMPLETED"},
+        )
+        target_device = SimpleNamespace(
+            id=101,
+            device_code="ROBOT-003",
+            capabilities_json={"supports_command_types": ["PICK_AND_PUT"]},
+            maintenance_mode=False,
+            device_status=DeviceStatus.RUNNING,
+            current_command_id=1001,
+        )
+        orch_result = OrchestratorResult(
+            success=True,
+            transition="dispatch_robot",
+            commands=[
+                CommandIntent(
+                    target_device_id=101,
+                    action="PICK_AND_PUT",
+                    parameters={"command_code": "VENDOR-CMD-BUSY"},
+                )
+            ],
+            wait=WaitIntent(
+                wait_type="COMMAND_RESULT",
+                wait_token="VENDOR-CMD-BUSY",
+                deadline_seconds=180,
+            ),
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.create = AsyncMock(
+            return_value=SimpleNamespace(
+                id=901,
+                command_code="VENDOR-CMD-BUSY",
+                params={},
+                task_type="PICK_AND_PUT",
+                priority=5,
+                timeout_ms=30000,
+            )
+        )
+        mock_db.add = MagicMock(side_effect=lambda model: added_models.append(model))
+
+        with (
+            patch("src.celery_app.tasks.workline._add_timeline", new=AsyncMock()),
+            patch(
+                "src.workline_runtime.timeline_generator.timeline_generator.generate",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
+        ):
+            await _apply_orchestrator_effects(
+                mock_db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role={"ROBOT": [target_device]},
+                source_device=None,
+                orch_result=orch_result,
+            )
+
+        outboxes = [model for model in added_models if getattr(model, "dispatch_type", None) is not None]
+        assert len(outboxes) == 1
+        assert outboxes[0].dispatch_type == DispatchType.DEVICE_COMMAND
+        assert outboxes[0].dispatch_key == "device-command:VENDOR-CMD-BUSY"
+        assert session.status == "WAITING_DEVICE_RESULT"
+        assert session.awaiting_command_id == 901
+        assert session.failure_code is None
+
+    @pytest.mark.asyncio
     async def test_apply_orchestrator_effects_rejects_device_in_maintenance_mode(self, mock_db):
         """maintenance_mode 必须在命令创建前被运行时消费。"""
         from src.app.workline.models.timeline import TimelineActionType
@@ -2337,7 +2454,7 @@ class TestInboxConsumer:
             trace_id=None,
             plugin_key=None,
             contract_version=None,
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type=None,
             current_wait_token=None,
@@ -2446,7 +2563,7 @@ class TestInboxConsumer:
             trace_id=None,
             plugin_key=None,
             contract_version=None,
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type="COMMAND_RESULT",
             current_wait_token="wait-token-001",
@@ -2550,7 +2667,7 @@ class TestInboxConsumer:
             trace_id=None,
             plugin_key=None,
             contract_version=None,
-            step_code=None,
+            plugin_state=None,
             last_inbox_id=None,
             current_wait_type="COMMAND_RESULT",
             current_wait_token="wait-token-002",

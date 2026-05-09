@@ -393,7 +393,7 @@ async def wait_for_session_completed(
     while time.time() < deadline:
         session = await conn.fetchrow(
             """
-            SELECT id, status, step_code, failure_domain, failure_code
+            SELECT id, status, plugin_state, failure_domain, failure_code
             FROM wes_biz.workline_sessions
             ORDER BY id DESC
             LIMIT 1

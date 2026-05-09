@@ -33,7 +33,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -51,7 +52,6 @@ class TestSmtClassifierPluginEvents:
         assert result.wait.deadline_seconds == 300
         assert result.context_patch["device_code"] == "SCANNER01"
         assert result.context_patch["location"] == "LOC01"
-        assert result.context_patch["plugin_state"] == "WAITING_MEASUREMENT"
         assert len(result.context_patch["barcodes"]) == 6
 
     @pytest.mark.asyncio
@@ -70,7 +70,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -90,7 +91,6 @@ class TestSmtClassifierPluginEvents:
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
         assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_scan_completed_ng_flow(self, plugin, mock_context):
@@ -112,7 +112,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -130,7 +131,6 @@ class TestSmtClassifierPluginEvents:
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
         assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
         assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_scan_completed_requires_data(self, plugin, mock_context):
@@ -143,7 +143,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 11
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -172,7 +173,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 12
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -203,7 +205,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -217,7 +220,6 @@ class TestSmtClassifierPluginEvents:
         assert result.wait.wait_type == "COMMAND_RESULT"
         assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
         assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
 
     @pytest.mark.asyncio
     async def test_scan_completed_rejects_legacy_device_id(self, plugin, mock_context):
@@ -232,7 +234,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 1
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -260,7 +263,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 101
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
         mock_context.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
 
         result = await plugin.on_device_event(mock_context, inbox)
@@ -284,7 +288,8 @@ class TestSmtClassifierPluginEvents:
         inbox = MagicMock()
         inbox.id = 102
         inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "WAITING_PICK_PLACE"}
+        mock_context.plugin_state = "WAITING_PICK_PLACE"
+        mock_context.session.context_json = {}
 
         result = await plugin.on_device_event(mock_context, inbox)
 
@@ -295,7 +300,8 @@ class TestSmtClassifierPluginEvents:
     @pytest.mark.asyncio
     async def test_idle_to_waiting_measurement(self, plugin, mock_context):
         """测试 IDLE → WAITING_MEASUREMENT 迁移。"""
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        mock_context.plugin_state = "IDLE"
+        mock_context.session.context_json = {}
 
         payload = {
             "device_code": "SCANNER01",
@@ -318,7 +324,6 @@ class TestSmtClassifierPluginEvents:
         result = await plugin.on_device_event(mock_context, inbox)
 
         assert result.transition == "scan_ok"
-        assert result.context_patch.get("plugin_state") == "WAITING_MEASUREMENT"
 
 
 class TestSmtClassifierPluginBasics:

@@ -67,6 +67,11 @@ class MockOutbox:
         self.dispatch_key = dispatch_key or f"outbox:{outbox_id}"
         self.next_retry_at = None
         self.last_error = None
+        self.finished_at = None
+        self.blocked_by_reconciliation_session_id = None
+        self.blocked_device_id = None
+        self.blocked_workline_id = None
+        self.blocked_reason = None
 
 
 class TestOutboxDispatcher:
@@ -87,6 +92,7 @@ class TestOutboxDispatcher:
         repo.get_pending_messages = AsyncMock(return_value=[])
         repo.mark_as_dispatching = AsyncMock(return_value=MagicMock())
         repo.mark_as_blocked_by_workline_estop = AsyncMock(return_value=MagicMock())
+        repo.mark_as_blocked_by_device_busy = AsyncMock(return_value=MagicMock())
         repo.mark_as_sent = AsyncMock(return_value=MagicMock())
         repo.mark_as_failed = AsyncMock(return_value=MagicMock())
         return repo
@@ -897,7 +903,7 @@ class TestOutboxDispatcher:
         """测试 session snapshot 优先使用 workline.contract_version。"""
         from src.celery_app.tasks.workline import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9", step_code=None)
+        session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9", plugin_state=None)
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version="wl-2.0")
 
         with patch(
@@ -907,17 +913,16 @@ class TestOutboxDispatcher:
             _sync_session_contract_snapshot(
                 session,
                 workline=workline,
-                context={"plugin_state": "WAITING_PICK_PLACE"},
             )
 
         assert session.contract_version == "wl-2.0"
-        assert session.step_code == "WAITING_PICK_PLACE"
+        assert session.plugin_state is None
 
     def test_sync_session_contract_snapshot_falls_back_to_registry(self):
         """测试 workline.contract_version 缺失时回退 registry。"""
         from src.celery_app.tasks.workline import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None, step_code=None)
+        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None, plugin_state=None)
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
 
         with patch(
@@ -927,11 +932,10 @@ class TestOutboxDispatcher:
             _sync_session_contract_snapshot(
                 session,
                 workline=workline,
-                context={"plugin_state": "WAITING_PICK_PLACE"},
             )
 
         assert session.contract_version == "1.0"
-        assert session.step_code == "WAITING_PICK_PLACE"
+        assert session.plugin_state is None
 
     @pytest.mark.asyncio
     async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
@@ -1219,13 +1223,17 @@ class TestDispatchByType:
         mock_outbox_repo.get_pending_messages.return_value = [first_outbox, second_outbox]
         mock_outbox_repo.mark_as_dispatching = AsyncMock(side_effect=[first_outbox, second_outbox])
 
-        async def mock_mark_failed(_db, outbox_id, error, _max_retries):
-            failed_outbox = second_outbox if outbox_id == 32 else first_outbox
-            failed_outbox.last_error = error
-            failed_outbox.status = OutboxStatus.NEW
-            return failed_outbox
+        async def mock_mark_blocked(_db, outbox_id, *, blocked_device_id, blocked_workline_id, reason, last_error):
+            blocked_outbox = second_outbox if outbox_id == 32 else first_outbox
+            blocked_outbox.status = OutboxStatus.BLOCKED_RESOURCE
+            blocked_outbox.blocked_device_id = blocked_device_id
+            blocked_outbox.blocked_workline_id = blocked_workline_id
+            blocked_outbox.blocked_reason = reason
+            blocked_outbox.last_error = last_error
+            return blocked_outbox
 
-        mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
+        mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=mock_mark_blocked)
+        mock_outbox_repo.mark_as_failed = AsyncMock()
 
         device = _mock_device_record(
             id=7,
@@ -1282,11 +1290,16 @@ class TestDispatchByType:
 
         assert result["dispatched"] == 2
         assert result["success"] == 1
-        assert result["failed"] == 1
+        assert result["failed"] == 0
+        assert result["skipped"] == 1
+        assert second_outbox.status == OutboxStatus.BLOCKED_RESOURCE
+        assert second_outbox.blocked_device_id == 7
+        assert second_outbox.blocked_reason == "DEVICE_BUSY"
         assert second_outbox.last_error is not None
         assert "正在执行任务" in second_outbox.last_error
         assert mock_client.return_value.__aenter__.return_value.post.await_count == 1
         mock_device_service.mark_command_dispatched.assert_awaited_once()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_device_command_routes_to_sandbox_without_payload_flag(self, mock_db):
@@ -1313,7 +1326,8 @@ class TestDispatchByType:
         mock_device_repo = MagicMock()
         mock_device_repo.get_by_device_code_for_update = AsyncMock(return_value=device)
         mock_command_repo = MagicMock()
-        mock_command_repo.get_by_command_code = AsyncMock(return_value=_mock_command_record(id=1001, device_id=7))
+        command = _mock_command_record(id=1001, device_id=7)
+        mock_command_repo.get_by_command_code = AsyncMock(return_value=command)
         mock_device_service = SimpleNamespace(mark_command_dispatched=AsyncMock())
 
         with (
@@ -1342,6 +1356,8 @@ class TestDispatchByType:
         assert "sandbox" not in outbox.payload_json
         live_dispatch.assert_not_awaited()
         mock_device_repo.get_by_device_code_for_update.assert_awaited_once_with(mock_db, "ROBOT_001")
+        assert command.status == CommandStatus.SENT
+        assert command.sent_at is not None
         mock_device_service.mark_command_dispatched.assert_awaited_once_with(
             mock_db,
             device_id=7,
@@ -1376,13 +1392,17 @@ class TestDispatchByType:
         mock_outbox_repo.mark_as_dispatching = AsyncMock(side_effect=[first_outbox, second_outbox])
         mock_outbox_repo.mark_as_sent = AsyncMock(return_value=MagicMock())
 
-        async def mock_mark_failed(_db, outbox_id, error, _max_retries):
-            failed_outbox = second_outbox if outbox_id == 32 else first_outbox
-            failed_outbox.last_error = error
-            failed_outbox.status = OutboxStatus.NEW
-            return failed_outbox
+        async def mock_mark_blocked(_db, outbox_id, *, blocked_device_id, blocked_workline_id, reason, last_error):
+            blocked_outbox = second_outbox if outbox_id == 32 else first_outbox
+            blocked_outbox.status = OutboxStatus.BLOCKED_RESOURCE
+            blocked_outbox.blocked_device_id = blocked_device_id
+            blocked_outbox.blocked_workline_id = blocked_workline_id
+            blocked_outbox.blocked_reason = reason
+            blocked_outbox.last_error = last_error
+            return blocked_outbox
 
-        mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
+        mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=mock_mark_blocked)
+        mock_outbox_repo.mark_as_failed = AsyncMock()
         device = _mock_device_record(
             id=7,
             device_code="ARM03",
@@ -1434,10 +1454,15 @@ class TestDispatchByType:
 
         assert result["dispatched"] == 2
         assert result["success"] == 1
-        assert result["failed"] == 1
+        assert result["failed"] == 0
+        assert result["skipped"] == 1
+        assert second_outbox.status == OutboxStatus.BLOCKED_RESOURCE
+        assert second_outbox.blocked_device_id == 7
+        assert second_outbox.blocked_reason == "DEVICE_BUSY"
         assert second_outbox.last_error is not None
         assert "正在执行任务" in second_outbox.last_error
         mock_device_service.mark_command_dispatched.assert_awaited_once()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_external_http_routes_to_sandbox(self, mock_db):

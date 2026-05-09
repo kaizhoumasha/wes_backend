@@ -41,6 +41,13 @@ class _OutboxRepoStub:
         self.outbox = outbox
         self.get_by_dispatch_key = AsyncMock(return_value=outbox)
         self.get_sandbox_pending_messages = AsyncMock(return_value=[outbox] if outbox is not None else [])
+        self.release_blocked_by_device = AsyncMock(return_value=0)
+
+
+class _RuntimeHoldRepoStub:
+    def __init__(self, hold: object | None = None) -> None:
+        self.hold = hold
+        self.find_latest_for_projection = AsyncMock(return_value=hold)
 
 
 @pytest.mark.asyncio
@@ -113,6 +120,9 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
         dispatch_key="device-command:CMD-001",
         dispatch_type=DispatchType.DEVICE_COMMAND,
         status=OutboxStatus.SENT,
+        sent_at=None,
+        next_retry_at=None,
+        last_error=None,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -149,6 +159,9 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
         dispatch_key="device-command:CMD-001",
         dispatch_type=DispatchType.DEVICE_COMMAND,
         status=OutboxStatus.SENT,
+        sent_at=None,
+        next_retry_at=None,
+        last_error=None,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -188,6 +201,9 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
         dispatch_key="device-command:CMD-001",
         dispatch_type=DispatchType.DEVICE_COMMAND,
         status=OutboxStatus.SENT,
+        sent_at=None,
+        next_retry_at=None,
+        last_error=None,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -224,11 +240,67 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
 
     assert returned is outbox
     assert outbox.status == OutboxStatus.SENT
+    assert outbox.sent_at is command.ack_received_at
+    assert outbox.next_retry_at is None
+    assert outbox.last_error is None
     assert command.status == CommandStatus.ACK_RECEIVED
     assert command.sent_at is command.ack_received_at
     assert command.ack_code == 200
     assert command.ack_message == "SANDBOX_ACK"
     activate_deadline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        status=OutboxStatus.NEW,
+        sent_at=None,
+        next_retry_at="retry-later",
+        last_error="previous dispatch wait",
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(
+        id=9,
+        command_code="CMD-001",
+        session_id_int=530,
+        sent_at=None,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+    )
+    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with patch(
+        "src.app.workline.services.runtime_reconciliation_service."
+        "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+        new=AsyncMock(return_value=session),
+    ):
+        await service.submit_sandbox_ack(
+            object(),
+            dispatch_key="device-command:CMD-001",
+            auto_commit=False,
+        )
+
+    assert outbox.status == OutboxStatus.SENT
+    assert outbox.sent_at is command.ack_received_at
+    assert outbox.next_retry_at is None
+    assert outbox.last_error is None
+    assert command.status == CommandStatus.ACK_RECEIVED
 
 
 @pytest.mark.asyncio
@@ -321,10 +393,277 @@ async def test_sandbox_pending_projects_ack_received_command_as_acked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_pending_projects_waiting_device_command_as_sent_for_ack() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="ARM01",
+        status=OutboxStatus.NEW,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(status=CommandStatus.SENT)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+    )
+
+    result = await service.get_sandbox_pending(object(), workline_id=45)
+
+    assert result[0].status == "SENT"
+    assert outbox.status == OutboxStatus.NEW
+
+
+@pytest.mark.asyncio
+async def test_sandbox_pending_keeps_history_but_only_current_command_actionable() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    old_acked = SimpleNamespace(
+        id=856,
+        dispatch_key="device-command:CMD-OLD-ACKED",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="ARM03",
+        status=OutboxStatus.SENT,
+        session_id=550,
+        workline_id=45,
+        payload_json={"command_code": "CMD-OLD-ACKED"},
+        last_error=None,
+    )
+    old_completed = SimpleNamespace(
+        id=857,
+        dispatch_key="device-command:CMD-OLD-COMPLETED",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="PIPELINE02",
+        status=OutboxStatus.SENT,
+        session_id=550,
+        workline_id=45,
+        payload_json={"command_code": "CMD-OLD-COMPLETED"},
+        last_error=None,
+    )
+    current = SimpleNamespace(
+        id=860,
+        dispatch_key="device-command:CMD-CURRENT",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="ARM04",
+        status=OutboxStatus.SENT,
+        session_id=550,
+        workline_id=45,
+        payload_json={"command_code": "CMD-CURRENT"},
+        last_error=None,
+    )
+    commands = {
+        "CMD-OLD-ACKED": SimpleNamespace(id=875, status=CommandStatus.ACK_RECEIVED),
+        "CMD-OLD-COMPLETED": SimpleNamespace(id=876, status=CommandStatus.COMPLETED),
+        "CMD-CURRENT": SimpleNamespace(id=879, status=CommandStatus.PENDING),
+    }
+    command_repo = SimpleNamespace(
+        get_by_command_code=AsyncMock(side_effect=lambda _db, command_code: commands[command_code])
+    )
+    session = SimpleNamespace(
+        id=550,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        awaiting_command_id=879,
+    )
+    outbox_repo = _OutboxRepoStub()
+    outbox_repo.get_sandbox_pending_messages = AsyncMock(return_value=[old_acked, old_completed, current])
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", outbox_repo),
+        command_repo=cast("Any", command_repo),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+    )
+
+    result = await service.get_sandbox_pending(object(), workline_id=45)
+
+    assert [item.id for item in result] == [856, 857, 860]
+    assert [item.status for item in result] == ["ACKED", "COMPLETED", "SENT"]
+    assert [item.is_current_action for item in result] == [False, False, True]
+    assert [item.dispatch_key for item in result] == [
+        "device-command:CMD-OLD-ACKED",
+        "device-command:CMD-OLD-COMPLETED",
+        "device-command:CMD-CURRENT",
+    ]
+    assert [item.is_actionable for item in result] == [False, False, True]
+    assert [item.history_group_key for item in result] == [
+        "session:550",
+        "session:550",
+        "session:550",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_failed_projection_exposes_hold_entry_without_action_button() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=901,
+        dispatch_key="device-command:CMD-FAILED-HOLD",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        target_type="DEVICE",
+        target_code="ARM03",
+        status=OutboxStatus.FAILED,
+        session_id=770,
+        workline_id=45,
+        payload_json={"command_code": "CMD-FAILED-HOLD"},
+        last_error="COMMAND_ACK_EXHAUSTED",
+        blocked_by_runtime_hold_id=None,
+    )
+    command = SimpleNamespace(
+        id=990,
+        command_code="CMD-FAILED-HOLD",
+        status=CommandStatus.FAILED,
+        error_detail={"code": "DEVICE_BUSY", "message": "设备正在执行其他任务"},
+    )
+    hold = SimpleNamespace(id=8801, source_reason="COMMAND_ACK_EXHAUSTED", status="OPEN")
+    service = WorklineOperationService(
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        runtime_hold_repo=cast("Any", _RuntimeHoldRepoStub(hold)),
+    )
+
+    result = await service._project_sandbox_pending_outbox(object(), outbox)
+
+    assert result.status == "FAILED"
+    assert result.command_status == "FAILED"
+    assert result.is_actionable is False
+    assert result.runtime_hold_id == 8801
+    assert result.failure_summary == {
+        "code": "COMMAND_ACK_EXHAUSTED",
+        "message": "设备正在执行其他任务",
+        "runtime_hold_id": 8801,
+    }
+    assert result.history_group_key == "session:770"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_completed_history_is_grouped_and_links_runtime_hold() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox_repo = _OutboxRepoStub()
+    outbox_repo.get_sandbox_completed_messages = AsyncMock(
+        return_value=[
+            {
+                "history_group_key": "session:770",
+                "session": {"id": 770, "failure_code": "DEVICE_BUSY", "failure_message": "设备忙"},
+                "outbox_items": [
+                    {
+                        "id": 901,
+                        "session_id": 770,
+                        "workline_id": 45,
+                        "dispatch_key": "device-command:CMD-FAILED-HOLD",
+                        "status": "FAILED",
+                        "last_error": "COMMAND_ACK_EXHAUSTED",
+                        "payload_json": {"command_code": "CMD-FAILED-HOLD"},
+                        "runtime_hold_id": None,
+                        "failure_summary": {
+                            "code": "DEVICE_BUSY",
+                            "message": "设备忙",
+                            "runtime_hold_id": None,
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    command = SimpleNamespace(
+        id=990,
+        device_id=7,
+        command_code="CMD-FAILED-HOLD",
+        status=CommandStatus.FAILED,
+        error_detail={"message": "设备正在执行其他任务"},
+    )
+    hold = SimpleNamespace(id=8801, source_reason="COMMAND_ACK_EXHAUSTED", status="OPEN")
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", outbox_repo),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        runtime_hold_repo=cast("Any", _RuntimeHoldRepoStub(hold)),
+    )
+
+    groups = await service.get_sandbox_completed(object(), workline_id=45)
+
+    item = groups[0]["outbox_items"][0]
+    assert groups[0]["history_group_key"] == "session:770"
+    assert item["is_actionable"] is False
+    assert item["runtime_hold_id"] == 8801
+    assert item["history_group_key"] == "session:770"
+    assert item["failure_summary"] == {
+        "code": "COMMAND_ACK_EXHAUSTED",
+        "message": "设备正在执行其他任务",
+        "runtime_hold_id": 8801,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sandbox_completed_history_uses_command_status_for_successful_items() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox_repo = _OutboxRepoStub()
+    outbox_repo.get_sandbox_completed_messages = AsyncMock(
+        return_value=[
+            {
+                "history_group_key": "session:770",
+                "session": {"id": 770, "failure_code": "DEVICE_BUSY", "failure_message": "设备忙"},
+                "outbox_items": [
+                    {
+                        "id": 900,
+                        "session_id": 770,
+                        "workline_id": 45,
+                        "dispatch_key": "device-command:CMD-SUCCESS",
+                        "status": "SENT",
+                        "last_error": None,
+                        "payload_json": {"command_code": "CMD-SUCCESS"},
+                        "runtime_hold_id": None,
+                        "failure_summary": {
+                            "code": "DEVICE_BUSY",
+                            "message": "设备忙",
+                            "runtime_hold_id": None,
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    command = SimpleNamespace(
+        id=990,
+        device_id=7,
+        command_code="CMD-SUCCESS",
+        status=CommandStatus.COMPLETED,
+        error_detail=None,
+    )
+    hold = SimpleNamespace(id=8801, source_reason="COMMAND_ACK_EXHAUSTED", status="OPEN")
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", outbox_repo),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        runtime_hold_repo=cast("Any", _RuntimeHoldRepoStub(hold)),
+    )
+
+    groups = await service.get_sandbox_completed(object(), workline_id=45)
+
+    item = groups[0]["outbox_items"][0]
+    assert item["status"] == "COMPLETED"
+    assert item["command_status"] == "COMPLETED"
+    assert item["runtime_hold_id"] is None
+    assert item["failure_summary"] is None
+
+
+@pytest.mark.asyncio
 async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime_processing() -> None:
+    from src.app.device.models.command import CommandStatus
     from src.app.workline.services.operation_service import WorklineOperationService
 
     input_payload = {"PkgID": "PKG-001"}
+    db = object()
     device = SimpleNamespace(id=7, device_code="ARM01")
     command = SimpleNamespace(
         id=9,
@@ -339,24 +678,35 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
     inbox_repo = _InboxRepoStub()
+    outbox_repo = _OutboxRepoStub()
     service = WorklineOperationService(
         inbox_repo=cast("Any", inbox_repo),
+        outbox_repo=cast("Any", outbox_repo),
         session_repo=cast("Any", _SessionRepoStub(session)),
         device_repo=cast("Any", _SingleItemRepoStub(device)),
         command_repo=cast("Any", _SingleItemRepoStub(command)),
         workline_repo=cast("Any", _SingleItemRepoStub(workline)),
     )
 
-    inbox = await service.submit_sandbox_result(
-        object(),
-        command_code="CMD-001",
-        device_code="ARM01",
-        result="SUCCESS",
-        payload=input_payload,
-        auto_commit=False,
+    mock_device_service = SimpleNamespace(
+        mark_command_finished=AsyncMock(return_value=SimpleNamespace(device_status="IDLE", current_command_id=None))
     )
+    with patch("src.app.device.services.device_service", mock_device_service):
+        inbox = await service.submit_sandbox_result(
+            db,
+            command_code="CMD-001",
+            device_code="ARM01",
+            result="SUCCESS",
+            payload=input_payload,
+            auto_commit=False,
+        )
 
     assert inbox.id == 88
+    assert command.status == CommandStatus.COMPLETED
+    assert command.result == "SUCCESS"
+    assert command.result_data == {"PkgID": "PKG-001"}
+    mock_device_service.mark_command_finished.assert_awaited_once()
+    outbox_repo.release_blocked_by_device.assert_awaited_once_with(db, device_id=7)
     assert inbox_repo.created is not None
     result_payload = inbox_repo.created["payload_json"]
     assert result_payload["command_code"] == "CMD-001"

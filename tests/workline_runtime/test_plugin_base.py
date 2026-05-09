@@ -14,6 +14,7 @@ from src.workline_runtime.plugin_base import (
     WorklinePlugin,
     on_command,
     on_event,
+    requires_state,
     resolve_normalized_command_envelope,
     resolve_normalized_command_failure,
     step,
@@ -55,7 +56,7 @@ class TestPlugin(WorklinePlugin):
     # ========== 事件处理 ==========
 
     @on_event("SCAN_COMPLETED")
-    @step("IDLE", "WAITING_INSPECTION")
+    @requires_state("IDLE")
     async def handle_scan(self, ctx, event: ScanEventPayload):
         """扫码处理"""
         return (
@@ -73,13 +74,13 @@ class TestPlugin(WorklinePlugin):
     # ========== 命令结果处理 ==========
 
     @on_command("PICK", result="SUCCESS")
-    @step("WAITING_INSPECTION", "WAITING_CONVEYOR")
+    @requires_state("WAITING_INSPECTION")
     async def handle_pick_success(self, ctx, result: PickPlaceResultPayload):
         """抓取成功"""
         return PluginResultBuilder(ctx).transition("pick_ok").build()
 
     @on_command("PICK", result="FAILED")
-    @step("WAITING_INSPECTION", "ERROR")
+    @requires_state("WAITING_INSPECTION")
     async def handle_pick_failed(self, ctx, result: PickPlaceResultPayload):
         """抓取失败"""
         return PluginResultBuilder(ctx).failure(domain="HARDWARE", code="PICK_FAILED", message="抓取失败").build()
@@ -145,20 +146,23 @@ class TestDecoratorRouting:
         assert not hasattr(TestPlugin, "_timeout" + "_handler")
 
 
-class TestStepDecorator:
-    """@step 装饰器测试"""
+class TestRequiresStateDecorator:
+    """@requires_state 装饰器测试"""
 
-    def test_step_decorator_sets_expected_and_target(self):
-        """验证 @step 设置 _expected_step 和 _target_step"""
+    def test_requires_state_decorator_sets_expected_states(self):
+        """验证 @requires_state 设置 _expected_states"""
         handler = TestPlugin._event_handlers["SCAN_COMPLETED"]
-        assert getattr(handler, "_expected_step", None) == "IDLE"
-        assert getattr(handler, "_target_step", None) == "WAITING_INSPECTION"
+        assert getattr(handler, "_expected_states", None) == ("IDLE",)
 
-    def test_step_decorator_optional_params(self):
-        """验证 @step 参数可选"""
+    def test_step_rejects_legacy_target(self):
+        """旧 @step(expected, target) 写法不再可用。"""
+        with pytest.raises(ValueError):
+            step("IDLE", "WAITING_INSPECTION")
+
+    def test_requires_state_decorator_optional_params(self):
+        """验证未声明状态时不会设置约束"""
         handler = TestPlugin._event_handlers["INSPECTION_COMPLETED"]
-        assert getattr(handler, "_expected_step", None) is None
-        assert getattr(handler, "_target_step", None) is None
+        assert getattr(handler, "_expected_states", None) is None
 
 
 class TestPydanticParsing:
@@ -173,7 +177,9 @@ class TestPydanticParsing:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
 
         # Mock inbox with payload
         inbox = MagicMock()
@@ -201,7 +207,9 @@ class TestPydanticParsing:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
 
         # Mock inbox with invalid payload (missing required field)
         inbox = MagicMock()
@@ -324,7 +332,9 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
 
         # Mock inbox
         inbox = MagicMock()
@@ -351,7 +361,9 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "COMPLETED"}
+        ctx.session.plugin_state = "COMPLETED"
+        ctx.plugin_state = "COMPLETED"
+        ctx.session.context_json = {}
 
         # Mock inbox
         inbox = MagicMock()
@@ -380,7 +392,9 @@ class TestStateValidation:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
 
         # Mock inbox
         inbox = MagicMock()
@@ -552,7 +566,9 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
 
         # Mock inbox
         inbox = MagicMock()
@@ -579,7 +595,9 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "IDLE"}
+        ctx.session.plugin_state = "IDLE"
+        ctx.plugin_state = "IDLE"
+        ctx.session.context_json = {}
         ctx.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
 
         inbox = MagicMock()
@@ -605,7 +623,9 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "WAITING_INSPECTION"}
+        ctx.session.plugin_state = "WAITING_INSPECTION"
+        ctx.plugin_state = "WAITING_INSPECTION"
+        ctx.session.context_json = {}
 
         # Mock inbox
         inbox = MagicMock()
@@ -630,7 +650,9 @@ class TestEventRouting:
         ctx = MagicMock()
         ctx.logger = MagicMock()
         ctx.session = MagicMock()
-        ctx.session.context_json = {"plugin_state": "WAITING_INSPECTION"}
+        ctx.session.plugin_state = "WAITING_INSPECTION"
+        ctx.plugin_state = "WAITING_INSPECTION"
+        ctx.session.context_json = {}
         ctx.normalized_input = MagicMock(
             command_type="PICK", source_result="ERROR", normalized_result="TERMINAL_FAILURE"
         )

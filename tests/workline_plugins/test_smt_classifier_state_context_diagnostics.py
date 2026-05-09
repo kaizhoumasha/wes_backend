@@ -21,7 +21,9 @@ def _make_context(*, plugin_state: str = SmtClassifierState.IDLE) -> MagicMock:
     ctx = MagicMock()
     ctx.session = MagicMock()
     ctx.session.id = 42
-    ctx.session.context_json = {"plugin_state": plugin_state}
+    ctx.session.plugin_state = plugin_state
+    ctx.session.context_json = {}
+    ctx.plugin_state = plugin_state
     ctx.trace_id = "trace-diagnostic"
     ctx.normalized_input = None
     ctx.logger = logging.getLogger("test_smt_diagnostic")
@@ -67,18 +69,16 @@ def test_smt_context_projects_typed_patch() -> None:
 
     context = SmtClassifierContext.from_mapping(
         {
-            "plugin_state": SmtClassifierState.WAITING_CONVEYOR,
             "barcode": "PKG-001",
             "barcodes": ["PKG-001"],
             "reel_diameter": 178.5,
         }
     )
 
-    patch = context.to_patch(plugin_state=SmtClassifierState.WAITING_OUTPUT)
+    patch = context.to_patch()
 
-    assert context.plugin_state == SmtClassifierState.WAITING_CONVEYOR
     assert context.barcode == "PKG-001"
-    assert patch["plugin_state"] == SmtClassifierState.WAITING_OUTPUT
+    assert "plugin_state" not in patch
     assert patch["reel_diameter"] == 178.5
 
 
@@ -105,7 +105,7 @@ async def test_smt_payload_diagnostic_explains_handler_context_and_result() -> N
     diagnostic = await diagnose_smt_payload(plugin, ctx, payload, kind="DEVICE_EVENT")
 
     assert diagnostic.normalized_input["canonical_event_type"] == "SCAN_COMPLETED"
-    assert diagnostic.parsed_context.plugin_state == SmtClassifierState.IDLE
+    assert "plugin_state" not in diagnostic.parsed_context.model_dump()
     assert diagnostic.selected_handler == "handle_scan_completed"
     assert diagnostic.plugin_result.transition == "scan_ok"
-    assert diagnostic.plugin_result.context_patch["plugin_state"] == SmtClassifierState.WAITING_MEASUREMENT
+    assert "plugin_state" not in diagnostic.plugin_result.context_patch

@@ -2,33 +2,41 @@
 
 from src.workline_runtime.plugin_state import (
     PLUGIN_STATE_KEY,
+    assert_context_patch_has_no_reserved_key,
     get_plugin_state,
-    project_plugin_state_for_trace,
-    set_plugin_state,
+    project_issued_plugin_state,
 )
 
 
 def test_get_plugin_state_reads_only_plugin_state_key() -> None:
     """插件业务态只从 plugin_state 读取，不再回退 step_code。"""
 
-    assert get_plugin_state({PLUGIN_STATE_KEY: "WAITING_PICK_PLACE"}) == "WAITING_PICK_PLACE"
-    assert get_plugin_state({"step_code": "WAITING_PICK_PLACE"}, default="IDLE") == "IDLE"
+    class Session:
+        plugin_state = "WAITING_PICK_PLACE"
+
+    assert get_plugin_state(Session()) == "WAITING_PICK_PLACE"
     assert get_plugin_state(None, default="IDLE") == "IDLE"
 
 
-def test_set_plugin_state_skips_empty_values() -> None:
-    """空状态不应污染 context patch。"""
+def test_context_patch_rejects_reserved_plugin_state() -> None:
+    """插件 context patch 不允许写 runtime-owned plugin_state。"""
 
     context_patch: dict[str, object] = {"barcode": "PKG-001"}
 
-    set_plugin_state(context_patch, "")
-    set_plugin_state(context_patch, None)
+    assert_context_patch_has_no_reserved_key(context_patch)
 
-    assert context_patch == {"barcode": "PKG-001"}
+    try:
+        assert_context_patch_has_no_reserved_key({PLUGIN_STATE_KEY: "WAITING_PICK_PLACE"})
+    except ValueError as exc:
+        assert "runtime-owned" in str(exc)
+    else:
+        raise AssertionError("reserved plugin_state should be rejected")
 
 
-def test_project_plugin_state_for_trace_projects_only_plugin_state() -> None:
-    """step_code 快照由 plugin_state 投影得到。"""
+def test_project_issued_plugin_state_reads_session_plugin_state() -> None:
+    """命令发行快照来自 Session 当前 plugin_state。"""
 
-    assert project_plugin_state_for_trace({PLUGIN_STATE_KEY: "SCAN_01"}) == "SCAN_01"
-    assert project_plugin_state_for_trace({"step_code": "SCAN_01"}) is None
+    class Session:
+        plugin_state = "SCAN_01"
+
+    assert project_issued_plugin_state(Session()) == "SCAN_01"

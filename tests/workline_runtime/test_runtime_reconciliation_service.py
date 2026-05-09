@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.app.device.models.command import CommandStatus
+from src.app.workline.models.outbox import OutboxStatus
+from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import (
     RuntimeReconciliationReason,
@@ -85,12 +87,16 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9901))
+    )
     db = _Db(command=command)
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
         device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
     )
 
     with (
@@ -133,9 +139,18 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         session_id=530,
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
+    runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
+        db,
+        session=session,
+        inbox=inbox,
+        command=command,
+    )
     mark_processed.assert_awaited_once_with(db, 88, auto_commit=False)
     add_timeline.assert_awaited_once()
+    timeline = add_timeline.await_args.args[1]
+    assert timeline.payload_json["runtime_hold_id"] == 9901
     record_diagnostic.assert_awaited_once()
+    assert record_diagnostic.await_args.kwargs["evidence"]["runtime_hold_id"] == 9901
     db.flush.assert_awaited_once()
 
 
@@ -177,12 +192,16 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9902))
+    )
     db = _Db(command=command)
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
         device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
     )
 
     with (
@@ -218,6 +237,12 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
     mark_processed.assert_awaited_once_with(db, 85599, auto_commit=False)
+    runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
+        db,
+        session=session,
+        inbox=inbox,
+        command=command,
+    )
     add_timeline.assert_awaited_once()
     record_diagnostic.assert_awaited_once()
     db.flush.assert_awaited_once()
@@ -254,12 +279,16 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9903))
+    )
     db = _Db(command=None)
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
         device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
     )
 
     with (
@@ -289,9 +318,231 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     device_service.mark_callback_deadline_expired.assert_not_awaited()
     mark_processed.assert_awaited_once_with(db, 85600, auto_commit=False)
+    runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
+        db,
+        session=session,
+        inbox=inbox,
+        command=None,
+    )
     add_timeline.assert_awaited_once()
     record_diagnostic.assert_awaited_once()
     db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> None:
+    command = SimpleNamespace(
+        id=881,
+        command_code="CMD-20260509-MOVE_FORWARD-AB5F1A76",
+        device_id=7,
+        status=CommandStatus.SENT,
+        completed_at=None,
+        error_detail=None,
+    )
+    outbox = SimpleNamespace(
+        id=862,
+        session_id=553,
+        workline_id=45,
+        target_code="CONVEYOR01",
+        status=OutboxStatus.SENT,
+        last_error=None,
+        next_retry_at=timezone.now_for_db() + timedelta(seconds=30),
+        finished_at=None,
+    )
+    session = SimpleNamespace(
+        id=553,
+        workline_id=45,
+        trace_id="sandbox:trace-ack-timeout",
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_token="CMD-20260509-MOVE_FORWARD-AB5F1A76",
+        current_wait_type="COMMAND_RESULT",
+        current_wait_timeout_seconds=300,
+        waiting_since=timezone.now_for_db() - timedelta(seconds=400),
+        deadline_at=None,
+        awaiting_command_id=881,
+        reconciliation_state=None,
+    )
+    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
+    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
+    device_service = SimpleNamespace(mark_dispatch_ack_exhausted=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9904))
+    )
+    db = _Db(command=command)
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repo,
+        workline_repository=workline_repo,
+        device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
+    )
+
+    with (
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            new=AsyncMock(),
+        ) as add_timeline,
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            new=AsyncMock(),
+        ) as record_diagnostic,
+    ):
+        updated = await service.handle_dispatch_ack_exhausted(
+            db,
+            outbox=outbox,
+            command=command,
+            error_message="COMMAND_ACK_TIMEOUT",
+        )
+
+    assert updated is session
+    assert outbox.status == OutboxStatus.FAILED
+    assert outbox.last_error == "COMMAND_ACK_TIMEOUT"
+    assert outbox.next_retry_at is None
+    assert outbox.finished_at is not None
+    assert command.status == CommandStatus.FAILED
+    assert command.completed_at is not None
+    assert command.error_detail == {
+        "error_code": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
+        "error_message": "COMMAND_ACK_TIMEOUT",
+        "outbox_id": 862,
+    }
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
+    assert session.reconciliation_reason == RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
+    assert session.reconciliation_source_kind == RuntimeReconciliationSourceKind.DISPATCH_ACK_EXHAUSTED
+    assert session.reconciliation_source_outbox_id == 862
+    assert session.reconciliation_command_id == 881
+    assert session.reconciliation_device_id == 7
+    assert session.reconciliation_wait_token == "CMD-20260509-MOVE_FORWARD-AB5F1A76"
+    assert session.current_wait_type is None
+    assert session.current_wait_token is None
+    assert session.awaiting_command_id is None
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_reason == RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
+    device_service.mark_dispatch_ack_exhausted.assert_awaited_once_with(db, device_id=7, auto_commit=False)
+    runtime_hold_creation_service.create_for_dispatch_ack_exhausted.assert_awaited_once_with(
+        db,
+        session=session,
+        outbox=outbox,
+        command=command,
+        source_reason=RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
+    )
+    add_timeline.assert_awaited_once()
+    timeline = add_timeline.await_args.args[1]
+    assert timeline.payload_json["runtime_hold_id"] == 9904
+    record_diagnostic.assert_awaited_once()
+    assert record_diagnostic.await_args.kwargs["evidence"]["runtime_hold_id"] == 9904
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ack_exhausted_preserves_outbox_dispatch_failed_source_reason() -> None:
+    command = SimpleNamespace(
+        id=882,
+        command_code="CMD-OUTBOX-DISPATCH-FAILED",
+        device_id=7,
+        status=CommandStatus.PENDING,
+        completed_at=None,
+        error_detail=None,
+    )
+    outbox = SimpleNamespace(
+        id=863,
+        session_id=554,
+        workline_id=45,
+        status=OutboxStatus.NEW,
+        last_error=None,
+        next_retry_at=timezone.now_for_db() + timedelta(seconds=30),
+        finished_at=None,
+    )
+    session = SimpleNamespace(
+        id=554,
+        workline_id=45,
+        trace_id="sandbox:trace-outbox-failed",
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_token="CMD-OUTBOX-DISPATCH-FAILED",
+        current_wait_type="COMMAND_RESULT",
+        current_wait_timeout_seconds=300,
+        waiting_since=timezone.now_for_db() - timedelta(seconds=400),
+        deadline_at=None,
+        awaiting_command_id=882,
+        reconciliation_state=None,
+    )
+    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
+    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
+    device_service = SimpleNamespace(mark_dispatch_ack_exhausted=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9905))
+    )
+    db = _Db(command=command)
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repo,
+        workline_repository=workline_repo,
+        device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
+    )
+
+    with (
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            new=AsyncMock(),
+        ),
+    ):
+        await service.handle_dispatch_ack_exhausted(
+            db,
+            outbox=outbox,
+            command=command,
+            error_message=RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value,
+        )
+
+    runtime_hold_creation_service.create_for_dispatch_ack_exhausted.assert_awaited_once_with(
+        db,
+        session=session,
+        outbox=outbox,
+        command=command,
+        source_reason=RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_park_outbox_for_reconciliation_uses_runtime_hold_owner() -> None:
+    owner = SimpleNamespace(id=530, reconciliation_device_id=7)
+    hold = SimpleNamespace(id=9901, session_id=530, hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION)
+    outbox = SimpleNamespace(id=88, workline_id=45)
+    session_repo = SimpleNamespace(get_pending_reconciliation_owner_for_workline=AsyncMock(return_value=owner))
+    runtime_hold_repo = SimpleNamespace(get_active_blocking_by_workline=AsyncMock(return_value=[hold]))
+    outbox_repo = SimpleNamespace(
+        block_by_runtime_hold=AsyncMock(return_value=outbox),
+        mark_as_blocked_by_workline_state=AsyncMock(return_value=None),
+    )
+    db = _Db()
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repo,
+        runtime_hold_repository=runtime_hold_repo,
+        outbox_repository=outbox_repo,
+    )
+
+    updated = await service.park_outbox_for_reconciliation(
+        db,
+        outbox=outbox,
+        reason="CALLBACK_DEADLINE_EXPIRED",
+    )
+
+    assert updated is outbox
+    outbox_repo.block_by_runtime_hold.assert_awaited_once_with(
+        db,
+        88,
+        runtime_hold_id=9901,
+        owner_session_id=530,
+        reason="CALLBACK_DEADLINE_EXPIRED",
+        blocked_device_id=7,
+        blocked_workline_id=45,
+    )
+    outbox_repo.mark_as_blocked_by_workline_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -406,20 +657,23 @@ async def test_runtime_reconciliation_resolve_writes_operator_timeline() -> None
         reconciliation_command_id=None,
         context_json={},
     )
-    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.RECONCILING, resumed_at=None, stopped_reason=None)
-    session_repo = SimpleNamespace(
-        get_for_update=AsyncMock(return_value=session),
-        count_pending_reconciliations_for_workline=AsyncMock(return_value=0),
+    hold = SimpleNamespace(id=9901, session_id=530, hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION, version=0)
+    session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
+    runtime_hold_repo = SimpleNamespace(get_active_blocking_by_workline=AsyncMock(return_value=[hold]))
+    release_service = SimpleNamespace(
+        build_latest_evidence_hash=lambda _hold, *, session=None: "hash:latest",
+        resolve_hold=AsyncMock(
+            return_value={
+                "released_outbox_count": 2,
+                "remaining_active_blocking_holds": 0,
+            }
+        ),
     )
-    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
-    outbox_repo = SimpleNamespace(release_blocked_by_reconciliation_session=AsyncMock(return_value=2))
-    device_service = SimpleNamespace(clear_reconciliation_error=AsyncMock(return_value=None))
     db = _Db()
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
-        workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
-        device_service=device_service,
+        runtime_hold_repository=runtime_hold_repo,
+        runtime_hold_release_service=release_service,
     )
 
     with patch(
@@ -442,12 +696,17 @@ async def test_runtime_reconciliation_resolve_writes_operator_timeline() -> None
         )
 
     assert result["released_outbox_count"] == 2
-    assert session.context_json["runtime_reconciliation_resolution"]["operator_id"] == 88
+    release_service.resolve_hold.assert_awaited_once()
+    release_request = release_service.resolve_hold.await_args.args[2]
+    assert release_request.material_disposition == "CONTINUE"
+    assert release_request.latest_evidence_hash == "hash:latest"
     add_timeline.assert_awaited_once()
+    timeline = add_timeline.await_args.args[1]
+    assert timeline.payload_json["runtime_hold_id"] == 9901
 
 
 @pytest.mark.asyncio
-async def test_runtime_reconciliation_resolve_normalizes_aware_confirmed_at() -> None:
+async def test_runtime_reconciliation_resolve_normalizes_aware_confirmed_at_in_timeline() -> None:
     from datetime import UTC
 
     from src.app.workline.models.session import RuntimeReconciliationResolution
@@ -465,26 +724,29 @@ async def test_runtime_reconciliation_resolve_normalizes_aware_confirmed_at() ->
         context_json={},
     )
     command = SimpleNamespace(id=9, completed_at=None, status=None, result=None, result_data=None, error_detail=None)
-    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.RECONCILING, resumed_at=None, stopped_reason=None)
-    session_repo = SimpleNamespace(
-        get_for_update=AsyncMock(return_value=session),
-        count_pending_reconciliations_for_workline=AsyncMock(return_value=0),
+    hold = SimpleNamespace(id=9902, session_id=530, hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION, version=0)
+    session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
+    runtime_hold_repo = SimpleNamespace(get_active_blocking_by_workline=AsyncMock(return_value=[hold]))
+    release_service = SimpleNamespace(
+        build_latest_evidence_hash=lambda _hold, *, session=None: "hash:latest",
+        resolve_hold=AsyncMock(
+            return_value={
+                "released_outbox_count": 0,
+                "remaining_active_blocking_holds": 0,
+            }
+        ),
     )
-    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
-    outbox_repo = SimpleNamespace(release_blocked_by_reconciliation_session=AsyncMock(return_value=0))
-    device_service = SimpleNamespace(clear_reconciliation_error=AsyncMock(return_value=None))
     db = _Db(command=command)
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
-        workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
-        device_service=device_service,
+        runtime_hold_repository=runtime_hold_repo,
+        runtime_hold_release_service=release_service,
     )
 
     with patch(
         "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
         new=AsyncMock(),
-    ):
+    ) as add_timeline:
         await service.resolve_runtime_reconciliation(
             db,
             session_id=530,
@@ -500,8 +762,6 @@ async def test_runtime_reconciliation_resolve_normalizes_aware_confirmed_at() ->
             operator_id=88,
         )
 
-    assert session.ended_at == expected_confirmed_at
-    assert command.completed_at == expected_confirmed_at
-    assert (
-        session.context_json["runtime_reconciliation_resolution"]["confirmed_at"] == expected_confirmed_at.isoformat()
-    )
+    release_service.resolve_hold.assert_awaited_once()
+    timeline = add_timeline.await_args.args[1]
+    assert timeline.payload_json["confirmed_at"] == expected_confirmed_at.isoformat()

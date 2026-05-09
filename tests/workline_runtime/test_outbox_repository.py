@@ -101,6 +101,45 @@ async def test_mark_as_blocked_by_workline_state_parks_without_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_block_by_runtime_hold_parks_with_hold_owner() -> None:
+    outbox = SimpleNamespace(
+        status=OutboxStatus.NEW,
+        workline_id=45,
+        finished_at=None,
+        next_retry_at=object(),
+        last_error="Dispatch failed",
+        blocked_by_runtime_hold_id=None,
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=None,
+        blocked_workline_id=None,
+        blocked_reason=None,
+    )
+    db = _FakeDb(outbox)
+
+    updated = await WorklineOutboxRepository().block_by_runtime_hold(  # type: ignore[arg-type]
+        db,
+        1,
+        runtime_hold_id=9901,
+        owner_session_id=91,
+        reason="CALLBACK_DEADLINE_EXPIRED",
+        blocked_device_id=7,
+        blocked_workline_id=45,
+    )
+
+    assert updated is outbox
+    assert outbox.status == OutboxStatus.BLOCKED_RESOURCE
+    assert outbox.finished_at is not None
+    assert outbox.next_retry_at is None
+    assert outbox.last_error == "CALLBACK_DEADLINE_EXPIRED"
+    assert outbox.blocked_by_runtime_hold_id == 9901
+    assert outbox.blocked_by_reconciliation_session_id == 91
+    assert outbox.blocked_device_id == 7
+    assert outbox.blocked_workline_id == 45
+    assert outbox.blocked_reason == "CALLBACK_DEADLINE_EXPIRED"
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mark_as_blocked_by_workline_estop_terminates_without_retry() -> None:
     outbox = SimpleNamespace(
         status=OutboxStatus.NEW,
@@ -117,6 +156,42 @@ async def test_mark_as_blocked_by_workline_estop_terminates_without_retry() -> N
     assert outbox.finished_at is not None
     assert outbox.next_retry_at is None
     assert outbox.last_error == "BLOCKED_BY_WORKLINE_ESTOP"
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_blocked_by_device_busy_parks_without_retry() -> None:
+    outbox = SimpleNamespace(
+        status=OutboxStatus.DISPATCHING,
+        workline_id=45,
+        finished_at=None,
+        next_retry_at=object(),
+        last_error=None,
+        blocked_by_reconciliation_session_id=91,
+        blocked_device_id=None,
+        blocked_workline_id=None,
+        blocked_reason=None,
+    )
+    db = _FakeDb(outbox)
+
+    updated = await WorklineOutboxRepository().mark_as_blocked_by_device_busy(  # type: ignore[arg-type]
+        db,
+        1,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        reason="DEVICE_BUSY",
+        last_error="设备 ARM01 正在执行任务",
+    )
+
+    assert updated is outbox
+    assert outbox.status == OutboxStatus.BLOCKED_RESOURCE
+    assert outbox.finished_at is not None
+    assert outbox.next_retry_at is None
+    assert outbox.last_error == "设备 ARM01 正在执行任务"
+    assert outbox.blocked_by_reconciliation_session_id is None
+    assert outbox.blocked_device_id == 7
+    assert outbox.blocked_workline_id == 45
+    assert outbox.blocked_reason == "DEVICE_BUSY"
     db.flush.assert_awaited_once()
 
 
@@ -190,6 +265,9 @@ async def test_get_sandbox_pending_messages_excludes_terminal_sessions_and_keeps
         plugin_key="smt_classifier",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
+        failure_domain="ORCHESTRATION",
+        failure_code="DEVICE_BUSY",
+        failure_message="设备正在执行任务",
     )
     waiting_session = WorklineSession(
         session_code="session-waiting",
@@ -220,13 +298,58 @@ async def test_get_sandbox_pending_messages_excludes_terminal_sessions_and_keeps
         target_code="ARM02",
         status=OutboxStatus.SENT,
     )
+    blocked_outbox = WorklineOutbox(
+        session_id=waiting_session.id,
+        workline_id=45,
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:blocked-device",
+        target_type=TargetType.DEVICE,
+        target_code="ARM03",
+        status=OutboxStatus.BLOCKED_RESOURCE,
+        blocked_device_id=7,
+        blocked_reason="DEVICE_BUSY",
+    )
     db_session.add(failed_outbox)
     db_session.add(waiting_outbox)
+    db_session.add(blocked_outbox)
     await db_session.flush()
 
     pending = await WorklineOutboxRepository().get_sandbox_pending_messages(db_session, workline_id=45)
 
-    assert [item.dispatch_key for item in pending] == ["device-command:waiting"]
+    assert [item.dispatch_key for item in pending] == [
+        "device-command:waiting",
+        "device-command:blocked-device",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_sandbox_pending_messages_keeps_failed_outbox_history_for_open_session(db_session) -> None:
+    session = WorklineSession(
+        session_code="session-manual-hold",
+        workline_id=45,
+        plugin_key="smt_classifier",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.MANUAL_HOLD,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    failed_outbox = WorklineOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:failed-open-session",
+        target_type=TargetType.DEVICE,
+        target_code="ARM02",
+        status=OutboxStatus.FAILED,
+        last_error="COMMAND_ACK_TIMEOUT",
+    )
+    db_session.add(failed_outbox)
+    await db_session.flush()
+
+    pending = await WorklineOutboxRepository().get_sandbox_pending_messages(db_session, workline_id=45)
+
+    assert "device-command:failed-open-session" in {item.dispatch_key for item in pending}
 
 
 @pytest.mark.asyncio
@@ -237,6 +360,9 @@ async def test_cancel_active_by_session_closes_stale_sandbox_actions(db_session)
         plugin_key="smt_classifier",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
+        failure_domain="ORCHESTRATION",
+        failure_code="DEVICE_BUSY",
+        failure_message="设备正在执行任务",
     )
     db_session.add(session)
     await db_session.flush()
@@ -340,6 +466,59 @@ async def test_release_blocked_by_reconciliation_session_requeues_only_owner_blo
 
 
 @pytest.mark.asyncio
+async def test_release_blocked_by_device_requeues_only_device_busy_outbox(db_session) -> None:
+    session = WorklineSession(
+        session_code="session-device-busy-release",
+        workline_id=45,
+        plugin_key="smt_classifier",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    device_blocked = WorklineOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:device-busy",
+        target_type=TargetType.DEVICE,
+        target_code="ARM01",
+        status=OutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=1,
+        last_error="设备 ARM01 正在执行任务",
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_BUSY",
+    )
+    reconciliation_blocked = WorklineOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:reconcile",
+        target_type=TargetType.DEVICE,
+        target_code="ARM01",
+        status=OutboxStatus.BLOCKED_RESOURCE,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="CALLBACK_DEADLINE_EXPIRED",
+    )
+    db_session.add_all([device_blocked, reconciliation_blocked])
+    await db_session.flush()
+
+    released = await WorklineOutboxRepository().release_blocked_by_device(db_session, device_id=7, workline_id=45)
+
+    assert released == 1
+    assert device_blocked.status == OutboxStatus.NEW
+    assert device_blocked.attempt_count == 0
+    assert device_blocked.last_error is None
+    assert device_blocked.blocked_device_id is None
+    assert device_blocked.blocked_workline_id is None
+    assert device_blocked.blocked_reason is None
+    assert reconciliation_blocked.status == OutboxStatus.BLOCKED_RESOURCE
+
+
+@pytest.mark.asyncio
 async def test_get_sandbox_completed_messages_includes_cancelled_terminal_outbox(db_session) -> None:
     session = WorklineSession(
         session_code="session-cancelled-outbox",
@@ -347,6 +526,9 @@ async def test_get_sandbox_completed_messages_includes_cancelled_terminal_outbox
         plugin_key="smt_classifier",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
+        failure_domain="ORCHESTRATION",
+        failure_code="DEVICE_BUSY",
+        failure_message="设备正在执行任务",
     )
     db_session.add(session)
     await db_session.flush()
@@ -359,6 +541,7 @@ async def test_get_sandbox_completed_messages_includes_cancelled_terminal_outbox
         target_type=TargetType.DEVICE,
         target_code="ARM01",
         status=OutboxStatus.CANCELLED,
+        last_error="DEVICE_BUSY",
     )
     db_session.add(outbox)
     await db_session.flush()
@@ -366,4 +549,16 @@ async def test_get_sandbox_completed_messages_includes_cancelled_terminal_outbox
     completed = await WorklineOutboxRepository().get_sandbox_completed_messages(db_session, workline_id=45)
 
     assert completed[0]["session"]["id"] == session.id
+    assert completed[0]["session"]["failure_domain"] == "ORCHESTRATION"
+    assert completed[0]["session"]["failure_code"] == "DEVICE_BUSY"
+    assert completed[0]["session"]["failure_message"] == "设备正在执行任务"
+    assert completed[0]["history_group_key"] == f"session:{session.id}"
     assert completed[0]["outbox_items"][0]["dispatch_key"] == "device-command:cancelled"
+    assert completed[0]["outbox_items"][0]["last_error"] == "DEVICE_BUSY"
+    assert completed[0]["outbox_items"][0]["is_actionable"] is False
+    assert completed[0]["outbox_items"][0]["history_group_key"] == f"session:{session.id}"
+    assert completed[0]["outbox_items"][0]["failure_summary"] == {
+        "code": "DEVICE_BUSY",
+        "message": "设备正在执行任务",
+        "runtime_hold_id": None,
+    }

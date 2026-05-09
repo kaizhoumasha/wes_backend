@@ -145,7 +145,8 @@ class TestOrchestratorServicePhase2:
         session = MagicMock()
         session.id = 12345
         session.status = "MANUAL_HOLD"
-        session.context_json = {"plugin_state": "MANUAL_HOLD"}
+        session.plugin_state = "WAITING_OUTPUT"
+        session.context_json = {}
 
         workline = MagicMock()
         workline.id = 1

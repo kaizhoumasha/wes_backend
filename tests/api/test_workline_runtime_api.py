@@ -248,7 +248,7 @@ class TestRuntimeQueryService:
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
-            step_code=None,
+            plugin_state=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -263,7 +263,7 @@ class TestRuntimeQueryService:
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
-            step_code=None,
+            plugin_state=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -311,7 +311,7 @@ class TestRuntimeQueryService:
             },
             workline_id=5,
             status="FAILED",
-            step_code=None,
+            plugin_state=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -321,7 +321,16 @@ class TestRuntimeQueryService:
         )
         workline = SimpleNamespace(line_name="SMT 线", line_code="WL-5")
 
-        item = service._build_trace_list_item(session, workline, None, None, None, now)
+        item = service._build_trace_list_item(
+            session,
+            workline,
+            None,
+            None,
+            None,
+            now,
+            latest_device=None,
+            action_source="NONE",
+        )
 
         assert item.business_key == "stable-key-11"
         assert item.barcode == "SVYU00125TP4LCR02_9"
@@ -570,7 +579,7 @@ class TestRuntimeQueryService:
             ack_code=None,
             ack_message=None,
             ack_trace_id=None,
-            step_code=None,
+            issued_plugin_state=None,
             params={},
             result_data=None,
             error_detail=None,
@@ -591,7 +600,7 @@ class TestRuntimeQueryService:
             last_request_id=None,
             workline_id=8,
             status="RUNNING",
-            step_code=None,
+            plugin_state=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -601,7 +610,16 @@ class TestRuntimeQueryService:
         )
 
         with pytest.raises(ValueError, match=r"session\.id"):
-            service._build_trace_list_item(session, None, None, None, None, timezone.now_for_db())
+            service._build_trace_list_item(
+                session,
+                None,
+                None,
+                None,
+                None,
+                timezone.now_for_db(),
+                latest_device=None,
+                action_source="NONE",
+            )
 
     def test_build_trace_response_preserves_diagnostic_context(self) -> None:
         from src.app.workline.services.trace_response_builder import build_trace_response
