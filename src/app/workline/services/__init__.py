@@ -4,6 +4,9 @@ from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_s
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
 from .inbox_service import WorklineInboxService, inbox_service
 from .operation_service import WorklineOperationService, workline_operation_service
+from .runtime_hold_creation_service import RuntimeHoldCreationService, runtime_hold_creation_service
+from .runtime_hold_query_service import RuntimeHoldQueryService, runtime_hold_query_service
+from .runtime_hold_release_service import RuntimeHoldReleaseService, runtime_hold_release_service
 from .runtime_query_service import RuntimeQueryService, runtime_query_service
 from .runtime_reconciliation_service import (
     WorklineRuntimeReconciliationService,
@@ -15,6 +18,9 @@ from .trace_query_service import TraceQueryResult, TraceQueryService, trace_quer
 from .workline_service import WorkLineService, workline_service
 
 __all__ = [
+    "RuntimeHoldCreationService",
+    "RuntimeHoldQueryService",
+    "RuntimeHoldReleaseService",
     "RuntimeQueryService",
     "TraceQueryResult",
     "TraceQueryService",
@@ -29,6 +35,9 @@ __all__ = [
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
     "inbox_service",
+    "runtime_hold_creation_service",
+    "runtime_hold_query_service",
+    "runtime_hold_release_service",
     "runtime_query_service",
     "trace_query_service",
     "workline_diagnostic_service",

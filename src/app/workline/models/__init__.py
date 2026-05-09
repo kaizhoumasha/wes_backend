@@ -54,6 +54,15 @@ from .runtime import (
     TraceSessionItem,
     TraceTimelineItem,
 )
+from .runtime_hold import (
+    MaterialDisposition,
+    NgReasonSource,
+    NgReturnItem,
+    NgReturnItemStatus,
+    RuntimeHold,
+    RuntimeHoldStatus,
+    RuntimeHoldType,
+)
 from .safety import (
     ClearWorkLineEstopRequest,
     WorkLineRuntimeStatus,
@@ -101,10 +110,17 @@ __all__ = [
     "InboxKind",
     "InboxStatus",
     "LineType",
+    "MaterialDisposition",
+    "NgReasonSource",
+    "NgReturnItem",
+    "NgReturnItemStatus",
     "OutboxStatus",
     "RunMode",
     "RuntimeDeviceDetailResponse",
     "RuntimeDeviceSummary",
+    "RuntimeHold",
+    "RuntimeHoldStatus",
+    "RuntimeHoldType",
     "RuntimeOverviewResponse",
     "RuntimeReconciliationReason",
     "RuntimeReconciliationResolution",

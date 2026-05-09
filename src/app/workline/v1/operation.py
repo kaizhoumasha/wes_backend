@@ -60,6 +60,13 @@ def _outbox_response(outbox: Any) -> dict[str, Any]:
         "status": _enum_value(outbox.status),
         "payload_json": payload,
         "source_device": None,
+        "last_error": getattr(outbox, "last_error", None),
+        "command_status": getattr(outbox, "command_status", None),
+        "is_current_action": getattr(outbox, "is_current_action", None),
+        "is_actionable": getattr(outbox, "is_actionable", None),
+        "runtime_hold_id": getattr(outbox, "runtime_hold_id", None),
+        "failure_summary": getattr(outbox, "failure_summary", None),
+        "history_group_key": getattr(outbox, "history_group_key", None),
     }
 
 
