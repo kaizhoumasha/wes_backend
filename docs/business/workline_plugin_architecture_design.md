@@ -113,7 +113,8 @@
 本阶段采用最直接、最稳定的技术形态：
 
 * 插件用 Python 类实现。
-* 流程状态采用显式状态机建模。
+* 流程状态由 Material Flow Runtime / MaterialRun 统一管理。
+* 插件只返回 `RuntimeIntent`，不维护 per-plugin state machines。
 * 编排器仍以 Celery Task 驱动。
 * 不引入 BPMN、在线 DSL、可视化流程引擎。
 * 不做插件热加载市场和脚本执行器。
@@ -226,7 +227,7 @@
 
 插件输出的是：
 
-* 状态机触发器或目标迁移意图
+* `RuntimeIntent`，即插件对物料下一步的业务判断
 * 上下文变更
 * 待派发的设备动作
 * 待调用的外部动作
@@ -731,14 +732,14 @@ async def get_downstream_devices(db: AsyncSession, device_id: int) -> list[Devic
 **插件使用示例**：
 ```python
 class PackingZonePlugin:
-    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> RuntimeIntent:
         # 按角色和序号获取设备
         main_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=1)
         aux_arm = ctx.get_device_by_role(DeviceRole.ROBOT_ARM, index=2)
 
         if aux_arm:
             # 双臂协作：主臂抓取，辅助臂放置
-            return PluginResult(
+            return RuntimeIntent(
                 commands=[
                     CommandIntent(target_device_id=main_arm.device_id, action="GRAB"),
                     CommandIntent(target_device_id=aux_arm.device_id, action="PLACE"),
@@ -746,7 +747,7 @@ class PackingZonePlugin:
             )
         else:
             # 单臂模式：抓取+放置
-            return PluginResult(
+            return RuntimeIntent(
                 commands=[CommandIntent(target_device_id=main_arm.device_id, action="GRAB_AND_PLACE")]
             )
 ```
@@ -759,14 +760,14 @@ class PackingZonePlugin:
 # 不需要复杂的拓扑配置
 # 在插件中根据业务逻辑选择下游设备
 class ConveyorPlugin:
-    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> RuntimeIntent:
         # 根据业务主键前缀决定走哪个分支
         if ctx.session.business_key.startswith("A"):
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=1)  # A线
         else:
             target = ctx.get_device_by_role(DeviceRole.CONVEYOR, index=2)  # B线
 
-        return PluginResult(commands=[CommandIntent(target_device_id=target.device_id, ...)])
+        return RuntimeIntent(commands=[CommandIntent(target_device_id=target.device_id, ...)])
 ```
 
 #### 8.2.3 设备表 Schema
@@ -836,7 +837,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 
 说明：
 
-* `status` 必须由插件定义的状态机管理
+* `status` 生命周期由 Material Flow Runtime / MaterialRun 管理，插件只返回 `RuntimeIntent`
 * `context_json` 由插件自己的上下文模型做版本化管理
 * `awaiting_command_id` 若保留，仅表示内部数据库外键（`DeviceCommand.id`）
 * 业务语义层仍应以 `command_code` 表示“正在等待哪条控制流命令结果”
@@ -1036,7 +1037,6 @@ src/workline_plugins/
   types.py
   packing_zone/
     plugin.py
-    state_machine.py
     config_models.py
   smt/
     plugin.py
@@ -1064,9 +1064,6 @@ class WorklinePlugin(Protocol):
     binding_config_model: Type[pydantic.BaseModel]
     context_model: Type[pydantic.BaseModel]
 
-    # 状态机类（基于 transitions 库）
-    state_machine_class: type["WorklineStateMachine"]
-
     # 业务键解析器
     business_key_resolver: "BusinessKeyResolver"
 
@@ -1074,15 +1071,15 @@ class WorklinePlugin(Protocol):
     async def validate_topology(self, ctx: "PluginBootstrapContext") -> None: ...
 
     # 事件处理入口
-    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
-    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
-    async def on_external_callback(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
-    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "PluginResult": ...
+    async def on_device_event(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "RuntimeIntent": ...
+    async def on_command_result(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "RuntimeIntent": ...
+    async def on_external_callback(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "RuntimeIntent": ...
+    async def on_manual_operation(self, ctx: "PluginContext", inbox: "WorklineInbox") -> "RuntimeIntent": ...
 ```
 
 **设计说明**：
 
-* `state_machine_class` 使用 `WorklineStateMachine` 子类（基于 transitions 库），提供成熟的回调机制
+* `state_machine_class` 是 legacy/deprecated 字段，目标架构中不再作为新插件必须字段
 * `business_key_resolver` 使用 `BusinessKeyResolver` 基类，强制实现校验逻辑
 * 插件不需要实现 `is_session_start` 和 `derive_business_key`，统一由 `BusinessKeyResolver` 处理
 
@@ -1101,13 +1098,13 @@ class WorklinePlugin(Protocol):
 
 插件只能通过 `services` 调用外部能力，不直接操作 Repository 或 HTTP Client。
 
-### 9.5 PluginResult 设计建议
+### 9.5 RuntimeIntent 设计建议
 
 插件返回的是“领域意图”，建议结构如下：
 
 ```python
-class PluginResult(BaseModel):
-    transition: str | None = None
+class RuntimeIntent(BaseModel):
+    material_outcome: MaterialOutcomeIntent | None = None
     context_patch: dict = Field(default_factory=dict)
     decisions: list[DecisionIntent] = Field(default_factory=list)
     commands: list[CommandIntent] = Field(default_factory=list)
@@ -1119,293 +1116,50 @@ class PluginResult(BaseModel):
 
 说明：
 
-* `transition`: 状态机触发器，而不是直接写死 `next_state`
+* `material_outcome`: 插件对物料完成、阻塞、NG 或继续流转的业务判断
 * `context_patch`: 对 `session.context_json` 的增量修改
-* `commands`: 待生成 `DeviceCommand` 与 `Outbox`
+* `commands`: 待由 Runtime 校验拓扑后生成 `DeviceCommand` 与 `Outbox`
 * `external_requests`: 待生成外部调用 `Outbox`
 * `decisions`: 领域判断证据
 * `wait`: 进入等待态时的等待定义
 * `failure`: 失败归因
 
-编排器根据 `PluginResult` 统一生成：
+Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 
-* Session 更新
+* MaterialRun 更新
+* Session / 当前视图投影更新
 * Timeline
 * DecisionLog
 * ExternalCallLog 初始记录
 * Outbox
 * Metrics
 
-### 9.6 状态机管理
+### 9.6 Legacy Plugin State Machine Deletion Plan
 
-状态机必须是显式定义，不允许只靠 `if/elif` 隐式维护。
+> Target architecture update: per-plugin state machines are replaced by Material Flow Runtime. Plugins return RuntimeIntent; Runtime owns MaterialRun lifecycle and validates topology/device execution.
 
-**使用 `transitions` 库**：项目应使用成熟的 [transitions](https://github.com/pytransitions/transitions) 库，而非自研状态机。
+删除目标：
 
-#### 9.6.1 依赖安装
+* 新插件不得新增 per-plugin state machines，不得新增 `state_machine_class`。
+* 旧插件状态机迁移为 `RuntimeIntent` + MaterialRun + RuntimeEvent。
+* `transitions` 仅属于 legacy/deprecated implementation，不再作为目标架构依赖。
+* 原 `WorklineStateMachine`、`validate_state_machine()`、插件内迁移触发器和状态图全部进入 deletion target。
 
-```bash
-uv add transitions
-```
+迁移规则：
 
-#### 9.6.2 状态机基类设计
+1. 插件保留业务判断：解释当前设备事件、选择下一设备动作、判断物料完成/阻塞/NG。
+2. 插件返回 `RuntimeIntent`，不返回状态机 trigger，不写 `status`，不创建命令记录。
+3. Material Flow Runtime 校验 `RuntimeIntent`，包括物料当前状态、拓扑、设备角色、命令生命周期和等待条件。
+4. Runtime 负责更新 MaterialRun，写入 RuntimeEvent，创建 blocker，更新投影，计算指标并触发告警。
+5. RuntimeEvent 是回放、追踪、当前视图、指标和告警的唯一事实来源。
 
-```python
-from transitions import Machine
-from typing import Protocol, Any
-from enum import Enum
+旧实现删除顺序：
 
-
-class SessionStatus(str, Enum):
-    “””通用 Session 状态枚举”””
-    NEW = “NEW”
-    RUNNING = “RUNNING”
-    WAITING_DEVICE_RESULT = “WAITING_DEVICE_RESULT”
-    WAITING_EXTERNAL = “WAITING_EXTERNAL”
-    MANUAL_HOLD = “MANUAL_HOLD”
-    COMPLETED = “COMPLETED”
-    FAILED = “FAILED”
-    CANCELLED = “CANCELLED”
-
-
-class WorklineStateMachine(Machine):
-    “””作业线状态机基类 - 基于 transitions 库”””
-
-    def __init__(self, model: Any, initial: str | None = None, **kwargs):
-        “””
-        初始化状态机
-
-        Args:
-            model: 状态机绑定的模型对象（通常是 Session）
-            initial: 初始状态，默认使用类定义的 initial_state
-        “””
-        super().__init__(
-            model=model,
-            states=self.get_states(),
-            transitions=self.get_transitions(),
-            initial=initial or self.get_initial_state(),
-            auto_transitions=False,  # 禁用自动迁移，强制显式定义
-            queued=True,  # 启用队列模式，支持回调中触发新迁移
-            **kwargs
-        )
-
-    @classmethod
-    def get_states(cls) -> list[str]:
-        “””获取状态列表”””
-        raise NotImplementedError(“子类必须实现 get_states()”)
-
-    @classmethod
-    def get_initial_state(cls) -> str:
-        “””获取初始状态”””
-        raise NotImplementedError(“子类必须实现 get_initial_state()”)
-
-    @classmethod
-    def get_transitions(cls) -> list[dict | list]:
-        “””获取迁移规则列表”””
-        raise NotImplementedError(“子类必须实现 get_transitions()”)
-
-    def is_valid_trigger(self, trigger: str) -> bool:
-        “””检查触发器是否有效”””
-        return trigger in self.get_triggers(self.model.state)
-```
-
-#### 9.6.3 插件状态机实现示例
-
-```python
-from src.workline_plugins.base import WorklineStateMachine, SessionStatus
-
-
-class PackingZoneStateMachine(WorklineStateMachine):
-    “””装箱区状态机”””
-
-    @classmethod
-    def get_states(cls) -> list[str]:
-        return [
-            SessionStatus.NEW.value,
-            SessionStatus.RUNNING.value,
-            SessionStatus.WAITING_DEVICE_RESULT.value,
-            SessionStatus.WAITING_EXTERNAL.value,
-            SessionStatus.MANUAL_HOLD.value,
-            SessionStatus.COMPLETED.value,
-            SessionStatus.FAILED.value,
-        ]
-
-    @classmethod
-    def get_initial_state(cls) -> str:
-        return SessionStatus.NEW.value
-
-    @classmethod
-    def get_transitions(cls) -> list[dict | list]:
-        return [
-            # 简写格式: [trigger, source, dest]
-            ['start', SessionStatus.NEW.value, SessionStatus.RUNNING.value],
-            ['wait_device', SessionStatus.RUNNING.value, SessionStatus.WAITING_DEVICE_RESULT.value],
-            ['wait_external', SessionStatus.RUNNING.value, SessionStatus.WAITING_EXTERNAL.value],
-            ['device_success', SessionStatus.WAITING_DEVICE_RESULT.value, SessionStatus.COMPLETED.value],
-            ['device_failed', SessionStatus.WAITING_DEVICE_RESULT.value, SessionStatus.MANUAL_HOLD.value],
-            ['external_success', SessionStatus.WAITING_EXTERNAL.value, SessionStatus.RUNNING.value],
-            ['external_failed', SessionStatus.WAITING_EXTERNAL.value, SessionStatus.MANUAL_HOLD.value],
-            ['retry', SessionStatus.MANUAL_HOLD.value, SessionStatus.RUNNING.value],
-            ['complete', SessionStatus.MANUAL_HOLD.value, SessionStatus.COMPLETED.value],
-
-            # 完整格式: 支持 conditions, before, after 等回调
-            {
-                'trigger': 'fail',
-                'source': '*',  # 通配符：任意状态都可失败
-                'dest': SessionStatus.FAILED.value,
-                'after': 'on_failure',  # 迁移后回调
-            },
-            {
-                'trigger': 'cancel',
-                'source': [SessionStatus.NEW.value, SessionStatus.RUNNING.value],
-                'dest': SessionStatus.CANCELLED.value,
-                'conditions': 'can_cancel',  # 条件检查
-            },
-        ]
-
-
-# 使用示例
-class SessionModel:
-    “””Session 模型（简化示例）”””
-    state: str = SessionStatus.NEW.value
-
-    def on_failure(self):
-        “””失败回调 - 记录日志、发送告警等”””
-        print(f”Session failed at state: {self.state}”)
-
-    def can_cancel(self) -> bool:
-        “””取消条件检查”””
-        return self.state in [SessionStatus.NEW.value, SessionStatus.RUNNING.value]
-
-
-# 创建状态机
-session = SessionModel()
-machine = PackingZoneStateMachine(model=session)
-
-# 触发迁移
-session.start()  # NEW -> RUNNING
-session.wait_device()  # RUNNING -> WAITING_DEVICE_RESULT
-session.device_success()  # WAITING_DEVICE_RESULT -> COMPLETED
-
-# 检查当前状态
-print(session.state)  # “COMPLETED”
-```
-
-#### 9.6.4 回调机制
-
-`transitions` 库提供完整的回调机制：
-
-```python
-# 迁移回调执行顺序
-# 1. transition.prepare    - 迁移准备
-# 2. transition.conditions - 条件检查（可阻断迁移）
-# 3. transition.before     - 迁移前
-# 4. state.on_exit         - 离开源状态
-# 5. <STATE CHANGE>        - 状态变更
-# 6. state.on_enter        - 进入目标状态
-# 7. transition.after      - 迁移后
-```
-
-**回调示例**：
-
-```python
-transitions = [
-    {
-        'trigger': 'wait_device',
-        'source': SessionStatus.RUNNING.value,
-        'dest': SessionStatus.WAITING_DEVICE_RESULT.value,
-        'prepare': ['setup_wait_context'],      # 准备阶段
-        'conditions': 'has_device_available',   # 条件检查
-        'before': ['log_wait_start'],           # 迁移前
-        'after': ['schedule_timeout'],          # 迁移后
-    },
-]
-```
-
-#### 9.6.5 状态机校验规则
-
-1. 每个插件必须提供 `WorklineStateMachine` 子类。
-2. 编排器根据当前 `session.status` 加载状态机。
-3. 插件返回 `transition` 后，由编排器调用 `is_valid_trigger()` 校验。
-4. 非法迁移直接拒绝，并记录 `SOFTWARE.INVALID_TRANSITION`。
-5. 状态机只负责”允许什么迁移”，不负责持久化。
-
-#### 9.6.6 状态机校验工具
-
-```python
-def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[str]:
-    “””
-    校验状态机定义的完整性，返回错误列表
-
-    Args:
-        machine_class: 状态机类（非实例）
-
-    Returns:
-        错误消息列表，空列表表示校验通过
-    “””
-    errors = []
-    states = machine_class.get_states()
-    initial = machine_class.get_initial_state()
-    transitions = machine_class.get_transitions()
-
-    # 校验初始状态在状态列表中
-    if initial not in states:
-        errors.append(f”初始状态 '{initial}' 不在状态列表中”)
-
-    # 校验所有迁移的源状态和目标状态都合法
-    for t in transitions:
-        if isinstance(t, dict):
-            trigger = t.get('trigger')
-            source = t.get('source')
-            dest = t.get('dest')
-        else:
-            trigger, source, dest = t[0], t[1], t[2]
-
-        # 检查源状态
-        sources = [source] if isinstance(source, str) else source
-        for s in sources:
-            if s != “*” and s not in states:
-                errors.append(f”迁移 '{trigger}' 的源状态 '{s}' 不在状态列表中”)
-
-        # 检查目标状态
-        if dest not in states:
-            errors.append(f”迁移 '{trigger}' 的目标状态 '{dest}' 不在状态列表中”)
-
-    # 校验所有状态都有可达路径
-    reachable = {initial}
-    changed = True
-    while changed:
-        changed = False
-        for t in transitions:
-            if isinstance(t, dict):
-                source = t.get('source')
-                dest = t.get('dest')
-            else:
-                source, dest = t[1], t[2]
-
-            sources = [source] if isinstance(source, str) else source
-            if any(s in reachable or s == “*” for s in sources) and dest not in reachable:
-                reachable.add(dest)
-                changed = True
-
-    unreachable = set(states) - reachable
-    if unreachable:
-        errors.append(f”存在不可达状态: {unreachable}”)
-
-    return errors
-```
-
-#### 9.6.7 transitions 库的优势
-
-| 特性 | 自研状态机 | transitions 库 |
-|------|------------|----------------|
-| 成熟度 | 需要大量测试 | 10+ 年历史，广泛使用 |
-| 回调机制 | 需自己实现 | 完整的 before/after/conditions |
-| 可视化 | 需额外开发 | 内置 Graphviz 支持 |
-| 嵌套状态 | 需自己实现 | 原生支持 HierarchicalMachine |
-| 并发安全 | 需自己实现 | 支持 queued 模式 |
-| 类型安全 | 弱 | 中等（experimental 支持更好） |
-| 维护成本 | 高 | 低（社区维护）|
+1. 将旧状态机分支的业务判断提取为 `RuntimeIntent` builder。
+2. 将状态迁移校验替换为 Runtime intent validation。
+3. 将状态进入/退出回调拆到 RuntimeEvent、MaterialRun 更新、命令创建和 blocker 创建。
+4. 删除插件 manifest/protocol 中的 `state_machine_class` 必填约束。
+5. 删除 `transitions` 依赖和 per-plugin `state_machine.py` 文件。
 
 ---
 
@@ -1464,8 +1218,8 @@ def validate_state_machine(machine_class: type[WorklineStateMachine]) -> list[st
 4. 锁定 Session。
 5. 构建 `PluginContext`。
 6. 根据 `inbox.kind` 调用插件入口。
-7. 校验 `PluginResult.transition` 合法性。
-8. 在单一事务中更新 `Session / Timeline / Decision / Outbox / Inbox`。
+7. 校验 `RuntimeIntent` 合法性，包括当前 MaterialRun 状态、拓扑、设备角色和等待条件。
+8. 在单一事务中更新 `MaterialRun / RuntimeEvent / Timeline / Decision / Outbox / Inbox`。
 
 ### 10.4 派发阶段
 
@@ -1900,7 +1654,7 @@ src/app/workline_runtime/
     orchestrator_service.py
     dispatcher_service.py
     role_resolver_service.py
-    state_machine_service.py
+    runtime_intent_validator_service.py
     timeout_service.py
   metrics/
     emitter.py
@@ -1912,31 +1666,23 @@ src/app/workline_runtime/
 ```text
 src/workline_plugins/
   base.py                    # 插件基类和协议
-  state_machine.py           # WorklineStateMachine 基类（基于 transitions）
   registry.py                # 插件注册表
   context.py                 # PluginContext 定义
   types.py                   # 类型定义
   packing_zone/
     plugin.py                # 插件实现
-    state_machine.py         # PackingZoneStateMachine
     config_models.py         # 配置模型
   smt/
     plugin.py
-    state_machine.py
     inbound.py
     outbound.py
   return_area/
     plugin.py
-    state_machine.py
 ```
 
 ### 15.3 依赖要求
 
-```toml
-# pyproject.toml
-[project.dependencies]
-transitions = ">=0.9.0"  # 状态机库
-```
+目标架构不新增 `transitions` 依赖。若当前实现中仍存在 `state_machine.py` 或 `transitions`，它们属于 legacy deletion target，应随 RuntimeIntent 迁移一并删除。
 
 ### 15.4 建议拆分 Celery 任务
 
@@ -1960,7 +1706,7 @@ scripts/
 * 直接构造 `PluginContext`
 * 单线程同步执行插件逻辑
 * Mock 掉外部依赖
-* 打印 `PluginResult`
+* 打印 `RuntimeIntent`
 
 ---
 
@@ -1987,11 +1733,11 @@ scripts/
 > - ✅ **单元测试完成**：31 个测试全部通过（枚举测试 + 幂等键计算测试）
 > - ✅ **Phase 2 运行时基础设施** (2026-03-24)：
 >   - ✅ `RedisDistributedLock` - 分布式锁（12 测试通过）
->   - ✅ `PluginResult & Types` - 插件返回类型（18 测试通过）
+>   - ⚠️ `PluginResult & Types` - legacy/deprecated 命名，目标架构应迁移为 RuntimeIntent
 >   - ✅ `PluginContext` - 插件上下文（7 测试通过）
 >   - ✅ `NullPlugin` - 默认插件（10 测试通过）
 > - ✅ **Phase 2 编排器核心服务** (2026-03-24)：
->   - ✅ `TransitionValidator` - 状态迁移校验（11 测试通过）
+>   - ⚠️ `TransitionValidator` - legacy/deprecated 状态迁移校验，目标架构中由 Runtime intent validation replaced
 >   - ✅ `OrchestratorService` - 核心编排服务（13 测试通过）
 >   - ✅ `InboxConsumer` - Celery Inbox 消费者（9 测试通过）
 >   - ✅ `TimeoutScanner` - 超时扫描器（6 测试通过）
@@ -2009,7 +1755,7 @@ scripts/
 
 * 明确 `business_key` 规则
 * 明确 `failure_domain / failure_code`
-* 明确状态机建模规范
+* 明确 Material Flow Runtime 状态所有权与 Runtime intent validation 规范
 * 定义 Inbox / Outbox 表与枚举
 
 产出：
@@ -2061,12 +1807,12 @@ scripts/
   * 支持 Redis 故障时降级到 PostgreSQL 行锁
   * 单元测试：12 个测试全部通过
 
-* ✅ **PluginResult & Types** - 插件返回结果类型 (`src/workline_runtime/types.py`)
+* ⚠️ **PluginResult & Types** - legacy/deprecated 插件返回结果类型 (`src/workline_runtime/types.py`)
   * `WaitIntent` - 等待意图
   * `CommandIntent` - 设备命令意图
   * `FailureIntent` - 失败归因意图
-  * `PluginResult` - 插件返回结果（领域意图集合）
-  * 单元测试：18 个测试全部通过
+  * `PluginResult` 命名应被 RuntimeIntent replaced，表达插件返回的是运行时意图集合
+  * 迁移完成后保留 Intent 子类型，删除 legacy 命名歧义
 
 * ✅ **PluginContext** - 插件上下文 (`src/workline_runtime/plugin_context.py`)
   * 包含 workline, session, devices_by_role 等核心实体
@@ -2078,21 +1824,20 @@ scripts/
 
 * ✅ **NullPlugin** - Phase 2 默认插件 (`src/workline_runtime/null_plugin.py`)
   * 空实现插件，用于测试编排流程
-  * 所有方法返回空的 PluginResult
+  * 目标架构下所有方法返回空的 `RuntimeIntent`
   * 支持 on_device_event, on_command_result, on_external_http, on_manual_operation
   * 单元测试：10 个测试全部通过
 
-* ✅ **TransitionValidator** - 状态迁移校验器 (`src/workline_runtime/transition_validator.py`)
-  * Phase 2 默认行为：无状态机时允许所有迁移
-  * Phase 3 状态机校验：使用 transitions 库验证迁移有效性
-  * 返回 (is_valid, error_message) 元组
-  * 单元测试：11 个测试全部通过
+* ⚠️ **TransitionValidator** - legacy/deprecated 状态迁移校验器 (`src/workline_runtime/transition_validator.py`)
+  * Material Flow Runtime 目标架构中被 Runtime intent validation replaced
+  * 不再引入 per-plugin state machines 或 `transitions` 作为 Phase 3 目标方案
+  * 迁移完成后应删除该 legacy validation path
 
 * ✅ **OrchestratorService** - 核心编排服务 (`src/workline_runtime/orchestrator.py`)
   * 支持分布式锁获取与释放
   * 支持插件加载与调用
-  * 处理 PluginResult 各字段（transition, commands, wait, failure, complete）
-  * 集成 TransitionValidator 验证状态迁移
+  * 处理 RuntimeIntent 各字段（commands, wait, failure, complete, material_outcome）
+  * 集成 Runtime intent validation 验证状态所有权、拓扑和设备执行
   * 支持依赖注入 lock_provider（便于测试）
   * 单元测试：13 个测试全部通过
 
@@ -2228,7 +1973,7 @@ scripts/
 ### 17.3 KISS
 
 * 优先使用 Python 插件类
-* 优先保持显式流程和显式状态机
+* 优先保持显式流程，并由 Runtime 集中管理 MaterialRun 状态
 * 优先做一条作业线先跑通
 * 避免提前引入复杂流程平台
 
@@ -2276,7 +2021,7 @@ scripts/
 | SQLModel/SQLAlchemy 2.0 | 中等 | 熟练使用异步 ORM | ✅ 已有 |
 | Celery 异步任务 | 中等 | 理解任务分发和重试机制 | ✅ 已有 |
 | Inbox/Outbox 模式 | 高 | 理解分布式事务和最终一致性 | ⚠️ 需学习 |
-| 状态机建模 | 中等 | 有状态机设计经验 | ⚠️ 需规范 |
+| Runtime 状态所有权建模 | 中等 | 理解 RuntimeIntent、MaterialRun、RuntimeEvent 边界 | ⚠️ 需规范 |
 | 插件化架构 | 高 | 有插件框架设计经验 | ⚠️ 需设计 |
 | TimescaleDB | 低 | 时序数据库基础 | ✅ 已有 |
 | Prometheus 监控 | 低 | 指标定义和看板设计 | ✅ 已有 |
@@ -2303,7 +2048,7 @@ scripts/
 | **插件开发门槛** | 中 | 中 | 提供 `debug_plugin.py` 和单元测试模板 |
 | **外部系统回调幂等** | 中 | 中 | 在接入层实现统一的幂等检查 |
 | **TimescaleDB 性能** | 低 | 低 | 提前做压测，准备压缩和清理策略 |
-| **状态机定义错误** | 中 | 中 | 提供 `validate_state_machine()` 校验工具 |
+| **RuntimeIntent 校验不完整** | 中 | 中 | 用 Runtime intent validation 统一校验状态、拓扑、设备执行和命令生命周期 |
 
 ### 20.4 团队技能建议
 
@@ -2312,7 +2057,7 @@ scripts/
 1. **架构师（1人）**：
    - 精通分布式系统和异步架构
    - 熟悉 Inbox/Outbox 模式
-   - 有状态机设计经验
+   - 熟悉 Runtime 状态所有权和事件溯源式事实流建模
 
 2. **后端开发（1-2人）**：
    - 熟练 Python/FastAPI/SQLModel
@@ -2369,7 +2114,7 @@ scripts/
 最适合 P9 WES 当前阶段的可实施方案是：
 
 * 保留现有 `CallbackLog` 和 `DeviceCommand` 作为设备层证据。
-* 新增 `WorklineSession` 作为业务主链路，其状态由插件定义的显式状态机管理。
+* 新增 `MaterialRun` / `WorklineSession` 作为业务主链路，其状态生命周期由 Material Flow Runtime 管理，插件只返回 `RuntimeIntent`。
 * 新增 `WorklineTimeline` 作为排障主视图。
 * 新增 `WorklineInbox` 作为统一编排入口，解决异步输入可靠消费问题。
 * 新增 `WorklineOutbox` 作为统一副作用出口，解决状态推进与动作派发的一致性问题。
