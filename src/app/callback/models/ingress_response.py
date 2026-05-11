@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.core.response import ResponseSchemaModel
+
 
 class CallbackRejectedResponse(BaseModel):
     """Callback 入口拒收响应数据。"""
@@ -41,6 +43,12 @@ class CallbackExternalAcceptedResponse(BaseModel):
     trace_id: str | None = Field(default=None, description="Trace ID")
     event_id: str | None = Field(default=None, description="供应商事件 ID")
     causation_id: str | None = Field(default=None, description="因果事件 ID")
+
+
+type CallbackRejectedIngressResponse = ResponseSchemaModel[CallbackRejectedResponse]
+type CallbackResultIngressResponse = ResponseSchemaModel[CallbackResultAcceptedResponse | CallbackRejectedResponse]
+type CallbackEventIngressResponse = ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]
+type CallbackExternalIngressResponse = ResponseSchemaModel[CallbackExternalAcceptedResponse | CallbackRejectedResponse]
 
 
 def build_callback_rejected_response() -> CallbackRejectedResponse:
@@ -102,9 +110,13 @@ def build_callback_external_accepted_response(
 
 __all__ = [
     "CallbackEventAcceptedResponse",
+    "CallbackEventIngressResponse",
     "CallbackExternalAcceptedResponse",
+    "CallbackExternalIngressResponse",
+    "CallbackRejectedIngressResponse",
     "CallbackRejectedResponse",
     "CallbackResultAcceptedResponse",
+    "CallbackResultIngressResponse",
     "build_callback_event_accepted_response",
     "build_callback_external_accepted_response",
     "build_callback_rejected_response",

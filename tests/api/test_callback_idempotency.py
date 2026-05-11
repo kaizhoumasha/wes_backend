@@ -104,11 +104,11 @@ class TestCallbackResultIdempotency:
 
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(return_value=existing_command),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -130,19 +130,19 @@ class TestCallbackResultIdempotency:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
@@ -184,7 +184,7 @@ class TestCallbackEventIdempotency:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -202,15 +202,15 @@ class TestCallbackEventIdempotency:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
@@ -252,15 +252,15 @@ class TestCallbackExternalIdempotency:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_external_http_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,

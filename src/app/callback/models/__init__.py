@@ -12,9 +12,13 @@ from src.app.callback.models.callback_log import (
 from src.app.callback.models.event import CallbackEventRequest
 from src.app.callback.models.ingress_response import (
     CallbackEventAcceptedResponse,
+    CallbackEventIngressResponse,
     CallbackExternalAcceptedResponse,
+    CallbackExternalIngressResponse,
+    CallbackRejectedIngressResponse,
     CallbackRejectedResponse,
     CallbackResultAcceptedResponse,
+    CallbackResultIngressResponse,
     build_callback_event_accepted_response,
     build_callback_external_accepted_response,
     build_callback_rejected_response,
@@ -23,15 +27,19 @@ from src.app.callback.models.ingress_response import (
 
 __all__ = [
     "CallbackEventAcceptedResponse",
+    "CallbackEventIngressResponse",
     "CallbackEventRequest",
     "CallbackExternalAcceptedResponse",
+    "CallbackExternalIngressResponse",
     "CallbackLog",
     "CallbackLogCreate",
     "CallbackLogResponse",
     "CallbackLogSubjectResponse",
     "CallbackLogTraceResponse",
+    "CallbackRejectedIngressResponse",
     "CallbackRejectedResponse",
     "CallbackResultAcceptedResponse",
+    "CallbackResultIngressResponse",
     "build_callback_event_accepted_response",
     "build_callback_external_accepted_response",
     "build_callback_log_response",
