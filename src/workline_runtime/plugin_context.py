@@ -15,6 +15,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
+from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
 from src.workline_runtime.plugin_state import get_plugin_state
@@ -123,6 +124,7 @@ class PluginContext(BaseModel):
     services: WorklineRuntimeServices
 
     # 工具
+    next: PluginNext = Field(default_factory=PluginNext)
     logger: logging.Logger
     clock: Callable[[], datetime]
 
@@ -221,6 +223,7 @@ class PluginContextBuilder:
             normalized_input=normalized_input,
             diagnostics=diagnostics,
             services=services,
+            next=PluginNext(),
             logger=logger,
             clock=clock,
         )

@@ -19,7 +19,10 @@ from src.workline_runtime.plugin_base import (
     resolve_normalized_command_failure,
     step,
 )
+from src.workline_runtime.plugin_context import PluginContextBuilder
+from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult, NormalizedDeviceEvent
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.types import (
     CommandIntent,
     CommandTargetScope,
@@ -118,7 +121,67 @@ class NormalizedInputPlugin(WorklinePlugin):
         )
 
 
+class RuntimeIntentTargetPlugin(WorklinePlugin):
+    """验证 target-style 插件可直接声明下一步 RuntimeIntent。"""
+
+    plugin_key = "runtime-intent-target"
+    contract_version = "1.0"
+
+    @on_event("TOTE_READY")
+    async def handle_tote_ready(self, ctx, inbox):
+        return ctx.next.command(
+            device_role="WEIGH_SCALE",
+            action="WEIGH_TOTE",
+            payload={"tote_id": inbox.payload_json["tote_id"]},
+            destination_role="WEIGH_SCALE",
+        )
+
+
 # ==================== 测试用例 ====================
+
+
+@pytest.mark.asyncio
+async def test_target_plugin_can_return_runtime_intent_without_state_machine():
+    plugin = RuntimeIntentTargetPlugin()
+    ctx = MagicMock()
+    ctx.next = PluginNext()
+    inbox = MagicMock()
+    inbox.payload_json = {"tote_id": "T-001"}
+
+    handler = RuntimeIntentTargetPlugin._event_handlers["TOTE_READY"]
+    intent = await handler(plugin, ctx, inbox)
+
+    assert getattr(handler, "_expected_states", None) is None
+    assert intent.action == "WEIGH_TOTE"
+    assert intent.device_role == "WEIGH_SCALE"
+
+
+def test_plugin_context_exposes_next_runtime_intent_helper():
+    session = MagicMock()
+    session.run_mode = "AUTO"
+    session.plugin_state = "IDLE"
+    session.context_json = {}
+
+    workline = MagicMock()
+    workline.config = {}
+    workline.run_mode = "AUTO"
+
+    ctx = PluginContextBuilder().build(
+        session=session,
+        workline=workline,
+        devices_by_role={},
+        services=WorklineRuntimeServices(),
+        trace_id="trace-next-helper",
+    )
+    intent = ctx.next.command(
+        device_role="WEIGH_SCALE",
+        action="WEIGH_TOTE",
+        payload={"tote_id": "T-001"},
+        destination_role="WEIGH_SCALE",
+    )
+
+    assert intent.action == "WEIGH_TOTE"
+    assert intent.device_role == "WEIGH_SCALE"
 
 
 class TestDecoratorRouting:
