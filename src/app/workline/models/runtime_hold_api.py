@@ -143,6 +143,7 @@ class ResolveRuntimeHoldResponse(BaseModel):
     remaining_active_blocking_holds: int
     released_outbox_count: int
     ng_return_item_id: int | None = None
+    created_inbox_id: int | None = None
 
 
 class NgReasonOption(BaseModel):
@@ -172,7 +173,7 @@ class NgReturnItemResponse(BaseModel):
     ng_reason_code: str
     ng_reason_label: str
     operator_note: str | None = None
-    created_from_runtime_hold_id: int
+    created_from_runtime_hold_id: int | None = None
     status: str
     confirmed_by: int | None = None
     confirmed_at: datetime | None = None

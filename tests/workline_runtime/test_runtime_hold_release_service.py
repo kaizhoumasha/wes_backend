@@ -3,7 +3,9 @@ from typing import cast
 import pytest
 from sqlalchemy import select
 
+from src.app.device.models import CommandResult, CommandStatus, Device, DeviceCommand
 from src.app.workline.models import LineType, WorkLine
+from src.app.workline.models.inbox import InboxKind, WorklineInbox
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
@@ -16,7 +18,12 @@ from src.app.workline.models.runtime_hold import (
 )
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus
-from src.app.workline.models.session import SessionStatus, WorklineSession
+from src.app.workline.models.session import (
+    RuntimeReconciliationResolution,
+    RuntimeReconciliationState,
+    SessionStatus,
+    WorklineSession,
+)
 from src.app.workline.services.runtime_hold_release_service import RuntimeHoldReleaseError, RuntimeHoldReleaseService
 
 pytestmark = pytest.mark.asyncio
@@ -137,6 +144,94 @@ async def test_continue_resolves_hold_without_ng_item(db_session) -> None:
     assert await _ng_item_count(db_session, cast("int", hold.id)) == 0
     assert session.status == SessionStatus.COMPLETED
     assert workline.runtime_status == WorkLineRuntimeStatus.READY
+
+
+async def test_continue_for_command_backed_hold_replays_command_result_instead_of_terminalizing_session(
+    db_session,
+) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-REPLAY")
+    device = Device(
+        device_code="ARM03-HOLD-CONTINUE-REPLAY",
+        device_name="ARM03",
+        work_line_id=workline.id,
+        device_role="ROBOT_ARM",
+        role_index=3,
+    )
+    db_session.add(device)
+    await db_session.flush()
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-CONTINUE-REPLAY",
+        context={"pkg_id": "PKG-001"},
+    )
+    session.plugin_state = "WAITING_MEASUREMENT"
+    session.reconciliation_state = RuntimeReconciliationState.PENDING
+    session.reconciliation_reason = "COMMAND_ACK_EXHAUSTED"
+    command = DeviceCommand(
+        command_code="CMD-HOLD-CONTINUE-REPLAY",
+        device_id=cast("int", device.id),
+        workline_id=cast("int", workline.id),
+        session_id=session.session_code,
+        session_id_int=cast("int", session.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        issued_plugin_state="WAITING_MEASUREMENT",
+        task_type="MEASUREMENT_REEL",
+        params={"pkg_id": "PKG-001"},
+        status=CommandStatus.FAILED,
+        trace_id="trace-hold-continue-replay",
+    )
+    db_session.add(command)
+    await db_session.flush()
+    hold = await _create_hold(
+        db_session,
+        workline,
+        session=session,
+        key="hold:continue-replay",
+    )
+    hold.source_reason = "COMMAND_ACK_EXHAUSTED"
+    hold.source_command_id = cast("int", command.id)
+    hold.source_device_id = cast("int", device.id)
+    hold.trace_id = command.trace_id
+    request = _continue_request(service, hold).model_copy(
+        update={"result_payload": {"PkgID": "PKG-001", "diameter": "ok"}}
+    )
+
+    result = await service.resolve_hold(db_session, cast("int", hold.id), request, 42)
+
+    await db_session.refresh(session)
+    await db_session.refresh(command)
+    assert result["status"] == RuntimeHoldStatus.RESOLVED.value
+    assert isinstance(result["created_inbox_id"], int)
+    assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+    assert session.ended_at is None
+    assert session.plugin_state == "WAITING_MEASUREMENT"
+    assert session.awaiting_command_id == command.id
+    assert session.current_wait_type == "COMMAND_RESULT"
+    assert session.current_wait_token == command.command_code
+    assert session.reconciliation_state == RuntimeReconciliationState.RESOLVED
+    assert session.reconciliation_resolution == RuntimeReconciliationResolution.COMPLETED
+    assert command.status == CommandStatus.COMPLETED
+    assert command.result == CommandResult.SUCCESS
+    assert command.result_data == {"PkgID": "PKG-001", "diameter": "ok"}
+
+    inbox = await db_session.get(WorklineInbox, result["created_inbox_id"])
+    assert inbox is not None
+    assert inbox.kind == InboxKind.COMMAND_RESULT
+    assert inbox.session_id == session.id
+    assert inbox.command_id == command.id
+    assert inbox.device_id == device.id
+    assert inbox.payload_json == {
+        "command_code": command.command_code,
+        "device_code": device.device_code,
+        "command_type": "MEASUREMENT_REEL",
+        "task_type": "MEASUREMENT_REEL",
+        "result": "SUCCESS",
+        "runtime_hold_release": True,
+        "data": {"PkgID": "PKG-001", "diameter": "ok"},
+    }
 
 
 async def test_return_to_ng_requires_handoff_evidence_and_does_not_release_workline(db_session) -> None:

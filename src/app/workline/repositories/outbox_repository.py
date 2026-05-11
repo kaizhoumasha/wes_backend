@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, WorklineOutbox
@@ -36,7 +36,27 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
             待派发的消息列表
         """
         columns = cast("Any", WorklineOutbox).__table__.c
+        older_outbox = cast("Any", WorklineOutbox).__table__.alias("older_device_outbox")
         now = timezone.now_for_db()
+        active_device_statuses = [
+            OutboxStatus.NEW,
+            OutboxStatus.DISPATCHING,
+            OutboxStatus.BLOCKED_RESOURCE,
+        ]
+        earlier_active_device_outbox_exists = exists(
+            select(1)
+            .select_from(older_outbox)
+            .where(
+                older_outbox.c.workline_id == columns.workline_id,
+                older_outbox.c.target_code == columns.target_code,
+                older_outbox.c.dispatch_type == DispatchType.DEVICE_COMMAND,
+                older_outbox.c.status.in_(active_device_statuses),
+                or_(
+                    older_outbox.c.created_at < columns.created_at,
+                    and_(older_outbox.c.created_at == columns.created_at, older_outbox.c.id < columns.id),
+                ),
+            )
+        )
 
         result = await db.execute(
             select(WorklineOutbox)
@@ -44,8 +64,54 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                 columns.status == OutboxStatus.NEW,
                 # next_retry_at 为空或已过重试时间
                 (columns.next_retry_at.is_(None)) | (columns.next_retry_at <= now),
+                # 设备是一条物理 FIFO 队列：同一工作线/设备上只允许最早的未闭环 outbox 成为候选。
+                or_(
+                    columns.dispatch_type != DispatchType.DEVICE_COMMAND,
+                    ~earlier_active_device_outbox_exists,
+                ),
             )
-            .order_by(columns.created_at.asc())
+            .order_by(columns.created_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_dispatching_device_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+    ) -> list[WorklineOutbox]:
+        """获取仍停留在派发租约中的设备 outbox，用于恢复已终结但未落终态的派发。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.status == OutboxStatus.DISPATCHING,
+                columns.dispatch_type == DispatchType.DEVICE_COMMAND,
+                columns.sent_at.is_(None),
+                columns.finished_at.is_(None),
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_blocked_device_busy_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+    ) -> list[WorklineOutbox]:
+        """获取因 DEVICE_BUSY 暂停的设备 outbox，用于运行态对账自愈。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(
+            select(WorklineOutbox)
+            .where(
+                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+                columns.dispatch_type == DispatchType.DEVICE_COMMAND,
+                columns.blocked_reason == "DEVICE_BUSY",
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
             .limit(limit)
         )
         return list(result.scalars().all())
@@ -510,6 +576,34 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
         outbox.sent_at = timezone.now_for_db()
         outbox.next_retry_at = None
         outbox.last_error = None
+        await db.flush()
+        return outbox
+
+    async def mark_blocked_device_busy_as_sent(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+    ) -> WorklineOutbox | None:
+        """将误判为 DEVICE_BUSY 的同命令自阻塞 outbox 收敛回 SENT。"""
+
+        columns = cast("Any", WorklineOutbox).__table__.c
+        result = await db.execute(select(WorklineOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+
+        if not outbox:
+            return None
+        if outbox.status != OutboxStatus.BLOCKED_RESOURCE or outbox.blocked_reason != "DEVICE_BUSY":
+            return None
+
+        outbox.status = OutboxStatus.SENT
+        outbox.sent_at = outbox.sent_at or timezone.now_for_db()
+        outbox.next_retry_at = None
+        outbox.last_error = None
+        outbox.finished_at = None
+        outbox.blocked_by_reconciliation_session_id = None
+        outbox.blocked_device_id = None
+        outbox.blocked_workline_id = None
+        outbox.blocked_reason = None
         await db.flush()
         return outbox
 

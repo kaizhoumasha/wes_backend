@@ -102,7 +102,7 @@ def _build_callback_log_item(item: Any) -> TraceCallbackLogItem:
     return TraceCallbackLogItem(
         id=item.id,
         callback_type=item.callback_type,
-        device_id=item.device_id,
+        subject_code=item.subject_code,
         request_id=item.request_id,
         trace_id=item.trace_id,
         event_id=item.event_id,

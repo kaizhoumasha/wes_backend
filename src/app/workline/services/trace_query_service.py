@@ -349,9 +349,7 @@ class TraceQueryService(BaseService[Any, Any]):
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
-            select(DeviceCommand)
-            .where((columns.session_id == str(session.id)) | (columns.session_id_int == session.id))
-            .order_by(columns.created_at.asc())
+            select(DeviceCommand).where(columns.session_id_int == session.id).order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 

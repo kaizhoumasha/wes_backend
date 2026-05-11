@@ -302,6 +302,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             inbox_id,
             status=InboxStatus.PROCESSED,
             processed_at=timezone.now_for_db(),
+            error_message=None,
+            next_retry_at=None,
+            processor_token=None,
             auto_commit=auto_commit,
         )
 
@@ -358,6 +361,27 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             status=InboxStatus.DEAD_LETTER,
             error_message=error_message,
             processed_at=timezone.now_for_db(),
+            auto_commit=auto_commit,
+        )
+
+    async def mark_as_dead_letter(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        error_message: str,
+        *,
+        auto_commit: bool = True,
+    ) -> WorklineInbox:
+        """标记为不可自动重试的终态死信。"""
+
+        return await self._update_inbox(
+            db,
+            inbox_id,
+            status=InboxStatus.DEAD_LETTER,
+            error_message=error_message,
+            processed_at=timezone.now_for_db(),
+            next_retry_at=None,
+            processor_token=None,
             auto_commit=auto_commit,
         )
 

@@ -107,7 +107,7 @@ class TraceContextResponse(BaseModel):
 class TraceCallbackLogItem(BaseModel):
     id: int
     callback_type: str
-    device_id: str
+    subject_code: str
     request_id: str | None = None
     trace_id: str | None = None
     event_id: str | None = None

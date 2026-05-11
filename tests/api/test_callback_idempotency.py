@@ -19,6 +19,13 @@ def _await_kwargs(mock: AsyncMock) -> JsonDict:
     return cast("JsonDict", await_args.kwargs)
 
 
+def _response_data(response: JsonDict) -> JsonDict:
+    data = response["data"]
+    if hasattr(data, "model_dump"):
+        return cast("JsonDict", data.model_dump())
+    return cast("JsonDict", data)
+
+
 @pytest.fixture
 def db_session() -> AsyncSession:
     mock = AsyncMock(spec=AsyncSession)
@@ -157,7 +164,7 @@ class TestCallbackResultIdempotency:
 
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
-        assert response2["data"]["ack"] is True
+        assert _response_data(response2)["ack"] is True
         assert mock_handle.await_count == 1
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
@@ -225,7 +232,7 @@ class TestCallbackEventIdempotency:
 
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
-        assert response2["data"]["status"] == "duplicate"
+        assert _response_data(response2)["status"] == "duplicate"
         assert mock_enqueue.call_count == 2
         assert mock_create_inbox.await_count == 2
         assert mock_log_callback.await_count == 2
@@ -275,7 +282,7 @@ class TestCallbackExternalIdempotency:
 
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
-        assert response2["data"]["status"] == "duplicate"
+        assert _response_data(response2)["status"] == "duplicate"
         assert mock_enqueue.call_count == 2
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)

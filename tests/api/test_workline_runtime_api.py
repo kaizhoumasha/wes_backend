@@ -108,7 +108,7 @@ def test_trace_callback_log_item_allows_null_updated_at() -> None:
     item = TraceCallbackLogItem(
         id=1,
         callback_type="event",
-        device_id="ARM01",
+        subject_code="ARM01",
         request_id="req-001",
         trace_id="trace-001",
         response_status=200,
@@ -542,7 +542,7 @@ class TestRuntimeQueryService:
         callback_log = SimpleNamespace(
             id=None,
             callback_type="event",
-            device_id="ARM-01",
+            subject_code="ARM-01",
             request_id=None,
             trace_id=None,
             response_status=200,
@@ -991,8 +991,10 @@ class TestRuntimeQueryService:
 
         result = await service._load_active_sessions_for_device(db, device_id=9, limit=10)
 
+        executed_query = db.execute.await_args.args[0]
         assert result == [active_session]
         assert db.execute.await_count == 1
+        assert "session_id_int" in str(executed_query)
 
     @pytest.mark.asyncio
     async def test_load_latest_command_by_session_uses_window_query(self) -> None:
@@ -1000,7 +1002,7 @@ class TestRuntimeQueryService:
 
         service = RuntimeQueryService()
         db = AsyncMock()
-        latest_command = SimpleNamespace(id=2, session_id="11")
+        latest_command = SimpleNamespace(id=2, session_id="SES-11", session_id_int=11)
         db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [latest_command]))
 
         result = await service._load_latest_command_by_session(db, [11])

@@ -24,3 +24,21 @@ def test_dev_beat_autoreload_script_runs_celery_beat() -> None:
     assert 'WATCH_PATH="${CELERY_WATCH_PATH:-/app/src}"' in script_text
     assert 'CELERY_CMD="celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}"' in script_text
     assert 'echo "[celery-beat-dev-reload] code change detected, restarting beat"' in script_text
+
+
+def test_dev_worker_autoreload_replaces_worker_process_on_restart() -> None:
+    script_text = (BACKEND_ROOT / "src/celery_app/dev_worker_autoreload.sh").read_text(encoding="utf-8")
+
+    assert 'setsid sh -c "exec $CELERY_CMD" &' in script_text
+    assert '\n    sh -c "exec $CELERY_CMD" &' in script_text
+    assert 'kill -TERM "$stop_target"' in script_text
+    assert 'kill -KILL "$stop_target"' in script_text
+
+
+def test_dev_beat_autoreload_replaces_beat_process_on_restart() -> None:
+    script_text = (BACKEND_ROOT / "src/celery_app/dev_beat_autoreload.sh").read_text(encoding="utf-8")
+
+    assert 'setsid sh -c "exec $CELERY_CMD" &' in script_text
+    assert '\n    sh -c "exec $CELERY_CMD" &' in script_text
+    assert 'kill -TERM "$stop_target"' in script_text
+    assert 'kill -KILL "$stop_target"' in script_text

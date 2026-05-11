@@ -44,6 +44,17 @@ def _json_error(code: Any, *, message: str, data: Any = None) -> JSONResponse:
     )
 
 
+def _enqueue_workline_processing() -> None:
+    """触发 Workline Inbox 异步处理。"""
+
+    from src.celery_app.app import celery_app
+
+    cast("Any", celery_app).send_task(
+        "src.celery_app.tasks.workline.process_inbox_batch",
+        kwargs={"limit": 10},
+    )
+
+
 async def _conflict_data(db: AsyncSessionDep, hold_id: int) -> dict[str, Any]:
     detail = await runtime_hold_query_service.get_detail(db, hold_id)
     if detail is None:
@@ -111,6 +122,8 @@ async def resolve_runtime_hold(
         result = await runtime_hold_release_service.resolve_hold(db, hold_id, payload, current_user_id)
         await db.commit()
         await publish_deferred_sse_events(db)
+        if result.get("created_inbox_id") is not None:
+            _enqueue_workline_processing()
         return cast("ResponseSchemaModel[ResolveRuntimeHoldResponse]", response_builder.success(data=result))
     except RuntimeHoldReleaseError as exc:
         code = _RUNTIME_HOLD_ERROR_CODES.get(exc.error_code, BusinessErrorCode.INVALID_STATE)

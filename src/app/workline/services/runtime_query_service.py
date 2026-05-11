@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import String, and_, exists, func, or_, select
-from sqlalchemy import cast as sa_cast
+from sqlalchemy import and_, exists, func, or_, select
 
 from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
@@ -149,16 +148,6 @@ def _recent_failure_or_timeout_clause(columns: Any, now: Any, recent_since: Any)
     )
 
 
-def _parse_session_id(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
-
-
 def _payload_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -261,7 +250,7 @@ def _device_session_clause(session_columns: Any, device_id: int) -> Any:
         exists(
             select(command_columns.id).where(
                 command_columns.device_id == device_id,
-                command_columns.session_id == sa_cast(session_columns.id, String()),
+                command_columns.session_id_int == session_columns.id,
             )
         ),
         exists(
@@ -531,7 +520,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
 
         recent_commands = await self._load_recent_commands_for_device(db, device_id, limit=20)
-        recent_callbacks = await callback_log_repository.get_by_device_id(db, device.device_code, limit=20)
+        recent_callbacks = await callback_log_repository.get_by_subject_code(db, device.device_code, limit=20)
         active_sessions = await self._load_active_sessions_for_device(db, device_id, limit=10)
 
         return RuntimeDeviceDetailResponse(
@@ -552,7 +541,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
     async def _load_simulation_workline_ids(self, db: Any) -> list[int]:
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
-            select(WorkLine.id).where(columns.is_deleted.is_(False), columns.run_mode == "SIMULATION")
+            select(columns.id).where(columns.is_deleted.is_(False), columns.run_mode == "SIMULATION")
         )
         return [row[0] for row in result.all() if row[0] is not None]
 
@@ -772,13 +761,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         columns = cast("Any", CallbackLog).__table__.c
         result = await db.execute(
             select(CallbackLog)
-            .where(columns.device_id.in_(device_codes))
-            .order_by(columns.device_id.asc(), columns.created_at.desc())
+            .where(columns.subject_code.in_(device_codes))
+            .order_by(columns.subject_code.asc(), columns.created_at.desc())
         )
         mapping: dict[str, Any] = {}
         for item in result.scalars().all():
-            if item.device_id not in mapping:
-                mapping[item.device_id] = item.created_at
+            if item.subject_code not in mapping:
+                mapping[item.subject_code] = item.created_at
         return mapping
 
     async def _load_recent_commands_for_device(self, db: Any, device_id: int, limit: int) -> list[DeviceCommand]:
@@ -833,7 +822,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if session.id is None:
                 continue
             latest_command = latest_command_by_session.get(session.id)
-            awaiting_command = awaiting_command_by_id.get(session.awaiting_command_id)
+            awaiting_command_id = session.awaiting_command_id
+            awaiting_command = (
+                awaiting_command_by_id.get(awaiting_command_id) if isinstance(awaiting_command_id, int) else None
+            )
             command = awaiting_command or latest_command
             inbox = latest_inbox_by_session.get(session.id)
             timeline = latest_timeline_by_session.get(session.id)
@@ -866,20 +858,19 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not session_ids:
             return {}
         columns = cast("Any", DeviceCommand).__table__.c
-        session_id_values = [str(item) for item in session_ids]
         latest_ids = _latest_rows_subquery(
             columns=columns,
-            partition_by=columns.session_id,
+            partition_by=columns.session_id_int,
             order_by=(columns.created_at.desc(), columns.id.desc()),
-            filters=[columns.session_id.in_(session_id_values)],
+            filters=[columns.session_id_int.in_(session_ids)],
         )
         result = await db.execute(
             select(DeviceCommand).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
         )
         mapping: dict[int, DeviceCommand] = {}
         for item in result.scalars().all():
-            session_id = _parse_session_id(item.session_id)
-            if session_id is not None and session_id not in mapping:
+            session_id = getattr(item, "session_id_int", None)
+            if isinstance(session_id, int) and session_id not in mapping:
                 mapping[session_id] = item
         return mapping
 
@@ -1067,9 +1058,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
         return TraceCallbackLogItem(
             id=_require_int_id(item.id, "callback_log.id"),
             callback_type=item.callback_type,
-            device_id=item.device_id,
+            subject_code=item.subject_code,
             request_id=item.request_id,
             trace_id=item.trace_id,
+            event_id=item.event_id,
+            causation_id=item.causation_id,
             response_status=item.response_status,
             response_time_ms=item.response_time_ms,
             error_message=item.error_message,
@@ -1357,7 +1350,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         device_identity_by_code: dict[str, _DeviceIdentity],
         blocking_device_id: int | None,
     ) -> RuntimeTraceTimelineGroup:
-        command = commands_by_id.get(getattr(timeline, "related_command_id", None))
+        related_command_id = getattr(timeline, "related_command_id", None)
+        command = commands_by_id.get(related_command_id) if isinstance(related_command_id, int) else None
         if command is not None:
             return self._device_timeline_group(
                 command.device_id,
@@ -1366,7 +1360,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 blocking_device_id=blocking_device_id,
             )
 
-        inbox = inboxes_by_id.get(getattr(timeline, "related_inbox_id", None))
+        related_inbox_id = getattr(timeline, "related_inbox_id", None)
+        inbox = inboxes_by_id.get(related_inbox_id) if isinstance(related_inbox_id, int) else None
         if inbox is not None:
             return self._device_timeline_group(
                 inbox.device_id,

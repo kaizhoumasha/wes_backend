@@ -8,7 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Request
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.app.callback.models import (
+    CallbackEventAcceptedResponse,
+    CallbackExternalAcceptedResponse,
+    CallbackRejectedResponse,
+    CallbackResultAcceptedResponse,
+)
+from src.app.callback.v1 import callback as callback_module
+from src.core.response import ResponseSchemaModel
 
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
@@ -18,6 +28,20 @@ def _await_kwargs(mock: AsyncMock) -> JsonDict:
     await_args = mock.await_args
     assert await_args is not None
     return cast("JsonDict", await_args.kwargs)
+
+
+def _response_data(response: JsonDict) -> JsonDict:
+    data = response["data"]
+    if hasattr(data, "model_dump"):
+        return cast("JsonDict", data.model_dump())
+    return cast("JsonDict", data)
+
+
+def _get_route(path: str, method: str) -> APIRoute:
+    for route in callback_module.router.routes:
+        if isinstance(route, APIRoute) and method in route.methods and route.path == path:
+            return route
+    raise AssertionError(f"{method} {path} route not found")
 
 
 @pytest.fixture(autouse=True)
@@ -150,6 +174,21 @@ def create_external_payload(**overrides: object) -> JsonDict:
     return payload
 
 
+class TestCallbackIngressRouteContracts:
+    @pytest.mark.parametrize(
+        ("path", "response_model"),
+        [
+            ("/result", ResponseSchemaModel[CallbackResultAcceptedResponse | CallbackRejectedResponse]),
+            ("/event", ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]),
+            ("/external", ResponseSchemaModel[CallbackExternalAcceptedResponse | CallbackRejectedResponse]),
+        ],
+    )
+    def test_ingress_routes_declare_named_response_models(self, path: str, response_model: object) -> None:
+        route = _get_route(path, "POST")
+
+        assert route.response_model == response_model
+
+
 class TestCallbackResultAPI:
     @pytest.mark.asyncio
     async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
@@ -241,7 +280,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["ack"] is True
+        assert _response_data(response)["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
         mock_mark_finished.assert_awaited_once_with(
             db_session,
@@ -366,10 +405,10 @@ class TestCallbackResultAPI:
 
         assert call_order[:2] == ["command:CMD-20250317-TRACE", "device:ARM_01"]
         assert response["code"] == "1000"
-        assert response["data"]["ack"] is True
-        assert response["data"]["request_id"] == "req-trace-001"
-        assert response["data"]["trace_id"] == "trace-vendor-001"
-        assert response["data"]["event_id"] == "evt-result-001"
+        assert _response_data(response)["ack"] is True
+        assert _response_data(response)["request_id"] == "req-trace-001"
+        assert _response_data(response)["trace_id"] == "trace-vendor-001"
+        assert _response_data(response)["event_id"] == "evt-result-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-vendor-001"
 
@@ -450,7 +489,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         assert "不匹配" in response["message"]
         mock_handle.assert_not_awaited()
         mock_create_inbox.assert_not_awaited()
@@ -556,7 +595,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -598,7 +637,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         assert "业务字段必须放在 data 中" in response["message"]
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
@@ -688,7 +727,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_create_inbox.assert_not_called()
         mock_handle.assert_not_called()
         mock_log_callback.assert_awaited_once()
@@ -808,7 +847,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_get_command.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -883,7 +922,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         create_inbox_kwargs = mock_create_inbox.call_args.kwargs
         event_trace_id = create_inbox_kwargs["trace_id"]
         assert create_inbox_kwargs["event_type"] == "SCAN_COMPLETED"
@@ -945,7 +984,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -988,7 +1027,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -1030,7 +1069,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         assert "业务字段必须放在 data 中" in response["message"]
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
@@ -1101,7 +1140,7 @@ class TestCallbackEventAPI:
 
         # 简化架构：接受所有事件类型，返回成功
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         mock_create_inbox.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
@@ -1163,7 +1202,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         inbox_kwargs = _await_kwargs(mock_create_inbox)
         assert inbox_kwargs["event_type"] == "SCAN_FINISH"
         assert inbox_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
@@ -1221,7 +1260,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_create_inbox.assert_not_called()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -1260,7 +1299,7 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         inbox_kwargs = _await_kwargs(mock_create_inbox)
         assert inbox_kwargs["callback_type"] == "AGV_TASK_RESULT"
         assert inbox_kwargs["trace_id"] == "trace-agv-001"
@@ -1305,7 +1344,7 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"

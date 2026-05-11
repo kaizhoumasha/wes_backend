@@ -248,6 +248,7 @@ class OrchestratorService:
             return _error_result(ErrorCode.SESSION_CONTEXT_MISSING, "Session missing primary key")
 
         lock_key = f"session:{session_id}"
+        inbox_id_for_log = getattr(inbox, "id", "unknown") if inbox else "unknown"
 
         # 单阶段锁:包含插件调用和结果处理
         try:
@@ -276,8 +277,7 @@ class OrchestratorService:
             logger.exception(f"Failed to acquire lock for session {session_id}")
             return _system_error_result("Lock acquire failed")
         except Exception as e:
-            inbox_id = getattr(inbox, "id", "unknown") if inbox else "unknown"
-            logger.exception(f"Unexpected error processing inbox {inbox_id}")
+            logger.exception(f"Unexpected error processing inbox {inbox_id_for_log}")
             return _system_error_result(str(e))
 
     async def _process_read_phase(

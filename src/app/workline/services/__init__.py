@@ -3,6 +3,7 @@
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
 from .inbox_service import WorklineInboxService, inbox_service
+from .ng_return_item_service import NgReturnItemService, ng_return_item_service
 from .operation_service import WorklineOperationService, workline_operation_service
 from .runtime_hold_creation_service import RuntimeHoldCreationService, runtime_hold_creation_service
 from .runtime_hold_query_service import RuntimeHoldQueryService, runtime_hold_query_service
@@ -18,6 +19,7 @@ from .trace_query_service import TraceQueryResult, TraceQueryService, trace_quer
 from .workline_service import WorkLineService, workline_service
 
 __all__ = [
+    "NgReturnItemService",
     "RuntimeHoldCreationService",
     "RuntimeHoldQueryService",
     "RuntimeHoldReleaseService",
@@ -35,6 +37,7 @@ __all__ = [
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
     "inbox_service",
+    "ng_return_item_service",
     "runtime_hold_creation_service",
     "runtime_hold_query_service",
     "runtime_hold_release_service",

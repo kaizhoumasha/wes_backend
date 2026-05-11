@@ -18,7 +18,17 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import ValidationError
 
-from src.app.callback.models import CallbackEventRequest
+from src.app.callback.models import (
+    CallbackEventAcceptedResponse,
+    CallbackEventRequest,
+    CallbackExternalAcceptedResponse,
+    CallbackRejectedResponse,
+    CallbackResultAcceptedResponse,
+    build_callback_event_accepted_response,
+    build_callback_external_accepted_response,
+    build_callback_rejected_response,
+    build_callback_result_accepted_response,
+)
 from src.app.callback.services import (
     callback_log_service,
     callback_orchestration_service,
@@ -31,7 +41,7 @@ from src.app.sys.services import audit_log_service
 from src.app.workline.services import inbox_service, workline_diagnostic_service, workline_service  # noqa: F401
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
-from src.core.response import response_builder
+from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
@@ -190,7 +200,7 @@ def _build_callback_log_payload(
     *,
     trace: TraceContext,
     callback_type: str,
-    device_id: str,
+    subject_code: str,
     request_body: JsonDict,
     response_status: int,
     response_time_ms: int,
@@ -200,7 +210,7 @@ def _build_callback_log_payload(
 ) -> JsonDict:
     return {
         "callback_type": callback_type,
-        "device_id": device_id,
+        "subject_code": subject_code,
         "request_body": request_body,
         "client_ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("User-Agent"),
@@ -262,7 +272,7 @@ def _build_contract_fail(message: str) -> JsonDict:
     return response_builder.fail(
         code=ClientErrorCode.VALIDATION_ERROR,
         message=message,
-        data={"ack": False},
+        data=build_callback_rejected_response(),
     )
 
 
@@ -270,7 +280,7 @@ def _build_not_found_fail(message: str) -> JsonDict:
     return response_builder.fail(
         code=ResourceErrorCode.NOT_FOUND,
         message=message,
-        data={"ack": False},
+        data=build_callback_rejected_response(),
     )
 
 
@@ -352,7 +362,7 @@ async def _log_callback_outcome(
     request: Request,
     *,
     callback_type: str,
-    device_id: str,
+    subject_code: str,
     request_body: JsonDict,
     request_id: str | None,
     response_status: int,
@@ -380,7 +390,7 @@ async def _log_callback_outcome(
             request,
             trace=trace,
             callback_type=callback_type,
-            device_id=device_id,
+            subject_code=subject_code,
             request_body=request_body,
             response_status=response_status,
             response_time_ms=response_time_ms,
@@ -430,7 +440,7 @@ async def _handle_validation_failure(
         db,
         request,
         callback_type=callback_type,
-        device_id=_resolve_callback_subject(callback_type, request_body),
+        subject_code=_resolve_callback_subject(callback_type, request_body),
         request_body=request_body,
         request_id=request_id,
         trace_id=trace_id or _resolve_callback_trace_id(request_body),
@@ -525,7 +535,7 @@ async def _handle_device_context_failure(
     request: Request,
     *,
     callback_type: str,
-    device_id: str,
+    subject_code: str,
     request_body: JsonDict,
     request_id: str | None,
     response_time_ms: int,
@@ -540,7 +550,7 @@ async def _handle_device_context_failure(
         db,
         request,
         callback_type=callback_type,
-        device_id=device_id,
+        subject_code=subject_code,
         request_body=request_body,
         request_id=request_id,
         trace_id=trace_id or _resolve_callback_trace_id(request_body),
@@ -560,7 +570,7 @@ async def _handle_device_context_failure(
 
 @router.post(
     "/result",
-    response_model=None,
+    response_model=ResponseSchemaModel[CallbackResultAcceptedResponse | CallbackRejectedResponse],
     status_code=status.HTTP_200_OK,
     summary="任务结果回传",
     dependencies=[
@@ -625,7 +635,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             db,
             request,
             callback_type="result",
-            device_id=device_code,
+            subject_code=device_code,
             request_body=callback_data,
             request_id=request_id,
             trace_id=_resolve_callback_trace_id(callback_data),
@@ -652,7 +662,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             db,
             request,
             callback_type="result",
-            device_id=device_code,
+            subject_code=device_code,
             request_body=callback_data,
             request_id=request_id,
             response_time_ms=_response_time_ms(start_time),
@@ -789,7 +799,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             db,
             request,
             callback_type="result",
-            device_id=callback.device_code,
+            subject_code=callback.device_code,
             request_body=callback_data,
             request_id=request_id,
             trace_id=outcome.trace_id,
@@ -804,13 +814,12 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             ingress_outcome=_INGRESS_OUTCOME_DUPLICATE if is_duplicate else _INGRESS_OUTCOME_ACCEPTED,
         )
         return response_builder.success(
-            data={
-                "ack": True,
-                "request_id": request_id,
-                "trace_id": outcome.trace_id,
-                "event_id": _resolve_callback_event_id(callback_data),
-                "causation_id": _resolve_callback_causation_id(callback_data),
-            }
+            data=build_callback_result_accepted_response(
+                request_id=request_id,
+                trace_id=outcome.trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            )
         )
 
     except ValidationError as exc:
@@ -872,7 +881,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
             db,
             request,
             callback_type="result",
-            device_id=device_code,
+            subject_code=device_code,
             request_body=callback_data,
             request_id=request_id,
             trace_id=resolved_trace_id,
@@ -892,7 +901,7 @@ async def callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，�
 
 @router.post(
     "/event",
-    response_model=None,
+    response_model=ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse],
     status_code=status.HTTP_200_OK,
     summary="设备事件上报",
     dependencies=[
@@ -960,7 +969,7 @@ async def callback_event(
             db,
             request,
             callback_type="event",
-            device_id=device_code,
+            subject_code=device_code,
             request_body=event_data,
             request_id=request_id,
             response_time_ms=_response_time_ms(start_time),
@@ -1069,7 +1078,7 @@ async def callback_event(
             db,
             request,
             callback_type="event",
-            device_id=normalized_event_request.device_code,
+            subject_code=normalized_event_request.device_code,
             request_body=event_data,
             request_id=request_id,
             trace_id=outcome.trace_id,
@@ -1086,14 +1095,14 @@ async def callback_event(
         logger.info(f"设备事件已提交处理: {normalized_event_request.device_code} (request_id={request_id})")
         return response_builder.success(
             message="Event received",
-            data={
-                "status": "duplicate" if is_duplicate else "submitted",
-                "device_code": normalized_event_request.device_code,
-                "request_id": request_id,
-                "trace_id": outcome.trace_id,
-                "event_id": _resolve_callback_event_id(event_data),
-                "causation_id": _resolve_callback_causation_id(event_data),
-            },
+            data=build_callback_event_accepted_response(
+                status="duplicate" if is_duplicate else "submitted",
+                device_code=normalized_event_request.device_code,
+                request_id=request_id,
+                trace_id=outcome.trace_id,
+                event_id=_resolve_callback_event_id(event_data),
+                causation_id=_resolve_callback_causation_id(event_data),
+            ),
         )
 
     except Exception as exc:
@@ -1103,7 +1112,7 @@ async def callback_event(
             db,
             request,
             callback_type="event",
-            device_id=device_code,
+            subject_code=device_code,
             request_body=event_data,
             request_id=request_id,
             response_status=500,
@@ -1120,7 +1129,7 @@ async def callback_event(
 
 @router.post(
     "/external",
-    response_model=None,
+    response_model=ResponseSchemaModel[CallbackExternalAcceptedResponse | CallbackRejectedResponse],
     status_code=status.HTTP_200_OK,
     summary="外部系统回调",
     dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
@@ -1186,7 +1195,7 @@ async def callback_external(
             db,
             request,
             callback_type="external",
-            device_id=callback_type,
+            subject_code=callback_type,
             request_body=callback_data,
             request_id=request_id,
             trace_id=outcome.trace_id,
@@ -1202,14 +1211,14 @@ async def callback_external(
         )
         return response_builder.success(
             message="External callback received",
-            data={
-                "status": "duplicate" if is_duplicate else "submitted",
-                "callback_type": callback_type,
-                "request_id": request_id,
-                "trace_id": outcome.trace_id,
-                "event_id": _resolve_callback_event_id(callback_data),
-                "causation_id": _resolve_callback_causation_id(callback_data),
-            },
+            data=build_callback_external_accepted_response(
+                status="duplicate" if is_duplicate else "submitted",
+                callback_type=callback_type,
+                request_id=request_id,
+                trace_id=outcome.trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            ),
         )
 
     except ValueError as exc:
@@ -1230,7 +1239,7 @@ async def callback_external(
             db,
             request,
             callback_type="external",
-            device_id=callback_type,
+            subject_code=callback_type,
             request_body=callback_data,
             request_id=request_id,
             trace_id=external_trace_id,

@@ -80,10 +80,10 @@ def _build_incomplete_scan_business_key(payload_json: dict[str, Any], six_in_one
     identity_payload: dict[str, Any] = {
         "device_code": device_code,
         "event_type": event_type,
-        "event_identity": event_identity,
-        "timestamp": payload_json.get("timestamp"),
         "fields": business_fields,
     }
+    if event_identity:
+        identity_payload["event_identity"] = event_identity
     serialized = json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
     return f"incomplete-scan:{digest}"
@@ -135,7 +135,7 @@ def resolve_smt_material_identity(input_value: MaterialIdentityInput) -> Materia
     """Resolve SMT material identity from plugin-owned SixInOne evidence."""
 
     evidence_hash = material_identity_input_to_hash(input_value)
-    unique_pkg_ids = tuple(dict.fromkeys(_pkg_id_candidates(input_value)))
+    unique_pkg_ids: tuple[str, ...] = tuple(dict.fromkeys(_pkg_id_candidates(input_value)))
     if not unique_pkg_ids:
         return MaterialIdentity(
             resolution_status=MaterialIdentityResolutionStatus.MISSING,
@@ -148,7 +148,7 @@ def resolve_smt_material_identity(input_value: MaterialIdentityInput) -> Materia
             raw_evidence_hash=evidence_hash,
         )
 
-    pkg_id = unique_pkg_ids[0]
+    pkg_id = next(iter(unique_pkg_ids))
     display: dict[str, Any] = {"PkgID": pkg_id}
     for payload in (
         input_value.source_payload,

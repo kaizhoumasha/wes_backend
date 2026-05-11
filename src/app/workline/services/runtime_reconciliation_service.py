@@ -293,7 +293,12 @@ class WorklineRuntimeReconciliationService:
         outbox.status = OutboxStatus.FAILED
         outbox.last_error = error_message
         outbox.next_retry_at = None
-        outbox.finished_at = outbox.finished_at or now
+        outbox.finished_at = now
+        outbox.blocked_by_runtime_hold_id = None
+        outbox.blocked_by_reconciliation_session_id = None
+        outbox.blocked_device_id = None
+        outbox.blocked_workline_id = None
+        outbox.blocked_reason = None
 
         if session.reconciliation_state == RuntimeReconciliationState.PENDING:
             if command is not None and _enum_value(command.status) in {

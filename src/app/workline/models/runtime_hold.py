@@ -210,7 +210,7 @@ class NgReturnItem(
     DataTableMixin,
     table=True,
 ):
-    """RETURN_TO_NG 处置下的单物料/原 session 持久记录。"""
+    """进入 NG 队列的单物料/原 session 持久记录。"""
 
     __tablename__: ClassVar[Literal["ng_return_items"]] = "ng_return_items"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
@@ -282,10 +282,11 @@ class NgReturnItem(
     ng_reason_label: str | None = Field(default=None, max_length=200, description="NG reason 展示标签")
     operator_note: str | None = Field(default=None, sa_column=Column(Text), description="操作员备注")
 
-    created_from_runtime_hold_id: int = Field(
+    created_from_runtime_hold_id: int | None = Field(
+        default=None,
         index=True,
         foreign_key="wes_biz.runtime_holds.id",
-        description="来源 RuntimeHold.id",
+        description="来源 RuntimeHold.id；普通扫码 NG 分流为空",
     )
     status: NgReturnItemStatus = Field(
         default=NgReturnItemStatus.WAITING_REWORK,

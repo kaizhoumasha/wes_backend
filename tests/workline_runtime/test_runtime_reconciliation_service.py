@@ -348,6 +348,11 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
         last_error=None,
         next_retry_at=timezone.now_for_db() + timedelta(seconds=30),
         finished_at=None,
+        blocked_by_runtime_hold_id=None,
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_BUSY",
     )
     session = SimpleNamespace(
         id=553,
@@ -399,6 +404,11 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
     assert outbox.last_error == "COMMAND_ACK_TIMEOUT"
     assert outbox.next_retry_at is None
     assert outbox.finished_at is not None
+    assert outbox.blocked_by_runtime_hold_id is None
+    assert outbox.blocked_by_reconciliation_session_id is None
+    assert outbox.blocked_device_id is None
+    assert outbox.blocked_workline_id is None
+    assert outbox.blocked_reason is None
     assert command.status == CommandStatus.FAILED
     assert command.completed_at is not None
     assert command.error_detail == {

@@ -5,14 +5,19 @@ import pytest
 
 
 class _AttemptRepoStub:
-    def __init__(self) -> None:
+    def __init__(self, attempts: list[object] | None = None) -> None:
         self.created: object | None = None
+        self.attempts = attempts or []
         self.create = AsyncMock(side_effect=self._create)
         self.get_by_lease_token = AsyncMock(side_effect=self._get_by_lease_token)
+        self.get_by_outbox_id = AsyncMock(side_effect=self._get_by_outbox_id)
 
     async def _create(self, _db: object, data: dict[str, object]) -> object:
         self.created = SimpleNamespace(id=12, **data)
         return self.created
+
+    async def _get_by_outbox_id(self, _db: object, _outbox_id: int) -> list[object]:
+        return self.attempts
 
     async def _get_by_lease_token(self, _db: object, lease_token: str) -> object | None:
         if self.created is not None and self.created.lease_token == lease_token:
@@ -48,6 +53,20 @@ async def test_dispatch_attempt_service_creates_lease_and_finalizes_success() ->
     assert finalized.status == "SENT"
     assert finalized.finalized_at is not None
     assert finalized.response_json == {"status_code": 200}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_attempt_service_uses_existing_attempt_history_for_next_attempt_no() -> None:
+    from src.app.workline.services.dispatch_attempt_service import WorklineDispatchAttemptService
+
+    repo = _AttemptRepoStub(attempts=[SimpleNamespace(attempt_no=1)])
+    service = WorklineDispatchAttemptService(repository=repo)  # type: ignore[arg-type]
+    outbox = SimpleNamespace(id=864, dispatch_key="device-command:CMD-1", attempt_count=0)
+
+    attempt = await service.create_attempt(object(), outbox=outbox, auto_commit=False)
+
+    assert attempt.attempt_no == 2
+    assert attempt.lease_token.startswith("dispatch-attempt:864:2:")
 
 
 @pytest.mark.asyncio

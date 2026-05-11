@@ -40,7 +40,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
     async def get_pending_commands(
         self,
         db: AsyncSession,
-        device_id: str | None = None,
+        device_id: int | None = None,
         limit: int = 100,
     ) -> list[DeviceCommand]:
         """
@@ -57,7 +57,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         columns = cast("Any", DeviceCommand).__table__.c
         statement = select(DeviceCommand).where(columns.status == CommandStatus.PENDING)
 
-        if device_id:
+        if device_id is not None:
             statement = statement.where(columns.device_id == device_id)
 
         statement = statement.order_by(columns.priority.desc()).limit(limit)
@@ -151,7 +151,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: str | None = None) -> int:
+    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: int | None = None) -> int:
         """
         统计指定状态的指令数量
 
@@ -168,7 +168,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         columns = cast("Any", DeviceCommand).__table__.c
         statement = select(func.count(columns.id)).where(columns.status == status)
 
-        if device_id:
+        if device_id is not None:
             statement = statement.where(columns.device_id == device_id)
 
         result = await db.execute(statement)

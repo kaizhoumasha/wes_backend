@@ -50,6 +50,20 @@ async def _finalize_attempt(
     return attempt
 
 
+async def _next_attempt_no(db: Any, *, repository: Any, outbox_id: int, outbox: Any) -> int:
+    outbox_attempt_count = int(getattr(outbox, "attempt_count", 0) or 0)
+    history_max_attempt_no = 0
+    get_by_outbox_id = getattr(repository, "get_by_outbox_id", None)
+    if callable(get_by_outbox_id):
+        attempts = await get_by_outbox_id(db, outbox_id)
+        history_max_attempt_no = max(
+            (int(getattr(attempt, "attempt_no", 0) or 0) for attempt in attempts),
+            default=0,
+        )
+
+    return max(outbox_attempt_count, history_max_attempt_no) + 1
+
+
 class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, WorklineDispatchAttemptRepository]):
     """维护 outbox 派发 attempt 的 lease 与 finalize 语义。"""
 
@@ -69,7 +83,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         if not isinstance(outbox_id, int):
             raise TypeError("创建派发尝试需要有效 outbox_id")
 
-        attempt_no = int(getattr(outbox, "attempt_count", 0) or 0) + 1
+        attempt_no = await _next_attempt_no(db, repository=self.repo, outbox_id=outbox_id, outbox=outbox)
         lease_token = f"dispatch-attempt:{outbox_id}:{attempt_no}:{uuid.uuid4().hex}"
         trace = TraceContext.from_runtime(outbox=outbox)
         data = {

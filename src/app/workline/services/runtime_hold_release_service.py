@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.device.models.command import CommandResult, CommandStatus
+from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
+from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
+from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -27,7 +29,12 @@ from src.app.workline.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.workline.repositories import outbox_repository, workline_repository, workline_session_repository
+from src.app.workline.repositories import (
+    inbox_repository,
+    outbox_repository,
+    workline_repository,
+    workline_session_repository,
+)
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_workline_plugin_definition
@@ -38,7 +45,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.device.repositories import DeviceCommandRepository
+    from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
+    from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
     from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
     from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
@@ -82,6 +91,7 @@ class RuntimeHoldReleaseService:
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: WorklineOutboxRepository | None = None,
+        inbox_repo: WorklineInboxRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
     ) -> None:
@@ -89,6 +99,7 @@ class RuntimeHoldReleaseService:
         self.workline_repo = workline_repo or workline_repository
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or outbox_repository
+        self.inbox_repo = inbox_repo or inbox_repository
         self.command_repo = command_repo or device_command_repository
         self.device_service = device_service or DeviceService()
 
@@ -187,10 +198,31 @@ class RuntimeHoldReleaseService:
         hold.resolved_by = operator_id
         hold.resolved_at = now
 
+        source_command = await self._resolve_source_command(db, hold=hold, request=request, resolved_at=now)
+        created_inbox = None
         if session is not None:
-            self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
+            if source_command is not None and self._should_replay_command_result(
+                hold=hold,
+                request=request,
+            ):
+                self._resolve_session_for_command_result_replay(
+                    session,
+                    request=request,
+                    operator_id=operator_id,
+                    resolved_at=now,
+                    command=source_command,
+                )
+                created_inbox = await self._create_continue_command_result_inbox(
+                    db,
+                    hold=hold,
+                    request=request,
+                    command=source_command,
+                    resolved_at=now,
+                    session_id=cast("int", session.id),
+                )
+            else:
+                self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
 
-        await self._resolve_source_command(db, hold=hold, request=request, resolved_at=now)
         await self._clear_runtime_device_error(db, hold=hold)
 
         hold.increment_version()
@@ -220,6 +252,7 @@ class RuntimeHoldReleaseService:
             "remaining_active_blocking_holds": remaining_active_blocking_holds,
             "released_outbox_count": released_outbox_count,
             "ng_return_item_id": getattr(ng_item, "id", None),
+            "created_inbox_id": getattr(created_inbox, "id", None),
         }
 
     def _validate_release_request(self, request: ResolveRuntimeHoldRequest) -> None:
@@ -267,6 +300,7 @@ class RuntimeHoldReleaseService:
         material_identity = release_context.material_identity
         ng_reason = release_context.ng_reason
         material_identity_key = cast("str", material_identity.idempotency_key)
+        item: NgReturnItem | None = None
         try:
             async with db.begin_nested():
                 item = NgReturnItem(
@@ -291,6 +325,8 @@ class RuntimeHoldReleaseService:
                 await db.flush()
         except IntegrityError:
             await self._raise_material_conflict(db, material_identity_key)
+        if item is None:
+            raise RuntimeError("创建 NG Return Item 后无法读取")
         return item
 
     async def _prepare_return_to_ng_release(
@@ -533,10 +569,71 @@ class RuntimeHoldReleaseService:
     ) -> None:
         session.status = SessionStatus(request.resolution)
         session.ended_at = resolved_at
+        session.current_wait_type = None
+        session.current_wait_token = None
+        session.waiting_since = None
+        session.deadline_at = None
+        session.current_wait_timeout_seconds = None
+        session.awaiting_command_id = None
+        session.plugin_state = None
+        self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
+        self._write_session_release_context(
+            session,
+            request=request,
+            operator_id=operator_id,
+            resolved_at=resolved_at,
+        )
+
+    def _resolve_session_for_command_result_replay(
+        self,
+        session: Any,
+        *,
+        request: ResolveRuntimeHoldRequest,
+        operator_id: int,
+        resolved_at: Any,
+        command: DeviceCommand,
+    ) -> None:
+        if command.id is None:
+            raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
+        session.status = SessionStatus.WAITING_DEVICE_RESULT
+        session.ended_at = None
+        session.current_wait_type = "COMMAND_RESULT"
+        session.current_wait_token = command.command_code
+        session.waiting_since = resolved_at
+        session.deadline_at = None
+        session.current_wait_timeout_seconds = None
+        session.awaiting_command_id = command.id
+        session.failure_domain = None
+        session.failure_code = None
+        session.failure_message = None
+        self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
+        self._write_session_release_context(
+            session,
+            request=request,
+            operator_id=operator_id,
+            resolved_at=resolved_at,
+        )
+
+    def _mark_reconciliation_resolved(
+        self,
+        session: Any,
+        *,
+        request: ResolveRuntimeHoldRequest,
+        resolved_at: Any,
+    ) -> None:
         if session.reconciliation_state == RuntimeReconciliationState.PENDING:
             session.reconciliation_state = RuntimeReconciliationState.RESOLVED
             session.reconciliation_resolution = RuntimeReconciliationResolution(request.resolution)
             session.reconciliation_resolved_at = resolved_at
+
+    def _write_session_release_context(
+        self,
+        session: Any,
+        *,
+        request: ResolveRuntimeHoldRequest,
+        operator_id: int,
+        resolved_at: Any,
+    ) -> None:
         context = _as_dict(session.context_json)
         context["runtime_hold_release"] = {
             "resolution": request.resolution,
@@ -549,6 +646,18 @@ class RuntimeHoldReleaseService:
         }
         session.context_json = context
 
+    def _should_replay_command_result(
+        self,
+        *,
+        hold: RuntimeHold,
+        request: ResolveRuntimeHoldRequest,
+    ) -> bool:
+        return (
+            hold.source_command_id is not None
+            and request.material_disposition == MaterialDisposition.CONTINUE.value
+            and request.resolution == SessionStatus.COMPLETED.value
+        )
+
     async def _resolve_source_command(
         self,
         db: AsyncSession,
@@ -556,12 +665,12 @@ class RuntimeHoldReleaseService:
         hold: RuntimeHold,
         request: ResolveRuntimeHoldRequest,
         resolved_at: Any,
-    ) -> None:
+    ) -> DeviceCommand | None:
         if hold.source_command_id is None:
-            return
+            return None
         command = await self.command_repo.get_by_id(db, hold.source_command_id)
         if command is None:
-            return
+            return None
         if request.resolution == SessionStatus.COMPLETED.value:
             command.status = CommandStatus.COMPLETED
             command.result = CommandResult.SUCCESS
@@ -584,6 +693,57 @@ class RuntimeHoldReleaseService:
                 "operator_resolution": request.resolution,
             }
         command.completed_at = resolved_at
+        return command
+
+    async def _create_continue_command_result_inbox(
+        self,
+        db: AsyncSession,
+        *,
+        hold: RuntimeHold,
+        request: ResolveRuntimeHoldRequest,
+        command: DeviceCommand,
+        resolved_at: Any,
+        session_id: int,
+    ) -> WorklineInbox:
+        if command.id is None:
+            raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
+        if command.workline_id is None:
+            command.workline_id = hold.workline_id
+        device = await db.get(Device, command.device_id)
+        if device is None:
+            raise ValueError(f"设备不存在: {command.device_id}")
+
+        command_type = _enum_value(command.task_type)
+        payload = {
+            "command_code": command.command_code,
+            "device_code": device.device_code,
+            "command_type": command_type,
+            "task_type": command_type,
+            "result": CommandResult.SUCCESS.value,
+            "runtime_hold_release": True,
+            "data": request.result_payload or {},
+        }
+        inbox = await self.inbox_repo.create(
+            db,
+            {
+                "kind": InboxKind.COMMAND_RESULT,
+                "idempotency_key": f"runtime-hold:continue-result:{hold.id}:{command.id}",
+                "source_system": SourceSystem.MANUAL,
+                "source_message_id": f"runtime-hold:continue-result:{hold.id}",
+                "workline_id": command.workline_id,
+                "device_id": command.device_id,
+                "command_id": command.id,
+                "session_id": session_id,
+                "trace_id": command.trace_id or hold.trace_id,
+                "event_id": f"runtime-hold:result:{hold.id}:{command.command_code}",
+                "causation_id": hold.trace_id,
+                "payload_json": payload,
+                "received_at": resolved_at,
+            },
+        )
+        if inbox is None:
+            raise RuntimeError(f"创建 Runtime Hold Continue Result Inbox 失败: command_code={command.command_code}")
+        return inbox
 
     async def _clear_runtime_device_error(self, db: AsyncSession, *, hold: RuntimeHold) -> None:
         device_error = self._device_error_for_hold(hold)

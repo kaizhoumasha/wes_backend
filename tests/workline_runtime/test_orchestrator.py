@@ -258,6 +258,52 @@ class TestOrchestratorServicePhase2:
         write_callback.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_process_inbox_write_callback_failure_preserves_original_error_when_inbox_expires(
+        self,
+        mock_session,
+        mock_workline,
+        mock_devices_by_role,
+        mock_services,
+    ):
+        """异常处理不能 lazy-load 已过期 ORM inbox，避免 MissingGreenlet 覆盖根因。"""
+        from sqlalchemy.exc import MissingGreenlet
+
+        from src.workline_runtime.orchestrator import OrchestratorService
+
+        class ExpiringInbox:
+            kind = InboxKind.DEVICE_EVENT
+
+            def __init__(self) -> None:
+                self.expired = False
+                self.payload_json = {"message_type": "DEVICE_EVENT", "event": "scan_complete"}
+
+            @property
+            def id(self) -> int:
+                if self.expired:
+                    raise MissingGreenlet("expired ORM attribute access")
+                return 100
+
+        inbox = ExpiringInbox()
+        orchestrator = OrchestratorService(lock_provider=lambda key: make_noop_lock())
+
+        async def write_callback(_result):
+            inbox.expired = True
+            raise ValueError("original write failure")
+
+        result = await orchestrator.process_inbox(
+            session=mock_session,
+            workline=mock_workline,
+            inbox=inbox,
+            devices_by_role=mock_devices_by_role,
+            services=mock_services,
+            trace_id="test-trace-id",
+            write_callback=write_callback,
+        )
+
+        assert result.success is False
+        assert result.error == "original write failure"
+
+    @pytest.mark.asyncio
     async def test_same_session_messages_are_serialized(
         self,
         mock_session,

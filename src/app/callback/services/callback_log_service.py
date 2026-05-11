@@ -18,7 +18,7 @@ from src.workline_runtime.trace_context import TraceContext
 def _build_callback_log_data(
     *,
     callback_type: str,
-    device_id: str,
+    subject_code: str,
     request_body: dict[str, Any],
     client_ip: str | None,
     user_agent: str | None,
@@ -31,7 +31,7 @@ def _build_callback_log_data(
 ) -> dict[str, Any]:
     return {
         "callback_type": callback_type,
-        "device_id": device_id,
+        "subject_code": subject_code,
         "request_body": request_body,
         "client_ip": client_ip,
         "user_agent": user_agent,
@@ -58,7 +58,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
         db: AsyncSession,
         *,
         callback_type: str,
-        device_id: str,
+        subject_code: str,
         request_body: dict[str, Any],
         client_ip: str | None = None,
         user_agent: str | None = None,
@@ -77,7 +77,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
         Args:
             db: 数据库会话
             callback_type: 回调类型 (event/result)
-            device_id: 设备 ID
+            subject_code: 回调主体编码（设备编码或外部回调类型）
             request_body: 原始请求体
             client_ip: 客户端 IP
             user_agent: 客户端 User-Agent
@@ -100,7 +100,7 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
 
         log_data = _build_callback_log_data(
             callback_type=callback_type,
-            device_id=device_id,
+            subject_code=subject_code,
             request_body=request_body,
             client_ip=client_ip,
             user_agent=user_agent,
@@ -126,10 +126,10 @@ class CallbackLogService(BaseService[CallbackLog, CallbackLogRepository]):
 
         return await self.repo.get_by_trace_id(db, trace_id)
 
-    async def get_by_device_id(self, db: AsyncSession, device_id: str, limit: int = 100) -> list[CallbackLog]:
-        """根据 device_id 查询最近的回调日志。"""
+    async def get_by_subject_code(self, db: AsyncSession, subject_code: str, limit: int = 100) -> list[CallbackLog]:
+        """根据回调主体编码查询最近的回调日志。"""
 
-        return await self.repo.get_by_device_id(db, device_id, limit)
+        return await self.repo.get_by_subject_code(db, subject_code, limit)
 
 
 # 创建单例

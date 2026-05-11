@@ -145,13 +145,8 @@ class CallbackOrchestrationService:
     async def _load_command_session(self, db: AsyncSession, command: object) -> object | None:
         from src.app.workline.models.session import WorklineSession
 
-        raw_session_id = getattr(command, "session_id", None)
-        if raw_session_id is None:
-            return None
-
-        try:
-            session_id = int(raw_session_id)
-        except (TypeError, ValueError):
+        session_id = getattr(command, "session_id_int", None)
+        if not isinstance(session_id, int):
             return None
 
         return await db.get(WorklineSession, session_id)

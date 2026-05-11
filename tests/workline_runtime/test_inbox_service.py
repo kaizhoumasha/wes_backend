@@ -334,6 +334,62 @@ async def test_mark_as_failed_moves_to_dead_letter_after_max_attempts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mark_as_processed_clears_retry_error_projection() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(
+        inbox=SimpleNamespace(
+            id=4,
+            status=InboxStatus.RETRY,
+            error_message="old transition error",
+            next_retry_at=datetime.now(),
+            processor_token="worker-1",
+        )
+    )
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_processed(db, 4)
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 4
+    assert data["status"] == InboxStatus.PROCESSED
+    assert data["error_message"] is None
+    assert data["next_retry_at"] is None
+    assert data["processor_token"] is None
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.PROCESSED
+
+
+@pytest.mark.asyncio
+async def test_mark_as_dead_letter_clears_retry_error_projection() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(
+        inbox=SimpleNamespace(
+            id=5,
+            status=InboxStatus.RETRY,
+            error_message="old retryable error",
+            next_retry_at=datetime.now(),
+            processor_token="worker-1",
+        )
+    )
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_dead_letter(db, 5, "terminal data conflict")
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 5
+    assert data["status"] == InboxStatus.DEAD_LETTER
+    assert data["error_message"] == "terminal data conflict"
+    assert data["next_retry_at"] is None
+    assert data["processor_token"] is None
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.DEAD_LETTER
+
+
+@pytest.mark.asyncio
 async def test_mark_as_processed_raises_when_message_missing() -> None:
     service = WorklineInboxService()
     fake_repo = _FakeInboxRepo(inbox=None)

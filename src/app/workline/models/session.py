@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -367,6 +367,23 @@ class WorklineSession(
 
     __tablename__: ClassVar[str] = "workline_sessions"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+    __table_args__ = (
+        Index(
+            "uq_workline_sessions_open_business_key",
+            "workline_id",
+            "business_key",
+            unique=True,
+            postgresql_where=text(
+                "business_key IS NOT NULL AND status IN "
+                "('NEW', 'RUNNING', 'WAITING_DEVICE_RESULT', 'WAITING_EXTERNAL', 'MANUAL_HOLD')"
+            ),
+            sqlite_where=text(
+                "business_key IS NOT NULL AND status IN "
+                "('NEW', 'RUNNING', 'WAITING_DEVICE_RESULT', 'WAITING_EXTERNAL', 'MANUAL_HOLD')"
+            ),
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
 
     # 关系定义
     workline: "WorkLine" = Relationship(
