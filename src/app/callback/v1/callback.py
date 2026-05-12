@@ -23,9 +23,9 @@ from src.app.callback.models import (
 )
 from src.app.callback.services import callback_ingress_service
 from src.core.api_security import RequireAPIPermission
+from src.core.logger import logger
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
-from src.utils.fast_fail import fast_fail_check
 
 router = APIRouter()
 
@@ -34,10 +34,13 @@ def _enqueue_workline_processing() -> None:
     """触发 Workline Inbox 异步处理。"""
     from src.celery_app.app import celery_app
 
-    cast("Any", celery_app).send_task(
-        "src.celery_app.tasks.workline.process_inbox_batch",
-        kwargs={"limit": 10},
-    )
+    try:
+        cast("Any", celery_app).send_task(
+            "src.celery_app.tasks.workline.process_inbox_batch",
+            kwargs={"limit": 10},
+        )
+    except Exception as exc:
+        logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
 
 @router.post(
@@ -47,7 +50,6 @@ def _enqueue_workline_processing() -> None:
     summary="任务结果回传",
     dependencies=[
         Depends(RequireAPIPermission("api:callback:result")),
-        Depends(fast_fail_check),
     ],
     description="设备完成指令后，调用此接口回传执行结果",
 )
@@ -71,7 +73,6 @@ async def callback_result(
     summary="设备事件上报",
     dependencies=[
         Depends(RequireAPIPermission("api:callback:event")),
-        Depends(fast_fail_check),
     ],
     description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )

@@ -143,7 +143,8 @@ services:
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD-SHELL", "celery -A src.celery_app.app inspect ping || exit 1"]
+      # 检查 worker 进程本身，避免 Celery remote-control ping 在热重载/控制面抖动时误报 unhealthy。
+      test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3

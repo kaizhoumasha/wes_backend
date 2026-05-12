@@ -89,18 +89,24 @@ class CallbackOrchestrationService:
     def _enqueue_workline_processing(self) -> None:
         from src.celery_app.app import celery_app
 
-        cast("Any", celery_app).send_task(
-            "src.celery_app.tasks.workline.process_inbox_batch",
-            kwargs={"limit": 10},
-        )
+        try:
+            cast("Any", celery_app).send_task(
+                "src.celery_app.tasks.workline.process_inbox_batch",
+                kwargs={"limit": 10},
+            )
+        except Exception as exc:
+            logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     def _enqueue_outbox_dispatch(self) -> None:
         from src.celery_app.app import celery_app
 
-        cast("Any", celery_app).send_task(
-            "src.celery_app.tasks.workline.dispatch_outbox_batch",
-            kwargs={"limit": 50},
-        )
+        try:
+            cast("Any", celery_app).send_task(
+                "src.celery_app.tasks.workline.dispatch_outbox_batch",
+                kwargs={"limit": 50},
+            )
+        except Exception as exc:
+            logger.warning(f"Callback 后续 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 
     def _resolve_duplicate_inbox_error(self, error: ValueError, *, duplicate_message: str) -> object | None:
         if not self._is_duplicate_inbox_error(error):
@@ -191,10 +197,13 @@ class CallbackOrchestrationService:
     ) -> None:
         await db.commit()
         await publish_deferred_sse_events(db)
-        if enqueue_processing is None:
-            self._enqueue_workline_processing()
-            return
-        enqueue_processing()
+        try:
+            if enqueue_processing is None:
+                self._enqueue_workline_processing()
+                return
+            enqueue_processing()
+        except Exception as exc:
+            logger.warning(f"Callback 已提交，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     async def _is_workline_command_callback(
         self,

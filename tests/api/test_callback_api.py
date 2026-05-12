@@ -189,6 +189,35 @@ class TestCallbackIngressRouteContracts:
 
         assert route.response_model == response_model
 
+    def test_ingress_routes_do_not_fast_fail_on_celery_control_plane(self) -> None:
+        for path in ("/result", "/event", "/external"):
+            route = _get_route(path, "POST")
+            route_dependency_names = [
+                getattr(dependency.call, "__name__", type(dependency.call).__name__)
+                for dependency in route.dependant.dependencies
+            ]
+
+            assert "fast_fail_check" not in route_dependency_names
+
+
+class TestCallbackEnqueueFallback:
+    @pytest.mark.asyncio
+    async def test_commit_succeeds_when_enqueue_is_unavailable(self, db_session: AsyncSession) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        service = CallbackOrchestrationService()
+
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            await service._commit_and_enqueue_workline_processing(
+                db_session,
+                enqueue_processing=MagicMock(side_effect=RuntimeError("celery down")),
+            )
+
+        db_session.commit.assert_awaited_once()
+
 
 class TestCallbackResultAPI:
     @pytest.mark.asyncio

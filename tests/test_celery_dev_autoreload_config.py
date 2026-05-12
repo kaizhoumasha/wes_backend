@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from src.celery_app.worker_healthcheck import has_celery_worker_process
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,6 +35,37 @@ def test_dev_worker_autoreload_replaces_worker_process_on_restart() -> None:
     assert '\n    sh -c "exec $CELERY_CMD" &' in script_text
     assert 'kill -TERM "$stop_target"' in script_text
     assert 'kill -KILL "$stop_target"' in script_text
+
+
+def test_celery_worker_healthcheck_uses_process_probe() -> None:
+    compose_text = (BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert '["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]' in compose_text
+    assert "celery -A src.celery_app.app inspect ping" not in compose_text
+
+
+def test_worker_healthcheck_detects_celery_worker_process(tmp_path: Path) -> None:
+    proc_dir = tmp_path / "123"
+    proc_dir.mkdir()
+    (proc_dir / "cmdline").write_bytes(b"python\0-m\0celery\0-A\0src.celery_app.app\0worker\0")
+
+    assert has_celery_worker_process(tmp_path)
+
+
+def test_worker_healthcheck_ignores_celery_inspect_ping(tmp_path: Path) -> None:
+    proc_dir = tmp_path / "123"
+    proc_dir.mkdir()
+    (proc_dir / "cmdline").write_bytes(b"celery\0-A\0src.celery_app.app\0inspect ping\0")
+
+    assert not has_celery_worker_process(tmp_path)
+
+
+def test_worker_healthcheck_ignores_healthcheck_process_itself(tmp_path: Path) -> None:
+    proc_dir = tmp_path / "123"
+    proc_dir.mkdir()
+    (proc_dir / "cmdline").write_bytes(b"python\0/app/src/celery_app/worker_healthcheck.py\0")
+
+    assert not has_celery_worker_process(tmp_path)
 
 
 def test_dev_beat_autoreload_replaces_beat_process_on_restart() -> None:
