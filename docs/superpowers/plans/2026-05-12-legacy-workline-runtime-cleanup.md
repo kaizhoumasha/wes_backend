@@ -2,8 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 清理 WORKLINE 插件旧链路，让生产 callback 链路以 `RuntimeIntent` 为插件唯一输出，以 Runtime/拓扑作为状态和流转的唯一所有者；最终删除 `PluginResult`、`TransitionValidator`、per-plugin `state_machine_class`、`requires_state`、`plugin_state` 等旧状态机机制。  
-**Architecture:** 插件只解释事件/结果并返回领域意图；Runtime 负责拓扑解析、命令创建、等待、幂等、超时、Timeline、Session/物料位置更新和监控投影。执行过程中允许短生命周期桥接以保持每个 checkpoint 可测试，但最终验收禁止旧链路残留。  
+**Goal:** 清理 WORKLINE 插件旧链路，让生产 callback 链路以 `RuntimeIntent` 为插件唯一输出，以 Runtime/拓扑作为状态和流转的唯一所有者；最终删除 `PluginResult`、`TransitionValidator`、per-plugin `state_machine_class`、`requires_state`、`plugin_state` 等旧状态机机制。
+**Architecture:** 插件只解释事件/结果并返回领域意图；Runtime 负责拓扑解析、命令创建、等待、幂等、超时、Timeline、Session/物料位置更新和监控投影。执行过程中允许短生命周期桥接以保持每个 checkpoint 可测试，但最终验收禁止旧链路残留。
 **Tech Stack:** FastAPI backend, SQLModel/SQLAlchemy async, Pydantic v2, Alembic, pytest, ruff, uv.
 
 ---

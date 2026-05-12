@@ -8,4 +8,3 @@
 - `docs/templates/workline_plugin/README.md`
 - `docs/business/workline_plugin_architecture_design.md`
 - `docs/business/workline_runtime_workflow_guide.md`
-
