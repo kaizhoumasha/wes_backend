@@ -41,6 +41,28 @@ def callback_log_1() -> SimpleNamespace:
     )
 
 
+def test_failed_command_evidence_uses_trace_response_builder_projection() -> None:
+    from src.app.workline.services.trace_response_builder import build_failed_command_evidence
+
+    command = SimpleNamespace(
+        id=501,
+        command_code="CMD-FAILED-TRACE",
+        status="FAILED",
+        result="FAILED",
+        error_detail={"code": "DEVICE_BUSY"},
+        result_data={"observed": True},
+    )
+
+    evidence = build_failed_command_evidence(command)
+
+    assert evidence.command_id == 501
+    assert evidence.command_code == "CMD-FAILED-TRACE"
+    assert evidence.status == "FAILED"
+    assert evidence.result == "FAILED"
+    assert evidence.error_detail == {"code": "DEVICE_BUSY"}
+    assert evidence.result_data == {"observed": True}
+
+
 @pytest.fixture
 def callback_log_2() -> SimpleNamespace:
     return SimpleNamespace(
@@ -344,7 +366,7 @@ async def test_blocking_point_returns_operable_diagnostic_card(
     assert result.trace_id == "trace-1"
     assert result.blocking_point == "outbox"
     assert result.diagnostic_card.error_code == "OUTBOX_DISPATCH_FAILED"
-    assert result.diagnostic_card.recoverability == "auto_retryable"
+    assert result.diagnostic_card.recoverability == "manual_intervention_required"
     assert result.operator_action
     assert result.evidence["outbox"]["dispatch_key"] == "dispatch-1"
     assert result.evidence["outbox"]["last_error"] == "HTTP 500"

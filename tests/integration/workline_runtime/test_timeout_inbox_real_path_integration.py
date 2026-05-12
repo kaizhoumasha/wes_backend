@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine
@@ -25,6 +27,8 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
     trace_id = f"{test_prefix}_timeout_chain"
     session_code = f"{test_prefix}_session"
     line_code = f"{test_prefix}_line"
+    device_code = f"{test_prefix}_device"
+    command_code = f"{test_prefix}_command"
     expired_deadline = timezone.now_for_db() - timedelta(minutes=10)
 
     async with integration_session_factory() as setup_db:
@@ -34,6 +38,15 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
             line_type=LineType.AUTO,
         )
         setup_db.add(line)
+        await setup_db.flush()
+
+        device = Device(
+            device_code=device_code,
+            device_name=f"{test_prefix}-device",
+            work_line_id=line.id,
+            device_role="ROBOT_ARM",
+        )
+        setup_db.add(device)
         await setup_db.flush()
 
         workline_session = WorklineSession(
@@ -46,6 +59,22 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
             deadline_at=expired_deadline,
         )
         setup_db.add(workline_session)
+        await setup_db.flush()
+
+        command = DeviceCommand(
+            device_id=device.id,
+            command_code=command_code,
+            task_type="TEST_TIMEOUT",
+            status=CommandStatus.ACK_RECEIVED,
+            ack_received_at=timezone.now_for_db() - timedelta(minutes=9),
+            trace_id=trace_id,
+            workline_id=line.id,
+            session_id_int=workline_session.id,
+        )
+        setup_db.add(command)
+        await setup_db.flush()
+
+        workline_session.awaiting_command_id = command.id
         await setup_db.commit()
         session_id = workline_session.id
 
@@ -62,7 +91,6 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
                 WorklineSession.status == SessionStatus.WAITING_DEVICE_RESULT,  # type: ignore[arg-type]
                 WorklineSession.deadline_at.is_not(None),  # type: ignore[arg-type]
                 WorklineSession.deadline_at < now,  # type: ignore[arg-type]
-                WorklineSession.is_deleted.is_(False),  # type: ignore[arg-type]
             )
             .limit(limit)
         )

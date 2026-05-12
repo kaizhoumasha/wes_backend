@@ -2,7 +2,7 @@
 SSE 实时事件推送 API
 
 提供 Server-Sent Events (SSE) 实时事件推送功能：
-- GET /api/v1/events/stream - SSE 事件流
+- GET /api/v1/sys/events/stream - SSE 事件流
 """
 
 import asyncio
@@ -19,6 +19,8 @@ from src.core.security import _verify_token
 from src.database.redis_client import get_redis
 
 router = APIRouter(tags=["系统事件"])
+
+SSE_HEARTBEAT_INTERVAL_SECONDS = 25.0
 
 
 class SSEEventType:
@@ -86,9 +88,10 @@ async def event_stream(
     if not redis_client:
         # Redis 不可用时返回空事件流（降级模式）
         async def empty_generator():
+            yield ": heartbeat\n\n"
             while True:
-                await asyncio.sleep(1)
-                yield ": keep-alive\n\n"
+                await asyncio.sleep(SSE_HEARTBEAT_INTERVAL_SECONDS)
+                yield ": heartbeat\n\n"
 
         return StreamingResponse(empty_generator(), media_type="text/event-stream")
 
@@ -96,11 +99,16 @@ async def event_stream(
         """事件生成器"""
         pubsub = cast("Any", redis_client).pubsub()
         await pubsub.subscribe(SSE_EVENT_CHANNEL)
+        _ = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
         try:
+            yield ": heartbeat\n\n"
             while True:
                 try:
                     # Pub/Sub 广播保证多个 SSE 客户端都能收到同一事件。
-                    event = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    event = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=SSE_HEARTBEAT_INTERVAL_SECONDS,
+                    )
                     if event and event.get("type") == "message":
                         data = event.get("data", "{}")
                         if isinstance(data, bytes):
@@ -125,7 +133,7 @@ async def event_stream(
                     # 出错时发送心跳
                     logger.warning(f"SSE 事件流异常: {e}，发送心跳保持连接")
                     yield ": heartbeat\n\n"
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(SSE_HEARTBEAT_INTERVAL_SECONDS)
         finally:
             try:
                 await pubsub.unsubscribe(SSE_EVENT_CHANNEL)

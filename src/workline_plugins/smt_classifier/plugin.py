@@ -1,43 +1,32 @@
-"""
-SMT 粗分机插件 - 基于装饰器框架
-
-基于装饰器驱动的声明式模式实现的 SMT 粗分机插件。
-
-功能：
-- 扫码识别（OK/NG 判定）
-- 机械臂抓取放置
-- 流水线传输
-- 料箱分配
-- NG 分流
-"""
+"""SMT 粗分机插件。"""
 
 from __future__ import annotations
 
 import inspect
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import ValidationError
+
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
 from src.workline_runtime.contracts import DeviceErrorCode
 from src.workline_runtime.plugin_base import (
-    PluginResultBuilder,
     WorklinePlugin,
-    build_payload_invalid_failure,
-    build_state_mismatch_failure,
+    build_payload_invalid_block,
     on_command,
     on_event,
-    on_timeout,
-    resolve_normalized_command_envelope,
+    payload_invalid_block_if_missing_envelope,
     resolve_normalized_command_failure,
-    step,
 )
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult  # noqa: TC001
-from src.workline_runtime.types import CommandTargetScope
+from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
+from src.workline_runtime.utils import non_empty_str
 
 from .context import SmtClassifierContext, parse_smt_context
 from .contract import (
-    EStopEventPayload,
+    INSPECTION_NG_REASONS,
+    INSPECTION_SIZE_NG_REASON,
     ScanEventPayload,
     build_default_bin_allocation,
     build_measurement_reel_params,
@@ -49,9 +38,10 @@ from .contract import (
     normalize_six_in_one_payload,
     parse_six_in_one_payload,
     resolve_smt_business_key,
+    resolve_smt_material_identity,
+    smt_ng_reason_catalog,
 )
 from .normalizers import parse_measurement_result_data, parse_pick_place_result_data
-from .state_machine import SmtClassifierState, SmtClassifierStateMachine
 
 if TYPE_CHECKING:
     from src.workline_runtime.plugin_context import PluginContext
@@ -61,7 +51,6 @@ def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, 
     """统一构造扫码 NG 分流上下文。"""
 
     return SmtClassifierContext(
-        plugin_state=SmtClassifierState.WAITING_PICK_PLACE,
         barcode=barcode,
         barcodes=barcodes,
         location=location,
@@ -71,95 +60,67 @@ def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, 
     ).to_patch()
 
 
-def _build_manual_hold_context(*, current_step: Any, error_code: str, error_message: str) -> dict[str, Any]:
+def _build_manual_hold_context(*, error_code: str, error_message: str) -> dict[str, Any]:
     """统一构造设备失败转人工介入的上下文。"""
 
-    return SmtClassifierContext(
-        plugin_state=str(current_step or SmtClassifierState.MANUAL_HOLD),
-        manual_hold=True,
-        manual_hold_reason_code=error_code,
-        manual_hold_reason_message=error_message,
-    ).to_patch(plugin_state=SmtClassifierState.MANUAL_HOLD)
+    return {
+        "manual_hold": True,
+        "manual_hold_reason_code": error_code,
+        "manual_hold_reason_message": error_message,
+    }
 
 
-def _build_scan_ng_result(
-    *,
-    builder: PluginResultBuilder,
-    barcode: str,
-    barcodes: list[str],
-    location: str,
-    device_code: str,
-    scan_ng_reason_code: str | None = None,
-    scan_ng_reason_message: str | None = None,
-):
-    """统一构造扫码 NG 分流结果。"""
+def _source_device_role(ctx: Any) -> str | None:
+    source_role = ctx.source_device_role
+    if source_role is not None and not isinstance(source_role, str):
+        raise TypeError("ctx.source_device_role must be set to a string or None")
+    return non_empty_str(source_role)
 
-    context_patch = _build_scan_ng_context(
-        barcode=barcode,
-        barcodes=barcodes,
-        location=location,
-        device_code=device_code,
-    )
-    if scan_ng_reason_code or scan_ng_reason_message:
-        context_patch.update(
-            {
-                "scan_ng_reason_code": scan_ng_reason_code or "BARCODE_INVALID",
-                "scan_ng_reason_message": scan_ng_reason_message or f"条码格式错误: {barcode}",
-            }
-        )
 
-    reason_code = scan_ng_reason_code or "SCAN_NG"
-    reason_message = scan_ng_reason_message or "扫码判定 NG"
-    return (
-        builder.transition("scan_ng")
-        .business_decision(
-            reason_code=reason_code,
-            message=reason_message,
-            business_key=barcode or None,
-            evidence={
-                "barcode": barcode,
-                "barcodes": barcodes,
-                "location": location,
-                "device_code": device_code,
-            },
-        )
-        .command(
-            command_type="PICK_AND_PUT",
-            parameters=build_pick_scan_ng_params(barcode=barcode, location=location),
-        )
-        .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
-        .context(context_patch)
-        .build()
+def _unexpected_source_role_block(ctx: Any, command_type: str) -> RuntimeIntent:
+    source_role = _source_device_role(ctx) or "UNKNOWN"
+    return ctx.next.block(
+        scope=BlockScope.MATERIAL,
+        reason_code="UNEXPECTED_DEVICE_ROLE",
+        message=f"{command_type} 不支持来自设备角色 {source_role} 的回调",
     )
 
 
-def _build_manual_hold_result(
-    *,
-    builder: PluginResultBuilder,
-    current_step: Any,
-    error_code: str,
-    error_message: str,
-):
-    """统一构造人工介入结果。"""
+def _error_detail_missing(result: NormalizedCommandResult) -> bool:
+    return not isinstance(getattr(result, "error_detail", None), dict) or not result.error_detail
 
-    return (
-        builder.transition("manual_hold")
-        .context(
-            _build_manual_hold_context(
-                current_step=current_step,
-                error_code=error_code,
-                error_message=error_message,
-            )
-        )
-        .build()
-    )
+
+def _manual_hold_intents(ctx: Any, *, error_code: str, error_message: str) -> list[RuntimeIntent]:
+    return [
+        ctx.next.update_context(_build_manual_hold_context(error_code=error_code, error_message=error_message)),
+        ctx.next.block(
+            scope=BlockScope.MATERIAL,
+            reason_code=error_code,
+            message=error_message,
+        ),
+    ]
+
+
+def _mark_ng_payload(*, barcode: str, barcodes: list[str] | None = None, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"barcode": barcode}
+    if barcodes is not None:
+        payload["barcodes"] = barcodes
+    payload.update(extra)
+    return payload
+
+
+def _measurement_inspection_ng_reason(measurement_data: Any) -> str | None:
+    inspection_result = (non_empty_str(getattr(measurement_data, "inspection_result", None)) or "").upper()
+    reason_code = non_empty_str(getattr(measurement_data, "reason_code", None))
+    if inspection_result != "NG":
+        return None
+    if reason_code in INSPECTION_NG_REASONS:
+        return reason_code
+    return INSPECTION_SIZE_NG_REASON
 
 
 def _resolve_pkg_id_from_result(result: NormalizedCommandResult) -> str | None:
-    """从标准化命令结果中恢复业务包裹标识。
-
-    不同设备回调约定不同：扫码臂用 PkgID，流水线用 pkg_id，两者都要支持。
-    """
+    """从标准化命令结果中恢复业务包裹标识。"""
 
     result_data = getattr(result, "data", None)
     if not isinstance(result_data, dict):
@@ -169,15 +130,7 @@ def _resolve_pkg_id_from_result(result: NormalizedCommandResult) -> str | None:
 
 
 class SmtClassifierPlugin(WorklinePlugin):
-    """
-    SMT 粗分机插件
-
-    基于 @step 装饰器实现状态迁移，业务流程：
-    1. 扫码完成 → 验证条码 → 机械臂抓取到检测位
-    2. 检测完成 → OK:流水线传输 / NG:NG缓存位
-    3. 机械臂完成 → 流水线传输或NG处理完成
-    4. 流水线完成 → 料箱分配 → 最终出料
-    """
+    """SMT 粗分机插件，handler 只产出 RuntimeIntent。"""
 
     plugin_key = "smt_classifier"
     contract_version = "1.0"
@@ -189,30 +142,27 @@ class SmtClassifierPlugin(WorklinePlugin):
             DeviceRoleRequirement("OUTPUT_ARM", min_count=1, max_count=1),
             DeviceRoleRequirement("CONVEYOR", min_count=1, max_count=1),
         ),
-        state_machine_class=SmtClassifierStateMachine,
         context_model=SmtClassifierContext,
         business_key_resolver=resolve_smt_business_key,
         result_classifier=classify_smt_command_result,
+        material_identity_resolver=resolve_smt_material_identity,
+        ng_reason_catalog=smt_ng_reason_catalog(),
         event_source_roles={
             "SCAN_COMPLETED": "INPUT_ARM",
-            "ESTOP_PRESSED": ("INPUT_ARM", "OUTPUT_ARM", "CONVEYOR"),
         },
         command_target_roles={
             "MEASUREMENT_REEL": "INPUT_ARM",
             "MOVE_FORWARD": "CONVEYOR",
             "PICK_AND_PUT": ("INPUT_ARM", "OUTPUT_ARM"),
         },
-        supported_events=frozenset({"SCAN_COMPLETED", "ESTOP_PRESSED"}),
+        supported_events=frozenset({"SCAN_COMPLETED"}),
         supported_commands=frozenset({"MEASUREMENT_REEL", "MOVE_FORWARD", "PICK_AND_PUT"}),
     )
-
-    # ========== 设备角色常量 ==========
 
     INPUT_ARM = "INPUT_ARM"
     OUTPUT_ARM = "OUTPUT_ARM"
     CONVEYOR = "CONVEYOR"
 
-    # ========== 业务规则 ==========
     MANUAL_HOLD_ERROR_CODES: ClassVar[set[str]] = {
         DeviceErrorCode.SCAN_FAILED.value,
         DeviceErrorCode.PICK_AND_PUT_FAILED.value,
@@ -227,71 +177,30 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         return parse_six_in_one_payload(payload)
 
-    # ========== 事件处理 ==========
-
-    @on_event("ESTOP_PRESSED")
-    async def handle_estop(self, ctx: PluginContext, event: EStopEventPayload):
-        """
-        急停事件 → 错误状态
-
-        硬件商约定 payload:
-        {
-            "device_code": "ARM01",
-            "event_type": "ESTOP_PRESSED",
-            "timestamp": 1702627300000,
-            "data": null
-        }
-        """
-        logger.error(f"E-STOP pressed: device_code={event.device_code}")
-
-        return (
-            PluginResultBuilder(ctx)
-            .transition("fail")
-            .failure(
-                domain="HARDWARE",
-                code="ESTOP",
-                message=f"急停触发: {event.device_code}",
-            )
-            .build()
-        )
-
     @on_event("SCAN_COMPLETED")
-    async def handle_scan_completed(self, ctx: PluginContext, event: ScanEventPayload):
-        """
-        扫码完成 → 机械臂抓取到流水线进料位置
+    async def handle_scan_completed(self, ctx: PluginContext, inbox: Any) -> RuntimeIntent | list[RuntimeIntent]:
+        """扫码完成后按条码判定生成下一步 RuntimeIntent。"""
 
-        硬件商约定 payload:
-        {
-            "device_code": "ARM01",
-            "event_type": "SCAN_COMPLETED",
-            "timestamp": 1702627300000,
-            "data": {
-              "location": "ARM01",
-              "HHPN": "620100L00-011-G",
-              "MfrPN": "CC0402JRNPO9BN220",
-              "Qty": "7387",
-              "DateCode": "122625",
-              "LotCode": "8904936031",
-              "PkgID": "SVYU00125TP4LCR02_2"
-            }
-        }
-        """
-        location = event.data.location if event.data else ""
-
-        # 检查扫码数据是否存在
-        if not event.data:
-            return (
-                PluginResultBuilder(ctx)
-                .transition("scan_ng")
-                .failure(
-                    domain="DATA",
-                    code="MISSING_SCAN_DATA",
-                    message="扫码事件缺少 data 字段",
-                )
-                .build()
+        payload = getattr(inbox, "payload_json", None) or {}
+        try:
+            event = ScanEventPayload.model_validate(payload)
+        except ValidationError as exc:
+            return ctx.next.block(
+                scope=BlockScope.MATERIAL,
+                reason_code="PAYLOAD_INVALID",
+                message=f"扫码事件 payload 非法: {exc}",
+                suggested_action="检查设备回调 payload",
             )
 
-        # 使用六合一码进行判定
+        if event.data is None:
+            return ctx.next.block(
+                scope=BlockScope.MATERIAL,
+                reason_code="MISSING_SCAN_DATA",
+                message="扫码事件缺少 data 字段",
+                suggested_action="检查扫码设备 data 字段",
+            )
+
+        location = event.data.location
         barcode_decision = barcode_decision_service.evaluate(event.data)
         pkg_id = barcode_decision.six_in_one.PkgID or ""
 
@@ -302,347 +211,284 @@ class SmtClassifierPlugin(WorklinePlugin):
             BarcodeDecisionType.INCOMPLETE,
         }
         if is_invalid_scan or barcode_decision.decision == BarcodeDecisionType.NG:
-            return _build_scan_ng_result(
-                builder=PluginResultBuilder(ctx),
+            reason_code = barcode_decision.reason_code if is_invalid_scan else "SCAN_NG"
+            reason_message = barcode_decision.reason_message if is_invalid_scan else "扫码判定 NG"
+            context_patch = _build_scan_ng_context(
                 barcode=pkg_id,
                 barcodes=barcode_decision.barcodes,
                 location=location,
                 device_code=event.device_code,
-                scan_ng_reason_code=barcode_decision.reason_code if is_invalid_scan else None,
-                scan_ng_reason_message=barcode_decision.reason_message if is_invalid_scan else None,
             )
+            if is_invalid_scan:
+                context_patch.update(
+                    {
+                        "scan_ng_reason_code": reason_code,
+                        "scan_ng_reason_message": reason_message,
+                    }
+                )
+            return [
+                ctx.next.mark_ng(
+                    reason_code=reason_code or "",
+                    message=reason_message or "",
+                    payload=_mark_ng_payload(
+                        barcode=pkg_id,
+                        barcodes=barcode_decision.barcodes,
+                        location=location,
+                        device_code=event.device_code,
+                    ),
+                ),
+                ctx.next.update_context(context_patch),
+                ctx.next.command(
+                    device_role=self.INPUT_ARM,
+                    action="PICK_AND_PUT",
+                    payload=build_pick_scan_ng_params(barcode=pkg_id, location=location),
+                    destination_role=self.INPUT_ARM,
+                    timeout_seconds=300,
+                ),
+            ]
 
-        return (
-            PluginResultBuilder(ctx)
-            .transition("scan_ok")
-            .command(
-                command_type="MEASUREMENT_REEL",
-                parameters=build_measurement_reel_params(pkg_id),
-            )
-            .wait(event_type="MEASUREMENT_REEL", timeout_seconds=300)
-            .context(
+        return [
+            ctx.next.update_context(
                 SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_MEASUREMENT,
                     device_code=event.device_code,
                     barcodes=barcode_decision.barcodes,
                     location=location,
                     barcode=pkg_id,
                 ).to_patch()
-            )
-            .build()
-        )
+            ),
+            ctx.next.command(
+                device_role=self.INPUT_ARM,
+                action="MEASUREMENT_REEL",
+                payload=build_measurement_reel_params(pkg_id),
+                destination_role=self.INPUT_ARM,
+                timeout_seconds=300,
+            ),
+        ]
 
-    # ========== 命令结果处理 ==========
     @on_command("MEASUREMENT_REEL", result="SUCCESS")
-    @step(SmtClassifierState.WAITING_MEASUREMENT)
-    async def handle_measurement_reel_success(self, ctx: PluginContext, result: NormalizedCommandResult):
-        """测量成功后推进到流水线传输。
+    async def handle_measurement_reel_success(
+        self,
+        ctx: PluginContext,
+        result: NormalizedCommandResult,
+    ) -> RuntimeIntent | list[RuntimeIntent]:
+        """测量成功后推进到流水线传输。"""
 
-        这里直接消费标准化命令结果，并从 `result.data` 中恢复测量业务字段。
-        """
-        smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
-        envelope = resolve_normalized_command_envelope(result)
-        if envelope is None:
-            return build_payload_invalid_failure(ctx, "测量结果缺少 command_code 或 device_code")
+        invalid = payload_invalid_block_if_missing_envelope(result, "测量结果缺少 command_code 或 device_code")
+        if invalid is not None:
+            return invalid
 
-        _, device_code = envelope
         raw_measurement_data = getattr(result, "data", None)
         if not isinstance(raw_measurement_data, dict) or not raw_measurement_data:
-            logger.error(f"扫码完成后，进行厚度和直径测量缺少 data: device_code={device_code}, step={current_step}")
-            return (
-                PluginResultBuilder(ctx)
-                .transition("measurement_ng")
-                .failure(
-                    domain="DATA",
-                    code="MEASUREMENT_DATA_MISSING",
-                    message="测量成功回调缺少 data 字段",
-                )
-                .build()
-            )
+            return build_payload_invalid_block("测量成功回调缺少 data 字段")
 
         normalized_measurement_payload = normalize_six_in_one_payload(raw_measurement_data) or {}
         measurement_pkg_id = normalized_measurement_payload.get("PkgID")
         if not isinstance(measurement_pkg_id, str) or not measurement_pkg_id:
-            logger.error(f"测量成功回调缺少 PkgID/pkg_id: device_code={device_code}, step={current_step}")
-            return build_payload_invalid_failure(ctx, "测量成功回调缺少 PkgID/pkg_id")
+            return build_payload_invalid_block("测量成功回调缺少 PkgID/pkg_id")
 
         measurement_data = parse_measurement_result_data(result)
         if measurement_data is None or measurement_data.PkgID is None:
-            logger.error(f"测量成功回调 data 非法: device_code={device_code}, step={current_step}")
-            return build_payload_invalid_failure(ctx, "测量成功回调 data 非法")
+            return build_payload_invalid_block("测量成功回调 data 非法")
 
-        logger.info(f"扫码完成后，进行厚度和直径测量成功: device_code={device_code}, step={current_step}")
+        logger.info(f"测量成功: device_code={result.device_code}")
 
-        return (
-            PluginResultBuilder(ctx)
-            .transition("pick_ok")
-            .command(
-                command_type="MOVE_FORWARD",
-                target_scope=CommandTargetScope.DOWNSTREAM,
+        inspection_ng_reason = _measurement_inspection_ng_reason(measurement_data)
+        if inspection_ng_reason is not None:
+            reason_message = non_empty_str(measurement_data.reason_message) or "检测结果 NG"
+            return [
+                ctx.next.mark_ng(
+                    reason_code=inspection_ng_reason,
+                    message=reason_message,
+                    payload=_mark_ng_payload(
+                        barcode=measurement_data.PkgID,
+                        device_code=result.device_code,
+                        command_code=result.command_code,
+                    ),
+                ),
+                ctx.next.update_context(
+                    {
+                        "pkg_id": measurement_data.PkgID,
+                        "reel_diameter": measurement_data.reel_diameter,
+                        "reel_thickness": measurement_data.reel_thickness,
+                        "inspection_error": inspection_ng_reason,
+                    }
+                ),
+                ctx.next.command(
+                    device_role=self.INPUT_ARM,
+                    action="PICK_AND_PUT",
+                    payload=build_pick_inspection_ng_params(barcode=measurement_data.PkgID),
+                    destination_role=self.INPUT_ARM,
+                    timeout_seconds=300,
+                ),
+            ]
+
+        return [
+            ctx.next.update_context(
+                {
+                    "pkg_id": measurement_data.PkgID,
+                    "reel_diameter": measurement_data.reel_diameter,
+                    "reel_thickness": measurement_data.reel_thickness,
+                }
+            ),
+            ctx.next.command(
                 device_role=self.CONVEYOR,
-                parameters=build_move_forward_params(measurement_data.PkgID),
-            )
-            .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
-            .context(
-                SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_CONVEYOR,
-                    pkg_id=measurement_data.PkgID,
-                    reel_diameter=measurement_data.reel_diameter,
-                    reel_thickness=measurement_data.reel_thickness,
-                ).to_patch()
-            )
-            .build()
-        )
+                action="MOVE_FORWARD",
+                payload=build_move_forward_params(measurement_data.PkgID),
+                destination_role=self.CONVEYOR,
+                timeout_seconds=300,
+            ),
+        ]
 
     @on_command("PICK_AND_PUT", result="SUCCESS")
-    async def handle_pick_and_put_success(self, ctx: PluginContext, result: NormalizedCommandResult):
-        """
-        PICK_AND_PUT 成功处理 - 根据当前状态路由
+    async def handle_pick_and_put_success(
+        self,
+        ctx: PluginContext,
+        result: NormalizedCommandResult,
+    ) -> RuntimeIntent | list[RuntimeIntent]:
+        """按 source_device_role 路由 PICK_AND_PUT 成功结果。"""
 
-        这里直接消费标准化命令结果，让成功分支与失败分支都建立在统一输入模型上。
+        invalid = payload_invalid_block_if_missing_envelope(
+            result, "PICK_AND_PUT 成功回调缺少 command_code 或 device_code"
+        )
+        if invalid is not None:
+            return invalid
 
-        状态路由：
-        - WAITING_PICK_PLACE: 进料臂完成 → 流水线传输
-        - WAITING_OUTPUT: 出料臂完成 → 结束
-        """
-        smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
-        envelope = resolve_normalized_command_envelope(result)
-        if envelope is None:
-            return build_payload_invalid_failure(ctx, "PICK_AND_PUT 成功回调缺少 command_code 或 device_code")
+        source_role = _source_device_role(ctx)
+        if source_role == self.INPUT_ARM:
+            smt_ctx = parse_smt_context(ctx)
+            if smt_ctx.pick_place_reason == "SCAN_NG" or smt_ctx.ng_reason == "SCAN_NG" or smt_ctx.inspection_error:
+                return [
+                    ctx.next.update_context({"ng_handled": True}),
+                    ctx.next.complete(),
+                ]
 
-        command_code, device_code = envelope
-        logger.info(f"PICK_AND_PUT succeeded: device_code={device_code}, step={current_step}")
-
-        # 路由1: 进料臂完成 → 流水线传输
-        if current_step == SmtClassifierState.WAITING_PICK_PLACE:
-            if smt_ctx.pick_place_reason == "SCAN_NG" or smt_ctx.ng_reason == "SCAN_NG":
-                logger.info(f"NG pick-and-put succeeded: command_code={command_code}")
-                return (
-                    PluginResultBuilder(ctx)
-                    .transition("pick_ng")
-                    .context(
-                        SmtClassifierContext(
-                            plugin_state=SmtClassifierState.COMPLETED,
-                            ng_handled=True,
-                        ).to_patch()
-                    )
-                    .complete()
-                    .build()
-                )
-
-            barcode = smt_ctx.barcode or ""
+            barcode = smt_ctx.barcode or smt_ctx.pkg_id or _resolve_pkg_id_from_result(result) or ""
             pick_place_data = parse_pick_place_result_data(result)
-            return (
-                PluginResultBuilder(ctx)
-                .transition("pick_ok")
-                .command(
-                    command_type="MOVE_FORWARD",
-                    target_scope=CommandTargetScope.DOWNSTREAM,
+            context_patch: dict[str, Any] = {}
+            if pick_place_data is not None:
+                if pick_place_data.reel_diameter is not None:
+                    context_patch["reel_diameter"] = pick_place_data.reel_diameter
+                if pick_place_data.reel_thickness is not None:
+                    context_patch["reel_thickness"] = pick_place_data.reel_thickness
+            return [
+                ctx.next.update_context(context_patch),
+                ctx.next.command(
                     device_role=self.CONVEYOR,
-                    parameters=build_move_forward_params(barcode),
-                )
-                .wait(event_type="MOVE_FORWARD", timeout_seconds=300)
-                .context(
-                    SmtClassifierContext(
-                        plugin_state=SmtClassifierState.WAITING_CONVEYOR,
-                        reel_diameter=pick_place_data.reel_diameter if pick_place_data else None,
-                        reel_thickness=pick_place_data.reel_thickness if pick_place_data else None,
-                    ).to_patch()
-                )
-                .build()
-            )
+                    action="MOVE_FORWARD",
+                    payload=build_move_forward_params(barcode),
+                    destination_role=self.CONVEYOR,
+                    timeout_seconds=300,
+                ),
+            ]
 
-        # 路由2: 出料臂完成 → 结束
-        if current_step == SmtClassifierState.WAITING_OUTPUT:
-            logger.info(f"Output succeeded: command_code={result.command_code}")
-            return (
-                PluginResultBuilder(ctx)
-                .transition("output_ok")
-                .context(SmtClassifierContext(plugin_state=SmtClassifierState.COMPLETED).to_patch())
-                .complete()
-                .build()
-            )
+        if source_role == self.OUTPUT_ARM:
+            return ctx.next.complete()
 
-        # 状态不匹配
-        logger.error(f"Unexpected plugin_state for PICK_AND_PUT SUCCESS: {current_step}")
-        return build_state_mismatch_failure(ctx, "PICK_AND_PUT", "SUCCESS", current_step)
+        return _unexpected_source_role_block(ctx, "PICK_AND_PUT SUCCESS")
 
     @on_command("PICK_AND_PUT", result="FAILED")
-    async def handle_pick_and_put_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
-        """
-        PICK_AND_PUT 失败处理 - 根据当前状态路由
+    async def handle_pick_and_put_failed(
+        self,
+        ctx: PluginContext,
+        result: NormalizedCommandResult,
+    ) -> RuntimeIntent | list[RuntimeIntent]:
+        """按 source_device_role 路由 PICK_AND_PUT 失败结果。"""
 
-        这里优先消费标准化结果模型，而不是依赖供应商 payload 的原始字段布局。
-        这样 `ERROR` / `FAILED` / 其他 vendor 失败语义可以先归一化，再复用同一条失败处理路径。
-
-        状态路由：
-        - WAITING_PICK_PLACE: 进料臂失败 → NG处理或错误
-        - WAITING_OUTPUT: 出料臂失败 → 错误
-
-        错误码约定:
-        - INSPECTION_SIZE_NG: 料盘尺寸检测异常
-        - INSPECTION_THICKNESS_NG: 料盘厚度检测异常
-        - SCAN_FAILED: 扫码执行失败
-        - PICK_AND_PUT_FAILED: 机械臂搬运失败
-        - BIN_FULL: 料箱已满
-        """
-        smt_ctx = parse_smt_context(ctx)
-        current_step = smt_ctx.plugin_state
-        if resolve_normalized_command_envelope(result) is None:
-            return build_payload_invalid_failure(ctx, "PICK_AND_PUT 失败回调缺少 command_code 或 device_code")
-        if not isinstance(getattr(result, "error_detail", None), dict) or not getattr(result, "error_detail", None):
-            return build_payload_invalid_failure(ctx, "PICK_AND_PUT 失败回调缺少 error_detail 字段")
+        invalid = payload_invalid_block_if_missing_envelope(
+            result, "PICK_AND_PUT 失败回调缺少 command_code 或 device_code"
+        )
+        if invalid is not None:
+            return invalid
+        if _error_detail_missing(result):
+            return build_payload_invalid_block("PICK_AND_PUT 失败回调缺少 error_detail 字段")
 
         error_code, error_msg = resolve_normalized_command_failure(
             result,
             default_code="UNKNOWN",
             default_message="未知错误",
         )
-        logger.error(f"PICK_AND_PUT failed: step={current_step}, error_code={error_code}, message={error_msg}")
-
-        is_dimension_error = error_code == DeviceErrorCode.INSPECTION_SIZE_NG.value
-        is_thickness_error = error_code == DeviceErrorCode.INSPECTION_THICKNESS_NG.value
         requires_manual_hold = error_code in self.MANUAL_HOLD_ERROR_CODES
+        source_role = _source_device_role(ctx)
 
-        # 路由1: 进料臂失败
-        if current_step == SmtClassifierState.WAITING_PICK_PLACE:
-            # 尺寸/厚度检测异常 → NG 缓存位
-            if is_dimension_error or is_thickness_error:
-                barcode = smt_ctx.barcode or ""
-                return (
-                    PluginResultBuilder(ctx)
-                    .transition("inspection_ng")
-                    .business_decision(
-                        reason_code=error_code,
-                        message=error_msg,
-                        business_key=barcode or None,
-                        evidence={
-                            "barcode": barcode,
-                            "device_code": result.device_code,
-                            "command_code": result.command_code,
-                        },
-                    )
-                    .command(
-                        command_type="PICK_AND_PUT",
-                        parameters=build_pick_inspection_ng_params(barcode=barcode),
-                    )
-                    .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
-                    .context(
-                        SmtClassifierContext(
-                            plugin_state=SmtClassifierState.WAITING_PICK_PLACE,
-                            inspection_error=error_code,
-                        ).to_patch()
-                    )
-                    .build()
-                )
-
+        if source_role == self.INPUT_ARM:
             if requires_manual_hold:
-                return _build_manual_hold_result(
-                    builder=PluginResultBuilder(ctx),
-                    current_step=current_step,
-                    error_code=error_code,
-                    error_message=error_msg,
-                )
+                return _manual_hold_intents(ctx, error_code=error_code, error_message=error_msg)
 
-            # 其他错误
-            return (
-                PluginResultBuilder(ctx)
-                .failure(
-                    domain="HARDWARE",
-                    code=error_code,
-                    message=f"抓取放置失败: {error_msg}",
-                )
-                .build()
+            return ctx.next.block(
+                scope=BlockScope.COMMAND,
+                reason_code=error_code,
+                message=f"抓取放置失败: {error_msg}",
             )
 
-        # 路由2: 出料臂失败
-        if current_step == SmtClassifierState.WAITING_OUTPUT:
-            output_error_code = error_code or "OUTPUT_ERROR"
-            output_error_msg = error_msg or "出料失败"
-            logger.error(f"Output failed: {output_error_code}")
-            if output_error_code in self.MANUAL_HOLD_ERROR_CODES:
-                return _build_manual_hold_result(
-                    builder=PluginResultBuilder(ctx),
-                    current_step=current_step,
-                    error_code=output_error_code,
-                    error_message=output_error_msg,
-                )
-            return (
-                PluginResultBuilder(ctx)
-                .failure(domain="HARDWARE", code=output_error_code, message=output_error_msg)
-                .build()
+        if source_role == self.OUTPUT_ARM:
+            if requires_manual_hold:
+                return _manual_hold_intents(ctx, error_code=error_code, error_message=error_msg)
+            return ctx.next.block(
+                scope=BlockScope.COMMAND,
+                reason_code=error_code,
+                message=error_msg,
             )
 
-        # 状态不匹配
-        logger.error(f"Unexpected plugin_state for PICK_AND_PUT FAILED: {current_step}")
-        return build_state_mismatch_failure(ctx, "PICK_AND_PUT", "FAILED", current_step)
+        return _unexpected_source_role_block(ctx, "PICK_AND_PUT FAILED")
 
     @on_command("MOVE_FORWARD", result="SUCCESS")
-    @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.WAITING_OUTPUT)
-    async def handle_conveyor_success(self, ctx: PluginContext, result: NormalizedCommandResult):
-        """
-        流水线传输成功 → 料箱分配 → 最终出料
+    async def handle_conveyor_success(
+        self,
+        ctx: PluginContext,
+        result: NormalizedCommandResult,
+    ) -> RuntimeIntent | list[RuntimeIntent]:
+        """流水线传输成功后分配料箱，并下发出料命令。"""
 
-        业务流程（完整版）：
-        1. 流水线传输完成
-        2. 料箱分配服务（allocation_mock）
-        3. 若需要 AGV，调度 AGV 搬运空料箱（TODO）
-        4. 下发出料命令到 ARM02
-
-        当前实现：随机生成料箱位置，待集成真实分配服务
-        """
-        if resolve_normalized_command_envelope(result) is None:
-            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 成功回调缺少 command_code 或 device_code")
-
-        logger.info("Conveyor move succeeded, starting bin allocation")
+        invalid = payload_invalid_block_if_missing_envelope(
+            result, "MOVE_FORWARD 成功回调缺少 command_code 或 device_code"
+        )
+        if invalid is not None:
+            return invalid
 
         pkg_id = _resolve_pkg_id_from_result(result)
         if not isinstance(pkg_id, str) or not pkg_id:
-            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 成功回调缺少 pkg_id")
+            return build_payload_invalid_block("MOVE_FORWARD 成功回调缺少 pkg_id")
 
         smt_ctx = parse_smt_context(ctx)
         reel_diameter = smt_ctx.reel_diameter or ""
-
-        # 料箱分配（TODO: 暂时使用随机料箱，后续集成真实分配服务）
         bin_location = await self._allocate_bin(ctx, pkg_id)
         logger.info(f"Bin allocated: {bin_location}")
 
-        return (
-            PluginResultBuilder(ctx)
-            .transition("conveyor_ok")
-            .command(
-                command_type="PICK_AND_PUT",
-                target_scope=CommandTargetScope.DOWNSTREAM,
+        return [
+            ctx.next.update_context(
+                SmtClassifierContext(
+                    pkg_id=pkg_id,
+                    bin_location=bin_location,
+                ).to_patch()
+            ),
+            ctx.next.command(
                 device_role=self.OUTPUT_ARM,
-                parameters=build_output_to_bin_params(
+                action="PICK_AND_PUT",
+                payload=build_output_to_bin_params(
                     pkg_id=pkg_id,
                     reel_diameter=str(reel_diameter),
                     bin_location=bin_location,
                 ),
-            )
-            .wait(event_type="PICK_AND_PUT", timeout_seconds=300)
-            .context(
-                SmtClassifierContext(
-                    plugin_state=SmtClassifierState.WAITING_OUTPUT,
-                    pkg_id=pkg_id,
-                    bin_location=bin_location,
-                ).to_patch()
-            )
-            .build()
-        )
+                destination_role=self.OUTPUT_ARM,
+                timeout_seconds=300,
+            ),
+        ]
 
     @on_command("MOVE_FORWARD", result="FAILED")
-    @step(SmtClassifierState.WAITING_CONVEYOR, SmtClassifierState.ERROR)
-    async def handle_conveyor_failed(self, ctx: PluginContext, result: NormalizedCommandResult):
-        """
-        流水线传输失败 → 错误
-        """
-        if resolve_normalized_command_envelope(result) is None:
-            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 失败回调缺少 command_code 或 device_code")
-        if not isinstance(getattr(result, "error_detail", None), dict) or not getattr(result, "error_detail", None):
-            return build_payload_invalid_failure(ctx, "MOVE_FORWARD 失败回调缺少 error_detail 字段")
+    async def handle_conveyor_failed(
+        self,
+        ctx: PluginContext,
+        result: NormalizedCommandResult,
+    ) -> RuntimeIntent | list[RuntimeIntent]:
+        """流水线传输失败后阻塞设备。"""
+
+        invalid = payload_invalid_block_if_missing_envelope(
+            result, "MOVE_FORWARD 失败回调缺少 command_code 或 device_code"
+        )
+        if invalid is not None:
+            return invalid
+        if _error_detail_missing(result):
+            return build_payload_invalid_block("MOVE_FORWARD 失败回调缺少 error_detail 字段")
 
         error_code, error_msg = resolve_normalized_command_failure(
             result,
@@ -650,38 +496,16 @@ class SmtClassifierPlugin(WorklinePlugin):
             default_message="流水线传输失败",
         )
 
-        logger.error(f"Conveyor move failed: {error_code}")
-
-        return PluginResultBuilder(ctx).failure(domain="HARDWARE", code=error_code, message=error_msg).build()
-
-    # ========== 超时处理 ==========
-
-    @on_timeout()
-    async def handle_timeout(self, ctx: PluginContext, _inbox: Any):
-        """
-        超时处理 → 错误
-
-        注意：使用 Any 类型避免 Pydantic 自动解析（inbox 应该是原始对象，不是从 payload 解析）
-        """
-        logger.warning(f"Timeout: session_id={ctx.session.id}")
-
-        return (
-            PluginResultBuilder(ctx)
-            .transition("timeout")
-            .failure(domain="TIMEOUT", code="DEVICE_TIMEOUT", message="设备响应超时")
-            .build()
+        return ctx.next.block(
+            scope=BlockScope.DEVICE,
+            reason_code=error_code,
+            message=error_msg,
         )
 
-    # ========== 辅助方法 ==========
-
     async def _allocate_bin(self, ctx: PluginContext, barcode: str) -> dict:
-        """料箱分配。
+        """料箱分配。"""
 
-        内部领域计算走 ctx.services；未注入服务时使用确定性 fallback，避免插件直接访问
-        HTTP / Repository / SQL，也避免随机结果影响 replay/debug。
-        """
-
-        allocator = self._resolve_bin_allocator(ctx)
+        allocator = ctx.services.bin_allocator
         if allocator is not None:
             allocation = allocator.allocate(barcode)
             if inspect.isawaitable(allocation):
@@ -692,18 +516,6 @@ class SmtClassifierPlugin(WorklinePlugin):
         logger.info(f"Using fallback bin allocation: barcode={barcode}, bin_id={fallback['bin_id']}")
         return fallback
 
-    @staticmethod
-    def _resolve_bin_allocator(ctx: PluginContext) -> Any | None:
-        services = getattr(ctx, "services", None)
-        if services is None:
-            return None
-        if isinstance(services, dict):
-            return services.get("bin_allocator") or services.get("bin_allocation_service")
-        service_attrs = vars(services) if hasattr(services, "__dict__") else {}
-        return service_attrs.get("bin_allocator") or service_attrs.get("bin_allocation_service")
-
-
-# ==================== 导出插件实例 ====================
 
 smt_classifier_plugin = SmtClassifierPlugin()
 

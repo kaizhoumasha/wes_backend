@@ -140,12 +140,20 @@ async def test_retry_command_updates_state_without_optimistic_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_error_detail_dict_is_kept_as_json_object() -> None:
+async def test_error_detail_dict_is_kept_as_json_object(monkeypatch: pytest.MonkeyPatch) -> None:
     command = FakeCommand(status=CommandStatus.ACK_RECEIVED)
     repo = FakeRepo(command)
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
+    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+    record_late_callback = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        workline_runtime_reconciliation_service,
+        "record_late_callback_if_pending",
+        record_late_callback,
+    )
     db = SimpleNamespace(commit=AsyncMock())
 
     callback = CommandCallbackResult(
@@ -162,6 +170,7 @@ async def test_error_detail_dict_is_kept_as_json_object() -> None:
     update_data = repo.update_calls[0][1]
     assert isinstance(update_data["error_detail"], dict)
     assert update_data["error_detail"]["code"] == "E-TIMEOUT"
+    record_late_callback.assert_awaited_once()
     db.commit.assert_not_awaited()
 
 

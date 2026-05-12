@@ -291,13 +291,6 @@ class DeviceCommand(
         max_length=50,
         description="命令生成时绑定的协议版本",
     )
-    step_code: str | None = Field(
-        default=None,
-        max_length=100,
-        index=True,
-        description="命令生成时的步骤语义编码",
-    )
-
     # 🔥 状态字段：使用 VARCHAR + CHECK 约束
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,

@@ -77,3 +77,17 @@ class TestPipelineMaterialArrivedE2E:
         assert inbox_row["status"] == "PROCESSED"
         assert inbox_row["error_message"] in (None, "")
         assert inbox_row["session_id"] is not None
+
+        session_row = await db_conn.fetchrow(
+            """
+            SELECT status, ended_at, current_wait_type, awaiting_command_id
+            FROM wes_biz.workline_sessions
+            WHERE id = $1
+            """,
+            inbox_row["session_id"],
+        )
+        assert session_row is not None
+        assert session_row["status"] == "COMPLETED"
+        assert session_row["ended_at"] is not None
+        assert session_row["current_wait_type"] is None
+        assert session_row["awaiting_command_id"] is None

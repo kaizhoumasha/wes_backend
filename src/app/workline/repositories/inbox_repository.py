@@ -4,6 +4,7 @@ import hashlib
 from typing import Any, cast
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.inbox import (
@@ -35,6 +36,38 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
             )
         )
         return result.scalar_one_or_none()
+
+    async def create_idempotent(
+        self,
+        db: AsyncSession,
+        data: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> WorklineInbox:
+        """按 idempotency_key 原子创建；冲突时返回已有记录，不回滚当前事务。"""
+
+        table = cast("Any", WorklineInbox).__table__
+        statement = (
+            insert(table)
+            .values(**data)
+            .on_conflict_do_nothing(
+                index_elements=["idempotency_key"],
+                index_where=table.c.idempotency_key.is_not(None),
+            )
+            .returning(table.c.id)
+        )
+        result = await db.execute(statement)
+        created_id = result.scalar_one_or_none()
+        if isinstance(created_id, int):
+            created = await self.get_by_id(db, created_id)
+            if created is None:
+                raise RuntimeError(f"创建 Inbox 后无法读取: id={created_id}")
+            return created
+
+        existing = await self.get_by_idempotency_key(db, idempotency_key)
+        if existing is None:
+            raise RuntimeError(f"Inbox 幂等创建冲突后无法读取原消息: {idempotency_key}")
+        return existing
 
     async def get_new_messages(
         self,

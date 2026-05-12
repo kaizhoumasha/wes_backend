@@ -26,5 +26,6 @@ async def test_workline_tasks_registered_and_eager_callable(
     assert timeout_result == {
         "scanned": 0,
         "timeouts_created": 0,
+        "ack_timeouts_reconciled": 0,
         "errors": 0,
     }

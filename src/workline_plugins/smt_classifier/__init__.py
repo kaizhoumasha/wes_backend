@@ -6,13 +6,10 @@ from src.workline_plugins.smt_classifier.plugin import (
     SmtClassifierPlugin,
     smt_classifier_plugin,
 )
-from src.workline_plugins.smt_classifier.state_machine import SmtClassifierState, SmtClassifierStateMachine
 
 __all__ = [
     "SmtClassifierContext",
     "SmtClassifierPlugin",
-    "SmtClassifierState",
-    "SmtClassifierStateMachine",
     "SmtPluginDiagnosticResult",
     "diagnose_smt_payload",
     "smt_classifier_plugin",

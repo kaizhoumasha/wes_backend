@@ -46,8 +46,10 @@ class ErrorCode(str, Enum):
     - 插件返回了不合法状态迁移：``PLUGIN_TRANSITION_INVALID``
     - 对接字段/版本/协议不一致：``CONTRACT_MISMATCH``
     - 设备当前连不上：``DEVICE_UNREACHABLE``
-    - 设备超时未返回：``DEVICE_TIMEOUT``
+    - 派发 ACK 通信超时：``OUTBOX_ACK_TIMEOUT``
+    - 执行 Callback 超时：``CALLBACK_DEADLINE_EXPIRED``
     - 指令派发动作失败：``OUTBOX_DISPATCH_FAILED``
+    - Inbox worker 自身处理超时：``INBOX_PROCESSING_TIMEOUT``
     - 重试次数耗尽：``INBOX_RETRY_EXHAUSTED``
     - 配置本身有问题：``CONFIG_INVALID``
     - 无法明确归因时才使用：``UNKNOWN``
@@ -68,7 +70,10 @@ class ErrorCode(str, Enum):
     # 设备与消息派发问题
     DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE"  # 目标设备不可连接或当前不可达。
     DEVICE_TIMEOUT = "DEVICE_TIMEOUT"  # 设备在约定时间内未返回结果。
+    OUTBOX_ACK_TIMEOUT = "OUTBOX_ACK_TIMEOUT"  # HTTP 派发未在通信 ACK 窗口内返回 200。
+    CALLBACK_DEADLINE_EXPIRED = "CALLBACK_DEADLINE_EXPIRED"  # ACK 后执行 Callback 未在业务窗口内回传。
     OUTBOX_DISPATCH_FAILED = "OUTBOX_DISPATCH_FAILED"  # Outbox 派发失败，消息未成功下发。
+    INBOX_PROCESSING_TIMEOUT = "INBOX_PROCESSING_TIMEOUT"  # Inbox worker 自身处理超时。
 
     # 重试 / 配置 / 兜底问题
     INBOX_RETRY_EXHAUSTED = "INBOX_RETRY_EXHAUSTED"  # Inbox 重试次数耗尽，仍未处理成功。
@@ -85,7 +90,10 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.PLUGIN_TRANSITION_INVALID: ErrorDomain.PLUGIN,
     ErrorCode.DEVICE_UNREACHABLE: ErrorDomain.DEVICE,
     ErrorCode.DEVICE_TIMEOUT: ErrorDomain.NETWORK,
+    ErrorCode.OUTBOX_ACK_TIMEOUT: ErrorDomain.NETWORK,
+    ErrorCode.CALLBACK_DEADLINE_EXPIRED: ErrorDomain.WORKFLOW,
     ErrorCode.OUTBOX_DISPATCH_FAILED: ErrorDomain.INTEGRATION,
+    ErrorCode.INBOX_PROCESSING_TIMEOUT: ErrorDomain.SYSTEM,
     ErrorCode.INBOX_RETRY_EXHAUSTED: ErrorDomain.SYSTEM,
     ErrorCode.CONFIG_INVALID: ErrorDomain.CONFIG,
     ErrorCode.UNKNOWN: ErrorDomain.SYSTEM,

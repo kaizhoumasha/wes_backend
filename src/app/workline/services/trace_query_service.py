@@ -61,6 +61,17 @@ if TYPE_CHECKING:
     from src.app.workline.models.session import WorklineSession
     from src.app.workline.repositories.diagnostic_repository import WorklineDiagnosticRepository
 
+_SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
+    "DEVICE_TIMEOUT": ErrorCode.DEVICE_TIMEOUT,
+    "DEVICE_UNREACHABLE": ErrorCode.DEVICE_UNREACHABLE,
+    "PLUGIN_EXECUTION_FAILED": ErrorCode.PLUGIN_EXECUTION_FAILED,
+    "PLUGIN_TRANSITION_INVALID": ErrorCode.PLUGIN_TRANSITION_INVALID,
+    "CONTRACT_MISMATCH": ErrorCode.CONTRACT_MISMATCH,
+    "CONFIG_INVALID": ErrorCode.CONFIG_INVALID,
+    "CALLBACK_SCHEMA_INVALID": ErrorCode.CALLBACK_SCHEMA_INVALID,
+    "INBOX_RETRY_EXHAUSTED": ErrorCode.INBOX_RETRY_EXHAUSTED,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class TraceQueryResult:
@@ -338,9 +349,7 @@ class TraceQueryService(BaseService[Any, Any]):
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
-            select(DeviceCommand)
-            .where((columns.session_id == str(session.id)) | (columns.session_id_int == session.id))
-            .order_by(columns.created_at.asc())
+            select(DeviceCommand).where(columns.session_id_int == session.id).order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
@@ -642,11 +651,13 @@ class TraceQueryService(BaseService[Any, Any]):
         session = result.session
         if session is not None and _enum_str(getattr(session, "status", None)) == "FAILED":
             context = build_diagnostic_context(trace=trace.with_session(session), session=session)
+            failure_code = _enum_str(getattr(session, "failure_code", None)) or ""
+            session_error_code = _SESSION_FAILURE_CODE_MAP.get(failure_code, ErrorCode.SESSION_RESOLVE_FAILED)
             return self._blocking_response(
                 trace=trace,
                 trace_id=trace_id,
                 blocking_point="session",
-                error_code=ErrorCode.SESSION_RESOLVE_FAILED,
+                error_code=session_error_code,
                 message=getattr(session, "failure_message", None) or "会话失败",
                 context=context,
                 evidence={
@@ -686,7 +697,7 @@ class TraceQueryService(BaseService[Any, Any]):
             error_code=error_code,
             context=context,
             message=message,
-            operator_action=definition.fix,
+            operator_action=definition.operator_action,
         )
         card = build_diagnostic_card(event)
         return TraceBlockingPointResponse(
@@ -695,10 +706,10 @@ class TraceQueryService(BaseService[Any, Any]):
             blocking_point=blocking_point,
             owner=definition.owner,
             recoverability=card.recoverability.value,
-            operator_action=card.operator_action or definition.fix,
+            operator_action=card.operator_action or definition.operator_action,
             diagnostic_card=DiagnosticCardResponse.model_validate(card.model_dump(mode="json")),
             evidence=evidence,
-            next_steps=list(card.next_steps),
+            next_steps=[],
         )
 
     @staticmethod

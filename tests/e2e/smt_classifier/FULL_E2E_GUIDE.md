@@ -88,7 +88,7 @@ WES Backend 日志应该显示：
 Celery Worker 日志应该显示：
 ```
 [时间] INFO Received task: process_inbox_batch
-[时间] INFO 插件执行完成: SimplifiedSmtPlugin
+[时间] INFO 插件执行完成: SmtClassifierPlugin
 [时间] INFO 命令已创建并写入 Outbox
 ```
 

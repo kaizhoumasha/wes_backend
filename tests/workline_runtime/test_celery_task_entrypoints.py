@@ -24,6 +24,7 @@ def test_ensure_non_empty_retry_result_allows_non_empty_retry() -> None:
         {
             "scanned": 1,
             "timeouts_created": 0,
+            "ack_timeouts_reconciled": 0,
             "errors": 0,
         },
         retries=2,

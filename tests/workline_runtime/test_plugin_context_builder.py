@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
+from src.workline_runtime.services import WorklineRuntimeServices
 
 
 class TestPluginContextBuilder:
@@ -61,11 +62,8 @@ class TestPluginContextBuilder:
 
     @pytest.fixture
     def mock_services(self):
-        """创建模拟的服务容器"""
-        services = MagicMock()
-        services.inbox_service = MagicMock()
-        services.outbox_service = MagicMock()
-        return services
+        """创建运行时服务容器"""
+        return WorklineRuntimeServices()
 
     def test_build_creates_context_with_all_fields(
         self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services

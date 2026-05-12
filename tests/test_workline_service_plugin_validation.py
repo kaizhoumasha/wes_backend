@@ -8,7 +8,7 @@ from src.app.device.models.device import Device
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
-from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin, SmtClassifierStateMachine
+from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin
 
 
 def make_workline() -> WorkLine:
@@ -49,11 +49,25 @@ def test_workline_model_resolves_runtime_plugin_classes() -> None:
     )
 
     assert workline.plugin_class is SmtClassifierPlugin
-    assert workline.state_machine_class is SmtClassifierStateMachine
+    assert not hasattr(workline, "state" + "_machine_class")
     assert workline.plugin_definition is not None
     assert workline.plugin_definition.manifest.plugin_key == "smt_classifier"
     assert workline.plugin_definition.manifest.contract_version == "1.0"
     assert workline.plugin_definition.manifest.context_model is SmtClassifierContext
+
+
+def test_workline_service_lists_plugin_options_from_registry() -> None:
+    """作业线插件下拉选项应来自插件注册表。"""
+
+    service = WorkLineService()
+
+    options = service.list_plugin_options()
+
+    assert options
+    smt_option = next(option for option in options if option.plugin_key == "smt_classifier")
+    assert smt_option.label == "smt_classifier"
+    assert smt_option.default_contract_version == "1.0"
+    assert smt_option.contract_versions == ["1.0"]
 
 
 def test_workline_run_mode_defaults_to_auto() -> None:
@@ -201,6 +215,31 @@ async def test_workline_service_create_allows_plugin_before_devices_are_bound(db
 
     assert result is not None
     assert result.plugin_key == "smt_classifier"
+    assert result.contract_version == "1.0"
+
+
+@pytest.mark.asyncio
+async def test_workline_service_rejects_manual_contract_version_mismatch(db_session) -> None:
+    """契约版本是插件 manifest 注解，不允许手工写入不匹配值。"""
+
+    service = WorkLineService()
+    with (
+        patch(
+            "src.app.sys.services.audit_service.audit_log_service.create_operation_log",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(BadRequestException, match=r"契约版本必须为 1\.0"),
+    ):
+        _ = await service.create(
+            db_session,
+            {
+                "line_code": "WL-SMT-004",
+                "line_name": "粗分机#4",
+                "line_type": LineType.AUTO,
+                "plugin_key": "smt_classifier",
+                "contract_version": "manual-override",
+            },
+        )
 
 
 @pytest.mark.asyncio

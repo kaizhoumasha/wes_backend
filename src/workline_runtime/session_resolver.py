@@ -14,8 +14,10 @@ Session 归属解析器
 """
 
 import uuid
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
@@ -30,6 +32,7 @@ from src.workline_plugin_registry import (
     get_plugin_contract_version,
     resolve_workline_business_key,
 )
+from src.workline_runtime.business_identity import resolve_payload_display_identity
 from src.workline_runtime.run_mode import normalize_run_mode
 
 from .trace_context import TraceContext
@@ -45,11 +48,6 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_RESUME,
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
-}
-
-# 无业务条码但可按设备级单例归属的事件。
-_DEVICE_SCOPED_EVENTS = {
-    "ESTOP_PRESSED",
 }
 
 # 无业务条码、但每次事件实例都必须独立归属的事件。
@@ -84,9 +82,6 @@ def _resolve_event_scope_business_key(payload_json: dict[str, Any]) -> str | Non
     if not isinstance(device_code, str) or not device_code:
         return None
 
-    if event_type in _DEVICE_SCOPED_EVENTS:
-        return f"event:{event_type}:{device_code}"
-
     data = ensure_dict(payload_json.get("data"))
     for field_name in _EVENT_INSTANCE_IDENTITY_FIELDS.get(event_type, ()):
         event_identity = data.get(field_name)
@@ -112,6 +107,31 @@ def _resolve_plugin_business_key(payload_json: dict[str, Any], *, plugin_key: st
         return resolve_workline_business_key(plugin_key, payload_json)
     except (TypeError, ValueError) as exc:
         raise SessionResolveError(f"Plugin business_key resolver failed: {exc}") from exc
+
+
+def _dialect_name(db: Any) -> str | None:
+    get_bind = getattr(db, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else getattr(db, "bind", None)
+    if isawaitable(bind):
+        close = getattr(bind, "close", None)
+        if callable(close):
+            _ = close()
+        return None
+    dialect = getattr(bind, "dialect", None)
+    name = getattr(dialect, "name", None)
+    return name if isinstance(name, str) else None
+
+
+async def _lock_device_event_business_key(db: Any, *, workline_id: int, business_key: str) -> None:
+    """串行化同一 workline/business_key 的查找与创建窗口。"""
+
+    if _dialect_name(db) != "postgresql":
+        return
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"workline-session:{workline_id}:{business_key}"},
+    )
 
 
 def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
@@ -319,6 +339,8 @@ class SessionResolver:
         if not isinstance(workline_id, int):
             raise TypeError("workline.id is required for DEVICE_EVENT")
 
+        await _lock_device_event_business_key(db, workline_id=workline_id, business_key=business_key)
+
         # 1. 优先查找未结束的 Session
         existing_session = await self.session_repo.get_open_session_by_business_key(
             db=db,
@@ -338,7 +360,9 @@ class SessionResolver:
             if session_by_trace:
                 return _reuse_existing_session(inbox, session_by_trace, trace=trace, observed_at=now)
 
-        # 3. 如果还是没有，查找最新的 Session（处理事件在 session 完成后立即到达的情况）
+        # 3. 如果还是没有，查找最新的 Session。
+        #    同一 business_key 的入口事件是否允许开启新周期，不能由“完成后几秒”决定；
+        #    在没有显式 rework/新物料授权前，终态 session 仍是该物料周期的归属锚点。
         latest_session = await self.session_repo.get_latest_session_by_business_key(
             db=db,
             workline_id=workline_id,
@@ -346,10 +370,7 @@ class SessionResolver:
         )
 
         if latest_session and latest_session.ended_at:
-            # 如果最新的 session 刚完成不久（5秒内），继续使用它
-            elapsed = (now - latest_session.ended_at).total_seconds()
-            if elapsed < 5:
-                return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=now)
+            return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=now)
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
@@ -362,6 +383,7 @@ class SessionResolver:
             "plugin_key": getattr(workline, "plugin_key", None),
             "run_mode": RunMode(normalize_run_mode(getattr(workline, "run_mode", None))),
             "business_key": business_key,
+            "barcode": resolve_payload_display_identity(payload_json),
             "status": SessionStatus.NEW,
             "ingress_count": 1,
             "last_request_id": trace.request_id,

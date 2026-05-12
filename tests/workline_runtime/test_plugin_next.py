@@ -1,0 +1,90 @@
+from src.workline_runtime.plugin_next import PluginNext
+from src.workline_runtime.runtime_intent import (
+    BlockScope,
+    Destination,
+    DestinationKind,
+    RuntimeIntentKind,
+)
+
+
+def test_plugin_next_command_builds_runtime_intent():
+    intent = PluginNext().command(
+        device_role="WEIGH_SCALE",
+        action="WEIGH_TOTE",
+        payload={"tote_id": "T-001"},
+        destination_role="WEIGH_SCALE",
+        timeout_seconds=120,
+    )
+
+    assert intent.kind == RuntimeIntentKind.COMMAND
+    assert intent.destination.kind == DestinationKind.ROLE
+    assert intent.destination.value == "WEIGH_SCALE"
+
+
+def test_plugin_next_block_builds_runtime_intent():
+    intent = PluginNext().block(
+        scope=BlockScope.MATERIAL,
+        reason_code="BARCODE_INVALID",
+        message="条码无法识别",
+        suggested_action="人工复核条码",
+    )
+
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.reason_code == "BARCODE_INVALID"
+
+
+def test_plugin_next_command_defaults_to_next_destination():
+    intent = PluginNext().command(
+        device_role="WEIGH_SCALE",
+        action="WEIGH_TOTE",
+    )
+
+    assert intent.destination.kind == DestinationKind.NEXT
+    assert intent.destination.value is None
+
+
+def test_plugin_next_command_uses_independent_empty_payloads():
+    first_intent = PluginNext().command(device_role="WEIGH_SCALE", action="WEIGH_TOTE")
+    second_intent = PluginNext().command(device_role="WEIGH_SCALE", action="WEIGH_TOTE")
+
+    first_intent.payload_json["tote_id"] = "T-001"
+
+    assert second_intent.payload_json == {}
+
+
+def test_plugin_next_update_context_builds_runtime_intent():
+    intent = PluginNext().update_context({"pkg_id": "L0001-1"})
+
+    assert intent.kind == RuntimeIntentKind.UPDATE_CONTEXT
+    assert intent.context_patch == {"pkg_id": "L0001-1"}
+
+
+def test_plugin_next_complete_builds_runtime_intent():
+    intent = PluginNext().complete({"bin_code": "BIN_463"})
+
+    assert intent.kind == RuntimeIntentKind.COMPLETE
+    assert intent.context_patch == {"bin_code": "BIN_463"}
+
+
+def test_plugin_next_mark_ng_builds_runtime_intent():
+    intent = PluginNext().mark_ng(
+        reason_code="SCAN_NG",
+        message="扫码判定 NG",
+        payload={"PkgID": "BAD"},
+        destination=Destination.ng_route(),
+    )
+
+    assert intent.kind == RuntimeIntentKind.MARK_NG
+    assert intent.reason_code == "SCAN_NG"
+    assert intent.message == "扫码判定 NG"
+    assert intent.payload_json == {"PkgID": "BAD"}
+    assert intent.destination == Destination.ng_route()
+
+
+def test_plugin_next_continue_next_builds_runtime_intent_with_default_destination():
+    intent = PluginNext().continue_next(action="MOVE_FORWARD", payload={"pkg_id": "L0001-1"})
+
+    assert intent.kind == RuntimeIntentKind.CONTINUE_NEXT
+    assert intent.action == "MOVE_FORWARD"
+    assert intent.payload_json == {"pkg_id": "L0001-1"}
+    assert intent.destination == Destination.next()

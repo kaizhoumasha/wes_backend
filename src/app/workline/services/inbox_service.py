@@ -302,6 +302,9 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             inbox_id,
             status=InboxStatus.PROCESSED,
             processed_at=timezone.now_for_db(),
+            error_message=None,
+            next_retry_at=None,
+            processor_token=None,
             auto_commit=auto_commit,
         )
 
@@ -358,6 +361,27 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             status=InboxStatus.DEAD_LETTER,
             error_message=error_message,
             processed_at=timezone.now_for_db(),
+            auto_commit=auto_commit,
+        )
+
+    async def mark_as_dead_letter(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        error_message: str,
+        *,
+        auto_commit: bool = True,
+    ) -> WorklineInbox:
+        """标记为不可自动重试的终态死信。"""
+
+        return await self._update_inbox(
+            db,
+            inbox_id,
+            status=InboxStatus.DEAD_LETTER,
+            error_message=error_message,
+            processed_at=timezone.now_for_db(),
+            next_retry_at=None,
+            processor_token=None,
             auto_commit=auto_commit,
         )
 
@@ -440,6 +464,14 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         workline_id: int,
         deadline_at: object | None = None,
         trace_id: str | None = None,
+        wait_token: str | None = None,
+        wait_type: str | None = None,
+        awaiting_command_id: int | None = None,
+        command_code: str | None = None,
+        device_id: int | None = None,
+        device_code: str | None = None,
+        command_status: str | None = None,
+        ack_received_at: object | None = None,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
@@ -457,13 +489,27 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             创建的 Inbox 消息
         """
         timeout_key = _format_deadline(deadline_at)
-        idempotency_key = f"timeout:{session_id}:{timeout_key}"
+        command_key = awaiting_command_id if awaiting_command_id is not None else "no-command"
+        wait_key = wait_token or "no-wait-token"
+        idempotency_key = f"timeout:{session_id}:{timeout_key}:{wait_key}:{command_key}"
+        existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
+        if existing is not None:
+            return existing
+
         payload: dict[str, Any] = {
             "message_type": "TIMEOUT",
             "session_id": session_id,
             "workline_id": workline_id,
             "timeout_at": timezone.now_for_db().isoformat(),
             "deadline_at": timeout_key,
+            "wait_token": wait_token,
+            "wait_type": wait_type,
+            "awaiting_command_id": awaiting_command_id,
+            "command_code": command_code,
+            "device_id": device_id,
+            "device_code": device_code,
+            "command_status": command_status,
+            "ack_received_at": _format_deadline(ack_received_at),
         }
 
         inbox_data: dict[str, Any] = {
@@ -480,9 +526,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         if trace_id:
             inbox_data["trace_id"] = trace_id
 
-        created = await self.repo.create(db, inbox_data)
-        if created is None:
-            raise RuntimeError("创建超时 Inbox 消息失败")
+        created = await self.repo.create_idempotent(db, inbox_data, idempotency_key=idempotency_key)
         await self._commit_inbox_mutation(db, auto_commit=auto_commit)
         return created
 

@@ -6,15 +6,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
-
-from .state_machine import SmtClassifierState
-
 
 class SmtClassifierContext(BaseModel):
     """SMT 插件自己的业务上下文快照。"""
 
-    plugin_state: str = SmtClassifierState.IDLE
     barcode: str | None = None
     pkg_id: str | None = None
     barcodes: list[str] = Field(default_factory=list)
@@ -39,9 +34,7 @@ class SmtClassifierContext(BaseModel):
     def from_mapping(cls, value: Any) -> SmtClassifierContext:
         """从 session.context_json 等 dict 结构解析插件上下文。"""
 
-        raw_context = dict(value) if isinstance(value, dict) else {}
-        raw_context["plugin_state"] = get_plugin_state(raw_context, default=SmtClassifierState.IDLE)
-        return cls.model_validate(raw_context)
+        return cls.model_validate(dict(value) if isinstance(value, dict) else {})
 
     @classmethod
     def from_session(cls, session: Any) -> SmtClassifierContext:
@@ -49,12 +42,10 @@ class SmtClassifierContext(BaseModel):
 
         return cls.from_mapping(getattr(session, "context_json", None))
 
-    def to_patch(self, *, plugin_state: str | None = None, exclude_none: bool = True) -> dict[str, Any]:
+    def to_patch(self, *, exclude_none: bool = True) -> dict[str, Any]:
         """投影为可写回 session.context_json 的 patch。"""
 
-        patch = self.model_dump(exclude_none=exclude_none)
-        set_plugin_state(patch, plugin_state or self.plugin_state)
-        return patch
+        return self.model_dump(exclude_none=exclude_none)
 
 
 def parse_smt_context(ctx: Any) -> SmtClassifierContext:

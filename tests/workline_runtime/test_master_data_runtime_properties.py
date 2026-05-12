@@ -10,13 +10,11 @@ def test_workline_runtime_and_diagnostic_properties() -> None:
         plugin_key="smt_classifier",
         contract_version="1.0",
         runtime_config_json={"retry_policy": {"max": 3}},
-        owner_team="wes",
-        support_contact="oncall",
         diagnostic_profile={"summary_mode": "compact"},
     )
 
     assert workline.resolved_runtime_config["plugin_key"] == "smt_classifier"
-    assert workline.diagnostic_summary["owner_team"] == "wes"
+    assert workline.diagnostic_summary["diagnostic_profile"] == {"summary_mode": "compact"}
 
 
 def test_device_communication_profile_is_runtime_friendly() -> None:

@@ -1,4 +1,4 @@
-"""FailureIntent 到诊断错误码的轻量映射。"""
+"""运行时失败对象到诊断错误码的轻量映射。"""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """
-SimplifiedSmtPlugin 集成测试
+SmtClassifierPlugin 集成测试
 
-使用 tests/mock/smt_classifier 中的 mock 服务测试 SimplifiedSmtPlugin 的完整业务流程。
+使用 tests/mock/smt_classifier 中的 mock 服务测试 SmtClassifierPlugin 的完整业务流程。
 测试从数据库查询数据验证业务流程。
 
 测试架构:
@@ -18,7 +18,7 @@ SimplifiedSmtPlugin 集成测试
 │  │ - PICK_NG       │                       │                             │
 │  └─────────────────┘                       ▼                             │
 │                                   ┌─────────────────┐                    │
-│  ┌─────────────────┐              │ SimplifiedSmt   │                    │
+│  ┌─────────────────┐              │ SmtClassifier   │                    │
 │  │ PIPELINE01(8005)│◀────command──│ Plugin         │                    │
 │  │ - MOVE_FORWARD  │              │                 │                    │
 │  └─────────────────┘              └─────────────────┘                    │
@@ -192,15 +192,15 @@ def get_outbox_commands(since_session_id: int) -> list[str]:
 def get_session_status(session_id: int) -> dict | None:
     """获取 session 状态"""
     query = f"""
-        SELECT status, step_code
+        SELECT status
         FROM wes_biz.workline_sessions
         WHERE id = {session_id};
     """
     result = run_db_query(query)
     if result and result[0]:
         parts = result[0].split("|")
-        if len(parts) >= 2:
-            return {"status": parts[0].strip(), "step_code": parts[1].strip()}
+        if parts:
+            return {"status": parts[0].strip()}
     return None
 
 
@@ -270,7 +270,7 @@ class MockServiceClient:
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginOKFlow:
+class TestSmtClassifierPluginOKFlow:
     """测试 OK 流程 - 数据库验证"""
 
     @pytest.fixture(autouse=True)
@@ -313,11 +313,10 @@ class TestSimplifiedSmtPluginOKFlow:
         session = get_session_by_barcode(barcode)
         assert session is not None, f"Session not found for barcode: {barcode}"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED, got: {session}"
-        assert session["step_code"] == "COMPLETED", f"Session step_code should be COMPLETED, got: {session}"
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginNGFlow:
+class TestSmtClassifierPluginNGFlow:
     """测试 NG 流程 - 数据库验证"""
 
     @pytest.fixture(autouse=True)
@@ -366,7 +365,7 @@ class TestSimplifiedSmtPluginNGFlow:
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginFailureHandling:
+class TestSmtClassifierPluginFailureHandling:
     """测试失败处理"""
 
     @pytest.fixture(autouse=True)

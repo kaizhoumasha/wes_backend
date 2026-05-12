@@ -10,7 +10,7 @@ SessionResolver 单元测试
 设计参考: 设计文档 phase2-orchestrator
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +18,7 @@ import pytest
 
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus
+from src.utils.timezone import timezone
 from src.workline_runtime.session_resolver import SessionResolveError, _resolve_business_key
 
 
@@ -231,6 +232,34 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
+    async def test_resolve_device_event_locks_business_key_before_lookup(
+        self,
+        mock_db,
+        resolver,
+    ):
+        """PostgreSQL 下同一 workline/business_key 必须先串行化再查建会话。"""
+        mock_db.get_bind = lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            source_message_id="req-lock",
+            payload_json={"barcode": "PKG12345", "business_key": "ORDER_LOCK"},
+        )
+        workline = make_workline(workline_id=7, plugin_key="smt_classifier")
+
+        _ = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        mock_db.execute.assert_awaited()
+        lock_statement, lock_params = mock_db.execute.await_args_list[0].args
+        assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(lock_statement)
+        assert lock_params == {"lock_key": "workline-session:7:ORDER_LOCK"}
+
+    @pytest.mark.asyncio
     async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(
         self, mock_db, mock_session_repo, resolver
     ):
@@ -347,6 +376,48 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 0
         # 验证调用了 business_key 查找
         assert ("business_key", 1, "ORDER_001") in mock_session_repo.find_calls
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_reuses_terminal_session_for_same_business_key_without_time_window(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """同一物料终态后重复入口不能靠超过 5 秒绕过归档防线。"""
+        existing_session = SimpleNamespace(
+            id=101,
+            session_code="SESSION_101",
+            workline_id=1,
+            plugin_key="smt_classifier",
+            business_key="ORDER_001",
+            status=SessionStatus.COMPLETED,
+            ended_at=timezone.now_for_db() - timedelta(minutes=3),
+            ingress_count=1,
+            last_request_id="req-old",
+            last_ingress_at=None,
+            trace_id="trace-main-101",
+            context_json={},
+        )
+        mock_session_repo.sessions[101] = existing_session
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            source_message_id="req-late-duplicate",
+            payload_json={"business_key": "ORDER_001"},
+        )
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=make_workline(workline_id=1, plugin_key="smt_classifier"),
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.id == 101
+        assert session.ingress_count == 2
+        assert inbox.session_id == 101
+        assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
     async def test_resolve_timer_timeout_finds_by_session_id(
@@ -612,17 +683,19 @@ class TestSessionResolver:
 
         assert key == expected_hash
 
-    def test_resolve_business_key_uses_event_scope_key_for_estop(self):
-        """无业务条码的急停事件应按 event_type + device_code 稳定归属。"""
+    def test_resolve_business_key_rejects_estop_as_normal_session_event(self):
+        """急停是平台保留安全事件，不应进入普通 Session 归属。"""
         payload = {
             "device_code": "ARM01",
             "event_type": "ESTOP_PRESSED",
             "data": None,
         }
 
-        key = _resolve_business_key(payload, plugin_key="smt_classifier")
-
-        assert key == "event:ESTOP_PRESSED:ARM01"
+        with pytest.raises(
+            SessionResolveError,
+            match="Unable to resolve stable business_key from payload",
+        ):
+            _resolve_business_key(payload, plugin_key="smt_classifier")
 
     def test_resolve_business_key_uses_event_id_for_material_arrived(self):
         """无业务条码的传感器事件应优先使用 event_id 形成稳定归属键。"""
@@ -694,13 +767,13 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_uses_event_scope_key_for_estop(
+    async def test_resolve_device_event_rejects_estop_as_normal_session_event(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """急停事件无业务条码时，仍应稳定归属到设备级 session。"""
+        """急停事件应在 SessionResolver 之前由安全事件入口短路处理。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -712,16 +785,18 @@ class TestSessionResolver:
         )
         workline = make_workline(workline_id=1, plugin_key="smt_classifier")
 
-        session = await resolver.resolve_or_create(
-            db=mock_db,
-            inbox=inbox,
-            workline=workline,
-            devices_by_role=make_devices_by_role(),
-        )
+        with pytest.raises(
+            SessionResolveError,
+            match="Unable to resolve stable business_key from payload",
+        ):
+            await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=workline,
+                devices_by_role=make_devices_by_role(),
+            )
 
-        assert session.business_key == "event:ESTOP_PRESSED:ARM01"
-        assert session.workline_id == 1
-        assert len(mock_session_repo.created_sessions) == 1
+        assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_event_scope_key_for_material_arrived(
@@ -830,6 +905,7 @@ class TestSessionResolver:
         ).hexdigest()[:16]
 
         assert session.business_key == expected_hash
+        assert session.barcode == "SVYU00125TP4LCR02_2"
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
@@ -873,6 +949,52 @@ class TestSessionResolver:
         assert session.business_key.startswith("incomplete-scan:")
         assert session.business_key == _resolve_business_key(payload, plugin_key="smt_classifier")
         assert ("business_key", 1, session.business_key) in mock_session_repo.find_calls
+        assert len(mock_session_repo.created_sessions) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_reuses_incomplete_scan_session_across_timestamps(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """缺 PkgID 的同一份扫码证据不能因为跨秒重复上报而拆成多个 NG 周期。"""
+        payload = {
+            "device_code": "ARM01",
+            "event_type": "SCAN_COMPLETED",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "timestamp": 1777338994000,
+            "data": {
+                "location": "ARM01",
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+            },
+        }
+        later_payload = {**payload, "timestamp": 1777338999000}
+        assert _resolve_business_key(payload, plugin_key="smt_classifier") == _resolve_business_key(
+            later_payload,
+            plugin_key="smt_classifier",
+        )
+
+        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        first_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+        second_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=later_payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert second_session.id == first_session.id
+        assert second_session.ingress_count == 2
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio

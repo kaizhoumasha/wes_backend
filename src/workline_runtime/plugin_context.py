@@ -15,9 +15,11 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
+from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
 from src.workline_runtime.run_mode import normalize_run_mode
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.topology import WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
 
@@ -52,8 +54,6 @@ def _normalize_workline_for_runtime(workline: Any) -> Any:
         run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
         config=_safe_dict(getattr(workline, "config", None)),
         runtime_config_json=_safe_dict(getattr(workline, "runtime_config_json", None)),
-        owner_team=_safe_str(getattr(workline, "owner_team", None)),
-        support_contact=_safe_str(getattr(workline, "support_contact", None)),
         diagnostic_profile=_safe_dict(getattr(workline, "diagnostic_profile", None)),
     )
 
@@ -86,6 +86,21 @@ def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
     )
 
 
+def _resolve_source_device(devices_by_role: dict[str, list[Any]], inbox: Any | None) -> Any | None:
+    payload = _safe_dict(getattr(inbox, "payload_json", None))
+    device_code = _safe_str(payload.get("device_code")) or _safe_str(payload.get("location"))
+    if not device_code:
+        normalized_input = getattr(inbox, "normalized_input", None)
+        device_code = _safe_str(getattr(normalized_input, "device_code", None))
+    if not device_code:
+        return None
+    for devices in devices_by_role.values():
+        for device in devices:
+            if _safe_str(getattr(device, "device_code", None)) == device_code:
+                return device
+    return None
+
+
 class PluginContext(BaseModel):
     """插件上下文 - 编排器构建，传递给插件
 
@@ -115,13 +130,16 @@ class PluginContext(BaseModel):
     binding_config: dict[str, Any]  # 设备绑定配置
     runtime: ResolvedExecutionContext  # 解析后的统一运行时配置
     run_mode: str = "AUTO"  # WORKLINE 运行模式快照，插件只能通过 runtime/context 感知
+    source_device: Any | None = None  # 触发当前 inbox 的源设备
+    source_device_role: str | None = None  # 源设备角色快照
     normalized_input: Any | None = None  # 标准化后的 inbox 输入
     diagnostics: DiagnosticContext | None = None  # 统一诊断上下文
 
     # 服务依赖
-    services: Any  # DomainServices - 领域服务容器
+    services: WorklineRuntimeServices
 
     # 工具
+    next: PluginNext = Field(default_factory=PluginNext)
     logger: logging.Logger
     clock: Callable[[], datetime]
 
@@ -146,7 +164,7 @@ class PluginContextBuilder:
         session: Any,
         workline: Any,
         devices_by_role: dict[str, list[Any]],
-        services: Any,
+        services: WorklineRuntimeServices,
         trace_id: str = "",
         logger: logging.Logger | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -190,6 +208,8 @@ class PluginContextBuilder:
         session_run_mode = normalize_run_mode(getattr(session, "run_mode", None))
         if runtime.workline is not None:
             runtime.workline.run_mode = session_run_mode
+        source_device = _resolve_source_device(devices_by_role, inbox)
+        source_device_role = _safe_str(getattr(source_device, "device_role", None))
         normalized_input = None
         if inbox is not None:
             normalized_input = normalize_inbox_input(
@@ -216,9 +236,12 @@ class PluginContextBuilder:
             binding_config=binding_config,
             runtime=runtime,
             run_mode=session_run_mode,
+            source_device=source_device,
+            source_device_role=source_device_role,
             normalized_input=normalized_input,
             diagnostics=diagnostics,
             services=services,
+            next=PluginNext(),
             logger=logger,
             clock=clock,
         )

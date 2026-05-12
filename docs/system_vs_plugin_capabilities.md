@@ -1,5 +1,7 @@
 # 系统能力 vs 插件能力边界
 
+> Legacy notes: 本文的代码示例仍保留旧 `PluginResult` 方案，用于历史对照；当前边界以 `RuntimeIntent` 为准，插件只做业务决策，Runtime 拥有状态和副作用。
+
 ## 核心原则
 
 **插件开发者只关注业务逻辑，框架提供所有系统级能力。**
@@ -59,7 +61,7 @@ flowchart TB
         subgraph BusinessLogic["业务逻辑"]
             B1["事件处理<br/>on_device_event()"]
             B2["命令结果处理<br/>on_command_result()"]
-            B3["超时处理<br/>on_timeout()"]
+            B3["等待声明<br/>WaitIntent"]
             B4["人工操作处理<br/>on_manual_operation()"]
         end
         

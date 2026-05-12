@@ -8,7 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Request
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.app.callback.models import (
+    CallbackEventIngressResponse,
+    CallbackExternalIngressResponse,
+    CallbackResultIngressResponse,
+)
+from src.app.callback.v1 import callback as callback_module
 
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
@@ -18,6 +26,20 @@ def _await_kwargs(mock: AsyncMock) -> JsonDict:
     await_args = mock.await_args
     assert await_args is not None
     return cast("JsonDict", await_args.kwargs)
+
+
+def _response_data(response: JsonDict) -> JsonDict:
+    data = response["data"]
+    if hasattr(data, "model_dump"):
+        return cast("JsonDict", data.model_dump())
+    return cast("JsonDict", data)
+
+
+def _get_route(path: str, method: str) -> APIRoute:
+    for route in callback_module.router.routes:
+        if isinstance(route, APIRoute) and method in route.methods and route.path == path:
+            return route
+    raise AssertionError(f"{method} {path} route not found")
 
 
 @pytest.fixture(autouse=True)
@@ -34,8 +56,11 @@ def mock_fast_fail_check():
             patch("src.utils.health.check_database_health", new_callable=AsyncMock) as db_mock,
             patch("src.utils.health.check_redis_health", new_callable=AsyncMock) as redis_mock,
             patch("src.utils.health.check_celery_health", new_callable=AsyncMock) as celery_mock,
-            patch("src.app.callback.v1.callback.device_context_service.resolve") as ctx_mock,
-            patch("src.app.callback.v1.callback.workline_diagnostic_service.record_event", new_callable=AsyncMock),
+            patch("src.app.callback.services.callback_ingress_service.device_context_service.resolve") as ctx_mock,
+            patch(
+                "src.app.callback.services.callback_ingress_service.workline_diagnostic_service.record_event",
+                new_callable=AsyncMock,
+            ),
         ):
             # 返回健康状态
             db_mock.return_value = {"status": "healthy"}
@@ -150,6 +175,50 @@ def create_external_payload(**overrides: object) -> JsonDict:
     return payload
 
 
+class TestCallbackIngressRouteContracts:
+    @pytest.mark.parametrize(
+        ("path", "response_model"),
+        [
+            ("/result", CallbackResultIngressResponse),
+            ("/event", CallbackEventIngressResponse),
+            ("/external", CallbackExternalIngressResponse),
+        ],
+    )
+    def test_ingress_routes_declare_named_response_models(self, path: str, response_model: object) -> None:
+        route = _get_route(path, "POST")
+
+        assert route.response_model == response_model
+
+    def test_ingress_routes_do_not_fast_fail_on_celery_control_plane(self) -> None:
+        for path in ("/result", "/event", "/external"):
+            route = _get_route(path, "POST")
+            route_dependency_names = [
+                getattr(dependency.call, "__name__", type(dependency.call).__name__)
+                for dependency in route.dependant.dependencies
+            ]
+
+            assert "fast_fail_check" not in route_dependency_names
+
+
+class TestCallbackEnqueueFallback:
+    @pytest.mark.asyncio
+    async def test_commit_succeeds_when_enqueue_is_unavailable(self, db_session: AsyncSession) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        service = CallbackOrchestrationService()
+
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            await service._commit_and_enqueue_workline_processing(
+                db_session,
+                enqueue_processing=MagicMock(side_effect=RuntimeError("celery down")),
+            )
+
+        db_session.commit.assert_awaited_once()
+
+
 class TestCallbackResultAPI:
     @pytest.mark.asyncio
     async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
@@ -159,6 +228,7 @@ class TestCallbackResultAPI:
             workline_id=1,
             plugin_key="smt_classifier",
             contract_version="1.0",
+            device_id=7,
         )
         handled_command = MagicMock()
         handled_command.id = 1001
@@ -171,11 +241,11 @@ class TestCallbackResultAPI:
 
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(return_value=existing_command),
             ),
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.services.callback_ingress_service.device_service.get_device_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
@@ -185,11 +255,15 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -205,33 +279,25 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
             patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
             patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=1),
-            ) as mock_mark_acked,
-            patch(
-                "src.app.callback.v1.callback.device_service.mark_command_finished",
+                "src.app.callback.services.callback_ingress_service.device_service.mark_command_finished",
                 new=AsyncMock(),
                 create=True,
             ) as mock_mark_finished,
@@ -244,7 +310,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["ack"] is True
+        assert _response_data(response)["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
         mock_mark_finished.assert_awaited_once_with(
             db_session,
@@ -260,7 +326,6 @@ class TestCallbackResultAPI:
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
         mock_handle.assert_awaited_once()
-        mock_mark_acked.assert_awaited_once_with(db_session, "device-command:CMD-20250317-001")
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -330,37 +395,33 @@ class TestCallbackResultAPI:
 
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(side_effect=get_command_by_code),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(side_effect=resolve_device_context),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
                 new=AsyncMock(),
             ),
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(return_value=handled_command),
             ),
             patch(
-                "src.app.callback.services.callback_orchestration_service.outbox_repository.mark_as_acked_by_dispatch_key",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
             patch("src.app.callback.v1.callback._enqueue_workline_processing"),
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-trace-001"),
             patch(
-                "src.app.callback.v1.callback.device_service.mark_command_finished",
+                "src.app.callback.services.callback_ingress_service.device_service.mark_command_finished",
                 new=AsyncMock(),
                 create=True,
             ),
@@ -374,12 +435,99 @@ class TestCallbackResultAPI:
 
         assert call_order[:2] == ["command:CMD-20250317-TRACE", "device:ARM_01"]
         assert response["code"] == "1000"
-        assert response["data"]["ack"] is True
-        assert response["data"]["request_id"] == "req-trace-001"
-        assert response["data"]["trace_id"] == "trace-vendor-001"
-        assert response["data"]["event_id"] == "evt-result-001"
+        assert _response_data(response)["ack"] is True
+        assert _response_data(response)["request_id"] == "req-trace-001"
+        assert _response_data(response)["trace_id"] == "trace-vendor-001"
+        assert _response_data(response)["event_id"] == "evt-result-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-vendor-001"
+
+    @pytest.mark.asyncio
+    async def test_callback_result_rejects_command_device_mismatch(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        existing_command = SimpleNamespace(
+            id=1001,
+            command_code="CMD-20250317-MISMATCH",
+            trace_id="trace-mismatch-001",
+            params={"task_type": "PICK_AND_PUT"},
+            workline_id=1,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            session_id=None,
+            device_id=8,
+        )
+
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
+                            workline=SimpleNamespace(
+                                id=1,
+                                plugin_key="smt_classifier",
+                                contract_version="1.0",
+                                is_active=True,
+                            ),
+                            plugin_key="smt_classifier",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
+                new=AsyncMock(),
+            ) as mock_handle,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-mismatch-001"),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(
+                    body=create_result_payload(command_code="CMD-20250317-MISMATCH"),
+                    path="/api/v1/callback/result",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        assert "不匹配" in response["message"]
+        mock_handle.assert_not_awaited()
+        mock_create_inbox.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_result_rejects_legacy_command_id_and_device_id(
@@ -389,7 +537,7 @@ class TestCallbackResultAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         trace_id="trace-001",
@@ -401,7 +549,7 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.services.callback_ingress_service.device_service.get_device_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
@@ -411,11 +559,15 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -431,11 +583,11 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
                 new=AsyncMock(),
             ),
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         trace_id="trace-001",
@@ -445,11 +597,11 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -473,7 +625,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -488,15 +640,15 @@ class TestCallbackResultAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(),
             ) as mock_resolve,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -515,7 +667,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         assert "业务字段必须放在 data 中" in response["message"]
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
@@ -525,7 +677,7 @@ class TestCallbackResultAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_rejects_invalid_plugin_result(
+    async def test_callback_result_rejects_invalid_runtime_result(
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         existing_command = SimpleNamespace(
@@ -534,15 +686,16 @@ class TestCallbackResultAPI:
             workline_id=1,
             plugin_key="smt_classifier",
             contract_version="1.0",
+            device_id=7,
         )
 
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(return_value=existing_command),
             ),
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.services.callback_ingress_service.device_service.get_device_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
@@ -552,11 +705,15 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_result_callback": True},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -572,19 +729,19 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_command_result_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.device_command_service.handle_callback_result",
+                "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(),
             ) as mock_handle,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-002"),
@@ -600,7 +757,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_create_inbox.assert_not_called()
         mock_handle.assert_not_called()
         mock_log_callback.assert_awaited_once()
@@ -615,7 +772,7 @@ class TestCallbackResultAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         trace_id="trace-ctx-001",
@@ -627,15 +784,15 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(return_value=(None, {"code": 404, "message": "未找到设备: ARM_01"})),
             ),
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -667,11 +824,11 @@ class TestCallbackResultAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=SimpleNamespace(capabilities_json=[]),
+                            device=SimpleNamespace(id=7, device_code="ARM_01", capabilities_json=[]),
                             workline=SimpleNamespace(
                                 plugin_key="smt_classifier",
                                 contract_version="1.0",
@@ -687,7 +844,7 @@ class TestCallbackResultAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_command_service.get_command_by_code",
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         trace_id="trace-cap-bad-001",
@@ -695,15 +852,16 @@ class TestCallbackResultAPI:
                         workline_id=1,
                         plugin_key="smt_classifier",
                         contract_version="1.0",
+                        device_id=7,
                     )
                 ),
             ) as mock_get_command,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -719,7 +877,7 @@ class TestCallbackResultAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_get_command.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -742,7 +900,7 @@ class TestCallbackEventAPI:
     async def test_callback_event_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.services.callback_ingress_service.device_service.get_device_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
@@ -752,7 +910,7 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -772,15 +930,15 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
@@ -794,7 +952,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         create_inbox_kwargs = mock_create_inbox.call_args.kwargs
         event_trace_id = create_inbox_kwargs["trace_id"]
         assert create_inbox_kwargs["event_type"] == "SCAN_COMPLETED"
@@ -825,15 +983,15 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(),
             ) as mock_resolve,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -856,7 +1014,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -871,11 +1029,11 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -899,7 +1057,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -914,15 +1072,15 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(),
             ) as mock_resolve,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -941,7 +1099,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         assert "业务字段必须放在 data 中" in response["message"]
         mock_resolve.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
@@ -956,7 +1114,7 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_service.get_device_by_code",
+                "src.app.callback.services.callback_ingress_service.device_service.get_device_by_code",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
@@ -966,7 +1124,7 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -986,15 +1144,15 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing"),
@@ -1012,7 +1170,7 @@ class TestCallbackEventAPI:
 
         # 简化架构：接受所有事件类型，返回成功
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         mock_create_inbox.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
@@ -1025,7 +1183,7 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -1046,15 +1204,15 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
@@ -1074,7 +1232,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         inbox_kwargs = _await_kwargs(mock_create_inbox)
         assert inbox_kwargs["event_type"] == "SCAN_FINISH"
         assert inbox_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
@@ -1088,7 +1246,7 @@ class TestCallbackEventAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.device_context_service.resolve",
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
@@ -1108,15 +1266,15 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_device_event_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -1132,7 +1290,7 @@ class TestCallbackEventAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_create_inbox.assert_not_called()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -1146,15 +1304,15 @@ class TestCallbackExternalAPI:
     async def test_callback_external_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.inbox_service.create_external_http_inbox",
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
@@ -1171,7 +1329,7 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "1000"
-        assert response["data"]["status"] == "submitted"
+        assert _response_data(response)["status"] == "submitted"
         inbox_kwargs = _await_kwargs(mock_create_inbox)
         assert inbox_kwargs["callback_type"] == "AGV_TASK_RESULT"
         assert inbox_kwargs["trace_id"] == "trace-agv-001"
@@ -1193,11 +1351,11 @@ class TestCallbackExternalAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.v1.callback.callback_log_service.log_callback",
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
             patch(
-                "src.app.callback.v1.callback.audit_log_service.create_audit_log",
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
             patch(
@@ -1216,7 +1374,7 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "2004"
-        assert response["data"]["ack"] is False
+        assert _response_data(response)["ack"] is False
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"

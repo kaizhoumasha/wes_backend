@@ -14,8 +14,6 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
         contract_version="1.0",
         config={"plugin": "config"},
         runtime_config_json={"timeout_policy": {"command": 30}},
-        owner_team="wes",
-        support_contact="oncall",
         diagnostic_profile={"summary_mode": "compact"},
     )
     device = SimpleNamespace(
@@ -113,7 +111,7 @@ def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> No
     assert normalized.result_classification == "hardware_failure"
 
 
-def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -> None:
+def test_normalize_inbox_input_uses_runtime_classifier_for_business_ng() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
         trace_id="trace-4",
@@ -135,7 +133,7 @@ def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -
     assert normalized.result_classification == "business_decision"
 
 
-def test_normalize_inbox_input_uses_plugin_result_classifier_for_legacy_inspection_ng() -> None:
+def test_normalize_inbox_input_treats_failed_inspection_ng_code_as_hardware_failure() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
         trace_id="trace-5",
@@ -154,7 +152,7 @@ def test_normalize_inbox_input_uses_plugin_result_classifier_for_legacy_inspecti
     normalized = normalize_inbox_input(inbox, plugin_key="smt_classifier")
 
     assert normalized.normalized_result == "TERMINAL_FAILURE"
-    assert normalized.result_classification == "business_decision"
+    assert normalized.result_classification == "hardware_failure"
 
 
 def test_normalize_inbox_input_prefers_canonical_six_in_one_business_key() -> None:

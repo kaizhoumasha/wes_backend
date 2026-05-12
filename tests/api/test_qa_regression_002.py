@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -53,3 +54,23 @@ async def test_manual_missing_session_returns_not_found_response(monkeypatch: py
 
     assert response["code"] == "3000"
     assert response["message"] == "会话不存在: 999999999"
+
+
+def test_pending_outbox_response_does_not_treat_target_device_as_source() -> None:
+    outbox = SimpleNamespace(
+        id=1,
+        session_id=2,
+        workline_id=45,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type="DEVICE_COMMAND",
+        target_type="DEVICE",
+        target_code="ARM03",
+        status="SENT",
+        payload_json={"device_code": "ARM03", "command_code": "CMD-001"},
+    )
+
+    response = operation_api._outbox_response(outbox)
+
+    assert response["target_code"] == "ARM03"
+    assert response["payload_json"]["device_code"] == "ARM03"
+    assert response["source_device"] is None

@@ -19,7 +19,7 @@ class SmtPluginDiagnosticResult(BaseModel):
     normalized_input: dict[str, Any]
     parsed_context: SmtClassifierContext
     selected_handler: str | None = None
-    plugin_result: Any
+    runtime_intents: Any
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -87,7 +87,7 @@ async def diagnose_smt_payload(
 ) -> SmtPluginDiagnosticResult:
     """诊断单条 SMT payload 会如何被插件解释。
 
-    该入口只覆盖 handler / context / 状态机解释，不替代 WORKLINE 级 sandbox 调试。
+    该入口只覆盖 handler / context / RuntimeIntent 解释，不替代 WORKLINE 级 sandbox 调试。
     """
 
     inbox = _make_inbox(payload_json, kind=kind, trace_id=getattr(ctx, "trace_id", None))
@@ -102,16 +102,16 @@ async def diagnose_smt_payload(
     selected_handler: str | None
     if kind == "COMMAND_RESULT":
         selected_handler = _select_command_handler(plugin, normalized_input, payload_json)
-        plugin_result = await plugin.on_command_result(ctx, inbox)
+        runtime_intents = await plugin.on_command_result(ctx, inbox)
     else:
         selected_handler = _select_event_handler(plugin, normalized_input, payload_json)
-        plugin_result = await plugin.on_device_event(ctx, inbox)
+        runtime_intents = await plugin.on_device_event(ctx, inbox)
 
     return SmtPluginDiagnosticResult(
         normalized_input=normalized_input.model_dump(),
         parsed_context=parsed_context,
         selected_handler=selected_handler,
-        plugin_result=plugin_result,
+        runtime_intents=runtime_intents,
     )
 
 

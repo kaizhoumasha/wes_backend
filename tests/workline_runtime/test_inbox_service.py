@@ -9,10 +9,12 @@
 """
 
 import hashlib
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
@@ -164,6 +166,38 @@ def test_payload_hash_algorithm():
 
 
 @pytest.mark.asyncio
+async def test_create_idempotent_conflict_target_matches_partial_unique_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PostgreSQL ON CONFLICT 必须匹配迁移中的部分唯一索引。"""
+    repository = WorklineInboxRepository()
+    captured: dict[str, object] = {}
+
+    class _FakeResult:
+        def scalar_one_or_none(self) -> int:
+            return 1
+
+    class _FakeDB:
+        async def execute(self, statement: object) -> _FakeResult:
+            captured["statement"] = statement
+            return _FakeResult()
+
+    async def _fake_get_by_id(_db: object, inbox_id: int) -> SimpleNamespace:
+        return SimpleNamespace(id=inbox_id)
+
+    monkeypatch.setattr(repository, "get_by_id", _fake_get_by_id)
+
+    _ = await repository.create_idempotent(
+        _FakeDB(),  # type: ignore[arg-type]
+        {"idempotency_key": "timer_timeout:session:1"},
+        idempotency_key="timer_timeout:session:1",
+    )
+
+    statement = captured["statement"]
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
+
+    assert "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL" in sql
+
+
+@pytest.mark.asyncio
 async def test_get_new_messages_only_selects_retry_ready_messages() -> None:
     repository = WorklineInboxRepository()
 
@@ -196,6 +230,7 @@ class _FakeInboxRepo:
         self.inbox = inbox
         self.update_calls: list[tuple[object, int, dict[str, object]]] = []
         self.created_data: dict[str, object] | None = None
+        self.create_idempotent_calls: list[tuple[object, dict[str, object], str]] = []
 
     def calculate_command_result_idempotency_key(
         self,
@@ -218,6 +253,17 @@ class _FakeInboxRepo:
     async def create(self, db: object, data: dict[str, object]) -> object:
         self.created_data = data
         return SimpleNamespace(id=99, **data)
+
+    async def create_idempotent(
+        self,
+        db: object,
+        data: dict[str, object],
+        *,
+        idempotency_key: str,
+    ) -> object:
+        self.create_idempotent_calls.append((db, data, idempotency_key))
+        self.created_data = data
+        return SimpleNamespace(id=100, **data)
 
     async def update(self, db: object, inbox_id: int, data: dict[str, object]) -> object:
         self.update_calls.append((db, inbox_id, data))
@@ -288,6 +334,62 @@ async def test_mark_as_failed_moves_to_dead_letter_after_max_attempts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mark_as_processed_clears_retry_error_projection() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(
+        inbox=SimpleNamespace(
+            id=4,
+            status=InboxStatus.RETRY,
+            error_message="old transition error",
+            next_retry_at=datetime.now(),
+            processor_token="worker-1",
+        )
+    )
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_processed(db, 4)
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 4
+    assert data["status"] == InboxStatus.PROCESSED
+    assert data["error_message"] is None
+    assert data["next_retry_at"] is None
+    assert data["processor_token"] is None
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.PROCESSED
+
+
+@pytest.mark.asyncio
+async def test_mark_as_dead_letter_clears_retry_error_projection() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(
+        inbox=SimpleNamespace(
+            id=5,
+            status=InboxStatus.RETRY,
+            error_message="old retryable error",
+            next_retry_at=datetime.now(),
+            processor_token="worker-1",
+        )
+    )
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    db = object()
+    result = await service.mark_as_dead_letter(db, 5, "terminal data conflict")
+
+    assert len(fake_repo.update_calls) == 1
+    _, inbox_id, data = fake_repo.update_calls[0]
+    assert inbox_id == 5
+    assert data["status"] == InboxStatus.DEAD_LETTER
+    assert data["error_message"] == "terminal data conflict"
+    assert data["next_retry_at"] is None
+    assert data["processor_token"] is None
+    assert data["processed_at"] is not None
+    assert result.status == InboxStatus.DEAD_LETTER
+
+
+@pytest.mark.asyncio
 async def test_mark_as_processed_raises_when_message_missing() -> None:
     service = WorklineInboxService()
     fake_repo = _FakeInboxRepo(inbox=None)
@@ -344,6 +446,31 @@ async def test_create_command_result_inbox_auto_commits_by_default() -> None:
     )
 
     db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_timeout_inbox_uses_idempotent_insert_without_rollback() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=None)
+    service.repo = fake_repo  # type: ignore[assignment]
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    result = await service.create_timeout_inbox(
+        db,
+        session_id=42,
+        workline_id=7,
+        deadline_at=datetime(2026, 5, 8, 8, 0, 0),
+        wait_token="CMD-1",
+        awaiting_command_id=9,
+        auto_commit=False,
+    )
+
+    assert result.id == 100
+    assert fake_repo.create_idempotent_calls
+    assert fake_repo.created_data is not None
+    assert fake_repo.created_data["idempotency_key"] == "timeout:42:2026-05-08T08:00:00:CMD-1:9"
+    db.commit.assert_not_awaited()
     db.rollback.assert_not_awaited()
 
 

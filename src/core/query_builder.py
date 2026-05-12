@@ -19,6 +19,7 @@ import sqlalchemy as sa
 from src.core.exceptions import InvalidParameterException
 from src.core.logger import logger
 from src.core.query_models import FilterCondition, FilterGroup, FilterOperator, SortField
+from src.utils.timezone import timezone
 
 # LIKE/ILIKE 转义字符：使用反斜杠支持字面量 %、_、\\ 搜索
 _SQL_ESCAPE_CHAR: str = "\\"
@@ -137,12 +138,12 @@ class QueryBuilder:
             return condition.value
 
         if condition.op == FilterOperator.BETWEEN and isinstance(condition.value, (list, tuple)):
-            return [self._coerce_scalar_value(item, python_type, condition.field) for item in condition.value]
+            return [self._coerce_scalar_value(item, python_type, condition.field, column) for item in condition.value]
 
         if condition.op in {FilterOperator.IN, FilterOperator.NIN} and isinstance(condition.value, (list, tuple, set)):
-            return [self._coerce_scalar_value(item, python_type, condition.field) for item in condition.value]
+            return [self._coerce_scalar_value(item, python_type, condition.field, column) for item in condition.value]
 
-        return self._coerce_scalar_value(condition.value, python_type, condition.field)
+        return self._coerce_scalar_value(condition.value, python_type, condition.field, column)
 
     def _resolve_column(self, field: Any) -> Any | None:
         property_obj = getattr(field, "property", None)
@@ -157,36 +158,43 @@ class QueryBuilder:
         except (AttributeError, NotImplementedError):
             return None
 
-    def _coerce_scalar_value(self, value: Any, python_type: type[Any], field_name: str) -> Any:
-        if value is None or isinstance(value, python_type):
+    def _coerce_scalar_value(self, value: Any, python_type: type[Any], field_name: str, column: Any) -> Any:
+        if value is None:
             return value
 
         try:
             if python_type is datetime:
-                return self._parse_datetime(value, field_name)
-            if python_type is date:
-                return self._parse_date(value, field_name)
-            if python_type is bool:
-                return self._parse_bool(value, field_name)
-            if python_type is UUID:
-                return UUID(str(value))
-            if isinstance(python_type, type) and issubclass(python_type, Enum):
-                return python_type(value)
-            if python_type in {int, float, str}:
-                return python_type(value)
+                coerced = self._parse_datetime(value, field_name, column)
+            elif python_type is date:
+                coerced = self._parse_date(value, field_name)
+            elif isinstance(value, python_type):
+                coerced = value
+            elif python_type is bool:
+                coerced = self._parse_bool(value, field_name)
+            elif python_type is UUID:
+                coerced = UUID(str(value))
+            elif (isinstance(python_type, type) and issubclass(python_type, Enum)) or python_type in {int, float, str}:
+                coerced = python_type(value)
+            else:
+                coerced = value
         except (TypeError, ValueError) as exc:
             raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 的筛选值格式无效") from exc
 
-        return value
+        return coerced
 
-    def _parse_datetime(self, value: Any, field_name: str) -> datetime:
-        if isinstance(value, datetime):
-            return value
-        if not isinstance(value, str):
+    def _parse_datetime(self, value: Any, field_name: str, column: Any) -> datetime:
+        parsed = timezone.parse_datetime(value)
+        if parsed is None:
             raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 需要 datetime 值")
 
-        normalized = value.strip().replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized)
+        column_type = getattr(column, "type", None)
+        if bool(getattr(column_type, "timezone", False)):
+            return timezone.to_utc(parsed) if parsed.tzinfo is not None else parsed
+
+        db_value = timezone.to_db_datetime(parsed)
+        if db_value is None:
+            raise InvalidParameterException(field=field_name, message=f"字段 '{field_name}' 需要 datetime 值")
+        return db_value
 
     def _parse_date(self, value: Any, field_name: str) -> date:
         if isinstance(value, date) and not isinstance(value, datetime):
