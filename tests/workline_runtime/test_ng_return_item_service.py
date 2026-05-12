@@ -76,7 +76,6 @@ async def _create_scan_ng_fixture(db_session):
         session_id_int=cast("int", session.id),
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
-        issued_plugin_state="WAITING_PICK_PLACE",
         task_type="PICK_AND_PUT",
         params={"barcode": "6", "source_type": "INPUT_PLATFORM", "target_type": "NG_PLATFORM"},
         status=CommandStatus.COMPLETED,

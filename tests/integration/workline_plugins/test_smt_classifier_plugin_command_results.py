@@ -1,4 +1,4 @@
-"""SMT 分类插件命令结果测试。"""
+"""SMT 分类插件命令结果 RuntimeIntent 测试。"""
 
 from __future__ import annotations
 
@@ -6,457 +6,395 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.workline_runtime.runtime_intent import BlockScope, DestinationKind, RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices
 
 
+def _make_inbox(payload: dict) -> MagicMock:
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.payload_json = payload
+    inbox.kind = None
+    inbox.trace_id = "trace-smt-command"
+    return inbox
+
+
+def _command_payload(command_type: str, result: str, *, data: dict | None = None, error_detail: dict | None = None):
+    payload = {
+        "command_code": f"CMD-{command_type}-{result}",
+        "command_type": command_type,
+        "result": result,
+        "device_code": "DEVICE01",
+    }
+    if data is not None:
+        payload["data"] = data
+    if error_detail is not None:
+        payload["error_detail"] = error_detail
+    return payload
+
+
+def _assert_command(intent, *, action: str, device_role: str, timeout: int = 300) -> None:
+    assert intent.kind == RuntimeIntentKind.COMMAND
+    assert intent.action == action
+    assert intent.device_role == device_role
+    assert intent.destination.kind == DestinationKind.ROLE
+    assert intent.destination.value == device_role
+    assert intent.timeout_seconds == timeout
+
+
 class TestSmtClassifierPluginCommandResults:
-    """SMT 分类插件命令结果测试。"""
+    """SMT 分类插件命令结果 RuntimeIntent 测试。"""
 
     @pytest.mark.asyncio
-    async def test_pick_success_completes_scan_ng_flow(self, plugin, mock_context):
-        """测试扫码 NG 分流命令成功后直接完成。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
+    async def test_pick_success_from_input_arm_completes_scan_ng_flow(self, plugin, mock_context):
+        """进料臂 SCAN_NG 分流成功后先写 ng_handled，再完成。"""
+        mock_context.source_device_role = "INPUT_ARM"
         mock_context.session.context_json = {
             "barcode": "LOTSIZENG",
             "pick_place_reason": "SCAN_NG",
         }
 
-        payload = {
-            "command_code": "CMD-001",
-            "command_type": "PICK_AND_PUT",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("PICK_AND_PUT", "SUCCESS")),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 3
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "pick_ng"
-        assert result.complete is True
-        assert result.context_patch["ng_handled"] is True
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMPLETE]
+        assert result[0].context_patch == {"ng_handled": True}
+        assert result[-1].kind == RuntimeIntentKind.COMPLETE
 
     @pytest.mark.asyncio
-    async def test_measurement_reel_success(self, plugin, mock_context):
-        """测试测量成功会推进到流水线传输。"""
-        mock_context.plugin_state = "WAITING_MEASUREMENT"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-MEASURE-001",
-            "command_type": "MEASUREMENT_REEL",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-            "data": {
-                "pkg_id": "SVYU00125TP4LCR02_2",
-                "reel_diameter": 178.5,
-                "reel_thickness": 12.3,
-            },
+    async def test_pick_success_from_input_arm_completes_inspection_ng_flow(self, plugin, mock_context):
+        """进料臂检测 NG 回送成功后先写 ng_handled，再完成，不再前进流水线。"""
+        mock_context.source_device_role = "INPUT_ARM"
+        mock_context.session.context_json = {
+            "barcode": "LOTABC123",
+            "inspection_error": "INSPECTION_SIZE_NG",
         }
 
-        inbox = MagicMock()
-        inbox.id = 2
-        inbox.payload_json = payload
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("PICK_AND_PUT", "SUCCESS")),
+        )
 
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "pick_ok"
-        assert result.commands is not None
-        assert result.commands[0].action == "MOVE_FORWARD"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-MOVE_FORWARD-")
-        assert result.commands[0].parameters["pkg_id"] == "SVYU00125TP4LCR02_2"
-        assert result.context_patch["pkg_id"] == "SVYU00125TP4LCR02_2"
-        assert result.context_patch["reel_diameter"] == 178.5
-        assert result.context_patch["reel_thickness"] == 12.3
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMPLETE]
+        assert result[0].context_patch == {"ng_handled": True}
+        assert result[-1].kind == RuntimeIntentKind.COMPLETE
 
     @pytest.mark.asyncio
-    async def test_measurement_reel_success_requires_data(self, plugin, mock_context):
-        """测试测量成功但缺少 data 时会进入 measurement_ng。"""
-        mock_context.plugin_state = "WAITING_MEASUREMENT"
-        mock_context.session.context_json = {}
+    async def test_pick_success_from_input_arm_moves_forward_for_ok_material(self, plugin, mock_context):
+        """进料臂普通抓取成功后写测量字段，并下发流水线前进。"""
+        mock_context.source_device_role = "INPUT_ARM"
+        mock_context.session.context_json = {"barcode": "LOTABC123"}
 
-        payload = {
-            "command_code": "CMD-MEASURE-002",
-            "command_type": "MEASUREMENT_REEL",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "SUCCESS",
+                    data={"reel_diameter": "178.5", "reel_thickness": "12.3"},
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 22
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "measurement_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "MEASUREMENT_DATA_MISSING"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        assert result[0].context_patch == {"reel_diameter": "178.5", "reel_thickness": "12.3"}
+        _assert_command(result[1], action="MOVE_FORWARD", device_role="CONVEYOR")
+        assert result[1].payload_json == {"pkg_id": "LOTABC123"}
 
     @pytest.mark.asyncio
-    async def test_measurement_reel_success_rejects_flattened_business_fields(self, plugin, mock_context):
-        """测试测量成功回调业务字段必须放在 data 中，不能拍平到顶层。"""
-        mock_context.plugin_state = "WAITING_MEASUREMENT"
-        mock_context.session.context_json = {}
+    async def test_pick_success_from_output_arm_completes(self, plugin, mock_context):
+        """出料臂抓取成功后完成。"""
+        mock_context.source_device_role = "OUTPUT_ARM"
 
-        payload = {
-            "command_code": "CMD-MEASURE-002B",
-            "command_type": "MEASUREMENT_REEL",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("PICK_AND_PUT", "SUCCESS")),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.COMPLETE]
+
+    @pytest.mark.asyncio
+    async def test_pick_success_from_unexpected_role_blocks_material(self, plugin, mock_context):
+        """非进料臂/出料臂上报 PICK_AND_PUT SUCCESS 时阻塞当前物料。"""
+        mock_context.source_device_role = "CONVEYOR"
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("PICK_AND_PUT", "SUCCESS")),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "UNEXPECTED_DEVICE_ROLE"
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_updates_context_and_moves_forward(self, plugin, mock_context):
+        """测量成功会写入测量上下文并下发流水线传输。"""
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "MEASUREMENT_REEL",
+                    "SUCCESS",
+                    data={
+                        "pkg_id": "SVYU00125TP4LCR02_2",
+                        "reel_diameter": 178.5,
+                        "reel_thickness": 12.3,
+                    },
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        assert result[0].context_patch == {
             "pkg_id": "SVYU00125TP4LCR02_2",
             "reel_diameter": 178.5,
             "reel_thickness": 12.3,
         }
+        _assert_command(result[1], action="MOVE_FORWARD", device_role="CONVEYOR")
+        assert result[1].payload_json == {"pkg_id": "SVYU00125TP4LCR02_2"}
 
-        inbox = MagicMock()
-        inbox.id = 223
-        inbox.payload_json = payload
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_with_inspection_ng_marks_ng_and_picks_to_ng(self, plugin, mock_context):
+        """检测 NG 是业务结果：设备动作成功，插件标记 NG 并下发 NG 分流。"""
 
-        result = await plugin.on_command_result(mock_context, inbox)
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "MEASUREMENT_REEL",
+                    "SUCCESS",
+                    data={
+                        "pkg_id": "PKG-SIZE-NG",
+                        "inspection_result": "NG",
+                        "reason_code": "INSPECTION_SIZE_NG",
+                        "reason_message": "料盘尺寸检测 NG",
+                        "reel_diameter": 178.5,
+                        "reel_thickness": 12.3,
+                    },
+                )
+            ),
+        )
 
-        assert result.transition == "measurement_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "MEASUREMENT_DATA_MISSING"
-        assert result.commands == []
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.MARK_NG,
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.COMMAND,
+        ]
+        assert result[0].reason_code == "INSPECTION_SIZE_NG"
+        assert result[0].message == "料盘尺寸检测 NG"
+        assert result[0].payload_json["barcode"] == "PKG-SIZE-NG"
+        assert result[1].context_patch == {
+            "pkg_id": "PKG-SIZE-NG",
+            "reel_diameter": 178.5,
+            "reel_thickness": 12.3,
+            "inspection_error": "INSPECTION_SIZE_NG",
+        }
+        _assert_command(result[2], action="PICK_AND_PUT", device_role="INPUT_ARM")
+        assert result[2].payload_json == {
+            "barcode": "PKG-SIZE-NG",
+            "source_type": "PIPELINE_PLATFORM",
+            "target_type": "NG_PLATFORM",
+        }
+
+    @pytest.mark.asyncio
+    async def test_measurement_reel_success_requires_data(self, plugin, mock_context):
+        """测量成功缺少 data 时返回 PAYLOAD_INVALID BLOCK。"""
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MEASUREMENT_REEL", "SUCCESS")),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "PAYLOAD_INVALID"
+        assert result[0].message == "测量成功回调缺少 data 字段"
 
     @pytest.mark.asyncio
     async def test_measurement_reel_success_requires_pkg_id(self, plugin, mock_context):
-        """测试测量成功但缺少 PkgID/pkg_id 时必须显式失败。"""
-        mock_context.plugin_state = "WAITING_MEASUREMENT"
-        mock_context.session.context_json = {}
+        """测量成功缺少 PkgID/pkg_id 时返回 PAYLOAD_INVALID BLOCK。"""
 
-        payload = {
-            "command_code": "CMD-MEASURE-002A",
-            "command_type": "MEASUREMENT_REEL",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-            "data": {
-                "reel_diameter": 178.5,
-                "reel_thickness": 12.3,
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "MEASUREMENT_REEL",
+                    "SUCCESS",
+                    data={"reel_diameter": 178.5, "reel_thickness": 12.3},
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 222
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
-        assert result.failure.message == "测量成功回调缺少 PkgID/pkg_id"
-        assert result.transition is None
-        assert result.commands == []
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "PAYLOAD_INVALID"
+        assert result[0].message == "测量成功回调缺少 PkgID/pkg_id"
 
     @pytest.mark.asyncio
-    async def test_measurement_reel_result_requires_standard_envelope(self, plugin, mock_context):
-        """测试测量结果缺少标准包络时返回 PAYLOAD_INVALID。"""
-        mock_context.plugin_state = "WAITING_MEASUREMENT"
-        mock_context.session.context_json = {}
+    async def test_pick_failed_from_input_arm_dimension_ng_code_blocks_as_invalid_device_failure(
+        self, plugin, mock_context
+    ):
+        """检测 NG 不允许再通过 PICK_AND_PUT FAILED/error_detail 表达。"""
+        mock_context.source_device_role = "INPUT_ARM"
+        mock_context.session.context_json = {"barcode": "LOTABC123"}
 
-        payload = {
-            "command_code": "CMD-MEASURE-003",
-            "command_type": "MEASUREMENT_REEL",
-            "result": "SUCCESS",
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "FAILED",
+                    error_detail={
+                        "error_code": "INSPECTION_SIZE_NG",
+                        "error_message": "料盘尺寸检测异常",
+                    },
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 23
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
-
-    @pytest.mark.asyncio
-    async def test_pick_success(self, plugin, mock_context):
-        """测试抓取成功。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {
-            "barcode": "LOTABC123",
-        }
-
-        payload = {
-            "command_code": "CMD-001",
-            "command_type": "PICK_AND_PUT",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-            "data": {
-                "reel_diameter": "178.5",
-                "reel_thickness": "12.3",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 3
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "pick_ok"
-        assert result.commands is not None
-        assert result.commands[0].action == "MOVE_FORWARD"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-MOVE_FORWARD-")
-        assert result.context_patch["reel_diameter"] == "178.5"
-        assert result.context_patch["reel_thickness"] == "12.3"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.COMMAND
+        assert result[0].reason_code == "INSPECTION_SIZE_NG"
 
     @pytest.mark.asyncio
-    async def test_pick_failed(self, plugin, mock_context):
-        """测试抓取失败。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {}
+    async def test_pick_failed_from_input_arm_manual_hold_updates_context_then_blocks(self, plugin, mock_context):
+        """进料臂人工介入类错误先写上下文，再以 MATERIAL BLOCK 终止。"""
+        mock_context.source_device_role = "INPUT_ARM"
 
-        payload = {
-            "command_code": "CMD-001",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "ARM_ERROR",
-                "error_message": "机械臂错误",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "FAILED",
+                    error_detail={
+                        "error_code": "PICK_AND_PUT_FAILED",
+                        "error_message": "机械臂搬运失败",
+                    },
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 3
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "ARM_ERROR"
-
-    @pytest.mark.asyncio
-    async def test_pick_failed_dimension_error_routes_to_inspection_ng(self, plugin, mock_context):
-        """测试尺寸检测异常会进入 inspection_ng 并回送 NG 平台。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {
-            "barcode": "LOTABC123",
-        }
-
-        payload = {
-            "command_code": "CMD-001A",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "INSPECTION_SIZE_NG",
-                "error_message": "料盘尺寸检测异常",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 31
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "inspection_ng"
-        assert result.failure is None
-        assert len(result.business_decisions) == 1
-        assert result.business_decisions[0].classification == "business_decision"
-        assert result.business_decisions[0].reason_code == "INSPECTION_SIZE_NG"
-        assert result.business_decisions[0].business_key == "LOTABC123"
-        assert result.commands is not None
-        assert result.commands[0].action == "PICK_AND_PUT"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
-        assert result.commands[0].parameters["barcode"] == "LOTABC123"
-        assert result.commands[0].parameters["source_type"] == "PIPELINE_PLATFORM"
-        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
-        assert result.context_patch["inspection_error"] == "INSPECTION_SIZE_NG"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.BLOCK]
+        assert result[0].context_patch["manual_hold"] is True
+        assert result[0].context_patch["manual_hold_reason_code"] == "PICK_AND_PUT_FAILED"
+        assert result[1].block_scope == BlockScope.MATERIAL
+        assert result[1].reason_code == "PICK_AND_PUT_FAILED"
+        assert result[-1].kind == RuntimeIntentKind.BLOCK
 
     @pytest.mark.asyncio
-    async def test_pick_failed_standard_error_routes_to_manual_hold(self, plugin, mock_context):
-        """测试标准设备错误码会把会话切到 MANUAL_HOLD。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {}
+    async def test_pick_failed_from_input_arm_unknown_blocks_command(self, plugin, mock_context):
+        """进料臂未知 PICK_AND_PUT 失败阻塞当前命令。"""
+        mock_context.source_device_role = "INPUT_ARM"
 
-        payload = {
-            "command_code": "CMD-001B",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "PICK_AND_PUT_FAILED",
-                "error_message": "机械臂搬运失败",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "FAILED",
+                    error_detail={"error_code": "ARM_ERROR", "error_message": "机械臂错误"},
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 32
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "manual_hold"
-        assert result.failure is None
-        assert result.context_patch["manual_hold"] is True
-        assert result.context_patch["manual_hold_reason_code"] == "PICK_AND_PUT_FAILED"
-        assert result.context_patch["manual_hold_reason_message"] == "机械臂搬运失败"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.COMMAND
+        assert result[0].reason_code == "ARM_ERROR"
+        assert result[0].message == "抓取放置失败: 机械臂错误"
 
     @pytest.mark.asyncio
-    async def test_pick_failed_scan_failed_routes_to_manual_hold(self, plugin, mock_context):
-        """测试 SCAN_FAILED 当前会直接进入 MANUAL_HOLD。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {}
+    async def test_pick_failed_from_output_arm_manual_hold_updates_context_then_blocks(self, plugin, mock_context):
+        """出料臂人工介入类错误先写上下文，再以 MATERIAL BLOCK 终止。"""
+        mock_context.source_device_role = "OUTPUT_ARM"
 
-        payload = {
-            "command_code": "CMD-001C",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "SCAN_FAILED",
-                "error_message": "扫码执行失败",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "FAILED",
+                    error_detail={"error_code": "BIN_FULL", "error_message": "料箱已满"},
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 33
-        inbox.payload_json = payload
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.BLOCK]
+        assert result[0].context_patch["manual_hold"] is True
+        assert result[1].block_scope == BlockScope.MATERIAL
+        assert result[1].reason_code == "BIN_FULL"
+        assert result[1].message == "料箱已满"
 
-        result = await plugin.on_command_result(mock_context, inbox)
+    @pytest.mark.asyncio
+    async def test_pick_failed_from_output_arm_unknown_blocks_command(self, plugin, mock_context):
+        """出料臂未知失败按 COMMAND BLOCK 返回原始错误信息。"""
+        mock_context.source_device_role = "OUTPUT_ARM"
 
-        assert result.transition == "manual_hold"
-        assert result.failure is None
-        assert result.context_patch["manual_hold"] is True
-        assert result.context_patch["manual_hold_reason_code"] == "SCAN_FAILED"
-        assert result.context_patch["manual_hold_reason_message"] == "扫码执行失败"
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "PICK_AND_PUT",
+                    "FAILED",
+                    error_detail={"error_code": "OUTPUT_ERROR", "error_message": "出料异常"},
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.COMMAND
+        assert result[0].reason_code == "OUTPUT_ERROR"
+        assert result[0].message == "出料异常"
 
     @pytest.mark.asyncio
     async def test_pick_failed_accepts_normalized_failure_alias(self, plugin, mock_context):
-        """测试粗分机插件可按标准化失败语义兼容 vendor ERROR 结果。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {}
+        """标准化失败语义仍应路由到 PICK_AND_PUT FAILED handler。"""
+        mock_context.source_device_role = "INPUT_ARM"
         mock_context.normalized_input = MagicMock(
             command_type="PICK_AND_PUT",
             source_result="ERROR",
             normalized_result="TERMINAL_FAILURE",
         )
 
-        payload = {
-            "command_code": "CMD-001",
-            "command_type": "PICK_AND_PUT",
-            "result": "ERROR",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "ARM_ERROR",
-                "error_message": "机械臂错误",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                {
+                    "command_code": "CMD-001",
+                    "command_type": "PICK_AND_PUT",
+                    "result": "ERROR",
+                    "device_code": "ARM01",
+                    "error_detail": {"error_code": "ARM_ERROR", "error_message": "机械臂错误"},
+                }
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 103
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "ARM_ERROR"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "ARM_ERROR"
 
     @pytest.mark.asyncio
-    async def test_pick_success_rejects_unexpected_state(self, plugin, mock_context):
-        """测试抓取成功在非法状态下返回 STATE_MISMATCH。"""
-        mock_context.plugin_state = "IDLE"
-        mock_context.session.context_json = {}
+    async def test_conveyor_success_updates_bin_context_and_commands_output_arm(self, plugin, mock_context):
+        """流水线成功后写入 pkg_id/bin_location，并下发出料臂命令。"""
+        mock_context.session.context_json = {"reel_diameter": "178.5"}
 
-        payload = {
-            "command_code": "CMD-010",
-            "command_type": "PICK_AND_PUT",
-            "result": "SUCCESS",
-            "device_code": "ARM01",
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": "CALLBACK-PKG-001"})),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 104
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "SOFTWARE"
-        assert result.failure.code == "STATE_MISMATCH"
-
-    @pytest.mark.asyncio
-    async def test_pick_failed_rejects_unexpected_state(self, plugin, mock_context):
-        """测试抓取失败在非法状态下返回 STATE_MISMATCH。"""
-        mock_context.plugin_state = "IDLE"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-011",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM01",
-            "error_detail": {
-                "error_code": "ARM_ERROR",
-                "error_message": "机械臂错误",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 105
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "SOFTWARE"
-        assert result.failure.code == "STATE_MISMATCH"
-
-    @pytest.mark.asyncio
-    async def test_conveyor_success(self, plugin, mock_context):
-        """测试流水线传输成功。"""
-        mock_context.plugin_state = "WAITING_CONVEYOR"
-        mock_context.session.context_json = {
-            "barcode": "LEGACY-BARCODE",
-            "pkg_id": "CTX-PKG-001",
-        }
-
-        payload = {
-            "command_code": "CMD-002",
-            "command_type": "MOVE_FORWARD",
-            "result": "SUCCESS",
-            "device_code": "CONVEYOR01",
-            "data": {
-                "pkg_id": "CALLBACK-PKG-001",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 4
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "conveyor_ok"
-        assert result.commands is not None
-        assert result.commands[0].action == "PICK_AND_PUT"
-        assert result.commands[0].parameters["barcode"] == "CALLBACK-PKG-001"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
-        assert result.context_patch["pkg_id"] == "CALLBACK-PKG-001"
-        assert "bin_location" in result.context_patch
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        assert result[0].context_patch["pkg_id"] == "CALLBACK-PKG-001"
+        assert "bin_location" in result[0].context_patch
+        _assert_command(result[1], action="PICK_AND_PUT", device_role="OUTPUT_ARM")
+        assert result[1].payload_json["barcode"] == "CALLBACK-PKG-001"
+        assert result[1].payload_json["reel_diameter"] == "178.5"
 
     @pytest.mark.asyncio
     async def test_conveyor_success_uses_bin_allocator_service(self, plugin, mock_context):
-        """测试料箱分配优先走 ctx.services 内部领域服务。"""
+        """料箱分配优先走 ctx.services 内部领域服务。"""
 
         class BinAllocator:
             def allocate(self, barcode: str) -> dict:
@@ -468,91 +406,52 @@ class TestSmtClassifierPluginCommandResults:
                 }
 
         mock_context.services = WorklineRuntimeServices(bin_allocator=BinAllocator())
-        mock_context.plugin_state = "WAITING_CONVEYOR"
-        mock_context.session.context_json = {
-            "pkg_id": "CTX-PKG-002",
-        }
-        inbox = MagicMock()
-        inbox.id = 40
-        inbox.payload_json = {
-            "command_code": "CMD-002B",
-            "command_type": "MOVE_FORWARD",
-            "result": "SUCCESS",
-            "device_code": "CONVEYOR01",
-            "data": {
-                "pkg_id": "CALLBACK-PKG-002",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": "CALLBACK-PKG-002"})),
+        )
 
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "conveyor_ok"
-        assert result.commands[0].parameters["target_loc"] == "BIN-SVC-001"
-        assert result.commands[0].parameters["bin_type"] == "九格箱"
-        assert result.context_patch["bin_location"]["bin_id"] == "BIN-SVC-001"
+        assert result[0].context_patch["bin_location"]["bin_id"] == "BIN-SVC-001"
+        assert result[1].payload_json["target_loc"] == "BIN-SVC-001"
+        assert result[1].payload_json["bin_type"] == "九格箱"
 
     @pytest.mark.asyncio
     async def test_conveyor_success_requires_callback_pkg_id(self, plugin, mock_context):
-        """测试流水线成功回调缺少 data.pkg_id 时必须显式失败。"""
-        mock_context.plugin_state = "WAITING_CONVEYOR"
-        mock_context.session.context_json = {
-            "barcode": "LEGACY-BARCODE",
-            "pkg_id": "CTX-PKG-001",
-        }
+        """流水线成功回调缺少 data.pkg_id 时返回 PAYLOAD_INVALID BLOCK。"""
 
-        payload = {
-            "command_code": "CMD-002A",
-            "command_type": "MOVE_FORWARD",
-            "result": "SUCCESS",
-            "device_code": "CONVEYOR01",
-            "data": {},
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={})),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 41
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
-        assert result.failure.message == "MOVE_FORWARD 成功回调缺少 pkg_id"
-        assert result.commands == []
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "PAYLOAD_INVALID"
+        assert result[0].message == "MOVE_FORWARD 成功回调缺少 pkg_id"
 
     @pytest.mark.asyncio
-    async def test_conveyor_failed(self, plugin, mock_context):
-        """测试流水线传输失败。"""
-        mock_context.plugin_state = "WAITING_CONVEYOR"
-        mock_context.session.context_json = {}
+    async def test_conveyor_failed_blocks_device_with_failure_reason(self, plugin, mock_context):
+        """流水线失败返回 DEVICE BLOCK，并保留错误码。"""
 
-        payload = {
-            "command_code": "CMD-003",
-            "command_type": "MOVE_FORWARD",
-            "result": "FAILED",
-            "device_code": "CONVEYOR01",
-            "error_detail": {
-                "error_code": "CONVEYOR_ERROR",
-                "error_message": "流水线卡住",
-            },
-        }
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(
+                _command_payload(
+                    "MOVE_FORWARD",
+                    "FAILED",
+                    error_detail={"error_code": "CONVEYOR_ERROR", "error_message": "流水线卡住"},
+                )
+            ),
+        )
 
-        inbox = MagicMock()
-        inbox.id = 5
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "CONVEYOR_ERROR"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.DEVICE
+        assert result[0].reason_code == "CONVEYOR_ERROR"
+        assert result[0].message == "流水线卡住"
 
     @pytest.mark.asyncio
     async def test_conveyor_failed_requires_nested_error_detail(self, plugin, mock_context):
-        """测试流水线失败回调不再接受拍平顶层错误字段。"""
-        mock_context.plugin_state = "WAITING_CONVEYOR"
-        mock_context.session.context_json = {}
-
+        """流水线失败回调不接受拍平顶层错误字段。"""
         payload = {
             "command_code": "CMD-003A",
             "command_type": "MOVE_FORWARD",
@@ -562,132 +461,17 @@ class TestSmtClassifierPluginCommandResults:
             "error_message": "流水线卡住",
         }
 
-        inbox = MagicMock()
-        inbox.id = 42
-        inbox.payload_json = payload
+        result = await plugin.on_command_result(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
-        assert result.failure.message == "MOVE_FORWARD 失败回调缺少 error_detail 字段"
-
-    @pytest.mark.asyncio
-    async def test_output_success(self, plugin, mock_context):
-        """测试出料机械臂成功后会完成会话。"""
-        mock_context.plugin_state = "WAITING_OUTPUT"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-004",
-            "command_type": "PICK_AND_PUT",
-            "result": "SUCCESS",
-            "device_code": "ARM02",
-        }
-
-        inbox = MagicMock()
-        inbox.id = 6
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "output_ok"
-        assert result.complete is True
-
-    @pytest.mark.asyncio
-    async def test_output_failed(self, plugin, mock_context):
-        """测试出料机械臂失败会按标准化错误信息返回。"""
-        mock_context.plugin_state = "WAITING_OUTPUT"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-005",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM02",
-            "error_detail": {
-                "error_code": "OUTPUT_ERROR",
-                "error_message": "出料异常",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 7
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "OUTPUT_ERROR"
-        assert result.failure.message == "出料异常"
-
-    @pytest.mark.asyncio
-    async def test_output_failed_standard_error_routes_to_manual_hold(self, plugin, mock_context):
-        """测试出料阶段的标准设备错误码也应进入 MANUAL_HOLD。"""
-        mock_context.plugin_state = "WAITING_OUTPUT"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-005A",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM02",
-            "error_detail": {
-                "error_code": "PICK_AND_PUT_FAILED",
-                "error_message": "出料机械臂搬运失败",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 70
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "manual_hold"
-        assert result.failure is None
-        assert result.context_patch["manual_hold"] is True
-        assert result.context_patch["manual_hold_reason_code"] == "PICK_AND_PUT_FAILED"
-        assert result.context_patch["manual_hold_reason_message"] == "出料机械臂搬运失败"
-
-    @pytest.mark.asyncio
-    async def test_output_failed_bin_full_routes_to_manual_hold(self, plugin, mock_context):
-        """测试 BIN_FULL 不再直接终态失败，而是进入 MANUAL_HOLD。"""
-        mock_context.plugin_state = "WAITING_OUTPUT"
-        mock_context.session.context_json = {}
-
-        payload = {
-            "command_code": "CMD-005B",
-            "command_type": "PICK_AND_PUT",
-            "result": "FAILED",
-            "device_code": "ARM02",
-            "error_detail": {
-                "error_code": "BIN_FULL",
-                "error_message": "料箱已满",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 71
-        inbox.payload_json = payload
-
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.transition == "manual_hold"
-        assert result.failure is None
-        assert result.context_patch["manual_hold"] is True
-        assert result.context_patch["manual_hold_reason_code"] == "BIN_FULL"
-        assert result.context_patch["manual_hold_reason_message"] == "料箱已满"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "PAYLOAD_INVALID"
+        assert result[0].message == "MOVE_FORWARD 失败回调缺少 error_detail 字段"
 
     @pytest.mark.asyncio
     async def test_pick_result_rejects_legacy_command_id_and_device_id(self, plugin, mock_context):
-        """测试命令结果不再接受 legacy command_id / device_id。"""
-        mock_context.plugin_state = "WAITING_PICK_PLACE"
-        mock_context.session.context_json = {
-            "barcode": "LOTABC123",
-        }
+        """命令结果不再接受 legacy command_id / device_id。"""
+        mock_context.source_device_role = "INPUT_ARM"
 
         payload = {
             "command_id": "CMD-001",
@@ -696,17 +480,13 @@ class TestSmtClassifierPluginCommandResults:
             "device_id": "ARM01",
         }
 
-        inbox = MagicMock()
-        inbox.id = 3
-        inbox.payload_json = payload
+        result = await plugin.on_command_result(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_command_result(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "PAYLOAD_INVALID"
 
     @pytest.mark.asyncio
     async def test_timeout(self, plugin, mock_context):
-        """测试插件不再处理系统 timeout。"""
+        """插件不处理系统 timeout。"""
         assert not hasattr(plugin, "on" + "_timeout")

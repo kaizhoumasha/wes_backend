@@ -33,6 +33,10 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.workline_plugins.smt_classifier.contract import (
+    INSPECTION_SIZE_NG_REASON,
+    INSPECTION_THICKNESS_NG_REASON,
+)
 from src.workline_runtime.contracts import DeviceErrorCode
 from tests.mock.smt_classifier.mock_support import (
     WES_EVENT_CALLBACK_URL,
@@ -570,13 +574,23 @@ class ArmSimulator:
         barcode_seed: str | None,
         pkg_id: str | None,
         move_result: str,
+        inspection_ng_reason: str | None = None,
     ) -> JsonDict:
         if task_type == "MEASUREMENT_REEL":
-            return {
+            data: JsonDict = {
                 "PkgID": pkg_id or barcode_seed or "",
                 "reel_diameter": 15.0,
                 "reel_thickness": 20.0,
+                "inspection_result": "NG" if inspection_ng_reason else "OK",
             }
+            if inspection_ng_reason:
+                reason_messages = {
+                    INSPECTION_SIZE_NG_REASON: "料盘尺寸检测 NG",
+                    INSPECTION_THICKNESS_NG_REASON: "料盘厚度检测 NG",
+                }
+                data["reason_code"] = inspection_ng_reason
+                data["reason_message"] = reason_messages.get(inspection_ng_reason, "检测结果 NG")
+            return data
 
         data: JsonDict = {
             "actual_qty": 1,
@@ -670,6 +684,7 @@ class ArmSimulator:
         reason: str | None = None,
         error_code: str | None = None,
         pkg_id: str | None = None,
+        inspection_ng_reason: str | None = None,
         report_result: bool = True,
     ) -> ExecutionRecord:
         async with self._lock:
@@ -723,8 +738,6 @@ class ArmSimulator:
 
             # 错误码映射（硬件约定）
             error_messages = {
-                DeviceErrorCode.INSPECTION_SIZE_NG.value: "料盘尺寸检测异常",
-                DeviceErrorCode.INSPECTION_THICKNESS_NG.value: "料盘厚度检测异常",
                 DeviceErrorCode.SCAN_FAILED.value: "扫码异常",
                 DeviceErrorCode.PICK_AND_PUT_FAILED.value: "搬运失败",
                 DeviceErrorCode.BIN_FULL.value: "料箱已满",
@@ -774,6 +787,7 @@ class ArmSimulator:
                 barcode_seed=barcode,
                 pkg_id=pkg_id,
                 move_result=move_result,
+                inspection_ng_reason=inspection_ng_reason,
             )
             if report_result:
                 try:
@@ -815,6 +829,15 @@ class ArmSimulator:
             self._execution_count += 1
             return record
 
+    @staticmethod
+    def _inspection_ng_reason_from_token(token: str | None) -> str | None:
+        normalized = (token or "").upper()
+        if "SIZENG" in normalized or "SIZE_NG" in normalized:
+            return INSPECTION_SIZE_NG_REASON
+        if "THICKNESSNG" in normalized or "THICKNESS_NG" in normalized:
+            return INSPECTION_THICKNESS_NG_REASON
+        return None
+
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         params = payload.params or {}
         source, target = self._resolve_command_locations_from_params(params)
@@ -826,26 +849,16 @@ class ArmSimulator:
                 }
             )
 
-        # 智能错误模拟：根据条码模式自动触发错误
         barcode = cast("str | None", params.get("barcode"))
-        smart_error_code = None
-
-        if barcode:
-            # 条码包含 "SIZENG" → 尺寸检测异常（语义码 INSPECTION_SIZE_NG）
-            if "SIZENG" in barcode.upper():
-                smart_error_code = "INSPECTION_SIZE_NG"
-                logger.info(
-                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发尺寸检测异常（语义码 INSPECTION_SIZE_NG）"
-                )
-            # 条码包含 "THICKNESSNG" → 厚度检测异常（语义码 INSPECTION_THICKNESS_NG）
-            elif "THICKNESSNG" in barcode.upper():
-                smart_error_code = "INSPECTION_THICKNESS_NG"
-                logger.info(
-                    f"[{self.device_name}] 智能错误模拟: 条码 '{barcode}' 触发厚度检测异常（语义码 INSPECTION_THICKNESS_NG）"
-                )
+        pkg_id = cast("str | None", params.get("pkg_id"))
+        inspection_ng_reason = None
+        if payload.task_type == "MEASUREMENT_REEL":
+            inspection_ng_reason = self._inspection_ng_reason_from_token(pkg_id or barcode)
+            if inspection_ng_reason:
+                logger.info(f"[{self.device_name}] 智能业务 NG 模拟: {inspection_ng_reason}")
 
         # 从 params 中提取错误码（优先级高于智能模拟）
-        error_code = params.get("error_code") or smart_error_code
+        error_code = params.get("error_code")
         if error_code:
             logger.info(f"[{self.device_name}] 模拟错误码: {error_code}")
 
@@ -862,7 +875,8 @@ class ArmSimulator:
             command_code=payload.command_code,
             reason=cast("str | None", params.get("reason")),
             error_code=cast("str | None", error_code),
-            pkg_id=cast("str | None", params.get("pkg_id")),
+            pkg_id=pkg_id,
+            inspection_ng_reason=inspection_ng_reason,
             report_result=True,
         )
 

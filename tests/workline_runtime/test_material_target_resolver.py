@@ -42,6 +42,19 @@ def test_resolves_role_within_downstream_candidates():
     assert resolved == weigh
 
 
+def test_resolves_role_to_current_device_when_source_has_target_role():
+    source = Device(id=1, device_role="INPUT_ARM")
+    conveyor = Device(id=2, device_role="CONVEYOR", upstream_device_id=1)
+
+    resolved = resolve_destination_device(
+        destination=Destination.role("INPUT_ARM"),
+        source_device=source,
+        devices=[source, conveyor],
+    )
+
+    assert resolved == source
+
+
 def test_raises_for_ambiguous_role():
     source = Device(id=1, device_role="ENTRY_SCANNER")
     left = Device(id=2, device_role="WEIGH_SCALE", upstream_device_id=1)
@@ -79,6 +92,20 @@ def test_resolves_device_by_id_across_all_devices():
     )
 
     assert resolved == target
+
+
+def test_resolves_ng_route_from_configured_role():
+    source = Device(id=1, device_role="ENTRY_SCANNER")
+    ng_target = Device(id=3, device_role="NG_BUFFER", upstream_device_id=1)
+
+    resolved = resolve_destination_device(
+        destination=Destination.ng_route(),
+        source_device=source,
+        devices=[source, ng_target],
+        route_roles={"NG_ROUTE": "NG_BUFFER"},
+    )
+
+    assert resolved == ng_target
 
 
 def test_raises_for_non_concrete_destination():

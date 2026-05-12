@@ -192,15 +192,15 @@ def get_outbox_commands(since_session_id: int) -> list[str]:
 def get_session_status(session_id: int) -> dict | None:
     """获取 session 状态"""
     query = f"""
-        SELECT status, plugin_state
+        SELECT status
         FROM wes_biz.workline_sessions
         WHERE id = {session_id};
     """
     result = run_db_query(query)
     if result and result[0]:
         parts = result[0].split("|")
-        if len(parts) >= 2:
-            return {"status": parts[0].strip(), "plugin_state": parts[1].strip()}
+        if parts:
+            return {"status": parts[0].strip()}
     return None
 
 
@@ -313,9 +313,6 @@ class TestSimplifiedSmtPluginOKFlow:
         session = get_session_by_barcode(barcode)
         assert session is not None, f"Session not found for barcode: {barcode}"
         assert session["status"] == "COMPLETED", f"Session should be COMPLETED, got: {session}"
-        assert session["plugin_state"] == "WAITING_OUTPUT", (
-            f"Session plugin_state should stay at last business stage, got: {session}"
-        )
 
 
 @pytest.mark.integration

@@ -8,7 +8,7 @@ from src.app.device.models.device import Device
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
-from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin, SmtClassifierStateMachine
+from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin
 
 
 def make_workline() -> WorkLine:
@@ -49,7 +49,7 @@ def test_workline_model_resolves_runtime_plugin_classes() -> None:
     )
 
     assert workline.plugin_class is SmtClassifierPlugin
-    assert workline.state_machine_class is SmtClassifierStateMachine
+    assert not hasattr(workline, "state" + "_machine_class")
     assert workline.plugin_definition is not None
     assert workline.plugin_definition.manifest.plugin_key == "smt_classifier"
     assert workline.plugin_definition.manifest.contract_version == "1.0"

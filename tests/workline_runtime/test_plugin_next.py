@@ -1,6 +1,7 @@
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.runtime_intent import (
     BlockScope,
+    Destination,
     DestinationKind,
     RuntimeIntentKind,
 )
@@ -49,3 +50,41 @@ def test_plugin_next_command_uses_independent_empty_payloads():
     first_intent.payload_json["tote_id"] = "T-001"
 
     assert second_intent.payload_json == {}
+
+
+def test_plugin_next_update_context_builds_runtime_intent():
+    intent = PluginNext().update_context({"pkg_id": "L0001-1"})
+
+    assert intent.kind == RuntimeIntentKind.UPDATE_CONTEXT
+    assert intent.context_patch == {"pkg_id": "L0001-1"}
+
+
+def test_plugin_next_complete_builds_runtime_intent():
+    intent = PluginNext().complete({"bin_code": "BIN_463"})
+
+    assert intent.kind == RuntimeIntentKind.COMPLETE
+    assert intent.context_patch == {"bin_code": "BIN_463"}
+
+
+def test_plugin_next_mark_ng_builds_runtime_intent():
+    intent = PluginNext().mark_ng(
+        reason_code="SCAN_NG",
+        message="扫码判定 NG",
+        payload={"PkgID": "BAD"},
+        destination=Destination.ng_route(),
+    )
+
+    assert intent.kind == RuntimeIntentKind.MARK_NG
+    assert intent.reason_code == "SCAN_NG"
+    assert intent.message == "扫码判定 NG"
+    assert intent.payload_json == {"PkgID": "BAD"}
+    assert intent.destination == Destination.ng_route()
+
+
+def test_plugin_next_continue_next_builds_runtime_intent_with_default_destination():
+    intent = PluginNext().continue_next(action="MOVE_FORWARD", payload={"pkg_id": "L0001-1"})
+
+    assert intent.kind == RuntimeIntentKind.CONTINUE_NEXT
+    assert intent.action == "MOVE_FORWARD"
+    assert intent.payload_json == {"pkg_id": "L0001-1"}
+    assert intent.destination == Destination.next()

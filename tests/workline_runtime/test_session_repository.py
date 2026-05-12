@@ -26,7 +26,6 @@ async def test_get_timed_out_sessions_includes_external_waits_without_command(db
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_EXTERNAL,
         current_wait_type="EXTERNAL_HTTP",
-        current_wait_token="agv:task:001",
         deadline_at=timezone.now_for_db() - timedelta(minutes=5),
         awaiting_command_id=None,
     )

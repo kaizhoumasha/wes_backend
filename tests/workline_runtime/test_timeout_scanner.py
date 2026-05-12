@@ -26,7 +26,6 @@ class MockSession:
         deadline_at: datetime | None = None,
         workline_id: int = 1,
         trace_id: str | None = None,
-        current_wait_token: str | None = None,
         current_wait_type: str = "COMMAND_RESULT",
         awaiting_command_id: int | None = 9,
     ):
@@ -35,7 +34,6 @@ class MockSession:
         self.deadline_at = deadline_at
         self.workline_id = workline_id
         self.trace_id = trace_id
-        self.current_wait_token = current_wait_token or "CMD-001"
         self.current_wait_type = current_wait_type
         self.awaiting_command_id = awaiting_command_id
 
@@ -225,7 +223,6 @@ class TestTimeoutScanner:
             deadline_at=expired_time,
             workline_id=1,
             trace_id="trace-external",
-            current_wait_token="agv:task:001",
             current_wait_type="EXTERNAL_HTTP",
             awaiting_command_id=None,
         )
@@ -254,7 +251,7 @@ class TestTimeoutScanner:
         mock_db.get.assert_not_awaited()
         mock_device_repo.get_by_id.assert_not_awaited()
         call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
-        assert call_kwargs["wait_token"] == "agv:task:001"
+        assert call_kwargs["wait_token"] is None
         assert call_kwargs["wait_type"] == "EXTERNAL_HTTP"
         assert call_kwargs["awaiting_command_id"] is None
         assert call_kwargs["command_code"] is None

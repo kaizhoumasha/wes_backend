@@ -374,6 +374,7 @@ async def wait_for_session_completed(
     conn: asyncpg.Connection,
     timeout_seconds: int = 30,
     poll_interval: float = 0.5,
+    after_session_id: int | None = None,
 ) -> dict[str, Any]:
     """轮询等待会话完成
 
@@ -393,11 +394,13 @@ async def wait_for_session_completed(
     while time.time() < deadline:
         session = await conn.fetchrow(
             """
-            SELECT id, status, plugin_state, failure_domain, failure_code
+            SELECT id, status, failure_domain, failure_code
             FROM wes_biz.workline_sessions
+            WHERE ($1::bigint IS NULL OR id > $1::bigint)
             ORDER BY id DESC
             LIMIT 1
-            """
+            """,
+            after_session_id,
         )
 
         if session and session["status"] == "COMPLETED":

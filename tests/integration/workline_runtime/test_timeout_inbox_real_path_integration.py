@@ -55,7 +55,6 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
             plugin_key="smt",
             status=SessionStatus.WAITING_DEVICE_RESULT,
             current_wait_type="DEVICE_CALLBACK",
-            current_wait_token=command_code,
             trace_id=trace_id,
             deadline_at=expired_deadline,
         )

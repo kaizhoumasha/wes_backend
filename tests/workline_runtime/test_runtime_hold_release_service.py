@@ -166,7 +166,6 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         code="S-HOLD-CONTINUE-REPLAY",
         context={"pkg_id": "PKG-001"},
     )
-    session.plugin_state = "WAITING_MEASUREMENT"
     session.reconciliation_state = RuntimeReconciliationState.PENDING
     session.reconciliation_reason = "COMMAND_ACK_EXHAUSTED"
     command = DeviceCommand(
@@ -177,7 +176,6 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         session_id_int=cast("int", session.id),
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
-        issued_plugin_state="WAITING_MEASUREMENT",
         task_type="MEASUREMENT_REEL",
         params={"pkg_id": "PKG-001"},
         status=CommandStatus.FAILED,
@@ -207,10 +205,8 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     assert isinstance(result["created_inbox_id"], int)
     assert session.status == SessionStatus.WAITING_DEVICE_RESULT
     assert session.ended_at is None
-    assert session.plugin_state == "WAITING_MEASUREMENT"
     assert session.awaiting_command_id == command.id
     assert session.current_wait_type == "COMMAND_RESULT"
-    assert session.current_wait_token == command.command_code
     assert session.reconciliation_state == RuntimeReconciliationState.RESOLVED
     assert session.reconciliation_resolution == RuntimeReconciliationResolution.COMPLETED
     assert command.status == CommandStatus.COMPLETED

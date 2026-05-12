@@ -65,7 +65,6 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         id=530,
         workline_id=45,
         status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_token="CMD-001",
         current_wait_type="COMMAND_RESULT",
         current_wait_timeout_seconds=180,
         waiting_since=ack_received_at,
@@ -78,7 +77,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         session_id=530,
         payload_json={
             "deadline_at": deadline_at.isoformat(),
-            "wait_token": "CMD-001",
+            "command_code": "CMD-001",
             "awaiting_command_id": 9,
         },
     )
@@ -127,7 +126,6 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     assert session.reconciliation_ack_received_at == ack_received_at
     assert session.reconciliation_deadline_at == deadline_at
     assert session.current_wait_type is None
-    assert session.current_wait_token is None
     assert session.current_wait_timeout_seconds is None
     assert session.deadline_at is None
     assert session.awaiting_command_id is None
@@ -169,7 +167,6 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         workline_id=45,
         trace_id="sandbox:trace-001",
         status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_token=None,
         current_wait_type=None,
         current_wait_timeout_seconds=300,
         waiting_since=None,
@@ -182,7 +179,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         session_id=545,
         payload_json={
             "deadline_at": deadline_at.isoformat(),
-            "wait_token": "CMD-20260508-MEASUREMENT_REEL-0EF06E0F",
+            "command_code": "CMD-20260508-MEASUREMENT_REEL-0EF06E0F",
             "awaiting_command_id": 9,
             "ack_received_at": ack_received_at.isoformat(),
         },
@@ -256,7 +253,6 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         workline_id=45,
         trace_id="external:trace-001",
         status=SessionStatus.WAITING_EXTERNAL,
-        current_wait_token="agv:task:001",
         current_wait_type="EXTERNAL_HTTP",
         current_wait_timeout_seconds=300,
         waiting_since=deadline_at - timedelta(seconds=300),
@@ -269,7 +265,6 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         session_id=546,
         payload_json={
             "deadline_at": deadline_at.isoformat(),
-            "wait_token": "agv:task:001",
             "wait_type": "EXTERNAL_HTTP",
             "awaiting_command_id": None,
         },
@@ -313,7 +308,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     assert session.reconciliation_source_inbox_id == 85600
     assert session.reconciliation_command_id is None
     assert session.reconciliation_device_id is None
-    assert session.reconciliation_wait_token == "agv:task:001"
+    assert session.reconciliation_wait_token is None
     assert session.reconciliation_deadline_at == deadline_at
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     device_service.mark_callback_deadline_expired.assert_not_awaited()
@@ -359,7 +354,6 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
         workline_id=45,
         trace_id="sandbox:trace-ack-timeout",
         status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_token="CMD-20260509-MOVE_FORWARD-AB5F1A76",
         current_wait_type="COMMAND_RESULT",
         current_wait_timeout_seconds=300,
         waiting_since=timezone.now_for_db() - timedelta(seconds=400),
@@ -425,7 +419,6 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
     assert session.reconciliation_device_id == 7
     assert session.reconciliation_wait_token == "CMD-20260509-MOVE_FORWARD-AB5F1A76"
     assert session.current_wait_type is None
-    assert session.current_wait_token is None
     assert session.awaiting_command_id is None
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     assert workline.stopped_reason == RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
@@ -469,7 +462,6 @@ async def test_dispatch_ack_exhausted_preserves_outbox_dispatch_failed_source_re
         workline_id=45,
         trace_id="sandbox:trace-outbox-failed",
         status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_token="CMD-OUTBOX-DISPATCH-FAILED",
         current_wait_type="COMMAND_RESULT",
         current_wait_timeout_seconds=300,
         waiting_since=timezone.now_for_db() - timedelta(seconds=400),

@@ -1036,7 +1036,7 @@ class TestOutboxDispatcher:
         """测试 session snapshot 优先使用 workline.contract_version。"""
         from src.celery_app.tasks.workline import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9", plugin_state=None)
+        session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9")
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version="wl-2.0")
 
         with patch(
@@ -1049,13 +1049,12 @@ class TestOutboxDispatcher:
             )
 
         assert session.contract_version == "wl-2.0"
-        assert session.plugin_state is None
 
     def test_sync_session_contract_snapshot_falls_back_to_registry(self):
         """测试 workline.contract_version 缺失时回退 registry。"""
         from src.celery_app.tasks.workline import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None, plugin_state=None)
+        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
 
         with patch(
@@ -1068,7 +1067,6 @@ class TestOutboxDispatcher:
             )
 
         assert session.contract_version == "1.0"
-        assert session.plugin_state is None
 
     @pytest.mark.asyncio
     async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
