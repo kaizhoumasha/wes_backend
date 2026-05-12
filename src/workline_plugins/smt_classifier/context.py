@@ -45,9 +45,7 @@ class SmtClassifierContext(BaseModel):
     def to_patch(self, *, exclude_none: bool = True) -> dict[str, Any]:
         """投影为可写回 session.context_json 的 patch。"""
 
-        patch = self.model_dump(exclude_none=exclude_none)
-        patch.pop("plugin_state", None)
-        return patch
+        return self.model_dump(exclude_none=exclude_none)
 
 
 def parse_smt_context(ctx: Any) -> SmtClassifierContext:

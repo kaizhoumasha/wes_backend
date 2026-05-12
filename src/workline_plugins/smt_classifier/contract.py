@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
-from src.workline_runtime.contracts import DeviceErrorCode, SixInOne
+from src.workline_runtime.contracts import SixInOne
 from src.workline_runtime.material_identity import (
     MaterialIdentity,
     MaterialIdentityInput,
@@ -20,6 +20,9 @@ from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.utils import non_empty_str
 
 _SCAN_COMPLETED_EVENT = "SCAN_COMPLETED"
+INSPECTION_SIZE_NG_REASON = "INSPECTION_SIZE_NG"
+INSPECTION_THICKNESS_NG_REASON = "INSPECTION_THICKNESS_NG"
+INSPECTION_NG_REASONS = frozenset({INSPECTION_SIZE_NG_REASON, INSPECTION_THICKNESS_NG_REASON})
 
 
 def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
@@ -189,20 +192,20 @@ def smt_ng_reason_catalog() -> tuple[NgReasonDefinition, ...]:
             maps_from=("SCAN_NG_BY_RULE",),
         ),
         NgReasonDefinition(
-            canonical_code=DeviceErrorCode.INSPECTION_SIZE_NG.value,
+            canonical_code=INSPECTION_SIZE_NG_REASON,
             label="尺寸检测异常",
             source=NgReasonSource.PLUGIN,
             plugin_key="smt_classifier",
             contract_version="1.0",
-            maps_from=(DeviceErrorCode.INSPECTION_SIZE_NG.value,),
+            maps_from=(INSPECTION_SIZE_NG_REASON,),
         ),
         NgReasonDefinition(
-            canonical_code=DeviceErrorCode.INSPECTION_THICKNESS_NG.value,
+            canonical_code=INSPECTION_THICKNESS_NG_REASON,
             label="厚度检测异常",
             source=NgReasonSource.PLUGIN,
             plugin_key="smt_classifier",
             contract_version="1.0",
-            maps_from=(DeviceErrorCode.INSPECTION_THICKNESS_NG.value,),
+            maps_from=(INSPECTION_THICKNESS_NG_REASON,),
         ),
         NgReasonDefinition(
             canonical_code="BARCODE_INVALID",
@@ -240,11 +243,6 @@ def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
         return "business_decision"
 
     error_code = error_detail.get("error_code") or error_detail.get("code")
-    if error_code in {
-        DeviceErrorCode.INSPECTION_SIZE_NG.value,
-        DeviceErrorCode.INSPECTION_THICKNESS_NG.value,
-    }:
-        return "business_decision"
     if error_code:
         return "hardware_failure"
 
@@ -342,6 +340,9 @@ class MeasurementResultData(SixInOne, BaseModel):
 
     reel_diameter: float | None = Field(default=None, description="料盘直径测量值")
     reel_thickness: float | None = Field(default=None, description="料盘厚度测量值")
+    inspection_result: str | None = Field(default=None, description="检测结果：OK/NG")
+    reason_code: str | None = Field(default=None, description="业务 NG 原因码")
+    reason_message: str | None = Field(default=None, description="业务 NG 原因说明")
 
     @model_validator(mode="before")
     @classmethod
@@ -352,6 +353,9 @@ class MeasurementResultData(SixInOne, BaseModel):
             data,
             reel_diameter=data.get("reel_diameter"),
             reel_thickness=data.get("reel_thickness"),
+            inspection_result=data.get("inspection_result"),
+            reason_code=data.get("reason_code") or data.get("ng_reason"),
+            reason_message=data.get("reason_message") or data.get("ng_message"),
         )
 
 

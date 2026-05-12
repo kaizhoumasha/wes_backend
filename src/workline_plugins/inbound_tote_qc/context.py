@@ -29,9 +29,7 @@ class InboundToteQcContext(BaseModel):
         return cls.from_mapping(getattr(session, "context_json", None))
 
     def to_patch(self, *, exclude_none: bool = True) -> dict[str, Any]:
-        patch = self.model_dump(exclude_none=exclude_none)
-        patch.pop("plugin_state", None)
-        return patch
+        return self.model_dump(exclude_none=exclude_none)
 
 
 def parse_inbound_tote_qc_context(ctx: Any) -> InboundToteQcContext:
