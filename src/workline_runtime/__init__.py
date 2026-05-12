@@ -3,7 +3,7 @@ WES 作业线运行时模块
 
 本模块提供作业线插件化编排的核心基础设施：
 - 分布式锁（RedisDistributedLock）
-- 插件类型定义（PluginResult, WaitIntent, CommandIntent, BusinessDecisionIntent, FailureIntent）
+- 插件意图定义（RuntimeIntent, Destination, BlockScope）
 - 插件上下文（PluginContext）
 - 默认插件（NullPlugin）
 - 统一输入模型（Inbox）
@@ -49,7 +49,6 @@ from src.workline_runtime.enums import (
 )
 from src.workline_runtime.exceptions import (
     PluginNotFoundError,
-    StateMachineError,
     WorklineRuntimeError,
 )
 from src.workline_runtime.lock import LockAcquireError, LockReleaseError, RedisDistributedLock
@@ -73,38 +72,34 @@ from src.workline_runtime.plugin_sdk import (
     resolve_execution_context,
     resolve_workline_runtime_config,
 )
-from src.workline_runtime.plugin_state import (
-    PLUGIN_STATE_KEY,
-    RESERVED_RUNTIME_CONTEXT_KEYS,
-    assert_context_patch_has_no_reserved_key,
-    context_patch_has_reserved_key,
-    get_plugin_state,
-    project_issued_plugin_state,
-)
 from src.workline_runtime.run_mode import (
     SANDBOX_ALLOWED_ENVS,
     is_sandbox_allowed_environment,
     is_simulation_run_mode,
     normalize_run_mode,
 )
+from src.workline_runtime.runtime_intent import (
+    BlockScope,
+    Destination,
+    DestinationKind,
+    RuntimeIntent,
+    RuntimeIntentKind,
+)
 from src.workline_runtime.services import BinAllocator, WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolver, session_resolver
 from src.workline_runtime.topology import TopologyDeviceSnapshot, WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.transition_validator import TransitionDecision, TransitionValidator
-from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 
 __version__ = "1.0.0"
 
 __all__ = [
-    "PLUGIN_STATE_KEY",
-    "RESERVED_RUNTIME_CONTEXT_KEYS",
     "SANDBOX_ALLOWED_ENVS",
     "AtomicWriter",
     "BinAllocator",
-    "BusinessDecisionIntent",
-    "CommandIntent",
+    "BlockScope",
     "DecisionType",
+    "Destination",
+    "DestinationKind",
     "DeviceRoleRequirement",
     "DiagnosticCard",
     "DiagnosticContext",
@@ -112,7 +107,6 @@ __all__ = [
     "ErrorCode",
     "ErrorDomain",
     "FailureDomain",
-    "FailureIntent",
     "InboxStatus",
     "LockAcquireError",
     "LockReleaseError",
@@ -128,28 +122,24 @@ __all__ = [
     "PluginContext",
     "PluginContextBuilder",
     "PluginNotFoundError",
-    "PluginResult",
     "ProblemClass",
     "Recoverability",
     "RedisDistributedLock",
     "ResolvedDeviceRuntimeConfig",
     "ResolvedExecutionContext",
     "ResolvedWorklineRuntimeConfig",
+    "RuntimeIntent",
+    "RuntimeIntentKind",
     "SessionResolver",
     "SessionStatus",
     "Severity",
-    "StateMachineError",
     "TimelineStage",
     "TopologyDeviceSnapshot",
     "TraceContext",
-    "TransitionDecision",
-    "TransitionValidator",
-    "WaitIntent",
     "WorklinePluginManifest",
     "WorklineRuntimeError",
     "WorklineRuntimeServices",
     "WorklineTopologyView",
-    "assert_context_patch_has_no_reserved_key",
     "atomic_writer",
     "build_diagnostic_card",
     "build_diagnostic_context",
@@ -158,15 +148,12 @@ __all__ = [
     "canonicalize_event_type",
     "classify_result",
     "classify_result_category",
-    "context_patch_has_reserved_key",
-    "get_plugin_state",
     "is_sandbox_allowed_environment",
     "is_simulation_run_mode",
     "normalize_inbox_input",
     "normalize_result_classification",
     "normalize_run_mode",
     "null_plugin",
-    "project_issued_plugin_state",
     "resolve_device_runtime_config",
     "resolve_execution_context",
     "resolve_workline_runtime_config",

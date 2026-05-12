@@ -4,9 +4,8 @@ OrchestratorService - 编排器核心服务
 负责协调 Session 的处理流程:
 1. 获取分布式锁
 2. 加载并调用插件
-3. 处理 PluginResult
-4. 触发状态迁移
-5. 派发命令到 Outbox
+3. 校验 RuntimeIntent
+4. 交给 Runtime effect 层落地命令、等待、状态和 Timeline
 
 Phase 1 简化:
 - 两阶段锁合并为单阶段锁
@@ -22,14 +21,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.workline_runtime.diagnostics import ErrorCode, error_domain_for
-from src.workline_runtime.enums import FailureCode, FailureDomain
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import null_plugin
 from src.workline_runtime.plugin_context import PluginContext, PluginContextBuilder
-from src.workline_runtime.plugin_state import assert_context_patch_has_no_reserved_key, get_plugin_state
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.transition_validator import TransitionDecision, TransitionValidator
-from src.workline_runtime.types import BusinessDecisionIntent, CommandIntent, FailureIntent, PluginResult, WaitIntent
 from src.workline_runtime.utils import ensure_dict
 
 # 类型注解用（运行时需要这些类型作为函数签名）
@@ -40,6 +35,7 @@ if TYPE_CHECKING:
     from src.app.workline.models import WorkLine
     from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.session import WorklineSession
+    from src.workline_runtime.runtime_intent import RuntimeIntent
     from src.workline_runtime.services import WorklineRuntimeServices
 
 
@@ -69,7 +65,18 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
     "MANUAL_CANCEL": "MANUAL_OPERATION",
 }
 _MANUAL_OPERATION_KINDS = {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}
-_MANUAL_OPERATION_TRANSITIONS = {"manual_hold", "manual_resume", "manual_cancel"}
+_RESERVED_CONTEXT_KEYS = frozenset(
+    {
+        "awaiting_command_id",
+        "current_device_id",
+        "current_device_role",
+        "current_wait_type",
+        "deadline_at",
+        "failure_code",
+        "failure_domain",
+        "status",
+    }
+)
 
 
 def _ensure_non_empty_str(value: Any) -> str | None:
@@ -83,11 +90,10 @@ def _inbox_kind_value(inbox: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _is_runtime_manual_transition(inbox: Any, transition: str | None) -> bool:
-    if transition not in _MANUAL_OPERATION_TRANSITIONS:
+def _context_patch_has_reserved_key(context_patch: dict[str, Any] | None) -> bool:
+    if not context_patch:
         return False
-    payload = ensure_dict(getattr(inbox, "payload_json", None))
-    return payload.get("message_type") == "MANUAL_OPERATION" or (_inbox_kind_value(inbox) in _MANUAL_OPERATION_KINDS)
+    return any(key in _RESERVED_CONTEXT_KEYS for key in context_patch)
 
 
 def _system_error_result(message: str) -> OrchestratorResult:
@@ -97,15 +103,12 @@ def _system_error_result(message: str) -> OrchestratorResult:
 def _error_result(
     error_code: ErrorCode,
     message: str,
-    *,
-    failure: FailureIntent | None = None,
 ) -> OrchestratorResult:
     return OrchestratorResult(
         success=False,
         error=message,
         error_code=error_code.value,
         error_domain=error_domain_for(error_code).value,
-        failure=failure,
     )
 
 
@@ -116,29 +119,14 @@ class OrchestratorResult:
     Attributes:
         success: 是否成功
         error: 错误信息（失败时）
-        transition: 触发的状态迁移
-        decisions: 待派发的外部决策
-        business_decisions: 业务判定事实
-        commands: 待派发的命令列表
-        wait: 等待条件
-        failure: 失败归因
-        complete: 是否完成
-        context_patch: 上下文更新
+        intents: RuntimeIntent 输出列表
     """
 
     success: bool
     error: str | None = None
     error_code: str | None = None
     error_domain: str | None = None
-    transition: str | None = None
-    decisions: list[dict[str, Any]] | None = None
-    business_decisions: list[BusinessDecisionIntent] | None = None
-    commands: list[CommandIntent] | None = None
-    wait: WaitIntent | None = None
-    failure: FailureIntent | None = None
-    complete: bool = False
-    context_patch: dict[str, Any] | None = None
-    transition_decision: TransitionDecision | None = None
+    intents: list[RuntimeIntent] | None = None
 
 
 class OrchestratorService:
@@ -151,7 +139,6 @@ class OrchestratorService:
     - 验证状态迁移
 
     Attributes:
-        validator: 状态迁移校验器
         lock_provider: 锁提供者函数（用于依赖注入）
     """
 
@@ -165,7 +152,6 @@ class OrchestratorService:
             lock_provider: 可选的锁提供者函数，用于测试注入。
                           接收锁 key，返回异步上下文管理器。
         """
-        self.validator = TransitionValidator()
         self._lock_provider = lock_provider
         self.context_builder = PluginContextBuilder()
 
@@ -176,20 +162,6 @@ class OrchestratorService:
         if isinstance(value, bool):
             return None
         return value if isinstance(value, int) else None
-
-    @staticmethod
-    def _resolve_transition_state(session: Any, state_machine_class: type[Any] | None) -> str:
-        """为插件状态机解析当前状态。
-
-        有插件状态机时使用 session.plugin_state；
-        否则退回通用 session.status。
-        """
-
-        if state_machine_class is not None:
-            return get_plugin_state(session, default="IDLE") or "IDLE"
-
-        status = getattr(session, "status", None)
-        return status if isinstance(status, str) and status else ""
 
     def _get_lock(self, lock_key: str) -> AbstractAsyncContextManager[None]:
         """获取锁上下文管理器。
@@ -333,11 +305,6 @@ class OrchestratorService:
             return _error_result(
                 ErrorCode.CONTRACT_MISMATCH,
                 f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
-                failure=FailureIntent(
-                    domain=FailureDomain.SOFTWARE.value,
-                    code=FailureCode.CONTRACT_MISMATCH,
-                    message=f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
-                ),
             )
 
         try:
@@ -346,7 +313,7 @@ class OrchestratorService:
             logger.exception("Plugin execution failed")
             return _error_result(ErrorCode.PLUGIN_EXECUTION_FAILED, str(e))
 
-        return self._process_result(result, session, getattr(workline, "state_machine_class", None), inbox=inbox)
+        return self._process_intents(result, session)
 
     async def _process_write_phase(
         self,
@@ -381,7 +348,7 @@ class OrchestratorService:
             OrchestratorResult: 处理结果
         """
         session_id = self._resolve_session_pk(session)
-        logger.debug(f"WRITE 阶段开始 for session {session_id}, transition={read_result.transition}")
+        logger.debug(f"WRITE 阶段开始 for session {session_id}")
 
         # 当前实现:直接返回读取阶段的结果
         # 状态修改在 Celery 任务 _apply_orchestrator_effects 中完成（不在锁保护下）
@@ -434,7 +401,7 @@ class OrchestratorService:
         plugin: Any,
         ctx: PluginContext,
         inbox: Any,
-    ) -> PluginResult:
+    ) -> list[RuntimeIntent]:
         """调用插件处理事件
 
         Args:
@@ -443,7 +410,7 @@ class OrchestratorService:
             inbox: Inbox 实体
 
         Returns:
-            PluginResult: 插件返回结果
+            list[RuntimeIntent]: 插件返回意图
         """
         # 根据事件类型调用对应方法
         inbox_type = self._resolve_inbox_type(inbox)
@@ -457,6 +424,18 @@ class OrchestratorService:
             return await plugin.on_manual_operation(ctx, inbox)
         # 默认调用 on_device_event
         return await plugin.on_device_event(ctx, inbox)
+
+    def _process_intents(self, intents: list[RuntimeIntent], session: Any) -> OrchestratorResult:
+        _ = session
+        for intent in intents:
+            if intent.context_patch and _context_patch_has_reserved_key(intent.context_patch):
+                logger.warning("Plugin attempted to write reserved runtime state")
+                return _error_result(
+                    ErrorCode.PLUGIN_TRANSITION_INVALID,
+                    "context patch contains runtime-owned key",
+                )
+
+        return OrchestratorResult(success=True, intents=intents)
 
     def _resolve_inbox_type(self, inbox: Any) -> str:
         """根据真实 Inbox 模型字段推导插件分发类型。"""
@@ -473,69 +452,6 @@ class OrchestratorService:
                 return plugin_type
 
         return "DEVICE_EVENT"
-
-    def _process_result(
-        self,
-        result: PluginResult,
-        session: Any,
-        state_machine_class: type[Any] | None,
-        *,
-        inbox: Any | None = None,
-    ) -> OrchestratorResult:
-        """处理 PluginResult
-
-        Args:
-            result: 插件返回结果
-            session: Session 实体
-            state_machine_class: 状态机类
-
-        Returns:
-            OrchestratorResult: 编排器结果
-        """
-        try:
-            assert_context_patch_has_no_reserved_key(result.context_patch)
-        except ValueError as exc:
-            logger.exception("Plugin attempted to write reserved runtime state")
-            return _error_result(ErrorCode.PLUGIN_TRANSITION_INVALID, str(exc))
-
-        current_transition_state = self._resolve_transition_state(session, state_machine_class)
-        transition_decision: TransitionDecision | None = None
-        if result.transition and not _is_runtime_manual_transition(inbox, result.transition):
-            transition_decision = self.validator.resolve(
-                current_state=current_transition_state,
-                transition=result.transition,
-                state_machine_class=state_machine_class,
-            )
-            if not transition_decision.valid:
-                logger.error(f"Invalid transition: {transition_decision.error}")
-                return _error_result(
-                    ErrorCode.PLUGIN_TRANSITION_INVALID,
-                    transition_decision.error or "Unknown transition error",
-                )
-        elif result.transition:
-            transition_decision = TransitionDecision(
-                valid=True,
-                transition=result.transition,
-                from_plugin_state=current_transition_state,
-                to_plugin_state=current_transition_state,
-                applied=False,
-            )
-
-        if result.failure:
-            logger.warning(f"Plugin returned failure intent: {result.failure}")
-
-        return OrchestratorResult(
-            success=True,
-            transition=result.transition,
-            decisions=result.decisions if result.decisions else None,
-            business_decisions=result.business_decisions if result.business_decisions else None,
-            commands=result.commands if result.commands else None,
-            wait=result.wait,
-            failure=result.failure,
-            complete=result.complete,
-            context_patch=result.context_patch if result.context_patch else None,
-            transition_decision=transition_decision,
-        )
 
 
 __all__ = ["OrchestratorResult", "OrchestratorService"]

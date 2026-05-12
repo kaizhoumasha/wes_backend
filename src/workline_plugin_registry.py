@@ -25,13 +25,6 @@ class WorklinePluginDefinition:
         return getattr(import_module(self.plugin_module), self.plugin_class_name)
 
     @property
-    def state_machine_class(self) -> type[Any] | None:
-        """惰性解析插件声明的状态机类。"""
-
-        state_machine_class = self.manifest.state_machine_class
-        return state_machine_class if isinstance(state_machine_class, type) else None
-
-    @property
     def manifest(self) -> "WorklinePluginManifest":
         """惰性解析插件 manifest。"""
 

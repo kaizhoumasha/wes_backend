@@ -14,7 +14,6 @@ class TraceQueryRequest(BaseModel):
     workline_id: int | None = None
     device_id: int | None = None
     status: str | None = None
-    plugin_state: str | None = None
     keyword: str | None = None
     only_active: bool = False
     only_failed: bool = False
@@ -47,7 +46,6 @@ class RuntimeTraceListItem(BaseModel):
     last_device_name: str | None = None
     last_device_code: str | None = None
     status: str
-    plugin_state: str | None = None
     current_wait_type: str | None = None
     failure_domain: str | None = None
     failure_code: str | None = None
@@ -77,7 +75,6 @@ class TraceOverviewSummary(BaseModel):
     timelines: int = 0
     diagnostics: int = 0
     session_status: str | None = None
-    plugin_state: str | None = None
     current_wait_type: str | None = None
     latest_timeline_action: str | None = None
     latest_timeline_status: str | None = None
@@ -153,12 +150,10 @@ class TraceSessionItem(BaseModel):
     business_key: str | None = None
     barcode: str | None = None
     status: str
-    plugin_state: str | None = None
     trace_id: str | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     current_wait_type: str | None = None
-    current_wait_token: str | None = None
     current_wait_timeout_seconds: int | None = None
     waiting_since: datetime | None = None
     deadline_at: datetime | None = None
@@ -205,7 +200,6 @@ class TraceCommandItem(BaseModel):
     ack_code: int | None = None
     ack_message: str | None = None
     ack_trace_id: str | None = None
-    issued_plugin_state: str | None = None
     params: dict[str, Any]
     result_data: dict[str, Any] | None = None
     error_detail: dict[str, Any] | None = None

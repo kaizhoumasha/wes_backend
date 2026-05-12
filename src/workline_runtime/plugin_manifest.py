@@ -71,8 +71,7 @@ class DeviceRoleRequirement:
 class WorklinePluginManifest:
     """插件运行契约。
 
-    PR2 只要求最小必填字段：插件身份、契约版本、设备角色和业务键解析器。
-    状态机、context model 等字段先作为可选能力保留。
+    插件身份、契约版本、设备角色和业务键解析器是最小必填字段。
     """
 
     plugin_key: str
@@ -80,7 +79,6 @@ class WorklinePluginManifest:
     required_device_roles: tuple[DeviceRoleRequirement, ...]
     business_key_resolver: BusinessKeyResolver
     result_classifier: ResultClassifier | None = None
-    state_machine_class: type[Any] | None = None
     context_model: type[Any] | None = None
     event_source_roles: Mapping[str, str | tuple[str, ...] | list[str] | set[str]] | None = None
     command_target_roles: Mapping[str, str | tuple[str, ...] | list[str] | set[str]] | None = None

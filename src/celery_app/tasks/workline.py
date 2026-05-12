@@ -57,13 +57,12 @@ from src.workline_runtime.diagnostics import (
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.plugin_state import project_issued_plugin_state
 from src.workline_runtime.run_mode import is_simulation_run_mode, normalize_run_mode
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
+from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.types import BusinessDecisionIntent, FailureIntent
 from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
@@ -93,6 +92,15 @@ def _enqueue_outbox_dispatch() -> None:
         "src.celery_app.tasks.workline.dispatch_outbox_batch",
         kwargs={"limit": 50},
     )
+
+
+def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
+    for intent in result.intents or []:
+        if intent.kind == RuntimeIntentKind.COMMAND:
+            return True
+        if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
+            return True
+    return False
 
 
 # ============================================
@@ -365,10 +373,6 @@ def _is_duplicate_entry_event_for_session(
     if status in _TERMINAL_SESSION_STATUSES or status in _BUSY_SESSION_STATUSES:
         return True
 
-    plugin_state = _string_value(getattr(session, "plugin_state", None))
-    if plugin_state and plugin_state != "IDLE":
-        return True
-
     if getattr(session, "awaiting_command_id", None) is not None:
         return True
 
@@ -379,18 +383,10 @@ def _is_duplicate_entry_event_for_session(
 def _is_current_wait_command_result(*, session: Any, command: Any, payload: dict[str, Any]) -> bool:
     """判断 COMMAND_RESULT 是否仍对应 session 当前声明的等待锚点。"""
 
+    _ = payload
     command_id = _resolve_entity_id(command)
     awaiting_command_id = _optional_int(getattr(session, "awaiting_command_id", None))
-    if command_id is not None and awaiting_command_id == command_id:
-        return True
-
-    current_wait_type = _string_value(getattr(session, "current_wait_type", None))
-    if current_wait_type != "COMMAND_RESULT":
-        return False
-
-    wait_token = _string_value(getattr(session, "current_wait_token", None))
-    command_code = _command_code_value(command, payload)
-    return bool(wait_token and command_code and wait_token == command_code)
+    return command_id is not None and awaiting_command_id == command_id
 
 
 def _is_late_or_duplicate_command_result_for_session(
@@ -527,7 +523,6 @@ async def _record_duplicate_entry_archive_timeline(
             "event_type": _canonical_event_type(payload),
             "inbox_id": _resolve_entity_id(inbox),
             "session_status": _session_status_value(session),
-            "plugin_state": _string_value(getattr(session, "plugin_state", None)),
             "awaiting_command_id": _optional_int(getattr(session, "awaiting_command_id", None)),
         },
         related_inbox_id=_resolve_entity_id(inbox),
@@ -581,10 +576,8 @@ async def _record_late_command_result_archive_timeline(
             "command_status": _command_status_value(command),
             "inbox_id": _resolve_entity_id(inbox),
             "session_status": _session_status_value(session),
-            "plugin_state": _string_value(getattr(session, "plugin_state", None)),
             "awaiting_command_id": _optional_int(getattr(session, "awaiting_command_id", None)),
             "current_wait_type": _string_value(getattr(session, "current_wait_type", None)),
-            "current_wait_token": _string_value(getattr(session, "current_wait_token", None)),
         },
         related_inbox_id=_resolve_entity_id(inbox),
         related_command_id=_resolve_entity_id(command),
@@ -788,7 +781,6 @@ def _sync_session_contract_snapshot(session: Any, *, workline: Any) -> None:
 
 def _clear_session_wait(session: Any) -> None:
     session.current_wait_type = None
-    session.current_wait_token = None
     session.waiting_since = None
     session.deadline_at = None
     session.current_wait_timeout_seconds = None
@@ -806,7 +798,6 @@ def _session_write_snapshot(session: Any) -> tuple[Any, Any, Any]:
 
     return (
         getattr(session, "status", None),
-        getattr(session, "plugin_state", None),
         getattr(session, "awaiting_command_id", None),
     )
 
@@ -1499,7 +1490,7 @@ def _apply_context_patch(ctx: EffectApplyContext) -> None:
     """先应用 context patch，再执行后续 effect。
 
     第三方插件开发者只能把业务数据写进 context；runtime-owned
-    `plugin_state` 已在 Orchestrator 阶段被拦截。
+    字段已在 Orchestrator 阶段被拦截。
     """
 
     orch_result = ctx["orch_result"]
@@ -1507,28 +1498,19 @@ def _apply_context_patch(ctx: EffectApplyContext) -> None:
     workline = ctx["workline"]
     session_ctx = ctx["session_ctx"]
 
-    if orch_result.context_patch:
-        session_ctx.update(orch_result.context_patch)
+    context_patch = getattr(orch_result, "context_patch", None)
+    if context_patch:
+        session_ctx.update(context_patch)
         _set_session_context(session, session_ctx)
         _sync_session_contract_snapshot(session, workline=workline)
         # 同步 barcode 到 session 字段，便于主数据和排障视图直接读取。
-        if "barcode" in orch_result.context_patch:
-            barcode_value = orch_result.context_patch["barcode"]
+        if "barcode" in context_patch:
+            barcode_value = context_patch["barcode"]
             if barcode_value:
                 session.barcode = barcode_value
         return
 
     _sync_session_contract_snapshot(session, workline=workline)
-
-
-def _apply_transition_decision(ctx: EffectApplyContext) -> None:
-    """把 Orchestrator 解析出的目标业务阶段写入 Session。"""
-
-    decision = ctx["orch_result"].transition_decision
-    if decision is None or not decision.valid:
-        return
-    if isinstance(decision.to_plugin_state, str) and decision.to_plugin_state:
-        ctx["session"].plugin_state = decision.to_plugin_state
 
 
 def _sync_effect_trace_fields(ctx: EffectApplyContext) -> None:
@@ -1561,21 +1543,14 @@ def _decision_timeline_payload(ctx: EffectApplyContext) -> dict[str, Any]:
     """构造“插件做出决策”这一类 timeline payload。"""
 
     orch_result = ctx["orch_result"]
-    decision = orch_result.transition_decision
     return {
         **_effect_trace_payload(ctx),
         "transition": orch_result.transition,
-        "from_plugin_state": decision.from_plugin_state if decision is not None else None,
-        "to_plugin_state": decision.to_plugin_state if decision is not None else None,
         "context_patch": orch_result.context_patch or {},
     }
 
 
-def _business_decision_timeline_payload(
-    ctx: EffectApplyContext,
-    *,
-    decision: BusinessDecisionIntent,
-) -> dict[str, Any]:
+def _business_decision_timeline_payload(ctx: EffectApplyContext, *, decision: Any) -> dict[str, Any]:
     """构造业务判定 timeline payload。
 
     业务 NG 是插件给出的业务结果，不代表系统失败；这里仅沉淀可检索投影。
@@ -1659,7 +1634,7 @@ async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
     orch_result = ctx["orch_result"]
-    if not orch_result.transition:
+    if not getattr(orch_result, "transition", None):
         return
 
     await _emit_timeline(
@@ -1678,7 +1653,7 @@ async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
 
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    for decision in ctx["orch_result"].business_decisions or []:
+    for decision in getattr(ctx["orch_result"], "business_decisions", None) or []:
         await _emit_timeline(
             ctx,
             stage=TimelineStage.DECISION,
@@ -1703,7 +1678,7 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
 
     db = ctx["db"]
 
-    for decision in ctx["orch_result"].decisions or []:
+    for decision in getattr(ctx["orch_result"], "decisions", None) or []:
         if not isinstance(decision, dict):
             continue
 
@@ -1747,48 +1722,6 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
         )
 
 
-async def _resolve_target_device(ctx: EffectApplyContext, *, device_repo: Any, command_intent: Any) -> Any:
-    """统一解析命令目标设备。"""
-
-    from src.workline_runtime.device_target_resolver import resolve_command_target
-
-    device_by_id = _device_map_from_roles(ctx["devices_by_role"])
-    target_device_id = getattr(command_intent, "target_device_id", None)
-    if isinstance(target_device_id, int):
-        target_device = device_by_id.get(target_device_id)
-        if target_device is None:
-            target_device = await device_repo.get_by_id(ctx["db"], target_device_id)
-        if target_device is None:
-            raise ValueError(f"Target device not found: {target_device_id}")
-        return target_device
-
-    return resolve_command_target(
-        command_intent=command_intent,
-        source_device=ctx["source_device"],
-        devices=list(device_by_id.values()),
-    )
-
-
-async def _validate_command_effects(ctx: EffectApplyContext) -> None:
-    """在真正落外部 decision / command 前，先消费设备治理字段。"""
-
-    from src.app.device.repositories import DeviceRepository
-
-    device_repo = DeviceRepository()
-    for command_intent in ctx["orch_result"].commands or []:
-        target_device = await _resolve_target_device(
-            ctx,
-            device_repo=device_repo,
-            command_intent=command_intent,
-        )
-        _enforce_device_command_governance(
-            target_device,
-            command_type=command_intent.action,
-            stage_label="命令创建",
-            allow_busy=True,
-        )
-
-
 def _build_command_create_payload(
     ctx: EffectApplyContext,
     *,
@@ -1821,7 +1754,6 @@ def _build_command_create_payload(
         "workline_id": session.workline_id,
         "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
         "contract_version": getattr(session, "contract_version", None),
-        "issued_plugin_state": project_issued_plugin_state(session),
     }
 
 
@@ -1875,90 +1807,10 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
     )
 
 
-async def _apply_command_effects(ctx: EffectApplyContext) -> None:
-    """应用 plugin 产出的命令 effect。
-
-    这里坚持两条原则：
-    1. 先创建 DeviceCommand，再创建对应 Outbox
-    2. `awaiting_command_id` 取第一条命令，供 wait transition 复用
-
-    这样做可以让“等待哪个命令结果”在 session 上有稳定锚点，
-    也更利于后续 replay/debug 能力落地。
-    """
-
-    from src.app.device.repositories import DeviceRepository
-    from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    db = ctx["db"]
-    command_repo = DeviceCommandRepository()
-    device_repo = DeviceRepository()
-
-    for command_intent in ctx["orch_result"].commands or []:
-        target_device = await _resolve_target_device(ctx, device_repo=device_repo, command_intent=command_intent)
-        target_device_id = _resolve_required_pk(target_device, "target_device")
-        _enforce_device_command_governance(
-            target_device,
-            command_type=command_intent.action,
-            stage_label="命令创建",
-            allow_busy=True,
-        )
-
-        device_code = getattr(target_device, "device_code", None)
-        if not isinstance(device_code, str) or not device_code:
-            raise ValueError(f"Target device missing device_code: {target_device_id}")
-
-        generated_command_code = _build_command_code(_map_command_task_type(command_intent.action))
-        vendor_payload = _normalize_vendor_command_payload(
-            command_intent.parameters,
-            action=command_intent.action,
-            default_command_code=generated_command_code,
-        )
-        logger.info(
-            f"[Orchestrator] Command parameters: command_intent.parameters={command_intent.parameters}, "
-            f"vendor_payload={vendor_payload}"
-        )
-        resolved_command_code = _string_value(vendor_payload.get("command_code"), generated_command_code)
-        command_data = _build_command_create_payload(
-            ctx,
-            command_intent=command_intent,
-            vendor_payload=vendor_payload,
-            target_device_id=target_device_id,
-            resolved_command_code=resolved_command_code,
-        )
-        command = await command_repo.create(db, command_data)
-        if command is None:
-            raise RuntimeError("Failed to create device command from PluginResult")
-
-        if ctx["awaiting_command_id"] is None:
-            ctx["awaiting_command_id"] = command.id
-            ctx["awaiting_command_code"] = command.command_code
-
-        command_outbox = _build_command_outbox_model(ctx, command=command, device_code=device_code)
-        db.add(command_outbox)
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.COMMAND_SENT,
-            payload=_command_timeline_payload(
-                ctx,
-                command_code=command.command_code,
-                command_type=command_intent.action,
-                dispatch_key=command_outbox.dispatch_key,
-                parameters=payload_dict(vendor_payload.get("params")),
-            ),
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            actor_code=device_code,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            related_command_id=command.id,
-            status=TimelineStatus.PENDING,
-        )
-
-
 async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    failure = ctx["orch_result"].failure
+    failure = getattr(ctx["orch_result"], "failure", None)
     if failure is None:
         return False
 
@@ -2024,7 +1876,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
     from src.app.workline.services.ng_return_item_service import ng_return_item_service
 
-    if not ctx["orch_result"].complete:
+    if not getattr(ctx["orch_result"], "complete", False):
         return False
 
     session = ctx["session"]
@@ -2033,12 +1885,11 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         session=session,
         workline=ctx["workline"],
         inbox=ctx["inbox"],
-        transition=ctx["orch_result"].transition,
+        transition=getattr(ctx["orch_result"], "transition", None),
         occurred_at=ctx["now"],
     )
     session.status = "COMPLETED"
     _clear_session_wait(session)
-    session.plugin_state = None
     session.ended_at = ctx["now"]
     await _emit_timeline(
         ctx,
@@ -2055,7 +1906,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
 async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    wait = ctx["orch_result"].wait
+    wait = getattr(ctx["orch_result"], "wait", None)
     if wait is None:
         return False
 
@@ -2066,7 +1917,6 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
 
     session.status = _wait_session_status(wait.wait_type)
     session.current_wait_type = wait.wait_type
-    session.current_wait_token = resolved_wait_token
     session.waiting_since = ctx["now"]
     session.awaiting_command_id = ctx["awaiting_command_id"]
     session.current_wait_timeout_seconds = wait.deadline_seconds
@@ -2103,7 +1953,7 @@ def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
     """
 
     session = ctx["session"]
-    transition = ctx["orch_result"].transition
+    transition = getattr(ctx["orch_result"], "transition", None)
 
     if transition == "manual_hold":
         session.status = "MANUAL_HOLD"
@@ -2128,11 +1978,11 @@ def _apply_running_fallback(ctx: EffectApplyContext) -> None:
     session = ctx["session"]
 
     if (
-        orch_result.transition
-        or orch_result.context_patch
-        or orch_result.business_decisions
-        or orch_result.commands
-        or orch_result.decisions
+        getattr(orch_result, "transition", None)
+        or getattr(orch_result, "context_patch", None)
+        or getattr(orch_result, "business_decisions", None)
+        or getattr(orch_result, "commands", None)
+        or getattr(orch_result, "decisions", None)
     ):
         session.status = "RUNNING"
 
@@ -2172,39 +2022,9 @@ async def _apply_orchestrator_effects(
         orch_result=orch_result,
     )
 
-    _apply_context_patch(ctx)
-    _apply_transition_decision(ctx)
-    _sync_effect_trace_fields(ctx)
-    await _apply_transition_timeline(ctx)
-    await _apply_business_decisions(ctx)
+    from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 
-    try:
-        await _validate_command_effects(ctx)
-        await _apply_external_decisions(ctx)
-        await _apply_command_effects(ctx)
-    except _DeviceCommandGovernanceError as exc:
-        orch_result.failure = FailureIntent(domain=exc.domain, code=exc.code, message=exc.message)
-        orch_result.decisions = []
-        orch_result.commands = []
-        orch_result.wait = None
-        orch_result.complete = False
-
-    # failure / cancel / complete / wait 的优先级必须稳定，避免出现“既完成又取消”的歧义。
-    if await _apply_failure_transition(ctx):
-        return
-
-    _clear_session_failure(session)
-
-    if await _apply_manual_cancel_transition(ctx):
-        return
-    if await _apply_completion_transition(ctx):
-        return
-    if await _apply_wait_transition(ctx):
-        return
-    if _apply_non_terminal_transition(ctx):
-        return
-
-    _apply_running_fallback(ctx)
+    await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
 
 
 async def _load_workline_session(db: Any, inbox: Any, session_repo: Any) -> Any | None:
@@ -2696,7 +2516,7 @@ class ProcessInboxMessages:
                         f"Inbox {inbox_pk} archived duplicate entry event: "
                         f"session_id={_resolve_entity_id(session)}, "
                         f"status={_session_status_value(session)}, "
-                        f"plugin_state={getattr(session, 'plugin_state', None)}"
+                        f"awaiting_command_id={getattr(session, 'awaiting_command_id', None)}"
                     )
                     continue
 
@@ -2787,7 +2607,7 @@ class ProcessInboxMessages:
                         _ = await inbox_service.mark_as_processed(db, _inbox_pk, auto_commit=False)
                         await db.commit()
                         write_effects_applied = True
-                        enqueue_outbox_dispatch = bool(write_result.commands or write_result.decisions)
+                        enqueue_outbox_dispatch = _result_requires_outbox_dispatch(write_result)
                         # 通知前端工作线运行态已变更，key 用于增量刷新定位
                         from src.app.sys.services.event_stream_service import (
                             WORKLINE_RUNTIME_CHANGED_EVENT,
@@ -2837,11 +2657,9 @@ class ProcessInboxMessages:
                     if enqueue_outbox_dispatch:
                         _enqueue_outbox_dispatch()
                 else:
-                    error_msg = orch_result.error or (
-                        orch_result.failure.message if orch_result.failure is not None else "Unknown error"
-                    )
+                    error_msg = orch_result.error or "Unknown error"
                     mapped_error_code, mapped_error_domain = map_failure_to_diagnostic(
-                        failure=orch_result.failure,
+                        failure=None,
                         error_code=orch_result.error_code,
                     )
                     await _record_diagnostic(
@@ -2855,7 +2673,6 @@ class ProcessInboxMessages:
                         workline=workline,
                         device=entities["device"],
                         command=entities["command"],
-                        transition=orch_result.transition,
                     )
                     _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                     await db.commit()
@@ -3038,7 +2855,7 @@ class TimeoutScanner:
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
                     trace_id=session.trace_id,
-                    wait_token=session.current_wait_token,
+                    wait_token=getattr(command, "command_code", None),
                     wait_type=getattr(session, "current_wait_type", None),
                     awaiting_command_id=awaiting_command_id,
                     command_code=getattr(command, "command_code", None),

@@ -168,13 +168,6 @@ class WorkLine(
         return definition.plugin_class if definition else None
 
     @property
-    def state_machine_class(self) -> type[Any] | None:
-        """按 plugin_key 解析状态机类。"""
-
-        definition = self.plugin_definition
-        return definition.state_machine_class if definition else None
-
-    @property
     def resolved_runtime_config(self) -> dict[str, Any]:
         """合并后的运行时配置视图。"""
 

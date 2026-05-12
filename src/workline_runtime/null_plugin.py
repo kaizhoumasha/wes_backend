@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.types import PluginResult
+from src.workline_runtime.runtime_intent import RuntimeIntent
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -24,7 +24,7 @@ class NullPlugin(WorklinePlugin):
     """Null 插件 - 空实现
 
     用于测试编排流程，验证基础设施。
-    所有处理器返回空的 PluginResult，不修改 Session。
+    所有处理器返回空 RuntimeIntent 列表，不修改 Session。
     """
 
     plugin_key = "null"
@@ -33,48 +33,48 @@ class NullPlugin(WorklinePlugin):
     # ========== 事件处理 ==========
 
     @on_event("SCAN_COMPLETED")
-    async def handle_scan_completed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_scan_completed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """扫码完成事件"""
         ctx.logger.info(f"NullPlugin received SCAN_COMPLETED: {inbox.id}")
-        return PluginResult()
+        return []
 
     @on_event("INSPECTION_COMPLETED")
-    async def handle_inspection_completed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_inspection_completed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """检测完成事件"""
         ctx.logger.info(f"NullPlugin received INSPECTION_COMPLETED: {inbox.id}")
-        return PluginResult()
+        return []
 
     @on_event("MATERIAL_ARRIVED")
-    async def handle_material_arrived(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_material_arrived(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """物料到达事件"""
         ctx.logger.info(f"NullPlugin received MATERIAL_ARRIVED: {inbox.id}")
-        return PluginResult()
+        return []
 
     # ========== 命令结果处理 ==========
 
     @on_command("PICK_AND_PUT", result="SUCCESS")
-    async def handle_pick_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_pick_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """抓取放置成功"""
         ctx.logger.info(f"NullPlugin received PICK_AND_PUT SUCCESS: {inbox.id}")
-        return PluginResult()
+        return []
 
     @on_command("PICK_AND_PUT", result="FAILED")
-    async def handle_pick_failed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_pick_failed(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """抓取放置失败"""
         ctx.logger.warning(f"NullPlugin received PICK_AND_PUT FAILED: {inbox.id}")
-        return PluginResult()
+        return []
 
     @on_command("MOVE_FORWARD", result="SUCCESS")
-    async def handle_move_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_move_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """流水线移动成功"""
         ctx.logger.info(f"NullPlugin received MOVE_FORWARD SUCCESS: {inbox.id}")
-        return PluginResult()
+        return []
 
     @on_command("OUTPUT", result="SUCCESS")
-    async def handle_output_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> PluginResult:
+    async def handle_output_success(self, ctx: "PluginContext", inbox: "WorklineInbox") -> list[RuntimeIntent]:
         """出料成功"""
         ctx.logger.info(f"NullPlugin received OUTPUT SUCCESS: {inbox.id}")
-        return PluginResult()
+        return []
 
 
 # 单例导出

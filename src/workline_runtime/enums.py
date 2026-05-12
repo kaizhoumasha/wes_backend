@@ -190,7 +190,7 @@ class FailureCode:
     """
     失败码常量
 
-    定义标准化的失败码，用于 FailureIntent.code 字段。
+    定义标准化的失败码，用于运行时失败归因字段。
 
     属性:
         CONTRACT_MISMATCH: 契约版本不匹配

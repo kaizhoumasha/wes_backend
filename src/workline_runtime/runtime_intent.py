@@ -6,6 +6,7 @@ legal, how target devices are resolved, and how state is persisted.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from enum import Enum
 from typing import Any
 
@@ -102,7 +103,7 @@ class RuntimeIntent(BaseModel):
             device_role=device_role,
             target_device_id=target_device_id,
             action=action,
-            payload_json=payload or {},
+            payload_json=deepcopy(payload) if payload is not None else {},
             destination=destination,
             timeout_seconds=timeout_seconds,
         )
@@ -124,6 +125,52 @@ class RuntimeIntent(BaseModel):
             suggested_action=suggested_action,
         )
 
+    @classmethod
+    def update_context(cls, patch: dict[str, Any]) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.UPDATE_CONTEXT,
+            context_patch=deepcopy(patch),
+        )
+
+    @classmethod
+    def complete(cls, patch: dict[str, Any] | None = None) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.COMPLETE,
+            context_patch=deepcopy(patch) if patch is not None else {},
+        )
+
+    @classmethod
+    def mark_ng(
+        cls,
+        *,
+        reason_code: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        destination: Destination | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.MARK_NG,
+            reason_code=reason_code,
+            message=message,
+            payload_json=deepcopy(payload) if payload is not None else {},
+            destination=destination,
+        )
+
+    @classmethod
+    def continue_next(
+        cls,
+        *,
+        action: str | None = None,
+        payload: dict[str, Any] | None = None,
+        destination: Destination | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.CONTINUE_NEXT,
+            action=action,
+            payload_json=deepcopy(payload) if payload is not None else {},
+            destination=destination or Destination.next(),
+        )
+
     @model_validator(mode="after")
     def validate_intent(self) -> RuntimeIntent:
         if self.kind == RuntimeIntentKind.COMMAND and not self.action:
@@ -135,6 +182,11 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("BLOCK intent requires reason_code")
             if not self.message:
                 raise ValueError("BLOCK intent requires message")
+        if self.kind == RuntimeIntentKind.MARK_NG:
+            if not self.reason_code:
+                raise ValueError("MARK_NG intent requires reason_code")
+            if not self.message:
+                raise ValueError("MARK_NG intent requires message")
         return self
 
 

@@ -385,7 +385,6 @@ class SessionResolver:
             "business_key": business_key,
             "barcode": resolve_payload_display_identity(payload_json),
             "status": SessionStatus.NEW,
-            "plugin_state": "IDLE",
             "ingress_count": 1,
             "last_request_id": trace.request_id,
             "last_ingress_at": now,

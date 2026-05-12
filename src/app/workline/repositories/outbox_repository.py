@@ -273,7 +273,7 @@ class WorklineOutboxRepository(BaseRepository[WorklineOutbox]):
                         "id": session.id,
                         "session_code": session.session_code,
                         "status": session.status.value if hasattr(session.status, "value") else session.status,
-                        "plugin_state": session.plugin_state,
+                        "awaiting_command_id": session.awaiting_command_id,
                         "barcode": session.barcode,
                         "created_at": session.created_at.isoformat() if session.created_at else None,
                         "started_at": session.started_at.isoformat() if session.started_at else None,

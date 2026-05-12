@@ -188,7 +188,6 @@ class WorklineRuntimeReconciliationService:
 
         now = timezone.now_for_db()
         claim_deadline_at = self._timer_timeout_deadline(session=session, payload=payload)
-        claim_wait_token = self._timer_timeout_wait_token(session=session, payload=payload)
         claim_ack_received_at = getattr(command, "ack_received_at", None) or timezone.to_db_datetime(
             payload.get("ack_received_at")
         )
@@ -200,7 +199,7 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_source_inbox_id = inbox_id
         session.reconciliation_command_id = _resolve_id(command)
         session.reconciliation_device_id = getattr(command, "device_id", None)
-        session.reconciliation_wait_token = claim_wait_token
+        session.reconciliation_wait_token = _payload_str(payload, "command_code")
         session.reconciliation_ack_received_at = claim_ack_received_at
         session.reconciliation_deadline_at = claim_deadline_at
         session.reconciliation_occurred_at = now
@@ -330,7 +329,7 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_source_outbox_id = _resolve_id(outbox)
         session.reconciliation_command_id = _resolve_id(command)
         session.reconciliation_device_id = getattr(command, "device_id", None)
-        session.reconciliation_wait_token = session.current_wait_token
+        session.reconciliation_wait_token = getattr(command, "command_code", None)
         session.reconciliation_occurred_at = now
         session.reconciliation_late_evidence_received = False
         self._clear_wait(session)
@@ -712,13 +711,6 @@ class WorklineRuntimeReconciliationService:
         payload_deadline = timezone.to_db_datetime(payload.get("deadline_at"))
         if session.deadline_at is not None and payload_deadline is not None and payload_deadline != session.deadline_at:
             return False
-        payload_wait_token = _payload_str(payload, "wait_token")
-        if (
-            session.current_wait_token is not None
-            and payload_wait_token is not None
-            and payload_wait_token != session.current_wait_token
-        ):
-            return False
         payload_command_id = _payload_int(payload, "awaiting_command_id")
         if (
             isinstance(payload_command_id, int)
@@ -746,12 +738,8 @@ class WorklineRuntimeReconciliationService:
     def _timer_timeout_deadline(self, *, session: WorklineSession, payload: dict[str, Any]) -> datetime | None:
         return session.deadline_at or timezone.to_db_datetime(payload.get("deadline_at"))
 
-    def _timer_timeout_wait_token(self, *, session: WorklineSession, payload: dict[str, Any]) -> str | None:
-        return session.current_wait_token or _payload_str(payload, "wait_token")
-
     def _clear_wait(self, session: WorklineSession) -> None:
         session.current_wait_type = None
-        session.current_wait_token = None
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None

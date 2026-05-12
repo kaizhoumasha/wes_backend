@@ -41,5 +41,37 @@ class PluginNext:
             suggested_action=suggested_action,
         )
 
+    def update_context(self, patch: dict[str, Any]) -> RuntimeIntent:
+        return RuntimeIntent.update_context(patch)
+
+    def complete(self, patch: dict[str, Any] | None = None) -> RuntimeIntent:
+        return RuntimeIntent.complete(patch)
+
+    def mark_ng(
+        self,
+        reason_code: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        destination: Destination | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.mark_ng(
+            reason_code=reason_code,
+            message=message,
+            payload=payload,
+            destination=destination,
+        )
+
+    def continue_next(
+        self,
+        action: str | None = None,
+        payload: dict[str, Any] | None = None,
+        destination: Destination | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.continue_next(
+            action=action,
+            payload=payload,
+            destination=destination,
+        )
+
 
 __all__ = ["PluginNext"]

@@ -570,12 +570,10 @@ class RuntimeHoldReleaseService:
         session.status = SessionStatus(request.resolution)
         session.ended_at = resolved_at
         session.current_wait_type = None
-        session.current_wait_token = None
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
         session.awaiting_command_id = None
-        session.plugin_state = None
         self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
         self._write_session_release_context(
             session,
@@ -598,7 +596,6 @@ class RuntimeHoldReleaseService:
         session.status = SessionStatus.WAITING_DEVICE_RESULT
         session.ended_at = None
         session.current_wait_type = "COMMAND_RESULT"
-        session.current_wait_token = command.command_code
         session.waiting_since = resolved_at
         session.deadline_at = None
         session.current_wait_timeout_seconds = None

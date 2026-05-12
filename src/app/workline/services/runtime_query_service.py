@@ -337,8 +337,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             filters.append(columns.workline_id == payload.workline_id)
         if payload.status:
             filters.append(columns.status == payload.status)
-        if payload.plugin_state:
-            filters.append(columns.plugin_state == payload.plugin_state)
         if payload.only_active:
             filters.append(columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
         if payload.only_failed:
@@ -1091,7 +1089,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             ack_code=item.ack_code,
             ack_message=item.ack_message,
             ack_trace_id=item.ack_trace_id,
-            issued_plugin_state=item.issued_plugin_state,
             params=item.params,
             result_data=item.result_data,
             error_detail=item.error_detail,
@@ -1152,7 +1149,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             last_device_name=latest_device.device_name if latest_device is not None else None,
             last_device_code=latest_device.device_code if latest_device is not None else None,
             status=_status_str(session.status),
-            plugin_state=session.plugin_state,
             current_wait_type=session.current_wait_type,
             failure_domain=session.failure_domain,
             failure_code=session.failure_code,
@@ -1261,7 +1257,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                     blocking_reason = RuntimeBlockingReason(
                         device_id=cmd.device_id,
                         reason=f"等待设备响应 {_enum_str(cmd.task_type) or cmd.command_code}",
-                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · state={cmd.issued_plugin_state}",
+                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · awaiting_command_id={session.awaiting_command_id}",
                     )
             if blocking_device_id is None and session.failure_domain:
                 blocking_reason = RuntimeBlockingReason(

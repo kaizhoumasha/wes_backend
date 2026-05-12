@@ -164,13 +164,6 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="执行时绑定的协议版本",
     )
-    plugin_state: str | None = Field(
-        default=None,
-        max_length=100,
-        index=True,
-        description="插件业务进度阶段（Session 当前业务态唯一事实源）",
-    )
-
     started_at: datetime | None = Field(
         default=None,
         index=True,
@@ -194,12 +187,6 @@ class WorklineSessionBase(BaseMixin):
         default=None,
         max_length=100,
         description="当前等待类型（如 DEVICE_CALLBACK, EXTERNAL_API）",
-    )
-
-    current_wait_token: str | None = Field(
-        default=None,
-        max_length=200,
-        description="当前等待令牌（用于回调匹配）",
     )
 
     waiting_since: datetime | None = Field(
