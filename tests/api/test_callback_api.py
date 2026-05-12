@@ -648,7 +648,7 @@ class TestCallbackResultAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_result_rejects_invalid_plugin_result(
+    async def test_callback_result_rejects_invalid_runtime_result(
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         existing_command = SimpleNamespace(

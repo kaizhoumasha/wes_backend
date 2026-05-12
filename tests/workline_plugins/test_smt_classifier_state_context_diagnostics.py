@@ -79,8 +79,8 @@ async def test_smt_payload_diagnostic_explains_handler_context_and_runtime_inten
 
     assert diagnostic.normalized_input["canonical_event_type"] == "SCAN_COMPLETED"
     assert diagnostic.selected_handler == "handle_scan_completed"
-    assert [intent.kind for intent in diagnostic.plugin_result] == [
+    assert [intent.kind for intent in diagnostic.runtime_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.COMMAND,
     ]
-    assert diagnostic.plugin_result[0].context_patch["barcode"] == "SVYU00125TP4LCR02_2"
+    assert diagnostic.runtime_intents[0].context_patch["barcode"] == "SVYU00125TP4LCR02_2"

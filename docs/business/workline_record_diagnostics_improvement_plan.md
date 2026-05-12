@@ -1223,7 +1223,7 @@ trace/diagnostics APIs
 
 #### 开发者共情叙事
 
-我打开 `README.md`，看到的是通用后端启动路径：Docker、依赖、migration、API server。文档没有把我引向 WORKLINE 诊断场景。我找到 `docs/plugin_validation_quickstart.md`，里面有 callback curl，但第一步需要连 Postgres，后续也靠 SQL 查 session 状态。到了 result callback 示例，它使用 `command_type` 且省略 `command_code`，而集成白皮书要求 `command_code`，命令 payload 又仍写 `task_type`。我继续看 sandbox happy path，它正确描述了 sandbox 应覆盖事件输入、命令派发、人工 callback 和 session 推进，但没有实际 API 响应或一条命令证明路径。这个计划承诺 trace、blocking point、diagnostics、sandbox、replay、manual API，方向正确；但作为第一次接入的人，我仍无法在不知道数据库表和日志位置的情况下，证明“这次失败归 DEVICE，下一步该 manual complete”。
+我打开 `README.md`，看到的是通用后端启动路径：Docker、依赖、migration、API server。文档没有把我引向 WORKLINE 诊断场景。我找到已归档的 `docs/archive/legacy-plugin-result/plugin_validation_quickstart.md`，里面有 callback curl，但第一步需要连 Postgres，后续也靠 SQL 查 session 状态。到了 result callback 示例，它使用 `command_type` 且省略 `command_code`，而集成白皮书要求 `command_code`，命令 payload 又仍写 `task_type`。我继续看 sandbox happy path，它正确描述了 sandbox 应覆盖事件输入、命令派发、人工 callback 和 session 推进，但没有实际 API 响应或一条命令证明路径。这个计划承诺 trace、blocking point、diagnostics、sandbox、replay、manual API，方向正确；但作为第一次接入的人，我仍无法在不知道数据库表和日志位置的情况下，证明“这次失败归 DEVICE，下一步该 manual complete”。
 
 #### 竞品 / 参考 DX 基准
 

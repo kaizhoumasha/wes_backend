@@ -1,7 +1,7 @@
 """
-SimplifiedSmtPlugin 集成测试
+SmtClassifierPlugin 集成测试
 
-使用 tests/mock/smt_classifier 中的 mock 服务测试 SimplifiedSmtPlugin 的完整业务流程。
+使用 tests/mock/smt_classifier 中的 mock 服务测试 SmtClassifierPlugin 的完整业务流程。
 测试从数据库查询数据验证业务流程。
 
 测试架构:
@@ -18,7 +18,7 @@ SimplifiedSmtPlugin 集成测试
 │  │ - PICK_NG       │                       │                             │
 │  └─────────────────┘                       ▼                             │
 │                                   ┌─────────────────┐                    │
-│  ┌─────────────────┐              │ SimplifiedSmt   │                    │
+│  ┌─────────────────┐              │ SmtClassifier   │                    │
 │  │ PIPELINE01(8005)│◀────command──│ Plugin         │                    │
 │  │ - MOVE_FORWARD  │              │                 │                    │
 │  └─────────────────┘              └─────────────────┘                    │
@@ -270,7 +270,7 @@ class MockServiceClient:
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginOKFlow:
+class TestSmtClassifierPluginOKFlow:
     """测试 OK 流程 - 数据库验证"""
 
     @pytest.fixture(autouse=True)
@@ -316,7 +316,7 @@ class TestSimplifiedSmtPluginOKFlow:
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginNGFlow:
+class TestSmtClassifierPluginNGFlow:
     """测试 NG 流程 - 数据库验证"""
 
     @pytest.fixture(autouse=True)
@@ -365,7 +365,7 @@ class TestSimplifiedSmtPluginNGFlow:
 
 
 @pytest.mark.integration
-class TestSimplifiedSmtPluginFailureHandling:
+class TestSmtClassifierPluginFailureHandling:
     """测试失败处理"""
 
     @pytest.fixture(autouse=True)

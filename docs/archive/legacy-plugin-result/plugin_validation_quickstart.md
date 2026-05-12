@@ -1,5 +1,7 @@
 # SimplifiedSmtPlugin 快速验证指南
 
+> Legacy notes: 本文记录旧 `SimplifiedSmtPlugin` / `PluginResult` 验证方式，当前不再作为插件开发或测试入口。现行插件验证应基于 `RuntimeIntent`、sandbox runtime 和 `docs/plugin_development_guide.md`。
+
 ## 📋 现有 WorkLine
 
 已找到可用的测试 WorkLine：

@@ -1,5 +1,7 @@
 # 插件验证测试环境
 
+> Legacy notes: 本目录已从 `tests/plugin_validation` 归档，保留旧 `SimplifiedSmtPlugin` 与 `SmtClassifierPlugin` 等价性验证脚本，仅用于历史追溯；当前测试不再执行该 harness。
+
 ## 📋 概述
 
 本测试环境用于验证 `SimplifiedSmtPlugin` 与 `SmtClassifierPlugin` 的功能等价性和性能对比。
@@ -22,7 +24,7 @@ python migrations/plugin_validation/001_add_test_worklines.py
 
 ### 2. 配置测试脚本
 
-编辑 `tests/plugin_validation/run_validation_test.py`：
+历史脚本已归档为 `docs/archive/legacy-plugin-result/plugin_validation_harness/run_validation_test.py.txt`：
 
 ```python
 traditional_workline_id = 1  # 替换为实际的 WorkLine ID
@@ -34,7 +36,7 @@ base_url = "http://localhost:8000"  # API 地址
 
 ```bash
 # 方式1: 直接运行
-python tests/plugin_validation/run_validation_test.py
+python docs/archive/legacy-plugin-result/plugin_validation_harness/run_validation_test.py.txt
 
 # 方式2: 使用 pytest
 pytest tests/plugin_validation/ -v
@@ -48,7 +50,7 @@ uv run pytest tests/plugin_validation/ -v
 ```
 tests/plugin_validation/
 ├── README.md                    # 本文件
-├── run_validation_test.py      # 测试运行脚本
+├── run_validation_test.py.txt  # 历史测试运行脚本文本归档
 ├── test_functional.py          # 功能等价性测试
 ├── test_performance.py         # 性能基准测试
 └── __init__.py

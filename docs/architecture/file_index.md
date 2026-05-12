@@ -385,24 +385,23 @@
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `smt_classifier/plugin.py` | 当前标准化改造样板插件：保留业务状态机与流程决策，协议细节下沉到局部模块 | 🔄 常用功能 |
+| `smt_classifier/plugin.py` | 当前标准化改造样板插件：只产出 RuntimeIntent，协议细节下沉到局部模块，运行时拥有拓扑、Session、命令和终态副作用 | 🔄 常用功能 |
 | `smt_classifier/contract.py` | SMT 粗分机插件协议模型（事件/结果 Payload） | 🔄 常用功能 |
 | `smt_classifier/normalizers.py` | SMT 粗分机插件数据解析与设备错误码兼容辅助 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
-- **性能对比报告**：`docs/plugin_performance_comparison.md` 📚 参考资料
-- **系统 vs 插件能力**：`docs/system_vs_plugin_capabilities.md` 📚 参考资料
-- **工作线流程图**：`docs/workline_flow_diagram.md` 📚 参考资料
-- **Transition 流程详解**：`docs/transition_flow_guide.md` 📚 参考资料
-- **快速验证指南**：`docs/plugin_validation_quickstart.md` 📚 参考资料
+- **插件模板说明**：`docs/templates/workline_plugin/README.md` 📖 必读文档
+- **RuntimeIntent 架构设计**：`docs/business/workline_plugin_architecture_design.md` 📖 必读文档
+- **Runtime 工作流指南**：`docs/business/workline_runtime_workflow_guide.md` 📖 必读文档
+- **旧 PluginResult 资料归档**：`docs/archive/legacy-plugin-result/README.md` 📚 历史对照
 
 **核心特性**：
-- **装饰器驱动**：`@on_event()`, `@on_command()`, `@step()` 自动路由
+- **装饰器驱动**：`@on_event()`, `@on_command()` 类型化路由
 - **Pydantic 自动验证**：Payload 自动解析和类型安全
-- **状态机集成**：声明式状态迁移，自动校验
-- **链式响应构建**：`PluginResultBuilder` 简化结果构建
-- **代码减少 70%**：1915 行 → ~500 行（SmtClassifierPlugin 示例）
+- **RuntimeIntent 输出**：插件只声明上下文更新、命令、等待、业务 NG、完成或阻断意图
+- **运行时拥有副作用**：拓扑解析、Session 生命周期、命令/outbox、等待状态和终态写入集中在 Runtime
+- **无插件状态机**：不再使用 per-plugin `state_machine.py`、`transitions`、`PluginResultBuilder` 或 `plugin_state`
 
 #### 🔔 回调模块 (src/app/callback/)
 

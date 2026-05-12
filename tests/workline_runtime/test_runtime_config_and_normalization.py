@@ -111,7 +111,7 @@ def test_normalize_inbox_input_normalizes_whitepaper_error_detail_fields() -> No
     assert normalized.result_classification == "hardware_failure"
 
 
-def test_normalize_inbox_input_uses_plugin_result_classifier_for_business_ng() -> None:
+def test_normalize_inbox_input_uses_runtime_classifier_for_business_ng() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="COMMAND_RESULT"),
         trace_id="trace-4",

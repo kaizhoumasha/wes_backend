@@ -138,7 +138,7 @@ if __name__ == "__main__":
 4. 确保 API 服务正在运行
 
 运行方式：
-    python tests/plugin_validation/run_validation_test.py
+    python docs/archive/legacy-plugin-result/plugin_validation_harness/run_validation_test.py.txt
     """)
 
     input("\n按 Enter 键开始测试...")
