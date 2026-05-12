@@ -1,5 +1,7 @@
 # 插件框架性能对比报告
 
+> Legacy notes: 本报告保留旧插件框架对比代码片段；当前插件输出合同为 `RuntimeIntent`。
+
 ## 代码量对比
 
 | 指标 | 传统方式 (SmtClassifierPlugin) | 简化方式 (SimplifiedSmtPlugin) | 改善 |

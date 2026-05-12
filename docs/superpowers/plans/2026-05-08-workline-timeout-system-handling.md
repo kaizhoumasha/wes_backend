@@ -1,5 +1,7 @@
 <!-- /autoplan restore point: /Users/kaizhou/.gstack/projects/kaizhoumasha-wes_backend/workline-sandbox-runtime-flow-autoplan-restore-20260508-135929.md -->
 
+> Legacy notes: 本计划记录旧 wait-token/builder 阶段的 timeout 设计；当前实现以 `awaiting_command_id`、`deadline_at` 和 Runtime reconciliation 为准。
+
 # WorkLine Timeout 系统级处理计划
 
 > 本计划承接 `2026-05-06-workline-emergency-stop.md`：急停已从插件事件流提取为系统级安全事件，下一步将 timeout 从插件 `on_timeout()` 提取为系统级运行时治理。

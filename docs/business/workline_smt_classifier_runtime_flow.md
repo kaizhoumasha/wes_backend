@@ -104,7 +104,6 @@
 | `status` | `NEW / RUNNING / WAITING_* / COMPLETED / FAILED / CANCELLED` |
 | `context_json` | 插件上下文快照 |
 | `current_wait_type` | 当前等待类型 |
-| `current_wait_token` | 当前等待令牌 |
 | `deadline_at` | 当前等待的截止时间 |
 | `awaiting_command_id` | 当前等待的命令 ID |
 | `failure_domain / failure_code / failure_message` | 失败归因 |
@@ -228,7 +227,7 @@ sequenceDiagram
 
     CEL->>SES: resolve/create session
     CEL->>PLG: process inbox
-    PLG-->>CEL: PluginResult
+    PLG-->>CEL: RuntimeIntent list
     CEL->>SES: update status/context
     CEL->>CMD: create command
     CEL->>OUT: create outbox
@@ -353,7 +352,7 @@ sequenceDiagram
 - `scan_result == NG`
 - 进入 `_handle_ng_flow()`
 
-返回的 `PluginResult` 关键内容：
+返回的 `RuntimeIntent` 关键内容：
 
 ```json
 {
@@ -399,7 +398,6 @@ sequenceDiagram
 | `context_json.barcode` | `SMTLOT20260327001` |
 | `context_json.ng_reason` | `SCAN_NG` |
 | `current_wait_type` | `COMMAND_RESULT` |
-| `current_wait_token` | `ng_pick_place_<session_id>` |
 | `awaiting_command_id` | 新命令 ID |
 | `deadline_at` | `now + 300s` |
 | `last_inbox_id` | 当前 DEVICE_EVENT Inbox ID |
@@ -553,7 +551,6 @@ ARM mock 设备行为：
 |------|--------|
 | `status` | `COMPLETED` |
 | `current_wait_type` | `null` |
-| `current_wait_token` | `null` |
 | `awaiting_command_id` | `null` |
 | `ended_at` | 当前时间 |
 | `context_json.stage` | `COMPLETED` |
@@ -847,8 +844,8 @@ IDLE
 
 1. 设备只负责上报事件或结果
 2. 所有输入统一先落为 `WorklineInbox`
-3. 所有业务决策统一由插件产出 `PluginResult`
-4. 所有状态变化统一写回 `WorklineSession`
+3. 所有业务决策统一由插件产出 `RuntimeIntent`
+4. 所有运行态变化由 Runtime 写回 `WorklineSession`
 5. 所有副作用统一写入 `WorklineOutbox`
 6. 真正的外发由 `dispatch_outbox_batch` 完成
 7. `MOVE_FORWARD SUCCESS` 后先做同步库位分配，只有拿到完整 `target_bin` 才允许创建 `ARM02` 命令

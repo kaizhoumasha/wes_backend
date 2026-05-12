@@ -1,5 +1,7 @@
 # 硬件工作线拓扑图
 
+> Legacy notes: 文中的旧 `PluginResult` 时序片段仅表示历史样例；当前运行时以 `RuntimeIntent` 和拓扑解析为准。
+
 > 本文档用于统一整理 `docs/hardware/` 下各类设备与作业线的拓扑结构，便于架构设计、联调评审和插件建模。
 > 当前已整理：`SMT 粗分机`、`SMT 流水线`、`SMT 分拣机`。
 > 运行时语义 SSOT：`../business/workline_business_data_event_flow_spec.md`

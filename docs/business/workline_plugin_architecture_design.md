@@ -814,7 +814,6 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `ended_at`
 * `correlation_id`
 * `current_wait_type`
-* `current_wait_token`
 * `waiting_since`
 * `deadline_at`
 * `awaiting_command_id`
@@ -1098,31 +1097,31 @@ class WorklinePlugin(Protocol):
 
 插件只能通过 `services` 调用外部能力，不直接操作 Repository 或 HTTP Client。
 
-### 9.5 RuntimeIntent 设计建议
+### 9.5 RuntimeIntent 当前合同
 
-插件返回的是“领域意图”，建议结构如下：
+插件 handler 返回 `RuntimeIntent` 或 `list[RuntimeIntent]`。插件不得返回 `PluginResult`，不得声明 `state_machine_class`，不得使用 `requires_state`。
+
+Runtime 根据拓扑、当前命令、Session lifecycle 和 RuntimeEvent 校验流程；插件只表达业务意图。
 
 ```python
 class RuntimeIntent(BaseModel):
-    material_outcome: MaterialOutcomeIntent | None = None
+    kind: RuntimeIntentKind
+    destination: Destination | None = None
+    action: str | None = None
+    payload_json: dict = Field(default_factory=dict)
     context_patch: dict = Field(default_factory=dict)
-    decisions: list[DecisionIntent] = Field(default_factory=list)
-    commands: list[CommandIntent] = Field(default_factory=list)
-    external_requests: list[ExternalRequestIntent] = Field(default_factory=list)
-    wait: WaitIntent | None = None
-    failure: FailureIntent | None = None
-    complete: bool = False
+    reason_code: str | None = None
+    message: str | None = None
 ```
 
 说明：
 
-* `material_outcome`: 插件对物料完成、阻塞、NG 或继续流转的业务判断
-* `context_patch`: 对 `session.context_json` 的增量修改
-* `commands`: 待由 Runtime 校验拓扑后生成 `DeviceCommand` 与 `Outbox`
-* `external_requests`: 待生成外部调用 `Outbox`
-* `decisions`: 领域判断证据
-* `wait`: 进入等待态时的等待定义
-* `failure`: 失败归因
+* `UPDATE_CONTEXT`: 对 `session.context_json` 的增量修改
+* `COMMAND`: 由 Runtime 校验拓扑后生成 `DeviceCommand` 与 `Outbox`
+* `MARK_NG`: 记录业务 NG 事实，不等同于系统失败
+* `BLOCK`: 阻断工作线、设备、物料或命令，等待人工/恢复动作
+* `COMPLETE`: 完成当前物料流程
+* `CONTINUE_NEXT`: 沿拓扑继续流转，可携带下一步动作
 
 Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 
@@ -1240,10 +1239,10 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 2. 若插件要求等待 RCS / WMS / AGV 等外部资源，则 Session 进入 `WAITING_EXTERNAL`。
 3. 等待态必须同时写入：
    * `current_wait_type`
-   * `current_wait_token`
+   * `awaiting_command_id`
    * `deadline_at`
    * `wait_payload`
-4. 正常回调优先通过 `wait_token / command_code / source_message_id` 命中同一 Session。
+4. 正常命令回调通过 `command_code -> DeviceCommand.id -> session.awaiting_command_id` 命中同一 Session；外部系统回调通过其业务相关 ID 命中。
 5. 若超过 `deadline_at` 仍无回调，则 Timeout Scanner 生成 `TIMEOUT Inbox`。
 6. 插件决定超时后是：
    * 重试
@@ -1311,11 +1310,11 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
    * `WorklineOutbox`
    * Session 迁移到 `WAITING_EXTERNAL`
    * `current_wait_type=RCS_DISPATCH`
-   * `current_wait_token=<rcs_request_no>`
+   * `context_json.rcs_request_no=<rcs_request_no>`
    * `deadline_at=<RCS响应超时时间>`
 5. Dispatcher 通过 `scene coordination service` 调用 RCS。
 6. RCS 受理后，可能异步回调“已完成货架搬运”或“调度失败”。
-7. RCS 回调进入 `WorklineInbox(EXTERNAL_CALLBACK)`，并通过 `wait_token / source_message_id` 命中原 Session。
+7. RCS 回调进入 `WorklineInbox(EXTERNAL_CALLBACK)`，并通过外部业务相关 ID 命中原 Session。
 8. 插件收到 RCS 成功结果后，再次调用分箱领域服务重新计算库位。
 9. 若此时已有位：
    * 写 `DecisionLog(decision_result=ALLOCATED_AFTER_RCS)`

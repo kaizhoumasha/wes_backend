@@ -1,6 +1,8 @@
 <!-- /autoplan final-review restore point: /tmp/feature-plugin-refactoring-autoplan-final-restore-20260424-210946.md -->
 <!-- /autoplan restore point: /tmp/feature-plugin-refactoring-autoplan-restore-20260424-204247.md -->
 
+> Legacy notes: 本文记录 2026-04 阶段的旧插件状态机重构设想，已被 `RuntimeIntent` + Runtime 拓扑/Session 所有权方案取代；不要作为当前插件开发指南使用。
+
 # WORKLINE 插件下一阶段重构计划
 
 ## 目标

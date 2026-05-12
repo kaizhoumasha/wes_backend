@@ -1297,7 +1297,7 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 **编排器集成**:
 1. 所有 WMS 回调事件必须写入 `WorklineInbox`，不得直接处理
 2. 编排器根据 `workline_id + business_key` 创建/恢复 `WorklineSession`
-3. 业务决策必须由插件输出 `PluginResult`，编排器统一生成 Timeline/Outbox
+3. 业务决策必须由插件输出 `RuntimeIntent`，Runtime 统一生成 Timeline/Outbox
 
 ### 10.3 联调测试建议
 

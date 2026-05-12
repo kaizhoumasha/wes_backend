@@ -71,7 +71,8 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
   SELECT
     s.id,
     s.status,
-    s.plugin_state,
+    s.current_wait_type,
+    s.awaiting_command_id,
     s.context_json->>'barcode' as barcode
   FROM wes_biz.workline_sessions s
   ORDER BY s.id DESC
@@ -81,9 +82,9 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
 
 预期输出（简化插件处理成功）：
 ```
-  id  | status | plugin_state           | barcode
-------+--------+---------------------+--------
-  456 | RUNNING| WAITING_INSPECTION  | ABC123
+  id  | status  | current_wait_type | awaiting_command_id | barcode
+------+---------+-------------------+---------------------+--------
+  456 | RUNNING |                   |                     | ABC123
 ```
 
 ### 步骤4: 发送检测完成事件
@@ -140,7 +141,7 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
   SELECT
     s.id,
     s.status,
-    s.plugin_state
+    s.awaiting_command_id
   FROM wes_biz.workline_sessions s
   ORDER BY s.id DESC
   LIMIT 1;
@@ -149,9 +150,9 @@ docker exec -it wes_postgres_dev psql -U wes_user -d wes_db -c "
 
 预期输出（会话完成）：
 ```
-  id  | status    | plugin_state
-------+-----------+----------------
-  456 | COMPLETED | WAITING_OUTPUT
+  id  | status    | awaiting_command_id
+------+-----------+---------------------
+  456 | COMPLETED |
 ```
 
 ### 步骤7: 恢复原插件

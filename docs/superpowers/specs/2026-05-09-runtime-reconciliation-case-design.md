@@ -1,5 +1,7 @@
 <!-- /autoplan restore point: /Users/kaizhou/.gstack/projects/kaizhoumasha-wes_backend/workline-sandbox-runtime-flow-autoplan-restore-20260509-161045.md -->
 
+> Legacy notes: 本规格中提到的旧插件 builder 仅用于说明当时输入来源；当前实现以 `RuntimeIntent` 为插件输出合同。
+
 # Runtime Hold 与 NG 物料处置设计
 
 ## 背景

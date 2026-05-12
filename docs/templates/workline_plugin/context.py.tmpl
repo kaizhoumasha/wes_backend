@@ -8,14 +8,9 @@ from pydantic import BaseModel, ConfigDict
 
 from src.workline_runtime.plugin_context import PluginContext
 
-from .state_machine import {{STATE_ENUM}}
-
 
 class {{CONTEXT_CLASS}}(BaseModel):
-    """Session context_json 的插件业务数据视图。
-
-    `plugin_state` 由 WorklineSession.plugin_state 持有，不属于插件 context。
-    """
+    """Session context_json 的插件业务数据视图。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -36,9 +31,7 @@ class {{CONTEXT_CLASS}}(BaseModel):
         return cls.from_mapping(ctx.session.context_json)
 
     def to_patch(self) -> dict[str, Any]:
-        patch = self.model_dump(exclude_none=True)
-        patch.pop("plugin_state", None)
-        return patch
+        return self.model_dump(exclude_none=True)
 
 
 def parse_context(ctx: PluginContext) -> {{CONTEXT_CLASS}}:

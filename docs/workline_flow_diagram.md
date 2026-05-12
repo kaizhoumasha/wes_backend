@@ -1,5 +1,7 @@
 # 工作线插件化编排完整流程
 
+> Legacy notes: 本图记录旧 `PluginResult` 编排流程，仅用于历史对照；当前生产链路以 `RuntimeIntent` 为插件输出，以 Runtime/TIMELINE 事实驱动监控和统计。
+
 ## 您的理解 vs 实际流程
 
 ### 您的理解

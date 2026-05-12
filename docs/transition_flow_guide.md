@@ -1,5 +1,7 @@
 # Transition 字符串处理流程详解
 
+> Legacy notes: 本文记录已删除的旧 transition/state-machine 链路，仅用于历史追溯；当前插件合同是 `RuntimeIntent`，Runtime 负责拓扑、Session、命令和等待状态。
+
 ## 完整调用链路
 
 从插件返回 `.transition("scan_ok")` 到状态机完成迁移的完整流程：

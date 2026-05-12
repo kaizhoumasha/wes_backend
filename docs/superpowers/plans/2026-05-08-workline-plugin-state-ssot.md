@@ -1,5 +1,7 @@
 <!-- /autoplan restore point: /Users/kaizhou/.gstack/projects/wes_workspace/workline-sandbox-runtime-flow-autoplan-restore-20260508-210210.md -->
 
+> Legacy notes: 本计划已被 2026-05-12 `RuntimeIntent` 旧链路清理方案取代；其中状态字段和状态机设计仅作历史记录。
+
 # WES 插件状态架构大重构计划
 
 ## Summary

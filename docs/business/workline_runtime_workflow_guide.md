@@ -142,7 +142,6 @@ Device Event -> Inbox -> Runtime Decision
 
 - `status`
 - `current_wait_type`
-- `current_wait_token`
 - `awaiting_command_id`
 - `deadline_at`
 
