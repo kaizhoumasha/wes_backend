@@ -37,6 +37,15 @@ class _FakeFullBoxExchangeTaskRepository:
         return SimpleNamespace(id=id, **data)
 
 
+class _RecordingRelationProjector:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def record_full_box_exchange_physical_completed(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(status="PROJECTED")
+
+
 @pytest.mark.asyncio
 async def test_full_box_exchange_task_service_records_requested_external_request() -> None:
     repo = _FakeFullBoxExchangeTaskRepository()
@@ -156,3 +165,44 @@ async def test_full_box_exchange_task_service_records_external_callback_status()
     assert repo.updated_payload["eta_seconds"] == 120
     assert repo.updated_payload["last_callback_payload_hash"].startswith("sha256:")
     assert repo.updated_payload["trace_id"] == "trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_projects_physical_completed_relations() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector()
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "source_version": "1",
+            "occurred_at": "2026-05-16T09:00:00Z",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "post_exchange_relations": {
+                "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"}]
+            },
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert len(projector.calls) == 1
+    assert projector.calls[0]["exchange_request_code"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert projector.calls[0]["rack_release_id"] == "release-001"
+    assert projector.calls[0]["source_event_id"] == "wms-event-001"
+    assert projector.calls[0]["source_task_id"] == "wms-task-001"
+    assert projector.calls[0]["post_exchange_relations"]["bin_mounts"][0]["bin_code"] == "BIN-001"

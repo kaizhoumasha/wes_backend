@@ -191,8 +191,13 @@ class BinContentSnapshotItemService(BaseService[BinContentSnapshotItem, BinConte
 class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchangeTaskRepository]):
     """满箱交换任务 Service。"""
 
-    def __init__(self, repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository) -> None:
+    def __init__(
+        self,
+        repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository,
+        relation_projector: Any | None = None,
+    ) -> None:
         super().__init__(repo)
+        self._relation_projector = relation_projector
 
     async def record_requested_from_external_request(
         self,
@@ -284,7 +289,52 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             data["version"] = version
 
         updated = await self.repo.update(db, task_id, data)
+        await self._project_post_exchange_relations(
+            db,
+            task=task,
+            payload_json=payload_json,
+            trace_id=trace_id,
+        )
         return updated or task
+
+    async def _project_post_exchange_relations(
+        self,
+        db: AsyncSession,
+        *,
+        task: FullBoxExchangeTask,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+    ) -> None:
+        status = _exchange_status(payload_json)
+        if status not in {FullBoxExchangeStatus.PHYSICAL_COMPLETED, FullBoxExchangeStatus.RESOURCE_PROJECTED}:
+            return
+        post_exchange_relations = payload_json.get("post_exchange_relations")
+        if not isinstance(post_exchange_relations, Mapping):
+            return
+        source_event_id = _optional_text(payload_json.get("source_event_id"))
+        if source_event_id is None:
+            return
+
+        await self._resolve_relation_projector().record_full_box_exchange_physical_completed(
+            db,
+            exchange_request_code=str(task.exchange_request_code),
+            rack_release_id=str(task.rack_release_id),
+            post_exchange_relations=post_exchange_relations,
+            source_system=_resource_source_system(payload_json),
+            source_event_id=source_event_id,
+            source_version=_optional_text(payload_json.get("source_version")),
+            source_task_id=_optional_text(payload_json.get("wms_rcs_task_id")),
+            occurred_at=payload_json.get("occurred_at"),
+            trace_id=trace_id or _optional_text(payload_json.get("trace_id")),
+            session_id=_optional_text(payload_json.get("session_id")),
+        )
+
+    def _resolve_relation_projector(self) -> Any:
+        if self._relation_projector is None:
+            from src.app.resource.services.relation_service import resource_relation_service
+
+            self._relation_projector = resource_relation_service
+        return self._relation_projector
 
 
 def _optional_text(value: Any) -> str | None:
@@ -332,6 +382,16 @@ def _exchange_status(payload_json: Mapping[str, Any]) -> FullBoxExchangeStatus:
         return FullBoxExchangeStatus(status_text)
     except ValueError as exc:
         raise ValueError(f"unsupported full box exchange_status: {status_text}") from exc
+
+
+def _resource_source_system(payload_json: Mapping[str, Any]) -> Any:
+    from src.app.resource.models import ResourceSourceSystem
+
+    source_system = _optional_text(payload_json.get("source_system"))
+    try:
+        return ResourceSourceSystem(source_system)
+    except (TypeError, ValueError):
+        return ResourceSourceSystem.WMS
 
 
 execution_zone_service = ExecutionZoneService()

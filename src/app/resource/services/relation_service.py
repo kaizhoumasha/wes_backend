@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 from src.app.resource.models import (
+    RackBinMountStatus,
     RackPlacement,
     RackPlacementStatus,
+    ResourceRelationSourceSystem,
     ResourceSourceSystem,
     ResourceStateEvent,
     ResourceStateEventType,
     ResourceType,
 )
 from src.app.resource.repositories import (
+    RackBinMountRepository,
     RackPlacementRepository,
     ResourceStateEventRepository,
+    rack_bin_mount_repository,
     rack_placement_repository,
     resource_state_event_repository,
 )
@@ -56,10 +61,12 @@ class ResourceRelationService:
         *,
         state_event_repo: ResourceStateEventRepository = resource_state_event_repository,
         rack_placement_repo: RackPlacementRepository = rack_placement_repository,
+        rack_bin_mount_repo: RackBinMountRepository = rack_bin_mount_repository,
         runtime_hold_creator: Any = default_runtime_hold_creation_service,
     ) -> None:
         self.state_event_repo = state_event_repo
         self.rack_placement_repo = rack_placement_repo
+        self.rack_bin_mount_repo = rack_bin_mount_repo
         self.runtime_hold_creator = runtime_hold_creator
 
     @staticmethod
@@ -170,6 +177,133 @@ class ResourceRelationService:
             projection=projection,
         )
 
+    async def record_full_box_exchange_physical_completed(
+        self,
+        db: object,
+        *,
+        exchange_request_code: str,
+        rack_release_id: str,
+        post_exchange_relations: Mapping[str, Any],
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        occurred_at: Any,
+        source_version: str | None = None,
+        source_task_id: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ResourceProjectionResult:
+        """记录满箱交换物理完成事实，并投影交换后的料箱挂载关系。"""
+
+        existing_event = await self.state_event_repo.get_by_source_event_id(
+            db,
+            source_system=source_system,
+            source_event_id=source_event_id,
+        )
+        if existing_event is not None:
+            return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+
+        event = await self.state_event_repo.create(
+            db,
+            {
+                "event_code": self._event_code(source_system, source_event_id),
+                "event_type": ResourceStateEventType.EXCHANGE_STATUS_UPDATED.value,
+                "resource_type": ResourceType.EXCHANGE_TASK.value,
+                "resource_code": exchange_request_code,
+                "source_system": source_system,
+                "source_event_id": source_event_id,
+                "source_version": source_version,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "payload_json": {
+                    "exchange_request_code": exchange_request_code,
+                    "rack_release_id": rack_release_id,
+                    "source_task_id": source_task_id,
+                    "post_exchange_relations": dict(post_exchange_relations),
+                },
+                "occurred_at": occurred_at,
+                "received_at": timezone.now_for_db(),
+            },
+        )
+
+        bin_mounts = _extract_bin_mounts(post_exchange_relations)
+        if not bin_mounts:
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                reason_code="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+                message="满箱交换回调缺少可投影的料箱挂载关系",
+            )
+
+        conflict = await self._first_bin_mount_conflict(db, bin_mounts)
+        if conflict is not None:
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                reason_code=conflict["reason_code"],
+                message=conflict["message"],
+            )
+
+        for mount in bin_mounts:
+            if await self._same_active_bin_mount_exists(db, mount):
+                continue
+            await self.rack_bin_mount_repo.create(
+                db,
+                {
+                    "rack_code": mount["rack_code"],
+                    "rack_slot_code": mount["rack_slot_code"],
+                    "bin_code": mount["bin_code"],
+                    "mount_status": RackBinMountStatus.MOUNTED.value,
+                    "source_system": ResourceRelationSourceSystem.WMS_RCS.value,
+                    "source_event_id": source_event_id,
+                    "source_version": source_version,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "started_at": occurred_at,
+                    "ended_at": None,
+                },
+            )
+
+        return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
+    async def _first_bin_mount_conflict(
+        self,
+        db: object,
+        bin_mounts: Sequence[dict[str, str]],
+    ) -> dict[str, str] | None:
+        """检查交换后关系是否会覆盖已有 active 料箱挂载投影。"""
+
+        for mount in bin_mounts:
+            active_slot = await self.rack_bin_mount_repo.get_active_by_rack_slot(
+                db,
+                rack_code=mount["rack_code"],
+                rack_slot_code=mount["rack_slot_code"],
+            )
+            if active_slot is not None and active_slot.bin_code != mount["bin_code"]:
+                return {
+                    "reason_code": "RACK_BIN_SLOT_CONFLICT",
+                    "message": "货架槽位已有不同 active bin mount，不覆盖当前投影",
+                }
+
+            active_bin = await self.rack_bin_mount_repo.get_active_by_bin_code(db, mount["bin_code"])
+            if active_bin is not None and (
+                active_bin.rack_code != mount["rack_code"] or active_bin.rack_slot_code != mount["rack_slot_code"]
+            ):
+                return {
+                    "reason_code": "BIN_ACTIVE_MOUNT_CONFLICT",
+                    "message": "料箱已有不同 active mount，不覆盖当前投影",
+                }
+        return None
+
+    async def _same_active_bin_mount_exists(self, db: object, mount: dict[str, str]) -> bool:
+        """同一 active 关系已存在时保持幂等，不重复创建投影。"""
+
+        active_slot = await self.rack_bin_mount_repo.get_active_by_rack_slot(
+            db,
+            rack_code=mount["rack_code"],
+            rack_slot_code=mount["rack_slot_code"],
+        )
+        return active_slot is not None and active_slot.bin_code == mount["bin_code"]
+
     async def _create_rack_placement_conflict_hold(
         self,
         db: object,
@@ -212,6 +346,43 @@ class ResourceRelationService:
                 "session_id": session_id,
             },
         )
+
+
+def _extract_bin_mounts(post_exchange_relations: Mapping[str, Any]) -> list[dict[str, str]]:
+    raw_mounts = None
+    for key in ("bin_mounts", "rack_bin_mounts", "mounts", "relations"):
+        candidate = post_exchange_relations.get(key)
+        if candidate is not None:
+            raw_mounts = candidate
+            break
+    if not isinstance(raw_mounts, Sequence) or isinstance(raw_mounts, (str, bytes)):
+        return []
+
+    default_rack_code = _text_or_none(post_exchange_relations.get("rack_code"))
+    mounts: list[dict[str, str]] = []
+    for item in raw_mounts:
+        if not isinstance(item, Mapping):
+            continue
+        rack_code = _text_or_none(item.get("rack_code")) or default_rack_code
+        rack_slot_code = _text_or_none(item.get("rack_slot_code")) or _text_or_none(item.get("slot_code"))
+        bin_code = _text_or_none(item.get("bin_code")) or _text_or_none(item.get("bin_id"))
+        if rack_code is None or rack_slot_code is None or bin_code is None:
+            continue
+        mounts.append(
+            {
+                "rack_code": rack_code,
+                "rack_slot_code": rack_slot_code,
+                "bin_code": bin_code,
+            }
+        )
+    return mounts
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 resource_relation_service = ResourceRelationService()
