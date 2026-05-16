@@ -62,6 +62,21 @@ class TestSmtClassifierPluginEvents:
         assert result[1].payload_json == {"pkg_id": "SVYU00125TP4LCR02_2"}
 
     @pytest.mark.asyncio
+    async def test_scan_completed_persists_six_in_one_context(self, plugin, mock_context):
+        """扫码 OK 后保存完整 6 合 1 上下文，供后续料箱调度使用。"""
+
+        result = await plugin.on_device_event(mock_context, _make_inbox(_scan_payload()))
+
+        assert result[0].context_patch["six_in_one"] == {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": "SVYU00125TP4LCR02_2",
+        }
+
+    @pytest.mark.asyncio
     async def test_scan_completed_incomplete_barcodes_marks_ng_and_picks_to_ng(self, plugin, mock_context):
         """条码不完整时标记 NG，写入 SCAN_NG 上下文，并下发 NG 分流。"""
         payload = {

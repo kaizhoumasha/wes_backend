@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,7 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.UPDATE_CONTEXT,
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
+    RuntimeIntentKind.EXTERNAL_REQUEST,
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
@@ -40,7 +42,7 @@ def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
 
 
 def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
-    return intent.kind == RuntimeIntentKind.COMMAND or (
+    return intent.kind in {RuntimeIntentKind.COMMAND, RuntimeIntentKind.EXTERNAL_REQUEST} or (
         intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None
     )
 
@@ -95,7 +97,8 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
         if _is_command_producing_intent(intent):
             command_producing_count += 1
             command_producing_seen = True
-            _validate_command_destination(_command_producing_intent_to_command_intent(intent))
+            if intent.kind != RuntimeIntentKind.EXTERNAL_REQUEST:
+                _validate_command_destination(_command_producing_intent_to_command_intent(intent))
 
         if intent.kind in _TERMINAL_INTENT_KINDS and index != len(intents) - 1:
             raise ValueError("terminal RuntimeIntent must be final intent")
@@ -168,6 +171,10 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.COMMAND:
                 await self._apply_command(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
+                await self._apply_external_request(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
@@ -336,6 +343,70 @@ class RuntimeIntentEffectApplier:
             return
 
         await self._apply_command_wait(ctx, intent)
+
+    async def _apply_external_request(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from src.app.workline.models.timeline import (
+            TimelineActionType,
+            TimelineActorType,
+            TimelineStage,
+            TimelineStatus,
+        )
+        from src.celery_app.tasks import workline as workline_effects
+
+        dispatch_key = str(intent.dispatch_key)
+        target_code = str(intent.target_code)
+        payload_json = dict(intent.payload_json)
+        timeout_seconds = int(intent.timeout_seconds or 0)
+        session = ctx["session"]
+
+        ctx["db"].add(
+            workline_effects._build_external_http_outbox_model(
+                ctx,
+                dispatch_key=dispatch_key,
+                target_code=target_code,
+                payload_json=payload_json,
+            )
+        )
+        await workline_effects._emit_timeline(
+            ctx,
+            stage=TimelineStage.DISPATCH_PREPARE,
+            action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
+            payload=workline_effects._external_decision_timeline_payload(
+                ctx,
+                dispatch_key=dispatch_key,
+                target_code=target_code,
+                payload_json=payload_json,
+            ),
+            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
+            actor_code=intent.source_system or "EXTERNAL_SYSTEM",
+            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
+            status=TimelineStatus.PENDING,
+        )
+
+        workline_effects._clear_session_failure(session)
+        session.status = workline_effects._wait_session_status("EXTERNAL_HTTP")
+        session.current_wait_type = "EXTERNAL_HTTP"
+        session.waiting_since = ctx["now"]
+        session.awaiting_command_id = None
+        session.current_wait_timeout_seconds = timeout_seconds
+        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
+        session.ended_at = None
+        await workline_effects._emit_timeline(
+            ctx,
+            stage=TimelineStage.WAITING,
+            action_type=TimelineActionType.WAIT_STARTED,
+            payload=workline_effects._wait_timeline_payload(
+                ctx,
+                wait_type="EXTERNAL_HTTP",
+                wait_token=dispatch_key,
+                deadline_seconds=timeout_seconds,
+            ),
+            from_status=ctx["current_status"],
+            to_status=session.status,
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
+            status=TimelineStatus.PENDING,
+        )
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (
