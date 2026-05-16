@@ -4,6 +4,7 @@ from .barcode_decision_service import BarcodeDecisionService, barcode_decision_s
 from .smt_rack_bin_scheduling_service import (
     SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
+    SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
     smt_rack_bin_scheduling_service,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "BarcodeDecisionService",
     "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
+    "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
     "barcode_decision_service",
     "smt_rack_bin_scheduling_service",

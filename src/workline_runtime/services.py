@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from src.app.workline.domain.services import SmtRackBinSchedulingDecision
+
 
 @runtime_checkable
 class BinAllocator(Protocol):
@@ -19,6 +21,14 @@ class BinAllocator(Protocol):
 
     def allocate(self, barcode: str) -> Mapping[str, Any] | None:
         """按条码分配料箱。"""
+
+    def plan_allocation(
+        self,
+        barcode: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> SmtRackBinSchedulingDecision | None:
+        """按条码和运行时上下文规划料箱调度。"""
 
 
 @dataclass(frozen=True, slots=True)

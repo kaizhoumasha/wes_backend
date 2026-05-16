@@ -48,7 +48,9 @@ def test_output_to_bin_params_use_allocated_bin_business_fields() -> None:
         "reel_diameter": "178.5",
         "target_type": "BIN",
         "target_loc": "BIN-001",
+        "bin_id": "BIN-001",
         "bin_type": "五格箱",
+        "bin_cell_location": "3",
     }
 
 

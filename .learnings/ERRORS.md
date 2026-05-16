@@ -8,6 +8,35 @@ Command failures, exceptions, and unexpected behaviors.
 
 ---
 
+## [ERR-20260516-001] gitnexus_analyze_null_node_target
+
+**Logged**: 2026-05-16T12:22:30+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+在隔离 worktree 中运行 `npx gitnexus analyze` 刷新索引失败，导致新增 staged 符号只能得到 GitNexus `UNKNOWN` 影响分析结果。
+
+### Error
+```text
+Cannot destructure property 'package' of 'node.target' as it is null.
+```
+
+### Context
+- Command/operation: `rtk npx gitnexus analyze`
+- Environment: `/Users/kaizhou/SynologyDrive/works/wes_backend-worktrees/smt-classifier-bin-slot-allocation`
+- Trigger: 为新增的 `SmtRackBinSchedulingService` / `SmtRackBinSchedulingDecision` 做影响分析时，MCP 索引尚未包含这些新符号。
+
+### Suggested Fix
+排查 GitNexus 1.6.4 对当前 Python/仓库文件的解析空节点；短期可对已索引符号继续使用 MCP impact，对新增符号用 targeted tests 和人工调用链 review 补足风险控制。
+
+### Metadata
+- Reproducible: yes
+- Related Files: src/app/workline/domain/services/smt_rack_bin_scheduling_service.py
+
+---
+
 ## [ERR-20260306-001] uv_pytest_sandbox_cache_permission
 
 **Logged**: 2026-03-06T11:01:23Z

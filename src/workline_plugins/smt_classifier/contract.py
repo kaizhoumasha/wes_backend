@@ -21,6 +21,9 @@ from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.utils import non_empty_str
 
 _SCAN_COMPLETED_EVENT = "SCAN_COMPLETED"
+WMS_RACK_EXCHANGE_PROGRESS = "WMS_RACK_EXCHANGE_PROGRESS"
+WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
+WMS_RACK_EXCHANGE_FAILED = "WMS_RACK_EXCHANGE_FAILED"
 INSPECTION_SIZE_NG_REASON = "INSPECTION_SIZE_NG"
 INSPECTION_THICKNESS_NG_REASON = "INSPECTION_THICKNESS_NG"
 INSPECTION_NG_REASONS = frozenset({INSPECTION_SIZE_NG_REASON, INSPECTION_THICKNESS_NG_REASON})
@@ -297,7 +300,9 @@ def build_output_to_bin_params(
         "reel_diameter": reel_diameter,
         "target_type": "BIN",
         "target_loc": bin_location["bin_id"],
+        "bin_id": bin_location["bin_id"],
         "bin_type": bin_location["bin_type"],
+        "bin_cell_location": bin_location["bin_cell_location"],
     }
 
 
@@ -379,6 +384,9 @@ class EStopEventPayload(BaseModel):
 
 
 __all__ = [
+    "WMS_RACK_ARRIVED",
+    "WMS_RACK_EXCHANGE_FAILED",
+    "WMS_RACK_EXCHANGE_PROGRESS",
     "EStopEventPayload",
     "MeasurementResultData",
     "PickPlaceResultData",
