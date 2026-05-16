@@ -264,6 +264,17 @@ class RackReleaseRepository(BaseRepository[RackRelease]):
     def __init__(self) -> None:
         super().__init__(RackRelease)
 
+    async def get_by_release_id(self, db: AsyncSession, rack_release_id: str) -> RackRelease | None:
+        """按释放周期业务 ID 查询释放记录。"""
+
+        columns = cast("Any", RackRelease).__table__.c
+        result = await db.execute(
+            select(RackRelease).where(
+                columns.rack_release_id == rack_release_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
 
 class RackReleaseBinSnapshotRepository(BaseRepository[RackReleaseBinSnapshot]):
     """释放槽位快照 Repository。"""

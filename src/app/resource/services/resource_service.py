@@ -12,6 +12,7 @@ from src.app.resource.models import (
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinSlotTemplate,
+    BinStatus,
     BinType,
     ExecutionLocation,
     ExecutionZone,
@@ -23,6 +24,7 @@ from src.app.resource.models import (
     RackPlacement,
     RackRelease,
     RackReleaseBinSnapshot,
+    RackReleaseStatus,
     RackSlotTemplate,
     RackType,
     ResourceStateEvent,
@@ -228,8 +230,75 @@ class WmsWritebackEvidenceService(BaseService[WmsWritebackEvidence, WmsWriteback
 class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
     """释放周期 Service。"""
 
-    def __init__(self, repo: RackReleaseRepository = rack_release_repository) -> None:
+    def __init__(
+        self,
+        repo: RackReleaseRepository = rack_release_repository,
+        snapshot_repo: RackReleaseBinSnapshotRepository = rack_release_bin_snapshot_repository,
+    ) -> None:
         super().__init__(repo)
+        self.snapshot_repo = snapshot_repo
+
+    async def record_release_snapshot(
+        self,
+        db: AsyncSession,
+        *,
+        rack_release_id: str,
+        single_layer_rack_code: str,
+        released_at: Any,
+        slot_snapshots: Sequence[Mapping[str, Any]],
+        source_classifier_line_code: str | None = None,
+        source_task_batch_id: str | None = None,
+        source_event_id: str | None = None,
+        inbox_id: int | None = None,
+        session_id: int | None = None,
+        release_cycle_seq: int = 1,
+        trace_id: str | None = None,
+    ) -> RackRelease:
+        """记录单层货架释放周期和槽位料箱快照。"""
+
+        existing = await self.repo.get_by_release_id(db, rack_release_id)
+        if existing is not None:
+            return existing
+
+        normalized_snapshots = _normalize_release_snapshots(slot_snapshots)
+        snapshot_hash = _payload_hash({"slot_snapshots": normalized_snapshots})
+        release = await self.repo.create(
+            db,
+            {
+                "rack_release_id": rack_release_id,
+                "single_layer_rack_code": single_layer_rack_code,
+                "source_classifier_line_code": source_classifier_line_code,
+                "source_task_batch_id": source_task_batch_id,
+                "source_event_id": source_event_id,
+                "release_status": RackReleaseStatus.CANDIDATE.value,
+                "released_at": released_at,
+                "inbox_id": inbox_id,
+                "session_id": session_id,
+                "release_cycle_seq": release_cycle_seq,
+                "idempotency_key": _payload_hash(
+                    {
+                        "rack_release_id": rack_release_id,
+                        "single_layer_rack_code": single_layer_rack_code,
+                        "release_cycle_seq": release_cycle_seq,
+                        "snapshot_hash": snapshot_hash,
+                    }
+                ),
+                "snapshot_hash": snapshot_hash,
+                "trace_id": trace_id,
+            },
+        )
+
+        for snapshot in normalized_snapshots:
+            await self.snapshot_repo.create(
+                db,
+                {
+                    "rack_release_id": rack_release_id,
+                    **snapshot,
+                },
+            )
+        if release is None:
+            raise RuntimeError("Failed to create rack release snapshot")
+        return release
 
 
 class RackReleaseBinSnapshotService(BaseService[RackReleaseBinSnapshot, RackReleaseBinSnapshotRepository]):
@@ -455,6 +524,43 @@ def _optional_int(value: Any) -> int | None:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value.strip())
     return None
+
+
+def _normalize_release_snapshots(slot_snapshots: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in sorted(slot_snapshots, key=lambda value: str(value.get("slot_code") or "")):
+        slot_code = _optional_text(item.get("slot_code"))
+        bin_code = _optional_text(item.get("bin_code"))
+        if slot_code is None or bin_code is None:
+            continue
+        normalized.append(
+            {
+                "slot_code": slot_code,
+                "bin_code": bin_code,
+                "bin_type_code": _optional_text(item.get("bin_type_code")),
+                "bin_execution_status": _bin_status(item.get("bin_execution_status")),
+                "usage_snapshot": item.get("usage_snapshot"),
+                "material_summary_json": _mapping_dict(item.get("material_summary_json")),
+                "wms_inventory_refs_json": _mapping_dict(item.get("wms_inventory_refs_json")),
+                "snapshot_id": _optional_text(item.get("snapshot_id")),
+                "content_snapshot_hash": _optional_text(item.get("content_snapshot_hash")),
+            }
+        )
+    return normalized
+
+
+def _bin_status(value: Any) -> BinStatus:
+    status_text = _optional_text(value)
+    if status_text is None:
+        return BinStatus.FULL_SNAPSHOT
+    try:
+        return BinStatus(status_text)
+    except ValueError:
+        return BinStatus.UNKNOWN
+
+
+def _mapping_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _requested_bins(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
