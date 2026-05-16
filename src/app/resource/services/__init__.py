@@ -44,6 +44,13 @@ from .resource_service import (
     resource_state_event_service,
     wms_writeback_evidence_service,
 )
+from .smt_rack_bin_scheduling_service import (
+    SmtFullBoxExchangeRequest,
+    SmtRackBinSchedulingDecision,
+    SmtRackBinSchedulingDecisionKind,
+    SmtRackBinSchedulingService,
+    smt_rack_bin_scheduling_service,
+)
 
 __all__ = [
     "BinContentSnapshotItemService",
@@ -66,6 +73,10 @@ __all__ = [
     "ResourceProjectionStatus",
     "ResourceRelationService",
     "ResourceStateEventService",
+    "SmtFullBoxExchangeRequest",
+    "SmtRackBinSchedulingDecision",
+    "SmtRackBinSchedulingDecisionKind",
+    "SmtRackBinSchedulingService",
     "WmsWritebackEvidenceService",
     "bin_content_snapshot_item_service",
     "bin_content_snapshot_service",
@@ -85,5 +96,6 @@ __all__ = [
     "rack_type_service",
     "resource_relation_service",
     "resource_state_event_service",
+    "smt_rack_bin_scheduling_service",
     "wms_writeback_evidence_service",
 ]

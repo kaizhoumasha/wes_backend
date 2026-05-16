@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from src.app.workline.domain.services import SmtRackBinSchedulingDecision
+    from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
 
 
 @runtime_checkable
@@ -41,7 +41,7 @@ class WorklineRuntimeServices:
 def build_workline_runtime_services() -> WorklineRuntimeServices:
     """构建当前 worker 使用的运行时服务集合。"""
 
-    from src.app.workline.domain.services import smt_rack_bin_scheduling_service
+    from src.app.resource.services.smt_rack_bin_scheduling_service import smt_rack_bin_scheduling_service
 
     return WorklineRuntimeServices(bin_allocator=smt_rack_bin_scheduling_service)
 

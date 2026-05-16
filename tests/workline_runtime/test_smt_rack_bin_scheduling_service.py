@@ -1,6 +1,10 @@
 """SMT 货架/料箱调度领域服务测试。"""
 
-from src.app.workline.domain.services import SmtRackBinSchedulingDecision, SmtRackBinSchedulingService
+from src.app.resource.services import (
+    SmtRackBinSchedulingDecision,
+    SmtRackBinSchedulingService,
+    smt_rack_bin_scheduling_service,
+)
 from src.workline_runtime.services import build_workline_runtime_services
 
 SIX_IN_ONE = {
@@ -268,4 +272,5 @@ def test_runtime_services_injects_default_smt_rack_bin_scheduler() -> None:
     services = build_workline_runtime_services()
 
     assert isinstance(services.bin_allocator, SmtRackBinSchedulingService)
+    assert services.bin_allocator is smt_rack_bin_scheduling_service
     assert services.bin_allocator.allocate("PKG-002") == SmtRackBinSchedulingService().allocate("PKG-002")

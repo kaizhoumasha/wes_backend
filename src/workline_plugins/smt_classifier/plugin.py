@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import ValidationError
 
-from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
-from src.app.workline.domain.services import (
+from src.app.resource.services import (
     SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     smt_rack_bin_scheduling_service,
 )
+from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
 from src.workline_runtime.contracts import DeviceErrorCode
 from src.workline_runtime.plugin_base import (

@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
-from src.app.workline.domain.services import SmtRackBinSchedulingService
+from src.app.resource.services import SmtRackBinSchedulingService
 from src.workline_runtime.contracts import SixInOne
 from src.workline_runtime.material_identity import (
     MaterialIdentity,
