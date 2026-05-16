@@ -70,6 +70,38 @@ class RecordingBinMountRepo:
         return RackBinMount(**data)
 
 
+class ConflictingBinMountRepo:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    async def get_active_by_rack_slot(
+        self,
+        _db: object,
+        *,
+        rack_code: str,
+        rack_slot_code: str,
+    ) -> RackBinMount | None:
+        assert rack_code == "RACK-002"
+        assert rack_slot_code == "A01"
+        return RackBinMount(
+            rack_code="RACK-002",
+            rack_slot_code="A01",
+            bin_code="BIN-OLD",
+            mount_status="MOUNTED",
+            source_system="WMS_RCS",
+            source_event_id="old-event",
+            started_at=datetime(2026, 5, 16, 8, 30, 0),
+        )
+
+    async def get_active_by_bin_code(self, _db: object, bin_code: str) -> RackBinMount | None:
+        assert bin_code == "BIN-NEW"
+        return None
+
+    async def create(self, _db: object, data: dict[str, Any]) -> RackBinMount:
+        self.created.append(data)
+        return RackBinMount(**data)
+
+
 class RecordingRuntimeHoldCreator:
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
@@ -201,6 +233,59 @@ async def test_record_full_box_exchange_physical_completed_projects_bin_mounts()
     assert bin_mounts.created[0]["bin_code"] == "BIN-001"
     assert bin_mounts.created[0]["mount_status"] == "MOUNTED"
     assert bin_mounts.created[0]["source_system"] == "WMS_RCS"
+
+
+@pytest.mark.asyncio
+async def test_record_full_box_exchange_physical_completed_conflict_creates_runtime_hold() -> None:
+    """交换后料箱挂载冲突时追加事实、创建 RuntimeHold 且不覆盖投影。"""
+
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    bin_mounts = ConflictingBinMountRepo()
+    runtime_holds = RecordingRuntimeHoldCreator()
+    service = ResourceRelationService(
+        state_event_repo=state_events,
+        rack_bin_mount_repo=bin_mounts,
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_full_box_exchange_physical_completed(
+        object(),
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        post_exchange_relations={
+            "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-NEW"}]
+        },
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-physical-conflict",
+        source_version="1",
+        source_task_id="wms-task-001",
+        occurred_at=datetime(2026, 5, 16, 9, 0, 0),
+        trace_id="trace-001",
+        session_id="session-001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "RACK_BIN_SLOT_CONFLICT"
+    assert result.runtime_hold is not None
+    assert result.runtime_hold.id == 9001
+    assert state_events.created[0]["resource_code"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert runtime_holds.created[0]["source_reason"] == "RACK_BIN_SLOT_CONFLICT"
+    assert runtime_holds.created[0]["source_event_id"] == "wms-event-physical-conflict"
+    assert runtime_holds.created[0]["evidence"]["exchange_request_code"] == (
+        "external:smt:release-001:FULL_BIN_EXCHANGE"
+    )
+    assert runtime_holds.created[0]["evidence"]["rack_release_id"] == "release-001"
+    assert runtime_holds.created[0]["evidence"]["rack_code"] == "RACK-002"
+    assert runtime_holds.created[0]["evidence"]["rack_slot_code"] == "A01"
+    assert runtime_holds.created[0]["evidence"]["active_bin_code"] == "BIN-OLD"
+    assert runtime_holds.created[0]["evidence"]["incoming_bin_code"] == "BIN-NEW"
+    assert bin_mounts.created == []
 
 
 @pytest.mark.asyncio

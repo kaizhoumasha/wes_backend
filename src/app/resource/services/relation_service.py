@@ -191,6 +191,10 @@ class ResourceRelationService:
         source_task_id: str | None = None,
         trace_id: str | None = None,
         session_id: str | None = None,
+        workline_id: int | None = None,
+        workline_session_id: int | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录满箱交换物理完成事实，并投影交换后的料箱挂载关系。"""
 
@@ -236,9 +240,24 @@ class ResourceRelationService:
 
         conflict = await self._first_bin_mount_conflict(db, bin_mounts)
         if conflict is not None:
+            runtime_hold = await self._create_bin_mount_conflict_hold(
+                db,
+                exchange_request_code=exchange_request_code,
+                rack_release_id=rack_release_id,
+                conflict=conflict,
+                source_system=source_system,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=workline_session_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
+                runtime_hold=runtime_hold,
                 reason_code=conflict["reason_code"],
                 message=conflict["message"],
             )
@@ -355,7 +374,7 @@ class ResourceRelationService:
         self,
         db: object,
         bin_mounts: Sequence[dict[str, str]],
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         """检查交换后关系是否会覆盖已有 active 料箱挂载投影。"""
 
         for mount in bin_mounts:
@@ -368,6 +387,13 @@ class ResourceRelationService:
                 return {
                     "reason_code": "RACK_BIN_SLOT_CONFLICT",
                     "message": "货架槽位已有不同 active bin mount，不覆盖当前投影",
+                    "rack_code": mount["rack_code"],
+                    "rack_slot_code": mount["rack_slot_code"],
+                    "incoming_bin_code": mount["bin_code"],
+                    "active_bin_code": active_slot.bin_code,
+                    "active_rack_code": active_slot.rack_code,
+                    "active_rack_slot_code": active_slot.rack_slot_code,
+                    "active_source_event_id": active_slot.source_event_id,
                 }
 
             active_bin = await self.rack_bin_mount_repo.get_active_by_bin_code(db, mount["bin_code"])
@@ -377,6 +403,13 @@ class ResourceRelationService:
                 return {
                     "reason_code": "BIN_ACTIVE_MOUNT_CONFLICT",
                     "message": "料箱已有不同 active mount，不覆盖当前投影",
+                    "rack_code": mount["rack_code"],
+                    "rack_slot_code": mount["rack_slot_code"],
+                    "incoming_bin_code": mount["bin_code"],
+                    "active_bin_code": active_bin.bin_code,
+                    "active_rack_code": active_bin.rack_code,
+                    "active_rack_slot_code": active_bin.rack_slot_code,
+                    "active_source_event_id": active_bin.source_event_id,
                 }
         return None
 
@@ -389,6 +422,54 @@ class ResourceRelationService:
             rack_slot_code=mount["rack_slot_code"],
         )
         return active_slot is not None and active_slot.bin_code == mount["bin_code"]
+
+    async def _create_bin_mount_conflict_hold(
+        self,
+        db: object,
+        *,
+        exchange_request_code: str,
+        rack_release_id: str,
+        conflict: Mapping[str, Any],
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        trace_id: str | None,
+        session_id: str | None,
+        workline_id: int | None,
+        workline_session_id: int | None,
+        plugin_key: str | None,
+        contract_version: str | None,
+    ) -> Any | None:
+        """有 WorkLine 上下文时，为料箱挂载投影冲突创建 RuntimeHold。"""
+
+        if workline_id is None:
+            return None
+
+        return await self.runtime_hold_creator.create_for_resource_reconciliation(
+            db,
+            workline_id=workline_id,
+            session_id=workline_session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_reason=str(conflict["reason_code"]),
+            source_event_id=source_event_id,
+            evidence={
+                "resource_type": ResourceType.BIN.value,
+                "exchange_request_code": exchange_request_code,
+                "rack_release_id": rack_release_id,
+                "rack_code": conflict.get("rack_code"),
+                "rack_slot_code": conflict.get("rack_slot_code"),
+                "incoming_bin_code": conflict.get("incoming_bin_code"),
+                "active_bin_code": conflict.get("active_bin_code"),
+                "active_rack_code": conflict.get("active_rack_code"),
+                "active_rack_slot_code": conflict.get("active_rack_slot_code"),
+                "active_source_event_id": conflict.get("active_source_event_id"),
+                "incoming_source_event_id": source_event_id,
+                "source_system": source_system.value,
+                "trace_id": trace_id,
+                "session_id": session_id,
+            },
+        )
 
     async def _create_rack_placement_conflict_hold(
         self,
