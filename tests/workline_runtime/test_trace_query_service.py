@@ -92,6 +92,13 @@ def test_build_trace_response_includes_resource_evidence() -> None:
         full_box_exchange_tasks=[SimpleNamespace(exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE")],
         wms_writeback_evidence=[SimpleNamespace(evidence_code="wms-confirmed-001")],
         rack_bin_mounts=[SimpleNamespace(rack_code="RACK-001", rack_slot_code="A01", bin_code="BIN-001")],
+        runtime_holds=[
+            SimpleNamespace(
+                id=9001,
+                source_reason="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+                evidence_snapshot_json={"exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE"},
+            )
+        ],
     )
 
     response = build_trace_response(result)
@@ -104,6 +111,9 @@ def test_build_trace_response_includes_resource_evidence() -> None:
     assert response.resource_evidence.rack_release_bin_snapshots[0]["slot_code"] == "A01"
     assert response.resource_evidence.wms_writeback_evidence[0]["evidence_code"] == "wms-confirmed-001"
     assert response.resource_evidence.rack_bin_mounts[0]["bin_code"] == "BIN-001"
+    assert response.resource_evidence.runtime_holds[0]["source_reason"] == (
+        "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+    )
 
 
 @pytest.fixture
@@ -228,6 +238,18 @@ def rack_bin_mount_obj() -> SimpleNamespace:
         bin_code="BIN-001",
         source_event_id="wms-event-001",
         trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def runtime_hold_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=9001,
+        trace_id="trace-1",
+        source_kind="RESOURCE_RECONCILIATION",
+        source_reason="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+        source_idempotency_key="resource-reconciliation:POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS:wms-event-001",
+        evidence_snapshot_json={"exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE"},
     )
 
 
@@ -468,6 +490,7 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
     rack_release_snapshot_obj: SimpleNamespace,
     wms_evidence_obj: SimpleNamespace,
     rack_bin_mount_obj: SimpleNamespace,
+    runtime_hold_obj: SimpleNamespace,
 ) -> None:
     """从 exchange_request_code 能追到运行时链路和资源证据链。"""
 
@@ -487,6 +510,7 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
         _ResultStub(rows=[rack_release_obj]),
         _ResultStub(rows=[rack_release_snapshot_obj]),
         _ResultStub(rows=[rack_bin_mount_obj]),
+        _ResultStub(rows=[runtime_hold_obj]),
     )
 
     result = await service.by_exchange_request_code(db, exchange_request_code)
@@ -500,7 +524,8 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
     assert result.rack_releases == [rack_release_obj]
     assert result.rack_release_bin_snapshots == [rack_release_snapshot_obj]
     assert result.rack_bin_mounts == [rack_bin_mount_obj]
-    assert db.execute.await_count == 12
+    assert result.runtime_holds == [runtime_hold_obj]
+    assert db.execute.await_count == 13
 
 
 @pytest.mark.asyncio

@@ -292,6 +292,7 @@ def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
             _resource_evidence_dict(item) for item in getattr(result, "wms_writeback_evidence", [])
         ],
         rack_bin_mounts=[_resource_evidence_dict(item) for item in getattr(result, "rack_bin_mounts", [])],
+        runtime_holds=[_resource_evidence_dict(item) for item in getattr(result, "runtime_holds", [])],
     )
 
 

@@ -295,6 +295,7 @@ class TraceResourceEvidenceResponse(BaseModel):
     full_box_exchange_tasks: list[dict[str, Any]] = Field(default_factory=list)
     wms_writeback_evidence: list[dict[str, Any]] = Field(default_factory=list)
     rack_bin_mounts: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_holds: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TraceDetailResponse(BaseModel):

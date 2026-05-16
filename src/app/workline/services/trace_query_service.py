@@ -41,6 +41,7 @@ from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
+from src.app.workline.models.runtime_hold import RuntimeHold
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.repositories import inbox_repository
 from src.app.workline.repositories.diagnostic_repository import workline_diagnostic_repository
@@ -80,6 +81,13 @@ _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "INBOX_RETRY_EXHAUSTED": ErrorCode.INBOX_RETRY_EXHAUSTED,
 }
 
+_RESOURCE_RECONCILIATION_REASON_CODES: tuple[str, ...] = (
+    "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+    "RACK_BIN_SLOT_CONFLICT",
+    "BIN_ACTIVE_MOUNT_CONFLICT",
+    "RACK_PLACEMENT_CONFLICT",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TraceQueryResult:
@@ -101,6 +109,7 @@ class TraceQueryResult:
     full_box_exchange_tasks: list[FullBoxExchangeTask] = field(default_factory=list)
     wms_writeback_evidence: list[WmsWritebackEvidence] = field(default_factory=list)
     rack_bin_mounts: list[RackBinMount] = field(default_factory=list)
+    runtime_holds: list[RuntimeHold] = field(default_factory=list)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -219,6 +228,11 @@ class TraceQueryService(BaseService[Any, Any]):
             resource_state_events=resource_state_events,
             trace_id=trace_id,
         )
+        runtime_holds = await self._load_runtime_holds_for_resource_events(
+            db,
+            resource_state_events=resource_state_events,
+            trace_id=trace_id,
+        )
 
         return replace(
             result,
@@ -228,6 +242,7 @@ class TraceQueryService(BaseService[Any, Any]):
             full_box_exchange_tasks=[task] if task is not None else [],
             wms_writeback_evidence=wms_writeback_evidence,
             rack_bin_mounts=rack_bin_mounts,
+            runtime_holds=runtime_holds,
         )
 
     async def query(
@@ -471,6 +486,34 @@ class TraceQueryService(BaseService[Any, Any]):
         result = await db.execute(
             select(RackBinMount).where(or_(*predicates)).order_by(columns.rack_code.asc(), columns.rack_slot_code.asc())
         )
+        return list(result.scalars().all())
+
+    async def _load_runtime_holds_for_resource_events(
+        self,
+        db: AsyncSession,
+        *,
+        resource_state_events: list[ResourceStateEvent],
+        trace_id: str | None,
+    ) -> list[RuntimeHold]:
+        columns = cast("Any", RuntimeHold).__table__.c
+        source_event_ids = [
+            source_event_id
+            for event in resource_state_events
+            if (source_event_id := _safe_str(getattr(event, "source_event_id", None))) is not None
+        ]
+        idempotency_keys = [
+            f"resource-reconciliation:{reason_code}:{source_event_id}"
+            for source_event_id in source_event_ids
+            for reason_code in _RESOURCE_RECONCILIATION_REASON_CODES
+        ]
+        predicates = []
+        if idempotency_keys:
+            predicates.append(columns.source_idempotency_key.in_(idempotency_keys))
+        if trace_id:
+            predicates.append((columns.trace_id == trace_id) & (columns.source_kind == "RESOURCE_RECONCILIATION"))
+        if not predicates:
+            return []
+        result = await db.execute(select(RuntimeHold).where(or_(*predicates)).order_by(columns.created_at.asc()))
         return list(result.scalars().all())
 
     async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineInbox]:
