@@ -272,6 +272,55 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
 
 
 @pytest.mark.asyncio
+async def test_external_request_intent_records_full_box_exchange_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    task_calls: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingFullBoxExchangeTaskService:
+        async def record_requested_from_external_request(self, **kwargs: Any) -> None:
+            task_calls.append(kwargs)
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService()).apply(
+        ctx,
+        [
+            RuntimeIntent.external_request(
+                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+                target_code="http://wms-rcs/api/full-box-exchange",
+                payload={
+                    "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+                    "rack_release_id": "release-001",
+                    "exchange_area_code": "SMT-EXCHANGE",
+                    "requested_bins": [{"bin_code": "BIN-001", "rack_slot_code": "A01"}],
+                },
+                timeout_seconds=1800,
+                source_system="WMS_RCS",
+            )
+        ],
+    )
+
+    outbox = db.add.call_args.args[0]
+    assert len(task_calls) == 1
+    assert task_calls[0]["db"] is db
+    assert task_calls[0]["session"] is session
+    assert task_calls[0]["outbox"] is outbox
+    assert task_calls[0]["dispatch_key"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert task_calls[0]["target_code"] == "http://wms-rcs/api/full-box-exchange"
+    assert task_calls[0]["payload_json"]["rack_release_id"] == "release-001"
+    assert task_calls[0]["trace_id"] == "trace-runtime"
+    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
+
+
+@pytest.mark.asyncio
 async def test_command_destination_current_targets_source_device(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     created_payloads: list[dict[str, Any]] = []

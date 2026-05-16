@@ -1,5 +1,12 @@
 """Resource Service 层。"""
 
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.app.resource.models import (
     Bin,
     BinContentSnapshot,
@@ -8,6 +15,7 @@ from src.app.resource.models import (
     BinType,
     ExecutionLocation,
     ExecutionZone,
+    FullBoxExchangeStatus,
     FullBoxExchangeTask,
     Rack,
     RackBinMount,
@@ -185,6 +193,90 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
 
     def __init__(self, repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository) -> None:
         super().__init__(repo)
+
+    async def record_requested_from_external_request(
+        self,
+        db: AsyncSession,
+        *,
+        session: Any,
+        outbox: Any,
+        dispatch_key: str,
+        target_code: str,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+    ) -> FullBoxExchangeTask | None:
+        """把 Runtime 外部请求镜像为满箱交换任务证据。
+
+        Runtime 仍拥有等待状态和 Outbox；资源服务只在 payload 明确携带满箱交换业务键时落业务过程表。
+        """
+
+        _ = target_code
+        exchange_request_code = _optional_text(payload_json.get("exchange_request_code"))
+        rack_release_id = _optional_text(payload_json.get("rack_release_id"))
+        if exchange_request_code is None or rack_release_id is None:
+            return None
+
+        existing = await self.repo.get_by_exchange_request_code(db, exchange_request_code)
+        if existing is not None:
+            return existing
+
+        flush = getattr(db, "flush", None)
+        if callable(flush):
+            await flush()
+
+        data = {
+            "exchange_request_code": exchange_request_code,
+            "rack_release_id": rack_release_id,
+            "session_id": _optional_int(getattr(session, "id", None)),
+            "outbox_id": _optional_int(getattr(outbox, "id", None)),
+            "dispatch_key": dispatch_key,
+            "exchange_status": FullBoxExchangeStatus.REQUESTED,
+            "exchange_area_code": _optional_text(payload_json.get("exchange_area_code")),
+            "requested_bins_json": _requested_bins(payload_json),
+            "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
+            "queue_position": _optional_int(payload_json.get("queue_position")),
+            "eta_seconds": _optional_int(payload_json.get("eta_seconds")),
+            "request_payload_hash": _payload_hash(payload_json),
+            "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
+        }
+        return await self.repo.create(db, data)
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _requested_bins(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_bins = payload_json.get("requested_bins_json")
+    if raw_bins is None:
+        raw_bins = payload_json.get("requested_bins")
+    if not isinstance(raw_bins, Sequence) or isinstance(raw_bins, (str, bytes)):
+        return []
+    return [dict(item) for item in raw_bins if isinstance(item, Mapping)]
+
+
+def _payload_hash(payload_json: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload_json,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 execution_zone_service = ExecutionZoneService()

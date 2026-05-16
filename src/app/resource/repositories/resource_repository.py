@@ -292,6 +292,21 @@ class FullBoxExchangeTaskRepository(BaseRepository[FullBoxExchangeTask]):
     def __init__(self) -> None:
         super().__init__(FullBoxExchangeTask)
 
+    async def get_by_exchange_request_code(
+        self,
+        db: AsyncSession,
+        exchange_request_code: str,
+    ) -> FullBoxExchangeTask | None:
+        """按满箱交换请求编码查询任务镜像。"""
+
+        columns = cast("Any", FullBoxExchangeTask).__table__.c
+        result = await db.execute(
+            select(FullBoxExchangeTask).where(
+                columns.exchange_request_code == exchange_request_code,
+            )
+        )
+        return result.scalar_one_or_none()
+
 
 execution_zone_repository = ExecutionZoneRepository()
 execution_location_repository = ExecutionLocationRepository()
