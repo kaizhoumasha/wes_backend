@@ -62,12 +62,17 @@ class _RecordingWritebackEvidenceService:
 
 
 class _RecordingRelationProjector:
-    def __init__(self) -> None:
+    def __init__(self, status: str = "PROJECTED") -> None:
         self.calls: list[dict[str, Any]] = []
+        self.status = status
 
     async def record_full_box_exchange_physical_completed(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(status="PROJECTED")
+        return SimpleNamespace(
+            status=self.status,
+            reason_code="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+            message="满箱交换回调缺少可投影的料箱挂载关系",
+        )
 
 
 @pytest.mark.asyncio
@@ -230,6 +235,44 @@ async def test_full_box_exchange_task_service_projects_physical_completed_relati
     assert projector.calls[0]["source_event_id"] == "wms-event-001"
     assert projector.calls[0]["source_task_id"] == "wms-task-001"
     assert projector.calls[0]["post_exchange_relations"]["bin_mounts"][0]["bin_code"] == "BIN-001"
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RESOURCE_PROJECTED
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_marks_reconciling_when_relation_projection_rejects() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector(status="RECONCILING")
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "source_version": "1",
+            "occurred_at": "2026-05-16T09:00:00Z",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "post_exchange_relations": {},
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RECONCILING
+    assert repo.updated_payload["failure_code"] == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
 
 
 @pytest.mark.asyncio

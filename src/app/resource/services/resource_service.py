@@ -344,10 +344,19 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             trace_id=trace_id,
             session_id=_optional_text(getattr(task, "session_id", None)),
         )
+        projection_result = await self._project_post_exchange_relations(
+            db,
+            task=task,
+            payload_json=payload_json,
+            trace_id=trace_id,
+        )
         data: dict[str, Any] = {
-            "exchange_status": _resolved_callback_status(status, writeback_evidence),
+            "exchange_status": _resolved_callback_status(status, writeback_evidence, projection_result),
             "last_callback_payload_hash": _payload_hash(payload_json),
         }
+        if _projection_status_value(projection_result) == "RECONCILING":
+            data["failure_code"] = _optional_text(getattr(projection_result, "reason_code", None))
+            data["failure_message"] = _optional_text(getattr(projection_result, "message", None))
         writeback_evidence_id = _optional_int(getattr(writeback_evidence, "id", None))
         if writeback_evidence_id is not None:
             data["writeback_evidence_id"] = writeback_evidence_id
@@ -366,12 +375,6 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             data["version"] = version
 
         updated = await self.repo.update(db, task_id, data)
-        await self._project_post_exchange_relations(
-            db,
-            task=task,
-            payload_json=payload_json,
-            trace_id=trace_id,
-        )
         return updated or task
 
     async def _record_wms_confirmation(
@@ -399,18 +402,18 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         task: FullBoxExchangeTask,
         payload_json: Mapping[str, Any],
         trace_id: str | None,
-    ) -> None:
+    ) -> Any | None:
         status = _exchange_status(payload_json)
         if status not in {FullBoxExchangeStatus.PHYSICAL_COMPLETED, FullBoxExchangeStatus.RESOURCE_PROJECTED}:
-            return
+            return None
         post_exchange_relations = payload_json.get("post_exchange_relations")
         if not isinstance(post_exchange_relations, Mapping):
-            return
+            return None
         source_event_id = _optional_text(payload_json.get("source_event_id"))
         if source_event_id is None:
-            return
+            return None
 
-        await self._resolve_relation_projector().record_full_box_exchange_physical_completed(
+        return await self._resolve_relation_projector().record_full_box_exchange_physical_completed(
             db,
             exchange_request_code=str(task.exchange_request_code),
             rack_release_id=str(task.rack_release_id),
@@ -498,7 +501,23 @@ def _resource_source_system(payload_json: Mapping[str, Any]) -> Any:
         return ResourceSourceSystem.WMS
 
 
-def _resolved_callback_status(status: FullBoxExchangeStatus, writeback_evidence: Any | None) -> FullBoxExchangeStatus:
+def _projection_status_value(projection_result: Any | None) -> str | None:
+    if projection_result is None:
+        return None
+    status = getattr(projection_result, "status", None)
+    return str(getattr(status, "value", status)) if status is not None else None
+
+
+def _resolved_callback_status(
+    status: FullBoxExchangeStatus,
+    writeback_evidence: Any | None,
+    projection_result: Any | None,
+) -> FullBoxExchangeStatus:
+    projection_status = _projection_status_value(projection_result)
+    if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "PROJECTED":
+        return FullBoxExchangeStatus.RESOURCE_PROJECTED
+    if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "RECONCILING":
+        return FullBoxExchangeStatus.RECONCILING
     if status == FullBoxExchangeStatus.WMS_CONFIRMED and writeback_evidence is not None:
         return FullBoxExchangeStatus.BUSINESS_COMPLETED
     return status
