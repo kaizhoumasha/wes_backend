@@ -22,6 +22,7 @@ class _FakeFullBoxExchangeTaskRepository:
         self.existing = existing
         self.lookup_codes: list[str] = []
         self.created_payload: dict[str, Any] | None = None
+        self.updated_payload: dict[str, Any] | None = None
 
     async def get_by_exchange_request_code(self, _db: Any, exchange_request_code: str) -> Any | None:
         self.lookup_codes.append(exchange_request_code)
@@ -30,6 +31,10 @@ class _FakeFullBoxExchangeTaskRepository:
     async def create(self, _db: Any, data: dict[str, Any]) -> Any:
         self.created_payload = data
         return SimpleNamespace(id=77, **data)
+
+    async def update(self, _db: Any, id: int, data: dict[str, Any]) -> Any:
+        self.updated_payload = {"id": id, **data}
+        return SimpleNamespace(id=id, **data)
 
 
 @pytest.mark.asyncio
@@ -112,3 +117,42 @@ async def test_full_box_exchange_task_service_skips_non_full_box_payload() -> No
     assert task is None
     assert repo.lookup_codes == []
     assert repo.created_payload is None
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_records_external_callback_status() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    service = FullBoxExchangeTaskService(repo=repo)  # type: ignore[arg-type]
+
+    task = await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "queue_position": "2",
+            "eta_seconds": 120,
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert task is not None
+    assert repo.lookup_codes == ["external:smt:release-001:FULL_BIN_EXCHANGE"]
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["id"] == 88
+    assert repo.updated_payload["version"] == 3
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.PHYSICAL_COMPLETED
+    assert repo.updated_payload["wms_rcs_task_id"] == "wms-task-001"
+    assert repo.updated_payload["wms_rcs_event_id"] == "wms-event-001"
+    assert repo.updated_payload["queue_position"] == 2
+    assert repo.updated_payload["eta_seconds"] == 120
+    assert repo.updated_payload["last_callback_payload_hash"].startswith("sha256:")
+    assert repo.updated_payload["trace_id"] == "trace-runtime"

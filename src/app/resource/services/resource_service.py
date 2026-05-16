@@ -241,6 +241,51 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         }
         return await self.repo.create(db, data)
 
+    async def record_callback_from_external_http(
+        self,
+        db: AsyncSession,
+        *,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+    ) -> FullBoxExchangeTask | None:
+        """把 WMS/RCS 满箱交换回调归因到任务镜像。"""
+
+        if _optional_text(payload_json.get("callback_type")) != "WMS_FULL_BOX_EXCHANGE_RESULT":
+            return None
+
+        exchange_request_code = _optional_text(payload_json.get("exchange_request_code"))
+        if exchange_request_code is None:
+            return None
+
+        task = await self.repo.get_by_exchange_request_code(db, exchange_request_code)
+        if task is None:
+            return None
+
+        task_id = _optional_int(getattr(task, "id", None))
+        if task_id is None:
+            return task
+
+        data: dict[str, Any] = {
+            "exchange_status": _exchange_status(payload_json),
+            "last_callback_payload_hash": _payload_hash(payload_json),
+        }
+        optional_updates = {
+            "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
+            "wms_rcs_event_id": _optional_text(payload_json.get("source_event_id")),
+            "queue_position": _optional_int(payload_json.get("queue_position")),
+            "eta_seconds": _optional_int(payload_json.get("eta_seconds")),
+            "failure_code": _optional_text(payload_json.get("failure_code")),
+            "failure_message": _optional_text(payload_json.get("failure_message")),
+            "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
+        }
+        data.update({key: value for key, value in optional_updates.items() if value is not None})
+        version = _optional_int(getattr(task, "version", None))
+        if version is not None:
+            data["version"] = version
+
+        updated = await self.repo.update(db, task_id, data)
+        return updated or task
+
 
 def _optional_text(value: Any) -> str | None:
     if value is None:
@@ -277,6 +322,16 @@ def _payload_hash(payload_json: Mapping[str, Any]) -> str:
         ensure_ascii=True,
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _exchange_status(payload_json: Mapping[str, Any]) -> FullBoxExchangeStatus:
+    status_text = _optional_text(payload_json.get("exchange_status"))
+    if status_text is None:
+        raise ValueError("exchange_status is required")
+    try:
+        return FullBoxExchangeStatus(status_text)
+    except ValueError as exc:
+        raise ValueError(f"unsupported full box exchange_status: {status_text}") from exc
 
 
 execution_zone_service = ExecutionZoneService()

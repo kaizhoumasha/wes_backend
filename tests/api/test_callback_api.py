@@ -3,7 +3,7 @@
 import importlib
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -235,6 +235,48 @@ class TestCallbackEnqueueFallback:
             )
 
         db_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_external_records_full_box_exchange_callback(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        calls: list[dict[str, Any]] = []
+
+        class FakeInboxService:
+            async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
+
+        class RecordingFullBoxExchangeTaskService:
+            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
+                calls.append(kwargs)
+
+        service = CallbackOrchestrationService(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService())
+        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        db = SimpleNamespace()
+        payload = create_wms_external_payload(
+            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+            exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+            rack_release_id="release-001",
+            wms_rcs_task_id="wms-task-001",
+            exchange_status="PHYSICAL_COMPLETED",
+            post_exchange_relations={"rack_code": "RACK-002"},
+        )
+
+        outcome = await service.process_external(
+            db,  # type: ignore[arg-type]
+            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+            payload=payload,
+            request_id="req-wms-physical",
+            trace_id="trace-wms-001",
+            inbox_service=FakeInboxService(),  # type: ignore[arg-type]
+            enqueue_processing=lambda: None,
+        )
+
+        assert outcome.trace_id == "trace-wms-001"
+        assert len(calls) == 1
+        assert calls[0]["db"] is db
+        assert calls[0]["payload_json"]["exchange_status"] == "PHYSICAL_COMPLETED"
+        assert calls[0]["trace_id"] == "trace-wms-001"
 
 
 class TestCallbackResultAPI:
