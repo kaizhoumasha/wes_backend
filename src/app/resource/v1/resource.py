@@ -24,7 +24,19 @@ from src.app.resource.models import (
     ExecutionZoneResponse,
     ExecutionZoneUpdate,
     Rack,
+    RackBinMount,
+    RackBinMountCreate,
+    RackBinMountResponse,
+    RackBinMountUpdate,
     RackCreate,
+    RackMaterialMount,
+    RackMaterialMountCreate,
+    RackMaterialMountResponse,
+    RackMaterialMountUpdate,
+    RackPlacement,
+    RackPlacementCreate,
+    RackPlacementResponse,
+    RackPlacementUpdate,
     RackResponse,
     RackSlotTemplate,
     RackSlotTemplateCreate,
@@ -35,6 +47,10 @@ from src.app.resource.models import (
     RackTypeResponse,
     RackTypeUpdate,
     RackUpdate,
+    ResourceStateEvent,
+    ResourceStateEventCreate,
+    ResourceStateEventResponse,
+    ResourceStateEventUpdate,
 )
 from src.app.resource.services import (
     bin_service,
@@ -42,9 +58,13 @@ from src.app.resource.services import (
     bin_type_service,
     execution_location_service,
     execution_zone_service,
+    rack_bin_mount_service,
+    rack_material_mount_service,
+    rack_placement_service,
     rack_service,
     rack_slot_template_service,
     rack_type_service,
+    resource_state_event_service,
 )
 from src.core.base_api import BaseAPI
 
@@ -136,6 +156,62 @@ bin_api = BaseAPI(
     tags=["资源模型-料箱实例"],
 )
 
+resource_state_event_api = BaseAPI(
+    module_name="resource",
+    model=ResourceStateEvent,
+    service=resource_state_event_service,
+    create_schema=ResourceStateEventCreate,
+    update_schema=ResourceStateEventUpdate,
+    response_schema=ResourceStateEventResponse,
+    prefix="/state-events",
+    tags=["资源模型-事实账本"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
+rack_placement_api = BaseAPI(
+    module_name="resource",
+    model=RackPlacement,
+    service=rack_placement_service,
+    create_schema=RackPlacementCreate,
+    update_schema=RackPlacementUpdate,
+    response_schema=RackPlacementResponse,
+    prefix="/rack-placements",
+    tags=["资源模型-货架位置投影"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
+rack_bin_mount_api = BaseAPI(
+    module_name="resource",
+    model=RackBinMount,
+    service=rack_bin_mount_service,
+    create_schema=RackBinMountCreate,
+    update_schema=RackBinMountUpdate,
+    response_schema=RackBinMountResponse,
+    prefix="/rack-bin-mounts",
+    tags=["资源模型-料箱挂载投影"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
+rack_material_mount_api = BaseAPI(
+    module_name="resource",
+    model=RackMaterialMount,
+    service=rack_material_mount_service,
+    create_schema=RackMaterialMountCreate,
+    update_schema=RackMaterialMountUpdate,
+    response_schema=RackMaterialMountResponse,
+    prefix="/rack-material-mounts",
+    tags=["资源模型-物料卡槽投影"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
 router = APIRouter()
 router.include_router(execution_zone_api.router)
 router.include_router(execution_location_api.router)
@@ -145,5 +221,9 @@ router.include_router(rack_api.router)
 router.include_router(bin_type_api.router)
 router.include_router(bin_slot_template_api.router)
 router.include_router(bin_api.router)
+router.include_router(resource_state_event_api.router)
+router.include_router(rack_placement_api.router)
+router.include_router(rack_bin_mount_api.router)
+router.include_router(rack_material_mount_api.router)
 
 __all__ = ["router"]

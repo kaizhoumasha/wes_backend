@@ -60,6 +60,32 @@ def test_first_stage_resource_tables_are_registered_with_required_fields() -> No
         assert model.__schema__ == "wes_biz"
 
 
+def test_second_stage_resource_fact_and_projection_tables_are_registered() -> None:
+    """第二阶段资源事实账本与当前投影表必须进入 SQLModel metadata。"""
+
+    from src.app.resource.models import (
+        RackBinMount,
+        RackMaterialMount,
+        RackPlacement,
+        ResourceStateEvent,
+        ResourceStateEventType,
+    )
+
+    expected_tables = {
+        "wes_biz.resource_state_events",
+        "wes_biz.resource_rack_placements",
+        "wes_biz.resource_rack_bin_mounts",
+        "wes_biz.resource_rack_material_mounts",
+    }
+
+    assert expected_tables.issubset(SQLModel.metadata.tables)
+    assert ResourceStateEventType.RACK_ARRIVED.value == "RACK_ARRIVED"
+    assert ResourceStateEvent.__table__.c.source_event_id.nullable is False
+    assert RackPlacement.__table__.c.ended_at.nullable is True
+    assert RackBinMount.__table__.c.bin_code.nullable is False
+    assert RackMaterialMount.__table__.c.material_identity_key.nullable is False
+
+
 def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
     """resource v1 路由应暴露第一阶段底座资源的查询入口。"""
 
@@ -75,3 +101,25 @@ def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
     assert "/v1/resource/bin-types/query" in paths
     assert "/v1/resource/bin-slot-templates/query" in paths
     assert "/v1/resource/bins/query" in paths
+
+
+def test_resource_v1_router_exposes_second_stage_readonly_routes() -> None:
+    """第二阶段事实账本与当前投影只暴露查询/详情，写入必须走 ResourceRelationService。"""
+
+    from src.app.resource import router_v1
+
+    paths = {route.path for route in router_v1.routes}
+    route_methods = {(route.path, method) for route in router_v1.routes for method in getattr(route, "methods", set())}
+    readonly_prefixes = (
+        "/v1/resource/state-events",
+        "/v1/resource/rack-placements",
+        "/v1/resource/rack-bin-mounts",
+        "/v1/resource/rack-material-mounts",
+    )
+
+    for prefix in readonly_prefixes:
+        assert f"{prefix}/query" in paths
+        assert f"{prefix}/{{id}}" in paths
+        assert (prefix, "POST") not in route_methods
+        assert (f"{prefix}/{{id}}", "PUT") not in route_methods
+        assert (f"{prefix}/{{id}}", "DELETE") not in route_methods

@@ -7,8 +7,12 @@ from src.app.resource.models import (
     ExecutionLocation,
     ExecutionZone,
     Rack,
+    RackBinMount,
+    RackMaterialMount,
+    RackPlacement,
     RackSlotTemplate,
     RackType,
+    ResourceStateEvent,
 )
 from src.app.resource.repositories import (
     BinRepository,
@@ -16,17 +20,25 @@ from src.app.resource.repositories import (
     BinTypeRepository,
     ExecutionLocationRepository,
     ExecutionZoneRepository,
+    RackBinMountRepository,
+    RackMaterialMountRepository,
+    RackPlacementRepository,
     RackRepository,
     RackSlotTemplateRepository,
     RackTypeRepository,
+    ResourceStateEventRepository,
     bin_repository,
     bin_slot_template_repository,
     bin_type_repository,
     execution_location_repository,
     execution_zone_repository,
+    rack_bin_mount_repository,
+    rack_material_mount_repository,
+    rack_placement_repository,
     rack_repository,
     rack_slot_template_repository,
     rack_type_repository,
+    resource_state_event_repository,
 )
 from src.core.base_service import BaseService
 
@@ -87,6 +99,34 @@ class BinService(BaseService[Bin, BinRepository]):
         super().__init__(repo)
 
 
+class ResourceStateEventService(BaseService[ResourceStateEvent, ResourceStateEventRepository]):
+    """资源事实 Service。"""
+
+    def __init__(self, repo: ResourceStateEventRepository = resource_state_event_repository) -> None:
+        super().__init__(repo)
+
+
+class RackPlacementService(BaseService[RackPlacement, RackPlacementRepository]):
+    """货架位置投影 Service。"""
+
+    def __init__(self, repo: RackPlacementRepository = rack_placement_repository) -> None:
+        super().__init__(repo)
+
+
+class RackBinMountService(BaseService[RackBinMount, RackBinMountRepository]):
+    """料箱挂载投影 Service。"""
+
+    def __init__(self, repo: RackBinMountRepository = rack_bin_mount_repository) -> None:
+        super().__init__(repo)
+
+
+class RackMaterialMountService(BaseService[RackMaterialMount, RackMaterialMountRepository]):
+    """物料卡槽投影 Service。"""
+
+    def __init__(self, repo: RackMaterialMountRepository = rack_material_mount_repository) -> None:
+        super().__init__(repo)
+
+
 execution_zone_service = ExecutionZoneService()
 execution_location_service = ExecutionLocationService()
 rack_type_service = RackTypeService()
@@ -95,6 +135,10 @@ rack_service = RackService()
 bin_type_service = BinTypeService()
 bin_slot_template_service = BinSlotTemplateService()
 bin_service = BinService()
+resource_state_event_service = ResourceStateEventService()
+rack_placement_service = RackPlacementService()
+rack_bin_mount_service = RackBinMountService()
+rack_material_mount_service = RackMaterialMountService()
 
 __all__ = [
     "BinService",
@@ -102,15 +146,23 @@ __all__ = [
     "BinTypeService",
     "ExecutionLocationService",
     "ExecutionZoneService",
+    "RackBinMountService",
+    "RackMaterialMountService",
+    "RackPlacementService",
     "RackService",
     "RackSlotTemplateService",
     "RackTypeService",
+    "ResourceStateEventService",
     "bin_service",
     "bin_slot_template_service",
     "bin_type_service",
     "execution_location_service",
     "execution_zone_service",
+    "rack_bin_mount_service",
+    "rack_material_mount_service",
+    "rack_placement_service",
     "rack_service",
     "rack_slot_template_service",
     "rack_type_service",
+    "resource_state_event_service",
 ]

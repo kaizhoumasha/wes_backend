@@ -146,6 +146,72 @@ class BinSlotSize(str, Enum):
     LARGE = "LARGE"
 
 
+class ResourceStateEventType(str, Enum):
+    """资源事实事件类型。"""
+
+    RACK_ARRIVED = "RACK_ARRIVED"
+    RACK_DEPARTED = "RACK_DEPARTED"
+    BIN_MOUNTED = "BIN_MOUNTED"
+    BIN_UNMOUNTED = "BIN_UNMOUNTED"
+    MATERIAL_MOUNTED = "MATERIAL_MOUNTED"
+    MATERIAL_UNMOUNTED = "MATERIAL_UNMOUNTED"
+    EXCHANGE_STATUS_UPDATED = "EXCHANGE_STATUS_UPDATED"
+    RESOURCE_RECONCILED = "RESOURCE_RECONCILED"
+
+
+class RackPlacementStatus(str, Enum):
+    """货架位置投影状态。"""
+
+    ARRIVED = "ARRIVED"
+    IN_TRANSIT = "IN_TRANSIT"
+    DEPARTED = "DEPARTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class RackBinMountStatus(str, Enum):
+    """料箱挂载投影状态。"""
+
+    MOUNTED = "MOUNTED"
+    UNMOUNTED = "UNMOUNTED"
+    EXCHANGING = "EXCHANGING"
+    UNKNOWN = "UNKNOWN"
+
+
+class RackMaterialMountStatus(str, Enum):
+    """物料卡槽投影状态。"""
+
+    OCCUPIED = "OCCUPIED"
+    REMOVED = "REMOVED"
+    LOCKED = "LOCKED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ResourceRelationSourceSystem(str, Enum):
+    """资源关系投影来源。"""
+
+    ECS = "ECS"
+    WMS_RCS = "WMS_RCS"
+    WES_RUNTIME = "WES_RUNTIME"
+    MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION"
+
+
+class WmsSplitPolicy(str, Enum):
+    """WMS 物料拆分策略。"""
+
+    NOT_SPLITTABLE = "NOT_SPLITTABLE"
+    SPLITTABLE = "SPLITTABLE"
+    UNKNOWN = "UNKNOWN"
+
+
+class WmsConfirmationStatus(str, Enum):
+    """WMS 确认状态。"""
+
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    NOT_REQUIRED = "NOT_REQUIRED"
+
+
 class ExecutionZoneBase(BaseMixin):
     """执行区域基础字段。"""
 
@@ -404,6 +470,194 @@ class Bin(BinBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True)
     )
 
 
+class ResourceStateEventBase(BaseMixin):
+    """资源 append-only 事实基础字段。"""
+
+    event_code: str = Field(min_length=1, max_length=160, index=True, description="资源事件唯一编码")
+    event_type: ResourceStateEventType = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceStateEventType, native_enum=False, create_constraint=True, length=80)),
+        description="资源事件类型",
+    )
+    resource_type: ResourceType = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceType, native_enum=False, create_constraint=True, length=50)),
+        description="资源类型",
+    )
+    resource_code: str = Field(min_length=1, max_length=120, index=True, description="资源编码")
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="事件事实")
+    occurred_at: datetime = Field(description="事实发生时间")
+    received_at: datetime = Field(description="WES 接收时间")
+
+
+class ResourceStateEvent(ResourceStateEventBase, EnterpriseMixin, DataTableMixin, table=True):
+    """资源 append-only 事实账本。"""
+
+    __tablename__: ClassVar[Literal["resource_state_events"]] = "resource_state_events"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_resource_state_events_event_code", "event_code", unique=True),
+        Index("ux_resource_state_events_source_event", "source_system", "source_event_id", unique=True),
+        Index("ix_resource_state_events_resource_time", "resource_type", "resource_code", "occurred_at"),
+    )
+
+
+class RackPlacementBase(BaseMixin):
+    """货架当前地码投影基础字段。"""
+
+    rack_code: str = Field(min_length=1, max_length=80, index=True, description="货架编码")
+    location_code: str = Field(min_length=1, max_length=80, index=True, description="地码编码")
+    placement_status: RackPlacementStatus = Field(
+        default=RackPlacementStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(RackPlacementStatus, native_enum=False, create_constraint=True, length=50)),
+        description="位置投影状态",
+    )
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="来源系统",
+    )
+    source_task_id: str | None = Field(default=None, max_length=120, description="WMS/RCS 搬运任务 ID")
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    started_at: datetime = Field(description="进入该关系的时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="离开该关系的时间")
+
+
+class RackPlacement(RackPlacementBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+    """货架处于哪个执行地码的当前投影与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_rack_placements"]] = "resource_rack_placements"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_rack_placements_active_rack",
+            "rack_code",
+            unique=True,
+            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+        ),
+        Index("ix_resource_rack_placements_location_active", "location_code", "ended_at"),
+    )
+
+
+class RackBinMountBase(BaseMixin):
+    """料箱挂载投影基础字段。"""
+
+    rack_code: str = Field(min_length=1, max_length=80, index=True, description="货架编码")
+    rack_slot_code: str = Field(min_length=1, max_length=50, index=True, description="货架槽位编码")
+    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
+    mount_status: RackBinMountStatus = Field(
+        default=RackBinMountStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(RackBinMountStatus, native_enum=False, create_constraint=True, length=50)),
+        description="料箱挂载状态",
+    )
+    source_system: ResourceRelationSourceSystem = Field(
+        sa_type=cast(
+            "Any", SQLAEnum(ResourceRelationSourceSystem, native_enum=False, create_constraint=True, length=50)
+        ),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    started_at: datetime = Field(description="挂载确认时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="解除挂载时间")
+
+
+class RackBinMount(RackBinMountBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+    """料箱挂载在哪个货架槽位的当前投影与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_rack_bin_mounts"]] = "resource_rack_bin_mounts"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_rack_bin_mounts_active_slot",
+            "rack_code",
+            "rack_slot_code",
+            unique=True,
+            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+        ),
+        Index(
+            "ux_resource_rack_bin_mounts_active_bin",
+            "bin_code",
+            unique=True,
+            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+        ),
+    )
+
+
+class RackMaterialMountBase(BaseMixin):
+    """物料卡槽投影基础字段。"""
+
+    rack_code: str = Field(min_length=1, max_length=80, index=True, description="货架编码")
+    rack_slot_code: str = Field(min_length=1, max_length=50, index=True, description="卡槽货位")
+    material_identity_key: str = Field(min_length=1, max_length=300, index=True, description="WES 过程物料身份幂等键")
+    pkg_code: str | None = Field(default=None, max_length=200, description="PKG 展示字段")
+    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
+    lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
+    vendor_code: str | None = Field(default=None, max_length=120, description="供应商引用")
+    qty_snapshot: float | None = Field(default=None, ge=0, description="当时执行过程看到的数量")
+    wms_inventory_id: str | None = Field(default=None, max_length=120, index=True, description="WMS 库存记录引用")
+    wms_inventory_version: str | None = Field(default=None, max_length=120, description="WMS 库存或分拆版本引用")
+    wms_split_policy: WmsSplitPolicy = Field(
+        default=WmsSplitPolicy.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(WmsSplitPolicy, native_enum=False, create_constraint=True, length=50)),
+        description="WMS 物料拆分策略",
+    )
+    wms_confirmation_status: WmsConfirmationStatus = Field(
+        default=WmsConfirmationStatus.PENDING,
+        sa_type=cast("Any", SQLAEnum(WmsConfirmationStatus, native_enum=False, create_constraint=True, length=50)),
+        description="WMS 确认状态",
+    )
+    writeback_evidence_id: int | None = Field(default=None, description="关联 WMS 回写证据")
+    mount_status: RackMaterialMountStatus = Field(
+        default=RackMaterialMountStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(RackMaterialMountStatus, native_enum=False, create_constraint=True, length=50)),
+        description="物料占用状态",
+    )
+    source_system: ResourceRelationSourceSystem = Field(
+        sa_type=cast(
+            "Any", SQLAEnum(ResourceRelationSourceSystem, native_enum=False, create_constraint=True, length=50)
+        ),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    started_at: datetime = Field(description="占用确认时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="离开卡槽时间")
+
+
+class RackMaterialMount(RackMaterialMountBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+    """物料/PKG/料盘直接占用哪个卡槽式货架槽位的当前投影与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_rack_material_mounts"]] = "resource_rack_material_mounts"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_rack_material_mounts_active_slot",
+            "rack_code",
+            "rack_slot_code",
+            unique=True,
+            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+        ),
+        Index(
+            "ix_resource_rack_material_mounts_identity_active",
+            "material_identity_key",
+            "ended_at",
+        ),
+    )
+
+
 class ExecutionZoneCreate(ModelFactory(ExecutionZoneBase).for_create()):
     """执行区域创建 Schema。"""
 
@@ -524,6 +778,66 @@ class BinResponse(BinBase):
     version: int
 
 
+class ResourceStateEventCreate(ModelFactory(ResourceStateEventBase).for_create()):
+    """资源事实创建 Schema。"""
+
+
+class ResourceStateEventUpdate(ModelFactory(ResourceStateEventBase).for_optimistic_update()):
+    """资源事实更新 Schema。"""
+
+
+class ResourceStateEventResponse(ResourceStateEventBase):
+    """资源事实响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class RackPlacementCreate(ModelFactory(RackPlacementBase).for_create()):
+    """货架位置投影创建 Schema。"""
+
+
+class RackPlacementUpdate(ModelFactory(RackPlacementBase).for_optimistic_update()):
+    """货架位置投影更新 Schema。"""
+
+
+class RackPlacementResponse(RackPlacementBase):
+    """货架位置投影响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class RackBinMountCreate(ModelFactory(RackBinMountBase).for_create()):
+    """料箱挂载投影创建 Schema。"""
+
+
+class RackBinMountUpdate(ModelFactory(RackBinMountBase).for_optimistic_update()):
+    """料箱挂载投影更新 Schema。"""
+
+
+class RackBinMountResponse(RackBinMountBase):
+    """料箱挂载投影响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class RackMaterialMountCreate(ModelFactory(RackMaterialMountBase).for_create()):
+    """物料卡槽投影创建 Schema。"""
+
+
+class RackMaterialMountUpdate(ModelFactory(RackMaterialMountBase).for_optimistic_update()):
+    """物料卡槽投影更新 Schema。"""
+
+
+class RackMaterialMountResponse(RackMaterialMountBase):
+    """物料卡槽投影响应 Schema。"""
+
+    id: int
+    version: int
+
+
 __all__ = [
     "Bin",
     "BinBase",
@@ -557,8 +871,26 @@ __all__ = [
     "ExecutionZoneUpdate",
     "Rack",
     "RackBase",
+    "RackBinMount",
+    "RackBinMountBase",
+    "RackBinMountCreate",
+    "RackBinMountResponse",
+    "RackBinMountStatus",
+    "RackBinMountUpdate",
     "RackCreate",
     "RackKind",
+    "RackMaterialMount",
+    "RackMaterialMountBase",
+    "RackMaterialMountCreate",
+    "RackMaterialMountResponse",
+    "RackMaterialMountStatus",
+    "RackMaterialMountUpdate",
+    "RackPlacement",
+    "RackPlacementBase",
+    "RackPlacementCreate",
+    "RackPlacementResponse",
+    "RackPlacementStatus",
+    "RackPlacementUpdate",
     "RackResponse",
     "RackSlotKind",
     "RackSlotSide",
@@ -576,6 +908,15 @@ __all__ = [
     "RackUpdate",
     "ResourceMasterStatus",
     "ResourceRef",
+    "ResourceRelationSourceSystem",
     "ResourceSourceSystem",
+    "ResourceStateEvent",
+    "ResourceStateEventBase",
+    "ResourceStateEventCreate",
+    "ResourceStateEventResponse",
+    "ResourceStateEventType",
+    "ResourceStateEventUpdate",
     "ResourceType",
+    "WmsConfirmationStatus",
+    "WmsSplitPolicy",
 ]

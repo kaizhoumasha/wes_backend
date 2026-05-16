@@ -39,8 +39,12 @@ from src.app.resource.models import (  # noqa: F401
     ExecutionLocation,
     ExecutionZone,
     Rack,
+    RackBinMount,
+    RackMaterialMount,
+    RackPlacement,
     RackSlotTemplate,
     RackType,
+    ResourceStateEvent,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 
