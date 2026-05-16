@@ -7,7 +7,7 @@ from typing import Any
 
 from src.workline_plugins.smt_full_box_exchange.contract import (
     SINGLE_LAYER_RACK_RELEASED,
-    SMT_FULL_BOX_EXCHANGE_CALLBACK,
+    WMS_FULL_BOX_EXCHANGE_CALLBACK,
     resolve_smt_full_box_exchange_business_key,
 )
 from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
@@ -127,7 +127,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         payload = getattr(inbox, "payload_json", None)
         if not isinstance(payload, Mapping):
             return [build_payload_invalid_block("SMT 满箱交换回调 payload 非法")]
-        if payload.get("callback_type") != SMT_FULL_BOX_EXCHANGE_CALLBACK:
+        if payload.get("callback_type") != WMS_FULL_BOX_EXCHANGE_CALLBACK:
             return [build_payload_invalid_block("SMT 满箱交换回调 callback_type 不支持")]
 
         status = _non_empty_upper(payload.get("exchange_status"))

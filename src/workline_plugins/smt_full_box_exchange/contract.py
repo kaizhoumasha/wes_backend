@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from typing import Any
 
 SINGLE_LAYER_RACK_RELEASED = "SINGLE_LAYER_RACK_RELEASED"
-SMT_FULL_BOX_EXCHANGE_CALLBACK = "SMT_FULL_BOX_EXCHANGE"
+WMS_FULL_BOX_EXCHANGE_CALLBACK = "WMS_FULL_BOX_EXCHANGE_RESULT"
+SMT_FULL_BOX_EXCHANGE_CALLBACK = WMS_FULL_BOX_EXCHANGE_CALLBACK
 
 
 def resolve_smt_full_box_exchange_business_key(payload_json: dict[str, Any]) -> str | None:
@@ -22,5 +23,6 @@ def resolve_smt_full_box_exchange_business_key(payload_json: dict[str, Any]) -> 
 __all__ = [
     "SINGLE_LAYER_RACK_RELEASED",
     "SMT_FULL_BOX_EXCHANGE_CALLBACK",
+    "WMS_FULL_BOX_EXCHANGE_CALLBACK",
     "resolve_smt_full_box_exchange_business_key",
 ]

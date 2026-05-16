@@ -98,7 +98,7 @@ async def test_external_progress_callback_updates_context_without_completion() -
         _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
         _inbox(
             {
-                "callback_type": "SMT_FULL_BOX_EXCHANGE",
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": "QUEUED",
                 "queue_position": 2,
@@ -117,7 +117,7 @@ async def test_business_completed_callback_completes_session() -> None:
         _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
         _inbox(
             {
-                "callback_type": "SMT_FULL_BOX_EXCHANGE",
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": "BUSINESS_COMPLETED",
                 "wms_confirmation": {"wms_document_id": "WMS-DOC-001"},
@@ -150,7 +150,7 @@ async def test_external_failure_callback_blocks_with_status_specific_reason(
         _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
         _inbox(
             {
-                "callback_type": "SMT_FULL_BOX_EXCHANGE",
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": exchange_status,
             }
