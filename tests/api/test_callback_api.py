@@ -175,6 +175,24 @@ def create_external_payload(**overrides: object) -> JsonDict:
     return payload
 
 
+def create_wms_external_payload(**overrides: object) -> JsonDict:
+    payload: JsonDict = {
+        "callback_type": "WMS_RACK_ARRIVED",
+        "trace_id": "trace-wms-001",
+        "dispatch_key": "external:smt_classifier:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
+        "source_system": "WMS",
+        "source_event_id": "wms-event-001",
+        "source_version": "1",
+        "occurred_at": "2026-05-16T08:00:00Z",
+        "request_id": "REQ-WMS-001",
+        "timestamp": "2026-05-16T08:00:01Z",
+        "signature": "test-signature",
+        "active_bin_rack": {"rack_id": "RACK-001", "cells": []},
+    }
+    payload.update(overrides)
+    return payload
+
+
 class TestCallbackIngressRouteContracts:
     @pytest.mark.parametrize(
         ("path", "response_model"),
@@ -1380,3 +1398,138 @@ class TestCallbackExternalAPI:
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "missing_field",
+        [
+            "dispatch_key",
+            "source_system",
+            "source_event_id",
+            "source_version",
+            "occurred_at",
+            "request_id",
+            "timestamp",
+            "signature",
+        ],
+    )
+    async def test_callback_external_rejects_wms_rcs_execution_missing_required_envelope_field(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+        missing_field: str,
+    ) -> None:
+        payload = create_wms_external_payload()
+        payload.pop(missing_field)
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-missing-field"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        assert missing_field in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_full_box_physical_completed_without_post_exchange_relations(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-physical"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(
+                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+                        rack_release_id="release-001",
+                        wms_rcs_task_id="wms-task-001",
+                        exchange_status="PHYSICAL_COMPLETED",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_full_box_wms_confirmed_without_confirmation(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-confirmed"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(
+                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+                        rack_release_id="release-001",
+                        wms_rcs_task_id="wms-task-001",
+                        exchange_status="WMS_CONFIRMED",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
