@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from src.app.resource.models import RackReleaseStatus
 from src.app.resource.repositories import rack_release_bin_snapshot_repository, rack_release_repository
@@ -32,6 +32,16 @@ class SmtFullBoxExchangeCandidateResult:
     inbox: Any | None = None
     reason_code: str | None = None
     message: str | None = None
+
+
+class SmtFullBoxExchangeCandidateScanResult(TypedDict):
+    """SMT 满箱交换候选批量扫描统计。"""
+
+    scanned: int
+    inbox_created: int
+    already_linked: int
+    skipped: int
+    errors: int
 
 
 class SmtFullBoxExchangeCandidateService:
@@ -118,6 +128,51 @@ class SmtFullBoxExchangeCandidateService:
             rack_release_id=rack_release_id,
             inbox=created_inbox,
         )
+
+    async def scan_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        source_device_code: str,
+        limit: int = 50,
+        auto_commit: bool = True,
+    ) -> SmtFullBoxExchangeCandidateScanResult:
+        """批量扫描释放候选并派生满箱交换入口 Inbox。"""
+
+        candidates = await self.rack_release_repo.list_full_box_exchange_candidates(db, limit=limit)
+        result: SmtFullBoxExchangeCandidateScanResult = {
+            "scanned": len(candidates),
+            "inbox_created": 0,
+            "already_linked": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        for release in candidates:
+            rack_release_id = _optional_text(getattr(release, "rack_release_id", None))
+            if rack_release_id is None:
+                result["errors"] += 1
+                continue
+            try:
+                candidate_result = await self.create_inbox_for_release(
+                    db,
+                    rack_release_id=rack_release_id,
+                    source_device_code=source_device_code,
+                    auto_commit=False,
+                )
+            except Exception:
+                result["errors"] += 1
+                continue
+
+            if candidate_result.status == SmtFullBoxExchangeCandidateStatus.INBOX_CREATED:
+                result["inbox_created"] += 1
+            elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.ALREADY_LINKED:
+                result["already_linked"] += 1
+            elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.SKIPPED:
+                result["skipped"] += 1
+
+        if auto_commit:
+            await db.commit()
+        return result
 
     async def _mark_release_inbox_created(
         self,
@@ -239,6 +294,7 @@ smt_full_box_exchange_candidate_service = SmtFullBoxExchangeCandidateService()
 
 __all__ = [
     "SmtFullBoxExchangeCandidateResult",
+    "SmtFullBoxExchangeCandidateScanResult",
     "SmtFullBoxExchangeCandidateService",
     "SmtFullBoxExchangeCandidateStatus",
     "smt_full_box_exchange_candidate_service",

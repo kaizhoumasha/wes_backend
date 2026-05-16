@@ -16,6 +16,7 @@ from .runtime_reconciliation_service import (
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .smt_full_box_exchange_candidate_service import (
     SmtFullBoxExchangeCandidateResult,
+    SmtFullBoxExchangeCandidateScanResult,
     SmtFullBoxExchangeCandidateService,
     SmtFullBoxExchangeCandidateStatus,
     smt_full_box_exchange_candidate_service,
@@ -31,6 +32,7 @@ __all__ = [
     "RuntimeHoldReleaseService",
     "RuntimeQueryService",
     "SmtFullBoxExchangeCandidateResult",
+    "SmtFullBoxExchangeCandidateScanResult",
     "SmtFullBoxExchangeCandidateService",
     "SmtFullBoxExchangeCandidateStatus",
     "TraceQueryResult",

@@ -20,6 +20,7 @@ from src.app.resource.models import (
     RackPlacement,
     RackRelease,
     RackReleaseBinSnapshot,
+    RackReleaseStatus,
     RackSlotTemplate,
     RackType,
     ResourceSourceSystem,
@@ -274,6 +275,27 @@ class RackReleaseRepository(BaseRepository[RackRelease]):
             )
         )
         return result.scalar_one_or_none()
+
+    async def list_full_box_exchange_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 50,
+    ) -> list[RackRelease]:
+        """查询可派生满箱交换入口 Inbox 的释放周期。"""
+
+        columns = cast("Any", RackRelease).__table__.c
+        result = await db.execute(
+            select(RackRelease)
+            .where(
+                columns.release_status == RackReleaseStatus.CANDIDATE.value,
+                columns.moved_out_at.is_not(None),
+                columns.inbox_id.is_(None),
+            )
+            .order_by(columns.released_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
 
 class RackReleaseBinSnapshotRepository(BaseRepository[RackReleaseBinSnapshot]):

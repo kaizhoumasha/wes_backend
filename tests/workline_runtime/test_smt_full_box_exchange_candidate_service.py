@@ -33,6 +33,10 @@ class _FakeRackReleaseRepository:
             setattr(self.release, key, value)
         return self.release
 
+    async def list_full_box_exchange_candidates(self, _db: Any, *, limit: int) -> list[Any]:
+        _ = limit
+        return [self.release] if self.release is not None else []
+
 
 class _FakeRackReleaseBinSnapshotRepository:
     def __init__(self, snapshots: list[Any]) -> None:
@@ -170,3 +174,29 @@ async def test_candidate_service_skips_incomplete_four_bin_snapshot() -> None:
     assert result.reason_code == "RACK_RELEASE_SNAPSHOT_INCOMPLETE"
     assert inbox_service.calls == []
     assert release_repo.updated_payload is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_batch_scan_counts_created_inbox() -> None:
+    release_repo = _FakeRackReleaseRepository(_release())
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository(_snapshots())
+    inbox_service = _FakeInboxService()
+    service = SmtFullBoxExchangeCandidateService(
+        rack_release_repo=release_repo,
+        rack_release_snapshot_repo=snapshot_repo,
+        inbox_service=inbox_service,
+    )
+
+    result = await service.scan_candidates(
+        _FakeDb(),
+        source_device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
+        limit=20,
+    )
+
+    assert result == {
+        "scanned": 1,
+        "inbox_created": 1,
+        "already_linked": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
