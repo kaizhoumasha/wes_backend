@@ -1,0 +1,312 @@
+"""SMT 满箱交换插件。"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from src.workline_plugins.smt_full_box_exchange.contract import (
+    SINGLE_LAYER_RACK_RELEASED,
+    SMT_FULL_BOX_EXCHANGE_CALLBACK,
+    resolve_smt_full_box_exchange_business_key,
+)
+from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
+
+_PROGRESS_STATUSES = {"ACCEPTED", "QUEUED", "IN_PROGRESS", "PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
+_FAILURE_STATUSES = {"REJECTED", "WMS_REJECTED", "FAILED", "CANCELLED", "RECONCILING"}
+_WMS_CONFIRMATION_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
+
+
+class SmtFullBoxExchangePlugin(WorklinePlugin):
+    """SMT 单层货架满箱交换插件。"""
+
+    plugin_key = "smt_full_box_exchange"
+    contract_version = "1.0"
+    manifest = WorklinePluginManifest(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        required_device_roles=(
+            DeviceRoleRequirement(
+                "RACK_RELEASE_SOURCE",
+                min_count=1,
+                max_count=1,
+                capabilities=frozenset({SINGLE_LAYER_RACK_RELEASED}),
+            ),
+        ),
+        business_key_resolver=resolve_smt_full_box_exchange_business_key,
+        event_source_roles={SINGLE_LAYER_RACK_RELEASED: "RACK_RELEASE_SOURCE"},
+        supported_events=frozenset({SINGLE_LAYER_RACK_RELEASED}),
+    )
+
+    @on_event(SINGLE_LAYER_RACK_RELEASED)
+    async def handle_rack_released(self, ctx: Any, inbox: Any) -> list[RuntimeIntent]:
+        """处理单层货架释放事件。"""
+
+        payload = getattr(inbox, "payload_json", None)
+        data = _payload_data(payload)
+        invalid_message = _validate_release_data(data)
+        if invalid_message is not None:
+            return [build_payload_invalid_block(invalid_message)]
+
+        config = _ctx_config(ctx)
+        snapshots = _snapshot_list(data)
+        exchange_bins = _exchange_bins(snapshots, _exchange_policy(config))
+        if not exchange_bins:
+            return [
+                ctx.next.complete(
+                    {
+                        "rack_release_id": data["rack_release_id"],
+                        "single_layer_rack_code": data["single_layer_rack_code"],
+                        "exchange_required": False,
+                        "exchange_status": "NOT_REQUIRED",
+                    }
+                )
+            ]
+
+        target_code = _target_code(config)
+        if target_code is None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.WORKLINE,
+                    reason_code="FULL_BOX_EXCHANGE_TARGET_MISSING",
+                    message="SMT 满箱交换缺少 WMS/RCS 目标地址配置",
+                )
+            ]
+
+        rack_release_id = str(data["rack_release_id"])
+        dispatch_key = f"external:{self.plugin_key}:{rack_release_id}:FULL_BOX_EXCHANGE"
+        exchange_request_code = f"FBE-{rack_release_id}"
+        request_payload = {
+            "request_type": "SMT_FULL_BOX_EXCHANGE",
+            "exchange_request_code": exchange_request_code,
+            "dispatch_key": dispatch_key,
+            "rack_release_id": rack_release_id,
+            "single_layer_rack_code": data["single_layer_rack_code"],
+            "release_cycle_seq": data.get("release_cycle_seq"),
+            "snapshot_hash": data.get("snapshot_hash"),
+            "exchange_bins": exchange_bins,
+            "bin_snapshots": snapshots,
+        }
+        context_patch = {
+            "rack_release_id": rack_release_id,
+            "single_layer_rack_code": data["single_layer_rack_code"],
+            "exchange_required": True,
+            "exchange_status": "REQUESTED",
+            "exchange_request_code": exchange_request_code,
+            "full_box_exchange": {
+                "dispatch_key": dispatch_key,
+                "exchange_request_code": exchange_request_code,
+                "exchange_status": "REQUESTED",
+                "exchange_bins": exchange_bins,
+            },
+        }
+        return [
+            ctx.next.update_context(context_patch),
+            ctx.next.external_request(
+                dispatch_key=dispatch_key,
+                target_code=target_code,
+                payload=request_payload,
+                timeout_seconds=_timeout_seconds(config),
+                source_system="WMS_RCS",
+            ),
+        ]
+
+    async def on_external_http(self, ctx: Any, inbox: Any) -> list[RuntimeIntent]:
+        """处理 WMS/RCS 满箱交换回调。"""
+
+        payload = getattr(inbox, "payload_json", None)
+        if not isinstance(payload, Mapping):
+            return [build_payload_invalid_block("SMT 满箱交换回调 payload 非法")]
+        if payload.get("callback_type") != SMT_FULL_BOX_EXCHANGE_CALLBACK:
+            return [build_payload_invalid_block("SMT 满箱交换回调 callback_type 不支持")]
+
+        status = _non_empty_upper(payload.get("exchange_status"))
+        if status is None:
+            return [build_payload_invalid_block("SMT 满箱交换回调缺少 exchange_status")]
+
+        exchange_context = _exchange_context(ctx)
+        expected_dispatch_key = _optional_text(exchange_context.get("dispatch_key"))
+        callback_dispatch_key = _optional_text(payload.get("dispatch_key"))
+        if expected_dispatch_key is not None and callback_dispatch_key != expected_dispatch_key:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="EXCHANGE_DISPATCH_KEY_MISMATCH",
+                    message="SMT 满箱交换回调 dispatch_key 与当前请求不匹配",
+                )
+            ]
+
+        if status in _WMS_CONFIRMATION_STATUSES and not isinstance(payload.get("wms_confirmation"), Mapping):
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="EXCHANGE_WMS_CONFIRMATION_INVALID",
+                    message="SMT 满箱交换 WMS 确认回调缺少 wms_confirmation",
+                )
+            ]
+
+        context_patch = {"full_box_exchange": _callback_context(exchange_context, payload, status)}
+        return _callback_intents(ctx, context_patch=context_patch, status=status)
+
+
+def _callback_intents(ctx: Any, *, context_patch: dict[str, Any], status: str) -> list[RuntimeIntent]:
+    if status == "BUSINESS_COMPLETED":
+        return [ctx.next.complete(context_patch)]
+    if status in _PROGRESS_STATUSES or status == "WMS_CONFIRMED":
+        return [ctx.next.update_context(context_patch)]
+    if status in _FAILURE_STATUSES:
+        return [
+            ctx.next.block(
+                scope=BlockScope.MATERIAL,
+                reason_code=_failure_reason(status),
+                message="SMT 满箱交换外部执行失败",
+            )
+        ]
+    return [build_payload_invalid_block(f"SMT 满箱交换回调状态不支持: {status}")]
+
+
+def _payload_data(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    data = payload.get("data")
+    return dict(data) if isinstance(data, Mapping) else dict(payload)
+
+
+def _validate_release_data(data: Mapping[str, Any]) -> str | None:
+    if not _optional_text(data.get("rack_release_id")):
+        return "SINGLE_LAYER_RACK_RELEASED 缺少 rack_release_id"
+    if not _optional_text(data.get("single_layer_rack_code")):
+        return "SINGLE_LAYER_RACK_RELEASED 缺少 single_layer_rack_code"
+    snapshots = data.get("bin_snapshots")
+    if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)) or len(snapshots) != 4:
+        return "SINGLE_LAYER_RACK_RELEASED 必须携带 4 个料箱快照"
+    return None
+
+
+def _snapshot_list(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    snapshots = data.get("bin_snapshots")
+    if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)):
+        return []
+    return [dict(item) for item in snapshots if isinstance(item, Mapping)]
+
+
+def _ctx_config(ctx: Any) -> dict[str, Any]:
+    config = getattr(ctx, "config", None)
+    return dict(config) if isinstance(config, Mapping) else {}
+
+
+def _exchange_policy(config: Mapping[str, Any]) -> dict[str, Any]:
+    policy = config.get("exchange_policy")
+    return dict(policy) if isinstance(policy, Mapping) else {}
+
+
+def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    full_statuses = _string_set(policy.get("full_statuses")) or {"CLOSED", "FULL"}
+    threshold = _float_value(policy.get("full_usage_threshold"), default=0.8)
+    min_count = _int_value(policy.get("min_exchange_bin_count"), default=1)
+    require_all = bool(policy.get("require_all_bins", False))
+    selected = [
+        snapshot
+        for snapshot in snapshots
+        if _non_empty_upper(snapshot.get("bin_execution_status")) in full_statuses
+        or _float_value(snapshot.get("usage_snapshot"), default=0.0) >= threshold
+    ]
+    if require_all and len(selected) != len(snapshots):
+        return []
+    if len(selected) < min_count:
+        return []
+    return [
+        {
+            "slot_code": snapshot.get("slot_code"),
+            "bin_code": snapshot.get("bin_code"),
+            "bin_type_code": snapshot.get("bin_type_code"),
+            "usage_snapshot": snapshot.get("usage_snapshot"),
+        }
+        for snapshot in selected
+    ]
+
+
+def _target_code(config: Mapping[str, Any]) -> str | None:
+    endpoints = config.get("external_endpoints")
+    if isinstance(endpoints, Mapping):
+        value = _optional_text(endpoints.get("wms_rcs_full_box_exchange_url"))
+        if value is not None:
+            return value
+    return _optional_text(config.get("wms_rcs_full_box_exchange_url"))
+
+
+def _timeout_seconds(config: Mapping[str, Any]) -> int:
+    timeouts = config.get("timeouts")
+    if isinstance(timeouts, Mapping):
+        value = _int_value(timeouts.get("external_exchange_seconds"), default=1800)
+        return max(value, 1)
+    return 1800
+
+
+def _exchange_context(ctx: Any) -> dict[str, Any]:
+    context = getattr(getattr(ctx, "session", None), "context_json", None)
+    if not isinstance(context, Mapping):
+        return {}
+    exchange = context.get("full_box_exchange")
+    return dict(exchange) if isinstance(exchange, Mapping) else {}
+
+
+def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], status: str) -> dict[str, Any]:
+    updated = dict(existing)
+    updated["exchange_status"] = status
+    for key in ("queue_position", "eta_seconds", "wms_rcs_task_id", "exchange_request_code", "dispatch_key"):
+        if key in payload:
+            updated[key] = payload[key]
+    if isinstance(payload.get("wms_confirmation"), Mapping):
+        updated["wms_confirmation"] = dict(payload["wms_confirmation"])
+    return updated
+
+
+def _failure_reason(status: str) -> str:
+    if status in {"REJECTED", "WMS_REJECTED"}:
+        return "EXCHANGE_RESOURCE_UNAVAILABLE"
+    if status == "CANCELLED":
+        return "EXCHANGE_CANCELLED"
+    if status == "RECONCILING":
+        return "EXCHANGE_RECONCILING"
+    return "EXCHANGE_EXECUTION_FAILED"
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _non_empty_upper(value: Any) -> str | None:
+    text = _optional_text(value)
+    return text.upper() if text is not None else None
+
+
+def _string_set(value: Any) -> set[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return set()
+    return {_non_empty_upper(item) for item in value if _non_empty_upper(item) is not None}
+
+
+def _float_value(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_value(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+smt_full_box_exchange_plugin = SmtFullBoxExchangePlugin()
+
+
+__all__ = ["SmtFullBoxExchangePlugin", "smt_full_box_exchange_plugin"]
