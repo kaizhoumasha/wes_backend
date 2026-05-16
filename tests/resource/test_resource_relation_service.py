@@ -268,6 +268,51 @@ async def test_record_full_box_exchange_physical_completed_projects_bin_mounts()
 
 
 @pytest.mark.asyncio
+async def test_record_full_box_exchange_physical_completed_missing_relations_creates_runtime_hold() -> None:
+    """交换后关系缺失时创建 RuntimeHold，等待 WMS 补证或人工对账。"""
+
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    runtime_holds = RecordingRuntimeHoldCreator()
+    service = ResourceRelationService(
+        state_event_repo=state_events,
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_full_box_exchange_physical_completed(
+        object(),
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        post_exchange_relations={},
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-physical-missing",
+        source_version="1",
+        source_task_id="wms-task-001",
+        occurred_at=datetime(2026, 5, 16, 9, 0, 0),
+        trace_id="trace-001",
+        session_id="session-001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+    assert result.runtime_hold is not None
+    assert result.runtime_hold.id == 9001
+    assert runtime_holds.created[0]["source_reason"] == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+    assert runtime_holds.created[0]["source_event_id"] == "wms-event-physical-missing"
+    assert runtime_holds.created[0]["evidence"]["resource_type"] == "EXCHANGE_TASK"
+    assert runtime_holds.created[0]["evidence"]["exchange_request_code"] == (
+        "external:smt:release-001:FULL_BIN_EXCHANGE"
+    )
+    assert runtime_holds.created[0]["evidence"]["rack_release_id"] == "release-001"
+    assert runtime_holds.created[0]["evidence"]["post_exchange_relations"] == {}
+
+
+@pytest.mark.asyncio
 async def test_record_full_box_exchange_physical_completed_conflict_creates_runtime_hold() -> None:
     """交换后料箱挂载冲突时追加事实、创建 RuntimeHold 且不覆盖投影。"""
 

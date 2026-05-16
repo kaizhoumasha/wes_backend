@@ -231,9 +231,25 @@ class ResourceRelationService:
 
         bin_mounts = _extract_bin_mounts(post_exchange_relations)
         if not bin_mounts:
+            runtime_hold = await self._create_post_exchange_relations_missing_hold(
+                db,
+                exchange_request_code=exchange_request_code,
+                rack_release_id=rack_release_id,
+                post_exchange_relations=post_exchange_relations,
+                source_system=source_system,
+                source_event_id=source_event_id,
+                source_task_id=source_task_id,
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=workline_session_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
+                runtime_hold=runtime_hold,
                 reason_code="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
                 message="满箱交换回调缺少可投影的料箱挂载关系",
             )
@@ -443,6 +459,50 @@ class ResourceRelationService:
             rack_slot_code=mount["rack_slot_code"],
         )
         return active_slot is not None and active_slot.bin_code == mount["bin_code"]
+
+    async def _create_post_exchange_relations_missing_hold(
+        self,
+        db: object,
+        *,
+        exchange_request_code: str,
+        rack_release_id: str,
+        post_exchange_relations: Mapping[str, Any],
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        source_task_id: str | None,
+        trace_id: str | None,
+        session_id: str | None,
+        workline_id: int | None,
+        workline_session_id: int | None,
+        plugin_key: str | None,
+        contract_version: str | None,
+    ) -> Any | None:
+        """有 WorkLine 上下文时，为交换后关系缺失创建 RuntimeHold。"""
+
+        if workline_id is None:
+            return None
+
+        return await self.runtime_hold_creator.create_for_resource_reconciliation(
+            db,
+            workline_id=workline_id,
+            session_id=workline_session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_reason="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+            source_event_id=source_event_id,
+            evidence={
+                "resource_type": ResourceType.EXCHANGE_TASK.value,
+                "exchange_request_code": exchange_request_code,
+                "rack_release_id": rack_release_id,
+                "post_exchange_relations": dict(post_exchange_relations),
+                "incoming_source_event_id": source_event_id,
+                "source_system": source_system.value,
+                "source_task_id": source_task_id,
+                "trace_id": trace_id,
+                "session_id": session_id,
+            },
+        )
 
     async def _create_bin_mount_conflict_hold(
         self,
