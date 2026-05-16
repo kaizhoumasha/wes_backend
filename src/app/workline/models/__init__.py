@@ -51,6 +51,7 @@ from .runtime import (
     TraceOutboxItem,
     TraceOverviewSummary,
     TraceQueryRequest,
+    TraceResourceEvidenceResponse,
     TraceSessionItem,
     TraceTimelineItem,
 )
@@ -151,6 +152,7 @@ __all__ = [
     "TraceOutboxItem",
     "TraceOverviewSummary",
     "TraceQueryRequest",
+    "TraceResourceEvidenceResponse",
     "TraceSessionItem",
     "TraceTimelineItem",
     "WorkLine",

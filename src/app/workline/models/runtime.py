@@ -286,6 +286,17 @@ class TraceDiagnosticItem(TraceDiagnosticContextItem):
     pass
 
 
+class TraceResourceEvidenceResponse(BaseModel):
+    """Trace 关联的资源域证据链。"""
+
+    resource_state_events: list[dict[str, Any]] = Field(default_factory=list)
+    rack_releases: list[dict[str, Any]] = Field(default_factory=list)
+    rack_release_bin_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    full_box_exchange_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    wms_writeback_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    rack_bin_mounts: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class TraceDetailResponse(BaseModel):
     trace: TraceContextResponse
     summary: TraceOverviewSummary
@@ -298,6 +309,7 @@ class TraceDetailResponse(BaseModel):
     dispatch_attempts: list[TraceDispatchAttemptItem] = Field(default_factory=list)
     timelines: list[TraceTimelineItem] = Field(default_factory=list)
     diagnostics: list[TraceDiagnosticItem] = Field(default_factory=list)
+    resource_evidence: TraceResourceEvidenceResponse = Field(default_factory=TraceResourceEvidenceResponse)
 
 
 class DiagnosticCardResponse(BaseModel):

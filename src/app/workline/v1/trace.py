@@ -105,6 +105,21 @@ async def get_trace_by_dispatch_key(
     return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=build_trace_response(result)))
 
 
+@router.get(
+    "/exchange/{exchange_request_code}",
+    summary="[biz:workline:list] 根据满箱交换请求编码查询 Trace 与资源证据",
+    response_model=ResponseSchemaModel[TraceDetailResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_trace_by_exchange_request_code(
+    exchange_request_code: str,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[TraceDetailResponse]:
+    result = await trace_query_service.by_exchange_request_code(db, exchange_request_code)
+    return cast("ResponseSchemaModel[TraceDetailResponse]", response_builder.success(data=build_trace_response(result)))
+
+
 @router.post(
     "/query",
     summary="[biz:workline:list] Trace 列表查询",
