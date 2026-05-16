@@ -7,14 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.resource.models import (
     Bin,
+    BinContentSnapshot,
+    BinContentSnapshotItem,
     BinSlotTemplate,
     BinType,
     ExecutionLocation,
     ExecutionZone,
+    FullBoxExchangeTask,
     Rack,
     RackBinMount,
     RackMaterialMount,
     RackPlacement,
+    RackRelease,
+    RackReleaseBinSnapshot,
     RackSlotTemplate,
     RackType,
     ResourceSourceSystem,
@@ -253,6 +258,41 @@ class WmsWritebackEvidenceRepository(BaseRepository[WmsWritebackEvidence]):
         return result.scalar_one_or_none()
 
 
+class RackReleaseRepository(BaseRepository[RackRelease]):
+    """释放周期 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(RackRelease)
+
+
+class RackReleaseBinSnapshotRepository(BaseRepository[RackReleaseBinSnapshot]):
+    """释放槽位快照 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(RackReleaseBinSnapshot)
+
+
+class BinContentSnapshotRepository(BaseRepository[BinContentSnapshot]):
+    """料箱内容快照头 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(BinContentSnapshot)
+
+
+class BinContentSnapshotItemRepository(BaseRepository[BinContentSnapshotItem]):
+    """料箱内容快照明细 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(BinContentSnapshotItem)
+
+
+class FullBoxExchangeTaskRepository(BaseRepository[FullBoxExchangeTask]):
+    """满箱交换任务 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(FullBoxExchangeTask)
+
+
 execution_zone_repository = ExecutionZoneRepository()
 execution_location_repository = ExecutionLocationRepository()
 rack_type_repository = RackTypeRepository()
@@ -266,29 +306,44 @@ rack_placement_repository = RackPlacementRepository()
 rack_bin_mount_repository = RackBinMountRepository()
 rack_material_mount_repository = RackMaterialMountRepository()
 wms_writeback_evidence_repository = WmsWritebackEvidenceRepository()
+rack_release_repository = RackReleaseRepository()
+rack_release_bin_snapshot_repository = RackReleaseBinSnapshotRepository()
+bin_content_snapshot_repository = BinContentSnapshotRepository()
+bin_content_snapshot_item_repository = BinContentSnapshotItemRepository()
+full_box_exchange_task_repository = FullBoxExchangeTaskRepository()
 
 __all__ = [
+    "BinContentSnapshotItemRepository",
+    "BinContentSnapshotRepository",
     "BinRepository",
     "BinSlotTemplateRepository",
     "BinTypeRepository",
     "ExecutionLocationRepository",
     "ExecutionZoneRepository",
+    "FullBoxExchangeTaskRepository",
     "RackBinMountRepository",
     "RackMaterialMountRepository",
     "RackPlacementRepository",
+    "RackReleaseBinSnapshotRepository",
+    "RackReleaseRepository",
     "RackRepository",
     "RackSlotTemplateRepository",
     "RackTypeRepository",
     "ResourceStateEventRepository",
     "WmsWritebackEvidenceRepository",
+    "bin_content_snapshot_item_repository",
+    "bin_content_snapshot_repository",
     "bin_repository",
     "bin_slot_template_repository",
     "bin_type_repository",
     "execution_location_repository",
     "execution_zone_repository",
+    "full_box_exchange_task_repository",
     "rack_bin_mount_repository",
     "rack_material_mount_repository",
     "rack_placement_repository",
+    "rack_release_bin_snapshot_repository",
+    "rack_release_repository",
     "rack_repository",
     "rack_slot_template_repository",
     "rack_type_repository",

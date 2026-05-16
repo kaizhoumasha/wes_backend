@@ -212,6 +212,45 @@ class WmsConfirmationStatus(str, Enum):
     NOT_REQUIRED = "NOT_REQUIRED"
 
 
+class RackReleaseStatus(str, Enum):
+    """单层货架释放周期状态。"""
+
+    CANDIDATE = "CANDIDATE"
+    INBOX_CREATED = "INBOX_CREATED"
+    SESSION_STARTED = "SESSION_STARTED"
+    EXCHANGE_REQUESTED = "EXCHANGE_REQUESTED"
+    COMPLETED = "COMPLETED"
+    BLOCKED = "BLOCKED"
+    RECONCILING = "RECONCILING"
+    CANCELLED = "CANCELLED"
+
+
+class BinContentSnapshotStatus(str, Enum):
+    """料箱内容快照完整性。"""
+
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
+
+
+class FullBoxExchangeStatus(str, Enum):
+    """满箱交换过程状态。"""
+
+    REQUESTED = "REQUESTED"
+    ACCEPTED = "ACCEPTED"
+    QUEUED = "QUEUED"
+    IN_PROGRESS = "IN_PROGRESS"
+    PHYSICAL_COMPLETED = "PHYSICAL_COMPLETED"
+    RESOURCE_PROJECTED = "RESOURCE_PROJECTED"
+    WMS_CONFIRMED = "WMS_CONFIRMED"
+    BUSINESS_COMPLETED = "BUSINESS_COMPLETED"
+    WMS_REJECTED = "WMS_REJECTED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    RECONCILING = "RECONCILING"
+
+
 class ExecutionZoneBase(BaseMixin):
     """执行区域基础字段。"""
 
@@ -705,6 +744,187 @@ class WmsWritebackEvidence(WmsWritebackEvidenceBase, EnterpriseMixin, DataTableM
     )
 
 
+class RackReleaseBase(BaseMixin):
+    """单层货架释放周期基础字段。"""
+
+    rack_release_id: str = Field(min_length=1, max_length=160, index=True, description="释放周期业务 ID")
+    single_layer_rack_code: str = Field(min_length=1, max_length=80, index=True, description="单层货架编码")
+    source_classifier_line_code: str | None = Field(default=None, max_length=100, index=True, description="粗分线编码")
+    source_task_batch_id: str | None = Field(default=None, max_length=160, index=True, description="粗分整架任务或批次")
+    source_event_id: str | None = Field(default=None, max_length=200, index=True, description="来源事件 ID")
+    release_status: RackReleaseStatus = Field(
+        default=RackReleaseStatus.CANDIDATE,
+        sa_type=cast("Any", SQLAEnum(RackReleaseStatus, native_enum=False, create_constraint=True, length=50)),
+        description="释放周期状态",
+    )
+    released_at: datetime = Field(description="整架完成时间")
+    moved_out_at: datetime | None = Field(default=None, index=True, description="离开粗分机时间")
+    inbox_id: int | None = Field(default=None, index=True, description="关联 WorklineInbox")
+    session_id: int | None = Field(default=None, index=True, description="关联 WorklineSession")
+    release_cycle_seq: int = Field(default=1, ge=1, description="同一货架连续释放周期序号")
+    idempotency_key: str = Field(min_length=1, max_length=300, index=True, description="释放周期幂等键")
+    snapshot_hash: str = Field(min_length=1, max_length=128, description="4 箱快照摘要")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+
+
+class RackRelease(RackReleaseBase, EnterpriseMixin, DataTableMixin, table=True):
+    """单层货架一次释放周期。"""
+
+    __tablename__: ClassVar[Literal["resource_rack_releases"]] = "resource_rack_releases"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_resource_rack_releases_release_id", "rack_release_id", unique=True),
+        Index("ux_resource_rack_releases_idempotency", "idempotency_key", unique=True),
+        Index(
+            "ix_resource_rack_releases_rack_cycle",
+            "single_layer_rack_code",
+            "release_cycle_seq",
+        ),
+        Index("ix_resource_rack_releases_session", "session_id"),
+    )
+
+
+class RackReleaseBinSnapshotBase(BaseMixin):
+    """释放瞬间料箱槽位快照基础字段。"""
+
+    rack_release_id: str = Field(min_length=1, max_length=160, index=True, description="释放周期业务 ID")
+    slot_code: str = Field(min_length=1, max_length=50, index=True, description="单层货架槽位")
+    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
+    bin_type_code: str | None = Field(default=None, max_length=80, description="快照时料箱类型")
+    bin_execution_status: BinStatus = Field(
+        sa_type=cast("Any", SQLAEnum(BinStatus, native_enum=False, create_constraint=True, length=50)),
+        description="快照时料箱执行状态",
+    )
+    usage_snapshot: float | None = Field(default=None, ge=0, le=1, description="过程计算使用率")
+    material_summary_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="物料摘要，不作为库存主账",
+    )
+    wms_inventory_refs_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="WMS 库存记录引用与版本",
+    )
+    snapshot_id: str | None = Field(default=None, max_length=160, index=True, description="料箱内容快照 ID")
+    content_snapshot_hash: str | None = Field(default=None, max_length=128, description="内容快照摘要")
+
+
+class RackReleaseBinSnapshot(RackReleaseBinSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+    """释放瞬间每个槽位的料箱快照。"""
+
+    __tablename__: ClassVar[Literal["resource_rack_release_bin_snapshots"]] = "resource_rack_release_bin_snapshots"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_rack_release_bin_snapshots_slot",
+            "rack_release_id",
+            "slot_code",
+            unique=True,
+        ),
+        Index("ix_resource_rack_release_bin_snapshots_bin", "bin_code"),
+    )
+
+
+class BinContentSnapshotBase(BaseMixin):
+    """料箱内部过程内容快照头基础字段。"""
+
+    snapshot_id: str = Field(min_length=1, max_length=160, index=True, description="快照业务 ID")
+    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
+    source_session_id: int | None = Field(default=None, index=True, description="产生快照的 WorklineSession")
+    source_event_id: str | None = Field(default=None, max_length=200, index=True, description="来源事件或命令结果")
+    captured_at: datetime = Field(index=True, description="快照时间")
+    snapshot_status: BinContentSnapshotStatus = Field(
+        default=BinContentSnapshotStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(BinContentSnapshotStatus, native_enum=False, create_constraint=True, length=50)),
+        description="快照完整性",
+    )
+    snapshot_hash: str = Field(min_length=1, max_length=128, description="快照头和明细稳定摘要")
+    wms_snapshot_version: str | None = Field(default=None, max_length=160, description="WMS 查询版本或时间")
+
+
+class BinContentSnapshot(BinContentSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+    """料箱内部过程内容快照头。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_content_snapshots"]] = "resource_bin_content_snapshots"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_resource_bin_content_snapshots_snapshot_id", "snapshot_id", unique=True),
+        Index("ix_resource_bin_content_snapshots_bin_time", "bin_code", "captured_at"),
+    )
+
+
+class BinContentSnapshotItemBase(BaseMixin):
+    """料箱内部过程内容快照明细基础字段。"""
+
+    snapshot_id: str = Field(min_length=1, max_length=160, index=True, description="所属快照业务 ID")
+    bin_slot_code: str | None = Field(default=None, max_length=50, index=True, description="料箱内部槽位")
+    pkg_code: str | None = Field(default=None, max_length=200, index=True, description="PKG 展示字段")
+    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
+    vendor_code: str | None = Field(default=None, max_length=120, description="供应商引用")
+    lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
+    date_code: str | None = Field(default=None, max_length=80, description="Date Code")
+    qty_snapshot: float | None = Field(default=None, ge=0, description="当时执行过程看到的数量")
+    thickness_mm: float | None = Field(default=None, ge=0, description="厚度")
+    dims_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False), description="尺寸")
+    wms_inventory_id: str | None = Field(default=None, max_length=160, index=True, description="WMS 库存记录引用")
+
+
+class BinContentSnapshotItem(BinContentSnapshotItemBase, EnterpriseMixin, DataTableMixin, table=True):
+    """料箱内部过程内容快照明细。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_content_snapshot_items"]] = "resource_bin_content_snapshot_items"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ix_resource_bin_content_snapshot_items_snapshot", "snapshot_id"),
+        Index("ix_resource_bin_content_snapshot_items_pkg", "pkg_code"),
+    )
+
+
+class FullBoxExchangeTaskBase(BaseMixin):
+    """满箱交换任务过程镜像基础字段。"""
+
+    exchange_request_code: str = Field(min_length=1, max_length=200, index=True, description="满箱交换请求编码")
+    rack_release_id: str = Field(min_length=1, max_length=160, index=True, description="来源释放周期")
+    session_id: int | None = Field(default=None, index=True, description="关联 WorklineSession")
+    outbox_id: int | None = Field(default=None, index=True, description="EXTERNAL_HTTP Outbox")
+    dispatch_key: str | None = Field(default=None, max_length=200, index=True, description="Outbox 派发键")
+    exchange_status: FullBoxExchangeStatus = Field(
+        default=FullBoxExchangeStatus.REQUESTED,
+        sa_type=cast("Any", SQLAEnum(FullBoxExchangeStatus, native_enum=False, create_constraint=True, length=50)),
+        description="满箱交换状态",
+    )
+    exchange_area_code: str | None = Field(default=None, max_length=100, index=True, description="满箱交换区")
+    requested_bins_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+        description="建议交换的料箱槽位",
+    )
+    wms_rcs_task_id: str | None = Field(default=None, max_length=160, index=True, description="WMS/RCS 任务 ID")
+    wms_rcs_event_id: str | None = Field(default=None, max_length=200, index=True, description="最近一次 WMS/RCS 事件")
+    queue_position: int | None = Field(default=None, ge=0, description="排队位置")
+    eta_seconds: int | None = Field(default=None, ge=0, description="预计等待或完成时间")
+    failure_code: str | None = Field(default=None, max_length=120, index=True, description="失败或拒绝原因")
+    failure_message: str | None = Field(default=None, max_length=500, description="失败或拒绝描述")
+    request_payload_hash: str | None = Field(default=None, max_length=128, description="请求摘要")
+    last_callback_payload_hash: str | None = Field(default=None, max_length=128, description="最近回调摘要")
+    writeback_evidence_id: int | None = Field(default=None, index=True, description="关联 WMS 回写证据")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+
+
+class FullBoxExchangeTask(FullBoxExchangeTaskBase, EnterpriseMixin, DataTableMixin, table=True):
+    """满箱交换任务过程镜像。"""
+
+    __tablename__: ClassVar[Literal["resource_full_box_exchange_tasks"]] = "resource_full_box_exchange_tasks"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_resource_full_box_exchange_tasks_request", "exchange_request_code", unique=True),
+        Index("ix_resource_full_box_exchange_tasks_release", "rack_release_id"),
+        Index("ix_resource_full_box_exchange_tasks_outbox", "outbox_id"),
+        Index("ix_resource_full_box_exchange_tasks_status", "exchange_status"),
+    )
+
+
 class ExecutionZoneCreate(ModelFactory(ExecutionZoneBase).for_create()):
     """执行区域创建 Schema。"""
 
@@ -900,9 +1120,95 @@ class WmsWritebackEvidenceResponse(WmsWritebackEvidenceBase):
     version: int
 
 
+class RackReleaseCreate(ModelFactory(RackReleaseBase).for_create()):
+    """释放周期创建 Schema。"""
+
+
+class RackReleaseUpdate(ModelFactory(RackReleaseBase).for_optimistic_update()):
+    """释放周期更新 Schema。"""
+
+
+class RackReleaseResponse(RackReleaseBase):
+    """释放周期响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class RackReleaseBinSnapshotCreate(ModelFactory(RackReleaseBinSnapshotBase).for_create()):
+    """释放槽位快照创建 Schema。"""
+
+
+class RackReleaseBinSnapshotUpdate(ModelFactory(RackReleaseBinSnapshotBase).for_optimistic_update()):
+    """释放槽位快照更新 Schema。"""
+
+
+class RackReleaseBinSnapshotResponse(RackReleaseBinSnapshotBase):
+    """释放槽位快照响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class BinContentSnapshotCreate(ModelFactory(BinContentSnapshotBase).for_create()):
+    """料箱内容快照头创建 Schema。"""
+
+
+class BinContentSnapshotUpdate(ModelFactory(BinContentSnapshotBase).for_optimistic_update()):
+    """料箱内容快照头更新 Schema。"""
+
+
+class BinContentSnapshotResponse(BinContentSnapshotBase):
+    """料箱内容快照头响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class BinContentSnapshotItemCreate(ModelFactory(BinContentSnapshotItemBase).for_create()):
+    """料箱内容快照明细创建 Schema。"""
+
+
+class BinContentSnapshotItemUpdate(ModelFactory(BinContentSnapshotItemBase).for_optimistic_update()):
+    """料箱内容快照明细更新 Schema。"""
+
+
+class BinContentSnapshotItemResponse(BinContentSnapshotItemBase):
+    """料箱内容快照明细响应 Schema。"""
+
+    id: int
+    version: int
+
+
+class FullBoxExchangeTaskCreate(ModelFactory(FullBoxExchangeTaskBase).for_create()):
+    """满箱交换任务创建 Schema。"""
+
+
+class FullBoxExchangeTaskUpdate(ModelFactory(FullBoxExchangeTaskBase).for_optimistic_update()):
+    """满箱交换任务更新 Schema。"""
+
+
+class FullBoxExchangeTaskResponse(FullBoxExchangeTaskBase):
+    """满箱交换任务响应 Schema。"""
+
+    id: int
+    version: int
+
+
 __all__ = [
     "Bin",
     "BinBase",
+    "BinContentSnapshot",
+    "BinContentSnapshotBase",
+    "BinContentSnapshotCreate",
+    "BinContentSnapshotItem",
+    "BinContentSnapshotItemBase",
+    "BinContentSnapshotItemCreate",
+    "BinContentSnapshotItemResponse",
+    "BinContentSnapshotItemUpdate",
+    "BinContentSnapshotResponse",
+    "BinContentSnapshotStatus",
+    "BinContentSnapshotUpdate",
     "BinCreate",
     "BinResponse",
     "BinSlotSize",
@@ -931,6 +1237,12 @@ __all__ = [
     "ExecutionZoneResponse",
     "ExecutionZoneType",
     "ExecutionZoneUpdate",
+    "FullBoxExchangeStatus",
+    "FullBoxExchangeTask",
+    "FullBoxExchangeTaskBase",
+    "FullBoxExchangeTaskCreate",
+    "FullBoxExchangeTaskResponse",
+    "FullBoxExchangeTaskUpdate",
     "Rack",
     "RackBase",
     "RackBinMount",
@@ -953,6 +1265,17 @@ __all__ = [
     "RackPlacementResponse",
     "RackPlacementStatus",
     "RackPlacementUpdate",
+    "RackRelease",
+    "RackReleaseBase",
+    "RackReleaseBinSnapshot",
+    "RackReleaseBinSnapshotBase",
+    "RackReleaseBinSnapshotCreate",
+    "RackReleaseBinSnapshotResponse",
+    "RackReleaseBinSnapshotUpdate",
+    "RackReleaseCreate",
+    "RackReleaseResponse",
+    "RackReleaseStatus",
+    "RackReleaseUpdate",
     "RackResponse",
     "RackSlotKind",
     "RackSlotSide",

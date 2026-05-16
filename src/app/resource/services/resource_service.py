@@ -2,41 +2,56 @@
 
 from src.app.resource.models import (
     Bin,
+    BinContentSnapshot,
+    BinContentSnapshotItem,
     BinSlotTemplate,
     BinType,
     ExecutionLocation,
     ExecutionZone,
+    FullBoxExchangeTask,
     Rack,
     RackBinMount,
     RackMaterialMount,
     RackPlacement,
+    RackRelease,
+    RackReleaseBinSnapshot,
     RackSlotTemplate,
     RackType,
     ResourceStateEvent,
     WmsWritebackEvidence,
 )
 from src.app.resource.repositories import (
+    BinContentSnapshotItemRepository,
+    BinContentSnapshotRepository,
     BinRepository,
     BinSlotTemplateRepository,
     BinTypeRepository,
     ExecutionLocationRepository,
     ExecutionZoneRepository,
+    FullBoxExchangeTaskRepository,
     RackBinMountRepository,
     RackMaterialMountRepository,
     RackPlacementRepository,
+    RackReleaseBinSnapshotRepository,
+    RackReleaseRepository,
     RackRepository,
     RackSlotTemplateRepository,
     RackTypeRepository,
     ResourceStateEventRepository,
     WmsWritebackEvidenceRepository,
+    bin_content_snapshot_item_repository,
+    bin_content_snapshot_repository,
     bin_repository,
     bin_slot_template_repository,
     bin_type_repository,
     execution_location_repository,
     execution_zone_repository,
+    full_box_exchange_task_repository,
     rack_bin_mount_repository,
     rack_material_mount_repository,
     rack_placement_repository,
+    rack_release_bin_snapshot_repository,
+    rack_release_repository,
     rack_repository,
     rack_slot_template_repository,
     rack_type_repository,
@@ -137,6 +152,41 @@ class WmsWritebackEvidenceService(BaseService[WmsWritebackEvidence, WmsWriteback
         super().__init__(repo)
 
 
+class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
+    """释放周期 Service。"""
+
+    def __init__(self, repo: RackReleaseRepository = rack_release_repository) -> None:
+        super().__init__(repo)
+
+
+class RackReleaseBinSnapshotService(BaseService[RackReleaseBinSnapshot, RackReleaseBinSnapshotRepository]):
+    """释放槽位快照 Service。"""
+
+    def __init__(self, repo: RackReleaseBinSnapshotRepository = rack_release_bin_snapshot_repository) -> None:
+        super().__init__(repo)
+
+
+class BinContentSnapshotService(BaseService[BinContentSnapshot, BinContentSnapshotRepository]):
+    """料箱内容快照头 Service。"""
+
+    def __init__(self, repo: BinContentSnapshotRepository = bin_content_snapshot_repository) -> None:
+        super().__init__(repo)
+
+
+class BinContentSnapshotItemService(BaseService[BinContentSnapshotItem, BinContentSnapshotItemRepository]):
+    """料箱内容快照明细 Service。"""
+
+    def __init__(self, repo: BinContentSnapshotItemRepository = bin_content_snapshot_item_repository) -> None:
+        super().__init__(repo)
+
+
+class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchangeTaskRepository]):
+    """满箱交换任务 Service。"""
+
+    def __init__(self, repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository) -> None:
+        super().__init__(repo)
+
+
 execution_zone_service = ExecutionZoneService()
 execution_location_service = ExecutionLocationService()
 rack_type_service = RackTypeService()
@@ -150,29 +200,44 @@ rack_placement_service = RackPlacementService()
 rack_bin_mount_service = RackBinMountService()
 rack_material_mount_service = RackMaterialMountService()
 wms_writeback_evidence_service = WmsWritebackEvidenceService()
+rack_release_service = RackReleaseService()
+rack_release_bin_snapshot_service = RackReleaseBinSnapshotService()
+bin_content_snapshot_service = BinContentSnapshotService()
+bin_content_snapshot_item_service = BinContentSnapshotItemService()
+full_box_exchange_task_service = FullBoxExchangeTaskService()
 
 __all__ = [
+    "BinContentSnapshotItemService",
+    "BinContentSnapshotService",
     "BinService",
     "BinSlotTemplateService",
     "BinTypeService",
     "ExecutionLocationService",
     "ExecutionZoneService",
+    "FullBoxExchangeTaskService",
     "RackBinMountService",
     "RackMaterialMountService",
     "RackPlacementService",
+    "RackReleaseBinSnapshotService",
+    "RackReleaseService",
     "RackService",
     "RackSlotTemplateService",
     "RackTypeService",
     "ResourceStateEventService",
     "WmsWritebackEvidenceService",
+    "bin_content_snapshot_item_service",
+    "bin_content_snapshot_service",
     "bin_service",
     "bin_slot_template_service",
     "bin_type_service",
     "execution_location_service",
     "execution_zone_service",
+    "full_box_exchange_task_service",
     "rack_bin_mount_service",
     "rack_material_mount_service",
     "rack_placement_service",
+    "rack_release_bin_snapshot_service",
+    "rack_release_service",
     "rack_service",
     "rack_slot_template_service",
     "rack_type_service",

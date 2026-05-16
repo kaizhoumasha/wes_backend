@@ -98,6 +98,39 @@ def test_fourth_stage_wms_writeback_evidence_table_is_registered() -> None:
     assert WmsWritebackEvidence.__table__.c.response_summary_json.nullable is False
 
 
+def test_fifth_stage_release_snapshot_and_exchange_tables_are_registered() -> None:
+    """第五阶段释放快照与满箱交换任务表必须进入 metadata。"""
+
+    from src.app.resource.models import (
+        BinContentSnapshot,
+        BinContentSnapshotItem,
+        BinContentSnapshotStatus,
+        FullBoxExchangeStatus,
+        FullBoxExchangeTask,
+        RackRelease,
+        RackReleaseBinSnapshot,
+        RackReleaseStatus,
+    )
+
+    expected_tables = {
+        "wes_biz.resource_rack_releases",
+        "wes_biz.resource_rack_release_bin_snapshots",
+        "wes_biz.resource_bin_content_snapshots",
+        "wes_biz.resource_bin_content_snapshot_items",
+        "wes_biz.resource_full_box_exchange_tasks",
+    }
+
+    assert expected_tables.issubset(SQLModel.metadata.tables)
+    assert RackReleaseStatus.CANDIDATE.value == "CANDIDATE"
+    assert BinContentSnapshotStatus.COMPLETE.value == "COMPLETE"
+    assert FullBoxExchangeStatus.PHYSICAL_COMPLETED.value == "PHYSICAL_COMPLETED"
+    assert RackRelease.__table__.c.rack_release_id.nullable is False
+    assert RackReleaseBinSnapshot.__table__.c.slot_code.nullable is False
+    assert BinContentSnapshot.__table__.c.snapshot_hash.nullable is False
+    assert BinContentSnapshotItem.__table__.c.snapshot_id.nullable is False
+    assert FullBoxExchangeTask.__table__.c.exchange_request_code.nullable is False
+
+
 def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
     """resource v1 路由应暴露第一阶段底座资源的查询入口。"""
 
@@ -115,8 +148,8 @@ def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
     assert "/v1/resource/bins/query" in paths
 
 
-def test_resource_v1_router_exposes_second_stage_readonly_routes() -> None:
-    """第二阶段事实账本与当前投影只暴露查询/详情，写入必须走 ResourceRelationService。"""
+def test_resource_v1_router_exposes_readonly_process_and_projection_routes() -> None:
+    """事实、投影、证据和过程镜像只暴露查询/详情，写入必须走领域服务。"""
 
     from src.app.resource import router_v1
 
@@ -128,6 +161,11 @@ def test_resource_v1_router_exposes_second_stage_readonly_routes() -> None:
         "/v1/resource/rack-bin-mounts",
         "/v1/resource/rack-material-mounts",
         "/v1/resource/wms-writeback-evidence",
+        "/v1/resource/rack-releases",
+        "/v1/resource/rack-release-bin-snapshots",
+        "/v1/resource/bin-content-snapshots",
+        "/v1/resource/bin-content-snapshot-items",
+        "/v1/resource/full-box-exchange-tasks",
     )
 
     for prefix in readonly_prefixes:
