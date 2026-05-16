@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -45,6 +46,15 @@ class RecordingPlacementRepo:
         return RackPlacement(**data)
 
 
+class RecordingRuntimeHoldCreator:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    async def create_for_resource_reconciliation(self, _db: object, **kwargs: Any) -> SimpleNamespace:
+        self.created.append(kwargs)
+        return SimpleNamespace(id=9001, **kwargs)
+
+
 @pytest.mark.asyncio
 async def test_record_rack_arrived_appends_fact_and_creates_active_placement() -> None:
     """货架到达事件先写 ResourceStateEvent，再创建 active RackPlacement 投影。"""
@@ -79,11 +89,12 @@ async def test_record_rack_arrived_appends_fact_and_creates_active_placement() -
 
 @pytest.mark.asyncio
 async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement() -> None:
-    """同一货架已有其他 active placement 时，只追加事实并返回 RECONCILING。"""
+    """同一货架已有其他 active placement 时，追加事实、创建 RuntimeHold 且不覆盖投影。"""
 
     from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
 
     state_events = RecordingStateEventRepo()
+    runtime_holds = RecordingRuntimeHoldCreator()
     placements = RecordingPlacementRepo(
         active_placement=RackPlacement(
             rack_code="RACK-001",
@@ -94,7 +105,11 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
             started_at=datetime(2026, 5, 16, 7, 0, 0),
         )
     )
-    service = ResourceRelationService(state_event_repo=state_events, rack_placement_repo=placements)
+    service = ResourceRelationService(
+        state_event_repo=state_events,
+        rack_placement_repo=placements,
+        runtime_hold_creator=runtime_holds,
+    )
 
     result = await service.record_rack_arrived(
         object(),
@@ -103,9 +118,21 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
         source_system=ResourceSourceSystem.WMS,
         source_event_id="wms-event-002",
         occurred_at=datetime(2026, 5, 16, 8, 0, 0),
+        trace_id="trace-001",
+        session_id="session-001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
     )
 
     assert result.status == ResourceProjectionStatus.RECONCILING
     assert result.reason_code == "RACK_PLACEMENT_CONFLICT"
+    assert result.runtime_hold is not None
+    assert result.runtime_hold.id == 9001
     assert state_events.created[0]["resource_code"] == "RACK-001"
+    assert runtime_holds.created[0]["source_reason"] == "RACK_PLACEMENT_CONFLICT"
+    assert runtime_holds.created[0]["source_event_id"] == "wms-event-002"
+    assert runtime_holds.created[0]["evidence"]["active_location_code"] == "LOC-OLD"
+    assert runtime_holds.created[0]["evidence"]["incoming_location_code"] == "LOC-NEW"
     assert placements.created == []
