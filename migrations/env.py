@@ -10,6 +10,7 @@
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -17,8 +18,6 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # 导入 SQLModel 以确保所有模型被注册
 from sqlmodel import SQLModel
 from sqlmodel.sql.sqltypes import AutoString
-
-from alembic import context
 
 # 导入所有模型以确保它们被 SQLModel.metadata 识别
 # 这样 Alembic 才能自动生成迁移
@@ -33,7 +32,18 @@ from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
 )
+from src.app.resource.models import (  # noqa: F401
+    Bin,
+    BinSlotTemplate,
+    BinType,
+    ExecutionLocation,
+    ExecutionZone,
+    Rack,
+    RackSlotTemplate,
+    RackType,
+)
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
+
 # 导入所有 workline 模型
 from src.app.workline.models import (  # noqa: F401
     WorkLine,
@@ -120,32 +130,29 @@ def render_item(type_, obj, autogen_context):
     # - 跨 schema 复杂
     #
     # 详见: CLAUDE.md - ENUM 类型规范
-    if type_ == "type" and hasattr(obj, "__visit_name__"):
-        if obj.__visit_name__ == "enum":
-            from sqlalchemy import Enum as SQLAEnum
+    if type_ == "type" and hasattr(obj, "__visit_name__") and obj.__visit_name__ == "enum":
+        # 获取 ENUM 的值列表
+        if hasattr(obj, "enums"):
+            enums = obj.enums
+            enum_name = getattr(obj, "name", None)
 
-            # 获取 ENUM 的值列表
-            if hasattr(obj, "enums"):
-                enums = obj.enums
-                enum_name = getattr(obj, "name", None)
+            # 构建非原生 ENUM 的参数
+            params = [repr(e) for e in enums]
 
-                # 构建非原生 ENUM 的参数
-                params = [repr(e) for e in enums]
+            # 添加 name 参数（如果有）
+            if enum_name:
+                params.append(f"name={enum_name!r}")
 
-                # 添加 name 参数（如果有）
-                if enum_name:
-                    params.append(f"name={repr(enum_name)}")
+            # 🔥 关键参数：禁用原生 ENUM
+            params.append("native_enum=False")
+            params.append("create_constraint=True")
+            params.append("length=50")  # VARCHAR 长度
 
-                # 🔥 关键参数：禁用原生 ENUM
-                params.append("native_enum=False")
-                params.append("create_constraint=True")
-                params.append("length=50")  # VARCHAR 长度
+            # 返回非原生 ENUM 定义
+            return f"sa.Enum({', '.join(params)})"
 
-                # 返回非原生 ENUM 定义
-                return f"sa.Enum({', '.join(params)})"
-
-            # 如果无法获取枚举值，返回 False 使用默认渲染
-            return False
+        # 如果无法获取枚举值，返回 False 使用默认渲染
+        return False
 
     # 对于其他类型，返回 False 使用默认渲染
     return False
