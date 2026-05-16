@@ -27,6 +27,22 @@ class PluginNext:
             timeout_seconds=timeout_seconds,
         )
 
+    def external_request(
+        self,
+        dispatch_key: str,
+        target_code: str,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+        source_system: str | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.external_request(
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            source_system=source_system,
+        )
+
     def block(
         self,
         scope: BlockScope,

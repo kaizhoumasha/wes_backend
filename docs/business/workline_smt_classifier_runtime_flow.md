@@ -700,6 +700,27 @@ ARM mock 设备行为：
 
 于是系统会创建第二条 `DeviceCommand` 和第二条 `Outbox`，目标设备变为 `ARM02`。
 
+#### 6.3.1 料箱格调度与换架补料恢复约定
+
+当前实现中，`MOVE_FORWARD SUCCESS` 之后不会立即默认下发 `OUTPUT_ARM`，而是先执行料箱格调度：
+
+- 若目标料箱中已有相同 `DateCode / LotCode` 的占用格，则优先合并到该格，避免同批次物料被拆散。
+- 若 `DateCode / LotCode` 不同，则只能选择空格，不能混放到已有不同批次的格位。
+- 若当前货架/料箱不满足上述分配条件，WES 发起 `SMT_RACK_EXCHANGE_AND_SUPPLY` 外部请求，等待 WMS/RCS 完成换架或补料。
+
+换架补料回调的运行时约定如下：
+
+- `WMS_RACK_EXCHANGE_PROGRESS` 只更新等待上下文，用于记录外部系统进度，不触发出料命令。
+- `WMS_RACK_EXCHANGE_FAILED` 会阻断当前物料，Session 进入人工阻断/人工介入态，避免继续占用流水线下游资源。
+- `WMS_RACK_ARRIVED` 表示可用货架/料箱已到位；Runtime 会基于最新上下文重新执行料箱格分配，只有重新分配成功后才下发 `OUTPUT_ARM` 的 `PICK_AND_PUT`。
+- 重复或迟到的 `WMS_RACK_ARRIVED` 回调不会再次下发出料命令；若当前物料已经失败、完成，或已存在有效出料等待上下文，回调只按幂等结果处理。
+
+出料命令必须携带明确的目标格位：
+
+- `params.bin_cell_location` 是 `OUTPUT_ARM` 执行出料放置的必需字段。
+- payload 现在显式携带 `bin_id / bin_type / bin_cell_location`，用于表达目标料箱和格位。
+- `target_loc` 仍保留为兼容字段，供旧 mock 或旧设备适配层继续读取，但业务语义以 `bin_cell_location` 为准。
+
 ### 6.4 阶段 4: OUTPUT_ARM 回调成功，Session 完成
 
 `ARM02` 完成 `PICK_AND_PUT` 后回调成功，插件再次处理 `COMMAND_RESULT`：

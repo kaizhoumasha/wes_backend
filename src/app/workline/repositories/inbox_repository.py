@@ -172,6 +172,14 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
     ) -> str:
         """计算外部 HTTP 回调的幂等键。"""
 
+        source_event_id = payload.get("source_event_id")
+        if not isinstance(source_event_id, str) or not source_event_id.strip():
+            data = payload.get("data")
+            if isinstance(data, dict):
+                source_event_id = data.get("source_event_id")
+        if isinstance(source_event_id, str) and source_event_id.strip():
+            return f"external_http:{callback_type}:{trace_id}:source_event:{source_event_id.strip()}"
+
         payload_items: list[tuple[str, Any]] = sorted(payload.items())
         payload_str = str(payload_items)
         payload_hash = hashlib.md5(payload_str.encode(), usedforsecurity=False).hexdigest()[:8]

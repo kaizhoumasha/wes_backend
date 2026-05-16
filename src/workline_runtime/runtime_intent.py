@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class RuntimeIntentKind(str, Enum):
     COMMAND = "COMMAND"
+    EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
     ROUTE = "ROUTE"
     COMPLETE = "COMPLETE"
     BLOCK = "BLOCK"
@@ -78,6 +79,9 @@ class RuntimeIntent(BaseModel):
     device_role: str | None = None
     target_device_id: int | None = None
     action: str | None = None
+    dispatch_key: str | None = None
+    target_code: str | None = None
+    source_system: str | None = None
     payload_json: dict[str, Any] = Field(default_factory=dict)
     destination: Destination | None = None
     timeout_seconds: int | None = None
@@ -105,6 +109,25 @@ class RuntimeIntent(BaseModel):
             action=action,
             payload_json=deepcopy(payload) if payload is not None else {},
             destination=destination,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @classmethod
+    def external_request(
+        cls,
+        *,
+        dispatch_key: str,
+        target_code: str,
+        payload: dict[str, Any] | None = None,
+        timeout_seconds: int | None,
+        source_system: str | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.EXTERNAL_REQUEST,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            source_system=source_system,
+            payload_json=deepcopy(payload) if payload is not None else {},
             timeout_seconds=timeout_seconds,
         )
 
@@ -175,6 +198,15 @@ class RuntimeIntent(BaseModel):
     def validate_intent(self) -> RuntimeIntent:
         if self.kind == RuntimeIntentKind.COMMAND and not self.action:
             raise ValueError("COMMAND intent requires action")
+        if self.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
+            if not self.dispatch_key:
+                raise ValueError("EXTERNAL_REQUEST intent requires dispatch_key")
+            if not self.target_code:
+                raise ValueError("EXTERNAL_REQUEST intent requires target_code")
+            if not self.payload_json:
+                raise ValueError("EXTERNAL_REQUEST intent requires payload")
+            if self.timeout_seconds is None or self.timeout_seconds <= 0:
+                raise ValueError("EXTERNAL_REQUEST intent requires timeout_seconds")
         if self.kind == RuntimeIntentKind.BLOCK:
             if self.block_scope is None:
                 raise ValueError("BLOCK intent requires block_scope")

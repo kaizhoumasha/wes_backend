@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
+from src.app.workline.domain.services import SmtRackBinSchedulingService
 from src.workline_runtime.contracts import SixInOne
 from src.workline_runtime.material_identity import (
     MaterialIdentity,
@@ -20,6 +21,9 @@ from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.utils import non_empty_str
 
 _SCAN_COMPLETED_EVENT = "SCAN_COMPLETED"
+WMS_RACK_EXCHANGE_PROGRESS = "WMS_RACK_EXCHANGE_PROGRESS"
+WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
+WMS_RACK_EXCHANGE_FAILED = "WMS_RACK_EXCHANGE_FAILED"
 INSPECTION_SIZE_NG_REASON = "INSPECTION_SIZE_NG"
 INSPECTION_THICKNESS_NG_REASON = "INSPECTION_THICKNESS_NG"
 INSPECTION_NG_REASONS = frozenset({INSPECTION_SIZE_NG_REASON, INSPECTION_THICKNESS_NG_REASON})
@@ -296,20 +300,17 @@ def build_output_to_bin_params(
         "reel_diameter": reel_diameter,
         "target_type": "BIN",
         "target_loc": bin_location["bin_id"],
+        "bin_id": bin_location["bin_id"],
         "bin_type": bin_location["bin_type"],
+        "bin_cell_location": bin_location["bin_cell_location"],
     }
 
 
 def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
-    """构造无外部分配服务时的确定性料箱分配结果。"""
+    """兼容旧调用：实际料箱调度逻辑已收敛到领域服务。"""
 
-    checksum = sum(ord(char) for char in pkg_id) or 1
-    bin_types = ("三格箱", "五格箱", "九格箱")
-    return {
-        "bin_id": f"BIN_{checksum % 900 + 100}",
-        "bin_type": bin_types[checksum % len(bin_types)],
-        "bin_cell_location": str(checksum % 9 + 1),
-    }
+    allocation = SmtRackBinSchedulingService().allocate(pkg_id)
+    return {key: str(value) for key, value in allocation.items()}
 
 
 class ScanEventData(SixInOne, BaseModel):
@@ -383,6 +384,9 @@ class EStopEventPayload(BaseModel):
 
 
 __all__ = [
+    "WMS_RACK_ARRIVED",
+    "WMS_RACK_EXCHANGE_FAILED",
+    "WMS_RACK_EXCHANGE_PROGRESS",
     "EStopEventPayload",
     "MeasurementResultData",
     "PickPlaceResultData",

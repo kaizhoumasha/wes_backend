@@ -219,7 +219,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
        * **路由**: 当前栈板 -> **栈板暂存区** (等待收货验收)。
   5. **复判与拆板 (Review & Split)**:
      * **复判 OK**: 更新 QMS 结果 -> 栈板移回 `栈板暂存区`。
-     * **复判 NG**: 
+     * **复判 NG**:
        * **拆板作业**: 必须将 NG 盘从原栈板拆解 (Split) 到新栈板 (或不良品车)。
        * **验证**: 确认原栈板仅剩 OK 物料 -> 移回 `栈板暂存区`。
        * **关联处理**: 系统提示并指导人员处理暂存区中其他包含该 NG GRN 的栈板。
@@ -368,15 +368,15 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   1. **模式判断 (Mode Decision)**:
 
-     * **满箱交换 (Full Exchange)**: 若料箱 `Usage >= 80%` 且 存储区有空箱资源 -> WES 生成 **交换任务**。
-     * **优先交换 (Priority Exchange)**: 若 `50% <= Usage < 80%` 且 存储区有空箱资源 -> 优先尝试交换，若无空箱则执行拣选。
-     * **零散入库 (Pipeline Picking)**: 若料箱 `Usage < 50%` 或 无空箱资源 -> WES 生成 **拣选任务**。
+     * **满箱交换 (Full Exchange)**: 若料箱 `Usage >= 80%` 且 WMS/RCS 授权存在可用空箱资源 -> WES 生成 **满箱交换外部请求**。
+     * **优先交换 (Priority Exchange)**: 若 `50% <= Usage < 80%`，WES 可向 WMS/RCS 请求优先交换；若 WMS/RCS 返回无资源或拒绝，则执行拣选或进入人工对账。
+     * **零散入库 (Pipeline Picking)**: 若料箱 `Usage < 50%`，或 WMS/RCS 未授权空箱资源 -> WES 生成 **拣选任务**。
      * **混合模式**: 先交换，后拣选。
   2. **满箱交换执行 (Full Exchange Execution)**:
 
-     * WES 锁定五层货架上的 `Empty_Bin` (指定层号和 A/B 面)。
-     * WES 生成交换任务 `Exchange(Source_Single_Layer_Rack, Target_5_Layer_Rack, Layer, Side)` 并提交给 WMS 调度 RCS/CTU 执行原子动作。
-     * **数据更新**: 交换完成后，WES 交换两个容器的库存属性。
+     * WMS/RCS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
+     * WES 生成交换外部请求 `FULL_BIN_EXCHANGE(Source_Single_Layer_Rack, RackReleaseSnapshot)` 并提交给 WMS，由 WMS 调度 RCS/CTU 执行原子动作。
+     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、WMS/RCS 回调、资源投影和回写证据。
   3. **流水线零散入库 (Pipeline Picking Execution)**:
 
      * **调度**: WES 生成 Target Bin (从五层货架) 到流水线的搬运需求，提交 WMS 调度 RCS。
@@ -397,7 +397,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   3. **自动线执行 (Auto Line)**:
      * **预缓存**: WES 提前调度下一波次的货架到 Buffer 区。
      * **指令下发**: `WES -> ECS: Pick_Command(Source, Target)`.
-     * **异常处理**: 若 ECS 反馈 `Pick_Fail`，WES 自动扣减库存并标记 `Shortage`，尝试从备选库存补发。
+     * **异常处理**: 若 ECS 反馈 `Pick_Fail`，WES 记录设备失败、诊断和 RuntimeHold；库存扣减、缺料确认和备选库存释放/补发必须由 WMS 确认或授权，WES 不自动扣减库存。
 
 ---
 
@@ -457,7 +457,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
       "expire_time": "2025-12-13T12:00:00Z"
     }
     ```
-  * **响应**: 现有 WMS 返回 `ReservationID`，并锁定库存。
+  * **响应**: 现有 WMS 返回 `ReservationID`，并在 WMS 侧锁定库存；WES 只保存预留引用和执行证据。
   * **释放机制**:
     * **主动释放**: 任务完成或取消时，WES 调用 `DELETE /api/wms/inventory/reserve/{ReservationID}` 释放预留。
     * **自动过期**: WMS 在 `expire_time` 后自动释放预留，无需 WES 干预。
@@ -882,7 +882,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   * **查询驱动 (Query-Driven)**: WES 需要库存数据时，实时查询现有 WMS。
   * **确认驱动 (Confirmation-Driven)**: WES 完成物理动作后，通知现有 WMS 更新库存。
-  * **预留机制 (Reservation)**: WES 通过预留接口锁定库存，避免超发。
+  * **预留机制 (Reservation)**: WES 通过预留接口请求 WMS 锁定库存，避免超发；锁定事实和释放规则仍由 WMS 拥有。
   * **RCS 通道 (Phase Boundary)**: 本阶段 RCS 仍由现有 WMS 统一调度。WES 只提交搬运/交换需求给 WMS，由 WMS 调用 RCS 并回传结果/事件。
   * **PDA 通道**: PDA 仅与 WMS 交互；WES 如需感知 PDA 作业结果，由 WMS 推送/同步。
 
@@ -975,6 +975,12 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **QMS**: 抽检请求、结果回传。
 
 ## 4. 接口需求 (Interface Requirements)
+
+> **运行时资源边界 ADR（2026-05-13）**:
+> SMT 运行时资源、满箱交换、WMS/RCS 回调和库存权责边界以
+> `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 为准。
+> 该 ADR 明确：WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；WMS/RCS 执行类回调统一走
+> `/api/v1/callback/external`，WES 只保存执行事实、资源投影、回写证据和对账证据。
 
 ### 4.1 北向接口 (Northbound API - To Existing WMS)
 

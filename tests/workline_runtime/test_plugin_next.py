@@ -88,3 +88,20 @@ def test_plugin_next_continue_next_builds_runtime_intent_with_default_destinatio
     assert intent.action == "MOVE_FORWARD"
     assert intent.payload_json == {"pkg_id": "L0001-1"}
     assert intent.destination == Destination.next()
+
+
+def test_plugin_next_external_request_builds_runtime_intent():
+    intent = PluginNext().external_request(
+        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+        target_code="http://wms-rcs/api/full-box-exchange",
+        payload={"rack_release_id": "release-001"},
+        timeout_seconds=1800,
+        source_system="WMS_RCS",
+    )
+
+    assert intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST
+    assert intent.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert intent.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert intent.payload_json == {"rack_release_id": "release-001"}
+    assert intent.timeout_seconds == 1800
+    assert intent.source_system == "WMS_RCS"

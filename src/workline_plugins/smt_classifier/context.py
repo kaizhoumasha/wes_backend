@@ -13,11 +13,14 @@ class SmtClassifierContext(BaseModel):
     barcode: str | None = None
     pkg_id: str | None = None
     barcodes: list[str] = Field(default_factory=list)
+    six_in_one: dict[str, Any] | None = None
     location: str | None = None
     device_code: str | None = None
     reel_diameter: str | float | None = None
     reel_thickness: str | float | None = None
     bin_location: dict[str, Any] | None = None
+    active_bin_rack: dict[str, Any] | None = None
+    rack_exchange: dict[str, Any] | None = None
     ng_reason: str | None = None
     pick_place_reason: str | None = None
     scan_ng_reason_code: str | None = None
