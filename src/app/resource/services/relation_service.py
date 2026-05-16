@@ -242,11 +242,13 @@ class ResourceRelationService:
         if conflict is not None:
             runtime_hold = await self._create_bin_mount_conflict_hold(
                 db,
+                operation="FULL_BOX_EXCHANGE_PHYSICAL_COMPLETED",
                 exchange_request_code=exchange_request_code,
                 rack_release_id=rack_release_id,
                 conflict=conflict,
                 source_system=source_system,
                 source_event_id=source_event_id,
+                source_task_id=source_task_id,
                 trace_id=trace_id,
                 session_id=session_id,
                 workline_id=workline_id,
@@ -296,6 +298,10 @@ class ResourceRelationService:
         source_task_id: str | None = None,
         trace_id: str | None = None,
         session_id: str | None = None,
+        workline_id: int | None = None,
+        workline_session_id: int | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录 ECS 验空事实，并投影空架上的 4 个 active 料箱挂载关系。"""
 
@@ -341,9 +347,24 @@ class ResourceRelationService:
 
         conflict = await self._first_bin_mount_conflict(db, normalized_mounts)
         if conflict is not None:
+            runtime_hold = await self._create_bin_mount_conflict_hold(
+                db,
+                operation="EMPTY_RACK_VERIFIED",
+                conflict=conflict,
+                source_system=source_system,
+                source_event_id=source_event_id,
+                source_task_id=source_task_id,
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=workline_session_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
+                runtime_hold=runtime_hold,
                 reason_code=conflict["reason_code"],
                 message=conflict["message"],
             )
@@ -427,11 +448,13 @@ class ResourceRelationService:
         self,
         db: object,
         *,
-        exchange_request_code: str,
-        rack_release_id: str,
+        operation: str,
         conflict: Mapping[str, Any],
         source_system: ResourceSourceSystem,
         source_event_id: str,
+        exchange_request_code: str | None = None,
+        rack_release_id: str | None = None,
+        source_task_id: str | None = None,
         trace_id: str | None,
         session_id: str | None,
         workline_id: int | None,
@@ -444,6 +467,27 @@ class ResourceRelationService:
         if workline_id is None:
             return None
 
+        evidence = {
+            "operation": operation,
+            "resource_type": ResourceType.BIN.value,
+            "rack_code": conflict.get("rack_code"),
+            "rack_slot_code": conflict.get("rack_slot_code"),
+            "incoming_bin_code": conflict.get("incoming_bin_code"),
+            "active_bin_code": conflict.get("active_bin_code"),
+            "active_rack_code": conflict.get("active_rack_code"),
+            "active_rack_slot_code": conflict.get("active_rack_slot_code"),
+            "active_source_event_id": conflict.get("active_source_event_id"),
+            "incoming_source_event_id": source_event_id,
+            "source_system": source_system.value,
+            "source_task_id": source_task_id,
+            "trace_id": trace_id,
+            "session_id": session_id,
+        }
+        if exchange_request_code is not None:
+            evidence["exchange_request_code"] = exchange_request_code
+        if rack_release_id is not None:
+            evidence["rack_release_id"] = rack_release_id
+
         return await self.runtime_hold_creator.create_for_resource_reconciliation(
             db,
             workline_id=workline_id,
@@ -453,22 +497,7 @@ class ResourceRelationService:
             contract_version=contract_version,
             source_reason=str(conflict["reason_code"]),
             source_event_id=source_event_id,
-            evidence={
-                "resource_type": ResourceType.BIN.value,
-                "exchange_request_code": exchange_request_code,
-                "rack_release_id": rack_release_id,
-                "rack_code": conflict.get("rack_code"),
-                "rack_slot_code": conflict.get("rack_slot_code"),
-                "incoming_bin_code": conflict.get("incoming_bin_code"),
-                "active_bin_code": conflict.get("active_bin_code"),
-                "active_rack_code": conflict.get("active_rack_code"),
-                "active_rack_slot_code": conflict.get("active_rack_slot_code"),
-                "active_source_event_id": conflict.get("active_source_event_id"),
-                "incoming_source_event_id": source_event_id,
-                "source_system": source_system.value,
-                "trace_id": trace_id,
-                "session_id": session_id,
-            },
+            evidence=evidence,
         )
 
     async def _create_rack_placement_conflict_hold(
