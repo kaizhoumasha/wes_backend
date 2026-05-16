@@ -282,6 +282,23 @@ class RackReleaseBinSnapshotRepository(BaseRepository[RackReleaseBinSnapshot]):
     def __init__(self) -> None:
         super().__init__(RackReleaseBinSnapshot)
 
+    async def list_by_release_id(
+        self,
+        db: AsyncSession,
+        rack_release_id: str,
+    ) -> list[RackReleaseBinSnapshot]:
+        """按释放周期业务 ID 查询槽位快照。"""
+
+        columns = cast("Any", RackReleaseBinSnapshot).__table__.c
+        result = await db.execute(
+            select(RackReleaseBinSnapshot)
+            .where(
+                columns.rack_release_id == rack_release_id,
+            )
+            .order_by(columns.slot_code.asc())
+        )
+        return list(result.scalars().all())
+
 
 class BinContentSnapshotRepository(BaseRepository[BinContentSnapshot]):
     """料箱内容快照头 Repository。"""
