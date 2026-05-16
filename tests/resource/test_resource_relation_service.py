@@ -23,7 +23,7 @@ class RecordingStateEventRepo:
         source_system: ResourceSourceSystem,
         source_event_id: str,
     ) -> ResourceStateEvent | None:
-        assert source_system == ResourceSourceSystem.WMS
+        assert source_system in {ResourceSourceSystem.ECS, ResourceSourceSystem.WMS}
         assert source_event_id
         return self.existing_event
 
@@ -57,12 +57,12 @@ class RecordingBinMountRepo:
         rack_code: str,
         rack_slot_code: str,
     ) -> RackBinMount | None:
-        assert rack_code == "RACK-002"
-        assert rack_slot_code in {"A01", "A02"}
+        assert rack_code in {"RACK-002", "RACK-ECS-001"}
+        assert rack_slot_code in {"A01", "A02", "A03", "A04"}
         return None
 
     async def get_active_by_bin_code(self, _db: object, bin_code: str) -> RackBinMount | None:
-        assert bin_code in {"BIN-001", "BIN-002"}
+        assert bin_code in {"BIN-001", "BIN-002", "BIN-ECS-001", "BIN-ECS-002", "BIN-ECS-003", "BIN-ECS-004"}
         return None
 
     async def create(self, _db: object, data: dict[str, Any]) -> RackBinMount:
@@ -201,3 +201,49 @@ async def test_record_full_box_exchange_physical_completed_projects_bin_mounts()
     assert bin_mounts.created[0]["bin_code"] == "BIN-001"
     assert bin_mounts.created[0]["mount_status"] == "MOUNTED"
     assert bin_mounts.created[0]["source_system"] == "WMS_RCS"
+
+
+@pytest.mark.asyncio
+async def test_record_empty_rack_verified_projects_four_bin_mounts() -> None:
+    """ECS 验空事实生成 4 个 active RackBinMount 投影。"""
+
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    bin_mounts = RecordingBinMountRepo()
+    service = ResourceRelationService(state_event_repo=state_events, rack_bin_mount_repo=bin_mounts)
+
+    result = await service.record_empty_rack_verified(
+        object(),
+        rack_code="RACK-ECS-001",
+        bin_mounts=[
+            {"rack_slot_code": "A01", "bin_code": "BIN-ECS-001"},
+            {"rack_slot_code": "A02", "bin_code": "BIN-ECS-002"},
+            {"rack_slot_code": "A03", "bin_code": "BIN-ECS-003"},
+            {"rack_slot_code": "A04", "bin_code": "BIN-ECS-004"},
+        ],
+        source_event_id="ecs-empty-verified-001",
+        source_version="1",
+        source_task_id="ecs-task-001",
+        occurred_at=datetime(2026, 5, 16, 10, 0, 0),
+        trace_id="trace-ecs-001",
+        session_id="session-ecs-001",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert state_events.created[0]["event_type"] == "BIN_MOUNTED"
+    assert state_events.created[0]["resource_type"] == "RACK"
+    assert state_events.created[0]["resource_code"] == "RACK-ECS-001"
+    assert state_events.created[0]["source_system"] == ResourceSourceSystem.ECS
+    assert state_events.created[0]["payload_json"]["source_task_id"] == "ecs-task-001"
+    assert len(bin_mounts.created) == 4
+    assert [mount["rack_slot_code"] for mount in bin_mounts.created] == ["A01", "A02", "A03", "A04"]
+    assert [mount["bin_code"] for mount in bin_mounts.created] == [
+        "BIN-ECS-001",
+        "BIN-ECS-002",
+        "BIN-ECS-003",
+        "BIN-ECS-004",
+    ]
+    assert {mount["rack_code"] for mount in bin_mounts.created} == {"RACK-ECS-001"}
+    assert {mount["mount_status"] for mount in bin_mounts.created} == {"MOUNTED"}
+    assert {mount["source_system"] for mount in bin_mounts.created} == {"ECS"}

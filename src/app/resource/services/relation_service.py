@@ -265,6 +265,92 @@ class ResourceRelationService:
 
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
+    async def record_empty_rack_verified(
+        self,
+        db: object,
+        *,
+        rack_code: str,
+        bin_mounts: Sequence[Mapping[str, Any]],
+        source_event_id: str,
+        occurred_at: Any,
+        source_version: str | None = None,
+        source_task_id: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ResourceProjectionResult:
+        """记录 ECS 验空事实，并投影空架上的 4 个 active 料箱挂载关系。"""
+
+        source_system = ResourceSourceSystem.ECS
+        existing_event = await self.state_event_repo.get_by_source_event_id(
+            db,
+            source_system=source_system,
+            source_event_id=source_event_id,
+        )
+        if existing_event is not None:
+            return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+
+        event = await self.state_event_repo.create(
+            db,
+            {
+                "event_code": self._event_code(source_system, source_event_id),
+                "event_type": ResourceStateEventType.BIN_MOUNTED.value,
+                "resource_type": ResourceType.RACK.value,
+                "resource_code": rack_code,
+                "source_system": source_system,
+                "source_event_id": source_event_id,
+                "source_version": source_version,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "payload_json": {
+                    "rack_code": rack_code,
+                    "source_task_id": source_task_id,
+                    "bin_mounts": [dict(mount) for mount in bin_mounts],
+                },
+                "occurred_at": occurred_at,
+                "received_at": timezone.now_for_db(),
+            },
+        )
+
+        normalized_mounts = _extract_bin_mounts({"rack_code": rack_code, "bin_mounts": list(bin_mounts)})
+        if len(normalized_mounts) != 4:
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                reason_code="EMPTY_RACK_BIN_MOUNTS_INVALID",
+                message="ECS 验空事实未提供 4 个可投影的料箱挂载关系",
+            )
+
+        conflict = await self._first_bin_mount_conflict(db, normalized_mounts)
+        if conflict is not None:
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                reason_code=conflict["reason_code"],
+                message=conflict["message"],
+            )
+
+        for mount in normalized_mounts:
+            if await self._same_active_bin_mount_exists(db, mount):
+                continue
+            await self.rack_bin_mount_repo.create(
+                db,
+                {
+                    "rack_code": mount["rack_code"],
+                    "rack_slot_code": mount["rack_slot_code"],
+                    "bin_code": mount["bin_code"],
+                    "mount_status": RackBinMountStatus.MOUNTED.value,
+                    "source_system": ResourceRelationSourceSystem.ECS.value,
+                    "source_event_id": source_event_id,
+                    "source_version": source_version,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "started_at": occurred_at,
+                    "ended_at": None,
+                },
+            )
+
+        return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
     async def _first_bin_mount_conflict(
         self,
         db: object,
