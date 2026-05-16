@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -230,6 +230,48 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_external_request_intent_creates_external_outbox_and_immediate_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.external_request(
+                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+                target_code="http://wms-rcs/api/full-box-exchange",
+                payload={"rack_release_id": "release-001"},
+                timeout_seconds=1800,
+                source_system="WMS_RCS",
+            )
+        ],
+    )
+
+    outbox = db.add.call_args.args[0]
+    assert outbox.dispatch_type == "EXTERNAL_HTTP"
+    assert outbox.target_type == "HTTP_ENDPOINT"
+    assert outbox.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert outbox.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert outbox.payload_json == {"rack_release_id": "release-001"}
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "EXTERNAL_HTTP"
+    assert session.awaiting_command_id is None
+    assert session.current_wait_timeout_seconds == 1800
+    assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
+    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
+    assert timelines[1]["payload"]["wait_token"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
+
+
+@pytest.mark.asyncio
 async def test_command_destination_current_targets_source_device(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     created_payloads: list[dict[str, Any]] = []
@@ -415,6 +457,51 @@ async def test_command_before_terminal_intent_is_rejected_before_side_effects(
     assert ctx["db"].add.call_count == 0
     create_command.assert_not_awaited()
     emit_timeline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_external_request_before_terminal_intent_is_rejected_before_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+
+    with pytest.raises(ValueError, match="terminal RuntimeIntent cannot follow command-producing RuntimeIntent"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.external_request(
+                    dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+                    target_code="http://wms-rcs/api/full-box-exchange",
+                    payload={"rack_release_id": "release-001"},
+                    timeout_seconds=1800,
+                ),
+                RuntimeIntent.complete({"done": True}),
+            ],
+        )
+
+    assert session.status == "RUNNING"
+    assert ctx["db"].add.call_count == 0
+    emit_timeline.assert_not_awaited()
+
+
+def test_result_requires_outbox_dispatch_for_external_request() -> None:
+    result = OrchestratorResult(
+        success=True,
+        intents=[
+            RuntimeIntent.external_request(
+                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+                target_code="http://wms-rcs/api/full-box-exchange",
+                payload={"rack_release_id": "release-001"},
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert workline_effects._result_requires_outbox_dispatch(result) is True
 
 
 @pytest.mark.asyncio

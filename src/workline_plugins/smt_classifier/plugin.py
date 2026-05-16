@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import ValidationError
 
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
+from src.app.workline.domain.services import (
+    SmtFullBoxExchangeRequest,
+    SmtRackBinSchedulingDecision,
+    smt_rack_bin_scheduling_service,
+)
 from src.core.logger import logger
 from src.workline_runtime.contracts import DeviceErrorCode
 from src.workline_runtime.plugin_base import (
@@ -28,7 +34,6 @@ from .contract import (
     INSPECTION_NG_REASONS,
     INSPECTION_SIZE_NG_REASON,
     ScanEventPayload,
-    build_default_bin_allocation,
     build_measurement_reel_params,
     build_move_forward_params,
     build_output_to_bin_params,
@@ -127,6 +132,50 @@ def _resolve_pkg_id_from_result(result: NormalizedCommandResult) -> str | None:
         return None
 
     return result_data.get("PkgID") or result_data.get("pkg_id") or None
+
+
+def _normalize_full_box_exchange_request(value: Any) -> SmtFullBoxExchangeRequest:
+    if isinstance(value, SmtFullBoxExchangeRequest):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("full_box_exchange_request must be a mapping or SmtFullBoxExchangeRequest")
+
+    payload = value.get("payload")
+    if not isinstance(payload, Mapping):
+        raise TypeError("full_box_exchange_request.payload must be a mapping")
+    return SmtFullBoxExchangeRequest(
+        dispatch_key=str(value.get("dispatch_key") or ""),
+        target_code=str(value.get("target_code") or ""),
+        payload=dict(payload),
+        timeout_seconds=int(value.get("timeout_seconds") or 1800),
+        source_system=str(value.get("source_system") or "WMS_RCS"),
+    )
+
+
+def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecision:
+    if isinstance(value, SmtRackBinSchedulingDecision):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("bin scheduling result must be a mapping or SmtRackBinSchedulingDecision")
+
+    if "full_box_exchange_request" in value:
+        return SmtRackBinSchedulingDecision(
+            full_box_exchange_request=_normalize_full_box_exchange_request(value["full_box_exchange_request"])
+        )
+
+    bin_location = value.get("bin_location") if "bin_location" in value else value
+    if not isinstance(bin_location, Mapping):
+        raise TypeError("bin scheduling result must include a bin_location mapping")
+    return SmtRackBinSchedulingDecision(bin_location=dict(bin_location))
+
+
+def _full_box_exchange_context(request: SmtFullBoxExchangeRequest) -> dict[str, Any]:
+    return {
+        "status": "REQUESTED",
+        "dispatch_key": request.dispatch_key,
+        "target_code": request.target_code,
+        "source_system": request.source_system,
+    }
 
 
 class SmtClassifierPlugin(WorklinePlugin):
@@ -451,7 +500,23 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         smt_ctx = parse_smt_context(ctx)
         reel_diameter = smt_ctx.reel_diameter or ""
-        bin_location = await self._allocate_bin(ctx, pkg_id)
+        allocation_decision = await self._allocate_bin(ctx, pkg_id)
+        if allocation_decision.full_box_exchange_request is not None:
+            request = allocation_decision.full_box_exchange_request
+            context_patch = SmtClassifierContext(pkg_id=pkg_id).to_patch()
+            context_patch["full_box_exchange"] = _full_box_exchange_context(request)
+            return [
+                ctx.next.update_context(context_patch),
+                ctx.next.external_request(
+                    dispatch_key=request.dispatch_key,
+                    target_code=request.target_code,
+                    payload=dict(request.payload),
+                    timeout_seconds=request.timeout_seconds,
+                    source_system=request.source_system,
+                ),
+            ]
+
+        bin_location = dict(allocation_decision.bin_location or {})
         logger.info(f"Bin allocated: {bin_location}")
 
         return [
@@ -502,19 +567,18 @@ class SmtClassifierPlugin(WorklinePlugin):
             message=error_msg,
         )
 
-    async def _allocate_bin(self, ctx: PluginContext, barcode: str) -> dict:
+    async def _allocate_bin(self, ctx: PluginContext, barcode: str) -> SmtRackBinSchedulingDecision:
         """料箱分配。"""
 
-        allocator = ctx.services.bin_allocator
-        if allocator is not None:
+        allocator = ctx.services.bin_allocator or smt_rack_bin_scheduling_service
+        context = dict(getattr(ctx.session, "context_json", None) or {})
+        if hasattr(allocator, "plan_allocation"):
+            allocation = allocator.plan_allocation(barcode, context=context)
+        else:
             allocation = allocator.allocate(barcode)
-            if inspect.isawaitable(allocation):
-                allocation = await allocation
-            return dict(allocation)
-
-        fallback = build_default_bin_allocation(barcode)
-        logger.info(f"Using fallback bin allocation: barcode={barcode}, bin_id={fallback['bin_id']}")
-        return fallback
+        if inspect.isawaitable(allocation):
+            allocation = await allocation
+        return _normalize_bin_scheduling_decision(allocation)
 
 
 smt_classifier_plugin = SmtClassifierPlugin()

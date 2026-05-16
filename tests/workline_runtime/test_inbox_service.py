@@ -100,6 +100,45 @@ def test_calculate_command_result_idempotency_key():
     assert len(hash_part) == 8
 
 
+def test_calculate_external_http_idempotency_key_uses_source_event_id() -> None:
+    """外部 HTTP 回调有源事件 ID 时，应使用稳定业务事件键。"""
+    repository = WorklineInboxRepository()
+
+    key1 = repository.calculate_external_http_idempotency_key(
+        callback_type="FULL_BIN_EXCHANGE_RESULT",
+        trace_id="trace-release-001",
+        payload={
+            "source_event_id": "wms-rcs-event-001",
+            "result": "SUCCESS",
+            "timestamp": 1778688000000,
+        },
+    )
+    key2 = repository.calculate_external_http_idempotency_key(
+        callback_type="FULL_BIN_EXCHANGE_RESULT",
+        trace_id="trace-release-001",
+        payload={
+            "source_event_id": "wms-rcs-event-001",
+            "result": "SUCCESS",
+            "timestamp": 1778688000999,
+        },
+    )
+
+    assert key1 == key2 == "external_http:FULL_BIN_EXCHANGE_RESULT:trace-release-001:source_event:wms-rcs-event-001"
+
+
+def test_calculate_external_http_idempotency_key_uses_nested_source_event_id() -> None:
+    """兼容外部系统把 source_event_id 放在 data 内的回调形态。"""
+    repository = WorklineInboxRepository()
+
+    key = repository.calculate_external_http_idempotency_key(
+        callback_type="FULL_BIN_EXCHANGE_RESULT",
+        trace_id="trace-release-001",
+        payload={"data": {"source_event_id": "wms-rcs-event-002"}},
+    )
+
+    assert key == "external_http:FULL_BIN_EXCHANGE_RESULT:trace-release-001:source_event:wms-rcs-event-002"
+
+
 def test_idempotency_key_collision_prevention():
     """测试幂等键防碰撞：不同数据应生成不同键"""
     repository = WorklineInboxRepository()

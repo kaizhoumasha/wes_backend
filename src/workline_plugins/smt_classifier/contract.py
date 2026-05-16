@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
+from src.app.workline.domain.services import SmtRackBinSchedulingService
 from src.workline_runtime.contracts import SixInOne
 from src.workline_runtime.material_identity import (
     MaterialIdentity,
@@ -301,15 +302,10 @@ def build_output_to_bin_params(
 
 
 def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
-    """构造无外部分配服务时的确定性料箱分配结果。"""
+    """兼容旧调用：实际料箱调度逻辑已收敛到领域服务。"""
 
-    checksum = sum(ord(char) for char in pkg_id) or 1
-    bin_types = ("三格箱", "五格箱", "九格箱")
-    return {
-        "bin_id": f"BIN_{checksum % 900 + 100}",
-        "bin_type": bin_types[checksum % len(bin_types)],
-        "bin_cell_location": str(checksum % 9 + 1),
-    }
+    allocation = SmtRackBinSchedulingService().allocate(pkg_id)
+    return {key: str(value) for key, value in allocation.items()}
 
 
 class ScanEventData(SixInOne, BaseModel):

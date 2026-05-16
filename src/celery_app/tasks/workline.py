@@ -98,6 +98,8 @@ def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
     for intent in result.intents or []:
         if intent.kind == RuntimeIntentKind.COMMAND:
             return True
+        if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
+            return True
         if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
             return True
     return False

@@ -6,6 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.app.workline.domain.services import (
+    SmtFullBoxExchangeRequest,
+    SmtRackBinSchedulingDecision,
+    SmtRackBinSchedulingService,
+)
 from src.workline_runtime.runtime_intent import BlockScope, DestinationKind, RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices
 
@@ -391,6 +396,7 @@ class TestSmtClassifierPluginCommandResults:
         _assert_command(result[1], action="PICK_AND_PUT", device_role="OUTPUT_ARM")
         assert result[1].payload_json["barcode"] == "CALLBACK-PKG-001"
         assert result[1].payload_json["reel_diameter"] == "178.5"
+        assert result[0].context_patch["bin_location"] == SmtRackBinSchedulingService().allocate("CALLBACK-PKG-001")
 
     @pytest.mark.asyncio
     async def test_conveyor_success_uses_bin_allocator_service(self, plugin, mock_context):
@@ -414,6 +420,55 @@ class TestSmtClassifierPluginCommandResults:
         assert result[0].context_patch["bin_location"]["bin_id"] == "BIN-SVC-001"
         assert result[1].payload_json["target_loc"] == "BIN-SVC-001"
         assert result[1].payload_json["bin_type"] == "九格箱"
+
+    @pytest.mark.asyncio
+    async def test_conveyor_success_requests_full_box_exchange_when_scheduler_requires_it(self, plugin, mock_context):
+        """料箱调度需要满箱交换时，插件只发外部请求，不直接下发出料臂命令。"""
+
+        class BinAllocator:
+            def plan_allocation(self, barcode: str, *, context: dict) -> SmtRackBinSchedulingDecision:
+                assert barcode == "CALLBACK-PKG-003"
+                assert context["reel_diameter"] == "178.5"
+                return SmtRackBinSchedulingDecision(
+                    full_box_exchange_request=SmtFullBoxExchangeRequest(
+                        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+                        target_code="http://wms-rcs/api/full-box-exchange",
+                        payload={
+                            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+                            "rack_release_id": "release-001",
+                            "pkg_id": barcode,
+                        },
+                        timeout_seconds=1800,
+                        source_system="WMS_RCS",
+                    )
+                )
+
+            def allocate(self, barcode: str) -> dict:
+                raise AssertionError(f"不应在 plan_allocation 已返回交换决策后调用 allocate: {barcode}")
+
+        mock_context.session.context_json = {"reel_diameter": "178.5"}
+        mock_context.services = WorklineRuntimeServices(bin_allocator=BinAllocator())
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": "CALLBACK-PKG-003"})),
+        )
+
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.EXTERNAL_REQUEST,
+        ]
+        assert result[0].context_patch["pkg_id"] == "CALLBACK-PKG-003"
+        assert result[0].context_patch["full_box_exchange"] == {
+            "status": "REQUESTED",
+            "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "target_code": "http://wms-rcs/api/full-box-exchange",
+            "source_system": "WMS_RCS",
+        }
+        assert result[1].dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
+        assert result[1].target_code == "http://wms-rcs/api/full-box-exchange"
+        assert result[1].payload_json["rack_release_id"] == "release-001"
+        assert result[1].timeout_seconds == 1800
 
     @pytest.mark.asyncio
     async def test_conveyor_success_requires_callback_pkg_id(self, plugin, mock_context):
