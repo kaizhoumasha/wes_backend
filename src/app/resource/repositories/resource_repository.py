@@ -19,6 +19,7 @@ from src.app.resource.models import (
     RackType,
     ResourceSourceSystem,
     ResourceStateEvent,
+    WmsWritebackEvidence,
 )
 from src.database.base_repository import BaseRepository
 
@@ -234,6 +235,24 @@ class RackMaterialMountRepository(BaseRepository[RackMaterialMount]):
         return result.scalar_one_or_none()
 
 
+class WmsWritebackEvidenceRepository(BaseRepository[WmsWritebackEvidence]):
+    """WMS 回写证据 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(WmsWritebackEvidence)
+
+    async def get_by_idempotency_key(self, db: AsyncSession, idempotency_key: str) -> WmsWritebackEvidence | None:
+        """按 WMS 回写幂等键查询证据。"""
+
+        columns = cast("Any", WmsWritebackEvidence).__table__.c
+        result = await db.execute(
+            select(WmsWritebackEvidence).where(
+                columns.idempotency_key == idempotency_key,
+            )
+        )
+        return result.scalar_one_or_none()
+
+
 execution_zone_repository = ExecutionZoneRepository()
 execution_location_repository = ExecutionLocationRepository()
 rack_type_repository = RackTypeRepository()
@@ -246,6 +265,7 @@ resource_state_event_repository = ResourceStateEventRepository()
 rack_placement_repository = RackPlacementRepository()
 rack_bin_mount_repository = RackBinMountRepository()
 rack_material_mount_repository = RackMaterialMountRepository()
+wms_writeback_evidence_repository = WmsWritebackEvidenceRepository()
 
 __all__ = [
     "BinRepository",
@@ -260,6 +280,7 @@ __all__ = [
     "RackSlotTemplateRepository",
     "RackTypeRepository",
     "ResourceStateEventRepository",
+    "WmsWritebackEvidenceRepository",
     "bin_repository",
     "bin_slot_template_repository",
     "bin_type_repository",
@@ -272,4 +293,5 @@ __all__ = [
     "rack_slot_template_repository",
     "rack_type_repository",
     "resource_state_event_repository",
+    "wms_writeback_evidence_repository",
 ]

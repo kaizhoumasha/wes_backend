@@ -658,6 +658,53 @@ class RackMaterialMount(RackMaterialMountBase, EnterpriseMixin, SoftDeleteMixin,
     )
 
 
+class WmsWritebackEvidenceBase(BaseMixin):
+    """WMS 回写与确认 append-only 证据基础字段。"""
+
+    evidence_code: str = Field(min_length=1, max_length=160, index=True, description="WMS 回写证据编码")
+    request_id: str = Field(min_length=1, max_length=120, index=True, description="WES 请求 ID")
+    idempotency_key: str = Field(min_length=1, max_length=200, index=True, description="WMS 回写幂等键")
+    dispatch_key: str | None = Field(default=None, max_length=200, index=True, description="Outbox 派发键")
+    endpoint: str = Field(min_length=1, max_length=300, description="WMS 接口或回调类型")
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="WMS/RCS 来源系统",
+    )
+    request_hash: str = Field(min_length=1, max_length=128, description="脱敏请求摘要 hash")
+    response_hash: str | None = Field(default=None, max_length=128, description="脱敏响应摘要 hash")
+    request_summary_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="脱敏请求摘要",
+    )
+    response_summary_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="脱敏响应摘要",
+    )
+    http_status: int | None = Field(default=None, ge=100, le=599, description="HTTP 状态")
+    wms_document_id: str | None = Field(default=None, max_length=160, index=True, description="WMS 单据或任务引用")
+    inventory_version: str | None = Field(default=None, max_length=160, description="WMS 库存或业务版本")
+    confirmed_at: datetime | None = Field(default=None, index=True, description="WMS 确认时间")
+    retry_count: int = Field(default=0, ge=0, description="重试次数")
+    failure_code: str | None = Field(default=None, max_length=120, index=True, description="失败原因")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+
+
+class WmsWritebackEvidence(WmsWritebackEvidenceBase, EnterpriseMixin, DataTableMixin, table=True):
+    """WMS 回写与确认 append-only 证据。"""
+
+    __tablename__: ClassVar[Literal["resource_wms_writeback_evidence"]] = "resource_wms_writeback_evidence"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_resource_wms_writeback_evidence_code", "evidence_code", unique=True),
+        Index("ux_resource_wms_writeback_evidence_idempotency", "idempotency_key", unique=True),
+        Index("ix_resource_wms_writeback_evidence_dispatch", "dispatch_key"),
+        Index("ix_resource_wms_writeback_evidence_confirmed", "wms_document_id", "confirmed_at"),
+    )
+
+
 class ExecutionZoneCreate(ModelFactory(ExecutionZoneBase).for_create()):
     """执行区域创建 Schema。"""
 
@@ -838,6 +885,21 @@ class RackMaterialMountResponse(RackMaterialMountBase):
     version: int
 
 
+class WmsWritebackEvidenceCreate(ModelFactory(WmsWritebackEvidenceBase).for_create()):
+    """WMS 回写证据创建 Schema。"""
+
+
+class WmsWritebackEvidenceUpdate(ModelFactory(WmsWritebackEvidenceBase).for_optimistic_update()):
+    """WMS 回写证据更新 Schema。"""
+
+
+class WmsWritebackEvidenceResponse(WmsWritebackEvidenceBase):
+    """WMS 回写证据响应 Schema。"""
+
+    id: int
+    version: int
+
+
 __all__ = [
     "Bin",
     "BinBase",
@@ -919,4 +981,9 @@ __all__ = [
     "ResourceType",
     "WmsConfirmationStatus",
     "WmsSplitPolicy",
+    "WmsWritebackEvidence",
+    "WmsWritebackEvidenceBase",
+    "WmsWritebackEvidenceCreate",
+    "WmsWritebackEvidenceResponse",
+    "WmsWritebackEvidenceUpdate",
 ]

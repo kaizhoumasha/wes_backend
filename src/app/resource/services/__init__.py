@@ -19,6 +19,7 @@ from .resource_service import (
     RackSlotTemplateService,
     RackTypeService,
     ResourceStateEventService,
+    WmsWritebackEvidenceService,
     bin_service,
     bin_slot_template_service,
     bin_type_service,
@@ -31,6 +32,7 @@ from .resource_service import (
     rack_slot_template_service,
     rack_type_service,
     resource_state_event_service,
+    wms_writeback_evidence_service,
 )
 
 __all__ = [
@@ -49,6 +51,7 @@ __all__ = [
     "ResourceProjectionStatus",
     "ResourceRelationService",
     "ResourceStateEventService",
+    "WmsWritebackEvidenceService",
     "bin_service",
     "bin_slot_template_service",
     "bin_type_service",
@@ -62,4 +65,5 @@ __all__ = [
     "rack_type_service",
     "resource_relation_service",
     "resource_state_event_service",
+    "wms_writeback_evidence_service",
 ]

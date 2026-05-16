@@ -11,6 +11,7 @@ from .resource_repository import (
     RackSlotTemplateRepository,
     RackTypeRepository,
     ResourceStateEventRepository,
+    WmsWritebackEvidenceRepository,
     bin_repository,
     bin_slot_template_repository,
     bin_type_repository,
@@ -23,6 +24,7 @@ from .resource_repository import (
     rack_slot_template_repository,
     rack_type_repository,
     resource_state_event_repository,
+    wms_writeback_evidence_repository,
 )
 
 __all__ = [
@@ -38,6 +40,7 @@ __all__ = [
     "RackSlotTemplateRepository",
     "RackTypeRepository",
     "ResourceStateEventRepository",
+    "WmsWritebackEvidenceRepository",
     "bin_repository",
     "bin_slot_template_repository",
     "bin_type_repository",
@@ -50,4 +53,5 @@ __all__ = [
     "rack_slot_template_repository",
     "rack_type_repository",
     "resource_state_event_repository",
+    "wms_writeback_evidence_repository",
 ]

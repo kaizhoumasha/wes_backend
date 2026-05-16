@@ -45,6 +45,7 @@ from src.app.resource.models import (  # noqa: F401
     RackSlotTemplate,
     RackType,
     ResourceStateEvent,
+    WmsWritebackEvidence,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 

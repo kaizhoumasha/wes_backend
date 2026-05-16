@@ -13,6 +13,7 @@ from src.app.resource.models import (
     RackSlotTemplate,
     RackType,
     ResourceStateEvent,
+    WmsWritebackEvidence,
 )
 from src.app.resource.repositories import (
     BinRepository,
@@ -27,6 +28,7 @@ from src.app.resource.repositories import (
     RackSlotTemplateRepository,
     RackTypeRepository,
     ResourceStateEventRepository,
+    WmsWritebackEvidenceRepository,
     bin_repository,
     bin_slot_template_repository,
     bin_type_repository,
@@ -39,6 +41,7 @@ from src.app.resource.repositories import (
     rack_slot_template_repository,
     rack_type_repository,
     resource_state_event_repository,
+    wms_writeback_evidence_repository,
 )
 from src.core.base_service import BaseService
 
@@ -127,6 +130,13 @@ class RackMaterialMountService(BaseService[RackMaterialMount, RackMaterialMountR
         super().__init__(repo)
 
 
+class WmsWritebackEvidenceService(BaseService[WmsWritebackEvidence, WmsWritebackEvidenceRepository]):
+    """WMS 回写证据 Service。"""
+
+    def __init__(self, repo: WmsWritebackEvidenceRepository = wms_writeback_evidence_repository) -> None:
+        super().__init__(repo)
+
+
 execution_zone_service = ExecutionZoneService()
 execution_location_service = ExecutionLocationService()
 rack_type_service = RackTypeService()
@@ -139,6 +149,7 @@ resource_state_event_service = ResourceStateEventService()
 rack_placement_service = RackPlacementService()
 rack_bin_mount_service = RackBinMountService()
 rack_material_mount_service = RackMaterialMountService()
+wms_writeback_evidence_service = WmsWritebackEvidenceService()
 
 __all__ = [
     "BinService",
@@ -153,6 +164,7 @@ __all__ = [
     "RackSlotTemplateService",
     "RackTypeService",
     "ResourceStateEventService",
+    "WmsWritebackEvidenceService",
     "bin_service",
     "bin_slot_template_service",
     "bin_type_service",
@@ -165,4 +177,5 @@ __all__ = [
     "rack_slot_template_service",
     "rack_type_service",
     "resource_state_event_service",
+    "wms_writeback_evidence_service",
 ]

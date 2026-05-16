@@ -79,6 +79,11 @@ from .resource import (
     ResourceType,
     WmsConfirmationStatus,
     WmsSplitPolicy,
+    WmsWritebackEvidence,
+    WmsWritebackEvidenceBase,
+    WmsWritebackEvidenceCreate,
+    WmsWritebackEvidenceResponse,
+    WmsWritebackEvidenceUpdate,
 )
 
 __all__ = [
@@ -162,4 +167,9 @@ __all__ = [
     "ResourceType",
     "WmsConfirmationStatus",
     "WmsSplitPolicy",
+    "WmsWritebackEvidence",
+    "WmsWritebackEvidenceBase",
+    "WmsWritebackEvidenceCreate",
+    "WmsWritebackEvidenceResponse",
+    "WmsWritebackEvidenceUpdate",
 ]

@@ -86,6 +86,18 @@ def test_second_stage_resource_fact_and_projection_tables_are_registered() -> No
     assert RackMaterialMount.__table__.c.material_identity_key.nullable is False
 
 
+def test_fourth_stage_wms_writeback_evidence_table_is_registered() -> None:
+    """第四阶段 WMS 回写证据表必须进入 metadata，并保留幂等与脱敏摘要字段。"""
+
+    from src.app.resource.models import WmsWritebackEvidence
+
+    assert "wes_biz.resource_wms_writeback_evidence" in SQLModel.metadata.tables
+    assert WmsWritebackEvidence.__table__.c.evidence_code.nullable is False
+    assert WmsWritebackEvidence.__table__.c.idempotency_key.nullable is False
+    assert WmsWritebackEvidence.__table__.c.request_summary_json.nullable is False
+    assert WmsWritebackEvidence.__table__.c.response_summary_json.nullable is False
+
+
 def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
     """resource v1 路由应暴露第一阶段底座资源的查询入口。"""
 
@@ -115,6 +127,7 @@ def test_resource_v1_router_exposes_second_stage_readonly_routes() -> None:
         "/v1/resource/rack-placements",
         "/v1/resource/rack-bin-mounts",
         "/v1/resource/rack-material-mounts",
+        "/v1/resource/wms-writeback-evidence",
     )
 
     for prefix in readonly_prefixes:

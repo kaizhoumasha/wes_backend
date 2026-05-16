@@ -51,6 +51,10 @@ from src.app.resource.models import (
     ResourceStateEventCreate,
     ResourceStateEventResponse,
     ResourceStateEventUpdate,
+    WmsWritebackEvidence,
+    WmsWritebackEvidenceCreate,
+    WmsWritebackEvidenceResponse,
+    WmsWritebackEvidenceUpdate,
 )
 from src.app.resource.services import (
     bin_service,
@@ -65,6 +69,7 @@ from src.app.resource.services import (
     rack_slot_template_service,
     rack_type_service,
     resource_state_event_service,
+    wms_writeback_evidence_service,
 )
 from src.core.base_api import BaseAPI
 
@@ -212,6 +217,20 @@ rack_material_mount_api = BaseAPI(
     gen_delete=False,
 )
 
+wms_writeback_evidence_api = BaseAPI(
+    module_name="resource",
+    model=WmsWritebackEvidence,
+    service=wms_writeback_evidence_service,
+    create_schema=WmsWritebackEvidenceCreate,
+    update_schema=WmsWritebackEvidenceUpdate,
+    response_schema=WmsWritebackEvidenceResponse,
+    prefix="/wms-writeback-evidence",
+    tags=["资源模型-WMS回写证据"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
 router = APIRouter()
 router.include_router(execution_zone_api.router)
 router.include_router(execution_location_api.router)
@@ -225,5 +244,6 @@ router.include_router(resource_state_event_api.router)
 router.include_router(rack_placement_api.router)
 router.include_router(rack_bin_mount_api.router)
 router.include_router(rack_material_mount_api.router)
+router.include_router(wms_writeback_evidence_api.router)
 
 __all__ = ["router"]
