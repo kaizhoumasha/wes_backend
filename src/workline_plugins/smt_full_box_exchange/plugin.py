@@ -15,7 +15,15 @@ from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, Workline
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
 _PROGRESS_STATUSES = {"ACCEPTED", "QUEUED", "IN_PROGRESS", "PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
-_FAILURE_STATUSES = {"REJECTED", "WMS_REJECTED", "FAILED", "CANCELLED", "RECONCILING"}
+_RESOURCE_REJECTION_STATUSES = {"REJECTED_EXCHANGE_AREA_FULL", "REJECTED_EMPTY_BIN_UNAVAILABLE"}
+_EXECUTION_FAILURE_STATUSES = {"FAILED_AGV", "FAILED_CTU"}
+_UNKNOWN_FAILURE_STATUSES = {"UNKNOWN"}
+_FAILURE_STATUSES = (
+    {"REJECTED", "WMS_REJECTED", "FAILED", "CANCELLED", "RECONCILING"}
+    | _RESOURCE_REJECTION_STATUSES
+    | _EXECUTION_FAILURE_STATUSES
+    | _UNKNOWN_FAILURE_STATUSES
+)
 _WMS_CONFIRMATION_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
 
 
@@ -265,8 +273,10 @@ def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], s
 
 
 def _failure_reason(status: str) -> str:
-    if status in {"REJECTED", "WMS_REJECTED"}:
+    if status in {"REJECTED", "WMS_REJECTED"} or status in _RESOURCE_REJECTION_STATUSES:
         return "EXCHANGE_RESOURCE_UNAVAILABLE"
+    if status in _UNKNOWN_FAILURE_STATUSES:
+        return "EXCHANGE_STATUS_UNKNOWN"
     if status == "CANCELLED":
         return "EXCHANGE_CANCELLED"
     if status == "RECONCILING":

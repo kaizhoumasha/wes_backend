@@ -409,6 +409,7 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             return task
 
         status = _exchange_status(payload_json)
+        source_status_text = _exchange_status_text(payload_json)
         writeback_evidence = await self._record_wms_confirmation(
             db,
             payload_json=payload_json,
@@ -431,6 +432,8 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         writeback_evidence_id = _optional_int(getattr(writeback_evidence, "id", None))
         if writeback_evidence_id is not None:
             data["writeback_evidence_id"] = writeback_evidence_id
+        if source_status_text in _WMS_RCS_DETAIL_FAILURE_STATUS_MAP:
+            data.setdefault("failure_code", source_status_text)
         optional_updates = {
             "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
             "wms_rcs_event_id": _optional_text(payload_json.get("source_event_id")),
@@ -632,13 +635,30 @@ def _evidence_code(idempotency_key: str) -> str:
     return f"WMSWB-{idempotency_key.removeprefix('sha256:')[:24]}"
 
 
-def _exchange_status(payload_json: Mapping[str, Any]) -> FullBoxExchangeStatus:
+_WMS_RCS_DETAIL_FAILURE_STATUS_MAP = {
+    "REJECTED_EXCHANGE_AREA_FULL": FullBoxExchangeStatus.REJECTED,
+    "REJECTED_EMPTY_BIN_UNAVAILABLE": FullBoxExchangeStatus.REJECTED,
+    "FAILED_AGV": FullBoxExchangeStatus.FAILED,
+    "FAILED_CTU": FullBoxExchangeStatus.FAILED,
+    "UNKNOWN": FullBoxExchangeStatus.RECONCILING,
+}
+
+
+def _exchange_status_text(payload_json: Mapping[str, Any]) -> str:
     status_text = _optional_text(payload_json.get("exchange_status"))
     if status_text is None:
         raise ValueError("exchange_status is required")
+    return status_text.upper()
+
+
+def _exchange_status(payload_json: Mapping[str, Any]) -> FullBoxExchangeStatus:
+    status_text = _exchange_status_text(payload_json)
     try:
         return FullBoxExchangeStatus(status_text)
     except ValueError as exc:
+        mapped_status = _WMS_RCS_DETAIL_FAILURE_STATUS_MAP.get(status_text)
+        if mapped_status is not None:
+            return mapped_status
         raise ValueError(f"unsupported full box exchange_status: {status_text}") from exc
 
 

@@ -127,3 +127,35 @@ async def test_business_completed_callback_completes_session() -> None:
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.COMPLETE]
     assert result[0].context_patch["full_box_exchange"]["exchange_status"] == "BUSINESS_COMPLETED"
+
+
+@pytest.mark.parametrize(
+    ("exchange_status", "expected_reason_code"),
+    [
+        ("REJECTED_EXCHANGE_AREA_FULL", "EXCHANGE_RESOURCE_UNAVAILABLE"),
+        ("REJECTED_EMPTY_BIN_UNAVAILABLE", "EXCHANGE_RESOURCE_UNAVAILABLE"),
+        ("FAILED_AGV", "EXCHANGE_EXECUTION_FAILED"),
+        ("FAILED_CTU", "EXCHANGE_EXECUTION_FAILED"),
+        ("UNKNOWN", "EXCHANGE_STATUS_UNKNOWN"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_external_failure_callback_blocks_with_status_specific_reason(
+    exchange_status: str,
+    expected_reason_code: str,
+) -> None:
+    """WMS/RCS 细分失败状态应进入人工阻断，而不是被当作非法 payload。"""
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
+        _inbox(
+            {
+                "callback_type": "SMT_FULL_BOX_EXCHANGE",
+                "dispatch_key": "dispatch-001",
+                "exchange_status": exchange_status,
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == expected_reason_code

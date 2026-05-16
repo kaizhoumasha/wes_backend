@@ -206,6 +206,49 @@ async def test_full_box_exchange_task_service_records_external_callback_status()
     assert repo.updated_payload["trace_id"] == "trace-runtime"
 
 
+@pytest.mark.parametrize(
+    ("source_status", "expected_status"),
+    [
+        ("REJECTED_EXCHANGE_AREA_FULL", FullBoxExchangeStatus.REJECTED),
+        ("REJECTED_EMPTY_BIN_UNAVAILABLE", FullBoxExchangeStatus.REJECTED),
+        ("FAILED_AGV", FullBoxExchangeStatus.FAILED),
+        ("FAILED_CTU", FullBoxExchangeStatus.FAILED),
+        ("UNKNOWN", FullBoxExchangeStatus.RECONCILING),
+    ],
+)
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_normalizes_wms_rcs_detail_failure_status(
+    source_status: str,
+    expected_status: FullBoxExchangeStatus,
+) -> None:
+    """任务镜像应接受 WMS/RCS 细分失败状态，并保留原始状态证据。"""
+
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    service = FullBoxExchangeTaskService(repo=repo)  # type: ignore[arg-type]
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": f"wms-event-{source_status.lower()}",
+            "exchange_status": source_status,
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == expected_status
+    assert repo.updated_payload["failure_code"] == source_status
+
+
 @pytest.mark.asyncio
 async def test_full_box_exchange_task_service_projects_physical_completed_relations() -> None:
     existing = SimpleNamespace(
