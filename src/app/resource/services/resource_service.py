@@ -330,10 +330,12 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository,
         relation_projector: Any | None = None,
         writeback_evidence_service: Any | None = None,
+        session_repo: Any | None = None,
     ) -> None:
         super().__init__(repo)
         self._relation_projector = relation_projector
         self._writeback_evidence_service = writeback_evidence_service
+        self._session_repo = session_repo
 
     async def record_requested_from_external_request(
         self,
@@ -482,6 +484,11 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         if source_event_id is None:
             return None
 
+        runtime_context = await self._runtime_context_for_projection(
+            db,
+            task=task,
+            payload_json=payload_json,
+        )
         return await self._resolve_relation_projector().record_full_box_exchange_physical_completed(
             db,
             exchange_request_code=str(task.exchange_request_code),
@@ -493,7 +500,11 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             source_task_id=_optional_text(payload_json.get("wms_rcs_task_id")),
             occurred_at=payload_json.get("occurred_at"),
             trace_id=trace_id or _optional_text(payload_json.get("trace_id")),
-            session_id=_optional_text(payload_json.get("session_id")),
+            session_id=runtime_context["session_id"],
+            workline_id=runtime_context["workline_id"],
+            workline_session_id=runtime_context["workline_session_id"],
+            plugin_key=runtime_context["plugin_key"],
+            contract_version=runtime_context["contract_version"],
         )
 
     def _resolve_relation_projector(self) -> Any:
@@ -502,6 +513,40 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
 
             self._relation_projector = resource_relation_service
         return self._relation_projector
+
+    async def _runtime_context_for_projection(
+        self,
+        db: AsyncSession,
+        *,
+        task: FullBoxExchangeTask,
+        payload_json: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """解析资源投影需要的 Runtime 上下文。"""
+
+        task_session_id = _optional_int(getattr(task, "session_id", None))
+        payload_session_id = _optional_int(payload_json.get("session_id"))
+        workline_session_id = task_session_id or payload_session_id
+        session = None
+        if workline_session_id is not None:
+            session = await self._resolve_session_repo().get_by_id(db, workline_session_id)
+
+        return {
+            "session_id": _optional_text(workline_session_id),
+            "workline_session_id": workline_session_id,
+            "workline_id": _optional_int(payload_json.get("workline_id"))
+            or _optional_int(getattr(session, "workline_id", None)),
+            "plugin_key": _optional_text(payload_json.get("plugin_key"))
+            or _optional_text(getattr(session, "plugin_key", None)),
+            "contract_version": _optional_text(payload_json.get("contract_version"))
+            or _optional_text(getattr(session, "contract_version", None)),
+        }
+
+    def _resolve_session_repo(self) -> Any:
+        if self._session_repo is None:
+            from src.app.workline.repositories import workline_session_repository
+
+            self._session_repo = workline_session_repository
+        return self._session_repo
 
     def _resolve_writeback_evidence_service(self) -> Any:
         if self._writeback_evidence_service is None:

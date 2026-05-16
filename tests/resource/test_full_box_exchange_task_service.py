@@ -75,6 +75,16 @@ class _RecordingRelationProjector:
         )
 
 
+class _FakeWorklineSessionRepository:
+    def __init__(self, session: Any | None = None) -> None:
+        self.session = session
+        self.lookup_ids: list[int] = []
+
+    async def get_by_id(self, _db: Any, session_id: int) -> Any | None:
+        self.lookup_ids.append(session_id)
+        return self.session
+
+
 @pytest.mark.asyncio
 async def test_full_box_exchange_task_service_records_requested_external_request() -> None:
     repo = _FakeFullBoxExchangeTaskRepository()
@@ -237,6 +247,60 @@ async def test_full_box_exchange_task_service_projects_physical_completed_relati
     assert projector.calls[0]["post_exchange_relations"]["bin_mounts"][0]["bin_code"] == "BIN-001"
     assert repo.updated_payload is not None
     assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RESOURCE_PROJECTED
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_passes_runtime_context_to_relation_projection() -> None:
+    """物理完成投影应携带 Runtime 上下文，冲突分支才能创建 RuntimeHold。"""
+
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        session_id=123,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector(status="RECONCILING")
+    session_repo = _FakeWorklineSessionRepository(
+        SimpleNamespace(
+            id=123,
+            workline_id=1001,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+        )
+    )
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+        session_repo=session_repo,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "source_version": "1",
+            "occurred_at": "2026-05-16T09:00:00Z",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "post_exchange_relations": {
+                "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"}]
+            },
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert session_repo.lookup_ids == [123]
+    assert len(projector.calls) == 1
+    assert projector.calls[0]["session_id"] == "123"
+    assert projector.calls[0]["workline_id"] == 1001
+    assert projector.calls[0]["workline_session_id"] == 123
+    assert projector.calls[0]["plugin_key"] == "smt_classifier"
+    assert projector.calls[0]["contract_version"] == "1.0"
 
 
 @pytest.mark.asyncio
