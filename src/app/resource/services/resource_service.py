@@ -67,6 +67,7 @@ from src.app.resource.repositories import (
     wms_writeback_evidence_repository,
 )
 from src.core.base_service import BaseService
+from src.utils.timezone import timezone
 
 
 class ExecutionZoneService(BaseService[ExecutionZone, ExecutionZoneRepository]):
@@ -159,6 +160,70 @@ class WmsWritebackEvidenceService(BaseService[WmsWritebackEvidence, WmsWriteback
     def __init__(self, repo: WmsWritebackEvidenceRepository = wms_writeback_evidence_repository) -> None:
         super().__init__(repo)
 
+    async def record_confirmation_from_external_http(
+        self,
+        db: AsyncSession,
+        *,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+        session_id: str | None,
+    ) -> WmsWritebackEvidence | None:
+        """把 WMS 满箱交换确认回调记录为回写证据。"""
+
+        status = _exchange_status(payload_json)
+        if status not in {FullBoxExchangeStatus.WMS_CONFIRMED, FullBoxExchangeStatus.BUSINESS_COMPLETED}:
+            return None
+
+        confirmation = payload_json.get("wms_confirmation")
+        if not isinstance(confirmation, Mapping):
+            return None
+
+        request_id = _optional_text(payload_json.get("request_id"))
+        exchange_request_code = _optional_text(payload_json.get("exchange_request_code"))
+        callback_type = _optional_text(payload_json.get("callback_type")) or "WMS_FULL_BOX_EXCHANGE_RESULT"
+        if request_id is None or exchange_request_code is None:
+            return None
+
+        idempotency_key = _payload_hash(
+            {
+                "callback_type": callback_type,
+                "exchange_request_code": exchange_request_code,
+                "request_id": request_id,
+            }
+        )
+        existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
+        if existing is not None:
+            return existing
+
+        request_summary = {
+            "exchange_request_code": exchange_request_code,
+            "rack_release_id": _optional_text(payload_json.get("rack_release_id")),
+            "dispatch_key": _optional_text(payload_json.get("dispatch_key")),
+            "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
+            "exchange_status": status.value,
+        }
+        response_summary = dict(confirmation)
+        data = {
+            "evidence_code": _evidence_code(idempotency_key),
+            "request_id": request_id,
+            "idempotency_key": idempotency_key,
+            "dispatch_key": _optional_text(payload_json.get("dispatch_key")),
+            "endpoint": callback_type,
+            "source_system": _resource_source_system(payload_json),
+            "request_hash": _payload_hash(request_summary),
+            "response_hash": _payload_hash(response_summary),
+            "request_summary_json": request_summary,
+            "response_summary_json": response_summary,
+            "wms_document_id": _optional_text(confirmation.get("wms_document_id"))
+            or _optional_text(confirmation.get("document_id")),
+            "inventory_version": _optional_text(confirmation.get("inventory_version")),
+            "confirmed_at": timezone.to_db_datetime(confirmation.get("confirmed_at"))
+            or timezone.to_db_datetime(payload_json.get("occurred_at")),
+            "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
+            "session_id": session_id,
+        }
+        return await self.repo.create(db, data)
+
 
 class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
     """释放周期 Service。"""
@@ -195,9 +260,11 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         self,
         repo: FullBoxExchangeTaskRepository = full_box_exchange_task_repository,
         relation_projector: Any | None = None,
+        writeback_evidence_service: Any | None = None,
     ) -> None:
         super().__init__(repo)
         self._relation_projector = relation_projector
+        self._writeback_evidence_service = writeback_evidence_service
 
     async def record_requested_from_external_request(
         self,
@@ -270,10 +337,20 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         if task_id is None:
             return task
 
+        status = _exchange_status(payload_json)
+        writeback_evidence = await self._record_wms_confirmation(
+            db,
+            payload_json=payload_json,
+            trace_id=trace_id,
+            session_id=_optional_text(getattr(task, "session_id", None)),
+        )
         data: dict[str, Any] = {
-            "exchange_status": _exchange_status(payload_json),
+            "exchange_status": _resolved_callback_status(status, writeback_evidence),
             "last_callback_payload_hash": _payload_hash(payload_json),
         }
+        writeback_evidence_id = _optional_int(getattr(writeback_evidence, "id", None))
+        if writeback_evidence_id is not None:
+            data["writeback_evidence_id"] = writeback_evidence_id
         optional_updates = {
             "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
             "wms_rcs_event_id": _optional_text(payload_json.get("source_event_id")),
@@ -296,6 +373,24 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             trace_id=trace_id,
         )
         return updated or task
+
+    async def _record_wms_confirmation(
+        self,
+        db: AsyncSession,
+        *,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+        session_id: str | None,
+    ) -> Any | None:
+        status = _exchange_status(payload_json)
+        if status not in {FullBoxExchangeStatus.WMS_CONFIRMED, FullBoxExchangeStatus.BUSINESS_COMPLETED}:
+            return None
+        return await self._resolve_writeback_evidence_service().record_confirmation_from_external_http(
+            db,
+            payload_json=payload_json,
+            trace_id=trace_id,
+            session_id=session_id,
+        )
 
     async def _project_post_exchange_relations(
         self,
@@ -336,6 +431,11 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             self._relation_projector = resource_relation_service
         return self._relation_projector
 
+    def _resolve_writeback_evidence_service(self) -> Any:
+        if self._writeback_evidence_service is None:
+            self._writeback_evidence_service = wms_writeback_evidence_service
+        return self._writeback_evidence_service
+
 
 def _optional_text(value: Any) -> str | None:
     if value is None:
@@ -374,6 +474,10 @@ def _payload_hash(payload_json: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _evidence_code(idempotency_key: str) -> str:
+    return f"WMSWB-{idempotency_key.removeprefix('sha256:')[:24]}"
+
+
 def _exchange_status(payload_json: Mapping[str, Any]) -> FullBoxExchangeStatus:
     status_text = _optional_text(payload_json.get("exchange_status"))
     if status_text is None:
@@ -392,6 +496,12 @@ def _resource_source_system(payload_json: Mapping[str, Any]) -> Any:
         return ResourceSourceSystem(source_system)
     except (TypeError, ValueError):
         return ResourceSourceSystem.WMS
+
+
+def _resolved_callback_status(status: FullBoxExchangeStatus, writeback_evidence: Any | None) -> FullBoxExchangeStatus:
+    if status == FullBoxExchangeStatus.WMS_CONFIRMED and writeback_evidence is not None:
+        return FullBoxExchangeStatus.BUSINESS_COMPLETED
+    return status
 
 
 execution_zone_service = ExecutionZoneService()

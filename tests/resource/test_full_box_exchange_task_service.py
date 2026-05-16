@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from src.app.resource.models import FullBoxExchangeStatus
-from src.app.resource.services import FullBoxExchangeTaskService
+from src.app.resource.models import FullBoxExchangeStatus, ResourceSourceSystem
+from src.app.resource.services import FullBoxExchangeTaskService, WmsWritebackEvidenceService
 
 
 class _FakeDb:
@@ -35,6 +35,30 @@ class _FakeFullBoxExchangeTaskRepository:
     async def update(self, _db: Any, id: int, data: dict[str, Any]) -> Any:
         self.updated_payload = {"id": id, **data}
         return SimpleNamespace(id=id, **data)
+
+
+class _FakeWmsWritebackEvidenceRepository:
+    def __init__(self, existing: Any | None = None) -> None:
+        self.existing = existing
+        self.lookup_keys: list[str] = []
+        self.created_payload: dict[str, Any] | None = None
+
+    async def get_by_idempotency_key(self, _db: Any, idempotency_key: str) -> Any | None:
+        self.lookup_keys.append(idempotency_key)
+        return self.existing
+
+    async def create(self, _db: Any, data: dict[str, Any]) -> Any:
+        self.created_payload = data
+        return SimpleNamespace(id=901, **data)
+
+
+class _RecordingWritebackEvidenceService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def record_confirmation_from_external_http(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(id=901)
 
 
 class _RecordingRelationProjector:
@@ -206,3 +230,80 @@ async def test_full_box_exchange_task_service_projects_physical_completed_relati
     assert projector.calls[0]["source_event_id"] == "wms-event-001"
     assert projector.calls[0]["source_task_id"] == "wms-task-001"
     assert projector.calls[0]["post_exchange_relations"]["bin_mounts"][0]["bin_code"] == "BIN-001"
+
+
+@pytest.mark.asyncio
+async def test_wms_writeback_evidence_service_records_confirmation() -> None:
+    repo = _FakeWmsWritebackEvidenceRepository()
+    service = WmsWritebackEvidenceService(repo=repo)  # type: ignore[arg-type]
+
+    evidence = await service.record_confirmation_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "request_id": "REQ-WMS-001",
+            "source_system": "WMS",
+            "exchange_status": "WMS_CONFIRMED",
+            "wms_confirmation": {
+                "wms_document_id": "WMS-DOC-001",
+                "inventory_version": "inv-v1",
+                "confirmed_at": "2026-05-16T10:00:00Z",
+            },
+        },
+        trace_id="trace-runtime",
+        session_id="123",
+    )
+
+    assert evidence is not None
+    assert repo.lookup_keys and repo.lookup_keys[0].startswith("sha256:")
+    assert repo.created_payload is not None
+    assert repo.created_payload["request_id"] == "REQ-WMS-001"
+    assert repo.created_payload["dispatch_key"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
+    assert repo.created_payload["endpoint"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
+    assert repo.created_payload["source_system"] == ResourceSourceSystem.WMS
+    assert repo.created_payload["wms_document_id"] == "WMS-DOC-001"
+    assert repo.created_payload["inventory_version"] == "inv-v1"
+    assert repo.created_payload["request_hash"].startswith("sha256:")
+    assert repo.created_payload["response_hash"].startswith("sha256:")
+    assert repo.created_payload["trace_id"] == "trace-runtime"
+    assert repo.created_payload["session_id"] == "123"
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_records_wms_confirmation_as_business_completed() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=4,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    evidence_service = _RecordingWritebackEvidenceService()
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        writeback_evidence_service=evidence_service,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "request_id": "REQ-WMS-001",
+            "source_event_id": "wms-event-confirmed-001",
+            "exchange_status": "WMS_CONFIRMED",
+            "wms_confirmation": {"wms_document_id": "WMS-DOC-001"},
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert len(evidence_service.calls) == 1
+    assert evidence_service.calls[0]["payload_json"]["exchange_status"] == "WMS_CONFIRMED"
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.BUSINESS_COMPLETED
+    assert repo.updated_payload["writeback_evidence_id"] == 901
