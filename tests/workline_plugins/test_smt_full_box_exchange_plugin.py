@@ -131,6 +131,28 @@ async def test_external_progress_callback_updates_context_without_completion() -
     assert result[0].context_patch["full_box_exchange"]["queue_position"] == 2
 
 
+@pytest.mark.parametrize("exchange_status", ["PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"])
+@pytest.mark.asyncio
+async def test_external_projection_callback_blocks_without_post_exchange_relations(exchange_status: str) -> None:
+    """物理完成或资源投影回调缺少交换后关系时，只能进入对账，不能推进 Session。"""
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(
+            {
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
+                "dispatch_key": "dispatch-001",
+                "exchange_status": exchange_status,
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "EXCHANGE_RECONCILING"
+
+
 @pytest.mark.asyncio
 async def test_business_completed_callback_completes_session() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(

@@ -25,6 +25,7 @@ _FAILURE_STATUSES = (
     | _UNKNOWN_FAILURE_STATUSES
 )
 _WMS_CONFIRMATION_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
+_POST_EXCHANGE_RELATION_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
 
 
 class SmtFullBoxExchangePlugin(WorklinePlugin):
@@ -155,6 +156,17 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                     scope=BlockScope.MATERIAL,
                     reason_code="EXCHANGE_DISPATCH_KEY_MISMATCH",
                     message="SMT 满箱交换回调 dispatch_key 与当前请求不匹配",
+                )
+            ]
+
+        if status in _POST_EXCHANGE_RELATION_STATUSES and not isinstance(
+            payload.get("post_exchange_relations"), Mapping
+        ):
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="EXCHANGE_RECONCILING",
+                    message="SMT 满箱交换回调缺少交换后关系证据",
                 )
             ]
 
