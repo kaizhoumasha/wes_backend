@@ -656,6 +656,21 @@ _WMS_RCS_DETAIL_FAILURE_STATUS_MAP = {
     "FAILED_CTU": FullBoxExchangeStatus.FAILED,
     "UNKNOWN": FullBoxExchangeStatus.RECONCILING,
 }
+_FULL_BOX_EXCHANGE_STATUS_RANK = {
+    FullBoxExchangeStatus.REQUESTED: 10,
+    FullBoxExchangeStatus.ACCEPTED: 20,
+    FullBoxExchangeStatus.QUEUED: 30,
+    FullBoxExchangeStatus.IN_PROGRESS: 40,
+    FullBoxExchangeStatus.PHYSICAL_COMPLETED: 50,
+    FullBoxExchangeStatus.RESOURCE_PROJECTED: 60,
+    FullBoxExchangeStatus.WMS_CONFIRMED: 70,
+    FullBoxExchangeStatus.RECONCILING: 80,
+    FullBoxExchangeStatus.WMS_REJECTED: 80,
+    FullBoxExchangeStatus.REJECTED: 80,
+    FullBoxExchangeStatus.FAILED: 80,
+    FullBoxExchangeStatus.CANCELLED: 80,
+    FullBoxExchangeStatus.BUSINESS_COMPLETED: 90,
+}
 
 
 def _exchange_status_text(payload_json: Mapping[str, Any]) -> str:
@@ -704,10 +719,27 @@ def _resolved_callback_status(
     if projection_status == "DUPLICATE" and current_status is not None:
         return current_status
     if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "PROJECTED":
-        return FullBoxExchangeStatus.RESOURCE_PROJECTED
-    if projection_status == "RECONCILING":
-        return FullBoxExchangeStatus.RECONCILING
-    return status
+        resolved_status = FullBoxExchangeStatus.RESOURCE_PROJECTED
+    elif projection_status == "RECONCILING":
+        resolved_status = FullBoxExchangeStatus.RECONCILING
+    else:
+        resolved_status = status
+    return _monotonic_exchange_status(current_status, resolved_status)
+
+
+def _monotonic_exchange_status(
+    current_status: FullBoxExchangeStatus | None,
+    candidate_status: FullBoxExchangeStatus,
+) -> FullBoxExchangeStatus:
+    if current_status is None:
+        return candidate_status
+    current_rank = _FULL_BOX_EXCHANGE_STATUS_RANK.get(current_status)
+    candidate_rank = _FULL_BOX_EXCHANGE_STATUS_RANK.get(candidate_status)
+    if current_rank is None or candidate_rank is None:
+        return candidate_status
+    if current_rank > candidate_rank:
+        return current_status
+    return candidate_status
 
 
 def _callback_identity_mismatched(task: Any, payload_json: Mapping[str, Any], *, trace_id: str | None) -> bool:

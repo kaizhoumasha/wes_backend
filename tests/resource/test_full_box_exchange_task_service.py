@@ -480,6 +480,73 @@ async def test_full_box_exchange_task_service_keeps_status_when_projection_is_du
 
 
 @pytest.mark.asyncio
+async def test_full_box_exchange_task_service_keeps_business_completed_when_physical_callback_arrives_late() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        exchange_status=FullBoxExchangeStatus.BUSINESS_COMPLETED,
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector(status="PROJECTED")
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-late-physical",
+            "source_version": "2",
+            "occurred_at": "2026-05-16T09:01:00Z",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "post_exchange_relations": {
+                "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"}]
+            },
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.BUSINESS_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_keeps_resource_projected_when_progress_callback_arrives_late() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        exchange_status=FullBoxExchangeStatus.RESOURCE_PROJECTED,
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    service = FullBoxExchangeTaskService(repo=repo)  # type: ignore[arg-type]
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "source_event_id": "wms-event-late-queued",
+            "exchange_status": "QUEUED",
+            "queue_position": 8,
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RESOURCE_PROJECTED
+
+
+@pytest.mark.asyncio
 async def test_full_box_exchange_task_service_marks_resource_projected_reconciling_when_projection_rejects() -> None:
     existing = SimpleNamespace(
         id=88,
