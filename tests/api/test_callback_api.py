@@ -1536,6 +1536,47 @@ class TestCallbackExternalAPI:
         mock_create_inbox.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_callback_external_rejects_full_box_lowercase_physical_completed_without_relations(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-physical-lowercase"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(
+                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+                        rack_release_id="release-001",
+                        wms_rcs_task_id="wms-task-001",
+                        exchange_status="physical_completed",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_callback_external_rejects_full_box_wms_confirmed_without_confirmation(
         self,
         db_session: AsyncSession,

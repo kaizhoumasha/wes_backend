@@ -408,7 +408,7 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         task_id = _optional_int(getattr(task, "id", None))
         if task_id is None:
             return task
-        if _callback_identity_mismatched(task, payload_json):
+        if _callback_identity_mismatched(task, payload_json, trace_id=trace_id):
             return task
 
         status = _exchange_status(payload_json)
@@ -426,7 +426,12 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             trace_id=trace_id,
         )
         data: dict[str, Any] = {
-            "exchange_status": _resolved_callback_status(status, writeback_evidence, projection_result),
+            "exchange_status": _resolved_callback_status(
+                status,
+                writeback_evidence,
+                projection_result,
+                current_status=_current_exchange_status(task),
+            ),
             "last_callback_payload_hash": _payload_hash(payload_json),
         }
         if _projection_status_value(projection_result) == "RECONCILING":
@@ -692,8 +697,12 @@ def _resolved_callback_status(
     status: FullBoxExchangeStatus,
     writeback_evidence: Any | None,
     projection_result: Any | None,
+    *,
+    current_status: FullBoxExchangeStatus | None = None,
 ) -> FullBoxExchangeStatus:
     projection_status = _projection_status_value(projection_result)
+    if projection_status == "DUPLICATE" and current_status is not None:
+        return current_status
     if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "PROJECTED":
         return FullBoxExchangeStatus.RESOURCE_PROJECTED
     if projection_status == "RECONCILING":
@@ -701,7 +710,7 @@ def _resolved_callback_status(
     return status
 
 
-def _callback_identity_mismatched(task: Any, payload_json: Mapping[str, Any]) -> bool:
+def _callback_identity_mismatched(task: Any, payload_json: Mapping[str, Any], *, trace_id: str | None) -> bool:
     expected_dispatch_key = _optional_text(getattr(task, "dispatch_key", None))
     callback_dispatch_key = _optional_text(payload_json.get("dispatch_key"))
     if expected_dispatch_key is not None and callback_dispatch_key != expected_dispatch_key:
@@ -709,7 +718,32 @@ def _callback_identity_mismatched(task: Any, payload_json: Mapping[str, Any]) ->
 
     expected_rack_release_id = _optional_text(getattr(task, "rack_release_id", None))
     callback_rack_release_id = _optional_text(payload_json.get("rack_release_id"))
-    return expected_rack_release_id is not None and callback_rack_release_id != expected_rack_release_id
+    if expected_rack_release_id is not None and callback_rack_release_id != expected_rack_release_id:
+        return True
+
+    expected_trace_id = _optional_text(getattr(task, "trace_id", None))
+    if expected_trace_id is None:
+        return False
+    callback_trace_ids = {
+        value
+        for value in (
+            _optional_text(payload_json.get("trace_id")),
+            _optional_text(trace_id),
+        )
+        if value is not None
+    }
+    return not callback_trace_ids or any(value != expected_trace_id for value in callback_trace_ids)
+
+
+def _current_exchange_status(task: Any) -> FullBoxExchangeStatus | None:
+    raw_status = getattr(task, "exchange_status", None)
+    status_text = _optional_text(getattr(raw_status, "value", raw_status))
+    if status_text is None:
+        return None
+    try:
+        return FullBoxExchangeStatus(status_text)
+    except ValueError:
+        return None
 
 
 execution_zone_service = ExecutionZoneService()

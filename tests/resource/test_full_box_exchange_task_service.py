@@ -208,14 +208,19 @@ async def test_full_box_exchange_task_service_records_external_callback_status()
 
 
 @pytest.mark.parametrize(
-    "payload_patch",
+    ("payload_patch", "trace_id"),
     [
-        {"dispatch_key": "external:smt:release-other:FULL_BIN_EXCHANGE"},
-        {"rack_release_id": "release-other"},
+        ({"dispatch_key": "external:smt:release-other:FULL_BIN_EXCHANGE"}, "trace-runtime"),
+        ({"rack_release_id": "release-other"}, "trace-runtime"),
+        ({"trace_id": "trace-other"}, "trace-runtime"),
+        ({}, "trace-other"),
     ],
 )
 @pytest.mark.asyncio
-async def test_full_box_exchange_task_service_skips_callback_when_identity_mismatches(payload_patch: dict) -> None:
+async def test_full_box_exchange_task_service_skips_callback_when_identity_mismatches(
+    payload_patch: dict,
+    trace_id: str,
+) -> None:
     """任务镜像必须先校验回调归属，不能在插件身份校验前污染正确任务。"""
 
     existing = SimpleNamespace(
@@ -224,6 +229,7 @@ async def test_full_box_exchange_task_service_skips_callback_when_identity_misma
         exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
         dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
         rack_release_id="release-001",
+        trace_id="trace-runtime",
     )
     repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
     projector = _RecordingRelationProjector()
@@ -238,6 +244,7 @@ async def test_full_box_exchange_task_service_skips_callback_when_identity_misma
         "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
         "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
         "rack_release_id": "release-001",
+        "trace_id": "trace-runtime",
         "source_event_id": "wms-event-001",
         "exchange_status": "PHYSICAL_COMPLETED",
         "post_exchange_relations": {
@@ -249,7 +256,7 @@ async def test_full_box_exchange_task_service_skips_callback_when_identity_misma
     task = await service.record_callback_from_external_http(
         _FakeDb(),  # type: ignore[arg-type]
         payload_json=payload,
-        trace_id="trace-runtime",
+        trace_id=trace_id,
     )
 
     assert task is existing
@@ -432,6 +439,44 @@ async def test_full_box_exchange_task_service_marks_reconciling_when_relation_pr
     assert repo.updated_payload is not None
     assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RECONCILING
     assert repo.updated_payload["failure_code"] == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_keeps_status_when_projection_is_duplicate() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        exchange_status=FullBoxExchangeStatus.RESOURCE_PROJECTED,
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector(status="DUPLICATE")
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "source_version": "1",
+            "occurred_at": "2026-05-16T09:00:00Z",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "post_exchange_relations": {
+                "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"}]
+            },
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RESOURCE_PROJECTED
 
 
 @pytest.mark.asyncio
