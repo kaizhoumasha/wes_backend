@@ -15,6 +15,7 @@ class _FakeRackReleaseRepository:
         self.existing = existing
         self.lookup_ids: list[str] = []
         self.created_payload: dict[str, Any] | None = None
+        self.updated_payload: dict[str, Any] | None = None
 
     async def get_by_release_id(self, _db: Any, rack_release_id: str) -> Any | None:
         self.lookup_ids.append(rack_release_id)
@@ -23,6 +24,14 @@ class _FakeRackReleaseRepository:
     async def create(self, _db: Any, data: dict[str, Any]) -> Any:
         self.created_payload = data
         return SimpleNamespace(id=77, **data)
+
+    async def update(self, _db: Any, _id: int, data: dict[str, Any]) -> Any:
+        self.updated_payload = data
+        if self.existing is None:
+            return SimpleNamespace(id=_id, **data)
+        for key, value in data.items():
+            setattr(self.existing, key, value)
+        return self.existing
 
 
 class _FakeRackReleaseBinSnapshotRepository:
@@ -68,7 +77,7 @@ async def test_rack_release_service_records_release_and_four_bin_snapshots() -> 
     assert release_repo.lookup_ids == ["release-001"]
     assert release_repo.created_payload is not None
     assert release_repo.created_payload["release_status"] == "CANDIDATE"
-    assert release_repo.created_payload["moved_out_at"] == released_at
+    assert release_repo.created_payload["moved_out_at"] is None
     assert release_repo.created_payload["snapshot_hash"].startswith("sha256:")
     assert release_repo.created_payload["idempotency_key"].startswith("sha256:")
     assert len(snapshot_repo.created_payloads) == 4
@@ -99,3 +108,51 @@ async def test_rack_release_service_reuses_existing_release_without_rewriting_sn
     assert release is existing
     assert release_repo.created_payload is None
     assert snapshot_repo.created_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_rack_release_service_records_explicit_moved_out_at() -> None:
+    release_repo = _FakeRackReleaseRepository()
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository()
+    service = RackReleaseService(  # type: ignore[arg-type]
+        repo=release_repo,
+        snapshot_repo=snapshot_repo,
+    )
+    moved_out_at = datetime(2026, 5, 16, 9, 35, 0)
+
+    await service.record_release_snapshot(
+        object(),
+        rack_release_id="release-001",
+        single_layer_rack_code="RACK-SL-001",
+        released_at=datetime(2026, 5, 16, 9, 30, 0),
+        moved_out_at=moved_out_at,
+        slot_snapshots=[],
+    )
+
+    assert release_repo.created_payload is not None
+    assert release_repo.created_payload["moved_out_at"] == moved_out_at
+
+
+@pytest.mark.asyncio
+async def test_rack_release_service_marks_release_moved_out_explicitly() -> None:
+    existing = SimpleNamespace(id=88, version=3, rack_release_id="release-001", moved_out_at=None)
+    release_repo = _FakeRackReleaseRepository(existing=existing)
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository()
+    service = RackReleaseService(  # type: ignore[arg-type]
+        repo=release_repo,
+        snapshot_repo=snapshot_repo,
+    )
+    moved_out_at = datetime(2026, 5, 16, 9, 35, 0)
+
+    release = await service.mark_release_moved_out(
+        object(),
+        rack_release_id="release-001",
+        moved_out_at=moved_out_at,
+    )
+
+    assert release is existing
+    assert release.moved_out_at == moved_out_at
+    assert release_repo.updated_payload == {
+        "moved_out_at": moved_out_at,
+        "version": 3,
+    }

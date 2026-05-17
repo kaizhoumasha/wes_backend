@@ -274,7 +274,7 @@ class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
                 "source_event_id": source_event_id,
                 "release_status": RackReleaseStatus.CANDIDATE.value,
                 "released_at": released_at,
-                "moved_out_at": moved_out_at if moved_out_at is not None else released_at,
+                "moved_out_at": moved_out_at,
                 "inbox_id": inbox_id,
                 "session_id": session_id,
                 "release_cycle_seq": release_cycle_seq,
@@ -302,6 +302,28 @@ class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
         if release is None:
             raise RuntimeError("Failed to create rack release snapshot")
         return release
+
+    async def mark_release_moved_out(
+        self,
+        db: AsyncSession,
+        *,
+        rack_release_id: str,
+        moved_out_at: Any,
+    ) -> RackRelease | None:
+        """显式记录单层货架离开粗分机事实。"""
+
+        release = await self.repo.get_by_release_id(db, rack_release_id)
+        if release is None:
+            return None
+
+        update_payload: dict[str, Any] = {"moved_out_at": moved_out_at}
+        version = _optional_int(getattr(release, "version", None))
+        if version is not None:
+            update_payload["version"] = version
+        release_id = _optional_int(getattr(release, "id", None))
+        if release_id is None:
+            return release
+        return await self.repo.update(db, release_id, update_payload)
 
 
 class RackReleaseBinSnapshotService(BaseService[RackReleaseBinSnapshot, RackReleaseBinSnapshotRepository]):
