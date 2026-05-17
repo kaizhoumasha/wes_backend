@@ -109,8 +109,8 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             ]
 
         rack_release_id = str(data["rack_release_id"])
-        dispatch_key = f"external:{self.plugin_key}:{rack_release_id}:FULL_BOX_EXCHANGE"
-        exchange_request_code = f"FBE-{rack_release_id}"
+        dispatch_key = f"external:{self.plugin_key}:{rack_release_id}:FULL_BIN_EXCHANGE"
+        exchange_request_code = dispatch_key
         request_payload = {
             "request_type": "SMT_FULL_BOX_EXCHANGE",
             "request_code": exchange_request_code,

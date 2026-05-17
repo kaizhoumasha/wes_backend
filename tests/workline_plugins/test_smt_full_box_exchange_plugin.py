@@ -125,9 +125,10 @@ async def test_release_event_requests_external_exchange_when_any_bin_is_full() -
         RuntimeIntentKind.EXTERNAL_REQUEST,
     ]
     assert result[0].context_patch["exchange_required"] is True
-    assert result[1].dispatch_key == "external:smt_full_box_exchange:release-001:FULL_BOX_EXCHANGE"
+    assert result[1].dispatch_key == "external:smt_full_box_exchange:release-001:FULL_BIN_EXCHANGE"
     assert result[1].target_code == "http://wms-rcs/api/full-box-exchange"
-    assert result[1].payload_json["request_code"] == "FBE-release-001"
+    assert result[1].payload_json["request_code"] == "external:smt_full_box_exchange:release-001:FULL_BIN_EXCHANGE"
+    assert result[1].payload_json["exchange_request_code"] == result[1].dispatch_key
     assert result[1].payload_json["trace_id"] == "trace-full-box-001"
     assert result[1].payload_json["rack_release_id"] == "release-001"
     assert result[1].payload_json["source_workline_code"] == "WL-SMT-FULL-BOX-EXCHANGE-01"
