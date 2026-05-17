@@ -109,6 +109,9 @@ async def test_release_event_completes_without_exchange_when_policy_not_hit() ->
     assert [intent.kind for intent in result] == [RuntimeIntentKind.COMPLETE]
     assert result[0].context_patch["rack_release_id"] == "release-001"
     assert result[0].context_patch["exchange_required"] is False
+    assert result[0].context_patch["exchange_policy_version"] == "default"
+    assert result[0].context_patch["qualified_bin_count"] == 0
+    assert len(result[0].context_patch["evaluated_bins"]) == 4
 
 
 @pytest.mark.asyncio
@@ -141,6 +144,10 @@ async def test_release_event_requests_external_exchange_when_any_bin_is_full() -
     assert result[1].payload_json["source_workline_code"] == "WL-SMT-FULL-BOX-EXCHANGE-01"
     assert result[1].payload_json["exchange_area_code"] == "SMT_FULL_BOX_EXCHANGE_A"
     assert result[1].payload_json["callback_url"] == "http://wes/api/v1/callback/external"
+    assert result[1].payload_json["exchange_policy"]["policy_version"] == "default"
+    assert result[1].payload_json["exchange_policy"]["expected_bin_count"] == 4
+    assert result[0].context_patch["qualified_bin_count"] == 4
+    assert len(result[0].context_patch["evaluated_bins"]) == 4
     assert len(result[1].payload_json["bins"]) == 4
     assert len(result[1].payload_json["requested_bins"]) == 4
     assert len(result[1].payload_json["exchange_bins"]) == 4

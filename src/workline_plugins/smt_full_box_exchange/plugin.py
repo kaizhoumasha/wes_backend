@@ -74,7 +74,14 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         config = _ctx_config(ctx)
         rack_identifier = _single_layer_rack_identifier(data)
         snapshots = _snapshot_list(data)
-        exchange_bins = _exchange_bins(snapshots, _exchange_policy(config))
+        exchange_policy = _exchange_policy(config)
+        exchange_bins = _exchange_bins(snapshots, exchange_policy)
+        evaluation_context = {
+            "exchange_policy": exchange_policy,
+            "exchange_policy_version": exchange_policy["policy_version"],
+            "evaluated_bins": snapshots,
+            "qualified_bin_count": len(exchange_bins),
+        }
         if not exchange_bins:
             return [
                 ctx.next.complete(
@@ -84,6 +91,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                         "single_layer_rack_code": rack_identifier,
                         "exchange_required": False,
                         "exchange_status": "NOT_REQUIRED",
+                        **evaluation_context,
                     }
                 )
             ]
@@ -126,6 +134,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             "callback_url": _callback_url(config),
             "release_cycle_seq": data.get("release_cycle_seq"),
             "snapshot_hash": data.get("snapshot_hash"),
+            "exchange_policy": exchange_policy,
             "exchange_bins": exchange_bins,
             "requested_bins": exchange_bins,
             "bins": snapshots,
@@ -138,6 +147,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             "exchange_required": True,
             "exchange_status": "REQUESTED",
             "exchange_request_code": exchange_request_code,
+            **evaluation_context,
             "full_box_exchange": {
                 "dispatch_key": dispatch_key,
                 "exchange_request_code": exchange_request_code,
@@ -365,7 +375,19 @@ def _ctx_config(ctx: Any) -> dict[str, Any]:
 
 def _exchange_policy(config: Mapping[str, Any]) -> dict[str, Any]:
     policy = config.get("exchange_policy")
-    return dict(policy) if isinstance(policy, Mapping) else {}
+    raw_policy = dict(policy) if isinstance(policy, Mapping) else {}
+    full_statuses = sorted(_string_set(raw_policy.get("full_statuses")) or {"CLOSED", "FULL"})
+    return {
+        **raw_policy,
+        "policy_version": _optional_text(raw_policy.get("policy_version"))
+        or _optional_text(raw_policy.get("version"))
+        or "default",
+        "expected_bin_count": _int_value(raw_policy.get("expected_bin_count"), default=4),
+        "full_statuses": full_statuses,
+        "full_usage_threshold": _float_value(raw_policy.get("full_usage_threshold"), default=0.8),
+        "min_exchange_bin_count": _int_value(raw_policy.get("min_exchange_bin_count"), default=1),
+        "require_all_bins": bool(raw_policy.get("require_all_bins", False)),
+    }
 
 
 def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -> list[dict[str, Any]]:
