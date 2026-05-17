@@ -88,13 +88,21 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         exchange_request_code = f"FBE-{rack_release_id}"
         request_payload = {
             "request_type": "SMT_FULL_BOX_EXCHANGE",
+            "request_code": exchange_request_code,
             "exchange_request_code": exchange_request_code,
             "dispatch_key": dispatch_key,
+            "trace_id": _trace_id(ctx, inbox),
             "rack_release_id": rack_release_id,
             "single_layer_rack_code": data["single_layer_rack_code"],
+            "single_layer_rack_id": data["single_layer_rack_code"],
+            "source_workline_code": _workline_code(ctx),
+            "exchange_area_code": _optional_text(config.get("exchange_area_code")),
+            "callback_url": _callback_url(config),
             "release_cycle_seq": data.get("release_cycle_seq"),
             "snapshot_hash": data.get("snapshot_hash"),
             "exchange_bins": exchange_bins,
+            "requested_bins": exchange_bins,
+            "bins": snapshots,
             "bin_snapshots": snapshots,
         }
         context_patch = {
@@ -251,6 +259,18 @@ def _timeout_seconds(config: Mapping[str, Any]) -> int:
         value = _int_value(timeouts.get("external_exchange_seconds"), default=1800)
         return max(value, 1)
     return 1800
+
+
+def _callback_url(config: Mapping[str, Any]) -> str | None:
+    return _optional_text(config.get("callback_url")) or _optional_text(config.get("external_callback_url"))
+
+
+def _trace_id(ctx: Any, inbox: Any) -> str | None:
+    return _optional_text(getattr(ctx, "trace_id", None)) or _optional_text(getattr(inbox, "trace_id", None))
+
+
+def _workline_code(ctx: Any) -> str | None:
+    return _optional_text(getattr(getattr(ctx, "workline", None), "line_code", None))
 
 
 def _exchange_context(ctx: Any) -> dict[str, Any]:
