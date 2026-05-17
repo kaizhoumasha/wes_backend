@@ -82,6 +82,28 @@ def test_smt_full_box_exchange_candidate_scan_task_is_registered() -> None:
     }
 
 
+def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:
+    conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE02", "device_role": "CONVEYOR"})())
+    session = cast(
+        "Any",
+        type(
+            "Session",
+            (),
+            {
+                "context_json": {
+                    "rack_exchange": {
+                        "resume_source_device_code": "PIPELINE02",
+                        "resume_source_device_role": "STALE_ROLE",
+                    }
+                }
+            },
+        )(),
+    )
+    inbox = cast("Any", type("Inbox", (), {"payload_json": {"callback_type": "WMS_RACK_ARRIVED"}})())
+
+    assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
+
+
 def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.MonkeyPatch) -> None:
     task = workline_tasks.process_inbox_batch
     task.cleanup()

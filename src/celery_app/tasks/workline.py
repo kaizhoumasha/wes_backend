@@ -2186,6 +2186,30 @@ async def _load_devices_by_role(db: Any, workline: Any, device_repo: Any) -> dic
     return devices_by_role
 
 
+def _resolve_effect_source_device(inbox: Any, session: Any, devices_by_role: dict[str, list[Any]]) -> Any | None:
+    """为 RuntimeIntent effect 层恢复无 device_id 回调的来源设备。"""
+
+    payload = payload_dict(getattr(inbox, "payload_json", None))
+    device_code = _optional_str(payload.get("device_code")) or _optional_str(payload.get("location"))
+    if device_code is None:
+        normalized_input = getattr(inbox, "normalized_input", None)
+        device_code = _optional_str(getattr(normalized_input, "device_code", None))
+    if device_code is None:
+        session_context = payload_dict(getattr(session, "context_json", None))
+        rack_exchange = payload_dict(session_context.get("rack_exchange"))
+        device_code = _optional_str(rack_exchange.get("resume_source_device_code")) or _optional_str(
+            session_context.get("resume_source_device_code")
+        )
+    if device_code is None:
+        return None
+
+    for devices in devices_by_role.values():
+        for device in devices:
+            if _optional_str(getattr(device, "device_code", None)) == device_code:
+                return device
+    return None
+
+
 async def _assert_workline_accepting_runtime_event(
     db: Any,
     *,
@@ -2267,6 +2291,8 @@ async def _load_related_entities(
                 safety_checked = await _assert_workline_accepting_runtime_event(
                     db, workline=workline, resolved_event_type=resolved_event_type
                 )
+    if device is None and session is not None:
+        device = _resolve_effect_source_device(inbox, session, devices_by_role)
 
     return {
         "session": session,

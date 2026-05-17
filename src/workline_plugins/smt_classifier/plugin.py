@@ -252,9 +252,11 @@ def _rack_exchange_context(
     *,
     pkg_id: str,
     reason_code: str | None,
+    resume_source_device_code: str | None = None,
+    resume_source_device_role: str | None = None,
 ) -> dict[str, Any]:
     actions = request.payload.get("actions")
-    return {
+    context = {
         "status": "REQUESTED",
         "dispatch_key": request.dispatch_key,
         "target_code": request.target_code,
@@ -264,7 +266,13 @@ def _rack_exchange_context(
         if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes))
         else [],
         "pkg_id": pkg_id,
+        "resume_callback_type": "WMS_RACK_ARRIVED",
     }
+    if resume_source_device_code is not None:
+        context["resume_source_device_code"] = resume_source_device_code
+    if resume_source_device_role is not None:
+        context["resume_source_device_role"] = resume_source_device_role
+    return context
 
 
 def _is_rack_exchange_and_supply_request(request: SmtFullBoxExchangeRequest) -> bool:
@@ -636,6 +644,8 @@ class SmtClassifierPlugin(WorklinePlugin):
                     request,
                     pkg_id=pkg_id,
                     reason_code=allocation_decision.reason_code,
+                    resume_source_device_code=non_empty_str(result.device_code),
+                    resume_source_device_role=_source_device_role(ctx) or self.CONVEYOR,
                 )
             context_patch["full_box_exchange"] = _full_box_exchange_context(request)
             return [

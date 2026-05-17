@@ -691,6 +691,7 @@ class TestSmtClassifierPluginCommandResults:
 
         pkg_id = "SVYU00125TP4LCR02_2"
         mock_context.trace_id = "trace-rack-full-001"
+        mock_context.source_device_role = "CONVEYOR"
         mock_context.config = {"wms_rcs_rack_exchange_url": "http://wms-rcs/api/rack-exchange"}
         mock_context.session.context_json = {
             "reel_diameter": "178.5",
@@ -729,10 +730,9 @@ class TestSmtClassifierPluginCommandResults:
         }
         mock_context.services = WorklineRuntimeServices(bin_allocator=SmtRackBinSchedulingService())
 
-        result = await plugin.on_command_result(
-            mock_context,
-            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": pkg_id})),
-        )
+        payload = _command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": pkg_id})
+        payload["device_code"] = "PIPELINE02"
+        result = await plugin.on_command_result(mock_context, _make_inbox(payload))
 
         assert [intent.kind for intent in result] == [
             RuntimeIntentKind.UPDATE_CONTEXT,
@@ -746,10 +746,16 @@ class TestSmtClassifierPluginCommandResults:
             "reason_code": "NO_COMPATIBLE_OR_EMPTY_CELL",
             "requested_actions": ["MOVE_OUT_CURRENT_RACK", "SUPPLY_EMPTY_RACK"],
             "pkg_id": pkg_id,
+            "resume_source_device_code": "PIPELINE02",
+            "resume_source_device_role": "CONVEYOR",
+            "resume_callback_type": "WMS_RACK_ARRIVED",
         }
         assert result[1].payload_json["actions"] == ["MOVE_OUT_CURRENT_RACK", "SUPPLY_EMPTY_RACK"]
         assert result[1].payload_json["dispatch_key"] == result[1].dispatch_key
+        assert result[1].payload_json["resume_callback_type"] == "WMS_RACK_ARRIVED"
         assert result[1].payload_json["trace_id"] == "trace-rack-full-001"
+        assert result[0].context_patch["full_box_exchange"]["dispatch_key"] == result[1].dispatch_key
+        assert "WMS_FULL_BOX_EXCHANGE_RESULT" not in str(result[0].context_patch)
         assert all(
             intent.kind != RuntimeIntentKind.COMMAND
             or intent.device_role != "OUTPUT_ARM"
@@ -848,6 +854,7 @@ class TestSmtClassifierPluginCommandResults:
             },
         }
         mock_context.services = WorklineRuntimeServices(bin_allocator=SmtRackBinSchedulingService())
+        assert "full_box_exchange" not in mock_context.session.context_json
 
         result = await plugin.on_external_http(
             mock_context,
@@ -863,6 +870,8 @@ class TestSmtClassifierPluginCommandResults:
         assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
         assert result[0].context_patch["active_bin_rack"] == active_bin_rack
         assert result[0].context_patch["rack_exchange"]["status"] == "ARRIVED"
+        assert "full_box_exchange" not in result[0].context_patch
+        assert "full_box_exchange" not in mock_context.session.context_json
         assert result[0].context_patch["bin_location"] == {
             "rack_id": "RACK-EMPTY-001",
             "bin_id": "BIN-EMPTY-001",
