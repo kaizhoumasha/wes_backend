@@ -103,6 +103,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                     scope=BlockScope.WORKLINE,
                     reason_code="FULL_BOX_EXCHANGE_TARGET_MISSING",
                     message="SMT 满箱交换缺少 WMS/RCS 目标地址配置",
+                    suggested_action="配置 WorkLine external_endpoints.wms_rcs_full_box_exchange_url",
                 )
             ]
 
@@ -192,6 +193,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                     scope=BlockScope.MATERIAL,
                     reason_code="EXCHANGE_DISPATCH_KEY_MISMATCH",
                     message="SMT 满箱交换回调 dispatch_key 与当前请求不匹配",
+                    suggested_action="核对 WMS/RCS 回调 dispatch_key 与当前 Session context",
                 )
             ]
 
@@ -203,6 +205,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                     scope=BlockScope.MATERIAL,
                     reason_code="EXCHANGE_RECONCILING",
                     message="SMT 满箱交换回调缺少交换后关系证据",
+                    suggested_action="要求 WMS/RCS 补传 post_exchange_relations 后重放回调",
                 )
             ]
 
@@ -212,6 +215,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                     scope=BlockScope.MATERIAL,
                     reason_code="EXCHANGE_WMS_CONFIRMATION_INVALID",
                     message="SMT 满箱交换 WMS 确认回调缺少 wms_confirmation",
+                    suggested_action="要求 WMS 补传 wms_confirmation 后重放回调",
                 )
             ]
 
@@ -230,6 +234,7 @@ def _callback_intents(ctx: Any, *, context_patch: dict[str, Any], status: str) -
                 scope=BlockScope.MATERIAL,
                 reason_code=_failure_reason(status),
                 message="SMT 满箱交换外部执行失败",
+                suggested_action=_failure_suggested_action(status),
             )
         ]
     return [build_payload_invalid_block(f"SMT 满箱交换回调状态不支持: {status}")]
@@ -243,6 +248,7 @@ def _callback_identity_block(ctx: Any, payload: Mapping[str, Any]) -> RuntimeInt
             scope=BlockScope.MATERIAL,
             reason_code="EXCHANGE_TRACE_ID_MISMATCH",
             message="SMT 满箱交换回调 trace_id 与当前会话不匹配",
+            suggested_action="核对 WMS/RCS 回调 trace_id 与当前 Session",
         )
 
     expected_rack_release_id = _expected_rack_release_id(ctx)
@@ -252,6 +258,7 @@ def _callback_identity_block(ctx: Any, payload: Mapping[str, Any]) -> RuntimeInt
             scope=BlockScope.MATERIAL,
             reason_code="EXCHANGE_RACK_RELEASE_MISMATCH",
             message="SMT 满箱交换回调 rack_release_id 与当前会话不匹配",
+            suggested_action="核对 WMS/RCS 回调 rack_release_id 与当前释放周期",
         )
     return None
 
@@ -490,6 +497,18 @@ def _failure_reason(status: str) -> str:
     if status == "RECONCILING":
         return "EXCHANGE_RECONCILING"
     return "EXCHANGE_EXECUTION_FAILED"
+
+
+def _failure_suggested_action(status: str) -> str:
+    if status == "WMS_REJECTED":
+        return "人工核对 WMS 库存或单据确认结果"
+    if status == "REJECTED" or status in _RESOURCE_REJECTION_STATUSES:
+        return "等待交换区或空箱资源恢复后重试"
+    if status in _EXECUTION_FAILURE_STATUSES or status == "FAILED":
+        return "联系 WMS/RCS 排查 AGV/CTU 执行失败"
+    if status == "CANCELLED":
+        return "人工确认现场实物状态后决定重试或取消"
+    return "人工核对现场实物状态并处理对账"
 
 
 def _optional_text(value: Any) -> str | None:

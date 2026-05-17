@@ -235,6 +235,18 @@ async def test_release_event_blocks_when_exchange_timeout_is_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_release_event_blocks_when_exchange_target_is_missing_with_suggested_action() -> None:
+    result = await SmtFullBoxExchangePlugin().on_device_event(
+        _ctx(config={"timeouts": {"external_exchange_seconds": 1800}}),
+        _inbox(_release_payload(usage_snapshot=0.91, status="IN_USE")),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "FULL_BOX_EXCHANGE_TARGET_MISSING"
+    assert result[0].suggested_action == "配置 WorkLine external_endpoints.wms_rcs_full_box_exchange_url"
+
+
+@pytest.mark.asyncio
 async def test_external_progress_callback_updates_context_without_completion() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(
         _ctx(context=_exchange_session_context()),
@@ -299,6 +311,27 @@ async def test_external_projection_callback_blocks_without_post_exchange_relatio
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
     assert result[0].reason_code == "EXCHANGE_RECONCILING"
+    assert result[0].suggested_action == "要求 WMS/RCS 补传 post_exchange_relations 后重放回调"
+
+
+@pytest.mark.asyncio
+async def test_wms_confirmed_callback_blocks_without_confirmation_with_suggested_action() -> None:
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(
+            {
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
+                "dispatch_key": "dispatch-001",
+                "exchange_status": "WMS_CONFIRMED",
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "EXCHANGE_WMS_CONFIRMATION_INVALID"
+    assert result[0].suggested_action == "要求 WMS 补传 wms_confirmation 后重放回调"
 
 
 @pytest.mark.asyncio
@@ -354,6 +387,7 @@ async def test_external_failure_callback_blocks_with_status_specific_reason(
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
     assert result[0].reason_code == expected_reason_code
+    assert result[0].suggested_action is not None
 
 
 @pytest.mark.parametrize(
