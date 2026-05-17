@@ -1,5 +1,5 @@
 """
-SMT 粗分机 WMS/RCS 货架交换 Mock 服务
+SMT 粗分机 WMS/RCS 新货架补充 Mock 服务
 
 正式接口:
 - POST /api/rack-exchange
@@ -47,16 +47,23 @@ DEFAULT_PORT = int(os.getenv("RACK_EXCHANGE_MOCK_PORT", "8010"))
 DEFAULT_MODE = os.getenv("RACK_EXCHANGE_MODE", "success")
 EXECUTION_TIME = float(os.getenv("RACK_EXCHANGE_EXECUTION_TIME", "0.5"))
 SOURCE_SYSTEM = os.getenv("RACK_EXCHANGE_SOURCE_SYSTEM", "WMS")
-RACK_ID = os.getenv("RACK_EXCHANGE_RACK_ID", "RACK_MOCK_001")
-BIN_ID = os.getenv("RACK_EXCHANGE_BIN_ID", "BIN_MOCK_001")
-BIN_TYPE = os.getenv("RACK_EXCHANGE_BIN_TYPE", "九格箱")
-BIN_CELL_LOCATION = os.getenv("RACK_EXCHANGE_BIN_CELL_LOCATION", "4")
+RACK_ID = os.getenv("RACK_EXCHANGE_RACK_ID", "NHW-1CLJ-0096")
+RACK_SLOT_CODE = os.getenv("RACK_EXCHANGE_RACK_SLOT_CODE", "C")
+RACK_SLOT_SIDE = "1" if RACK_SLOT_CODE in {"C", "D"} else "0"
+RACK_SLOT_LOCATION_CODE = os.getenv(
+    "RACK_EXCHANGE_RACK_SLOT_LOCATION_CODE",
+    f"{RACK_ID}-1{RACK_SLOT_CODE}-{RACK_SLOT_SIDE}",
+)
+BIN_ID = os.getenv("RACK_EXCHANGE_BIN_ID", "BIN-MOCK-001")
+BIN_ORIENTATION_CODE = os.getenv("RACK_EXCHANGE_BIN_ORIENTATION_CODE", f"{BIN_ID}-A")
+BIN_TYPE = os.getenv("RACK_EXCHANGE_BIN_TYPE", "6格箱")
+BIN_CELL_LOCATION = os.getenv("RACK_EXCHANGE_BIN_CELL_LOCATION", f"{BIN_ID}-4")
 CELL_TYPE = os.getenv("RACK_EXCHANGE_CELL_TYPE", "SEVEN_INCH")
 REMAINING_DEPTH = os.getenv("RACK_EXCHANGE_REMAINING_DEPTH", "300")
 
 
 class RackExchangeRequest(BaseModel):
-    request_type: str = "SMT_RACK_EXCHANGE_AND_SUPPLY"
+    request_type: str = "SMT_RACK_SUPPLY"
     dispatch_key: str
     trace_id: str | None = None
     material: JsonDict = Field(default_factory=dict)
@@ -121,7 +128,7 @@ class RackExchangeSimulator:
                 request=request,
                 record=record,
                 callback_type=callback_type,
-                extra={"status": result, "message": "WMS/RCS mock rack exchange in progress"},
+                extra={"status": result, "message": "WMS/RCS mock rack supply in progress"},
             )
         elif self.mode == "failed":
             callback_type = "WMS_RACK_EXCHANGE_FAILED"
@@ -132,7 +139,7 @@ class RackExchangeSimulator:
                 callback_type=callback_type,
                 extra={
                     "reason_code": request.reason_code or "RCS_RACK_SUPPLY_FAILED",
-                    "reason_message": "WMS/RCS mock rack exchange failed",
+                    "reason_message": "WMS/RCS mock rack supply failed",
                 },
             )
         else:
@@ -183,9 +190,13 @@ class RackExchangeSimulator:
             "cells": [
                 {
                     "rack_id": RACK_ID,
+                    "rack_slot_code": RACK_SLOT_CODE,
+                    "rack_slot_location_code": RACK_SLOT_LOCATION_CODE,
                     "bin_id": BIN_ID,
+                    "bin_orientation_code": BIN_ORIENTATION_CODE,
                     "bin_type": BIN_TYPE,
                     "bin_cell_location": BIN_CELL_LOCATION,
+                    "bin_cell_index": BIN_CELL_LOCATION.rsplit("-", 1)[-1],
                     "status": "EMPTY",
                     "cell_type": CELL_TYPE,
                     "remaining_depth": REMAINING_DEPTH,
@@ -200,8 +211,8 @@ class RackExchangeSimulator:
 rack_exchange_simulator = RackExchangeSimulator()
 _background_tasks: set[asyncio.Task[RackExchangeRecord]] = set()
 app = FastAPI(
-    title="SMT 粗分机 WMS/RCS 货架交换 Mock 服务",
-    description="模拟 WES 发起换架补空箱请求后，WMS/RCS 回调 WMS_RACK_ARRIVED 等事件。",
+    title="SMT 粗分机 WMS/RCS 新货架补充 Mock 服务",
+    description="模拟 WES 发起新货架补充请求后，WMS/RCS 回调 WMS_RACK_ARRIVED 等事件。",
     version="1.0.0",
 )
 register_mock_exception_handlers(app, logger, service_name="SMT_RACK_EXCHANGE_MOCK")
@@ -209,7 +220,9 @@ register_mock_exception_handlers(app, logger, service_name="SMT_RACK_EXCHANGE_MO
 
 @app.post("/api/rack-exchange", response_model=RackExchangeResponse)
 async def request_rack_exchange(request: RackExchangeRequest) -> RackExchangeResponse:
-    logger.info("收到 WMS/RCS 换架请求: dispatch_key=%s mode=%s", request.dispatch_key, rack_exchange_simulator.mode)
+    logger.info(
+        "收到 WMS/RCS 新货架补充请求: dispatch_key=%s mode=%s", request.dispatch_key, rack_exchange_simulator.mode
+    )
     task = asyncio.create_task(rack_exchange_simulator.execute_request(request))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -265,7 +278,7 @@ class RackExchangeMockServer:
         self._server: Server | None = None
 
     async def start(self) -> None:
-        logger.info("SMT WMS/RCS 货架交换 Mock 服务启动: http://%s:%s", self.host, self.port)
+        logger.info("SMT WMS/RCS 新货架补充 Mock 服务启动: http://%s:%s", self.host, self.port)
         logger.info("正式接口:")
         logger.info("  - POST /api/rack-exchange")
         logger.info("调试接口:")

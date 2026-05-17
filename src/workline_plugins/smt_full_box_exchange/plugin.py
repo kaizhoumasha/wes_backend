@@ -7,6 +7,7 @@ from typing import Any
 
 from src.workline_plugins.smt_full_box_exchange.contract import (
     SINGLE_LAYER_RACK_RELEASED,
+    SMT_FORCE_EXCHANGE_RELEASE_REASON_CODES,
     WMS_FULL_BOX_EXCHANGE_CALLBACK,
     resolve_smt_full_box_exchange_business_key,
 )
@@ -78,12 +79,19 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         rack_identifier = _single_layer_rack_identifier(data)
         snapshots = _snapshot_list(data)
         exchange_policy = _exchange_policy(config)
-        exchange_bins = _exchange_bins(snapshots, exchange_policy)
+        forced_exchange_reason = _is_smt_force_exchange_reason(data.get("release_reason_code"))
+        exchange_bins = (
+            _smt_release_exchange_bins(snapshots)
+            if forced_exchange_reason
+            else _exchange_bins(snapshots, exchange_policy)
+        )
         evaluation_context = {
             "exchange_policy": exchange_policy,
             "exchange_policy_version": exchange_policy["policy_version"],
             "evaluated_bins": snapshots,
             "qualified_bin_count": len(exchange_bins),
+            "release_reason_code": _optional_text(data.get("release_reason_code")),
+            "forced_exchange_reason": forced_exchange_reason,
         }
         if not exchange_bins:
             return [
@@ -134,6 +142,9 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             "single_layer_rack_code": rack_identifier,
             "single_layer_rack_id": rack_identifier,
             "source_workline_code": _workline_code(ctx),
+            "source_classifier_line_code": _optional_text(data.get("source_classifier_line_code")),
+            "source_task_batch_id": _optional_text(data.get("source_task_batch_id")),
+            "release_reason_code": _optional_text(data.get("release_reason_code")),
             "exchange_area_code": _optional_text(config.get("exchange_area_code")),
             "callback_url": _callback_url(config),
             "release_cycle_seq": data.get("release_cycle_seq"),
@@ -427,18 +438,28 @@ def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -
         return []
     if len(selected) < min_count:
         return []
-    return [
-        {
-            "slot_code": snapshot.get("slot_code"),
-            "bin_id": snapshot.get("bin_id"),
-            "bin_code": snapshot.get("bin_code"),
-            "bin_type_code": snapshot.get("bin_type_code"),
-            "status": snapshot.get("status"),
-            "usage_snapshot": snapshot.get("usage_snapshot"),
-            "usage": snapshot.get("usage"),
-        }
-        for snapshot in selected
-    ]
+    return [_exchange_bin_payload(snapshot) for snapshot in selected]
+
+
+def _smt_release_exchange_bins(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_exchange_bin_payload(snapshot) for snapshot in snapshots]
+
+
+def _exchange_bin_payload(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "slot_code": snapshot.get("slot_code"),
+        "bin_id": snapshot.get("bin_id"),
+        "bin_code": snapshot.get("bin_code"),
+        "bin_type_code": snapshot.get("bin_type_code"),
+        "status": snapshot.get("status"),
+        "usage_snapshot": snapshot.get("usage_snapshot"),
+        "usage": snapshot.get("usage"),
+    }
+
+
+def _is_smt_force_exchange_reason(value: Any) -> bool:
+    text = _non_empty_upper(value)
+    return text in SMT_FORCE_EXCHANGE_RELEASE_REASON_CODES
 
 
 def _is_exchange_bin(snapshot: Mapping[str, Any], full_statuses: set[str], threshold: float) -> bool:

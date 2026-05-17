@@ -392,9 +392,13 @@ async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: py
         params={
             "barcode": "PKG-OUTPUT-001",
             "target_type": "BIN",
-            "target_loc": "BIN_249",
-            "bin_type": "九格箱",
-            "bin_cell_location": "4",
+            "target_loc": "BIN-249",
+            "rack_slot_code": "A",
+            "rack_slot_location_code": "NHW-1CLJ-0096-1A-0",
+            "bin_orientation_code": "BIN-249-A",
+            "bin_type": "6格箱",
+            "bin_cell_location": "BIN-249-4",
+            "bin_cell_index": "4",
             "execution_time": 0,
         },
         timestamp=1,
@@ -406,9 +410,13 @@ async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: py
     assert captured["result"] == "SUCCESS"
     callback_data = captured["data"]
     assert isinstance(callback_data, dict)
-    assert callback_data["bin_id"] == "BIN_249"
-    assert callback_data["bin_type"] == "九格箱"
-    assert callback_data["bin_cell_location"] == "4"
+    assert callback_data["bin_id"] == "BIN-249"
+    assert callback_data["rack_slot_code"] == "A"
+    assert callback_data["rack_slot_location_code"] == "NHW-1CLJ-0096-1A-0"
+    assert callback_data["bin_orientation_code"] == "BIN-249-A"
+    assert callback_data["bin_type"] == "6格箱"
+    assert callback_data["bin_cell_location"] == "BIN-249-4"
+    assert callback_data["bin_cell_index"] == "4"
 
 
 @pytest.mark.asyncio
@@ -452,8 +460,12 @@ async def test_arm_output_mock_accepts_hyphenated_dynamic_bin_id(monkeypatch: py
             "barcode": "PKG-OUTPUT-002",
             "target_type": "BIN",
             "target_loc": "BIN-MOCK-001",
-            "bin_type": "九格箱",
-            "bin_cell_location": "5",
+            "rack_slot_code": "B",
+            "rack_slot_location_code": "NHW-1CLJ-0096-1B-0",
+            "bin_orientation_code": "BIN-MOCK-001-A",
+            "bin_type": "6格箱",
+            "bin_cell_location": "BIN-MOCK-001-5",
+            "bin_cell_index": "5",
             "execution_time": 0,
         },
         timestamp=1,
@@ -464,7 +476,11 @@ async def test_arm_output_mock_accepts_hyphenated_dynamic_bin_id(monkeypatch: py
     callback_data = captured["data"]
     assert isinstance(callback_data, dict)
     assert callback_data["bin_id"] == "BIN-MOCK-001"
-    assert callback_data["bin_cell_location"] == "5"
+    assert callback_data["rack_slot_code"] == "B"
+    assert callback_data["rack_slot_location_code"] == "NHW-1CLJ-0096-1B-0"
+    assert callback_data["bin_orientation_code"] == "BIN-MOCK-001-A"
+    assert callback_data["bin_cell_location"] == "BIN-MOCK-001-5"
+    assert callback_data["bin_cell_index"] == "5"
 
 
 @pytest.mark.asyncio
@@ -640,7 +656,13 @@ async def test_allocation_mock_returns_agv_then_allocated() -> None:
     assert first.message == "AGV_REQUIRED"
     assert first.data["allocation_status"] == "AGV_REQUIRED"
     assert second.message == "ALLOCATED"
-    assert second.data["target_bin"]["bin_id"].startswith("BIN_")
+    target_bin = second.data["target_bin"]
+    assert target_bin["bin_id"].startswith("BIN-")
+    assert target_bin["rack_slot_code"] in {"A", "B", "C", "D"}
+    assert target_bin["rack_slot_location_code"].startswith(f"{target_bin['rack_id']}-1")
+    assert target_bin["bin_orientation_code"] == f"{target_bin['bin_id']}-A"
+    assert target_bin["bin_cell_location"].startswith(f"{target_bin['bin_id']}-")
+    assert target_bin["bin_cell_index"] == target_bin["bin_cell_location"].rsplit("-", 1)[-1]
 
 
 @pytest.mark.asyncio
@@ -677,6 +699,41 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
     assert callback_payload["callback_type"] == "AGV_TASK_RESULT"
     assert callback_payload["trace_id"] == "trace-agv-001"
     assert callback_payload["command_code"] == "AGV-REQ-001"
+
+
+@pytest.mark.asyncio
+async def test_rack_supply_mock_accepts_smt_rack_supply_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_SUPPLY",
+        trace_id="trace-rack-mock",
+        actions=["SUPPLY_EMPTY_RACK"],
+    )
+
+    assert request.request_type == "SMT_RACK_SUPPLY"
+
+    record = await simulator.execute_request(request)
+
+    assert record.request_type == "SMT_RACK_SUPPLY"
+    assert record.callback_type == "WMS_RACK_ARRIVED"
+    assert record.result == "SUCCESS"
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
+    assert callback_payload["dispatch_key"] == "external:smt_classifier:trace-rack-mock:RACK_SUPPLY"
 
 
 @pytest.mark.asyncio
@@ -723,8 +780,14 @@ async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest
     assert callback_payload["trace_id"] == "trace-rack-mock"
     active_bin_rack = callback_payload["active_bin_rack"]
     assert isinstance(active_bin_rack, dict)
-    assert active_bin_rack["cells"][0]["bin_id"].startswith("BIN_")
-    assert active_bin_rack["cells"][0]["status"] == "EMPTY"
+    cell = active_bin_rack["cells"][0]
+    assert cell["bin_id"].startswith("BIN-")
+    assert cell["rack_slot_code"] in {"A", "B", "C", "D"}
+    assert cell["rack_slot_location_code"].startswith(f"{cell['rack_id']}-1")
+    assert cell["bin_orientation_code"] == f"{cell['bin_id']}-A"
+    assert cell["bin_cell_location"].startswith(f"{cell['bin_id']}-")
+    assert cell["bin_cell_index"] == cell["bin_cell_location"].rsplit("-", 1)[-1]
+    assert cell["status"] == "EMPTY"
 
 
 @pytest.mark.asyncio

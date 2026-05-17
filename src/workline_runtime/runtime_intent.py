@@ -12,10 +12,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.utils.timezone import timezone
+
 
 class RuntimeIntentKind(str, Enum):
     COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
+    DEVICE_EVENT = "DEVICE_EVENT"
     ROUTE = "ROUTE"
     COMPLETE = "COMPLETE"
     BLOCK = "BLOCK"
@@ -132,6 +135,36 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
+    def device_event(
+        cls,
+        *,
+        device_code: str,
+        event_type: str,
+        data: dict[str, Any] | None = None,
+        timestamp: int | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        canonical_event_type: str | None = None,
+    ) -> RuntimeIntent:
+        payload_json: dict[str, Any] = {
+            "device_code": device_code,
+            "event_type": event_type,
+            "timestamp": timestamp if timestamp is not None else int(timezone.now_utc().timestamp() * 1000),
+            "data": deepcopy(data) if data is not None else {},
+        }
+        if event_id is not None:
+            payload_json["event_id"] = event_id
+        if causation_id is not None:
+            payload_json["causation_id"] = causation_id
+        if canonical_event_type is not None:
+            payload_json["canonical_event_type"] = canonical_event_type
+
+        return cls(
+            kind=RuntimeIntentKind.DEVICE_EVENT,
+            payload_json=payload_json,
+        )
+
+    @classmethod
     def block(
         cls,
         *,
@@ -207,6 +240,19 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("EXTERNAL_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:
                 raise ValueError("EXTERNAL_REQUEST intent requires timeout_seconds")
+        if self.kind == RuntimeIntentKind.DEVICE_EVENT:
+            if not self.payload_json.get("device_code"):
+                raise ValueError("DEVICE_EVENT intent requires device_code")
+            if not self.payload_json.get("event_type"):
+                raise ValueError("DEVICE_EVENT intent requires event_type")
+            if "timestamp" not in self.payload_json:
+                raise ValueError("DEVICE_EVENT intent requires timestamp")
+            if not isinstance(self.payload_json.get("timestamp"), int):
+                raise ValueError("DEVICE_EVENT intent timestamp must be an integer")
+            if "data" not in self.payload_json:
+                raise ValueError("DEVICE_EVENT intent requires data")
+            if not isinstance(self.payload_json.get("data"), dict):
+                raise ValueError("DEVICE_EVENT intent data must be a dict")
         if self.kind == RuntimeIntentKind.BLOCK:
             if self.block_scope is None:
                 raise ValueError("BLOCK intent requires block_scope")

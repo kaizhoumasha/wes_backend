@@ -300,9 +300,14 @@ def build_output_to_bin_params(
         "reel_diameter": reel_diameter,
         "target_type": "BIN",
         "target_loc": bin_location["bin_id"],
+        "rack_id": bin_location["rack_id"],
+        "rack_slot_code": bin_location["rack_slot_code"],
+        "rack_slot_location_code": bin_location["rack_slot_location_code"],
         "bin_id": bin_location["bin_id"],
+        "bin_orientation_code": bin_location["bin_orientation_code"],
         "bin_type": bin_location["bin_type"],
         "bin_cell_location": bin_location["bin_cell_location"],
+        "bin_cell_index": bin_location["bin_cell_index"],
     }
 
 

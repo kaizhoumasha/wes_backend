@@ -43,6 +43,27 @@ class PluginNext:
             source_system=source_system,
         )
 
+    def device_event(
+        self,
+        *,
+        device_code: str,
+        event_type: str,
+        data: dict[str, Any] | None = None,
+        timestamp: int | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        canonical_event_type: str | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.device_event(
+            device_code=device_code,
+            event_type=event_type,
+            data=data,
+            timestamp=timestamp,
+            event_id=event_id,
+            causation_id=causation_id,
+            canonical_event_type=canonical_event_type,
+        )
+
     def block(
         self,
         scope: BlockScope,

@@ -89,9 +89,13 @@ class DeviceLocation(BaseModel):
     location_id: str
     location_type: str
     rack_id: str | None = None
+    rack_slot_code: str | None = None
+    rack_slot_location_code: str | None = None
     bin_id: str | None = None
+    bin_orientation_code: str | None = None
     bin_type: str | None = None
     bin_cell_location: str | None = None
+    bin_cell_index: str | None = None
     reel_layer: str | None = None
     reel_thickness: str | None = None
     reel_diameter: str | None = None

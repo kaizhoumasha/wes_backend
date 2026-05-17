@@ -5,6 +5,8 @@ from src.app.resource.services.smt_rack_bin_scheduling_service import (
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
+    SmtRackReleaseEvent,
+    SmtRackSupplyRequest,
     smt_rack_bin_scheduling_service,
 )
 
@@ -13,5 +15,7 @@ __all__ = [
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
+    "SmtRackReleaseEvent",
+    "SmtRackSupplyRequest",
     "smt_rack_bin_scheduling_service",
 ]

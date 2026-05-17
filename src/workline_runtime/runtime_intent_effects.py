@@ -20,6 +20,7 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
+    RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
@@ -149,8 +150,14 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
 
 
 class RuntimeIntentEffectApplier:
-    def __init__(self, *, full_box_exchange_task_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        full_box_exchange_task_service: Any | None = None,
+        inbox_service: Any | None = None,
+    ) -> None:
         self._full_box_exchange_task_service = full_box_exchange_task_service
+        self._inbox_service = inbox_service
 
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
@@ -178,6 +185,10 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
                 await self._apply_external_request(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
+                await self._apply_device_event(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
@@ -415,6 +426,29 @@ class RuntimeIntentEffectApplier:
             actor_type=TimelineActorType.ORCHESTRATOR,
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
             status=TimelineStatus.PENDING,
+        )
+
+    async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
+        service = self._inbox_service
+        if service is None:
+            from src.app.workline.services import inbox_service
+
+            service = inbox_service
+
+        payload = dict(intent.payload_json)
+        trace = ctx.get("trace") if isinstance(ctx, dict) else None
+        trace_id = getattr(trace, "trace_id", None) or ctx.get("trace_id")
+        _ = await service.create_device_event_inbox(
+            db=ctx["db"],
+            device_code=str(payload["device_code"]),
+            event_type=str(payload["event_type"]),
+            timestamp=int(payload["timestamp"]),
+            data=dict(payload["data"]),
+            trace_id=trace_id,
+            event_id=payload.get("event_id"),
+            causation_id=payload.get("causation_id"),
+            canonical_event_type=payload.get("canonical_event_type"),
+            auto_commit=False,
         )
 
     async def _record_full_box_exchange_task(
