@@ -260,6 +260,19 @@ def _callback_identity_block(ctx: Any, payload: Mapping[str, Any]) -> RuntimeInt
             message="SMT 满箱交换回调 rack_release_id 与当前会话不匹配",
             suggested_action="核对 WMS/RCS 回调 rack_release_id 与当前释放周期",
         )
+
+    exchange_context = _exchange_context(ctx)
+    expected_exchange_request_code = _optional_text(exchange_context.get("exchange_request_code")) or _optional_text(
+        exchange_context.get("dispatch_key")
+    )
+    callback_exchange_request_code = _optional_text(payload.get("exchange_request_code"))
+    if expected_exchange_request_code is not None and callback_exchange_request_code != expected_exchange_request_code:
+        return ctx.next.block(
+            scope=BlockScope.MATERIAL,
+            reason_code="EXCHANGE_REQUEST_CODE_MISMATCH",
+            message="SMT 满箱交换回调 exchange_request_code 与当前请求不匹配",
+            suggested_action="核对 WMS/RCS 回调 exchange_request_code 与当前 Session context",
+        )
     return None
 
 

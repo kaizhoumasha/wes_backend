@@ -34,7 +34,10 @@ def _inbox(payload: dict) -> SimpleNamespace:
 def _exchange_session_context() -> dict:
     return {
         "rack_release_id": "release-001",
-        "full_box_exchange": {"dispatch_key": "dispatch-001"},
+        "full_box_exchange": {
+            "dispatch_key": "dispatch-001",
+            "exchange_request_code": "dispatch-001",
+        },
     }
 
 
@@ -268,6 +271,7 @@ async def test_external_progress_callback_updates_context_without_completion() -
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": "QUEUED",
                 "queue_position": 2,
             }
@@ -288,6 +292,7 @@ async def test_external_progress_callback_accepts_normalized_input() -> None:
         payload={
             "rack_release_id": "release-001",
             "dispatch_key": "dispatch-001",
+            "exchange_request_code": "dispatch-001",
             "exchange_status": "QUEUED",
             "queue_position": 2,
         },
@@ -316,6 +321,7 @@ async def test_external_projection_callback_blocks_without_post_exchange_relatio
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": exchange_status,
             }
         ),
@@ -347,6 +353,7 @@ async def test_external_projection_callback_records_post_exchange_relations(exch
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": exchange_status,
                 "post_exchange_relations": post_exchange_relations,
             }
@@ -368,6 +375,7 @@ async def test_wms_confirmed_callback_blocks_without_confirmation_with_suggested
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": "WMS_CONFIRMED",
             }
         ),
@@ -393,6 +401,7 @@ async def test_wms_confirmed_callback_records_confirmation_without_completion() 
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": "WMS_CONFIRMED",
                 "wms_confirmation": wms_confirmation,
             }
@@ -414,6 +423,7 @@ async def test_business_completed_callback_completes_session() -> None:
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": "BUSINESS_COMPLETED",
                 "wms_confirmation": {"wms_document_id": "WMS-DOC-001"},
             }
@@ -450,6 +460,7 @@ async def test_external_failure_callback_blocks_with_status_specific_reason(
                 "trace_id": "trace-full-box-001",
                 "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
+                "exchange_request_code": "dispatch-001",
                 "exchange_status": exchange_status,
             }
         ),
@@ -457,6 +468,32 @@ async def test_external_failure_callback_blocks_with_status_specific_reason(
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
     assert result[0].reason_code == expected_reason_code
+    assert result[0].suggested_action is not None
+
+
+@pytest.mark.parametrize("payload_patch", [{}, {"exchange_request_code": "dispatch-other"}])
+@pytest.mark.asyncio
+async def test_external_callback_blocks_when_exchange_request_code_missing_or_mismatches(
+    payload_patch: dict,
+) -> None:
+    """WMS/RCS 回调必须归属于当前等待中的 exchange_request_code。"""
+
+    payload = {
+        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "trace_id": "trace-full-box-001",
+        "rack_release_id": "release-001",
+        "dispatch_key": "dispatch-001",
+        "exchange_status": "QUEUED",
+    }
+    payload.update(payload_patch)
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(payload),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "EXCHANGE_REQUEST_CODE_MISMATCH"
     assert result[0].suggested_action is not None
 
 
@@ -479,6 +516,7 @@ async def test_external_callback_blocks_when_session_identity_mismatches(
         "trace_id": "trace-full-box-001",
         "rack_release_id": "release-001",
         "dispatch_key": "dispatch-001",
+        "exchange_request_code": "dispatch-001",
         "exchange_status": "QUEUED",
     }
     payload.update(payload_patch)

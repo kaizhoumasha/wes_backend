@@ -49,6 +49,8 @@ class RecordingPlacementRepo:
 class RecordingBinMountRepo:
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
+        self.slot_lookups: list[tuple[str, str]] = []
+        self.bin_lookups: list[str] = []
 
     async def get_active_by_rack_slot(
         self,
@@ -57,11 +59,13 @@ class RecordingBinMountRepo:
         rack_code: str,
         rack_slot_code: str,
     ) -> RackBinMount | None:
+        self.slot_lookups.append((rack_code, rack_slot_code))
         assert rack_code in {"RACK-002", "RACK-ECS-001"}
         assert rack_slot_code in {"A01", "A02", "A03", "A04"}
         return None
 
     async def get_active_by_bin_code(self, _db: object, bin_code: str) -> RackBinMount | None:
+        self.bin_lookups.append(bin_code)
         assert bin_code in {"BIN-001", "BIN-002", "BIN-ECS-001", "BIN-ECS-002", "BIN-ECS-003", "BIN-ECS-004"}
         return None
 
@@ -362,6 +366,73 @@ async def test_record_full_box_exchange_physical_completed_conflict_creates_runt
     assert runtime_holds.created[0]["evidence"]["rack_slot_code"] == "A01"
     assert runtime_holds.created[0]["evidence"]["active_bin_code"] == "BIN-OLD"
     assert runtime_holds.created[0]["evidence"]["incoming_bin_code"] == "BIN-NEW"
+    assert bin_mounts.created == []
+
+
+@pytest.mark.parametrize(
+    ("bin_mounts_payload", "expected_reason_code"),
+    [
+        (
+            [
+                {"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"},
+                {"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-002"},
+            ],
+            "RACK_BIN_SLOT_DUPLICATED",
+        ),
+        (
+            [
+                {"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"},
+                {"rack_code": "RACK-002", "rack_slot_code": "A02", "bin_code": "BIN-001"},
+            ],
+            "BIN_MOUNT_DUPLICATED",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_record_full_box_exchange_physical_completed_reconciles_payload_internal_duplicates(
+    bin_mounts_payload: list[dict[str, str]],
+    expected_reason_code: str,
+) -> None:
+    """同一回调内部重复 slot/bin 时先进入对账，不依赖数据库唯一约束失败。"""
+
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    bin_mounts = RecordingBinMountRepo()
+    runtime_holds = RecordingRuntimeHoldCreator()
+    service = ResourceRelationService(
+        state_event_repo=state_events,
+        rack_bin_mount_repo=bin_mounts,
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_full_box_exchange_physical_completed(
+        object(),
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        post_exchange_relations={"bin_mounts": bin_mounts_payload},
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id=f"wms-event-physical-{expected_reason_code.lower()}",
+        source_version="1",
+        source_task_id="wms-task-001",
+        occurred_at=datetime(2026, 5, 16, 9, 0, 0),
+        trace_id="trace-001",
+        session_id="session-001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == expected_reason_code
+    assert result.runtime_hold is not None
+    assert runtime_holds.created[0]["source_reason"] == expected_reason_code
+    assert runtime_holds.created[0]["evidence"]["exchange_request_code"] == (
+        "external:smt:release-001:FULL_BIN_EXCHANGE"
+    )
+    assert bin_mounts.slot_lookups == []
+    assert bin_mounts.bin_lookups == []
     assert bin_mounts.created == []
 
 

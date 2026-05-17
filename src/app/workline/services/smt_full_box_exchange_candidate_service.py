@@ -153,12 +153,22 @@ class SmtFullBoxExchangeCandidateService:
                 result["errors"] += 1
                 continue
             try:
-                candidate_result = await self.create_inbox_for_release(
-                    db,
-                    rack_release_id=rack_release_id,
-                    source_device_code=source_device_code,
-                    auto_commit=False,
-                )
+                begin_nested = getattr(db, "begin_nested", None)
+                if callable(begin_nested):
+                    async with begin_nested():
+                        candidate_result = await self.create_inbox_for_release(
+                            db,
+                            rack_release_id=rack_release_id,
+                            source_device_code=source_device_code,
+                            auto_commit=False,
+                        )
+                else:
+                    candidate_result = await self.create_inbox_for_release(
+                        db,
+                        rack_release_id=rack_release_id,
+                        source_device_code=source_device_code,
+                        auto_commit=False,
+                    )
             except Exception:
                 result["errors"] += 1
                 continue

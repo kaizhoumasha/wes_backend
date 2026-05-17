@@ -43,11 +43,13 @@ async def test_rack_release_service_records_release_and_four_bin_snapshots() -> 
         snapshot_repo=snapshot_repo,
     )
 
+    released_at = datetime(2026, 5, 16, 9, 30, 0)
+
     release = await service.record_release_snapshot(
         object(),
         rack_release_id="release-001",
         single_layer_rack_code="RACK-SL-001",
-        released_at=datetime(2026, 5, 16, 9, 30, 0),
+        released_at=released_at,
         slot_snapshots=[
             {"slot_code": "A01", "bin_code": "BIN-001", "bin_type_code": "BIN-3", "usage_snapshot": 0.9},
             {"slot_code": "A02", "bin_code": "BIN-002", "bin_type_code": "BIN-3", "usage_snapshot": 0.8},
@@ -66,6 +68,7 @@ async def test_rack_release_service_records_release_and_four_bin_snapshots() -> 
     assert release_repo.lookup_ids == ["release-001"]
     assert release_repo.created_payload is not None
     assert release_repo.created_payload["release_status"] == "CANDIDATE"
+    assert release_repo.created_payload["moved_out_at"] == released_at
     assert release_repo.created_payload["snapshot_hash"].startswith("sha256:")
     assert release_repo.created_payload["idempotency_key"].startswith("sha256:")
     assert len(snapshot_repo.created_payloads) == 4

@@ -254,6 +254,32 @@ class ResourceRelationService:
                 message="满箱交换回调缺少可投影的料箱挂载关系",
             )
 
+        payload_conflict = _first_payload_bin_mount_conflict(bin_mounts)
+        if payload_conflict is not None:
+            runtime_hold = await self._create_bin_mount_conflict_hold(
+                db,
+                operation="FULL_BOX_EXCHANGE_PHYSICAL_COMPLETED",
+                exchange_request_code=exchange_request_code,
+                rack_release_id=rack_release_id,
+                conflict=payload_conflict,
+                source_system=source_system,
+                source_event_id=source_event_id,
+                source_task_id=source_task_id,
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=workline_session_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code=payload_conflict["reason_code"],
+                message=payload_conflict["message"],
+            )
+
         conflict = await self._first_bin_mount_conflict(db, bin_mounts)
         if conflict is not None:
             runtime_hold = await self._create_bin_mount_conflict_hold(
@@ -632,6 +658,43 @@ def _extract_bin_mounts(post_exchange_relations: Mapping[str, Any]) -> list[dict
             }
         )
     return mounts
+
+
+def _first_payload_bin_mount_conflict(bin_mounts: Sequence[dict[str, str]]) -> dict[str, Any] | None:
+    seen_slots: dict[tuple[str, str], dict[str, str]] = {}
+    seen_bins: dict[str, dict[str, str]] = {}
+    for mount in bin_mounts:
+        slot_key = (mount["rack_code"], mount["rack_slot_code"])
+        active_slot = seen_slots.get(slot_key)
+        if active_slot is not None:
+            return {
+                "reason_code": "RACK_BIN_SLOT_DUPLICATED",
+                "message": "交换后关系中同一货架槽位被重复挂载",
+                "rack_code": mount["rack_code"],
+                "rack_slot_code": mount["rack_slot_code"],
+                "incoming_bin_code": mount["bin_code"],
+                "active_bin_code": active_slot["bin_code"],
+                "active_rack_code": active_slot["rack_code"],
+                "active_rack_slot_code": active_slot["rack_slot_code"],
+                "active_source_event_id": None,
+            }
+        seen_slots[slot_key] = mount
+
+        active_bin = seen_bins.get(mount["bin_code"])
+        if active_bin is not None:
+            return {
+                "reason_code": "BIN_MOUNT_DUPLICATED",
+                "message": "交换后关系中同一料箱被重复挂载",
+                "rack_code": mount["rack_code"],
+                "rack_slot_code": mount["rack_slot_code"],
+                "incoming_bin_code": mount["bin_code"],
+                "active_bin_code": active_bin["bin_code"],
+                "active_rack_code": active_bin["rack_code"],
+                "active_rack_slot_code": active_bin["rack_slot_code"],
+                "active_source_event_id": None,
+            }
+        seen_bins[mount["bin_code"]] = mount
+    return None
 
 
 def _text_or_none(value: Any) -> str | None:

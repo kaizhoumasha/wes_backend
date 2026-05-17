@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import Any
 
 import pytest
@@ -15,9 +15,38 @@ from src.app.workline.services.smt_full_box_exchange_candidate_service import (
 class _FakeDb:
     def __init__(self) -> None:
         self.commits = 0
+        self.pending_inboxes: list[Any] = []
+        self.committed_inboxes: list[Any] = []
+        self.rolled_back_savepoints = 0
 
     async def commit(self) -> None:
         self.commits += 1
+        self.committed_inboxes.extend(self.pending_inboxes)
+        self.pending_inboxes.clear()
+
+    def begin_nested(self) -> "_FakeSavepoint":
+        return _FakeSavepoint(self)
+
+
+class _FakeSavepoint:
+    def __init__(self, db: _FakeDb) -> None:
+        self.db = db
+        self.pending_start = 0
+
+    async def __aenter__(self) -> "_FakeSavepoint":
+        self.pending_start = len(self.db.pending_inboxes)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _tb: TracebackType | None,
+    ) -> bool:
+        if exc_type is not None:
+            del self.db.pending_inboxes[self.pending_start :]
+            self.db.rolled_back_savepoints += 1
+        return False
 
 
 class _FakeRackReleaseRepository:
@@ -59,7 +88,17 @@ class _FakeInboxService:
                 "设备事件已存在（幂等键重复）",
                 existing_inbox=self.duplicate_inbox,
             )
-        return SimpleNamespace(id=701, payload_json={"data": kwargs["data"]}, event_id=kwargs["event_id"])
+        inbox = SimpleNamespace(id=701, payload_json={"data": kwargs["data"]}, event_id=kwargs["event_id"])
+        db = kwargs.get("db")
+        if hasattr(db, "pending_inboxes"):
+            db.pending_inboxes.append(inbox)
+        return inbox
+
+
+class _FailingRackReleaseRepository(_FakeRackReleaseRepository):
+    async def update(self, _db: Any, _id: int, data: dict[str, Any]) -> Any:
+        self.updated_payload = data
+        raise RuntimeError("mark release failed")
 
 
 def _release(**overrides: Any) -> Any:
@@ -290,3 +329,33 @@ async def test_candidate_service_batch_scan_counts_created_inbox() -> None:
         "skipped": 0,
         "errors": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_batch_scan_rolls_back_inbox_when_release_mark_fails() -> None:
+    db = _FakeDb()
+    release_repo = _FailingRackReleaseRepository(_release())
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository(_snapshots())
+    inbox_service = _FakeInboxService()
+    service = SmtFullBoxExchangeCandidateService(
+        rack_release_repo=release_repo,
+        rack_release_snapshot_repo=snapshot_repo,
+        inbox_service=inbox_service,
+    )
+
+    result = await service.scan_candidates(
+        db,
+        source_device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
+        limit=20,
+    )
+
+    assert result == {
+        "scanned": 1,
+        "inbox_created": 0,
+        "already_linked": 0,
+        "skipped": 0,
+        "errors": 1,
+    }
+    assert inbox_service.calls
+    assert db.rolled_back_savepoints == 1
+    assert db.committed_inboxes == []
