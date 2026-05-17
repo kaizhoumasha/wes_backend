@@ -536,7 +536,7 @@ class ResourceStateEventBase(BaseMixin):
     received_at: datetime = Field(description="WES 接收时间")
 
 
-class ResourceStateEvent(ResourceStateEventBase, EnterpriseMixin, DataTableMixin, table=True):
+class ResourceStateEvent(ResourceStateEventBase, DataTableMixin, table=True):
     """资源 append-only 事实账本。"""
 
     __tablename__: ClassVar[Literal["resource_state_events"]] = "resource_state_events"
@@ -732,7 +732,7 @@ class WmsWritebackEvidenceBase(BaseMixin):
     session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
 
 
-class WmsWritebackEvidence(WmsWritebackEvidenceBase, EnterpriseMixin, DataTableMixin, table=True):
+class WmsWritebackEvidence(WmsWritebackEvidenceBase, DataTableMixin, table=True):
     """WMS 回写与确认 append-only 证据。"""
 
     __tablename__: ClassVar[Literal["resource_wms_writeback_evidence"]] = "resource_wms_writeback_evidence"
@@ -811,7 +811,7 @@ class RackReleaseBinSnapshotBase(BaseMixin):
     content_snapshot_hash: str | None = Field(default=None, max_length=128, description="内容快照摘要")
 
 
-class RackReleaseBinSnapshot(RackReleaseBinSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+class RackReleaseBinSnapshot(RackReleaseBinSnapshotBase, DataTableMixin, table=True):
     """释放瞬间每个槽位的料箱快照。"""
 
     __tablename__: ClassVar[Literal["resource_rack_release_bin_snapshots"]] = "resource_rack_release_bin_snapshots"
@@ -844,7 +844,7 @@ class BinContentSnapshotBase(BaseMixin):
     wms_snapshot_version: str | None = Field(default=None, max_length=160, description="WMS 查询版本或时间")
 
 
-class BinContentSnapshot(BinContentSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+class BinContentSnapshot(BinContentSnapshotBase, DataTableMixin, table=True):
     """料箱内部过程内容快照头。"""
 
     __tablename__: ClassVar[Literal["resource_bin_content_snapshots"]] = "resource_bin_content_snapshots"
@@ -871,7 +871,7 @@ class BinContentSnapshotItemBase(BaseMixin):
     wms_inventory_id: str | None = Field(default=None, max_length=160, index=True, description="WMS 库存记录引用")
 
 
-class BinContentSnapshotItem(BinContentSnapshotItemBase, EnterpriseMixin, DataTableMixin, table=True):
+class BinContentSnapshotItem(BinContentSnapshotItemBase, DataTableMixin, table=True):
     """料箱内部过程内容快照明细。"""
 
     __tablename__: ClassVar[Literal["resource_bin_content_snapshot_items"]] = "resource_bin_content_snapshot_items"
@@ -1050,7 +1050,7 @@ class ResourceStateEventCreate(ModelFactory(ResourceStateEventBase).for_create()
     """资源事实创建 Schema。"""
 
 
-class ResourceStateEventUpdate(ModelFactory(ResourceStateEventBase).for_optimistic_update()):
+class ResourceStateEventUpdate(ModelFactory(ResourceStateEventBase).for_update()):
     """资源事实更新 Schema。"""
 
 
@@ -1058,7 +1058,6 @@ class ResourceStateEventResponse(ResourceStateEventBase):
     """资源事实响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackPlacementCreate(ModelFactory(RackPlacementBase).for_create()):
@@ -1110,7 +1109,7 @@ class WmsWritebackEvidenceCreate(ModelFactory(WmsWritebackEvidenceBase).for_crea
     """WMS 回写证据创建 Schema。"""
 
 
-class WmsWritebackEvidenceUpdate(ModelFactory(WmsWritebackEvidenceBase).for_optimistic_update()):
+class WmsWritebackEvidenceUpdate(ModelFactory(WmsWritebackEvidenceBase).for_update()):
     """WMS 回写证据更新 Schema。"""
 
 
@@ -1118,7 +1117,6 @@ class WmsWritebackEvidenceResponse(WmsWritebackEvidenceBase):
     """WMS 回写证据响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackReleaseCreate(ModelFactory(RackReleaseBase).for_create()):
@@ -1140,7 +1138,7 @@ class RackReleaseBinSnapshotCreate(ModelFactory(RackReleaseBinSnapshotBase).for_
     """释放槽位快照创建 Schema。"""
 
 
-class RackReleaseBinSnapshotUpdate(ModelFactory(RackReleaseBinSnapshotBase).for_optimistic_update()):
+class RackReleaseBinSnapshotUpdate(ModelFactory(RackReleaseBinSnapshotBase).for_update()):
     """释放槽位快照更新 Schema。"""
 
 
@@ -1148,14 +1146,13 @@ class RackReleaseBinSnapshotResponse(RackReleaseBinSnapshotBase):
     """释放槽位快照响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinContentSnapshotCreate(ModelFactory(BinContentSnapshotBase).for_create()):
     """料箱内容快照头创建 Schema。"""
 
 
-class BinContentSnapshotUpdate(ModelFactory(BinContentSnapshotBase).for_optimistic_update()):
+class BinContentSnapshotUpdate(ModelFactory(BinContentSnapshotBase).for_update()):
     """料箱内容快照头更新 Schema。"""
 
 
@@ -1163,14 +1160,13 @@ class BinContentSnapshotResponse(BinContentSnapshotBase):
     """料箱内容快照头响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinContentSnapshotItemCreate(ModelFactory(BinContentSnapshotItemBase).for_create()):
     """料箱内容快照明细创建 Schema。"""
 
 
-class BinContentSnapshotItemUpdate(ModelFactory(BinContentSnapshotItemBase).for_optimistic_update()):
+class BinContentSnapshotItemUpdate(ModelFactory(BinContentSnapshotItemBase).for_update()):
     """料箱内容快照明细更新 Schema。"""
 
 
@@ -1178,7 +1174,6 @@ class BinContentSnapshotItemResponse(BinContentSnapshotItemBase):
     """料箱内容快照明细响应 Schema。"""
 
     id: int
-    version: int
 
 
 class FullBoxExchangeTaskCreate(ModelFactory(FullBoxExchangeTaskBase).for_create()):

@@ -38,6 +38,7 @@ from src.celery_app.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
 )
 from src.core.logger import logger
+from src.database import db as db_module
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import (
@@ -191,6 +192,7 @@ _ENTRY_DEVICE_EVENT_TYPES = frozenset({"SCAN_COMPLETED"})
 _TERMINAL_SESSION_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 _BUSY_SESSION_STATUSES = frozenset({"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"})
 _TERMINAL_COMMAND_STATUSES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
+_WORKLINE_TASK_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 class _DeviceCommandGovernanceError(RuntimeError):
@@ -291,13 +293,42 @@ def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retri
     )
 
 
-def _run_async(coro: Awaitable[Any]) -> Any:
-    """在 Celery 同步任务中运行异步函数"""
+def _get_sync_event_loop() -> asyncio.AbstractEventLoop:
+    global _WORKLINE_TASK_LOOP
+
     try:
-        loop = asyncio.get_event_loop()
+        _ = asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        if _WORKLINE_TASK_LOOP is None or _WORKLINE_TASK_LOOP.is_closed():
+            _WORKLINE_TASK_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_WORKLINE_TASK_LOOP)
+        return _WORKLINE_TASK_LOOP
+
+    raise RuntimeError("当前事件循环正在运行，无法同步执行 Workline Celery 任务")
+
+
+def _lazy_init_db(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """在直接调用或 Worker 子进程未完成 signal 初始化时懒初始化数据库。"""
+    if db_module.AsyncSessionLocal is not None:
+        return
+
+    from src.database.db import init_db
+
+    init_loop = loop or _get_sync_event_loop()
+    init_loop.run_until_complete(init_db())
+    logger.info("✓ Workline Celery 任务懒初始化数据库连接成功")
+
+
+def _run_async(coro: Awaitable[Any]) -> Any:
+    """在 Celery 同步任务中运行异步函数。"""
+    try:
+        loop = _get_sync_event_loop()
+        _lazy_init_db(loop)
+    except Exception:
+        with suppress(Exception):
+            cast("Any", coro).close()
+        raise
+
     return loop.run_until_complete(coro)
 
 
@@ -2264,9 +2295,8 @@ class WorklineTask(Task):
     def db(self) -> Any:
         """懒加载数据库会话"""
         if self._db is None:
-            from src.database.db import AsyncSessionLocal as AsyncSessionLocalDynamic
-
-            session_local = AsyncSessionLocalDynamic
+            _lazy_init_db()
+            session_local = db_module.AsyncSessionLocal
             if session_local is None:
                 raise RuntimeError("数据库未初始化，请先调用 init_db()")
             self._db = session_local()

@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
 import pytest
 
 from src.celery_app import config
 from src.celery_app.tasks import workline as workline_tasks
 from src.celery_app.tasks.workline import _ensure_non_empty_retry_result, _map_command_task_type
+from src.database import db as db_module
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+
+class _FakeAsyncSession:
+    async def __aenter__(self) -> _FakeAsyncSession:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        _ = exc_type, exc, tb
+
+    async def close(self) -> None:
+        pass
 
 
 def test_ensure_non_empty_retry_result_allows_empty_first_attempt() -> None:
@@ -58,3 +80,32 @@ def test_smt_full_box_exchange_candidate_scan_task_is_registered() -> None:
         "task": "src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
         "schedule": 60.0,
     }
+
+
+def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = workline_tasks.process_inbox_batch
+    task.cleanup()
+    init_called = False
+
+    def fake_session_factory() -> _FakeAsyncSession:
+        return _FakeAsyncSession()
+
+    async def fake_init_db() -> None:
+        nonlocal init_called
+        init_called = True
+        cast("Any", db_module).AsyncSessionLocal = fake_session_factory
+
+    async def fake_process_batch(db: Any, *, limit: int) -> workline_tasks.ProcessResult:
+        assert isinstance(db, _FakeAsyncSession)
+        assert limit == 0
+        return {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
+
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
+    monkeypatch.setattr(db_module, "init_db", fake_init_db)
+    monkeypatch.setattr(workline_tasks.ProcessInboxMessages, "_process_batch", staticmethod(fake_process_batch))
+
+    try:
+        assert task(limit=0) == {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
+        assert init_called
+    finally:
+        task.cleanup()

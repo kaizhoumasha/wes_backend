@@ -1,6 +1,16 @@
 """WES 运行时资源底座测试。"""
 
+from typing import Any, cast
+
 from sqlmodel import SQLModel
+
+
+def _table_columns(model: type[Any]) -> set[str]:
+    return set(cast("Any", model).__table__.c.keys())
+
+
+def _schema_fields(schema: type[Any]) -> set[str]:
+    return set(cast("Any", schema).model_fields)
 
 
 def test_resource_ref_covers_wes_runtime_resource_types() -> None:
@@ -129,6 +139,60 @@ def test_fifth_stage_release_snapshot_and_exchange_tables_are_registered() -> No
     assert BinContentSnapshot.__table__.c.snapshot_hash.nullable is False
     assert BinContentSnapshotItem.__table__.c.snapshot_id.nullable is False
     assert FullBoxExchangeTask.__table__.c.exchange_request_code.nullable is False
+
+
+def test_append_only_resource_records_do_not_use_enterprise_state_mixins() -> None:
+    """记录、证据、快照类表模型不应携带人工审计、乐观锁或软删除字段。"""
+
+    from src.app.resource.models import (
+        BinContentSnapshot,
+        BinContentSnapshotItem,
+        RackReleaseBinSnapshot,
+        ResourceStateEvent,
+        WmsWritebackEvidence,
+    )
+
+    forbidden_columns = {"version", "created_by", "updated_by", "deleted_by", "deleted_at", "is_deleted"}
+
+    for model in (
+        ResourceStateEvent,
+        WmsWritebackEvidence,
+        RackReleaseBinSnapshot,
+        BinContentSnapshot,
+        BinContentSnapshotItem,
+    ):
+        assert forbidden_columns.isdisjoint(_table_columns(model)), model.__name__
+
+
+def test_append_only_resource_record_schemas_do_not_expose_optimistic_version() -> None:
+    """只读记录、证据、快照 Schema 不应暴露乐观锁 version。"""
+
+    from src.app.resource.models import (
+        BinContentSnapshotItemResponse,
+        BinContentSnapshotItemUpdate,
+        BinContentSnapshotResponse,
+        BinContentSnapshotUpdate,
+        RackReleaseBinSnapshotResponse,
+        RackReleaseBinSnapshotUpdate,
+        ResourceStateEventResponse,
+        ResourceStateEventUpdate,
+        WmsWritebackEvidenceResponse,
+        WmsWritebackEvidenceUpdate,
+    )
+
+    for schema in (
+        ResourceStateEventUpdate,
+        ResourceStateEventResponse,
+        WmsWritebackEvidenceUpdate,
+        WmsWritebackEvidenceResponse,
+        RackReleaseBinSnapshotUpdate,
+        RackReleaseBinSnapshotResponse,
+        BinContentSnapshotUpdate,
+        BinContentSnapshotResponse,
+        BinContentSnapshotItemUpdate,
+        BinContentSnapshotItemResponse,
+    ):
+        assert "version" not in _schema_fields(schema), schema.__name__
 
 
 def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
