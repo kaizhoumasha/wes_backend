@@ -806,7 +806,7 @@ def _clear_session_failure(session: Any) -> None:
     session.failure_message = None
 
 
-def _session_write_snapshot(session: Any) -> tuple[Any, Any, Any]:
+def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
     """提取写入前的最小 session 快照，用于锁内防止 stale write。"""
 
     return (
@@ -2574,7 +2574,7 @@ class ProcessInboxMessages:
                     _device: Any | None = entities["device"],
                     _command: Any | None = entities["command"],
                     _inbox_pk: int = inbox_pk,
-                    _session_snapshot: tuple[Any, Any, Any] = session_snapshot,
+                    _session_snapshot: tuple[Any, Any] = session_snapshot,
                 ) -> None:
                     nonlocal write_effects_applied, enqueue_outbox_dispatch
                     try:

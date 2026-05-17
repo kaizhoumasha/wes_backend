@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.resource.models import RackReleaseStatus
 from src.app.resource.repositories import rack_release_bin_snapshot_repository, rack_release_repository
@@ -120,7 +120,7 @@ class SmtFullBoxExchangeCandidateService:
         await self._mark_release_inbox_created(
             db,
             release=release,
-            inbox_id=created_inbox.id,
+            inbox_id=cast("int", created_inbox.id),
             auto_commit=auto_commit,
         )
         return SmtFullBoxExchangeCandidateResult(
@@ -153,36 +153,44 @@ class SmtFullBoxExchangeCandidateService:
                 result["errors"] += 1
                 continue
             try:
-                begin_nested = getattr(db, "begin_nested", None)
-                if callable(begin_nested):
-                    async with begin_nested():
-                        candidate_result = await self.create_inbox_for_release(
-                            db,
-                            rack_release_id=rack_release_id,
-                            source_device_code=source_device_code,
-                            auto_commit=False,
-                        )
-                else:
-                    candidate_result = await self.create_inbox_for_release(
-                        db,
-                        rack_release_id=rack_release_id,
-                        source_device_code=source_device_code,
-                        auto_commit=False,
-                    )
+                candidate_result = await self._create_candidate_inbox(
+                    db,
+                    rack_release_id=rack_release_id,
+                    source_device_code=source_device_code,
+                )
             except Exception:
                 result["errors"] += 1
                 continue
 
-            if candidate_result.status == SmtFullBoxExchangeCandidateStatus.INBOX_CREATED:
-                result["inbox_created"] += 1
-            elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.ALREADY_LINKED:
-                result["already_linked"] += 1
-            elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.SKIPPED:
-                result["skipped"] += 1
+            self._record_scan_result(result, candidate_result)
 
         if auto_commit:
             await db.commit()
         return result
+
+    async def _create_candidate_inbox(
+        self,
+        db: AsyncSession,
+        *,
+        rack_release_id: str,
+        source_device_code: str,
+    ) -> SmtFullBoxExchangeCandidateResult:
+        begin_nested = getattr(db, "begin_nested", None)
+        if callable(begin_nested):
+            async with cast("Any", begin_nested)():
+                return await self.create_inbox_for_release(
+                    db,
+                    rack_release_id=rack_release_id,
+                    source_device_code=source_device_code,
+                    auto_commit=False,
+                )
+
+        return await self.create_inbox_for_release(
+            db,
+            rack_release_id=rack_release_id,
+            source_device_code=source_device_code,
+            auto_commit=False,
+        )
 
     async def _mark_release_inbox_created(
         self,
@@ -203,6 +211,18 @@ class SmtFullBoxExchangeCandidateService:
         await self.rack_release_repo.update(db, release.id, update_payload)
         if auto_commit:
             await db.commit()
+
+    def _record_scan_result(
+        self,
+        result: SmtFullBoxExchangeCandidateScanResult,
+        candidate_result: SmtFullBoxExchangeCandidateResult,
+    ) -> None:
+        if candidate_result.status == SmtFullBoxExchangeCandidateStatus.INBOX_CREATED:
+            result["inbox_created"] += 1
+        elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.ALREADY_LINKED:
+            result["already_linked"] += 1
+        elif candidate_result.status == SmtFullBoxExchangeCandidateStatus.SKIPPED:
+            result["skipped"] += 1
 
     def _skipped(self, rack_release_id: str, reason_code: str, message: str) -> SmtFullBoxExchangeCandidateResult:
         return SmtFullBoxExchangeCandidateResult(

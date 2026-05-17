@@ -709,10 +709,13 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if command.id is None:
             raise ValueError(f"Command 缺少主键: {command_code}")
-        if device.id != command.device_id:
+        device_id = device.id
+        if device_id is None:
+            raise ValueError(f"设备缺少主键: {device_code}")
+        if device_id != command.device_id:
             raise ValueError(
                 f"Result 设备与 Command 不匹配: command_code={command_code}, "
-                f"expected_device_id={command.device_id}, actual_device_id={device.id}"
+                f"expected_device_id={command.device_id}, actual_device_id={device_id}"
             )
 
         session = await self._load_session_waiting_for_command(
@@ -747,7 +750,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         updated_device = await device_service.mark_command_finished(
             db,
-            device_id=device.id,
+            device_id=device_id,
             command_id=command.id,
             success=sandbox_success,
             error_code="SANDBOX_RESULT_FAILED" if not sandbox_success else None,
@@ -764,7 +767,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             and device_status == "IDLE"
             and getattr(updated_device, "current_command_id", None) is None
         ):
-            released_outboxes = await self.outbox_repo.release_blocked_by_device(db, device_id=device.id)
+            released_outboxes = await self.outbox_repo.release_blocked_by_device(db, device_id=device_id)
 
         inbox = await self.inbox_repo.create(
             db,
@@ -774,7 +777,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 "source_system": SourceSystem.MANUAL,
                 "source_message_id": f"sandbox:result:{uuid.uuid4().hex}",
                 "workline_id": workline_id,
-                "device_id": device.id,
+                "device_id": device_id,
                 "command_id": command.id,
                 "session_id": session.id,
                 "trace_id": command.trace_id,

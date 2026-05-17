@@ -19,6 +19,8 @@ _PROGRESS_STATUSES = {"ACCEPTED", "QUEUED", "IN_PROGRESS", "PHYSICAL_COMPLETED",
 _RESOURCE_REJECTION_STATUSES = {"REJECTED_EXCHANGE_AREA_FULL", "REJECTED_EMPTY_BIN_UNAVAILABLE"}
 _EXECUTION_FAILURE_STATUSES = {"FAILED_AGV", "FAILED_CTU"}
 _UNKNOWN_FAILURE_STATUSES = {"UNKNOWN"}
+_RESOURCE_UNAVAILABLE_STATUSES = {"REJECTED"} | _RESOURCE_REJECTION_STATUSES
+_EXECUTION_FAILED_STATUSES = {"FAILED"} | _EXECUTION_FAILURE_STATUSES
 _FAILURE_STATUSES = (
     {"REJECTED", "WMS_REJECTED", "FAILED", "CANCELLED", "RECONCILING"}
     | _RESOURCE_REJECTION_STATUSES
@@ -26,6 +28,7 @@ _FAILURE_STATUSES = (
     | _UNKNOWN_FAILURE_STATUSES
 )
 _WMS_CONFIRMATION_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
+_CONTEXT_UPDATE_STATUSES = _PROGRESS_STATUSES | {"WMS_CONFIRMED"}
 _POST_EXCHANGE_RELATION_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
 _ALLOWED_BIN_STATUSES = {
     "EMPTY_VERIFIED",
@@ -226,7 +229,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
 def _callback_intents(ctx: Any, *, context_patch: dict[str, Any], status: str) -> list[RuntimeIntent]:
     if status == "BUSINESS_COMPLETED":
         return [ctx.next.complete(context_patch)]
-    if status in _PROGRESS_STATUSES or status == "WMS_CONFIRMED":
+    if status in _CONTEXT_UPDATE_STATUSES:
         return [ctx.next.update_context(context_patch)]
     if status in _FAILURE_STATUSES:
         return [
@@ -419,12 +422,7 @@ def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -
     threshold = _float_value(policy.get("full_usage_threshold"), default=0.8)
     min_count = _int_value(policy.get("min_exchange_bin_count"), default=1)
     require_all = bool(policy.get("require_all_bins", False))
-    selected = [
-        snapshot
-        for snapshot in snapshots
-        if _non_empty_upper(snapshot.get("bin_execution_status")) in full_statuses
-        or _float_value(snapshot.get("usage_snapshot"), default=0.0) >= threshold
-    ]
+    selected = [snapshot for snapshot in snapshots if _is_exchange_bin(snapshot, full_statuses, threshold)]
     if require_all and len(selected) != len(snapshots):
         return []
     if len(selected) < min_count:
@@ -441,6 +439,12 @@ def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -
         }
         for snapshot in selected
     ]
+
+
+def _is_exchange_bin(snapshot: Mapping[str, Any], full_statuses: set[str], threshold: float) -> bool:
+    status = _non_empty_upper(snapshot.get("bin_execution_status"))
+    usage = _float_value(snapshot.get("usage_snapshot"), default=0.0)
+    return status in full_statuses or usage >= threshold
 
 
 def _target_code(config: Mapping[str, Any]) -> str | None:
@@ -507,7 +511,7 @@ def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], s
 def _failure_reason(status: str) -> str:
     if status == "WMS_REJECTED":
         return "EXCHANGE_WMS_REJECTED"
-    if status == "REJECTED" or status in _RESOURCE_REJECTION_STATUSES:
+    if status in _RESOURCE_UNAVAILABLE_STATUSES:
         return "EXCHANGE_RESOURCE_UNAVAILABLE"
     if status in _UNKNOWN_FAILURE_STATUSES:
         return "EXCHANGE_STATUS_UNKNOWN"
@@ -521,9 +525,9 @@ def _failure_reason(status: str) -> str:
 def _failure_suggested_action(status: str) -> str:
     if status == "WMS_REJECTED":
         return "人工核对 WMS 库存或单据确认结果"
-    if status == "REJECTED" or status in _RESOURCE_REJECTION_STATUSES:
+    if status in _RESOURCE_UNAVAILABLE_STATUSES:
         return "等待交换区或空箱资源恢复后重试"
-    if status in _EXECUTION_FAILURE_STATUSES or status == "FAILED":
+    if status in _EXECUTION_FAILED_STATUSES:
         return "联系 WMS/RCS 排查 AGV/CTU 执行失败"
     if status == "CANCELLED":
         return "人工确认现场实物状态后决定重试或取消"
@@ -545,7 +549,13 @@ def _non_empty_upper(value: Any) -> str | None:
 def _string_set(value: Any) -> set[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return set()
-    return {_non_empty_upper(item) for item in value if _non_empty_upper(item) is not None}
+
+    values: set[str] = set()
+    for item in value:
+        text = _non_empty_upper(item)
+        if text is not None:
+            values.add(text)
+    return values
 
 
 def _float_value(value: Any, *, default: float) -> float:

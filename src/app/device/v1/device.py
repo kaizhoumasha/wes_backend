@@ -49,7 +49,7 @@ def register_runtime_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> N
         payload: DeviceMaintenanceRequest = Body(...),
     ) -> ResponseSchemaModel[DeviceResponse]:
         updated = await device_service.enter_maintenance(db, device_id=id, reason=payload.reason)
-        response_resource = await device_service.get_by_id(db, cache, id, max_depth=1) or updated
+        response_resource = cast("Device", await device_service.get_by_id(db, cache, id, max_depth=1) or updated)
         return cast(
             "ResponseSchemaModel[DeviceResponse]",
             response_builder.success(data=device_service.to_response(response_resource, DeviceResponse)),
@@ -69,7 +69,7 @@ def register_runtime_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> N
     ) -> ResponseSchemaModel[DeviceResponse]:
         _ = payload
         updated = await device_service.exit_maintenance(db, device_id=id)
-        response_resource = await device_service.get_by_id(db, cache, id, max_depth=1) or updated
+        response_resource = cast("Device", await device_service.get_by_id(db, cache, id, max_depth=1) or updated)
         return cast(
             "ResponseSchemaModel[DeviceResponse]",
             response_builder.success(data=device_service.to_response(response_resource, DeviceResponse)),
@@ -89,7 +89,7 @@ def register_runtime_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> N
     ) -> ResponseSchemaModel[DeviceResponse]:
         _ = payload
         updated = await device_service.clear_fault(db, device_id=id)
-        response_resource = await device_service.get_by_id(db, cache, id, max_depth=1) or updated
+        response_resource = cast("Device", await device_service.get_by_id(db, cache, id, max_depth=1) or updated)
         return cast(
             "ResponseSchemaModel[DeviceResponse]",
             response_builder.success(data=device_service.to_response(response_resource, DeviceResponse)),

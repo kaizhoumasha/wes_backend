@@ -272,7 +272,7 @@ def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_typ
         return
 
     for field_name in _WMS_RCS_EXECUTION_REQUIRED_FIELDS:
-        _require_payload_value(payload, field_name)
+        _ = _require_payload_value(payload, field_name)
 
     source_system = str(payload["source_system"]).strip()
     if source_system not in {"WMS", "RCS"}:
@@ -282,13 +282,13 @@ def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_typ
         return
 
     for field_name in _FULL_BOX_EXCHANGE_REQUIRED_FIELDS:
-        _require_payload_value(payload, field_name)
+        _ = _require_payload_value(payload, field_name)
 
     exchange_status = str(_require_payload_value(payload, "exchange_status")).strip().upper()
     if exchange_status in _FULL_BOX_RELATION_REQUIRED_STATUSES:
-        _require_payload_value(payload, "post_exchange_relations")
+        _ = _require_payload_value(payload, "post_exchange_relations")
     if exchange_status in _FULL_BOX_CONFIRMATION_REQUIRED_STATUSES:
-        _require_payload_value(payload, "wms_confirmation")
+        _ = _require_payload_value(payload, "wms_confirmation")
 
 
 def _build_contract_fail(message: str) -> CallbackRejectedIngressResponse:

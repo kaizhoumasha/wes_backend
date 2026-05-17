@@ -136,7 +136,7 @@ async def parse_ip_info(request: Request) -> IpInfo:
         except RedisError as exc:
             # IP 属地缓存是辅助能力，Redis 池异常不能阻断主请求链路。
             logger.warning(f"读取 IP 属地缓存失败，已降级: {exc}")
-            await ensure_redis_connection()
+            _ = await ensure_redis_connection()
     user_agent = request.headers.get("User-Agent") or ""
     if settings.IP_LOCATION_PARSE == "online":
         location_info = await get_location_online(ip, user_agent)
@@ -157,7 +157,7 @@ async def parse_ip_info(request: Request) -> IpInfo:
                 )
             except RedisError as exc:
                 logger.warning(f"写入 IP 属地缓存失败，已降级: {exc}")
-                await ensure_redis_connection()
+                _ = await ensure_redis_connection()
     return IpInfo(ip=ip, country=country, region=region, city=city)
 
 

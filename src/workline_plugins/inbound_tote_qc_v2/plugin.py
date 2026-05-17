@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from src.workline_runtime.runtime_intent import Destination, RuntimeIntent
 
 
@@ -18,9 +20,9 @@ def handle_tote_arrived(payload: dict[str, object]) -> RuntimeIntent:
 
 def handle_weigh_result(payload: dict[str, object]) -> RuntimeIntent:
     tote_id = str(payload["tote_id"])
-    actual_weight_kg = float(payload["actual_weight_kg"])
-    expected_weight_kg = float(payload["expected_weight_kg"])
-    tolerance_kg = float(payload["tolerance_kg"])
+    actual_weight_kg = float(cast("Any", payload["actual_weight_kg"]))
+    expected_weight_kg = float(cast("Any", payload["expected_weight_kg"]))
+    tolerance_kg = float(cast("Any", payload["tolerance_kg"]))
     destination_lane = "PASS" if abs(actual_weight_kg - expected_weight_kg) <= tolerance_kg else "NG"
 
     return RuntimeIntent.command(

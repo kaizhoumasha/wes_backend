@@ -5,17 +5,26 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 from src.workline_runtime.runtime_intent import Destination, DestinationKind
 
 
 class DeviceLike(Protocol):
-    id: int
-    device_role: str
-    upstream_device_id: int | None
-    sort_order: int
-    role_index: int
+    @property
+    def id(self) -> int: ...
+
+    @property
+    def device_role(self) -> str: ...
+
+    @property
+    def upstream_device_id(self) -> int | None: ...
+
+    @property
+    def sort_order(self) -> int: ...
+
+    @property
+    def role_index(self) -> int: ...
 
 
 DeviceT = TypeVar("DeviceT", bound=DeviceLike)
@@ -40,7 +49,7 @@ def _device_sort_key(device: DeviceLike) -> tuple[int, int, int]:
     return (_int_attr(device, "sort_order"), _int_attr(device, "role_index"), _int_attr(device, "id"))
 
 
-def _describe_candidates(devices: list[DeviceLike]) -> str:
+def _describe_candidates(devices: Sequence[DeviceLike]) -> str:
     return ", ".join(f"{_optional_int_attr(device, 'id')}:{_str_attr(device, 'device_role')}" for device in devices)
 
 
@@ -48,7 +57,7 @@ def _resolve_single_candidate(
     *,
     destination: Destination,
     source_device: DeviceLike,
-    candidates: list[DeviceT],
+    candidates: Sequence[DeviceT],
 ) -> DeviceT:
     ordered_candidates = sorted(candidates, key=_device_sort_key)
     if len(ordered_candidates) == 1:
@@ -66,7 +75,7 @@ def resolve_destination_device(
     *,
     destination: Destination,
     source_device: DeviceT,
-    devices: list[DeviceT],
+    devices: Sequence[DeviceT],
     route_roles: Mapping[str, str] | None = None,
 ) -> DeviceT:
     """Resolve a concrete material destination device from runtime topology."""

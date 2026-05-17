@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.resource.models import (
     RackBinMountStatus,
@@ -75,7 +78,7 @@ class ResourceRelationService:
 
     async def record_rack_arrived(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         rack_code: str,
         location_code: str,
@@ -179,7 +182,7 @@ class ResourceRelationService:
 
     async def record_full_box_exchange_physical_completed(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         exchange_request_code: str,
         rack_release_id: str,
@@ -309,7 +312,7 @@ class ResourceRelationService:
         for mount in bin_mounts:
             if await self._same_active_bin_mount_exists(db, mount):
                 continue
-            await self.rack_bin_mount_repo.create(
+            _ = await self.rack_bin_mount_repo.create(
                 db,
                 {
                     "rack_code": mount["rack_code"],
@@ -330,7 +333,7 @@ class ResourceRelationService:
 
     async def record_empty_rack_verified(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         rack_code: str,
         bin_mounts: Sequence[Mapping[str, Any]],
@@ -414,7 +417,7 @@ class ResourceRelationService:
         for mount in normalized_mounts:
             if await self._same_active_bin_mount_exists(db, mount):
                 continue
-            await self.rack_bin_mount_repo.create(
+            _ = await self.rack_bin_mount_repo.create(
                 db,
                 {
                     "rack_code": mount["rack_code"],
@@ -435,7 +438,7 @@ class ResourceRelationService:
 
     async def _first_bin_mount_conflict(
         self,
-        db: object,
+        db: AsyncSession,
         bin_mounts: Sequence[dict[str, str]],
     ) -> dict[str, Any] | None:
         """检查交换后关系是否会覆盖已有 active 料箱挂载投影。"""
@@ -476,7 +479,7 @@ class ResourceRelationService:
                 }
         return None
 
-    async def _same_active_bin_mount_exists(self, db: object, mount: dict[str, str]) -> bool:
+    async def _same_active_bin_mount_exists(self, db: AsyncSession, mount: dict[str, str]) -> bool:
         """同一 active 关系已存在时保持幂等，不重复创建投影。"""
 
         active_slot = await self.rack_bin_mount_repo.get_active_by_rack_slot(
@@ -488,7 +491,7 @@ class ResourceRelationService:
 
     async def _create_post_exchange_relations_missing_hold(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         exchange_request_code: str,
         rack_release_id: str,
@@ -532,7 +535,7 @@ class ResourceRelationService:
 
     async def _create_bin_mount_conflict_hold(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         operation: str,
         conflict: Mapping[str, Any],
@@ -588,7 +591,7 @@ class ResourceRelationService:
 
     async def _create_rack_placement_conflict_hold(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         rack_code: str,
         incoming_location_code: str,

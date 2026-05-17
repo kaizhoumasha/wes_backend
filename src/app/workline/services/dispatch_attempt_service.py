@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import uuid
 from inspect import isawaitable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.dispatch_attempt import (
     DispatchAttemptStatus,
@@ -50,16 +53,20 @@ async def _finalize_attempt(
     return attempt
 
 
-async def _next_attempt_no(db: Any, *, repository: Any, outbox_id: int, outbox: Any) -> int:
+async def _next_attempt_no(
+    db: AsyncSession,
+    *,
+    repository: WorklineDispatchAttemptRepository,
+    outbox_id: int,
+    outbox: Any,
+) -> int:
     outbox_attempt_count = int(getattr(outbox, "attempt_count", 0) or 0)
     history_max_attempt_no = 0
-    get_by_outbox_id = getattr(repository, "get_by_outbox_id", None)
-    if callable(get_by_outbox_id):
-        attempts = await get_by_outbox_id(db, outbox_id)
-        history_max_attempt_no = max(
-            (int(getattr(attempt, "attempt_no", 0) or 0) for attempt in attempts),
-            default=0,
-        )
+    attempts = await repository.get_by_outbox_id(db, outbox_id)
+    history_max_attempt_no = max(
+        (int(getattr(attempt, "attempt_no", 0) or 0) for attempt in attempts),
+        default=0,
+    )
 
     return max(outbox_attempt_count, history_max_attempt_no) + 1
 

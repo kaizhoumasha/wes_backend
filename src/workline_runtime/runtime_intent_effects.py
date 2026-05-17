@@ -434,7 +434,7 @@ class RuntimeIntentEffectApplier:
 
         trace = ctx.get("trace") if isinstance(ctx, dict) else None
         trace_id = getattr(trace, "trace_id", None) or ctx.get("trace_id")
-        await service.record_requested_from_external_request(
+        _ = await service.record_requested_from_external_request(
             db=ctx["db"],
             session=ctx["session"],
             outbox=outbox,
@@ -484,7 +484,7 @@ class RuntimeIntentEffectApplier:
         from src.celery_app.tasks import workline as workline_effects
 
         ctx["orch_result"].failure = SimpleNamespace(domain=exc.domain, code=exc.code, message=exc.message)
-        await workline_effects._apply_failure_transition(ctx)
+        _ = await workline_effects._apply_failure_transition(ctx)
 
     async def _apply_destination_failure(self, ctx: Any, exc: ValueError) -> None:
         await self._apply_block(

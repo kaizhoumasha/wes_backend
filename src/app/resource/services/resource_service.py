@@ -292,7 +292,7 @@ class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
         )
 
         for snapshot in normalized_snapshots:
-            await self.snapshot_repo.create(
+            _ = await self.snapshot_repo.create(
                 db,
                 {
                     "rack_release_id": rack_release_id,
@@ -388,9 +388,7 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         if existing is not None:
             return existing
 
-        flush = getattr(db, "flush", None)
-        if callable(flush):
-            await flush()
+        await db.flush()
 
         data = {
             "exchange_request_code": exchange_request_code,

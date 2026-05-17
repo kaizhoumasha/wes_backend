@@ -1,3 +1,4 @@
+# pyright: reportIncompatibleVariableOverride=false
 """WES 运行时资源底座模型。"""
 
 from __future__ import annotations
