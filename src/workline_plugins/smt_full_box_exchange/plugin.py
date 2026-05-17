@@ -298,14 +298,18 @@ def _validate_release_data(data: Mapping[str, Any]) -> str | None:
 
 def _validate_snapshot_items(snapshots: Sequence[Any]) -> str | None:
     slot_codes: list[str] = []
+    bin_ids: list[str] = []
     for index, snapshot in enumerate(snapshots, start=1):
         item_error = _validate_snapshot_item(index, snapshot)
         if item_error is not None:
             return item_error
         slot_codes.append(_optional_text(snapshot.get("slot_code")) or "")
+        bin_ids.append(_snapshot_bin_id(snapshot) or "")
 
     if len(set(slot_codes)) != len(slot_codes):
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照存在重复槽位"
+    if len(set(bin_ids)) != len(bin_ids):
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照存在重复料箱"
     return None
 
 
@@ -480,6 +484,8 @@ def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], s
     for key in ("queue_position", "eta_seconds", "wms_rcs_task_id", "exchange_request_code", "dispatch_key"):
         if key in payload:
             updated[key] = payload[key]
+    if isinstance(payload.get("post_exchange_relations"), Mapping):
+        updated["post_exchange_relations"] = dict(payload["post_exchange_relations"])
     if isinstance(payload.get("wms_confirmation"), Mapping):
         updated["wms_confirmation"] = dict(payload["wms_confirmation"])
     return updated

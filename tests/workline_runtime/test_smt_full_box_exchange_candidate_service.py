@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from src.app.resource.models import BinStatus, RackReleaseStatus
+from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.smt_full_box_exchange_candidate_service import (
     SmtFullBoxExchangeCandidateService,
     SmtFullBoxExchangeCandidateStatus,
@@ -47,11 +48,17 @@ class _FakeRackReleaseBinSnapshotRepository:
 
 
 class _FakeInboxService:
-    def __init__(self) -> None:
+    def __init__(self, duplicate_inbox: Any | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.duplicate_inbox = duplicate_inbox
 
     async def create_device_event_inbox(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        if self.duplicate_inbox is not None:
+            raise DuplicateInboxError(
+                "设备事件已存在（幂等键重复）",
+                existing_inbox=self.duplicate_inbox,
+            )
         return SimpleNamespace(id=701, payload_json={"data": kwargs["data"]}, event_id=kwargs["event_id"])
 
 
@@ -182,6 +189,81 @@ async def test_candidate_service_skips_incomplete_four_bin_snapshot() -> None:
     assert result.reason_code == "RACK_RELEASE_SNAPSHOT_INCOMPLETE"
     assert inbox_service.calls == []
     assert release_repo.updated_payload is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_skips_duplicate_bin_snapshot() -> None:
+    snapshots = _snapshots()
+    snapshots[1].bin_code = "BIN-001"
+    release_repo = _FakeRackReleaseRepository(_release())
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository(snapshots)
+    inbox_service = _FakeInboxService()
+    service = SmtFullBoxExchangeCandidateService(
+        rack_release_repo=release_repo,
+        rack_release_snapshot_repo=snapshot_repo,
+        inbox_service=inbox_service,
+    )
+
+    result = await service.create_inbox_for_release(
+        _FakeDb(),
+        rack_release_id="release-001",
+        source_device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
+    )
+
+    assert result.status == SmtFullBoxExchangeCandidateStatus.SKIPPED
+    assert result.reason_code == "RACK_RELEASE_BIN_DUPLICATED"
+    assert inbox_service.calls == []
+    assert release_repo.updated_payload is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_returns_already_linked_when_release_has_inbox() -> None:
+    release_repo = _FakeRackReleaseRepository(_release(inbox_id=701))
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository(_snapshots())
+    inbox_service = _FakeInboxService()
+    service = SmtFullBoxExchangeCandidateService(
+        rack_release_repo=release_repo,
+        rack_release_snapshot_repo=snapshot_repo,
+        inbox_service=inbox_service,
+    )
+
+    result = await service.create_inbox_for_release(
+        _FakeDb(),
+        rack_release_id="release-001",
+        source_device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
+    )
+
+    assert result.status == SmtFullBoxExchangeCandidateStatus.ALREADY_LINKED
+    assert result.reason_code == "RACK_RELEASE_ALREADY_HAS_INBOX"
+    assert inbox_service.calls == []
+    assert release_repo.updated_payload is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_service_returns_existing_inbox_after_duplicate_inbox_race() -> None:
+    existing_inbox = SimpleNamespace(id=702, payload_json={}, event_id="smt-full-box-exchange:release-001")
+    release_repo = _FakeRackReleaseRepository(_release())
+    snapshot_repo = _FakeRackReleaseBinSnapshotRepository(_snapshots())
+    inbox_service = _FakeInboxService(duplicate_inbox=existing_inbox)
+    service = SmtFullBoxExchangeCandidateService(
+        rack_release_repo=release_repo,
+        rack_release_snapshot_repo=snapshot_repo,
+        inbox_service=inbox_service,
+    )
+
+    result = await service.create_inbox_for_release(
+        _FakeDb(),
+        rack_release_id="release-001",
+        source_device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
+    )
+
+    assert result.status == SmtFullBoxExchangeCandidateStatus.INBOX_CREATED
+    assert result.inbox is existing_inbox
+    assert release_repo.updated_payload == {
+        "inbox_id": 702,
+        "release_status": RackReleaseStatus.INBOX_CREATED.value,
+        "version": 0,
+    }
 
 
 @pytest.mark.asyncio

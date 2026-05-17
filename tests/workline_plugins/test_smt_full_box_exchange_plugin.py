@@ -191,6 +191,18 @@ async def test_release_event_blocks_duplicate_slot_in_spec_bins_contract() -> No
     assert "重复槽位" in result[0].message
 
 
+@pytest.mark.asyncio
+async def test_release_event_blocks_duplicate_bin_in_spec_bins_contract() -> None:
+    payload = _spec_release_payload(usage=0.91, status="IN_USE")
+    payload["data"]["bins"][1]["bin_id"] = "BIN-001"
+
+    result = await SmtFullBoxExchangePlugin().on_device_event(_ctx(), _inbox(payload))
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "PAYLOAD_INVALID"
+    assert "重复料箱" in result[0].message
+
+
 @pytest.mark.parametrize(
     ("bin_patch", "expected_message"),
     [
@@ -314,6 +326,38 @@ async def test_external_projection_callback_blocks_without_post_exchange_relatio
     assert result[0].suggested_action == "要求 WMS/RCS 补传 post_exchange_relations 后重放回调"
 
 
+@pytest.mark.parametrize("exchange_status", ["PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"])
+@pytest.mark.asyncio
+async def test_external_projection_callback_records_post_exchange_relations(exchange_status: str) -> None:
+    post_exchange_relations = {
+        "bin_mounts": [
+            {
+                "rack_id": "RACK-SL-001",
+                "slot_code": "S1",
+                "bin_id": "BIN-101",
+            }
+        ]
+    }
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(
+            {
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
+                "dispatch_key": "dispatch-001",
+                "exchange_status": exchange_status,
+                "post_exchange_relations": post_exchange_relations,
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert result[0].context_patch["full_box_exchange"]["exchange_status"] == exchange_status
+    assert result[0].context_patch["full_box_exchange"]["post_exchange_relations"] == post_exchange_relations
+
+
 @pytest.mark.asyncio
 async def test_wms_confirmed_callback_blocks_without_confirmation_with_suggested_action() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(
@@ -332,6 +376,32 @@ async def test_wms_confirmed_callback_blocks_without_confirmation_with_suggested
     assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
     assert result[0].reason_code == "EXCHANGE_WMS_CONFIRMATION_INVALID"
     assert result[0].suggested_action == "要求 WMS 补传 wms_confirmation 后重放回调"
+
+
+@pytest.mark.asyncio
+async def test_wms_confirmed_callback_records_confirmation_without_completion() -> None:
+    wms_confirmation = {
+        "wms_document_id": "WMS-DOC-001",
+        "inventory_version": "INV-V2",
+    }
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(
+            {
+                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
+                "dispatch_key": "dispatch-001",
+                "exchange_status": "WMS_CONFIRMED",
+                "wms_confirmation": wms_confirmation,
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert result[0].context_patch["full_box_exchange"]["exchange_status"] == "WMS_CONFIRMED"
+    assert result[0].context_patch["full_box_exchange"]["wms_confirmation"] == wms_confirmation
 
 
 @pytest.mark.asyncio

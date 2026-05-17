@@ -254,6 +254,8 @@ def _validate_release_snapshots(snapshots: list[Any], *, expected_bin_count: int
     bin_codes = [_optional_text(getattr(snapshot, "bin_code", None)) for snapshot in snapshots]
     if any(bin_code is None for bin_code in bin_codes):
         return "RACK_RELEASE_BIN_MISSING", "单层货架释放快照缺少料箱编码"
+    if len(set(bin_codes)) != len(bin_codes):
+        return "RACK_RELEASE_BIN_DUPLICATED", "单层货架释放快照存在重复料箱"
     return None
 
 
