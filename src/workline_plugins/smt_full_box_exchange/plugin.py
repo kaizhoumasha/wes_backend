@@ -339,7 +339,9 @@ def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], s
 
 
 def _failure_reason(status: str) -> str:
-    if status in {"REJECTED", "WMS_REJECTED"} or status in _RESOURCE_REJECTION_STATUSES:
+    if status == "WMS_REJECTED":
+        return "EXCHANGE_WMS_REJECTED"
+    if status == "REJECTED" or status in _RESOURCE_REJECTION_STATUSES:
         return "EXCHANGE_RESOURCE_UNAVAILABLE"
     if status in _UNKNOWN_FAILURE_STATUSES:
         return "EXCHANGE_STATUS_UNKNOWN"

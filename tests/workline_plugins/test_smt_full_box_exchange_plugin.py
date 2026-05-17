@@ -176,6 +176,7 @@ async def test_business_completed_callback_completes_session() -> None:
 @pytest.mark.parametrize(
     ("exchange_status", "expected_reason_code"),
     [
+        ("WMS_REJECTED", "EXCHANGE_WMS_REJECTED"),
         ("REJECTED_EXCHANGE_AREA_FULL", "EXCHANGE_RESOURCE_UNAVAILABLE"),
         ("REJECTED_EMPTY_BIN_UNAVAILABLE", "EXCHANGE_RESOURCE_UNAVAILABLE"),
         ("FAILED_AGV", "EXCHANGE_EXECUTION_FAILED"),
