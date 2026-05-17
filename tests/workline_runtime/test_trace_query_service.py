@@ -63,6 +63,59 @@ def test_failed_command_evidence_uses_trace_response_builder_projection() -> Non
     assert evidence.result_data == {"observed": True}
 
 
+def test_build_trace_response_includes_resource_evidence() -> None:
+    """Trace 响应应暴露资源事实、交换任务、WMS 证据和当前投影证据链。"""
+
+    from src.app.workline.services.trace_response_builder import build_trace_response
+    from src.workline_runtime.trace_context import TraceContext
+
+    result = SimpleNamespace(
+        trace=TraceContext.from_request(trace_id="trace-resource-001"),
+        callback_logs=[],
+        inboxes=[],
+        session=None,
+        sessions=[],
+        commands=[],
+        outboxes=[],
+        dispatch_attempts=[],
+        timelines=[],
+        diagnostics=[],
+        resource_state_events=[
+            SimpleNamespace(
+                id=1,
+                event_type="EXCHANGE_STATUS_UPDATED",
+                resource_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+            )
+        ],
+        rack_releases=[SimpleNamespace(rack_release_id="release-001")],
+        rack_release_bin_snapshots=[SimpleNamespace(slot_code="A01", bin_code="BIN-001")],
+        full_box_exchange_tasks=[SimpleNamespace(exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE")],
+        wms_writeback_evidence=[SimpleNamespace(evidence_code="wms-confirmed-001")],
+        rack_bin_mounts=[SimpleNamespace(rack_code="RACK-001", rack_slot_code="A01", bin_code="BIN-001")],
+        runtime_holds=[
+            SimpleNamespace(
+                id=9001,
+                source_reason="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+                evidence_snapshot_json={"exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE"},
+            )
+        ],
+    )
+
+    response = build_trace_response(result)
+
+    assert response.resource_evidence.resource_state_events[0]["event_type"] == "EXCHANGE_STATUS_UPDATED"
+    assert response.resource_evidence.full_box_exchange_tasks[0]["exchange_request_code"] == (
+        "external:smt:release-001:FULL_BIN_EXCHANGE"
+    )
+    assert response.resource_evidence.rack_releases[0]["rack_release_id"] == "release-001"
+    assert response.resource_evidence.rack_release_bin_snapshots[0]["slot_code"] == "A01"
+    assert response.resource_evidence.wms_writeback_evidence[0]["evidence_code"] == "wms-confirmed-001"
+    assert response.resource_evidence.rack_bin_mounts[0]["bin_code"] == "BIN-001"
+    assert response.resource_evidence.runtime_holds[0]["source_reason"] == (
+        "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+    )
+
+
 @pytest.fixture
 def callback_log_2() -> SimpleNamespace:
     return SimpleNamespace(
@@ -118,6 +171,85 @@ def outbox_obj() -> SimpleNamespace:
         target_code="ARM-01",
         status="SENT",
         created_at=1,
+    )
+
+
+@pytest.fixture
+def full_box_exchange_task_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=88,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        session_id=11,
+        outbox_id=44,
+        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+        trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def resource_state_event_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=89,
+        event_type="EXCHANGE_STATUS_UPDATED",
+        resource_type="EXCHANGE_TASK",
+        resource_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        source_event_id="wms-event-001",
+        trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def rack_release_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=90,
+        rack_release_id="release-001",
+        single_layer_rack_code="RACK-001",
+        trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def rack_release_snapshot_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=91,
+        rack_release_id="release-001",
+        slot_code="A01",
+        bin_code="BIN-001",
+    )
+
+
+@pytest.fixture
+def wms_evidence_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=92,
+        evidence_code="wms-confirmed-001",
+        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+        trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def rack_bin_mount_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=93,
+        rack_code="RACK-001",
+        rack_slot_code="A01",
+        bin_code="BIN-001",
+        source_event_id="wms-event-001",
+        trace_id="trace-1",
+    )
+
+
+@pytest.fixture
+def runtime_hold_obj() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=9001,
+        trace_id="trace-1",
+        source_kind="RESOURCE_RECONCILIATION",
+        source_reason="POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+        source_idempotency_key="resource-reconciliation:POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS:wms-event-001",
+        evidence_snapshot_json={"exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE"},
     )
 
 
@@ -342,6 +474,58 @@ async def test_by_dispatch_key_uses_outbox_anchor(
     assert result.outboxes and result.outboxes[0].dispatch_key == "dispatch-1"
     assert any(d.extra.get("source") == "outbox" for d in result.diagnostics)
     assert db.execute.await_count == 6
+
+
+@pytest.mark.asyncio
+async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence(
+    callback_log_1: SimpleNamespace,
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+    full_box_exchange_task_obj: SimpleNamespace,
+    resource_state_event_obj: SimpleNamespace,
+    rack_release_obj: SimpleNamespace,
+    rack_release_snapshot_obj: SimpleNamespace,
+    wms_evidence_obj: SimpleNamespace,
+    rack_bin_mount_obj: SimpleNamespace,
+    runtime_hold_obj: SimpleNamespace,
+) -> None:
+    """从 exchange_request_code 能追到运行时链路和资源证据链。"""
+
+    exchange_request_code = "external:smt:release-001:FULL_BIN_EXCHANGE"
+    outbox_obj.dispatch_key = exchange_request_code
+    cast("Any", service.callback_log_repo).get_by_trace_id = AsyncMock(return_value=[callback_log_1])
+    db = _db_with_execute_results(
+        _ResultStub(scalar=full_box_exchange_task_obj),
+        _ResultStub(scalar=outbox_obj),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+        _ResultStub(rows=[resource_state_event_obj]),
+        _ResultStub(rows=[wms_evidence_obj]),
+        _ResultStub(rows=[rack_release_obj]),
+        _ResultStub(rows=[rack_release_snapshot_obj]),
+        _ResultStub(rows=[rack_bin_mount_obj]),
+        _ResultStub(rows=[runtime_hold_obj]),
+    )
+
+    result = await service.by_exchange_request_code(db, exchange_request_code)
+
+    assert result.trace.dispatch_key == exchange_request_code
+    assert result.trace.session_id == 11
+    assert result.outboxes and result.outboxes[0].dispatch_key == exchange_request_code
+    assert result.full_box_exchange_tasks == [full_box_exchange_task_obj]
+    assert result.resource_state_events == [resource_state_event_obj]
+    assert result.wms_writeback_evidence == [wms_evidence_obj]
+    assert result.rack_releases == [rack_release_obj]
+    assert result.rack_release_bin_snapshots == [rack_release_snapshot_obj]
+    assert result.rack_bin_mounts == [rack_bin_mount_obj]
+    assert result.runtime_holds == [runtime_hold_obj]
+    assert db.execute.await_count == 13
 
 
 @pytest.mark.asyncio

@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from src.app.callback.repositories.callback_log_repository import (
     CallbackLogRepository,
@@ -29,10 +29,19 @@ from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
 )
+from src.app.resource.models import (
+    FullBoxExchangeTask,
+    RackBinMount,
+    RackRelease,
+    RackReleaseBinSnapshot,
+    ResourceStateEvent,
+    WmsWritebackEvidence,
+)
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
+from src.app.workline.models.runtime_hold import RuntimeHold
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.repositories import inbox_repository
 from src.app.workline.repositories.diagnostic_repository import workline_diagnostic_repository
@@ -72,6 +81,13 @@ _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "INBOX_RETRY_EXHAUSTED": ErrorCode.INBOX_RETRY_EXHAUSTED,
 }
 
+_RESOURCE_RECONCILIATION_REASON_CODES: tuple[str, ...] = (
+    "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS",
+    "RACK_BIN_SLOT_CONFLICT",
+    "BIN_ACTIVE_MOUNT_CONFLICT",
+    "RACK_PLACEMENT_CONFLICT",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TraceQueryResult:
@@ -87,6 +103,13 @@ class TraceQueryResult:
     dispatch_attempts: list[WorklineDispatchAttempt] = field(default_factory=list)
     timelines: list[WorklineTimeline] = field(default_factory=list)
     diagnostics: list[DiagnosticContext] = field(default_factory=list)
+    resource_state_events: list[ResourceStateEvent] = field(default_factory=list)
+    rack_releases: list[RackRelease] = field(default_factory=list)
+    rack_release_bin_snapshots: list[RackReleaseBinSnapshot] = field(default_factory=list)
+    full_box_exchange_tasks: list[FullBoxExchangeTask] = field(default_factory=list)
+    wms_writeback_evidence: list[WmsWritebackEvidence] = field(default_factory=list)
+    rack_bin_mounts: list[RackBinMount] = field(default_factory=list)
+    runtime_holds: list[RuntimeHold] = field(default_factory=list)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -177,6 +200,50 @@ class TraceQueryService(BaseService[Any, Any]):
 
     async def by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> TraceQueryResult:
         return await self.query(db, dispatch_key=dispatch_key)
+
+    async def by_exchange_request_code(self, db: AsyncSession, exchange_request_code: str) -> TraceQueryResult:
+        task = await self._get_full_box_exchange_task_by_request_code(db, exchange_request_code)
+        dispatch_key = _safe_str(getattr(task, "dispatch_key", None)) or exchange_request_code
+        result = await self.query(db, dispatch_key=dispatch_key)
+        trace_id = result.trace.trace_id or _safe_str(getattr(task, "trace_id", None))
+
+        resource_state_events = await self._load_resource_state_events_for_exchange(
+            db,
+            exchange_request_code=exchange_request_code,
+            trace_id=trace_id,
+        )
+        wms_writeback_evidence = await self._load_wms_writeback_evidence_for_exchange(
+            db,
+            exchange_request_code=exchange_request_code,
+            trace_id=trace_id,
+        )
+        rack_release_id = _safe_str(getattr(task, "rack_release_id", None))
+        rack_releases = await self._load_rack_releases_for_exchange(db, rack_release_id=rack_release_id)
+        rack_release_bin_snapshots = await self._load_rack_release_bin_snapshots(
+            db,
+            rack_release_id=rack_release_id,
+        )
+        rack_bin_mounts = await self._load_rack_bin_mounts_for_resource_events(
+            db,
+            resource_state_events=resource_state_events,
+            trace_id=trace_id,
+        )
+        runtime_holds = await self._load_runtime_holds_for_resource_events(
+            db,
+            resource_state_events=resource_state_events,
+            trace_id=trace_id,
+        )
+
+        return replace(
+            result,
+            resource_state_events=resource_state_events,
+            rack_releases=rack_releases,
+            rack_release_bin_snapshots=rack_release_bin_snapshots,
+            full_box_exchange_tasks=[task] if task is not None else [],
+            wms_writeback_evidence=wms_writeback_evidence,
+            rack_bin_mounts=rack_bin_mounts,
+            runtime_holds=runtime_holds,
+        )
 
     async def query(
         self,
@@ -324,6 +391,130 @@ class TraceQueryService(BaseService[Any, Any]):
         columns = cast("Any", WorklineOutbox).__table__.c
         result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
+
+    async def _get_full_box_exchange_task_by_request_code(
+        self,
+        db: AsyncSession,
+        exchange_request_code: str,
+    ) -> FullBoxExchangeTask | None:
+        columns = cast("Any", FullBoxExchangeTask).__table__.c
+        result = await db.execute(
+            select(FullBoxExchangeTask).where(columns.exchange_request_code == exchange_request_code)
+        )
+        return result.scalar_one_or_none()
+
+    async def _load_resource_state_events_for_exchange(
+        self,
+        db: AsyncSession,
+        *,
+        exchange_request_code: str,
+        trace_id: str | None,
+    ) -> list[ResourceStateEvent]:
+        columns = cast("Any", ResourceStateEvent).__table__.c
+        predicates = [columns.resource_code == exchange_request_code]
+        if trace_id:
+            predicates.append(columns.trace_id == trace_id)
+        result = await db.execute(
+            select(ResourceStateEvent).where(or_(*predicates)).order_by(columns.occurred_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _load_wms_writeback_evidence_for_exchange(
+        self,
+        db: AsyncSession,
+        *,
+        exchange_request_code: str,
+        trace_id: str | None,
+    ) -> list[WmsWritebackEvidence]:
+        columns = cast("Any", WmsWritebackEvidence).__table__.c
+        predicates = [columns.dispatch_key == exchange_request_code]
+        if trace_id:
+            predicates.append(columns.trace_id == trace_id)
+        result = await db.execute(
+            select(WmsWritebackEvidence).where(or_(*predicates)).order_by(columns.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _load_rack_releases_for_exchange(
+        self,
+        db: AsyncSession,
+        *,
+        rack_release_id: str | None,
+    ) -> list[RackRelease]:
+        if rack_release_id is None:
+            return []
+        columns = cast("Any", RackRelease).__table__.c
+        result = await db.execute(select(RackRelease).where(columns.rack_release_id == rack_release_id))
+        return list(result.scalars().all())
+
+    async def _load_rack_release_bin_snapshots(
+        self,
+        db: AsyncSession,
+        *,
+        rack_release_id: str | None,
+    ) -> list[RackReleaseBinSnapshot]:
+        if rack_release_id is None:
+            return []
+        columns = cast("Any", RackReleaseBinSnapshot).__table__.c
+        result = await db.execute(
+            select(RackReleaseBinSnapshot)
+            .where(columns.rack_release_id == rack_release_id)
+            .order_by(columns.slot_code.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _load_rack_bin_mounts_for_resource_events(
+        self,
+        db: AsyncSession,
+        *,
+        resource_state_events: list[ResourceStateEvent],
+        trace_id: str | None,
+    ) -> list[RackBinMount]:
+        columns = cast("Any", RackBinMount).__table__.c
+        source_event_ids = [
+            source_event_id
+            for event in resource_state_events
+            if (source_event_id := _safe_str(getattr(event, "source_event_id", None))) is not None
+        ]
+        predicates = []
+        if source_event_ids:
+            predicates.append(columns.source_event_id.in_(source_event_ids))
+        if trace_id:
+            predicates.append(columns.trace_id == trace_id)
+        if not predicates:
+            return []
+        result = await db.execute(
+            select(RackBinMount).where(or_(*predicates)).order_by(columns.rack_code.asc(), columns.rack_slot_code.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _load_runtime_holds_for_resource_events(
+        self,
+        db: AsyncSession,
+        *,
+        resource_state_events: list[ResourceStateEvent],
+        trace_id: str | None,
+    ) -> list[RuntimeHold]:
+        columns = cast("Any", RuntimeHold).__table__.c
+        source_event_ids = [
+            source_event_id
+            for event in resource_state_events
+            if (source_event_id := _safe_str(getattr(event, "source_event_id", None))) is not None
+        ]
+        idempotency_keys = [
+            f"resource-reconciliation:{reason_code}:{source_event_id}"
+            for source_event_id in source_event_ids
+            for reason_code in _RESOURCE_RECONCILIATION_REASON_CODES
+        ]
+        predicates = []
+        if idempotency_keys:
+            predicates.append(columns.source_idempotency_key.in_(idempotency_keys))
+        if trace_id:
+            predicates.append((columns.trace_id == trace_id) & (columns.source_kind == "RESOURCE_RECONCILIATION"))
+        if not predicates:
+            return []
+        result = await db.execute(select(RuntimeHold).where(or_(*predicates)).order_by(columns.created_at.asc()))
+        return list(result.scalars().all())
 
     async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineInbox]:
         columns = cast("Any", WorklineInbox).__table__.c

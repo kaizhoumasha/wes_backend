@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import ValidationError
 
-from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
-from src.app.workline.domain.services import (
+from src.app.resource.services import (
     SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     smt_rack_bin_scheduling_service,
 )
+from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
 from src.workline_runtime.contracts import DeviceErrorCode
 from src.workline_runtime.plugin_base import (
@@ -53,6 +53,17 @@ from .normalizers import parse_measurement_result_data, parse_pick_place_result_
 
 if TYPE_CHECKING:
     from src.workline_runtime.plugin_context import PluginContext
+
+_WMS_RCS_CALLBACK_REQUIRED_FIELDS = (
+    "dispatch_key",
+    "source_system",
+    "source_event_id",
+    "source_version",
+    "occurred_at",
+    "request_id",
+    "timestamp",
+    "signature",
+)
 
 
 def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
@@ -268,6 +279,20 @@ def _validated_bin_location_or_block(
         if non_empty_str(location.get(required_field)) is None:
             return None, build_payload_invalid_block(f"料箱调度结果缺少 {required_field}")
     return location, None
+
+
+def _validate_wms_rcs_callback_envelope(payload: Mapping[str, Any]) -> str | None:
+    """校验 WMS/RCS 回调进入插件处理前的最小来源包络。"""
+
+    for field_name in _WMS_RCS_CALLBACK_REQUIRED_FIELDS:
+        value = payload.get(field_name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return f"EXTERNAL_HTTP 回调缺少 {field_name}"
+
+    source_system = non_empty_str(payload.get("source_system"))
+    if source_system not in {"WMS", "RCS"}:
+        return "EXTERNAL_HTTP 回调 source_system 必须是 WMS 或 RCS"
+    return None
 
 
 class SmtClassifierPlugin(WorklinePlugin):
@@ -692,6 +717,10 @@ class SmtClassifierPlugin(WorklinePlugin):
             WMS_RACK_EXCHANGE_FAILED,
         }:
             return [build_payload_invalid_block("EXTERNAL_HTTP 回调 callback_type 不支持")]
+
+        envelope_error = _validate_wms_rcs_callback_envelope(payload)
+        if envelope_error is not None:
+            return [build_payload_invalid_block(envelope_error)]
 
         rack_exchange = self._rack_exchange_from_context(ctx)
         if rack_exchange is None:

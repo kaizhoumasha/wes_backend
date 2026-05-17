@@ -149,6 +149,9 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
 
 
 class RuntimeIntentEffectApplier:
+    def __init__(self, *, full_box_exchange_task_service: Any | None = None) -> None:
+        self._full_box_exchange_task_service = full_box_exchange_task_service
+
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
 
@@ -359,13 +362,19 @@ class RuntimeIntentEffectApplier:
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
 
-        ctx["db"].add(
-            workline_effects._build_external_http_outbox_model(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            )
+        outbox = workline_effects._build_external_http_outbox_model(
+            ctx,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload_json=payload_json,
+        )
+        ctx["db"].add(outbox)
+        await self._record_full_box_exchange_task(
+            ctx,
+            outbox=outbox,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload_json=payload_json,
         )
         await workline_effects._emit_timeline(
             ctx,
@@ -406,6 +415,33 @@ class RuntimeIntentEffectApplier:
             actor_type=TimelineActorType.ORCHESTRATOR,
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
             status=TimelineStatus.PENDING,
+        )
+
+    async def _record_full_box_exchange_task(
+        self,
+        ctx: Any,
+        *,
+        outbox: Any,
+        dispatch_key: str,
+        target_code: str,
+        payload_json: dict[str, Any],
+    ) -> None:
+        service = self._full_box_exchange_task_service
+        if service is None:
+            from src.app.resource.services import full_box_exchange_task_service
+
+            service = full_box_exchange_task_service
+
+        trace = ctx.get("trace") if isinstance(ctx, dict) else None
+        trace_id = getattr(trace, "trace_id", None) or ctx.get("trace_id")
+        await service.record_requested_from_external_request(
+            db=ctx["db"],
+            session=ctx["session"],
+            outbox=outbox,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload_json=payload_json,
+            trace_id=trace_id,
         )
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:

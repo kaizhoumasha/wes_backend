@@ -14,6 +14,7 @@ from src.app.workline.models.runtime import (
     TraceInboxItem,
     TraceOutboxItem,
     TraceOverviewSummary,
+    TraceResourceEvidenceResponse,
     TraceSessionItem,
     TraceTimelineItem,
 )
@@ -26,6 +27,16 @@ def _enum_str(value: Any) -> str | None:
 
 def _status_str(value: Any) -> str:
     return _enum_str(value) or "UNKNOWN"
+
+
+def _resource_evidence_dict(item: Any) -> dict[str, Any]:
+    if hasattr(item, "model_dump"):
+        payload = item.model_dump(mode="json")
+    elif hasattr(item, "__dict__"):
+        payload = vars(item)
+    else:
+        return {}
+    return {key: _enum_str(value) for key, value in payload.items() if not key.startswith("_")}
 
 
 def _build_trace_summary(result: Any) -> TraceOverviewSummary:
@@ -267,6 +278,24 @@ def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
     )
 
 
+def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
+    return TraceResourceEvidenceResponse(
+        resource_state_events=[_resource_evidence_dict(item) for item in getattr(result, "resource_state_events", [])],
+        rack_releases=[_resource_evidence_dict(item) for item in getattr(result, "rack_releases", [])],
+        rack_release_bin_snapshots=[
+            _resource_evidence_dict(item) for item in getattr(result, "rack_release_bin_snapshots", [])
+        ],
+        full_box_exchange_tasks=[
+            _resource_evidence_dict(item) for item in getattr(result, "full_box_exchange_tasks", [])
+        ],
+        wms_writeback_evidence=[
+            _resource_evidence_dict(item) for item in getattr(result, "wms_writeback_evidence", [])
+        ],
+        rack_bin_mounts=[_resource_evidence_dict(item) for item in getattr(result, "rack_bin_mounts", [])],
+        runtime_holds=[_resource_evidence_dict(item) for item in getattr(result, "runtime_holds", [])],
+    )
+
+
 def build_trace_response(result: Any) -> TraceDetailResponse:
     session = result.session
     sessions = result.sessions
@@ -284,6 +313,7 @@ def build_trace_response(result: Any) -> TraceDetailResponse:
         dispatch_attempts=[_build_dispatch_attempt_item(item) for item in dispatch_attempts],
         timelines=[_build_timeline_item(item) for item in result.timelines],
         diagnostics=[_build_diagnostic_item(item) for item in result.diagnostics],
+        resource_evidence=_build_resource_evidence(result),
     )
 
 

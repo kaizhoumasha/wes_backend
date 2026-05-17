@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.app.workline.models.runtime_hold import RuntimeHold, RuntimeHoldType
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 def _enum_value(value: Any) -> str:
@@ -154,6 +157,39 @@ class RuntimeHoldCreationService:
                 "event_type": _str_attr(incident, "event_type"),
                 "reason": source_reason,
                 "evidence": _json_attr(incident, "evidence_json"),
+            },
+        )
+
+    async def create_for_resource_reconciliation(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        source_reason: str,
+        source_event_id: str,
+        evidence: Mapping[str, Any],
+        session_id: int | None = None,
+        trace_id: str | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
+    ) -> RuntimeHold:
+        """资源投影冲突时幂等创建 RuntimeHold。"""
+
+        return await self.repository.create_open_hold(
+            db,
+            hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
+            workline_id=workline_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_kind="RESOURCE_RECONCILIATION",
+            source_reason=source_reason,
+            source_idempotency_key=f"resource-reconciliation:{source_reason}:{source_event_id}",
+            evidence_snapshot_json={
+                **dict(evidence),
+                "source_event_id": source_event_id,
+                "reason": source_reason,
             },
         )
 

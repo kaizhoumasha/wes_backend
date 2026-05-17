@@ -135,6 +135,16 @@ class DeviceHeartbeatScanResult(TypedDict):
     marked_offline: int
 
 
+class SmtFullBoxExchangeCandidateScanResult(TypedDict):
+    """SMT 满箱交换候选扫描结果"""
+
+    scanned: int
+    inbox_created: int
+    already_linked: int
+    skipped: int
+    errors: int
+
+
 class DispatchResult(TypedDict):
     """派发结果"""
 
@@ -176,6 +186,7 @@ class _InboxDiagnosticSnapshot:
 # 常量已提取到 src.celery_app.constants
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
+_DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE = "SMT_FULL_EXCHANGE_TRIGGER_01"
 _ENTRY_DEVICE_EVENT_TYPES = frozenset({"SCAN_COMPLETED"})
 _TERMINAL_SESSION_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 _BUSY_SESSION_STATUSES = frozenset({"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"})
@@ -2944,6 +2955,28 @@ class DeviceHeartbeatScanner:
         }
 
 
+class SmtFullBoxExchangeCandidateScanner:
+    """SMT 满箱交换候选释放补偿扫描器。"""
+
+    @staticmethod
+    async def _scan(
+        db: Any,
+        *,
+        source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
+        limit: int = 50,
+    ) -> SmtFullBoxExchangeCandidateScanResult:
+        from src.app.workline.services.smt_full_box_exchange_candidate_service import (
+            smt_full_box_exchange_candidate_service,
+        )
+
+        return await smt_full_box_exchange_candidate_service.scan_candidates(
+            db,
+            source_device_code=source_device_code,
+            limit=limit,
+            auto_commit=True,
+        )
+
+
 @celery_app.task(
     name="src.celery_app.tasks.workline.process_inbox_batch",
     base=WorklineTask,
@@ -3113,6 +3146,45 @@ def scan_device_heartbeats_batch(
         return result
     except Exception as e:
         logger.error(f"设备心跳扫描失败: {e}")
+        countdown = 60 * (2**self.request.retries)
+        raise self.retry(exc=e, countdown=countdown) from None
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
+    base=WorklineTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def scan_smt_full_box_exchange_candidates_batch(
+    self: WorklineTask,
+    source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
+    limit: int = 50,
+) -> SmtFullBoxExchangeCandidateScanResult:
+    """扫描 SMT 单层货架释放候选，派生满箱交换插件入口 Inbox。"""
+
+    logger.info(f"开始扫描 SMT 满箱交换候选释放, source_device_code={source_device_code}, limit={limit}")
+
+    async def _scan() -> SmtFullBoxExchangeCandidateScanResult:
+        async with self.db as db:
+            return await SmtFullBoxExchangeCandidateScanner._scan(
+                db,
+                source_device_code=source_device_code,
+                limit=limit,
+            )
+
+    try:
+        result = _run_async(_scan())
+        _ensure_non_empty_retry_result(
+            "scan_smt_full_box_exchange_candidates_batch",
+            result,
+            int(getattr(self.request, "retries", 0) or 0),
+        )
+        logger.info(f"SMT 满箱交换候选释放扫描完成: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"SMT 满箱交换候选释放扫描失败: {e}")
         countdown = 60 * (2**self.request.retries)
         raise self.retry(exc=e, countdown=countdown) from None
 

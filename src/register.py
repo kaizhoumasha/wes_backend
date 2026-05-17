@@ -101,6 +101,7 @@ def register_routers(app: FastAPI) -> None:
     from src.app.callback import router_v1 as callback_router
     from src.app.demo import router_v1 as demo_router
     from src.app.device import router_v1 as device_router
+    from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
     from src.app.workline import router_v1 as workline_router
 
@@ -109,6 +110,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(sys_router, prefix=settings.API_PATH)
     app.include_router(workline_router, prefix=settings.API_PATH)
     app.include_router(device_router, prefix=settings.API_PATH)
+    app.include_router(resource_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(demo_router, prefix=settings.API_PATH)

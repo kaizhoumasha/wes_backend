@@ -54,6 +54,20 @@ _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
 )
+_WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
+_WMS_RCS_EXECUTION_REQUIRED_FIELDS = (
+    "dispatch_key",
+    "source_system",
+    "source_event_id",
+    "source_version",
+    "occurred_at",
+    "request_id",
+    "timestamp",
+    "signature",
+)
+_FULL_BOX_EXCHANGE_REQUIRED_FIELDS = ("exchange_request_code", "rack_release_id", "wms_rcs_task_id")
+_FULL_BOX_RELATION_REQUIRED_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
+_FULL_BOX_CONFIRMATION_REQUIRED_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
 
 _CALLBACK_AUDIT_TITLES = {
     "result": "设备回调结果",
@@ -101,6 +115,15 @@ def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: 
     if value:
         return value
     raise ValueError(f"{field_name} is required")
+
+
+def _require_payload_value(payload: JsonDict, field_name: str) -> object:
+    value = payload.get(field_name)
+    if value is None:
+        raise ValueError(f"{field_name} is required")
+    if isinstance(value, str) and not value.strip():
+        raise ValueError(f"{field_name} is required")
+    return value
 
 
 def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str], callback_type: str) -> None:
@@ -233,12 +256,39 @@ async def _read_request_json(request: Request) -> JsonDict:
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     callback_type = _require_first_str(payload, ("callback_type",), "callback_type")
     trace_id = _require_first_str(payload, _TRACE_ID_ALIASES, "trace_id")
+    _validate_wms_rcs_execution_callback_payload(payload, callback_type)
 
     return {
         "callback_type": callback_type,
         "trace_id": trace_id,
         "payload": payload,
     }
+
+
+def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
+    """校验 WMS/RCS 运行时执行回调第零阶段最小包络。"""
+
+    if not callback_type.startswith(_WMS_RCS_EXECUTION_PREFIXES):
+        return
+
+    for field_name in _WMS_RCS_EXECUTION_REQUIRED_FIELDS:
+        _require_payload_value(payload, field_name)
+
+    source_system = str(payload["source_system"]).strip()
+    if source_system not in {"WMS", "RCS"}:
+        raise ValueError("source_system must be WMS or RCS")
+
+    if callback_type != "WMS_FULL_BOX_EXCHANGE_RESULT":
+        return
+
+    for field_name in _FULL_BOX_EXCHANGE_REQUIRED_FIELDS:
+        _require_payload_value(payload, field_name)
+
+    exchange_status = str(_require_payload_value(payload, "exchange_status")).strip().upper()
+    if exchange_status in _FULL_BOX_RELATION_REQUIRED_STATUSES:
+        _require_payload_value(payload, "post_exchange_relations")
+    if exchange_status in _FULL_BOX_CONFIRMATION_REQUIRED_STATUSES:
+        _require_payload_value(payload, "wms_confirmation")
 
 
 def _build_contract_fail(message: str) -> CallbackRejectedIngressResponse:

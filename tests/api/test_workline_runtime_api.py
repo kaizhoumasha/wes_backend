@@ -44,6 +44,7 @@ class TestWorklineRuntimeRoutePermissions:
         assert _permission_names(trace_module, "/session/{session_id}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/command/{command_code}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/dispatch/{dispatch_key}", "GET") == ["biz:workline:list"]
+        assert _permission_names(trace_module, "/exchange/{exchange_request_code}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/query", "POST") == ["biz:workline:list"]
 
     def test_runtime_routes_require_expected_permissions(self) -> None:
@@ -98,6 +99,47 @@ class TestWorklineTraceApi:
 
         mock_get_trace_list.assert_awaited_once_with(AnyArgHashable(), payload)
         assert response["data"].total == 1
+
+    @pytest.mark.asyncio
+    async def test_get_trace_by_exchange_request_code_uses_trace_query_service(self) -> None:
+        from src.app.workline.v1.trace import get_trace_by_exchange_request_code
+
+        trace_result = SimpleNamespace(
+            trace=_TraceContextStub(
+                trace_id="trace-001",
+                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+            ),
+            callback_logs=[],
+            inboxes=[],
+            session=None,
+            sessions=[],
+            commands=[],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=[],
+            diagnostics=[],
+            resource_state_events=[],
+            rack_releases=[],
+            rack_release_bin_snapshots=[],
+            full_box_exchange_tasks=[],
+            wms_writeback_evidence=[],
+            rack_bin_mounts=[],
+        )
+
+        with patch(
+            "src.app.workline.v1.trace.trace_query_service.by_exchange_request_code",
+            new=AsyncMock(return_value=trace_result),
+        ) as mock_by_exchange_request_code:
+            response = await get_trace_by_exchange_request_code(
+                "external:smt:release-001:FULL_BIN_EXCHANGE",
+                db=AsyncMock(),
+            )
+
+        mock_by_exchange_request_code.assert_awaited_once_with(
+            AnyArgHashable(),
+            "external:smt:release-001:FULL_BIN_EXCHANGE",
+        )
+        assert response["data"].trace.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
 
 
 def test_trace_callback_log_item_allows_null_updated_at() -> None:

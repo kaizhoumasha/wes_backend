@@ -39,6 +39,23 @@ def _command_payload(command_type: str, result: str, *, data: dict | None = None
     return payload
 
 
+def _wms_callback_payload(**overrides: object) -> dict:
+    payload = {
+        "callback_type": "WMS_RACK_EXCHANGE_PROGRESS",
+        "trace_id": "trace-smt-command",
+        "dispatch_key": "external:smt_classifier:trace-smt-command:RACK_EXCHANGE_AND_SUPPLY",
+        "source_system": "WMS",
+        "source_event_id": "wms-event-001",
+        "source_version": "1",
+        "occurred_at": "2026-05-16T08:00:00Z",
+        "request_id": "REQ-WMS-001",
+        "timestamp": "2026-05-16T08:00:01Z",
+        "signature": "test-signature",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _assert_command(intent, *, action: str, device_role: str, timeout: int = 300) -> None:
     assert intent.kind == RuntimeIntentKind.COMMAND
     assert intent.action == action
@@ -755,16 +772,44 @@ class TestSmtClassifierPluginCommandResults:
         result = await plugin.on_external_http(
             mock_context,
             _make_inbox(
-                {
-                    "callback_type": "WMS_RACK_EXCHANGE_PROGRESS",
-                    "dispatch_key": dispatch_key,
-                    "status": "IN_PROGRESS",
-                }
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_EXCHANGE_PROGRESS",
+                    dispatch_key=dispatch_key,
+                    status="IN_PROGRESS",
+                )
             ),
         )
 
         assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT]
         assert result[0].context_patch["rack_exchange"]["status"] == "IN_PROGRESS"
+
+    @pytest.mark.asyncio
+    async def test_external_rack_exchange_callback_requires_wms_rcs_envelope(self, plugin, mock_context):
+        """插件直连处理 WMS/RCS 回调时也必须校验第零阶段最小包络。"""
+        dispatch_key = "external:smt_classifier:trace-rack-envelope:RACK_EXCHANGE_AND_SUPPLY"
+        mock_context.session.current_wait_type = "EXTERNAL_HTTP"
+        mock_context.session.context_json = {
+            "rack_exchange": {
+                "status": "REQUESTED",
+                "dispatch_key": dispatch_key,
+            }
+        }
+
+        result = await plugin.on_external_http(
+            mock_context,
+            _make_inbox(
+                {
+                    "callback_type": "WMS_RACK_EXCHANGE_PROGRESS",
+                    "dispatch_key": dispatch_key,
+                    "source_system": "WMS",
+                    "status": "IN_PROGRESS",
+                }
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "PAYLOAD_INVALID"
+        assert "source_event_id" in str(result[0].message)
 
     @pytest.mark.asyncio
     async def test_external_rack_arrived_reallocates_and_commands_output_arm(self, plugin, mock_context):
@@ -807,11 +852,11 @@ class TestSmtClassifierPluginCommandResults:
         result = await plugin.on_external_http(
             mock_context,
             _make_inbox(
-                {
-                    "callback_type": "WMS_RACK_ARRIVED",
-                    "dispatch_key": dispatch_key,
-                    "active_bin_rack": active_bin_rack,
-                }
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack=active_bin_rack,
+                )
             ),
         )
 
@@ -846,12 +891,12 @@ class TestSmtClassifierPluginCommandResults:
         result = await plugin.on_external_http(
             mock_context,
             _make_inbox(
-                {
-                    "callback_type": "WMS_RACK_EXCHANGE_FAILED",
-                    "dispatch_key": dispatch_key,
-                    "reason_code": "RCS_RACK_SUPPLY_FAILED",
-                    "reason_message": "RCS 未能补充空架",
-                }
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_EXCHANGE_FAILED",
+                    dispatch_key=dispatch_key,
+                    reason_code="RCS_RACK_SUPPLY_FAILED",
+                    reason_message="RCS 未能补充空架",
+                )
             ),
         )
 
@@ -876,10 +921,10 @@ class TestSmtClassifierPluginCommandResults:
         result = await plugin.on_external_http(
             mock_context,
             _make_inbox(
-                {
-                    "callback_type": "WMS_RACK_ARRIVED",
-                    "dispatch_key": dispatch_key,
-                    "active_bin_rack": {
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack={
                         "rack_id": "RACK-EMPTY-DUP",
                         "cells": [
                             {
@@ -890,7 +935,7 @@ class TestSmtClassifierPluginCommandResults:
                             }
                         ],
                     },
-                }
+                )
             ),
         )
 
@@ -918,11 +963,11 @@ class TestSmtClassifierPluginCommandResults:
         result = await plugin.on_external_http(
             mock_context,
             _make_inbox(
-                {
-                    "callback_type": "WMS_RACK_EXCHANGE_PROGRESS",
-                    "dispatch_key": dispatch_key,
-                    "status": "IN_PROGRESS",
-                }
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_EXCHANGE_PROGRESS",
+                    dispatch_key=dispatch_key,
+                    status="IN_PROGRESS",
+                )
             ),
         )
 
