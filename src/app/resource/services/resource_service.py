@@ -689,8 +689,6 @@ def _resolved_callback_status(
         return FullBoxExchangeStatus.RESOURCE_PROJECTED
     if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "RECONCILING":
         return FullBoxExchangeStatus.RECONCILING
-    if status == FullBoxExchangeStatus.WMS_CONFIRMED and writeback_evidence is not None:
-        return FullBoxExchangeStatus.BUSINESS_COMPLETED
     return status
 
 

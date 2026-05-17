@@ -423,7 +423,7 @@ async def test_wms_writeback_evidence_service_records_confirmation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_box_exchange_task_service_records_wms_confirmation_as_business_completed() -> None:
+async def test_full_box_exchange_task_service_records_wms_confirmation_without_business_completion() -> None:
     existing = SimpleNamespace(
         id=88,
         version=4,
@@ -454,6 +454,43 @@ async def test_full_box_exchange_task_service_records_wms_confirmation_as_busine
 
     assert len(evidence_service.calls) == 1
     assert evidence_service.calls[0]["payload_json"]["exchange_status"] == "WMS_CONFIRMED"
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.WMS_CONFIRMED
+    assert repo.updated_payload["writeback_evidence_id"] == 901
+
+
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_records_business_completed_after_wms_confirmation() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=4,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    evidence_service = _RecordingWritebackEvidenceService()
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        writeback_evidence_service=evidence_service,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "request_id": "REQ-WMS-002",
+            "source_event_id": "wms-event-business-completed-001",
+            "exchange_status": "BUSINESS_COMPLETED",
+            "wms_confirmation": {"wms_document_id": "WMS-DOC-001"},
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert len(evidence_service.calls) == 1
+    assert evidence_service.calls[0]["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
     assert repo.updated_payload is not None
     assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.BUSINESS_COMPLETED
     assert repo.updated_payload["writeback_evidence_id"] == 901
