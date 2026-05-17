@@ -116,12 +116,20 @@ async def test_candidate_service_creates_single_layer_release_inbox_and_marks_re
     assert inbox_service.calls[0]["canonical_event_type"] == "SINGLE_LAYER_RACK_RELEASED"
     assert inbox_service.calls[0]["event_id"] == "smt-full-box-exchange:release-001"
     assert inbox_service.calls[0]["trace_id"] == "trace-release-001"
+    assert inbox_service.calls[0]["source_message_id"] == "release-001"
     assert inbox_service.calls[0]["data"]["rack_release_id"] == "release-001"
+    assert inbox_service.calls[0]["data"]["single_layer_rack_id"] == "RACK-SL-001"
     assert [item["slot_code"] for item in inbox_service.calls[0]["data"]["bin_snapshots"]] == [
         "S1",
         "S2",
         "S3",
         "S4",
+    ]
+    assert [item["bin_id"] for item in inbox_service.calls[0]["data"]["bins"]] == [
+        "BIN-001",
+        "BIN-002",
+        "BIN-003",
+        "BIN-004",
     ]
     assert release_repo.updated_payload == {
         "inbox_id": 701,

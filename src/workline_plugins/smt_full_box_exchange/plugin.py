@@ -26,6 +26,17 @@ _FAILURE_STATUSES = (
 )
 _WMS_CONFIRMATION_STATUSES = {"WMS_CONFIRMED", "BUSINESS_COMPLETED"}
 _POST_EXCHANGE_RELATION_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
+_ALLOWED_BIN_STATUSES = {
+    "EMPTY_VERIFIED",
+    "IN_USE",
+    "LOCKED",
+    "FULL_SNAPSHOT",
+    "EXCEPTION",
+    "DISABLED",
+    "UNKNOWN",
+    "CLOSED",
+    "FULL",
+}
 
 
 class SmtFullBoxExchangePlugin(WorklinePlugin):
@@ -60,6 +71,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             return [build_payload_invalid_block(invalid_message)]
 
         config = _ctx_config(ctx)
+        rack_identifier = _single_layer_rack_identifier(data)
         snapshots = _snapshot_list(data)
         exchange_bins = _exchange_bins(snapshots, _exchange_policy(config))
         if not exchange_bins:
@@ -67,7 +79,8 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                 ctx.next.complete(
                     {
                         "rack_release_id": data["rack_release_id"],
-                        "single_layer_rack_code": data["single_layer_rack_code"],
+                        "single_layer_rack_id": rack_identifier,
+                        "single_layer_rack_code": rack_identifier,
                         "exchange_required": False,
                         "exchange_status": "NOT_REQUIRED",
                     }
@@ -105,8 +118,8 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             "dispatch_key": dispatch_key,
             "trace_id": _trace_id(ctx, inbox),
             "rack_release_id": rack_release_id,
-            "single_layer_rack_code": data["single_layer_rack_code"],
-            "single_layer_rack_id": data["single_layer_rack_code"],
+            "single_layer_rack_code": rack_identifier,
+            "single_layer_rack_id": rack_identifier,
             "source_workline_code": _workline_code(ctx),
             "exchange_area_code": _optional_text(config.get("exchange_area_code")),
             "callback_url": _callback_url(config),
@@ -119,7 +132,8 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         }
         context_patch = {
             "rack_release_id": rack_release_id,
-            "single_layer_rack_code": data["single_layer_rack_code"],
+            "single_layer_rack_id": rack_identifier,
+            "single_layer_rack_code": rack_identifier,
             "exchange_required": True,
             "exchange_status": "REQUESTED",
             "exchange_request_code": exchange_request_code,
@@ -241,19 +255,93 @@ def _payload_data(payload: Any) -> dict[str, Any]:
 def _validate_release_data(data: Mapping[str, Any]) -> str | None:
     if not _optional_text(data.get("rack_release_id")):
         return "SINGLE_LAYER_RACK_RELEASED 缺少 rack_release_id"
-    if not _optional_text(data.get("single_layer_rack_code")):
-        return "SINGLE_LAYER_RACK_RELEASED 缺少 single_layer_rack_code"
-    snapshots = data.get("bin_snapshots")
+    if _single_layer_rack_identifier(data) is None:
+        return "SINGLE_LAYER_RACK_RELEASED 缺少 single_layer_rack_id"
+
+    snapshots = _snapshot_items(data)
     if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)) or len(snapshots) != 4:
         return "SINGLE_LAYER_RACK_RELEASED 必须携带 4 个料箱快照"
+
+    return _validate_snapshot_items(snapshots)
+
+
+def _validate_snapshot_items(snapshots: Sequence[Any]) -> str | None:
+    slot_codes: list[str] = []
+    for index, snapshot in enumerate(snapshots, start=1):
+        item_error = _validate_snapshot_item(index, snapshot)
+        if item_error is not None:
+            return item_error
+        slot_codes.append(_optional_text(snapshot.get("slot_code")) or "")
+
+    if len(set(slot_codes)) != len(slot_codes):
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照存在重复槽位"
+    return None
+
+
+def _validate_snapshot_item(index: int, snapshot: Any) -> str | None:
+    if not isinstance(snapshot, Mapping):
+        return f"SINGLE_LAYER_RACK_RELEASED 第 {index} 个料箱快照非法"
+
+    if not _optional_text(snapshot.get("slot_code")):
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 slot_code"
+    if _snapshot_bin_id(snapshot) is None:
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少料箱编码"
+
+    status = _non_empty_upper(snapshot.get("status") or snapshot.get("bin_execution_status"))
+    if status is None:
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 status"
+    if status not in _ALLOWED_BIN_STATUSES:
+        return f"SINGLE_LAYER_RACK_RELEASED 料箱快照 status 不支持: {status}"
+
+    usage = _snapshot_usage(snapshot)
+    if usage is None:
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 usage"
+    if usage < 0 or usage > 1:
+        return "SINGLE_LAYER_RACK_RELEASED 料箱快照 usage 必须在 0 到 1 之间"
     return None
 
 
 def _snapshot_list(data: Mapping[str, Any]) -> list[dict[str, Any]]:
-    snapshots = data.get("bin_snapshots")
+    snapshots = _snapshot_items(data)
     if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)):
         return []
-    return [dict(item) for item in snapshots if isinstance(item, Mapping)]
+    return [_normalize_snapshot(item) for item in snapshots if isinstance(item, Mapping)]
+
+
+def _single_layer_rack_identifier(data: Mapping[str, Any]) -> str | None:
+    return _optional_text(data.get("single_layer_rack_id")) or _optional_text(data.get("single_layer_rack_code"))
+
+
+def _snapshot_items(data: Mapping[str, Any]) -> Any:
+    return data.get("bins") if "bins" in data else data.get("bin_snapshots")
+
+
+def _normalize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(snapshot)
+    bin_id = _snapshot_bin_id(snapshot)
+    status = _non_empty_upper(snapshot.get("status") or snapshot.get("bin_execution_status"))
+    usage = _snapshot_usage(snapshot)
+    normalized["bin_id"] = bin_id
+    normalized["bin_code"] = bin_id
+    normalized["status"] = status
+    normalized["bin_execution_status"] = status
+    normalized["usage"] = usage
+    normalized["usage_snapshot"] = usage
+    return normalized
+
+
+def _snapshot_bin_id(snapshot: Mapping[str, Any]) -> str | None:
+    return _optional_text(snapshot.get("bin_id")) or _optional_text(snapshot.get("bin_code"))
+
+
+def _snapshot_usage(snapshot: Mapping[str, Any]) -> float | None:
+    value = snapshot.get("usage") if "usage" in snapshot else snapshot.get("usage_snapshot")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ctx_config(ctx: Any) -> dict[str, Any]:
@@ -284,9 +372,12 @@ def _exchange_bins(snapshots: list[dict[str, Any]], policy: Mapping[str, Any]) -
     return [
         {
             "slot_code": snapshot.get("slot_code"),
+            "bin_id": snapshot.get("bin_id"),
             "bin_code": snapshot.get("bin_code"),
             "bin_type_code": snapshot.get("bin_type_code"),
+            "status": snapshot.get("status"),
             "usage_snapshot": snapshot.get("usage_snapshot"),
+            "usage": snapshot.get("usage"),
         }
         for snapshot in selected
     ]

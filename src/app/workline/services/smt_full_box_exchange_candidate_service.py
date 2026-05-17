@@ -108,7 +108,7 @@ class SmtFullBoxExchangeCandidateService:
                 canonical_event_type=self.EVENT_TYPE,
                 timestamp=_timestamp_ms(getattr(release, "released_at", None)),
                 data=data,
-                source_message_id=_optional_text(getattr(release, "source_event_id", None)),
+                source_message_id=rack_release_id,
                 trace_id=_optional_text(getattr(release, "trace_id", None)),
                 event_id=event_id,
                 causation_id=_optional_text(getattr(release, "source_event_id", None)),
@@ -204,26 +204,36 @@ class SmtFullBoxExchangeCandidateService:
 
 
 def _release_payload(release: Any, snapshots: list[Any]) -> dict[str, Any]:
+    single_layer_rack_id = str(release.single_layer_rack_code)
+    snapshot_payloads = [_snapshot_payload(snapshot) for snapshot in sorted(snapshots, key=_slot_sort_key)]
     return {
         "rack_release_id": str(release.rack_release_id),
-        "single_layer_rack_code": str(release.single_layer_rack_code),
+        "single_layer_rack_id": single_layer_rack_id,
+        "single_layer_rack_code": single_layer_rack_id,
         "source_classifier_line_code": _optional_text(getattr(release, "source_classifier_line_code", None)),
         "source_task_batch_id": _optional_text(getattr(release, "source_task_batch_id", None)),
         "release_cycle_seq": getattr(release, "release_cycle_seq", None),
         "released_at": _isoformat_utc(getattr(release, "released_at", None)),
         "moved_out_at": _isoformat_utc(getattr(release, "moved_out_at", None)),
         "snapshot_hash": str(release.snapshot_hash),
-        "bin_snapshots": [_snapshot_payload(snapshot) for snapshot in sorted(snapshots, key=_slot_sort_key)],
+        "bins": snapshot_payloads,
+        "bin_snapshots": snapshot_payloads,
     }
 
 
 def _snapshot_payload(snapshot: Any) -> dict[str, Any]:
+    bin_id = str(snapshot.bin_code)
+    status = _enum_value(getattr(snapshot, "bin_execution_status", None))
+    usage = getattr(snapshot, "usage_snapshot", None)
     return {
         "slot_code": str(snapshot.slot_code),
-        "bin_code": str(snapshot.bin_code),
+        "bin_id": bin_id,
+        "bin_code": bin_id,
         "bin_type_code": _optional_text(getattr(snapshot, "bin_type_code", None)),
-        "bin_execution_status": _enum_value(getattr(snapshot, "bin_execution_status", None)),
-        "usage_snapshot": getattr(snapshot, "usage_snapshot", None),
+        "status": status,
+        "bin_execution_status": status,
+        "usage": usage,
+        "usage_snapshot": usage,
         "material_summary_json": dict(getattr(snapshot, "material_summary_json", None) or {}),
         "wms_inventory_refs_json": dict(getattr(snapshot, "wms_inventory_refs_json", None) or {}),
         "snapshot_id": _optional_text(getattr(snapshot, "snapshot_id", None)),
