@@ -84,6 +84,17 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                 )
             ]
 
+        timeout_seconds = _timeout_seconds(config)
+        if timeout_seconds is None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.WORKLINE,
+                    reason_code="FULL_BOX_EXCHANGE_TIMEOUT_MISSING",
+                    message="SMT 满箱交换缺少外部等待超时配置",
+                    suggested_action="配置 WorkLine timeouts.external_exchange_seconds",
+                )
+            ]
+
         rack_release_id = str(data["rack_release_id"])
         dispatch_key = f"external:{self.plugin_key}:{rack_release_id}:FULL_BOX_EXCHANGE"
         exchange_request_code = f"FBE-{rack_release_id}"
@@ -125,7 +136,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
                 dispatch_key=dispatch_key,
                 target_code=target_code,
                 payload=request_payload,
-                timeout_seconds=_timeout_seconds(config),
+                timeout_seconds=timeout_seconds,
                 source_system="WMS_RCS",
             ),
         ]
@@ -290,12 +301,14 @@ def _target_code(config: Mapping[str, Any]) -> str | None:
     return _optional_text(config.get("wms_rcs_full_box_exchange_url"))
 
 
-def _timeout_seconds(config: Mapping[str, Any]) -> int:
+def _timeout_seconds(config: Mapping[str, Any]) -> int | None:
     timeouts = config.get("timeouts")
     if isinstance(timeouts, Mapping):
-        value = _int_value(timeouts.get("external_exchange_seconds"), default=1800)
-        return max(value, 1)
-    return 1800
+        value = timeouts.get("external_exchange_seconds")
+        if value is not None:
+            seconds = _int_value(value, default=0)
+            return seconds if seconds > 0 else None
+    return None
 
 
 def _callback_url(config: Mapping[str, Any]) -> str | None:

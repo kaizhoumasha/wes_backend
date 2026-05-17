@@ -111,6 +111,25 @@ async def test_release_event_requests_external_exchange_when_any_bin_is_full() -
 
 
 @pytest.mark.asyncio
+async def test_release_event_blocks_when_exchange_timeout_is_missing() -> None:
+    """满箱交换 WorkLine 必须显式配置外部等待超时，避免静默使用隐式默认值。"""
+
+    result = await SmtFullBoxExchangePlugin().on_device_event(
+        _ctx(
+            config={
+                "external_endpoints": {
+                    "wms_rcs_full_box_exchange_url": "http://wms-rcs/api/full-box-exchange",
+                },
+            }
+        ),
+        _inbox(_release_payload(usage_snapshot=0.91, status="IN_USE")),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == "FULL_BOX_EXCHANGE_TIMEOUT_MISSING"
+
+
+@pytest.mark.asyncio
 async def test_external_progress_callback_updates_context_without_completion() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(
         _ctx(context=_exchange_session_context()),
