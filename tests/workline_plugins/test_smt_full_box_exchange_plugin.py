@@ -24,6 +24,13 @@ def _inbox(payload: dict) -> SimpleNamespace:
     return SimpleNamespace(id=1, trace_id="trace-full-box-001", payload_json=payload)
 
 
+def _exchange_session_context() -> dict:
+    return {
+        "rack_release_id": "release-001",
+        "full_box_exchange": {"dispatch_key": "dispatch-001"},
+    }
+
+
 def _release_payload(*, usage_snapshot: float = 0.2, status: str = "IN_USE") -> dict:
     return {
         "message_type": "DEVICE_EVENT",
@@ -106,10 +113,12 @@ async def test_release_event_requests_external_exchange_when_any_bin_is_full() -
 @pytest.mark.asyncio
 async def test_external_progress_callback_updates_context_without_completion() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(
-        _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
+        _ctx(context=_exchange_session_context()),
         _inbox(
             {
                 "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": "QUEUED",
                 "queue_position": 2,
@@ -125,10 +134,12 @@ async def test_external_progress_callback_updates_context_without_completion() -
 @pytest.mark.asyncio
 async def test_business_completed_callback_completes_session() -> None:
     result = await SmtFullBoxExchangePlugin().on_external_http(
-        _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
+        _ctx(context=_exchange_session_context()),
         _inbox(
             {
                 "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": "BUSINESS_COMPLETED",
                 "wms_confirmation": {"wms_document_id": "WMS-DOC-001"},
@@ -158,14 +169,48 @@ async def test_external_failure_callback_blocks_with_status_specific_reason(
     """WMS/RCS 细分失败状态应进入人工阻断，而不是被当作非法 payload。"""
 
     result = await SmtFullBoxExchangePlugin().on_external_http(
-        _ctx(context={"full_box_exchange": {"dispatch_key": "dispatch-001"}}),
+        _ctx(context=_exchange_session_context()),
         _inbox(
             {
                 "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "trace_id": "trace-full-box-001",
+                "rack_release_id": "release-001",
                 "dispatch_key": "dispatch-001",
                 "exchange_status": exchange_status,
             }
         ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+    assert result[0].reason_code == expected_reason_code
+
+
+@pytest.mark.parametrize(
+    ("payload_patch", "expected_reason_code"),
+    [
+        ({"trace_id": "trace-other"}, "EXCHANGE_TRACE_ID_MISMATCH"),
+        ({"rack_release_id": "release-other"}, "EXCHANGE_RACK_RELEASE_MISMATCH"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_external_callback_blocks_when_session_identity_mismatches(
+    payload_patch: dict,
+    expected_reason_code: str,
+) -> None:
+    """WMS/RCS 回调必须归属于当前等待中的 trace 和 rack_release。"""
+
+    payload = {
+        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "trace_id": "trace-full-box-001",
+        "rack_release_id": "release-001",
+        "dispatch_key": "dispatch-001",
+        "exchange_status": "QUEUED",
+    }
+    payload.update(payload_patch)
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context()),
+        _inbox(payload),
     )
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]

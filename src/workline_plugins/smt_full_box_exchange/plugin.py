@@ -142,6 +142,10 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         if status is None:
             return [build_payload_invalid_block("SMT 满箱交换回调缺少 exchange_status")]
 
+        identity_block = _callback_identity_block(ctx, payload)
+        if identity_block is not None:
+            return [identity_block]
+
         exchange_context = _exchange_context(ctx)
         expected_dispatch_key = _optional_text(exchange_context.get("dispatch_key"))
         callback_dispatch_key = _optional_text(payload.get("dispatch_key"))
@@ -181,6 +185,27 @@ def _callback_intents(ctx: Any, *, context_patch: dict[str, Any], status: str) -
             )
         ]
     return [build_payload_invalid_block(f"SMT 满箱交换回调状态不支持: {status}")]
+
+
+def _callback_identity_block(ctx: Any, payload: Mapping[str, Any]) -> RuntimeIntent | None:
+    expected_trace_id = _optional_text(getattr(ctx, "trace_id", None))
+    callback_trace_id = _optional_text(payload.get("trace_id"))
+    if expected_trace_id is not None and callback_trace_id != expected_trace_id:
+        return ctx.next.block(
+            scope=BlockScope.MATERIAL,
+            reason_code="EXCHANGE_TRACE_ID_MISMATCH",
+            message="SMT 满箱交换回调 trace_id 与当前会话不匹配",
+        )
+
+    expected_rack_release_id = _expected_rack_release_id(ctx)
+    callback_rack_release_id = _optional_text(payload.get("rack_release_id"))
+    if expected_rack_release_id is not None and callback_rack_release_id != expected_rack_release_id:
+        return ctx.next.block(
+            scope=BlockScope.MATERIAL,
+            reason_code="EXCHANGE_RACK_RELEASE_MISMATCH",
+            message="SMT 满箱交换回调 rack_release_id 与当前会话不匹配",
+        )
+    return None
 
 
 def _payload_data(payload: Any) -> dict[str, Any]:
@@ -279,6 +304,15 @@ def _exchange_context(ctx: Any) -> dict[str, Any]:
         return {}
     exchange = context.get("full_box_exchange")
     return dict(exchange) if isinstance(exchange, Mapping) else {}
+
+
+def _expected_rack_release_id(ctx: Any) -> str | None:
+    context = getattr(getattr(ctx, "session", None), "context_json", None)
+    if not isinstance(context, Mapping):
+        return None
+    return _optional_text(context.get("rack_release_id")) or _optional_text(
+        _exchange_context(ctx).get("rack_release_id")
+    )
 
 
 def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], status: str) -> dict[str, Any]:
