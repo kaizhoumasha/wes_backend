@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -407,6 +408,8 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         task_id = _optional_int(getattr(task, "id", None))
         if task_id is None:
             return task
+        if _callback_identity_mismatched(task, payload_json):
+            return task
 
         status = _exchange_status(payload_json)
         source_status_text = _exchange_status_text(payload_json)
@@ -481,6 +484,12 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
         if status not in {FullBoxExchangeStatus.PHYSICAL_COMPLETED, FullBoxExchangeStatus.RESOURCE_PROJECTED}:
             return None
         post_exchange_relations = payload_json.get("post_exchange_relations")
+        if "post_exchange_relations" in payload_json and not isinstance(post_exchange_relations, Mapping):
+            return SimpleNamespace(
+                status="RECONCILING",
+                reason_code="POST_EXCHANGE_RELATIONS_INVALID",
+                message="满箱交换回调 post_exchange_relations 必须是对象",
+            )
         if not isinstance(post_exchange_relations, Mapping):
             return None
         source_event_id = _optional_text(payload_json.get("source_event_id"))
@@ -687,9 +696,20 @@ def _resolved_callback_status(
     projection_status = _projection_status_value(projection_result)
     if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "PROJECTED":
         return FullBoxExchangeStatus.RESOURCE_PROJECTED
-    if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "RECONCILING":
+    if projection_status == "RECONCILING":
         return FullBoxExchangeStatus.RECONCILING
     return status
+
+
+def _callback_identity_mismatched(task: Any, payload_json: Mapping[str, Any]) -> bool:
+    expected_dispatch_key = _optional_text(getattr(task, "dispatch_key", None))
+    callback_dispatch_key = _optional_text(payload_json.get("dispatch_key"))
+    if expected_dispatch_key is not None and callback_dispatch_key != expected_dispatch_key:
+        return True
+
+    expected_rack_release_id = _optional_text(getattr(task, "rack_release_id", None))
+    callback_rack_release_id = _optional_text(payload_json.get("rack_release_id"))
+    return expected_rack_release_id is not None and callback_rack_release_id != expected_rack_release_id
 
 
 execution_zone_service = ExecutionZoneService()

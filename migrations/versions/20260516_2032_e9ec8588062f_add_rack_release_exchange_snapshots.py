@@ -125,7 +125,6 @@ def upgrade() -> None:
         sa.Column(
             "bin_execution_status",
             sa.Enum(
-                "AVAILABLE",
                 "EMPTY_VERIFIED",
                 "IN_USE",
                 "LOCKED",

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from src.app.resource.models import FullBoxExchangeStatus, ResourceSourceSystem
+from src.app.resource.models import BinStatus, FullBoxExchangeStatus, ResourceSourceSystem
 from src.app.resource.services import FullBoxExchangeTaskService, WmsWritebackEvidenceService
 
 
@@ -207,6 +208,57 @@ async def test_full_box_exchange_task_service_records_external_callback_status()
 
 
 @pytest.mark.parametrize(
+    "payload_patch",
+    [
+        {"dispatch_key": "external:smt:release-other:FULL_BIN_EXCHANGE"},
+        {"rack_release_id": "release-other"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_skips_callback_when_identity_mismatches(payload_patch: dict) -> None:
+    """任务镜像必须先校验回调归属，不能在插件身份校验前污染正确任务。"""
+
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector()
+    evidence_service = _RecordingWritebackEvidenceService()
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+        writeback_evidence_service=evidence_service,
+    )
+    payload = {
+        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+        "dispatch_key": "external:smt:release-001:FULL_BIN_EXCHANGE",
+        "rack_release_id": "release-001",
+        "source_event_id": "wms-event-001",
+        "exchange_status": "PHYSICAL_COMPLETED",
+        "post_exchange_relations": {
+            "bin_mounts": [{"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"}]
+        },
+    }
+    payload.update(payload_patch)
+
+    task = await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json=payload,
+        trace_id="trace-runtime",
+    )
+
+    assert task is existing
+    assert repo.updated_payload is None
+    assert projector.calls == []
+    assert evidence_service.calls == []
+
+
+@pytest.mark.parametrize(
     ("source_status", "expected_status"),
     [
         ("REJECTED_EXCHANGE_AREA_FULL", FullBoxExchangeStatus.REJECTED),
@@ -383,6 +435,79 @@ async def test_full_box_exchange_task_service_marks_reconciling_when_relation_pr
 
 
 @pytest.mark.asyncio
+async def test_full_box_exchange_task_service_marks_resource_projected_reconciling_when_projection_rejects() -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector(status="RECONCILING")
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "wms_rcs_task_id": "wms-task-001",
+            "source_event_id": "wms-event-001",
+            "source_version": "1",
+            "occurred_at": "2026-05-16T09:00:00Z",
+            "exchange_status": "RESOURCE_PROJECTED",
+            "post_exchange_relations": {},
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RECONCILING
+    assert repo.updated_payload["failure_code"] == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
+
+
+@pytest.mark.parametrize("exchange_status", ["PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"])
+@pytest.mark.asyncio
+async def test_full_box_exchange_task_service_marks_reconciling_when_relation_evidence_is_invalid(
+    exchange_status: str,
+) -> None:
+    existing = SimpleNamespace(
+        id=88,
+        version=3,
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+    )
+    repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
+    projector = _RecordingRelationProjector()
+    service = FullBoxExchangeTaskService(  # type: ignore[arg-type]
+        repo=repo,
+        relation_projector=projector,
+    )
+
+    await service.record_callback_from_external_http(
+        _FakeDb(),  # type: ignore[arg-type]
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
+            "rack_release_id": "release-001",
+            "source_event_id": "wms-event-001",
+            "exchange_status": exchange_status,
+            "post_exchange_relations": "not-a-mapping",
+        },
+        trace_id="trace-runtime",
+    )
+
+    assert repo.updated_payload is not None
+    assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.RECONCILING
+    assert repo.updated_payload["failure_code"] == "POST_EXCHANGE_RELATIONS_INVALID"
+    assert projector.calls == []
+
+
+@pytest.mark.asyncio
 async def test_wms_writeback_evidence_service_records_confirmation() -> None:
     repo = _FakeWmsWritebackEvidenceRepository()
     service = WmsWritebackEvidenceService(repo=repo)  # type: ignore[arg-type]
@@ -494,3 +619,21 @@ async def test_full_box_exchange_task_service_records_business_completed_after_w
     assert repo.updated_payload is not None
     assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.BUSINESS_COMPLETED
     assert repo.updated_payload["writeback_evidence_id"] == 901
+
+
+def test_rack_release_bin_snapshot_migration_bin_status_matches_model() -> None:
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations"
+        / "versions"
+        / "20260516_2032_e9ec8588062f_add_rack_release_exchange_snapshots.py"
+    )
+    migration_text = migration_path.read_text()
+    enum_segment = migration_text.split('"bin_execution_status"', maxsplit=1)[1].split(
+        'name="binstatus"',
+        maxsplit=1,
+    )[0]
+
+    assert '"AVAILABLE"' not in enum_segment
+    for status in BinStatus:
+        assert f'"{status.value}"' in enum_segment
