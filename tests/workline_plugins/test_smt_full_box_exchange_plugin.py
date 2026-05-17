@@ -6,10 +6,16 @@ import pytest
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_full_box_exchange import SmtFullBoxExchangePlugin
 from src.workline_runtime.plugin_next import PluginNext
+from src.workline_runtime.plugin_sdk.contracts import NormalizedExternalCallback
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
 
-def _ctx(*, config: dict | None = None, context: dict | None = None) -> SimpleNamespace:
+def _ctx(
+    *,
+    config: dict | None = None,
+    context: dict | None = None,
+    normalized_input: object | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         logger=MagicMock(),
         next=PluginNext(),
@@ -17,6 +23,7 @@ def _ctx(*, config: dict | None = None, context: dict | None = None) -> SimpleNa
         trace_id="trace-full-box-001",
         workline=SimpleNamespace(line_code="WL-SMT-FULL-BOX-EXCHANGE-01"),
         session=SimpleNamespace(id=42, context_json=context or {}, current_wait_type="EXTERNAL_HTTP"),
+        normalized_input=normalized_input,
     )
 
 
@@ -234,6 +241,30 @@ async def test_external_progress_callback_updates_context_without_completion() -
                 "queue_position": 2,
             }
         ),
+    )
+
+    assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert result[0].context_patch["full_box_exchange"]["exchange_status"] == "QUEUED"
+    assert result[0].context_patch["full_box_exchange"]["queue_position"] == 2
+
+
+@pytest.mark.asyncio
+async def test_external_progress_callback_accepts_normalized_input() -> None:
+    normalized_input = NormalizedExternalCallback(
+        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+        trace_id="trace-full-box-001",
+        source_system="WMS",
+        payload={
+            "rack_release_id": "release-001",
+            "dispatch_key": "dispatch-001",
+            "exchange_status": "QUEUED",
+            "queue_position": 2,
+        },
+    )
+
+    result = await SmtFullBoxExchangePlugin().on_external_http(
+        _ctx(context=_exchange_session_context(), normalized_input=normalized_input),
+        _inbox({}),
     )
 
     assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT]

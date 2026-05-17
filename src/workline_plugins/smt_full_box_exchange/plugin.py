@@ -12,6 +12,7 @@ from src.workline_plugins.smt_full_box_exchange.contract import (
 )
 from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_sdk.contracts import NormalizedExternalCallback
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
 _PROGRESS_STATUSES = {"ACCEPTED", "QUEUED", "IN_PROGRESS", "PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
@@ -158,7 +159,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
     async def on_external_http(self, ctx: Any, inbox: Any) -> list[RuntimeIntent]:
         """处理 WMS/RCS 满箱交换回调。"""
 
-        payload = getattr(inbox, "payload_json", None)
+        payload = _external_callback_payload(ctx, inbox)
         if not isinstance(payload, Mapping):
             return [build_payload_invalid_block("SMT 满箱交换回调 payload 非法")]
         if payload.get("callback_type") != WMS_FULL_BOX_EXCHANGE_CALLBACK:
@@ -250,6 +251,19 @@ def _payload_data(payload: Any) -> dict[str, Any]:
         return {}
     data = payload.get("data")
     return dict(data) if isinstance(data, Mapping) else dict(payload)
+
+
+def _external_callback_payload(ctx: Any, inbox: Any) -> Any:
+    normalized_input = getattr(ctx, "normalized_input", None)
+    if isinstance(normalized_input, NormalizedExternalCallback):
+        payload = dict(normalized_input.payload)
+        payload.setdefault("callback_type", normalized_input.callback_type)
+        if normalized_input.trace_id is not None:
+            payload.setdefault("trace_id", normalized_input.trace_id)
+        if normalized_input.source_system is not None:
+            payload.setdefault("source_system", normalized_input.source_system)
+        return payload
+    return getattr(inbox, "payload_json", None)
 
 
 def _validate_release_data(data: Mapping[str, Any]) -> str | None:
