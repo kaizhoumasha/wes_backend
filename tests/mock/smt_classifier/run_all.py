@@ -7,6 +7,7 @@ SMT 粗分机工作线 Mock 服务启动脚本
 - Arm Mock (ARM02 + ARM04, port 8007)
 - Allocation Mock (port 8008)
 - AGV Mock (AGV01, port 8009)
+- WMS/RCS Rack Exchange Mock (port 8010)
 
 运行方式:
     python tests/mock/smt_classifier/run_all.py
@@ -14,8 +15,10 @@ SMT 粗分机工作线 Mock 服务启动脚本
 环境变量:
     WES_EVENT_CALLBACK_URL: WES 事件回调地址 (默认 http://localhost:8001/api/v1/callback/event)
     WES_RESULT_CALLBACK_URL: WES 结果回调地址 (默认 http://localhost:8001/api/v1/callback/result)
+    WES_EXTERNAL_CALLBACK_URL: WES 外部回调地址 (默认 http://localhost:8001/api/v1/callback/external)
     API_APP_ID: API 应用 ID
     API_APP_SECRET: API 应用密钥
+    RACK_EXCHANGE_MODE: WMS/RCS 换架回调模式 (success/progress/failed/timeout)
 """
 
 from __future__ import annotations
@@ -91,6 +94,14 @@ MOCK_SERVICES = [
         "host": "0.0.0.0",
         "port": 8009,
         "device_code": "AGV01",
+    },
+    {
+        "name": "WMS/RCS Rack Exchange Mock",
+        "module": "tests.mock.smt_classifier.rack_exchange_mock",
+        "app_attr": "app",
+        "host": "0.0.0.0",
+        "port": 8010,
+        "device_code": "WMS_RCS",
     },
 ]
 
@@ -173,6 +184,10 @@ def start_all_services() -> None:
     logger.info(
         f"AGV 正式接口: {os.getenv('SMT_CLASSIFIER_AGV_DISPATCH_URL', 'http://127.0.0.1:8009/api/v1/device/command')}"
     )
+    logger.info(
+        f"WMS/RCS 换架 MOCK 接口: {os.getenv('SMT_RACK_EXCHANGE_MOCK_URL', 'http://127.0.0.1:8010/api/rack-exchange')}"
+    )
+    logger.info(f"WMS/RCS 换架 MOCK 模式: {os.getenv('RACK_EXCHANGE_MODE', 'success')}")
     logger.info(f"API App ID: {os.getenv('API_APP_ID', '未设置')}")
     logger.info("-" * 60)
 

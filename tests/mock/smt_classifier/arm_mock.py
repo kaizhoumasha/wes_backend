@@ -462,7 +462,7 @@ class ArmSimulator:
         return None
 
     def _resolve_dynamic_bin_location(self, location_id: str) -> DeviceLocation | None:
-        if not location_id.startswith("BIN_"):
+        if not location_id.startswith(("BIN_", "BIN-")):
             return None
 
         bin_locations = self.device_config["locations"].get("BIN", [])
@@ -677,6 +677,7 @@ class ArmSimulator:
         source_location_id: str | None = None,
         target_location_id: str | None = None,
         target_bin_type: str | None = None,
+        target_bin_cell_location: str | None = None,
         barcode: str | None = None,
         simulate_failure: bool = False,
         execution_time: float = EXECUTION_TIME,
@@ -714,6 +715,7 @@ class ArmSimulator:
                     update={
                         "bin_id": target_location_id or target.bin_id,
                         "bin_type": target_bin_type or target.bin_type,
+                        "bin_cell_location": target_bin_cell_location or target.bin_cell_location,
                     }
                 )
             resolved_command_code = command_code or self._generate_command_code()
@@ -840,12 +842,20 @@ class ArmSimulator:
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         params = payload.params or {}
+        target_payload = cast("JsonDict", params.get("target")) if isinstance(params.get("target"), dict) else {}
+        raw_bin_cell_location = params.get("bin_cell_location")
+        if raw_bin_cell_location is None:
+            raw_bin_cell_location = target_payload.get("bin_cell_location")
+        bin_cell_location = str(raw_bin_cell_location).strip() if raw_bin_cell_location is not None else None
+        if not bin_cell_location:
+            bin_cell_location = None
         source, target = self._resolve_command_locations_from_params(params)
         if target.location_type == "BIN":
             target = target.model_copy(
                 update={
                     "bin_id": cast("str | None", params.get("target_loc")) or target.bin_id,
                     "bin_type": cast("str | None", params.get("bin_type")) or target.bin_type,
+                    "bin_cell_location": bin_cell_location or target.bin_cell_location,
                 }
             )
 
@@ -869,6 +879,7 @@ class ArmSimulator:
             source_location_id=source.location_id,
             target_location_id=cast("str | None", params.get("target_loc")) or target.location_id,
             target_bin_type=cast("str | None", params.get("bin_type")),
+            target_bin_cell_location=bin_cell_location,
             barcode=barcode,
             simulate_failure=bool(params.get("simulate_failure", False)),
             execution_time=float(params.get("execution_time", EXECUTION_TIME)),
