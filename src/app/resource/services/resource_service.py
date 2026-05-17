@@ -425,33 +425,39 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
             payload_json=payload_json,
             trace_id=trace_id,
         )
+        current_status = _current_exchange_status(task)
+        candidate_status = _candidate_callback_status(status, projection_result)
+        status_adopted = _callback_status_adopted(current_status, candidate_status)
         data: dict[str, Any] = {
             "exchange_status": _resolved_callback_status(
                 status,
                 writeback_evidence,
                 projection_result,
-                current_status=_current_exchange_status(task),
+                current_status=current_status,
             ),
             "last_callback_payload_hash": _payload_hash(payload_json),
         }
-        if _projection_status_value(projection_result) == "RECONCILING":
+        wms_rcs_event_id = _optional_text(payload_json.get("source_event_id"))
+        if wms_rcs_event_id is not None:
+            data["wms_rcs_event_id"] = wms_rcs_event_id
+        if status_adopted and _projection_status_value(projection_result) == "RECONCILING":
             data["failure_code"] = _optional_text(getattr(projection_result, "reason_code", None))
             data["failure_message"] = _optional_text(getattr(projection_result, "message", None))
         writeback_evidence_id = _optional_int(getattr(writeback_evidence, "id", None))
-        if writeback_evidence_id is not None:
+        if status_adopted and writeback_evidence_id is not None:
             data["writeback_evidence_id"] = writeback_evidence_id
-        if source_status_text in _WMS_RCS_DETAIL_FAILURE_STATUS_MAP:
+        if status_adopted and source_status_text in _WMS_RCS_DETAIL_FAILURE_STATUS_MAP:
             data.setdefault("failure_code", source_status_text)
-        optional_updates = {
-            "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
-            "wms_rcs_event_id": _optional_text(payload_json.get("source_event_id")),
-            "queue_position": _optional_int(payload_json.get("queue_position")),
-            "eta_seconds": _optional_int(payload_json.get("eta_seconds")),
-            "failure_code": _optional_text(payload_json.get("failure_code")),
-            "failure_message": _optional_text(payload_json.get("failure_message")),
-            "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
-        }
-        data.update({key: value for key, value in optional_updates.items() if value is not None})
+        if status_adopted:
+            optional_updates = {
+                "wms_rcs_task_id": _optional_text(payload_json.get("wms_rcs_task_id")),
+                "queue_position": _optional_int(payload_json.get("queue_position")),
+                "eta_seconds": _optional_int(payload_json.get("eta_seconds")),
+                "failure_code": _optional_text(payload_json.get("failure_code")),
+                "failure_message": _optional_text(payload_json.get("failure_message")),
+                "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
+            }
+            data.update({key: value for key, value in optional_updates.items() if value is not None})
         version = _optional_int(getattr(task, "version", None))
         if version is not None:
             data["version"] = version
@@ -718,13 +724,32 @@ def _resolved_callback_status(
     projection_status = _projection_status_value(projection_result)
     if projection_status == "DUPLICATE" and current_status is not None:
         return current_status
+    return _monotonic_exchange_status(current_status, _candidate_callback_status(status, projection_result))
+
+
+def _candidate_callback_status(
+    status: FullBoxExchangeStatus,
+    projection_result: Any | None,
+) -> FullBoxExchangeStatus:
+    projection_status = _projection_status_value(projection_result)
     if status == FullBoxExchangeStatus.PHYSICAL_COMPLETED and projection_status == "PROJECTED":
-        resolved_status = FullBoxExchangeStatus.RESOURCE_PROJECTED
-    elif projection_status == "RECONCILING":
-        resolved_status = FullBoxExchangeStatus.RECONCILING
-    else:
-        resolved_status = status
-    return _monotonic_exchange_status(current_status, resolved_status)
+        return FullBoxExchangeStatus.RESOURCE_PROJECTED
+    if projection_status == "RECONCILING":
+        return FullBoxExchangeStatus.RECONCILING
+    return status
+
+
+def _callback_status_adopted(
+    current_status: FullBoxExchangeStatus | None,
+    candidate_status: FullBoxExchangeStatus,
+) -> bool:
+    if current_status is None:
+        return True
+    current_rank = _FULL_BOX_EXCHANGE_STATUS_RANK.get(current_status)
+    candidate_rank = _FULL_BOX_EXCHANGE_STATUS_RANK.get(candidate_status)
+    if current_rank is None or candidate_rank is None:
+        return True
+    return candidate_rank >= current_rank
 
 
 def _monotonic_exchange_status(
