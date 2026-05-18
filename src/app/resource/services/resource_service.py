@@ -317,9 +317,6 @@ class RackReleaseService(BaseService[RackRelease, RackReleaseRepository]):
             return None
 
         update_payload: dict[str, Any] = {"moved_out_at": moved_out_at}
-        version = _optional_int(getattr(release, "version", None))
-        if version is not None:
-            update_payload["version"] = version
         release_id = _optional_int(getattr(release, "id", None))
         if release_id is None:
             return release
@@ -480,10 +477,6 @@ class FullBoxExchangeTaskService(BaseService[FullBoxExchangeTask, FullBoxExchang
                 "trace_id": trace_id or _optional_text(payload_json.get("trace_id")),
             }
             data.update({key: value for key, value in optional_updates.items() if value is not None})
-        version = _optional_int(getattr(task, "version", None))
-        if version is not None:
-            data["version"] = version
-
         updated = await self.repo.update(db, task_id, data)
         return updated or task
 

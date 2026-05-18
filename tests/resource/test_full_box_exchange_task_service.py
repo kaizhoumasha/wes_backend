@@ -172,7 +172,6 @@ async def test_full_box_exchange_task_service_skips_non_full_box_payload() -> No
 async def test_full_box_exchange_task_service_records_external_callback_status() -> None:
     existing = SimpleNamespace(
         id=88,
-        version=3,
         exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
     )
     repo = _FakeFullBoxExchangeTaskRepository(existing=existing)
@@ -197,7 +196,7 @@ async def test_full_box_exchange_task_service_records_external_callback_status()
     assert repo.lookup_codes == ["external:smt:release-001:FULL_BIN_EXCHANGE"]
     assert repo.updated_payload is not None
     assert repo.updated_payload["id"] == 88
-    assert repo.updated_payload["version"] == 3
+    assert "version" not in repo.updated_payload
     assert repo.updated_payload["exchange_status"] == FullBoxExchangeStatus.PHYSICAL_COMPLETED
     assert repo.updated_payload["wms_rcs_task_id"] == "wms-task-001"
     assert repo.updated_payload["wms_rcs_event_id"] == "wms-event-001"

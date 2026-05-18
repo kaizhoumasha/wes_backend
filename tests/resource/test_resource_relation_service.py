@@ -272,6 +272,35 @@ async def test_record_full_box_exchange_physical_completed_projects_bin_mounts()
 
 
 @pytest.mark.asyncio
+async def test_record_full_box_exchange_physical_completed_normalizes_aware_occurred_at_for_db() -> None:
+    """满箱交换外部回调的 aware ISO 时间入库前转为 UTC naive datetime。"""
+
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    bin_mounts = RecordingBinMountRepo()
+    service = ResourceRelationService(state_event_repo=state_events, rack_bin_mount_repo=bin_mounts)
+
+    result = await service.record_full_box_exchange_physical_completed(
+        object(),
+        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
+        rack_release_id="release-001",
+        post_exchange_relations={
+            "bin_mounts": [
+                {"rack_code": "RACK-002", "rack_slot_code": "A01", "bin_code": "BIN-001"},
+            ]
+        },
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-physical-aware-001",
+        occurred_at="2026-05-16T09:00:00Z",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert state_events.created[0]["occurred_at"] == datetime(2026, 5, 16, 9, 0, 0)
+    assert bin_mounts.created[0]["started_at"] == datetime(2026, 5, 16, 9, 0, 0)
+
+
+@pytest.mark.asyncio
 async def test_record_full_box_exchange_physical_completed_missing_relations_creates_runtime_hold() -> None:
     """交换后关系缺失时创建 RuntimeHold，等待 WMS 补证或人工对账。"""
 

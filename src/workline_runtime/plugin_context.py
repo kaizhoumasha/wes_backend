@@ -35,7 +35,18 @@ def _safe_int(value: Any) -> int | None:
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+
+
+def _source_device_code_from_session(session: Any | None) -> str | None:
+    context = _safe_dict(getattr(session, "context_json", None))
+    rack_supply = _safe_dict(context.get("rack_supply"))
+    rack_exchange = _safe_dict(context.get("rack_exchange"))
+    return (
+        _safe_str(rack_supply.get("resume_source_device_code"))
+        or _safe_str(rack_exchange.get("resume_source_device_code"))
+        or _safe_str(context.get("resume_source_device_code"))
+    )
 
 
 def _normalize_workline_for_runtime(workline: Any) -> Any:
@@ -86,12 +97,16 @@ def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
     )
 
 
-def _resolve_source_device(devices_by_role: dict[str, list[Any]], inbox: Any | None) -> Any | None:
+def _resolve_source_device(
+    devices_by_role: dict[str, list[Any]], inbox: Any | None, session: Any | None = None
+) -> Any | None:
     payload = _safe_dict(getattr(inbox, "payload_json", None))
     device_code = _safe_str(payload.get("device_code")) or _safe_str(payload.get("location"))
     if not device_code:
         normalized_input = getattr(inbox, "normalized_input", None)
         device_code = _safe_str(getattr(normalized_input, "device_code", None))
+    if not device_code:
+        device_code = _source_device_code_from_session(session)
     if not device_code:
         return None
     for devices in devices_by_role.values():
@@ -208,7 +223,7 @@ class PluginContextBuilder:
         session_run_mode = normalize_run_mode(getattr(session, "run_mode", None))
         if runtime.workline is not None:
             runtime.workline.run_mode = session_run_mode
-        source_device = _resolve_source_device(devices_by_role, inbox)
+        source_device = _resolve_source_device(devices_by_role, inbox, session)
         source_device_role = _safe_str(getattr(source_device, "device_role", None))
         normalized_input = None
         if inbox is not None:

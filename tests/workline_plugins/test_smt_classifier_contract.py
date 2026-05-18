@@ -37,9 +37,14 @@ def test_output_to_bin_params_use_allocated_bin_business_fields() -> None:
         pkg_id="PKG-001",
         reel_diameter="178.5",
         bin_location={
+            "rack_id": "NHW-1CLJ-0096",
+            "rack_slot_code": "C",
+            "rack_slot_location_code": "NHW-1CLJ-0096-1C-1",
             "bin_id": "BIN-001",
-            "bin_type": "五格箱",
-            "bin_cell_location": "3",
+            "bin_orientation_code": "BIN-001-A",
+            "bin_type": "6格箱",
+            "bin_cell_location": "BIN-001-3",
+            "bin_cell_index": "3",
         },
     )
 
@@ -48,9 +53,14 @@ def test_output_to_bin_params_use_allocated_bin_business_fields() -> None:
         "reel_diameter": "178.5",
         "target_type": "BIN",
         "target_loc": "BIN-001",
+        "rack_id": "NHW-1CLJ-0096",
+        "rack_slot_code": "C",
+        "rack_slot_location_code": "NHW-1CLJ-0096-1C-1",
         "bin_id": "BIN-001",
-        "bin_type": "五格箱",
-        "bin_cell_location": "3",
+        "bin_orientation_code": "BIN-001-A",
+        "bin_type": "6格箱",
+        "bin_cell_location": "BIN-001-3",
+        "bin_cell_index": "3",
     }
 
 
@@ -59,7 +69,18 @@ def test_default_bin_allocation_is_deterministic() -> None:
     second = build_default_bin_allocation("PKG-001")
 
     assert first == second
-    assert set(first) == {"bin_id", "bin_type", "bin_cell_location"}
+    assert set(first) == {
+        "rack_id",
+        "rack_slot_code",
+        "rack_slot_location_code",
+        "bin_id",
+        "bin_orientation_code",
+        "bin_type",
+        "bin_cell_location",
+        "bin_cell_index",
+    }
+    assert first["rack_slot_code"] in {"A", "B", "C", "D"}
+    assert first["bin_cell_location"].startswith(f"{first['bin_id']}-")
 
 
 def test_resolve_smt_business_key_uses_stable_incomplete_scan_key_when_pkg_id_missing() -> None:

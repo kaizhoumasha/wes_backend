@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 SINGLE_LAYER_RACK_RELEASED = "SINGLE_LAYER_RACK_RELEASED"
 WMS_FULL_BOX_EXCHANGE_CALLBACK = "WMS_FULL_BOX_EXCHANGE_RESULT"
 SMT_FULL_BOX_EXCHANGE_CALLBACK = WMS_FULL_BOX_EXCHANGE_CALLBACK
+SMT_FORCE_EXCHANGE_RELEASE_REASON_CODES = frozenset({"NO_COMPATIBLE_OR_EMPTY_CELL"})
 
 
 def resolve_smt_full_box_exchange_business_key(payload_json: dict[str, Any]) -> str | None:
@@ -16,12 +17,14 @@ def resolve_smt_full_box_exchange_business_key(payload_json: dict[str, Any]) -> 
     data = payload_json.get("data")
     if not isinstance(data, Mapping):
         data = payload_json
-    value = data.get("rack_release_id")
+    data_map = cast("Mapping[str, Any]", data)
+    value = data_map.get("rack_release_id")
     return value if isinstance(value, str) and value else None
 
 
 __all__ = [
     "SINGLE_LAYER_RACK_RELEASED",
+    "SMT_FORCE_EXCHANGE_RELEASE_REASON_CODES",
     "SMT_FULL_BOX_EXCHANGE_CALLBACK",
     "WMS_FULL_BOX_EXCHANGE_CALLBACK",
     "resolve_smt_full_box_exchange_business_key",

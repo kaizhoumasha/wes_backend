@@ -135,7 +135,7 @@ async def test_rack_release_service_records_explicit_moved_out_at() -> None:
 
 @pytest.mark.asyncio
 async def test_rack_release_service_marks_release_moved_out_explicitly() -> None:
-    existing = SimpleNamespace(id=88, version=3, rack_release_id="release-001", moved_out_at=None)
+    existing = SimpleNamespace(id=88, rack_release_id="release-001", moved_out_at=None)
     release_repo = _FakeRackReleaseRepository(existing=existing)
     snapshot_repo = _FakeRackReleaseBinSnapshotRepository()
     service = RackReleaseService(  # type: ignore[arg-type]
@@ -154,5 +154,4 @@ async def test_rack_release_service_marks_release_moved_out_explicitly() -> None
     assert release.moved_out_at == moved_out_at
     assert release_repo.updated_payload == {
         "moved_out_at": moved_out_at,
-        "version": 3,
     }

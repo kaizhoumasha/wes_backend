@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,9 +43,10 @@ def resolve_tote_business_key(payload_json: dict[str, Any]) -> str | None:
     """从 TOTE_ARRIVED.data.tote_id 解析业务键。"""
 
     data = payload_json.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(data, Mapping):
         raise TypeError("TOTE_ARRIVED.data is required")
-    tote_id = non_empty_str(data.get("tote_id"))
+    data_map = cast("Mapping[str, Any]", data)
+    tote_id = non_empty_str(data_map.get("tote_id"))
     if not tote_id:
         raise ValueError("TOTE_ARRIVED.data.tote_id is required")
     return tote_id
@@ -54,7 +56,10 @@ def classify_inbound_tote_result(payload_json: dict[str, Any]) -> str | None:
     """入库料箱复核命令结果分类。"""
 
     result = str(payload_json.get("result") or "").strip().upper()
-    error_detail = payload_json.get("error_detail") if isinstance(payload_json.get("error_detail"), dict) else {}
+    raw_error_detail = payload_json.get("error_detail")
+    error_detail: dict[str, Any] = (
+        cast("dict[str, Any]", raw_error_detail) if isinstance(raw_error_detail, dict) else {}
+    )
     if result == "FAILED" and error_detail:
         return "hardware_failure"
     return None

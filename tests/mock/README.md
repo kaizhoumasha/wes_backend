@@ -17,6 +17,21 @@ docker compose --env-file .env.dev --profile dev up -d
 - ARM01 (8006) - 进料机械臂
 - ARM02 (8007) - 出料机械臂
 
+SMT 货架 mock 默认初始化为单层混合货架：2 个 `6格箱` + 2 个 `3格箱`，无需传入货架启动参数。
+
+```bash
+# 使用默认混合货架启动
+./tests/mock/smt_classifier/start_local.sh
+
+# 如需验证 7 寸测量结果，可单独覆盖 ARM 测量值
+ARM_MEASUREMENT_REEL_DIAMETER=7inch \
+./tests/mock/smt_classifier/start_local.sh
+
+# 默认 ARM 测量值为 15 寸，会分配到 3 格箱大料格
+ARM_MEASUREMENT_REEL_DIAMETER=15inch \
+./tests/mock/smt_classifier/start_local.sh
+```
+
 ## 服务列表
 
 | 服务 | 端口 | 描述 |

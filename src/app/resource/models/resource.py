@@ -13,7 +13,7 @@ from sqlalchemy import JSON, Column, Index
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
-from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
+from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -276,14 +276,12 @@ class ExecutionZoneBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class ExecutionZone(ExecutionZoneBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class ExecutionZone(ExecutionZoneBase, DataTableMixin, table=True):
     """WES 可识别的执行区域。"""
 
     __tablename__: ClassVar[Literal["resource_execution_zones"]] = "resource_execution_zones"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index("ux_resource_execution_zones_code_deleted", "zone_code", unique=True, postgresql_where="NOT is_deleted"),
-    )
+    __table_args__ = (Index("ux_resource_execution_zones_code", "zone_code", unique=True),)
 
 
 class ExecutionLocationBase(BaseMixin):
@@ -310,19 +308,12 @@ class ExecutionLocationBase(BaseMixin):
     coordinates_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="RCS 坐标透传")
 
 
-class ExecutionLocation(ExecutionLocationBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class ExecutionLocation(ExecutionLocationBase, DataTableMixin, table=True):
     """地码、缓存位、工作站位置或交换区排队位。"""
 
     __tablename__: ClassVar[Literal["resource_execution_locations"]] = "resource_execution_locations"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index(
-            "ux_resource_execution_locations_code_deleted",
-            "location_code",
-            unique=True,
-            postgresql_where="NOT is_deleted",
-        ),
-    )
+    __table_args__ = (Index("ux_resource_execution_locations_code", "location_code", unique=True),)
 
 
 class RackTypeBase(BaseMixin):
@@ -341,14 +332,12 @@ class RackTypeBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class RackType(RackTypeBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class RackType(RackTypeBase, DataTableMixin, table=True):
     """货架物理结构定义。"""
 
     __tablename__: ClassVar[Literal["resource_rack_types"]] = "resource_rack_types"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index("ux_resource_rack_types_code_deleted", "rack_type_code", unique=True, postgresql_where="NOT is_deleted"),
-    )
+    __table_args__ = (Index("ux_resource_rack_types_code", "rack_type_code", unique=True),)
 
 
 class RackSlotTemplateBase(BaseMixin):
@@ -380,18 +369,17 @@ class RackSlotTemplateBase(BaseMixin):
     active: bool = Field(default=True, description="是否启用")
 
 
-class RackSlotTemplate(RackSlotTemplateBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class RackSlotTemplate(RackSlotTemplateBase, DataTableMixin, table=True):
     """货架槽位模板。"""
 
     __tablename__: ClassVar[Literal["resource_rack_slot_templates"]] = "resource_rack_slot_templates"
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index(
-            "ux_resource_rack_slot_templates_type_slot_deleted",
+            "ux_resource_rack_slot_templates_type_slot",
             "rack_type_code",
             "slot_code",
             unique=True,
-            postgresql_where="NOT is_deleted",
         ),
     )
 
@@ -418,14 +406,12 @@ class RackBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class Rack(RackBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class Rack(RackBase, DataTableMixin, table=True):
     """物理货架实例。"""
 
     __tablename__: ClassVar[Literal["resource_racks"]] = "resource_racks"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index("ux_resource_racks_code_deleted", "rack_code", unique=True, postgresql_where="NOT is_deleted"),
-    )
+    __table_args__ = (Index("ux_resource_racks_code", "rack_code", unique=True),)
 
 
 class BinTypeBase(BaseMixin):
@@ -438,14 +424,12 @@ class BinTypeBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class BinType(BinTypeBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class BinType(BinTypeBase, DataTableMixin, table=True):
     """料箱内部结构定义。"""
 
     __tablename__: ClassVar[Literal["resource_bin_types"]] = "resource_bin_types"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index("ux_resource_bin_types_code_deleted", "bin_type_code", unique=True, postgresql_where="NOT is_deleted"),
-    )
+    __table_args__ = (Index("ux_resource_bin_types_code", "bin_type_code", unique=True),)
 
 
 class BinSlotTemplateBase(BaseMixin):
@@ -463,18 +447,17 @@ class BinSlotTemplateBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class BinSlotTemplate(BinSlotTemplateBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class BinSlotTemplate(BinSlotTemplateBase, DataTableMixin, table=True):
     """料箱内部槽位模板。"""
 
     __tablename__: ClassVar[Literal["resource_bin_slot_templates"]] = "resource_bin_slot_templates"
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index(
-            "ux_resource_bin_slot_templates_type_slot_deleted",
+            "ux_resource_bin_slot_templates_type_slot",
             "bin_type_code",
             "bin_slot_code",
             unique=True,
-            postgresql_where="NOT is_deleted",
         ),
     )
 
@@ -500,14 +483,12 @@ class BinBase(BaseMixin):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 
-class Bin(BinBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class Bin(BinBase, DataTableMixin, table=True):
     """物理料箱实例。"""
 
     __tablename__: ClassVar[Literal["resource_bins"]] = "resource_bins"
     __schema__ = SchemaType.BIZ.value
-    __table_args__ = (
-        Index("ux_resource_bins_code_deleted", "bin_code", unique=True, postgresql_where="NOT is_deleted"),
-    )
+    __table_args__ = (Index("ux_resource_bins_code", "bin_code", unique=True),)
 
 
 class ResourceStateEventBase(BaseMixin):
@@ -536,7 +517,7 @@ class ResourceStateEventBase(BaseMixin):
     received_at: datetime = Field(description="WES 接收时间")
 
 
-class ResourceStateEvent(ResourceStateEventBase, EnterpriseMixin, DataTableMixin, table=True):
+class ResourceStateEvent(ResourceStateEventBase, DataTableMixin, table=True):
     """资源 append-only 事实账本。"""
 
     __tablename__: ClassVar[Literal["resource_state_events"]] = "resource_state_events"
@@ -571,7 +552,7 @@ class RackPlacementBase(BaseMixin):
     ended_at: datetime | None = Field(default=None, index=True, description="离开该关系的时间")
 
 
-class RackPlacement(RackPlacementBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class RackPlacement(RackPlacementBase, DataTableMixin, table=True):
     """货架处于哪个执行地码的当前投影与历史。"""
 
     __tablename__: ClassVar[Literal["resource_rack_placements"]] = "resource_rack_placements"
@@ -581,7 +562,7 @@ class RackPlacement(RackPlacementBase, EnterpriseMixin, SoftDeleteMixin, DataTab
             "ux_resource_rack_placements_active_rack",
             "rack_code",
             unique=True,
-            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+            postgresql_where="ended_at IS NULL",
         ),
         Index("ix_resource_rack_placements_location_active", "location_code", "ended_at"),
     )
@@ -612,7 +593,7 @@ class RackBinMountBase(BaseMixin):
     ended_at: datetime | None = Field(default=None, index=True, description="解除挂载时间")
 
 
-class RackBinMount(RackBinMountBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class RackBinMount(RackBinMountBase, DataTableMixin, table=True):
     """料箱挂载在哪个货架槽位的当前投影与历史。"""
 
     __tablename__: ClassVar[Literal["resource_rack_bin_mounts"]] = "resource_rack_bin_mounts"
@@ -623,13 +604,13 @@ class RackBinMount(RackBinMountBase, EnterpriseMixin, SoftDeleteMixin, DataTable
             "rack_code",
             "rack_slot_code",
             unique=True,
-            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+            postgresql_where="ended_at IS NULL",
         ),
         Index(
             "ux_resource_rack_bin_mounts_active_bin",
             "bin_code",
             unique=True,
-            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+            postgresql_where="ended_at IS NULL",
         ),
     )
 
@@ -677,7 +658,7 @@ class RackMaterialMountBase(BaseMixin):
     ended_at: datetime | None = Field(default=None, index=True, description="离开卡槽时间")
 
 
-class RackMaterialMount(RackMaterialMountBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
+class RackMaterialMount(RackMaterialMountBase, DataTableMixin, table=True):
     """物料/PKG/料盘直接占用哪个卡槽式货架槽位的当前投影与历史。"""
 
     __tablename__: ClassVar[Literal["resource_rack_material_mounts"]] = "resource_rack_material_mounts"
@@ -688,7 +669,7 @@ class RackMaterialMount(RackMaterialMountBase, EnterpriseMixin, SoftDeleteMixin,
             "rack_code",
             "rack_slot_code",
             unique=True,
-            postgresql_where="ended_at IS NULL AND NOT is_deleted",
+            postgresql_where="ended_at IS NULL",
         ),
         Index(
             "ix_resource_rack_material_mounts_identity_active",
@@ -732,7 +713,7 @@ class WmsWritebackEvidenceBase(BaseMixin):
     session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
 
 
-class WmsWritebackEvidence(WmsWritebackEvidenceBase, EnterpriseMixin, DataTableMixin, table=True):
+class WmsWritebackEvidence(WmsWritebackEvidenceBase, DataTableMixin, table=True):
     """WMS 回写与确认 append-only 证据。"""
 
     __tablename__: ClassVar[Literal["resource_wms_writeback_evidence"]] = "resource_wms_writeback_evidence"
@@ -768,7 +749,7 @@ class RackReleaseBase(BaseMixin):
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
 
 
-class RackRelease(RackReleaseBase, EnterpriseMixin, DataTableMixin, table=True):
+class RackRelease(RackReleaseBase, DataTableMixin, table=True):
     """单层货架一次释放周期。"""
 
     __tablename__: ClassVar[Literal["resource_rack_releases"]] = "resource_rack_releases"
@@ -811,7 +792,7 @@ class RackReleaseBinSnapshotBase(BaseMixin):
     content_snapshot_hash: str | None = Field(default=None, max_length=128, description="内容快照摘要")
 
 
-class RackReleaseBinSnapshot(RackReleaseBinSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+class RackReleaseBinSnapshot(RackReleaseBinSnapshotBase, DataTableMixin, table=True):
     """释放瞬间每个槽位的料箱快照。"""
 
     __tablename__: ClassVar[Literal["resource_rack_release_bin_snapshots"]] = "resource_rack_release_bin_snapshots"
@@ -844,7 +825,7 @@ class BinContentSnapshotBase(BaseMixin):
     wms_snapshot_version: str | None = Field(default=None, max_length=160, description="WMS 查询版本或时间")
 
 
-class BinContentSnapshot(BinContentSnapshotBase, EnterpriseMixin, DataTableMixin, table=True):
+class BinContentSnapshot(BinContentSnapshotBase, DataTableMixin, table=True):
     """料箱内部过程内容快照头。"""
 
     __tablename__: ClassVar[Literal["resource_bin_content_snapshots"]] = "resource_bin_content_snapshots"
@@ -871,7 +852,7 @@ class BinContentSnapshotItemBase(BaseMixin):
     wms_inventory_id: str | None = Field(default=None, max_length=160, index=True, description="WMS 库存记录引用")
 
 
-class BinContentSnapshotItem(BinContentSnapshotItemBase, EnterpriseMixin, DataTableMixin, table=True):
+class BinContentSnapshotItem(BinContentSnapshotItemBase, DataTableMixin, table=True):
     """料箱内部过程内容快照明细。"""
 
     __tablename__: ClassVar[Literal["resource_bin_content_snapshot_items"]] = "resource_bin_content_snapshot_items"
@@ -913,7 +894,7 @@ class FullBoxExchangeTaskBase(BaseMixin):
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
 
 
-class FullBoxExchangeTask(FullBoxExchangeTaskBase, EnterpriseMixin, DataTableMixin, table=True):
+class FullBoxExchangeTask(FullBoxExchangeTaskBase, DataTableMixin, table=True):
     """满箱交换任务过程镜像。"""
 
     __tablename__: ClassVar[Literal["resource_full_box_exchange_tasks"]] = "resource_full_box_exchange_tasks"
@@ -930,7 +911,7 @@ class ExecutionZoneCreate(ModelFactory(ExecutionZoneBase).for_create()):
     """执行区域创建 Schema。"""
 
 
-class ExecutionZoneUpdate(ModelFactory(ExecutionZoneBase).for_optimistic_update()):
+class ExecutionZoneUpdate(ModelFactory(ExecutionZoneBase).for_update()):
     """执行区域更新 Schema。"""
 
 
@@ -938,14 +919,13 @@ class ExecutionZoneResponse(ExecutionZoneBase):
     """执行区域响应 Schema。"""
 
     id: int
-    version: int
 
 
 class ExecutionLocationCreate(ModelFactory(ExecutionLocationBase).for_create()):
     """执行地码创建 Schema。"""
 
 
-class ExecutionLocationUpdate(ModelFactory(ExecutionLocationBase).for_optimistic_update()):
+class ExecutionLocationUpdate(ModelFactory(ExecutionLocationBase).for_update()):
     """执行地码更新 Schema。"""
 
 
@@ -953,14 +933,13 @@ class ExecutionLocationResponse(ExecutionLocationBase):
     """执行地码响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackTypeCreate(ModelFactory(RackTypeBase).for_create()):
     """货架类型创建 Schema。"""
 
 
-class RackTypeUpdate(ModelFactory(RackTypeBase).for_optimistic_update()):
+class RackTypeUpdate(ModelFactory(RackTypeBase).for_update()):
     """货架类型更新 Schema。"""
 
 
@@ -968,14 +947,13 @@ class RackTypeResponse(RackTypeBase):
     """货架类型响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackSlotTemplateCreate(ModelFactory(RackSlotTemplateBase).for_create()):
     """货架槽位模板创建 Schema。"""
 
 
-class RackSlotTemplateUpdate(ModelFactory(RackSlotTemplateBase).for_optimistic_update()):
+class RackSlotTemplateUpdate(ModelFactory(RackSlotTemplateBase).for_update()):
     """货架槽位模板更新 Schema。"""
 
 
@@ -983,14 +961,13 @@ class RackSlotTemplateResponse(RackSlotTemplateBase):
     """货架槽位模板响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackCreate(ModelFactory(RackBase).for_create()):
     """货架实例创建 Schema。"""
 
 
-class RackUpdate(ModelFactory(RackBase).for_optimistic_update()):
+class RackUpdate(ModelFactory(RackBase).for_update()):
     """货架实例更新 Schema。"""
 
 
@@ -998,14 +975,13 @@ class RackResponse(RackBase):
     """货架实例响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinTypeCreate(ModelFactory(BinTypeBase).for_create()):
     """料箱类型创建 Schema。"""
 
 
-class BinTypeUpdate(ModelFactory(BinTypeBase).for_optimistic_update()):
+class BinTypeUpdate(ModelFactory(BinTypeBase).for_update()):
     """料箱类型更新 Schema。"""
 
 
@@ -1013,14 +989,13 @@ class BinTypeResponse(BinTypeBase):
     """料箱类型响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinSlotTemplateCreate(ModelFactory(BinSlotTemplateBase).for_create()):
     """料箱槽位模板创建 Schema。"""
 
 
-class BinSlotTemplateUpdate(ModelFactory(BinSlotTemplateBase).for_optimistic_update()):
+class BinSlotTemplateUpdate(ModelFactory(BinSlotTemplateBase).for_update()):
     """料箱槽位模板更新 Schema。"""
 
 
@@ -1028,14 +1003,13 @@ class BinSlotTemplateResponse(BinSlotTemplateBase):
     """料箱槽位模板响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinCreate(ModelFactory(BinBase).for_create()):
     """料箱实例创建 Schema。"""
 
 
-class BinUpdate(ModelFactory(BinBase).for_optimistic_update()):
+class BinUpdate(ModelFactory(BinBase).for_update()):
     """料箱实例更新 Schema。"""
 
 
@@ -1043,14 +1017,13 @@ class BinResponse(BinBase):
     """料箱实例响应 Schema。"""
 
     id: int
-    version: int
 
 
 class ResourceStateEventCreate(ModelFactory(ResourceStateEventBase).for_create()):
     """资源事实创建 Schema。"""
 
 
-class ResourceStateEventUpdate(ModelFactory(ResourceStateEventBase).for_optimistic_update()):
+class ResourceStateEventUpdate(ModelFactory(ResourceStateEventBase).for_update()):
     """资源事实更新 Schema。"""
 
 
@@ -1058,14 +1031,13 @@ class ResourceStateEventResponse(ResourceStateEventBase):
     """资源事实响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackPlacementCreate(ModelFactory(RackPlacementBase).for_create()):
     """货架位置投影创建 Schema。"""
 
 
-class RackPlacementUpdate(ModelFactory(RackPlacementBase).for_optimistic_update()):
+class RackPlacementUpdate(ModelFactory(RackPlacementBase).for_update()):
     """货架位置投影更新 Schema。"""
 
 
@@ -1073,14 +1045,13 @@ class RackPlacementResponse(RackPlacementBase):
     """货架位置投影响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackBinMountCreate(ModelFactory(RackBinMountBase).for_create()):
     """料箱挂载投影创建 Schema。"""
 
 
-class RackBinMountUpdate(ModelFactory(RackBinMountBase).for_optimistic_update()):
+class RackBinMountUpdate(ModelFactory(RackBinMountBase).for_update()):
     """料箱挂载投影更新 Schema。"""
 
 
@@ -1088,14 +1059,13 @@ class RackBinMountResponse(RackBinMountBase):
     """料箱挂载投影响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackMaterialMountCreate(ModelFactory(RackMaterialMountBase).for_create()):
     """物料卡槽投影创建 Schema。"""
 
 
-class RackMaterialMountUpdate(ModelFactory(RackMaterialMountBase).for_optimistic_update()):
+class RackMaterialMountUpdate(ModelFactory(RackMaterialMountBase).for_update()):
     """物料卡槽投影更新 Schema。"""
 
 
@@ -1103,14 +1073,13 @@ class RackMaterialMountResponse(RackMaterialMountBase):
     """物料卡槽投影响应 Schema。"""
 
     id: int
-    version: int
 
 
 class WmsWritebackEvidenceCreate(ModelFactory(WmsWritebackEvidenceBase).for_create()):
     """WMS 回写证据创建 Schema。"""
 
 
-class WmsWritebackEvidenceUpdate(ModelFactory(WmsWritebackEvidenceBase).for_optimistic_update()):
+class WmsWritebackEvidenceUpdate(ModelFactory(WmsWritebackEvidenceBase).for_update()):
     """WMS 回写证据更新 Schema。"""
 
 
@@ -1118,14 +1087,13 @@ class WmsWritebackEvidenceResponse(WmsWritebackEvidenceBase):
     """WMS 回写证据响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackReleaseCreate(ModelFactory(RackReleaseBase).for_create()):
     """释放周期创建 Schema。"""
 
 
-class RackReleaseUpdate(ModelFactory(RackReleaseBase).for_optimistic_update()):
+class RackReleaseUpdate(ModelFactory(RackReleaseBase).for_update()):
     """释放周期更新 Schema。"""
 
 
@@ -1133,14 +1101,13 @@ class RackReleaseResponse(RackReleaseBase):
     """释放周期响应 Schema。"""
 
     id: int
-    version: int
 
 
 class RackReleaseBinSnapshotCreate(ModelFactory(RackReleaseBinSnapshotBase).for_create()):
     """释放槽位快照创建 Schema。"""
 
 
-class RackReleaseBinSnapshotUpdate(ModelFactory(RackReleaseBinSnapshotBase).for_optimistic_update()):
+class RackReleaseBinSnapshotUpdate(ModelFactory(RackReleaseBinSnapshotBase).for_update()):
     """释放槽位快照更新 Schema。"""
 
 
@@ -1148,14 +1115,13 @@ class RackReleaseBinSnapshotResponse(RackReleaseBinSnapshotBase):
     """释放槽位快照响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinContentSnapshotCreate(ModelFactory(BinContentSnapshotBase).for_create()):
     """料箱内容快照头创建 Schema。"""
 
 
-class BinContentSnapshotUpdate(ModelFactory(BinContentSnapshotBase).for_optimistic_update()):
+class BinContentSnapshotUpdate(ModelFactory(BinContentSnapshotBase).for_update()):
     """料箱内容快照头更新 Schema。"""
 
 
@@ -1163,14 +1129,13 @@ class BinContentSnapshotResponse(BinContentSnapshotBase):
     """料箱内容快照头响应 Schema。"""
 
     id: int
-    version: int
 
 
 class BinContentSnapshotItemCreate(ModelFactory(BinContentSnapshotItemBase).for_create()):
     """料箱内容快照明细创建 Schema。"""
 
 
-class BinContentSnapshotItemUpdate(ModelFactory(BinContentSnapshotItemBase).for_optimistic_update()):
+class BinContentSnapshotItemUpdate(ModelFactory(BinContentSnapshotItemBase).for_update()):
     """料箱内容快照明细更新 Schema。"""
 
 
@@ -1178,14 +1143,13 @@ class BinContentSnapshotItemResponse(BinContentSnapshotItemBase):
     """料箱内容快照明细响应 Schema。"""
 
     id: int
-    version: int
 
 
 class FullBoxExchangeTaskCreate(ModelFactory(FullBoxExchangeTaskBase).for_create()):
     """满箱交换任务创建 Schema。"""
 
 
-class FullBoxExchangeTaskUpdate(ModelFactory(FullBoxExchangeTaskBase).for_optimistic_update()):
+class FullBoxExchangeTaskUpdate(ModelFactory(FullBoxExchangeTaskBase).for_update()):
     """满箱交换任务更新 Schema。"""
 
 
@@ -1193,7 +1157,6 @@ class FullBoxExchangeTaskResponse(FullBoxExchangeTaskBase):
     """满箱交换任务响应 Schema。"""
 
     id: int
-    version: int
 
 
 __all__ = [

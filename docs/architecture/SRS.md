@@ -124,6 +124,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **物理结构**：
   * 单层平面结构，可承载 **4 个料箱 (Bins)**。
   * 无 A/B 面区分，所有储位在同一平面。
+  * **货位编码**: 单层移动料架每架 4 个货位，按 Excel 初始化协议使用 `A/B/C/D`
+    顺时针编码；货位条码示例为 `NHW-1CLJ-0096-1C-1`。
 * **业务用途**：
   * **中转缓存 (Transit Buffer)**: 用于收货装箱、发料准备等临时作业场景。
   * **快速流转**: 适合高频次的装卸操作，AGV 可快速搬运整架。
@@ -350,15 +352,30 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     1. **校验**: 验证 PKG 是否属于当前 GRN，校验 `Dims/Thickness` 偏差。
     2. **分配 (Binning Algorithm)**:
        * **同类合并**: 优先放入已存有相同 `Material + Vendor + DC` 的储位。
-       * **料箱选择**: 7 寸优先 A 型料箱，13/15 寸选择 B 型料箱。
+       * **料箱选择**: 料箱分为 **6 格箱** 与 **3 格箱** 两类；7 寸料盘优先选择 6 格箱，13/15 寸等大尺寸料盘只能选择 3 格箱的大尺寸格。
        * **深度计算**: 实时计算储位剩余深度，确保容量充足。
   * **指令下发**: `WES -> ECS: Put_Instruction(BinID, SlotID, Expected_Stack_Height)`.
+    * `SlotID` 在 SMT 粗分机场景必须拆分为两级位置:
+      * **料架货位**: `rack_id + rack_slot_code(A/B/C/D) + rack_slot_location_code`
+      * **料箱货格**: `bin_id + bin_cell_location`
+    * 机械手执行放盘时以上位给出的“箱位 + 储位信息”为准。
   * **执行**: ECS 接收指令后，驱动机械臂从流水线抓取料盘并执行放入动作。
 
 **Step 3: 异常与满架 (Exception & Full)**
 
 * **装不进**: 若 ECS 反馈 `Put_Fail` (物理无法放入)，WES 标记该 Slot 异常，重新分配。
-* **满架切出**: WES 计算货架已满，生成 `Transport_Task` (To SMT_Buffer)，提交给 WMS 调度 RCS，并补新空架。
+* **初次无货架**: SMT 粗分机开工或当前 session 恢复时，如果粗分机工位没有 `active_bin_rack`，
+  SMT 插件只发起 `SMT_RACK_SUPPLY` 新货架补充请求，等待 WMS/RCS 回调 `WMS_RACK_ARRIVED` 后继续当前料盘分配；
+  此场景不触发满箱交换。
+* **当前货架无可用料格**: 当 `active_bin_rack` 存在，但 4 个料箱中没有同 DC/LC 兼容格位，也没有满足料盘尺寸的空格时，
+  SMT 插件同时执行两件事:
+  * 向满箱交换插件发内部设备事件 `SINGLE_LAYER_RACK_RELEASED`，事件携带
+    `rack_release_id`、`single_layer_rack_id`、`source_classifier_line_code`、`source_task_batch_id`、
+    `release_reason_code=NO_COMPATIBLE_OR_EMPTY_CELL`、`bin_snapshots`。
+  * 向 WMS/RCS 发起 `SMT_RACK_SUPPLY` 新货架补充请求，并在当前 SMT session 的 `rack_supply` 上下文中记录
+    `dispatch_key`、`reason_code`、`pkg_id` 和恢复所需的设备信息。
+* **新货架到位恢复**: WMS/RCS 回调 `WMS_RACK_ARRIVED` 后，SMT 插件用回调中的 `active_bin_rack` 重新执行料格分配；
+  如果仍无可用料格，则再次按上述规则请求下一架。只有出料机械臂成功把当前料盘放入料格后，当前 SMT session 才完成。
 
 #### 3.3.2 混合入库策略 (Hybrid Inbound Strategy)
 
@@ -377,6 +394,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
      * WMS/RCS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
      * WES 生成交换外部请求 `FULL_BIN_EXCHANGE(Source_Single_Layer_Rack, RackReleaseSnapshot)` 并提交给 WMS，由 WMS 调度 RCS/CTU 执行原子动作。
      * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、WMS/RCS 回调、资源投影和回写证据。
+     * **职责边界**: 满箱交换插件只消费 `SINGLE_LAYER_RACK_RELEASED` 事件，判断旧货架是否需要满箱交换并生成旧货架处理请求；
+       它不恢复 SMT 粗分机当前料盘 session，也不决定新货架补充。SMT 当前 session 的恢复只由 `SMT_RACK_SUPPLY`
+       对应的 `WMS_RACK_ARRIVED` 回调驱动。
   3. **流水线零散入库 (Pipeline Picking Execution)**:
 
      * **调度**: WES 生成 Target Bin (从五层货架) 到流水线的搬运需求，提交 WMS 调度 RCS。
@@ -506,28 +526,37 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   * **料箱规格定义**:
 
-    * **A 型料箱**: 6 个 7 寸料盘储位，每个储位仅可存放 7 寸料盘。
-    * **B 型料箱**: 2 个 7 寸料盘储位 + 1 个大尺寸储位 (可存 13/15 寸料盘)。
+    * **6 格箱**: 6 个 7 寸料盘可用格，每个格位仅可存放 7 寸料盘。
+    * **3 格箱**: 2 个 7 寸料盘可用格 + 1 个大尺寸料盘可用格；大尺寸格用于 13/15 寸等大尺寸料盘。
+    * **料格编号规则**:
+      * 6 格箱: `料箱条码-1` ~ `料箱条码-6`，均为 7 寸料盘可用格。
+      * 3 格箱: `料箱条码-1`、`料箱条码-2` 为 7 寸料盘可用格；`料箱条码-7` 为大尺寸料盘可用格。
+      * 料箱外侧方位码使用 `料箱条码-A/B/C/D`；放入移动料架时 A 方位朝货架外侧、C 方位朝货位内侧。
+    * **完整物理定位**:
+      * `rack_slot_code`: 单层料架 4 个货位，取值 `A/B/C/D`。
+      * `rack_slot_location_code`: 料架货位条码，例如 `NHW-1CLJ-0096-1C-1`。
+      * `bin_cell_location`: 料箱货格条码，例如 `NHW000001-7`。
+      * SMT 出料指令必须同时携带料架货位和料箱货格，不能只下发料箱内部货格。
     * **储位堆叠**: 每个储位可堆叠多个料盘，堆叠数量 = `储位可用深度 / 料盘厚度`。
   * **分配算法 (Allocation Algorithm)**:
 
     ```
     IF (料盘尺寸 == 7寸) THEN
-      优先查找: 已有 A 型或 B 型料箱中，存有相同 Material+Vendor+DC 的 7 寸储位
+      优先查找: 已有 6 格箱或 3 格箱中，存有相同 Material+Vendor+DC 的 7 寸格位
       IF (找到 AND 储位未满) THEN
         分配到该储位
       ELSE
-        选择空料箱: 优先 A 型 (6 个储位) > B 型 (2 个 7 寸储位)
-        分配到第一个空储位
+        选择空料箱: 优先 6 格箱 (`-1` ~ `-6`) > 3 格箱 (`-1`、`-2`)
+        分配到第一个空 7 寸格位
       END IF
 
     ELSE IF (料盘尺寸 > 7寸) THEN
-      优先查找: 已有 B 型料箱中，大尺寸储位存有相同 Material+Vendor+DC 的料盘
+      优先查找: 已有 3 格箱中，大尺寸格存有相同 Material+Vendor+DC 的料盘
       IF (找到 AND 储位未满) THEN
         分配到该储位
       ELSE
-        选择空 B 型料箱
-        分配到大尺寸储位
+        选择空 3 格箱
+        分配到大尺寸格 (`-7`)
       END IF
     END IF
     ```
@@ -538,7 +567,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     * **实时更新**: 每次放入后，WES 更新储位的 `Used_Depth` 和 `Remaining_Capacity`。
   * **防错机制 (Error Prevention)**:
 
-    * **尺寸校验**: 7 寸料盘不得放入大尺寸储位，13/15 寸料盘不得放入 7 寸储位。
+    * **尺寸校验**: 7 寸料盘不得放入 3 格箱的大尺寸格；13/15 寸等大尺寸料盘不得放入 7 寸格位，也不得放入 6 格箱。
     * **混料禁止**: 同一储位内，`Material + Vendor + DC` 必须一致。
 
   **2. 发料优先级策略 (Issue Priority Strategy)**

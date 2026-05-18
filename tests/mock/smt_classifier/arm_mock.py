@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from collections import deque
 from datetime import datetime
@@ -63,6 +64,20 @@ DEVICE_CODE = os.getenv("DEVICE_CODE") or os.getenv("DEVICE_ID", "ARM01")
 EXECUTION_TIME = float(os.getenv("EXECUTION_TIME", "2.0"))
 AUTO_EXECUTE_INTERVAL = int(os.getenv("AUTO_EXECUTE_INTERVAL", "5"))
 BARCODE_PREFIX = os.getenv("BARCODE_PREFIX", "SMT-PKG")
+MEASUREMENT_REEL_DIAMETER_ENV = "ARM_MEASUREMENT_REEL_DIAMETER"
+MEASUREMENT_REEL_THICKNESS_ENV = "ARM_MEASUREMENT_REEL_THICKNESS"
+MEASUREMENT_NUMBER_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _measurement_number_from_env(env_name: str, default: float) -> float:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    match = MEASUREMENT_NUMBER_PATTERN.search(raw_value)
+    if match is None:
+        logger.warning("忽略无效机械臂测量配置: %s=%r", env_name, raw_value)
+        return default
+    return float(match.group(0))
 
 
 class DeviceLocations(TypedDict):
@@ -136,10 +151,14 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
                 DeviceLocation(
                     location_id="LEFT_STATION_OUTPUT",
                     location_type="BIN",
-                    rack_id="LEFT_RACK_001",
-                    bin_id="LEFT_BIN_104",
-                    bin_type="三格箱",
-                    bin_cell_location="1",
+                    rack_id="NHW-1CLJ-0096",
+                    rack_slot_code="A",
+                    rack_slot_location_code="NHW-1CLJ-0096-1A-0",
+                    bin_id="LEFT-BIN-104",
+                    bin_orientation_code="LEFT-BIN-104-A",
+                    bin_type="3格箱",
+                    bin_cell_location="LEFT-BIN-104-7",
+                    bin_cell_index="7",
                     reel_layer="15",
                     reel_thickness="20",
                     reel_diameter="15inch",
@@ -194,10 +213,14 @@ DEVICE_CONFIGS: dict[str, DeviceConfig] = {
                 DeviceLocation(
                     location_id="RIGHT_STATION_OUTPUT",
                     location_type="BIN",
-                    rack_id="RIGHT_RACK_001",
-                    bin_id="BIN_204",
-                    bin_type="三格箱",
-                    bin_cell_location="1",
+                    rack_id="NHW-1CLJ-0096",
+                    rack_slot_code="C",
+                    rack_slot_location_code="NHW-1CLJ-0096-1C-1",
+                    bin_id="BIN-204",
+                    bin_orientation_code="BIN-204-A",
+                    bin_type="3格箱",
+                    bin_cell_location="BIN-204-7",
+                    bin_cell_index="7",
                     reel_layer="15",
                     reel_thickness="20",
                     reel_diameter="15inch",
@@ -462,7 +485,7 @@ class ArmSimulator:
         return None
 
     def _resolve_dynamic_bin_location(self, location_id: str) -> DeviceLocation | None:
-        if not location_id.startswith("BIN_"):
+        if not location_id.startswith(("BIN_", "BIN-")):
             return None
 
         bin_locations = self.device_config["locations"].get("BIN", [])
@@ -579,8 +602,8 @@ class ArmSimulator:
         if task_type == "MEASUREMENT_REEL":
             data: JsonDict = {
                 "PkgID": pkg_id or barcode_seed or "",
-                "reel_diameter": 15.0,
-                "reel_thickness": 20.0,
+                "reel_diameter": _measurement_number_from_env(MEASUREMENT_REEL_DIAMETER_ENV, 15.0),
+                "reel_thickness": _measurement_number_from_env(MEASUREMENT_REEL_THICKNESS_ENV, 20.0),
                 "inspection_result": "NG" if inspection_ng_reason else "OK",
             }
             if inspection_ng_reason:
@@ -605,9 +628,13 @@ class ArmSimulator:
             data.update(
                 {
                     "rack_id": target.rack_id,
+                    "rack_slot_code": target.rack_slot_code,
+                    "rack_slot_location_code": target.rack_slot_location_code,
                     "bin_id": target.bin_id,
+                    "bin_orientation_code": target.bin_orientation_code,
                     "bin_type": target.bin_type,
                     "bin_cell_location": target.bin_cell_location,
+                    "bin_cell_index": target.bin_cell_index,
                 }
             )
         return data
@@ -677,6 +704,11 @@ class ArmSimulator:
         source_location_id: str | None = None,
         target_location_id: str | None = None,
         target_bin_type: str | None = None,
+        target_bin_cell_location: str | None = None,
+        target_rack_slot_code: str | None = None,
+        target_rack_slot_location_code: str | None = None,
+        target_bin_orientation_code: str | None = None,
+        target_bin_cell_index: str | None = None,
         barcode: str | None = None,
         simulate_failure: bool = False,
         execution_time: float = EXECUTION_TIME,
@@ -713,7 +745,12 @@ class ArmSimulator:
                 target = target.model_copy(
                     update={
                         "bin_id": target_location_id or target.bin_id,
+                        "rack_slot_code": target_rack_slot_code or target.rack_slot_code,
+                        "rack_slot_location_code": target_rack_slot_location_code or target.rack_slot_location_code,
                         "bin_type": target_bin_type or target.bin_type,
+                        "bin_orientation_code": target_bin_orientation_code or target.bin_orientation_code,
+                        "bin_cell_location": target_bin_cell_location or target.bin_cell_location,
+                        "bin_cell_index": target_bin_cell_index or target.bin_cell_index,
                     }
                 )
             resolved_command_code = command_code or self._generate_command_code()
@@ -840,12 +877,28 @@ class ArmSimulator:
 
     async def execute_wes_command(self, payload: DeviceCommandPayload) -> ExecutionRecord:
         params = payload.params or {}
+        target_payload = cast("JsonDict", params.get("target")) if isinstance(params.get("target"), dict) else {}
+        rack_slot_code = self._text_param(params, target_payload, "rack_slot_code")
+        rack_slot_location_code = self._text_param(params, target_payload, "rack_slot_location_code")
+        bin_orientation_code = self._text_param(params, target_payload, "bin_orientation_code")
+        bin_cell_index = self._text_param(params, target_payload, "bin_cell_index")
+        raw_bin_cell_location = params.get("bin_cell_location")
+        if raw_bin_cell_location is None:
+            raw_bin_cell_location = target_payload.get("bin_cell_location")
+        bin_cell_location = str(raw_bin_cell_location).strip() if raw_bin_cell_location is not None else None
+        if not bin_cell_location:
+            bin_cell_location = None
         source, target = self._resolve_command_locations_from_params(params)
         if target.location_type == "BIN":
             target = target.model_copy(
                 update={
                     "bin_id": cast("str | None", params.get("target_loc")) or target.bin_id,
+                    "rack_slot_code": rack_slot_code or target.rack_slot_code,
+                    "rack_slot_location_code": rack_slot_location_code or target.rack_slot_location_code,
                     "bin_type": cast("str | None", params.get("bin_type")) or target.bin_type,
+                    "bin_orientation_code": bin_orientation_code or target.bin_orientation_code,
+                    "bin_cell_location": bin_cell_location or target.bin_cell_location,
+                    "bin_cell_index": bin_cell_index or target.bin_cell_index,
                 }
             )
 
@@ -869,6 +922,11 @@ class ArmSimulator:
             source_location_id=source.location_id,
             target_location_id=cast("str | None", params.get("target_loc")) or target.location_id,
             target_bin_type=cast("str | None", params.get("bin_type")),
+            target_bin_cell_location=bin_cell_location,
+            target_rack_slot_code=rack_slot_code,
+            target_rack_slot_location_code=rack_slot_location_code,
+            target_bin_orientation_code=bin_orientation_code,
+            target_bin_cell_index=bin_cell_index,
             barcode=barcode,
             simulate_failure=bool(params.get("simulate_failure", False)),
             execution_time=float(params.get("execution_time", EXECUTION_TIME)),
@@ -879,6 +937,16 @@ class ArmSimulator:
             inspection_ng_reason=inspection_ng_reason,
             report_result=True,
         )
+
+    @staticmethod
+    def _text_param(params: JsonDict, target_payload: JsonDict, field_name: str) -> str | None:
+        raw_value = params.get(field_name)
+        if raw_value is None:
+            raw_value = target_payload.get(field_name)
+        if raw_value is None:
+            return None
+        value = str(raw_value).strip()
+        return value or None
 
     async def emit_scan_completed(self, request: ScanCompletedDebugRequest) -> ExecutionRecord:
         if self.device_config["device_role"] != "INPUT_ARM":

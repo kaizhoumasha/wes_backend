@@ -10,7 +10,7 @@ import pytest
 from src.app.workline.services.ng_return_item_service import ng_return_item_service
 from src.celery_app.tasks import workline as workline_effects
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent
+from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.workline_runtime.trace_context import TraceContext
 
@@ -318,6 +318,48 @@ async def test_external_request_intent_records_full_box_exchange_task(
     assert task_calls[0]["payload_json"]["rack_release_id"] == "release-001"
     assert task_calls[0]["trace_id"] == "trace-runtime"
     assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
+
+
+@pytest.mark.asyncio
+async def test_device_event_intent_creates_device_event_inbox_without_waiting_current_session() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    class RecordingInboxService:
+        def __init__(self) -> None:
+            self.created: dict[str, Any] = {}
+
+        async def create_device_event_inbox(self, **kwargs: Any) -> object:
+            self.created = kwargs
+            return SimpleNamespace(id=456)
+
+    recording_inbox_service = RecordingInboxService()
+    intent = RuntimeIntent.device_event(
+        device_code="SMT-RACK-RELEASE",
+        event_type="SINGLE_LAYER_RACK_RELEASED",
+        timestamp=1770000000000,
+        data={"rack_release_id": "release-001"},
+        event_id="smt-release:release-001",
+        causation_id="scan:event-001",
+        canonical_event_type="SINGLE_LAYER_RACK_RELEASED",
+    )
+
+    await RuntimeIntentEffectApplier(inbox_service=recording_inbox_service).apply(ctx, [intent])
+
+    assert intent.kind == RuntimeIntentKind.DEVICE_EVENT
+    assert recording_inbox_service.created["db"] is ctx["db"]
+    assert recording_inbox_service.created["device_code"] == "SMT-RACK-RELEASE"
+    assert recording_inbox_service.created["event_type"] == "SINGLE_LAYER_RACK_RELEASED"
+    assert recording_inbox_service.created["timestamp"] == 1770000000000
+    assert recording_inbox_service.created["data"] == {"rack_release_id": "release-001"}
+    assert recording_inbox_service.created["trace_id"] == "trace-runtime"
+    assert recording_inbox_service.created["event_id"] == "smt-release:release-001"
+    assert recording_inbox_service.created["causation_id"] == "scan:event-001"
+    assert recording_inbox_service.created["canonical_event_type"] == "SINGLE_LAYER_RACK_RELEASED"
+    assert recording_inbox_service.created["auto_commit"] is False
+    assert session.status == "RUNNING"
+    assert session.current_wait_type is None
+    assert session.awaiting_command_id is None
 
 
 @pytest.mark.asyncio

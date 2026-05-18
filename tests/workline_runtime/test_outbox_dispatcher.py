@@ -910,7 +910,7 @@ class TestOutboxDispatcher:
 
         fixed_now = datetime(2026, 4, 17, 1, 57, 12)
 
-        with patch("src.app.workline.models.outbox.timezone.now_for_db", return_value=fixed_now):
+        with patch("src.core.mixins.timestamp.TimestampMixin._get_now", return_value=fixed_now):
             outbox = WorklineOutbox(
                 session_id=417,
                 workline_id=45,

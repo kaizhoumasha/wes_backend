@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,7 +38,7 @@ class SmtClassifierContext(BaseModel):
     def from_mapping(cls, value: Any) -> SmtClassifierContext:
         """从 session.context_json 等 dict 结构解析插件上下文。"""
 
-        return cls.model_validate(dict(value) if isinstance(value, dict) else {})
+        return cls.model_validate(dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {})
 
     @classmethod
     def from_session(cls, session: Any) -> SmtClassifierContext:

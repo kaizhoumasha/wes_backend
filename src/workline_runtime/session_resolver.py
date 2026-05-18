@@ -6,7 +6,7 @@ Session 归属解析器
 规则（按 InboxKind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
 - COMMAND_RESULT: 按 command_code -> awaiting_command_id / trace_id 恢复 Session
-- EXTERNAL_HTTP: 按 trace_id 恢复 Session
+- EXTERNAL_HTTP: 优先按 dispatch_key -> outbox 恢复 Session，回退 trace_id
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
+from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository, outbox_repository
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -267,6 +268,7 @@ class SessionResolver:
         self,
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
+        outbox_repo: WorklineOutboxRepository | None = None,
     ) -> None:
         """初始化 SessionResolver
 
@@ -275,6 +277,7 @@ class SessionResolver:
         """
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or DeviceCommandRepository()
+        self.outbox_repo = outbox_repo or outbox_repository
 
     async def resolve_or_create(
         self,
@@ -357,7 +360,7 @@ class SessionResolver:
                 db=db,
                 trace_id=trace.trace_id,
             )
-            if session_by_trace:
+            if session_by_trace and getattr(session_by_trace, "workline_id", None) == workline_id:
                 return _reuse_existing_session(inbox, session_by_trace, trace=trace, observed_at=now)
 
         # 3. 如果还是没有，查找最新的 Session。
@@ -452,7 +455,7 @@ class SessionResolver:
     ) -> WorklineSession:
         """处理 EXTERNAL_HTTP 类型的 Session 解析
 
-        按 trace_id 恢复 Session。
+        优先按 dispatch_key 找到 Outbox 绑定的 Session；无绑定时回退 trace_id。
 
         Args:
             db: 数据库会话
@@ -466,6 +469,18 @@ class SessionResolver:
         """
         trace = TraceContext.from_runtime(inbox=inbox)
         trace_id = trace.trace_id
+        payload_json = ensure_dict(inbox.payload_json)
+        dispatch_key = non_empty_str(payload_json.get("dispatch_key"))
+
+        if dispatch_key is not None:
+            outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
+            session_id = getattr(outbox, "session_id", None) if outbox is not None else None
+            if isinstance(session_id, int):
+                session_by_dispatch_key = await self.session_repo.get_by_id(db, session_id)
+                if session_by_dispatch_key is not None:
+                    inbox.session_id = session_by_dispatch_key.id
+                    inbox.workline_id = getattr(session_by_dispatch_key, "workline_id", None)
+                    return session_by_dispatch_key
 
         if not trace_id:
             raise ValueError("trace_id is required for EXTERNAL_HTTP")

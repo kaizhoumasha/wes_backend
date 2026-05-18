@@ -118,6 +118,36 @@ async def test_release_event_completes_without_exchange_when_policy_not_hit() ->
 
 
 @pytest.mark.asyncio
+async def test_smt_release_event_requests_exchange_even_when_usage_snapshot_is_low() -> None:
+    payload = _spec_release_payload(usage=0.2, status="IN_USE")
+    payload["data"]["release_reason_code"] = "NO_COMPATIBLE_OR_EMPTY_CELL"
+
+    result = await SmtFullBoxExchangePlugin().on_device_event(
+        _ctx(
+            config={
+                "external_endpoints": {
+                    "wms_rcs_full_box_exchange_url": "http://wms-rcs/api/full-box-exchange",
+                },
+                "exchange_area_code": "SMT_FULL_BOX_EXCHANGE_A",
+                "callback_url": "http://wes/api/v1/callback/external",
+                "timeouts": {"external_exchange_seconds": 1800},
+            }
+        ),
+        _inbox(payload),
+    )
+
+    assert [intent.kind for intent in result] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.EXTERNAL_REQUEST,
+    ]
+    assert result[0].context_patch["exchange_required"] is True
+    assert result[0].context_patch["qualified_bin_count"] == 4
+    assert result[1].payload_json["request_type"] == "SMT_FULL_BOX_EXCHANGE"
+    assert result[1].payload_json["source_classifier_line_code"] == "WL-SMT-CLASSIFIER-01"
+    assert len(result[1].payload_json["exchange_bins"]) == 4
+
+
+@pytest.mark.asyncio
 async def test_release_event_requests_external_exchange_when_any_bin_is_full() -> None:
     result = await SmtFullBoxExchangePlugin().on_device_event(
         _ctx(

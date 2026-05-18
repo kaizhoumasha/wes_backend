@@ -1,8 +1,11 @@
+import pytest
+
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.runtime_intent import (
     BlockScope,
     Destination,
     DestinationKind,
+    RuntimeIntent,
     RuntimeIntentKind,
 )
 
@@ -105,3 +108,59 @@ def test_plugin_next_external_request_builds_runtime_intent():
     assert intent.payload_json == {"rack_release_id": "release-001"}
     assert intent.timeout_seconds == 1800
     assert intent.source_system == "WMS_RCS"
+
+
+def test_device_event_intent_builder():
+    intent = PluginNext().device_event(
+        device_code="SMT-RACK-RELEASE",
+        event_type="SINGLE_LAYER_RACK_RELEASED",
+        data={"rack_release_id": "release-001"},
+        event_id="smt-release:release-001",
+    )
+
+    assert intent.kind == RuntimeIntentKind.DEVICE_EVENT
+    assert intent.payload_json["device_code"] == "SMT-RACK-RELEASE"
+    assert intent.payload_json["event_type"] == "SINGLE_LAYER_RACK_RELEASED"
+    assert intent.payload_json["data"] == {"rack_release_id": "release-001"}
+    assert intent.payload_json["event_id"] == "smt-release:release-001"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {"device_code": "SMT-RACK-RELEASE", "event_type": "SINGLE_LAYER_RACK_RELEASED", "data": {}},
+            "DEVICE_EVENT intent requires timestamp",
+        ),
+        (
+            {
+                "device_code": "SMT-RACK-RELEASE",
+                "event_type": "SINGLE_LAYER_RACK_RELEASED",
+                "timestamp": "invalid",
+                "data": {},
+            },
+            "DEVICE_EVENT intent timestamp must be an integer",
+        ),
+        (
+            {
+                "device_code": "SMT-RACK-RELEASE",
+                "event_type": "SINGLE_LAYER_RACK_RELEASED",
+                "timestamp": 1770000000000,
+                "data": None,
+            },
+            "DEVICE_EVENT intent data must be a dict",
+        ),
+        (
+            {
+                "device_code": "SMT-RACK-RELEASE",
+                "event_type": "SINGLE_LAYER_RACK_RELEASED",
+                "timestamp": 1770000000000,
+                "data": [],
+            },
+            "DEVICE_EVENT intent data must be a dict",
+        ),
+    ],
+)
+def test_device_event_intent_rejects_invalid_payload_contract(payload, message):
+    with pytest.raises(ValueError, match=message):
+        RuntimeIntent(kind=RuntimeIntentKind.DEVICE_EVENT, payload_json=payload)

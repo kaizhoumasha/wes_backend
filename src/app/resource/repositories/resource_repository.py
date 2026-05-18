@@ -64,14 +64,13 @@ class RackSlotTemplateRepository(BaseRepository[RackSlotTemplate]):
         rack_type_code: str,
         slot_code: str,
     ) -> RackSlotTemplate | None:
-        """按货架类型和槽位编码查询未删除模板。"""
+        """按货架类型和槽位编码查询模板。"""
 
         columns = cast("Any", RackSlotTemplate).__table__.c
         result = await db.execute(
             select(RackSlotTemplate).where(
                 columns.rack_type_code == rack_type_code,
                 columns.slot_code == slot_code,
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -84,13 +83,12 @@ class RackRepository(BaseRepository[Rack]):
         super().__init__(Rack)
 
     async def get_by_rack_code(self, db: AsyncSession, rack_code: str) -> Rack | None:
-        """按 rack_code 查询未删除货架。"""
+        """按 rack_code 查询货架。"""
 
         columns = cast("Any", Rack).__table__.c
         result = await db.execute(
             select(Rack).where(
                 columns.rack_code == rack_code,
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -117,13 +115,12 @@ class BinRepository(BaseRepository[Bin]):
         super().__init__(Bin)
 
     async def get_by_bin_code(self, db: AsyncSession, bin_code: str) -> Bin | None:
-        """按 bin_code 查询未删除料箱。"""
+        """按 bin_code 查询料箱。"""
 
         columns = cast("Any", Bin).__table__.c
         result = await db.execute(
             select(Bin).where(
                 columns.bin_code == bin_code,
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -168,7 +165,6 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
             select(RackPlacement).where(
                 columns.rack_code == rack_code,
                 columns.ended_at.is_(None),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -195,7 +191,6 @@ class RackBinMountRepository(BaseRepository[RackBinMount]):
                 columns.rack_code == rack_code,
                 columns.rack_slot_code == rack_slot_code,
                 columns.ended_at.is_(None),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -208,7 +203,6 @@ class RackBinMountRepository(BaseRepository[RackBinMount]):
             select(RackBinMount).where(
                 columns.bin_code == bin_code,
                 columns.ended_at.is_(None),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()
@@ -235,7 +229,6 @@ class RackMaterialMountRepository(BaseRepository[RackMaterialMount]):
                 columns.rack_code == rack_code,
                 columns.rack_slot_code == rack_slot_code,
                 columns.ended_at.is_(None),
-                columns.is_deleted.is_(False),
             )
         )
         return result.scalar_one_or_none()

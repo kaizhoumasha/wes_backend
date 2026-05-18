@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -64,7 +64,7 @@ class ResolvedExecutionContext(BaseModel):
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
 
 def _enum_str(value: Any) -> Any:

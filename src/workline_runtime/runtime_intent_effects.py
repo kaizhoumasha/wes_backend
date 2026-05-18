@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from src.workline_runtime.material_target_resolver import resolve_destination_device
 from src.workline_runtime.runtime_intent import (
@@ -20,6 +21,7 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
+    RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
@@ -113,19 +115,26 @@ def _runtime_route_roles(ctx: Any) -> dict[str, str]:
     workline = ctx["workline"]
     route_roles: dict[str, str] = {}
     for source in (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None)):
-        if not isinstance(source, dict):
+        if not isinstance(source, Mapping):
             continue
-        raw_routes = source.get("route_roles") or source.get("routes")
-        if not isinstance(raw_routes, dict):
+        source_map = cast("Mapping[str, Any]", source)
+        raw_routes = source_map.get("route_roles") or source_map.get("routes")
+        if not isinstance(raw_routes, Mapping):
             continue
+        route_map = cast("Mapping[Any, Any]", raw_routes)
         route_roles.update(
             {
                 key: value
-                for key, value in raw_routes.items()
+                for key, value in route_map.items()
                 if isinstance(key, str) and isinstance(value, str) and value
             }
         )
     return route_roles
+
+
+def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
+    trace = ctx.get("trace")
+    return getattr(trace, "trace_id", None) or ctx.get("trace_id")
 
 
 def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
@@ -149,8 +158,14 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
 
 
 class RuntimeIntentEffectApplier:
-    def __init__(self, *, full_box_exchange_task_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        full_box_exchange_task_service: Any | None = None,
+        inbox_service: Any | None = None,
+    ) -> None:
         self._full_box_exchange_task_service = full_box_exchange_task_service
+        self._inbox_service = inbox_service
 
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
@@ -178,6 +193,10 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
                 await self._apply_external_request(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
+                await self._apply_device_event(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
@@ -417,6 +436,28 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
 
+    async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
+        service = self._inbox_service
+        if service is None:
+            from src.app.workline.services import inbox_service
+
+            service = inbox_service
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        payload = dict(intent.payload_json)
+        _ = await service.create_device_event_inbox(
+            db=ctx_map["db"],
+            device_code=str(payload["device_code"]),
+            event_type=str(payload["event_type"]),
+            timestamp=int(payload["timestamp"]),
+            data=dict(payload["data"]),
+            trace_id=_ctx_trace_id(ctx_map),
+            event_id=payload.get("event_id"),
+            causation_id=payload.get("causation_id"),
+            canonical_event_type=payload.get("canonical_event_type"),
+            auto_commit=False,
+        )
+
     async def _record_full_box_exchange_task(
         self,
         ctx: Any,
@@ -432,16 +473,15 @@ class RuntimeIntentEffectApplier:
 
             service = full_box_exchange_task_service
 
-        trace = ctx.get("trace") if isinstance(ctx, dict) else None
-        trace_id = getattr(trace, "trace_id", None) or ctx.get("trace_id")
+        ctx_map = cast("Mapping[str, Any]", ctx)
         _ = await service.record_requested_from_external_request(
-            db=ctx["db"],
-            session=ctx["session"],
+            db=ctx_map["db"],
+            session=ctx_map["session"],
             outbox=outbox,
             dispatch_key=dispatch_key,
             target_code=target_code,
             payload_json=payload_json,
-            trace_id=trace_id,
+            trace_id=_ctx_trace_id(ctx_map),
         )
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:

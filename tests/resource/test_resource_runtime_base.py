@@ -1,6 +1,19 @@
 """WES 运行时资源底座测试。"""
 
+from typing import Any, cast
+
 from sqlmodel import SQLModel
+
+
+def _table_columns(model: type[Any]) -> set[str]:
+    return set(cast("Any", model).__table__.c.keys())
+
+
+def _schema_fields(schema: type[Any]) -> set[str]:
+    return set(cast("Any", schema).model_fields)
+
+
+RESOURCE_STATE_COLUMNS = {"version", "created_by", "updated_by", "deleted_by", "deleted_at", "is_deleted"}
 
 
 def test_resource_ref_covers_wes_runtime_resource_types() -> None:
@@ -131,31 +144,170 @@ def test_fifth_stage_release_snapshot_and_exchange_tables_are_registered() -> No
     assert FullBoxExchangeTask.__table__.c.exchange_request_code.nullable is False
 
 
-def test_resource_v1_router_exposes_first_stage_crud_routes() -> None:
-    """resource v1 路由应暴露第一阶段底座资源的查询入口。"""
+def test_resource_table_models_do_not_use_enterprise_or_soft_delete_mixins() -> None:
+    """资源域表模型不应携带人工审计、乐观锁或软删除字段。"""
 
-    from src.app.resource import router_v1
+    from src.app.resource.models import (
+        Bin,
+        BinContentSnapshot,
+        BinContentSnapshotItem,
+        BinSlotTemplate,
+        BinType,
+        ExecutionLocation,
+        ExecutionZone,
+        FullBoxExchangeTask,
+        Rack,
+        RackBinMount,
+        RackMaterialMount,
+        RackPlacement,
+        RackRelease,
+        RackReleaseBinSnapshot,
+        RackSlotTemplate,
+        RackType,
+        ResourceStateEvent,
+        WmsWritebackEvidence,
+    )
 
-    paths = {route.path for route in router_v1.routes}
+    for model in (
+        ExecutionZone,
+        ExecutionLocation,
+        RackType,
+        RackSlotTemplate,
+        Rack,
+        BinType,
+        BinSlotTemplate,
+        Bin,
+        ResourceStateEvent,
+        RackPlacement,
+        RackBinMount,
+        RackMaterialMount,
+        WmsWritebackEvidence,
+        RackRelease,
+        RackReleaseBinSnapshot,
+        BinContentSnapshot,
+        BinContentSnapshotItem,
+        FullBoxExchangeTask,
+    ):
+        assert RESOURCE_STATE_COLUMNS.isdisjoint(_table_columns(model)), model.__name__
 
-    assert "/v1/resource/execution-zones/query" in paths
-    assert "/v1/resource/execution-locations/query" in paths
-    assert "/v1/resource/rack-types/query" in paths
-    assert "/v1/resource/rack-slot-templates/query" in paths
-    assert "/v1/resource/racks/query" in paths
-    assert "/v1/resource/bin-types/query" in paths
-    assert "/v1/resource/bin-slot-templates/query" in paths
-    assert "/v1/resource/bins/query" in paths
+
+def test_resource_schemas_do_not_expose_optimistic_version() -> None:
+    """资源域 Schema 不应暴露乐观锁 version。"""
+
+    from src.app.resource.models import (
+        BinContentSnapshotCreate,
+        BinContentSnapshotItemResponse,
+        BinContentSnapshotItemUpdate,
+        BinContentSnapshotResponse,
+        BinContentSnapshotUpdate,
+        BinCreate,
+        BinResponse,
+        BinSlotTemplateCreate,
+        BinSlotTemplateResponse,
+        BinSlotTemplateUpdate,
+        BinTypeCreate,
+        BinTypeResponse,
+        BinTypeUpdate,
+        BinUpdate,
+        ExecutionLocationCreate,
+        ExecutionLocationResponse,
+        ExecutionLocationUpdate,
+        ExecutionZoneCreate,
+        ExecutionZoneResponse,
+        ExecutionZoneUpdate,
+        FullBoxExchangeTaskResponse,
+        FullBoxExchangeTaskUpdate,
+        RackBinMountResponse,
+        RackBinMountUpdate,
+        RackCreate,
+        RackMaterialMountResponse,
+        RackMaterialMountUpdate,
+        RackPlacementResponse,
+        RackPlacementUpdate,
+        RackReleaseBinSnapshotResponse,
+        RackReleaseBinSnapshotUpdate,
+        RackReleaseResponse,
+        RackReleaseUpdate,
+        RackResponse,
+        RackSlotTemplateCreate,
+        RackSlotTemplateResponse,
+        RackSlotTemplateUpdate,
+        RackTypeCreate,
+        RackTypeResponse,
+        RackTypeUpdate,
+        RackUpdate,
+        ResourceStateEventResponse,
+        ResourceStateEventUpdate,
+        WmsWritebackEvidenceResponse,
+        WmsWritebackEvidenceUpdate,
+    )
+
+    for schema in (
+        ExecutionZoneCreate,
+        ExecutionZoneUpdate,
+        ExecutionZoneResponse,
+        ExecutionLocationCreate,
+        ExecutionLocationUpdate,
+        ExecutionLocationResponse,
+        RackTypeCreate,
+        RackTypeUpdate,
+        RackTypeResponse,
+        RackSlotTemplateCreate,
+        RackSlotTemplateUpdate,
+        RackSlotTemplateResponse,
+        RackCreate,
+        RackUpdate,
+        RackResponse,
+        BinTypeCreate,
+        BinTypeUpdate,
+        BinTypeResponse,
+        BinSlotTemplateCreate,
+        BinSlotTemplateUpdate,
+        BinSlotTemplateResponse,
+        BinCreate,
+        BinUpdate,
+        BinResponse,
+        ResourceStateEventUpdate,
+        ResourceStateEventResponse,
+        RackPlacementUpdate,
+        RackPlacementResponse,
+        RackBinMountUpdate,
+        RackBinMountResponse,
+        RackMaterialMountUpdate,
+        RackMaterialMountResponse,
+        WmsWritebackEvidenceUpdate,
+        WmsWritebackEvidenceResponse,
+        RackReleaseUpdate,
+        RackReleaseResponse,
+        RackReleaseBinSnapshotUpdate,
+        RackReleaseBinSnapshotResponse,
+        BinContentSnapshotCreate,
+        BinContentSnapshotUpdate,
+        BinContentSnapshotResponse,
+        BinContentSnapshotItemUpdate,
+        BinContentSnapshotItemResponse,
+        FullBoxExchangeTaskUpdate,
+        FullBoxExchangeTaskResponse,
+    ):
+        assert "version" not in _schema_fields(schema), schema.__name__
 
 
-def test_resource_v1_router_exposes_readonly_process_and_projection_routes() -> None:
-    """事实、投影、证据和过程镜像只暴露查询/详情，写入必须走领域服务。"""
+def test_resource_v1_router_exposes_readonly_routes() -> None:
+    """资源域只暴露查询/详情，写入必须走同步或领域服务。"""
 
     from src.app.resource import router_v1
 
     paths = {route.path for route in router_v1.routes}
     route_methods = {(route.path, method) for route in router_v1.routes for method in getattr(route, "methods", set())}
     readonly_prefixes = (
+        "/v1/resource/execution-zones",
+        "/v1/resource/execution-locations",
+        "/v1/resource/rack-types",
+        "/v1/resource/rack-slot-templates",
+        "/v1/resource/racks",
+        "/v1/resource/bin-types",
+        "/v1/resource/bin-slot-templates",
+        "/v1/resource/bins",
         "/v1/resource/state-events",
         "/v1/resource/rack-placements",
         "/v1/resource/rack-bin-mounts",

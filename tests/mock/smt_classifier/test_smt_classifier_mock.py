@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from tests.mock.smt_classifier import agv_mock, allocation_mock, arm_mock, pipeline_mock
+from tests.mock.smt_classifier import agv_mock, allocation_mock, arm_mock, pipeline_mock, rack_exchange_mock
 from tests.mock.smt_classifier.run_all import MOCK_SERVICES
 
 
@@ -21,6 +21,13 @@ def test_run_all_modules_are_importable() -> None:
     for service in MOCK_SERVICES:
         module = importlib.import_module(service["module"])
         assert hasattr(module, service["app_attr"])
+
+
+def test_run_all_includes_wms_rcs_rack_exchange_mock() -> None:
+    services_by_port = {service["port"]: service for service in MOCK_SERVICES}
+
+    assert services_by_port[8010]["module"] == "tests.mock.smt_classifier.rack_exchange_mock"
+    assert services_by_port[8010]["device_code"] == "WMS_RCS"
 
 
 def test_run_all_uses_shared_ports_for_dual_worklines() -> None:
@@ -346,6 +353,47 @@ async def test_arm_input_mock_supports_measurement_reel(monkeypatch: pytest.Monk
     assert callback_data["reel_thickness"] == 20.0
 
 
+@pytest.mark.asyncio
+async def test_arm_input_mock_uses_configured_measurement_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARM_MEASUREMENT_REEL_DIAMETER", "7inch")
+    monkeypatch.setenv("ARM_MEASUREMENT_REEL_THICKNESS", "12.5")
+
+    simulator = arm_mock.ArmSimulator(arm_mock.DEVICE_CONFIGS["ARM01"])
+    captured: dict[str, object] = {}
+
+    async def fake_callback_result_to_wes(
+        *,
+        command_code: str,
+        result: str,
+        data: dict[str, object] | None,
+        error_detail: dict[str, object] | None,
+    ) -> dict[str, object]:
+        captured["command_code"] = command_code
+        captured["result"] = result
+        captured["data"] = data
+        captured["error_detail"] = error_detail
+        return {"code": 1000}
+
+    monkeypatch.setattr(simulator, "_callback_result_to_wes", fake_callback_result_to_wes)
+
+    payload = arm_mock.DeviceCommandPayload(
+        device_code="ARM01",
+        command_code="CMD-MEASURE-ENV-001",
+        task_type="MEASUREMENT_REEL",
+        priority=1,
+        timeout=30,
+        params={"pkg_id": "PKG001", "execution_time": 0},
+        timestamp=1,
+    )
+
+    await simulator.execute_wes_command(payload)
+
+    callback_data = captured["data"]
+    assert isinstance(callback_data, dict)
+    assert callback_data["reel_diameter"] == 7.0
+    assert callback_data["reel_thickness"] == 12.5
+
+
 async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         arm_mock.DEVICE_STATUS_BY_CODE,
@@ -385,8 +433,13 @@ async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: py
         params={
             "barcode": "PKG-OUTPUT-001",
             "target_type": "BIN",
-            "target_loc": "BIN_249",
-            "bin_type": "九格箱",
+            "target_loc": "BIN-249",
+            "rack_slot_code": "A",
+            "rack_slot_location_code": "NHW-1CLJ-0096-1A-0",
+            "bin_orientation_code": "BIN-249-A",
+            "bin_type": "6格箱",
+            "bin_cell_location": "BIN-249-4",
+            "bin_cell_index": "4",
             "execution_time": 0,
         },
         timestamp=1,
@@ -398,8 +451,77 @@ async def test_arm_output_mock_accepts_bin_id_as_target_location(monkeypatch: py
     assert captured["result"] == "SUCCESS"
     callback_data = captured["data"]
     assert isinstance(callback_data, dict)
-    assert callback_data["bin_id"] == "BIN_249"
-    assert callback_data["bin_type"] == "九格箱"
+    assert callback_data["bin_id"] == "BIN-249"
+    assert callback_data["rack_slot_code"] == "A"
+    assert callback_data["rack_slot_location_code"] == "NHW-1CLJ-0096-1A-0"
+    assert callback_data["bin_orientation_code"] == "BIN-249-A"
+    assert callback_data["bin_type"] == "6格箱"
+    assert callback_data["bin_cell_location"] == "BIN-249-4"
+    assert callback_data["bin_cell_index"] == "4"
+
+
+@pytest.mark.asyncio
+async def test_arm_output_mock_accepts_hyphenated_dynamic_bin_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        arm_mock.DEVICE_STATUS_BY_CODE,
+        "ARM02",
+        {
+            "device_code": "ARM02",
+            "status": "IDLE",
+            "is_online": True,
+            "error_code": "NONE",
+            "current_command_code": None,
+        },
+    )
+    simulator = arm_mock.ArmSimulator(arm_mock.DEVICE_CONFIGS["ARM02"])
+    captured: dict[str, object] = {}
+
+    async def fake_callback_result_to_wes(
+        *,
+        command_code: str,
+        result: str,
+        data: dict[str, object] | None,
+        error_detail: dict[str, object] | None,
+    ) -> dict[str, object]:
+        captured["command_code"] = command_code
+        captured["result"] = result
+        captured["data"] = data
+        captured["error_detail"] = error_detail
+        return {"code": 1000}
+
+    monkeypatch.setattr(simulator, "_callback_result_to_wes", fake_callback_result_to_wes)
+
+    payload = arm_mock.DeviceCommandPayload(
+        device_code="ARM02",
+        command_code="CMD-OUTPUT-BIN-HYPHEN-001",
+        task_type="PICK_AND_PUT",
+        priority=1,
+        timeout=30,
+        params={
+            "barcode": "PKG-OUTPUT-002",
+            "target_type": "BIN",
+            "target_loc": "BIN-MOCK-001",
+            "rack_slot_code": "B",
+            "rack_slot_location_code": "NHW-1CLJ-0096-1B-0",
+            "bin_orientation_code": "BIN-MOCK-001-A",
+            "bin_type": "6格箱",
+            "bin_cell_location": "BIN-MOCK-001-5",
+            "bin_cell_index": "5",
+            "execution_time": 0,
+        },
+        timestamp=1,
+    )
+
+    await simulator.execute_wes_command(payload)
+
+    callback_data = captured["data"]
+    assert isinstance(callback_data, dict)
+    assert callback_data["bin_id"] == "BIN-MOCK-001"
+    assert callback_data["rack_slot_code"] == "B"
+    assert callback_data["rack_slot_location_code"] == "NHW-1CLJ-0096-1B-0"
+    assert callback_data["bin_orientation_code"] == "BIN-MOCK-001-A"
+    assert callback_data["bin_cell_location"] == "BIN-MOCK-001-5"
+    assert callback_data["bin_cell_index"] == "5"
 
 
 @pytest.mark.asyncio
@@ -575,7 +697,13 @@ async def test_allocation_mock_returns_agv_then_allocated() -> None:
     assert first.message == "AGV_REQUIRED"
     assert first.data["allocation_status"] == "AGV_REQUIRED"
     assert second.message == "ALLOCATED"
-    assert second.data["target_bin"]["bin_id"].startswith("BIN_")
+    target_bin = second.data["target_bin"]
+    assert target_bin["bin_id"].startswith("BIN-")
+    assert target_bin["rack_slot_code"] in {"A", "B", "C", "D"}
+    assert target_bin["rack_slot_location_code"].startswith(f"{target_bin['rack_id']}-1")
+    assert target_bin["bin_orientation_code"] == f"{target_bin['bin_id']}-A"
+    assert target_bin["bin_cell_location"].startswith(f"{target_bin['bin_id']}-")
+    assert target_bin["bin_cell_index"] == target_bin["bin_cell_location"].rsplit("-", 1)[-1]
 
 
 @pytest.mark.asyncio
@@ -612,3 +740,258 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
     assert callback_payload["callback_type"] == "AGV_TASK_RESULT"
     assert callback_payload["trace_id"] == "trace-agv-001"
     assert callback_payload["command_code"] == "AGV-REQ-001"
+
+
+@pytest.mark.asyncio
+async def test_rack_supply_mock_accepts_smt_rack_supply_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_SUPPLY",
+        trace_id="trace-rack-mock",
+        actions=["SUPPLY_EMPTY_RACK"],
+    )
+
+    assert request.request_type == "SMT_RACK_SUPPLY"
+
+    record = await simulator.execute_request(request)
+
+    assert record.request_type == "SMT_RACK_SUPPLY"
+    assert record.callback_type == "WMS_RACK_ARRIVED"
+    assert record.result == "SUCCESS"
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
+    assert callback_payload["dispatch_key"] == "external:smt_classifier:trace-rack-mock:RACK_SUPPLY"
+
+
+@pytest.mark.asyncio
+async def test_rack_exchange_mock_defaults_to_mixed_single_layer_rack(monkeypatch: pytest.MonkeyPatch) -> None:
+    for env_name in (
+        "RACK_EXCHANGE_PROFILE",
+        "RACK_EXCHANGE_BIN_ID",
+        "RACK_EXCHANGE_BIN_TYPE",
+        "RACK_EXCHANGE_BIN_CELL_LOCATION",
+        "RACK_EXCHANGE_CELL_TYPE",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="external:smt_classifier:trace-mixed-rack:RACK_SUPPLY",
+        trace_id="trace-mixed-rack",
+        actions=["SUPPLY_EMPTY_RACK"],
+    )
+
+    await simulator.execute_request(request)
+
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    active_bin_rack = callback_payload["active_bin_rack"]
+    assert isinstance(active_bin_rack, dict)
+    cells = active_bin_rack["cells"]
+    assert isinstance(cells, list)
+    assert len(cells) == 18
+
+    cells_by_bin: dict[str, list[dict[str, object]]] = {}
+    for cell in cells:
+        assert isinstance(cell, dict)
+        cells_by_bin.setdefault(str(cell["bin_id"]), []).append(cell)
+        assert cell["status"] == "EMPTY"
+
+    six_cell_bins = [bin_id for bin_id, bin_cells in cells_by_bin.items() if bin_cells[0]["bin_type"] == "6格箱"]
+    three_cell_bins = [bin_id for bin_id, bin_cells in cells_by_bin.items() if bin_cells[0]["bin_type"] == "3格箱"]
+    assert len(six_cell_bins) == 2
+    assert len(three_cell_bins) == 2
+    assert all(
+        {str(cell["bin_cell_index"]) for cell in cells_by_bin[bin_id]} == {"1", "2", "3", "4", "5", "6"}
+        for bin_id in six_cell_bins
+    )
+    assert all(
+        {str(cell["bin_cell_index"]) for cell in cells_by_bin[bin_id]} == {"1", "2", "7"} for bin_id in three_cell_bins
+    )
+    assert sum(1 for cell in cells if cell["cell_type"] == "LARGE") == 2
+
+
+@pytest.mark.asyncio
+async def test_rack_exchange_mock_uses_large_three_cell_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RACK_EXCHANGE_PROFILE", "large_three_cell")
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="external:smt_classifier:trace-large-cell:RACK_SUPPLY",
+        trace_id="trace-large-cell",
+        actions=["SUPPLY_EMPTY_RACK"],
+    )
+
+    await simulator.execute_request(request)
+
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    active_bin_rack = callback_payload["active_bin_rack"]
+    assert isinstance(active_bin_rack, dict)
+    cell = active_bin_rack["cells"][0]
+    assert cell["bin_type"] == "3格箱"
+    assert cell["bin_cell_location"] == "BIN-MOCK-001-7"
+    assert cell["bin_cell_index"] == "7"
+    assert cell["cell_type"] == "LARGE"
+
+
+@pytest.mark.asyncio
+async def test_rack_exchange_mock_uses_seven_inch_six_cell_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RACK_EXCHANGE_PROFILE", "seven_inch_six_cell")
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="external:smt_classifier:trace-seven-inch:RACK_SUPPLY",
+        trace_id="trace-seven-inch",
+        actions=["SUPPLY_EMPTY_RACK"],
+    )
+
+    await simulator.execute_request(request)
+
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    active_bin_rack = callback_payload["active_bin_rack"]
+    assert isinstance(active_bin_rack, dict)
+    cell = active_bin_rack["cells"][0]
+    assert cell["bin_type"] == "6格箱"
+    assert cell["bin_cell_location"] == "BIN-MOCK-001-4"
+    assert cell["bin_cell_index"] == "4"
+    assert cell["cell_type"] == "SEVEN_INCH"
+
+
+@pytest.mark.asyncio
+async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(
+        url: str, payload: dict[str, object], timeout_seconds: float = 10.0
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_EXCHANGE_AND_SUPPLY",
+        trace_id="trace-rack-mock",
+        material={
+            "PkgID": "PKG-RACK-MOCK-001",
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+        },
+        actions=["EXCHANGE_RACK", "SUPPLY_EMPTY_BIN"],
+        resume_callback_type="WMS_RACK_ARRIVED",
+    )
+
+    record = await simulator.execute_request(request)
+
+    assert record.callback_type == "WMS_RACK_ARRIVED"
+    assert record.result == "SUCCESS"
+    assert captured["url"] == rack_exchange_mock.WES_EXTERNAL_CALLBACK_URL
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
+    assert callback_payload["source_system"] == "WMS"
+    assert callback_payload["dispatch_key"] == request.dispatch_key
+    assert callback_payload["trace_id"] == "trace-rack-mock"
+    active_bin_rack = callback_payload["active_bin_rack"]
+    assert isinstance(active_bin_rack, dict)
+    cell = active_bin_rack["cells"][0]
+    assert cell["bin_id"].startswith("BIN-")
+    assert cell["rack_slot_code"] in {"A", "B", "C", "D"}
+    assert cell["rack_slot_location_code"].startswith(f"{cell['rack_id']}-1")
+    assert cell["bin_orientation_code"] == f"{cell['bin_id']}-A"
+    assert cell["bin_cell_location"].startswith(f"{cell['bin_id']}-")
+    assert cell["bin_cell_index"] == cell["bin_cell_location"].rsplit("-", 1)[-1]
+    assert cell["status"] == "EMPTY"
+
+
+@pytest.mark.asyncio
+async def test_rack_exchange_mock_progress_mode_keeps_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = rack_exchange_mock.RackExchangeSimulator(mode="progress")
+    captured: dict[str, object] = {}
+
+    async def fake_post_signed_json(url: str, payload: dict[str, object], timeout_seconds: float = 10.0) -> dict:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return {"code": 1000}
+
+    monkeypatch.setattr(rack_exchange_mock, "post_signed_json", fake_post_signed_json)
+    monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
+
+    request = rack_exchange_mock.RackExchangeRequest(
+        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-rack-progress:RACK_EXCHANGE_AND_SUPPLY",
+        trace_id="trace-rack-progress",
+        material={"PkgID": "PKG-RACK-MOCK-002"},
+        actions=["EXCHANGE_RACK"],
+        resume_callback_type="WMS_RACK_ARRIVED",
+    )
+
+    record = await simulator.execute_request(request)
+
+    assert record.callback_type == "WMS_RACK_EXCHANGE_PROGRESS"
+    assert record.result == "IN_PROGRESS"
+    callback_payload = captured["payload"]
+    assert isinstance(callback_payload, dict)
+    assert callback_payload["callback_type"] == "WMS_RACK_EXCHANGE_PROGRESS"
+    assert callback_payload["status"] == "IN_PROGRESS"

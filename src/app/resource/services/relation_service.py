@@ -209,6 +209,7 @@ class ResourceRelationService:
         if existing_event is not None:
             return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
 
+        occurred_at_for_db = timezone.to_db_datetime(occurred_at) or timezone.now_for_db()
         event = await self.state_event_repo.create(
             db,
             {
@@ -227,7 +228,7 @@ class ResourceRelationService:
                     "source_task_id": source_task_id,
                     "post_exchange_relations": dict(post_exchange_relations),
                 },
-                "occurred_at": occurred_at,
+                "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
             },
         )
@@ -324,7 +325,7 @@ class ResourceRelationService:
                     "source_version": source_version,
                     "trace_id": trace_id,
                     "session_id": session_id,
-                    "started_at": occurred_at,
+                    "started_at": occurred_at_for_db,
                     "ended_at": None,
                 },
             )
