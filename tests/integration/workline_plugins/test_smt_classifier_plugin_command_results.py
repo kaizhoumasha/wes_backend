@@ -766,7 +766,7 @@ class TestSmtClassifierPluginCommandResults:
     async def test_conveyor_success_requests_rack_exchange_and_supply_when_rack_cannot_store(
         self, plugin, mock_context
     ):
-        """当前货架无兼容格且无空格时，发释放事件并请求新货架补充。"""
+        """当前货架快照不完整时阻断对账，不继续补架。"""
 
         pkg_id = "SVYU00125TP4LCR02_2"
         mock_context.trace_id = "trace-rack-full-001"
@@ -822,40 +822,18 @@ class TestSmtClassifierPluginCommandResults:
         payload["device_code"] = "PIPELINE02"
         result = await plugin.on_command_result(mock_context, _make_inbox(payload))
 
-        assert [intent.kind for intent in result] == [
-            RuntimeIntentKind.UPDATE_CONTEXT,
-            RuntimeIntentKind.DEVICE_EVENT,
-            RuntimeIntentKind.EXTERNAL_REQUEST,
-        ]
-        assert result[0].context_patch["rack_supply"] == {
-            "status": "REQUESTED",
-            "dispatch_key": result[2].dispatch_key,
-            "target_code": result[2].target_code,
-            "source_system": result[2].source_system,
-            "reason_code": "NO_COMPATIBLE_OR_EMPTY_CELL",
-            "requested_actions": ["SUPPLY_EMPTY_RACK"],
-            "pkg_id": pkg_id,
-            "resume_source_device_code": "PIPELINE02",
-            "resume_source_device_role": "CONVEYOR",
-            "resume_callback_type": "WMS_RACK_ARRIVED",
-        }
-        assert "full_box_exchange" not in result[0].context_patch
-        assert "rack_exchange" not in result[0].context_patch
-        assert result[1].payload_json["event_type"] == "SINGLE_LAYER_RACK_RELEASED"
-        assert result[1].payload_json["device_code"] == "SMT-FULL-BOX-EVENT"
-        assert result[1].payload_json["data"]["single_layer_rack_id"] == "RACK-FULL-001"
-        assert result[1].payload_json["data"]["release_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
-        assert result[2].payload_json["request_type"] == "SMT_RACK_SUPPLY"
-        assert result[2].payload_json["actions"] == ["SUPPLY_EMPTY_RACK"]
-        assert result[2].payload_json["dispatch_key"] == result[2].dispatch_key
-        assert result[2].payload_json["resume_callback_type"] == "WMS_RACK_ARRIVED"
-        assert result[2].payload_json["trace_id"] == "trace-rack-full-001"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID"
+        assert result[0].message == "SMT 当前货架释放事件无法生成 4 个料箱快照"
         assert all(
             intent.kind != RuntimeIntentKind.COMMAND
             or intent.device_role != "OUTPUT_ARM"
             or intent.action != "PICK_AND_PUT"
             for intent in result
         )
+        assert all(intent.kind != RuntimeIntentKind.EXTERNAL_REQUEST for intent in result)
+        assert all(intent.kind != RuntimeIntentKind.DEVICE_EVENT for intent in result)
 
     @pytest.mark.asyncio
     async def test_external_rack_exchange_progress_keeps_waiting(self, plugin, mock_context):

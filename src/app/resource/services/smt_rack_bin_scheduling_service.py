@@ -144,6 +144,27 @@ class SmtRackBinSchedulingService:
     LARGE_CELL_SUFFIXES: ClassVar[frozenset[str]] = frozenset({"7"})
     RACK_SLOT_CODES: ClassVar[tuple[str, ...]] = ("A", "B", "C", "D")
     RACK_SLOT_SIDE_BY_CODE: ClassVar[dict[str, str]] = {"A": "0", "B": "0", "C": "1", "D": "1"}
+    RELEASE_BIN_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "EMPTY_VERIFIED",
+            "IN_USE",
+            "LOCKED",
+            "FULL_SNAPSHOT",
+            "EXCEPTION",
+            "DISABLED",
+            "UNKNOWN",
+            "CLOSED",
+            "FULL",
+        }
+    )
+    RELEASE_BIN_STATUS_ALIASES: ClassVar[dict[str, str]] = {
+        "EMPTY": "EMPTY_VERIFIED",
+        "AVAILABLE": "EMPTY_VERIFIED",
+        "OCCUPIED": "IN_USE",
+        "USED": "IN_USE",
+        "ABNORMAL": "EXCEPTION",
+        "ERROR": "EXCEPTION",
+    }
     REQUEST_TYPE: ClassVar[str] = "SMT_RACK_SUPPLY"
     RELEASE_EVENT_TYPE: ClassVar[str] = "SINGLE_LAYER_RACK_RELEASED"
     SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("SUPPLY_EMPTY_RACK",)
@@ -476,12 +497,26 @@ class SmtRackBinSchedulingService:
         reason_code: str,
         message: str,
     ) -> SmtRackBinSchedulingDecision:
+        if active_rack is not None and len(self._rack_bin_snapshots(active_rack)) != len(self.RACK_SLOT_CODES):
+            return SmtRackBinSchedulingDecision(
+                kind="BLOCKED",
+                reason_code="FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID",
+                message="SMT 当前货架释放事件无法生成 4 个料箱快照",
+            )
+
         target_code = self._target_code(context)
         if target_code is None:
             return SmtRackBinSchedulingDecision(
                 kind="BLOCKED",
                 reason_code="RACK_SUPPLY_TARGET_MISSING",
                 message="SMT 新货架补充请求缺少 WMS/RCS 目标地址配置",
+            )
+
+        if active_rack is not None and self._release_event_device_code(context) is None:
+            return SmtRackBinSchedulingDecision(
+                kind="BLOCKED",
+                reason_code="FULL_BOX_RELEASE_EVENT_DEVICE_MISSING",
+                message="SMT 当前货架释放事件缺少满箱交换插件入口设备编码配置",
             )
 
         rack_release_event = self._rack_release_event(
@@ -493,8 +528,8 @@ class SmtRackBinSchedulingService:
         if active_rack is not None and rack_release_event is None:
             return SmtRackBinSchedulingDecision(
                 kind="BLOCKED",
-                reason_code="FULL_BOX_RELEASE_EVENT_DEVICE_MISSING",
-                message="SMT 当前货架释放事件缺少满箱交换插件入口设备编码配置",
+                reason_code="FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID",
+                message="SMT 当前货架释放事件无法生成 4 个料箱快照",
             )
 
         dispatch_key = self._dispatch_key(context=context, material=material, active_rack=active_rack)
@@ -554,6 +589,10 @@ class SmtRackBinSchedulingService:
             return None
 
         rack_id = self._active_rack_id(active_rack)
+        bin_snapshots = self._rack_bin_snapshots(active_rack)
+        if len(bin_snapshots) != len(self.RACK_SLOT_CODES):
+            return None
+
         token = self._context_dispatch_token(context) or f"{material.get('PkgID')}:{rack_id}"
         event_id = f"smt-rack-release:{token}:{rack_id}"
         data: dict[str, Any] = {
@@ -564,7 +603,7 @@ class SmtRackBinSchedulingService:
             "source_task_batch_id": token,
             "release_reason_code": reason_code,
             "material": dict(material),
-            "bin_snapshots": list(self._rack_cells(active_rack)),
+            "bin_snapshots": bin_snapshots,
         }
         return SmtRackReleaseEvent(
             device_code=device_code,
@@ -573,6 +612,160 @@ class SmtRackBinSchedulingService:
             event_id=event_id,
             causation_id=self._trace_id(context),
         )
+
+    def _rack_bin_snapshots(self, active_rack: Mapping[str, Any]) -> list[dict[str, Any]]:
+        raw_bins = active_rack.get("bins") or active_rack.get("bin_snapshots")
+        if isinstance(raw_bins, Sequence) and not isinstance(raw_bins, (str, bytes)):
+            snapshots = [
+                normalized
+                for item in cast("Sequence[Any]", raw_bins)
+                if isinstance(item, Mapping)
+                for normalized in [self._normalize_rack_bin_snapshot(cast("Mapping[str, Any]", item))]
+                if normalized is not None
+            ]
+            four_slot_snapshots = self._four_slot_rack_bin_snapshots(snapshots)
+            if four_slot_snapshots:
+                return four_slot_snapshots
+
+        return self._rack_bin_snapshots_from_cells(active_rack)
+
+    def _normalize_rack_bin_snapshot(self, snapshot: Mapping[str, Any]) -> dict[str, Any] | None:
+        slot_code = self._canonical_rack_slot_code(snapshot.get("slot_code") or snapshot.get("rack_slot_code"))
+        bin_id = self._text_or_none(snapshot.get("bin_id") or snapshot.get("bin_code"))
+        usage = self._release_bin_usage(snapshot)
+        status = self._release_bin_status(snapshot.get("status") or snapshot.get("bin_execution_status"), usage=usage)
+        if slot_code is None or bin_id is None or usage is None or status is None:
+            return None
+
+        normalized = dict(snapshot)
+        normalized["slot_code"] = slot_code
+        normalized["bin_id"] = bin_id
+        normalized["bin_code"] = bin_id
+        normalized["status"] = status
+        normalized["bin_execution_status"] = status
+        normalized["usage"] = usage
+        normalized["usage_snapshot"] = usage
+        return normalized
+
+    def _rack_bin_snapshots_from_cells(self, active_rack: Mapping[str, Any]) -> list[dict[str, Any]]:
+        cells_by_slot: dict[str, list[dict[str, Any]]] = {}
+        bin_ids_by_slot: dict[str, set[str]] = {}
+        for cell in self._rack_cells(active_rack):
+            normalized = self.normalize_bin_location(cell)
+            if normalized is None:
+                continue
+            slot_code = self._canonical_rack_slot_code(normalized.get("rack_slot_code"))
+            if slot_code is None:
+                continue
+            cells_by_slot.setdefault(slot_code, []).append(normalized)
+            bin_ids_by_slot.setdefault(slot_code, set()).add(str(normalized["bin_id"]))
+
+        if not cells_by_slot:
+            return []
+        if any(len(bin_ids) != 1 for bin_ids in bin_ids_by_slot.values()):
+            return []
+
+        snapshots: list[dict[str, Any]] = []
+        for slot_code in self.RACK_SLOT_CODES:
+            if slot_code not in cells_by_slot:
+                continue
+            cells = cells_by_slot[slot_code]
+            snapshots.append(self._rack_bin_snapshot_from_cells(slot_code, cells))
+        return self._four_slot_rack_bin_snapshots(snapshots)
+
+    def _rack_bin_snapshot_from_cells(self, slot_code: str, cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        first_cell = cells[0]
+        bin_id = str(first_cell["bin_id"])
+        bin_type = self._text_or_none(first_cell.get("bin_type"))
+        usage = self._rack_bin_usage(cells)
+        status = self._rack_bin_status(cells, usage)
+        return {
+            "slot_code": slot_code,
+            "bin_id": bin_id,
+            "bin_code": bin_id,
+            "bin_type": bin_type,
+            "bin_type_code": bin_type,
+            "status": status,
+            "bin_execution_status": status,
+            "usage": usage,
+            "usage_snapshot": usage,
+            "rack_slot_location_code": first_cell.get("rack_slot_location_code"),
+            "bin_orientation_code": first_cell.get("bin_orientation_code"),
+            "cell_count": self._rack_bin_capacity(cells),
+            "occupied_cell_count": self._occupied_cell_count(cells),
+        }
+
+    def _four_slot_rack_bin_snapshots(self, snapshots: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_slot: dict[str, dict[str, Any]] = {}
+        for snapshot in snapshots:
+            slot_code = str(snapshot["slot_code"])
+            if slot_code in by_slot:
+                return []
+            by_slot[slot_code] = snapshot
+
+        if not by_slot:
+            return []
+        if set(by_slot) != set(self.RACK_SLOT_CODES):
+            return []
+        return [by_slot[slot_code] for slot_code in self.RACK_SLOT_CODES]
+
+    def _release_bin_usage(self, snapshot: Mapping[str, Any]) -> float | None:
+        value = snapshot.get("usage") if "usage" in snapshot else snapshot.get("usage_snapshot")
+        if value is None:
+            return None
+        try:
+            usage = float(value)
+        except (TypeError, ValueError):
+            return None
+        if usage < 0 or usage > 1:
+            return None
+        return usage
+
+    def _release_bin_status(self, value: Any, *, usage: float | None) -> str | None:
+        text = self._text_or_none(value)
+        status = self.RELEASE_BIN_STATUS_ALIASES.get(text.upper(), text.upper()) if text is not None else None
+        if status is None and usage is not None:
+            if usage >= 1:
+                status = "FULL"
+            elif usage > 0:
+                status = "IN_USE"
+            else:
+                status = "EMPTY_VERIFIED"
+        return status if status in self.RELEASE_BIN_STATUSES else None
+
+    def _rack_bin_usage(self, cells: Sequence[Mapping[str, Any]]) -> float:
+        capacity = self._rack_bin_capacity(cells)
+        if capacity <= 0:
+            return 0.0
+        return min(self._occupied_cell_count(cells) / capacity, 1.0)
+
+    def _rack_bin_capacity(self, cells: Sequence[Mapping[str, Any]]) -> int:
+        if not cells:
+            return 0
+        bin_type = self._canonical_bin_type(cells[0].get("bin_type"))
+        if bin_type == self.SIX_CELL_BIN_TYPE:
+            return len(self.SEVEN_INCH_CELL_SUFFIXES)
+        if bin_type == self.THREE_CELL_BIN_TYPE:
+            return len(self.THREE_CELL_SEVEN_INCH_SUFFIXES | self.LARGE_CELL_SUFFIXES)
+        return len(cells)
+
+    def _occupied_cell_count(self, cells: Sequence[Mapping[str, Any]]) -> int:
+        occupied_statuses = {"OCCUPIED", "IN_USE", "FULL", "FULL_SNAPSHOT", "CLOSED"}
+        return sum(1 for cell in cells if self._cell_status(cell) in occupied_statuses)
+
+    def _rack_bin_status(self, cells: Sequence[Mapping[str, Any]], usage: float) -> str:
+        statuses = {self._cell_status(cell) for cell in cells}
+        if statuses & {"EXCEPTION", "ERROR", "ABNORMAL"}:
+            return "EXCEPTION"
+        if statuses and statuses <= {"DISABLED"}:
+            return "DISABLED"
+        if statuses and statuses <= {"LOCKED"}:
+            return "LOCKED"
+        if usage >= 1:
+            return "FULL"
+        if usage > 0:
+            return "IN_USE"
+        return "EMPTY_VERIFIED"
 
     def _release_event_device_code(self, context: Mapping[str, Any]) -> str | None:
         keys = ("smt_full_box_release_device_code", "full_box_release_device_code")

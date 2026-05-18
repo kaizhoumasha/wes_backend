@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from src.workline_runtime.plugin_manifest import WorklinePluginManifest
@@ -20,13 +20,14 @@ def _safe_str(value: Any) -> str | None:
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
 
 
 def _string_set(value: Any) -> frozenset[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return frozenset()
-    return frozenset(item for item in value if isinstance(item, str) and item)
+    values = cast("list[Any] | tuple[Any, ...] | set[Any] | frozenset[Any]", value)
+    return frozenset(item for item in values if isinstance(item, str) and item)
 
 
 def _device_sort_key(device: Any) -> tuple[int, int, int]:

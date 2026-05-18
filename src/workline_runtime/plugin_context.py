@@ -35,7 +35,7 @@ def _safe_int(value: Any) -> int | None:
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
 
 
 def _source_device_code_from_session(session: Any | None) -> str | None:

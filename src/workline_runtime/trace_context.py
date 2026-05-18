@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from src.workline_runtime.utils import non_empty_str
 
@@ -24,7 +24,7 @@ def _resolve_int(value: Any) -> int | None:
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
 
 
 def _attr_int(obj: Any, name: str) -> int | None:
@@ -240,7 +240,7 @@ class TraceContext:
         if outbox is not None:
             dispatch_type = dispatch_type or _enum_value(getattr(outbox, "dispatch_type", None))
             target_code = target_code or _attr_str(outbox, "target_code")
-        payload = {
+        payload: dict[str, Any] = {
             "outbox_id": self.outbox_id or _attr_int(outbox, "id"),
             "dispatch_key": self.dispatch_key or _attr_str(outbox, "dispatch_key"),
             "dispatch_type": dispatch_type,

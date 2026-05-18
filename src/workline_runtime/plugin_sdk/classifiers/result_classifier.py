@@ -1,6 +1,6 @@
 """命令结果分类器。"""
 
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 _SUCCESS = {"SUCCESS", "OK", "DONE", "COMPLETED", "PASS"}
 _RETRYABLE = {"TIMEOUT", "RETRY", "TEMP_FAILURE"}
@@ -47,7 +47,7 @@ def normalize_result_classification(value: str | None) -> ResultClassification |
 def classify_result_category(
     value: str | None,
     *,
-    error_detail: dict | None = None,
+    error_detail: dict[str, Any] | None = None,
 ) -> ResultClassification | None:
     """按通用规则给命令结果增加失败分类。
 

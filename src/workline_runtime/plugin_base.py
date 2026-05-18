@@ -23,7 +23,7 @@ from __future__ import annotations
 import inspect
 import typing
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -291,12 +291,10 @@ def _normalize_handler_result(result: Any) -> list[RuntimeIntent]:
         return []
     if isinstance(result, RuntimeIntent):
         return [result]
-    if (
-        isinstance(result, Sequence)
-        and not isinstance(result, (str, bytes, bytearray))
-        and all(isinstance(intent, RuntimeIntent) for intent in result)
-    ):
-        return list(result)
+    if isinstance(result, Sequence) and not isinstance(result, (str, bytes, bytearray)):
+        result_sequence = cast("Sequence[Any]", result)
+        if all(isinstance(intent, RuntimeIntent) for intent in result_sequence):
+            return list(cast("Sequence[RuntimeIntent]", result_sequence))
     raise TypeError("Plugin handler must return RuntimeIntent, list[RuntimeIntent], or None")
 
 
