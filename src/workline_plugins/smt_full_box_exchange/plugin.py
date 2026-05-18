@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from src.workline_plugins.smt_full_box_exchange.contract import (
     SINGLE_LAYER_RACK_RELEASED,
@@ -85,7 +85,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             if forced_exchange_reason
             else _exchange_bins(snapshots, exchange_policy)
         )
-        evaluation_context = {
+        evaluation_context: dict[str, Any] = {
             "exchange_policy": exchange_policy,
             "exchange_policy_version": exchange_policy["policy_version"],
             "evaluated_bins": snapshots,
@@ -132,7 +132,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
         rack_release_id = str(data["rack_release_id"])
         dispatch_key = f"external:{self.plugin_key}:{rack_release_id}:FULL_BIN_EXCHANGE"
         exchange_request_code = dispatch_key
-        request_payload = {
+        request_payload: dict[str, Any] = {
             "request_type": "SMT_FULL_BOX_EXCHANGE",
             "request_code": exchange_request_code,
             "exchange_request_code": exchange_request_code,
@@ -155,7 +155,7 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
             "bins": snapshots,
             "bin_snapshots": snapshots,
         }
-        context_patch = {
+        context_patch: dict[str, Any] = {
             "rack_release_id": rack_release_id,
             "single_layer_rack_id": rack_identifier,
             "single_layer_rack_code": rack_identifier,
@@ -184,9 +184,10 @@ class SmtFullBoxExchangePlugin(WorklinePlugin):
     async def on_external_http(self, ctx: Any, inbox: Any) -> list[RuntimeIntent]:
         """处理 WMS/RCS 满箱交换回调。"""
 
-        payload = _external_callback_payload(ctx, inbox)
-        if not isinstance(payload, Mapping):
+        raw_payload = _external_callback_payload(ctx, inbox)
+        if not isinstance(raw_payload, Mapping):
             return [build_payload_invalid_block("SMT 满箱交换回调 payload 非法")]
+        payload = cast("Mapping[str, Any]", raw_payload)
         if payload.get("callback_type") != WMS_FULL_BOX_EXCHANGE_CALLBACK:
             return [build_payload_invalid_block("SMT 满箱交换回调 callback_type 不支持")]
 
@@ -293,8 +294,9 @@ def _callback_identity_block(ctx: Any, payload: Mapping[str, Any]) -> RuntimeInt
 def _payload_data(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         return {}
-    data = payload.get("data")
-    return dict(data) if isinstance(data, Mapping) else dict(payload)
+    payload_map = cast("Mapping[str, Any]", payload)
+    data = payload_map.get("data")
+    return dict(cast("Mapping[str, Any]", data)) if isinstance(data, Mapping) else dict(payload_map)
 
 
 def _external_callback_payload(ctx: Any, inbox: Any) -> Any:
@@ -317,10 +319,13 @@ def _validate_release_data(data: Mapping[str, Any]) -> str | None:
         return "SINGLE_LAYER_RACK_RELEASED 缺少 single_layer_rack_id"
 
     snapshots = _snapshot_items(data)
-    if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)) or len(snapshots) != 4:
+    if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)):
+        return "SINGLE_LAYER_RACK_RELEASED 必须携带 4 个料箱快照"
+    snapshot_sequence = cast("Sequence[Any]", snapshots)
+    if len(snapshot_sequence) != 4:
         return "SINGLE_LAYER_RACK_RELEASED 必须携带 4 个料箱快照"
 
-    return _validate_snapshot_items(snapshots)
+    return _validate_snapshot_items(snapshot_sequence)
 
 
 def _validate_snapshot_items(snapshots: Sequence[Any]) -> str | None:
@@ -330,8 +335,9 @@ def _validate_snapshot_items(snapshots: Sequence[Any]) -> str | None:
         item_error = _validate_snapshot_item(index, snapshot)
         if item_error is not None:
             return item_error
-        slot_codes.append(_optional_text(snapshot.get("slot_code")) or "")
-        bin_ids.append(_snapshot_bin_id(snapshot) or "")
+        snapshot_map = cast("Mapping[str, Any]", snapshot)
+        slot_codes.append(_optional_text(snapshot_map.get("slot_code")) or "")
+        bin_ids.append(_snapshot_bin_id(snapshot_map) or "")
 
     if len(set(slot_codes)) != len(slot_codes):
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照存在重复槽位"
@@ -344,18 +350,19 @@ def _validate_snapshot_item(index: int, snapshot: Any) -> str | None:
     if not isinstance(snapshot, Mapping):
         return f"SINGLE_LAYER_RACK_RELEASED 第 {index} 个料箱快照非法"
 
-    if not _optional_text(snapshot.get("slot_code")):
+    snapshot_map = cast("Mapping[str, Any]", snapshot)
+    if not _optional_text(snapshot_map.get("slot_code")):
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 slot_code"
-    if _snapshot_bin_id(snapshot) is None:
+    if _snapshot_bin_id(snapshot_map) is None:
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少料箱编码"
 
-    status = _non_empty_upper(snapshot.get("status") or snapshot.get("bin_execution_status"))
+    status = _non_empty_upper(snapshot_map.get("status") or snapshot_map.get("bin_execution_status"))
     if status is None:
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 status"
     if status not in _ALLOWED_BIN_STATUSES:
         return f"SINGLE_LAYER_RACK_RELEASED 料箱快照 status 不支持: {status}"
 
-    usage = _snapshot_usage(snapshot)
+    usage = _snapshot_usage(snapshot_map)
     if usage is None:
         return "SINGLE_LAYER_RACK_RELEASED 料箱快照缺少 usage"
     if usage < 0 or usage > 1:
@@ -367,7 +374,11 @@ def _snapshot_list(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     snapshots = _snapshot_items(data)
     if not isinstance(snapshots, Sequence) or isinstance(snapshots, (str, bytes)):
         return []
-    return [_normalize_snapshot(item) for item in snapshots if isinstance(item, Mapping)]
+    return [
+        _normalize_snapshot(cast("Mapping[str, Any]", item))
+        for item in cast("Sequence[Any]", snapshots)
+        if isinstance(item, Mapping)
+    ]
 
 
 def _single_layer_rack_identifier(data: Mapping[str, Any]) -> str | None:
@@ -408,12 +419,12 @@ def _snapshot_usage(snapshot: Mapping[str, Any]) -> float | None:
 
 def _ctx_config(ctx: Any) -> dict[str, Any]:
     config = getattr(ctx, "config", None)
-    return dict(config) if isinstance(config, Mapping) else {}
+    return dict(cast("Mapping[str, Any]", config)) if isinstance(config, Mapping) else {}
 
 
 def _exchange_policy(config: Mapping[str, Any]) -> dict[str, Any]:
     policy = config.get("exchange_policy")
-    raw_policy = dict(policy) if isinstance(policy, Mapping) else {}
+    raw_policy: dict[str, Any] = dict(cast("Mapping[str, Any]", policy)) if isinstance(policy, Mapping) else {}
     full_statuses = sorted(_string_set(raw_policy.get("full_statuses")) or {"CLOSED", "FULL"})
     return {
         **raw_policy,
@@ -471,7 +482,8 @@ def _is_exchange_bin(snapshot: Mapping[str, Any], full_statuses: set[str], thres
 def _target_code(config: Mapping[str, Any]) -> str | None:
     endpoints = config.get("external_endpoints")
     if isinstance(endpoints, Mapping):
-        value = _optional_text(endpoints.get("wms_rcs_full_box_exchange_url"))
+        endpoint_map = cast("Mapping[str, Any]", endpoints)
+        value = _optional_text(endpoint_map.get("wms_rcs_full_box_exchange_url"))
         if value is not None:
             return value
     return _optional_text(config.get("wms_rcs_full_box_exchange_url"))
@@ -480,7 +492,8 @@ def _target_code(config: Mapping[str, Any]) -> str | None:
 def _timeout_seconds(config: Mapping[str, Any]) -> int | None:
     timeouts = config.get("timeouts")
     if isinstance(timeouts, Mapping):
-        value = timeouts.get("external_exchange_seconds")
+        timeout_map = cast("Mapping[str, Any]", timeouts)
+        value = timeout_map.get("external_exchange_seconds")
         if value is not None:
             seconds = _int_value(value, default=0)
             return seconds if seconds > 0 else None
@@ -503,15 +516,17 @@ def _exchange_context(ctx: Any) -> dict[str, Any]:
     context = getattr(getattr(ctx, "session", None), "context_json", None)
     if not isinstance(context, Mapping):
         return {}
-    exchange = context.get("full_box_exchange")
-    return dict(exchange) if isinstance(exchange, Mapping) else {}
+    context_map = cast("Mapping[str, Any]", context)
+    exchange = context_map.get("full_box_exchange")
+    return dict(cast("Mapping[str, Any]", exchange)) if isinstance(exchange, Mapping) else {}
 
 
 def _expected_rack_release_id(ctx: Any) -> str | None:
     context = getattr(getattr(ctx, "session", None), "context_json", None)
     if not isinstance(context, Mapping):
         return None
-    return _optional_text(context.get("rack_release_id")) or _optional_text(
+    context_map = cast("Mapping[str, Any]", context)
+    return _optional_text(context_map.get("rack_release_id")) or _optional_text(
         _exchange_context(ctx).get("rack_release_id")
     )
 
@@ -522,10 +537,12 @@ def _callback_context(existing: Mapping[str, Any], payload: Mapping[str, Any], s
     for key in ("queue_position", "eta_seconds", "wms_rcs_task_id", "exchange_request_code", "dispatch_key"):
         if key in payload:
             updated[key] = payload[key]
-    if isinstance(payload.get("post_exchange_relations"), Mapping):
-        updated["post_exchange_relations"] = dict(payload["post_exchange_relations"])
-    if isinstance(payload.get("wms_confirmation"), Mapping):
-        updated["wms_confirmation"] = dict(payload["wms_confirmation"])
+    post_exchange_relations = payload.get("post_exchange_relations")
+    if isinstance(post_exchange_relations, Mapping):
+        updated["post_exchange_relations"] = dict(cast("Mapping[str, Any]", post_exchange_relations))
+    wms_confirmation = payload.get("wms_confirmation")
+    if isinstance(wms_confirmation, Mapping):
+        updated["wms_confirmation"] = dict(cast("Mapping[str, Any]", wms_confirmation))
     return updated
 
 
@@ -572,7 +589,7 @@ def _string_set(value: Any) -> set[str]:
         return set()
 
     values: set[str] = set()
-    for item in value:
+    for item in cast("Sequence[Any]", value):
         text = _non_empty_upper(item)
         if text is not None:
             values.add(text)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 SINGLE_LAYER_RACK_RELEASED = "SINGLE_LAYER_RACK_RELEASED"
 WMS_FULL_BOX_EXCHANGE_CALLBACK = "WMS_FULL_BOX_EXCHANGE_RESULT"
@@ -17,7 +17,8 @@ def resolve_smt_full_box_exchange_business_key(payload_json: dict[str, Any]) -> 
     data = payload_json.get("data")
     if not isinstance(data, Mapping):
         data = payload_json
-    value = data.get("rack_release_id")
+    data_map = cast("Mapping[str, Any]", data)
+    value = data_map.get("rack_release_id")
     return value if isinstance(value, str) and value else None
 
 

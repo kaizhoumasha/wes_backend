@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 SmtRackBinSchedulingDecisionKind = Literal[
     "ALLOCATED",
@@ -208,6 +208,7 @@ class SmtRackBinSchedulingService:
                 reason_code="NO_ACTIVE_RACK",
                 message="SMT 料箱调度缺少当前可用料架",
             )
+        active_rack_map = cast("Mapping[str, Any]", active_rack)
 
         reel_size_kind = self._reel_size_kind(scheduling_context)
         if reel_size_kind is None:
@@ -217,35 +218,39 @@ class SmtRackBinSchedulingService:
                 message="SMT 料箱调度缺少或不支持料盘尺寸，无法匹配 6/3 格箱料格",
             )
 
-        cells = self._rack_cells(active_rack)
+        cells = self._rack_cells(active_rack_map)
         compatible_cell = self._find_compatible_occupied_cell(cells, material, reel_size_kind)
         if compatible_cell is not None:
-            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(compatible_cell, active_rack))
+            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(compatible_cell, active_rack_map))
 
         empty_cell = self._find_first_empty_cell(cells, reel_size_kind)
         if empty_cell is not None:
-            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(empty_cell, active_rack))
+            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(empty_cell, active_rack_map))
 
         return self._rack_exchange_decision(
             context=scheduling_context,
             material=material,
-            active_rack=active_rack,
+            active_rack=active_rack_map,
             reason_code="NO_COMPATIBLE_OR_EMPTY_CELL",
             message="当前料架无同 DC/LC 兼容格位，也无可用空格",
         )
 
     def _material_from_context(self, context: Mapping[str, Any]) -> dict[str, Any]:
         six_in_one = context.get("six_in_one")
-        return dict(six_in_one) if isinstance(six_in_one, Mapping) else {}
+        return dict(cast("Mapping[str, Any]", six_in_one)) if isinstance(six_in_one, Mapping) else {}
 
     def _active_rack_or_none(self, value: Any) -> Mapping[str, Any] | None:
-        return value if isinstance(value, Mapping) else None
+        return cast("Mapping[str, Any]", value) if isinstance(value, Mapping) else None
 
     def _rack_cells(self, active_rack: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        raw_cells = active_rack.get("cells") or active_rack.get("bin_cells") or active_rack.get("cell_snapshots") or []
+        raw_cells: Any = (
+            active_rack.get("cells") or active_rack.get("bin_cells") or active_rack.get("cell_snapshots") or []
+        )
         if not isinstance(raw_cells, Sequence) or isinstance(raw_cells, (str, bytes)):
             return []
-        return [cell for cell in raw_cells if isinstance(cell, Mapping)]
+        return [
+            cast("Mapping[str, Any]", cell) for cell in cast("Sequence[Any]", raw_cells) if isinstance(cell, Mapping)
+        ]
 
     def _find_compatible_occupied_cell(
         self, cells: Sequence[Mapping[str, Any]], material: Mapping[str, Any], reel_size_kind: SmtReelSizeKind
@@ -519,31 +524,19 @@ class SmtRackBinSchedulingService:
         )
 
     def _target_code(self, context: Mapping[str, Any]) -> str | None:
-        for key in (
+        keys = (
             "wms_rcs_rack_supply_url",
             "rack_supply_target_code",
             "wms_rcs_rack_exchange_url",
             "rack_exchange_target_code",
             "wms_rcs_target_code",
-        ):
-            value = context.get(key)
-            if value:
-                return str(value)
+        )
+        value = self._first_text(context, keys)
+        if value is not None:
+            return value
 
         config = context.get("config")
-        if isinstance(config, Mapping):
-            for key in (
-                "wms_rcs_rack_supply_url",
-                "rack_supply_target_code",
-                "wms_rcs_rack_exchange_url",
-                "rack_exchange_target_code",
-                "wms_rcs_target_code",
-            ):
-                value = config.get(key)
-                if value:
-                    return str(value)
-
-        return None
+        return self._first_text(cast("Mapping[str, Any]", config), keys) if isinstance(config, Mapping) else None
 
     def _rack_release_event(
         self,
@@ -582,48 +575,44 @@ class SmtRackBinSchedulingService:
         )
 
     def _release_event_device_code(self, context: Mapping[str, Any]) -> str | None:
-        for key in ("smt_full_box_release_device_code", "full_box_release_device_code"):
-            value = context.get(key)
-            if value:
-                return str(value)
+        keys = ("smt_full_box_release_device_code", "full_box_release_device_code")
+        value = self._first_text(context, keys)
+        if value is not None:
+            return value
 
         config = context.get("config")
-        if isinstance(config, Mapping):
-            for key in ("smt_full_box_release_device_code", "full_box_release_device_code"):
-                value = config.get(key)
-                if value:
-                    return str(value)
-        return None
+        return self._first_text(cast("Mapping[str, Any]", config), keys) if isinstance(config, Mapping) else None
 
     def _active_rack_id(self, active_rack: Mapping[str, Any]) -> str:
         return str(active_rack.get("rack_id") or active_rack.get("rack_code") or "")
 
     def _workline_code(self, context: Mapping[str, Any]) -> str | None:
-        for key in ("workline_code", "line_code", "source_classifier_line_code"):
-            value = context.get(key)
-            if value:
-                return str(value)
+        value = self._first_text(context, ("workline_code", "line_code", "source_classifier_line_code"))
+        if value is not None:
+            return value
 
         workline = context.get("workline")
-        if isinstance(workline, Mapping):
-            for key in ("line_code", "workline_code", "code"):
-                value = workline.get(key)
-                if value:
-                    return str(value)
-        return None
+        return (
+            self._first_text(cast("Mapping[str, Any]", workline), ("line_code", "workline_code", "code"))
+            if isinstance(workline, Mapping)
+            else None
+        )
 
     def _trace_id(self, context: Mapping[str, Any]) -> str | None:
-        for key in ("trace_id", "trace_code"):
-            value = context.get(key)
-            if value:
-                return str(value)
+        keys = ("trace_id", "trace_code")
+        value = self._first_text(context, keys)
+        if value is not None:
+            return value
 
         session = context.get("session")
-        if isinstance(session, Mapping):
-            for key in ("trace_id", "trace_code"):
-                value = session.get(key)
-                if value:
-                    return str(value)
+        return self._first_text(cast("Mapping[str, Any]", session), keys) if isinstance(session, Mapping) else None
+
+    @staticmethod
+    def _first_text(values: Mapping[str, Any], keys: Sequence[str]) -> str | None:
+        for key in keys:
+            value = values.get(key)
+            if value:
+                return str(value)
         return None
 
     def _dispatch_key(
@@ -642,18 +631,21 @@ class SmtRackBinSchedulingService:
         return f"external:smt_classifier:{token}:RACK_SUPPLY"
 
     def _context_dispatch_token(self, context: Mapping[str, Any]) -> str | None:
-        for key in ("dispatch_key", "trace_id", "trace_code", "session_id", "session_code", "workline_session_id"):
-            value = context.get(key)
-            if value:
-                return str(value)
+        value = self._first_text(
+            context,
+            ("dispatch_key", "trace_id", "trace_code", "session_id", "session_code", "workline_session_id"),
+        )
+        if value is not None:
+            return value
 
         session = context.get("session")
-        if isinstance(session, Mapping):
-            for key in ("dispatch_key", "trace_id", "session_id", "id", "code"):
-                value = session.get(key)
-                if value:
-                    return str(value)
-        return None
+        return (
+            self._first_text(
+                cast("Mapping[str, Any]", session), ("dispatch_key", "trace_id", "session_id", "id", "code")
+            )
+            if isinstance(session, Mapping)
+            else None
+        )
 
 
 smt_rack_bin_scheduling_service = SmtRackBinSchedulingService()

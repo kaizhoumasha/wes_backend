@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
@@ -35,7 +35,8 @@ def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
 
-    normalized = normalize_six_in_one_payload(payload) or {}
+    payload_map = cast("dict[str, Any]", payload)
+    normalized: dict[str, Any] = normalize_six_in_one_payload(payload_map) or {}
     normalized.update(extra_fields)
     return normalized
 
@@ -81,7 +82,7 @@ def _build_incomplete_scan_business_key(payload_json: dict[str, Any], six_in_one
         return None
 
     raw_data = payload_json.get("data")
-    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    data: dict[str, Any] = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else {}
     event_identity = payload_json.get("event_id") or data.get("event_id") or data.get("vendor_event_id")
     business_fields: dict[str, Any] = {field: value for field, value in six_in_one.iter_business_fields() if value}
     identity_payload: dict[str, Any] = {
@@ -100,7 +101,7 @@ def resolve_smt_business_key(payload_json: dict[str, Any]) -> str | None:
     """从 SMT 事件包络中解析稳定业务键。"""
 
     raw_data = payload_json.get("data")
-    data: dict[str, Any] | None = raw_data if isinstance(raw_data, dict) else None
+    data: dict[str, Any] | None = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else None
     six_in_one = parse_six_in_one_payload(data)
     if six_in_one is None:
         return None
@@ -114,7 +115,7 @@ def _payload_data(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         return {}
     raw_data = payload.get("data")
     if isinstance(raw_data, dict):
-        return raw_data
+        return cast("dict[str, Any]", raw_data)
     return dict(payload)
 
 
@@ -238,9 +239,11 @@ def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
 
     result = str(payload_json.get("result") or "").strip().upper()
     raw_data = payload_json.get("data")
-    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    data: dict[str, Any] = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else {}
     raw_error_detail = payload_json.get("error_detail")
-    error_detail: dict[str, Any] = raw_error_detail if isinstance(raw_error_detail, dict) else {}
+    error_detail: dict[str, Any] = (
+        cast("dict[str, Any]", raw_error_detail) if isinstance(raw_error_detail, dict) else {}
+    )
 
     inspection_result = str(data.get("inspection_result") or "").strip().upper()
     if result == "SUCCESS" and inspection_result == "NG":
@@ -326,7 +329,8 @@ class ScanEventData(SixInOne, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_payload(cls, data: Any) -> Any:
-        return _normalize_contract_data(data, location=data.get("location") if isinstance(data, dict) else None)
+        data_map = cast("dict[str, Any]", data) if isinstance(data, dict) else None
+        return _normalize_contract_data(data, location=data_map.get("location") if data_map is not None else None)
 
 
 class ScanEventPayload(BaseModel):
@@ -355,13 +359,14 @@ class MeasurementResultData(SixInOne, BaseModel):
     def _normalize_payload(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        data_map = cast("dict[str, Any]", data)
         return _normalize_contract_data(
-            data,
-            reel_diameter=data.get("reel_diameter"),
-            reel_thickness=data.get("reel_thickness"),
-            inspection_result=data.get("inspection_result"),
-            reason_code=data.get("reason_code") or data.get("ng_reason"),
-            reason_message=data.get("reason_message") or data.get("ng_message"),
+            data_map,
+            reel_diameter=data_map.get("reel_diameter"),
+            reel_thickness=data_map.get("reel_thickness"),
+            inspection_result=data_map.get("inspection_result"),
+            reason_code=data_map.get("reason_code") or data_map.get("ng_reason"),
+            reason_message=data_map.get("reason_message") or data_map.get("ng_message"),
         )
 
 

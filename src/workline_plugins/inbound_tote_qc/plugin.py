@@ -65,7 +65,7 @@ class InboundToteQcPlugin(WorklinePlugin):
     async def handle_tote_arrived(self, ctx: PluginContext, inbox: Any) -> RuntimeIntent | list[RuntimeIntent]:
         """料箱到位后下发称重命令。"""
 
-        payload = getattr(inbox, "payload_json", None) or {}
+        payload: Any = getattr(inbox, "payload_json", None) or {}
         try:
             event = ToteArrivedPayload.model_validate(payload)
         except Exception:

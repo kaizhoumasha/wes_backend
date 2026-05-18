@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,7 +23,7 @@ class InboundToteQcContext(BaseModel):
 
     @classmethod
     def from_mapping(cls, value: Any) -> InboundToteQcContext:
-        return cls.model_validate(dict(value) if isinstance(value, dict) else {})
+        return cls.model_validate(dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {})
 
     @classmethod
     def from_session(cls, session: Any) -> InboundToteQcContext:
