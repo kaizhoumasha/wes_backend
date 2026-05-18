@@ -567,6 +567,140 @@ class WorklineOperationService(BaseService[Any, Any]):
             await self._commit_mutation(db)
         return inbox
 
+    async def submit_sandbox_external_callback(
+        self,
+        db: Any,
+        *,
+        dispatch_key: str,
+        callback_type: str | None = None,
+        payload: dict[str, Any] | None = None,
+        source_system: str = "WMS",
+        source_event_id: str | None = None,
+        source_version: str = "1",
+        request_id: str | None = None,
+        occurred_at: datetime | None = None,
+        timestamp: datetime | None = None,
+        signature: str = "sandbox",
+        auto_commit: bool = True,
+    ) -> Any:
+        """沙箱模式模拟 External HTTP 回调。
+
+        只在 SIMULATION 工作线开放，把调试人员输入转成运行时统一消费的
+        EXTERNAL_HTTP inbox，避免前端直接依赖 callback ingress 的验签/来源契约。
+        """
+
+        outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
+        if outbox is None:
+            raise ValueError(f"Outbox 不存在: {dispatch_key}")
+
+        workline = await self.workline_repo.get_by_id(db, outbox.workline_id)
+        if workline is None:
+            raise ValueError(f"工作线不存在: {outbox.workline_id}")
+        self._require_simulation_workline(workline)
+
+        if _enum_value(outbox.dispatch_type) != DispatchType.EXTERNAL_HTTP.value:
+            raise ValueError(f"仅允许 EXTERNAL_HTTP Outbox 模拟外部回调: dispatch_key={dispatch_key}")
+        if _enum_value(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
+            raise ValueError(
+                f"当前 Outbox 状态不允许模拟外部回调: dispatch_key={dispatch_key}, status={_enum_value(outbox.status)}"
+            )
+        if outbox.session_id is None:
+            raise ValueError(f"Outbox 未关联会话: dispatch_key={dispatch_key}")
+
+        session = await self.session_repo.get_by_id(db, outbox.session_id)
+        if session is None:
+            raise ValueError(f"会话不存在: {outbox.session_id}")
+        if (
+            session.status != SessionStatus.WAITING_EXTERNAL
+            or _enum_value(getattr(session, "current_wait_type", None)) != "EXTERNAL_HTTP"
+        ):
+            raise ValueError(
+                f"当前会话状态不允许模拟外部回调: session_id={session.id}, "
+                f"status={_enum_value(session.status)}, wait_type={getattr(session, 'current_wait_type', None)}"
+            )
+
+        raw_outbox_payload = outbox.payload_json
+        outbox_payload = cast("dict[str, Any]", raw_outbox_payload) if isinstance(raw_outbox_payload, dict) else {}
+        raw_payload = dict(payload or {})
+        resolved_callback_type = (
+            callback_type or outbox_payload.get("resume_callback_type") or raw_payload.get("callback_type")
+        )
+        if not isinstance(resolved_callback_type, str) or not resolved_callback_type.strip():
+            raise ValueError(f"Outbox 缺少外部回调类型: dispatch_key={dispatch_key}")
+        resolved_callback_type = resolved_callback_type.strip()
+
+        if source_system not in {"WMS", "RCS"}:
+            raise ValueError(f"外部来源系统不支持: source_system={source_system}")
+
+        trace_id = getattr(session, "trace_id", None) or outbox_payload.get("trace_id") or raw_payload.get("trace_id")
+        if not isinstance(trace_id, str) or not trace_id.strip():
+            raise ValueError(f"会话缺少 trace_id: session_id={session.id}")
+        trace_id = trace_id.strip()
+
+        callback_received_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
+        event_occurred_at = occurred_at if isinstance(occurred_at, datetime) else callback_received_at
+        resolved_source_event_id = source_event_id or raw_payload.get("source_event_id")
+        if not isinstance(resolved_source_event_id, str) or not resolved_source_event_id.strip():
+            dispatch_event_hash = uuid.uuid5(uuid.NAMESPACE_URL, dispatch_key).hex
+            resolved_source_event_id = f"sandbox:{resolved_callback_type}:{dispatch_event_hash}"
+        resolved_source_event_id = resolved_source_event_id.strip()
+        resolved_request_id = request_id or raw_payload.get("request_id")
+        if not isinstance(resolved_request_id, str) or not resolved_request_id.strip():
+            resolved_request_id = f"sandbox:external:{uuid.uuid4().hex}"
+        resolved_request_id = resolved_request_id.strip()
+
+        inbox_payload = {
+            **raw_payload,
+            "message_type": "EXTERNAL_HTTP",
+            "callback_type": resolved_callback_type,
+            "trace_id": trace_id,
+            "dispatch_key": dispatch_key,
+            "source_system": source_system,
+            "source_event_id": resolved_source_event_id,
+            "source_version": source_version,
+            "occurred_at": event_occurred_at.isoformat(),
+            "request_id": resolved_request_id,
+            "timestamp": callback_received_at.isoformat(),
+            "signature": signature,
+            "sandbox_mode": True,
+        }
+        idempotency_key = self.inbox_repo.calculate_external_http_idempotency_key(
+            callback_type=resolved_callback_type,
+            trace_id=trace_id,
+            payload=inbox_payload,
+        )
+        inbox_data = {
+            "kind": InboxKind.EXTERNAL_HTTP,
+            "idempotency_key": idempotency_key,
+            "source_system": SourceSystem.MANUAL,
+            "source_message_id": resolved_request_id,
+            "workline_id": session.workline_id,
+            "session_id": session.id,
+            "trace_id": trace_id,
+            "event_id": resolved_source_event_id,
+            "payload_json": inbox_payload,
+            "received_at": callback_received_at,
+        }
+        inbox = await self.inbox_repo.create_idempotent(
+            db,
+            inbox_data,
+            idempotency_key=idempotency_key,
+        )
+        if inbox is None:
+            raise RuntimeError(f"创建沙箱外部回调失败: dispatch_key={dispatch_key}")
+
+        outbox.status = OutboxStatus.SENT
+        if getattr(outbox, "sent_at", None) is None:
+            outbox.sent_at = callback_received_at
+        if hasattr(outbox, "next_retry_at"):
+            outbox.next_retry_at = None
+        if hasattr(outbox, "last_error"):
+            outbox.last_error = None
+
+        if auto_commit:
+            await self._commit_mutation(db)
+        return inbox
+
     async def submit_sandbox_ack(
         self,
         db: Any,

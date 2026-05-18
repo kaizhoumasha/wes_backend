@@ -92,6 +92,29 @@ def _full_rack_cells(rack_id: str = "RACK-001") -> list[dict]:
     return cells
 
 
+def _with_required_rack_bins(cells: list[dict], rack_id: str = "RACK-001") -> list[dict]:
+    """补齐单层货架 A/B/C/D 四个料箱，便于测试聚焦目标格位选择。"""
+
+    result = list(cells)
+    present_slots = {str(cell.get("rack_slot_code")) for cell in cells if cell.get("rack_slot_code")}
+    slot_sides = {"A": "0", "B": "0", "C": "1", "D": "1"}
+    for slot_code in ("A", "B", "C", "D"):
+        if slot_code in present_slots:
+            continue
+        result.append(
+            _cell(
+                "1",
+                status="OCCUPIED",
+                bin_id=f"BIN-FILLER-{slot_code}",
+                rack_slot_code=slot_code,
+                rack_slot_location_code=f"{rack_id}-1{slot_code}-{slot_sides[slot_code]}",
+                date_code="122624",
+                lot_code="FILLER",
+            )
+        )
+    return result
+
+
 def _full_box_ctx() -> SimpleNamespace:
     return SimpleNamespace(
         logger=MagicMock(),
@@ -157,10 +180,12 @@ def test_plan_allocation_same_dc_lc_chooses_occupied_compatible_cell() -> None:
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
         context=_context(
-            cells=[
-                _cell("1", status="EMPTY"),
-                _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031"),
-            ]
+            cells=_with_required_rack_bins(
+                [
+                    _cell("1", status="EMPTY"),
+                    _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031"),
+                ]
+            )
         ),
     )
 
@@ -188,12 +213,14 @@ def test_plan_allocation_different_dc_lc_chooses_first_empty_cell() -> None:
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
         context=_context(
-            cells=[
-                _cell("1", status="OCCUPIED", date_code="122624", lot_code="8904936031"),
-                _cell("2", status="OCCUPIED", date_code="122625", lot_code="DIFFERENT"),
-                _cell("3", status="EMPTY"),
-                _cell("4", status="EMPTY"),
-            ]
+            cells=_with_required_rack_bins(
+                [
+                    _cell("1", status="OCCUPIED", date_code="122624", lot_code="8904936031"),
+                    _cell("2", status="OCCUPIED", date_code="122625", lot_code="DIFFERENT"),
+                    _cell("3", status="EMPTY"),
+                    _cell("4", status="EMPTY"),
+                ]
+            )
         ),
     )
 
@@ -210,24 +237,26 @@ def test_plan_allocation_7inch_prefers_empty_six_bin_cell_before_three_bin_cell(
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
         context=_context(
-            cells=[
-                _cell(
-                    "1",
-                    status="EMPTY",
-                    bin_id="BIN-3-001",
-                    bin_type="3格箱",
-                    rack_slot_code="A",
-                    rack_slot_location_code="NHW-1CLJ-0001-1A-0",
-                ),
-                _cell(
-                    "1",
-                    status="EMPTY",
-                    bin_id="BIN-6-001",
-                    bin_type="6格箱",
-                    rack_slot_code="B",
-                    rack_slot_location_code="NHW-1CLJ-0001-1B-0",
-                ),
-            ],
+            cells=_with_required_rack_bins(
+                [
+                    _cell(
+                        "1",
+                        status="EMPTY",
+                        bin_id="BIN-3-001",
+                        bin_type="3格箱",
+                        rack_slot_code="A",
+                        rack_slot_location_code="NHW-1CLJ-0001-1A-0",
+                    ),
+                    _cell(
+                        "1",
+                        status="EMPTY",
+                        bin_id="BIN-6-001",
+                        bin_type="6格箱",
+                        rack_slot_code="B",
+                        rack_slot_location_code="NHW-1CLJ-0001-1B-0",
+                    ),
+                ]
+            ),
             reel_diameter="7inch",
         ),
     )
@@ -253,18 +282,34 @@ def test_plan_allocation_large_reel_uses_three_bin_large_cell_only() -> None:
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
         context=_context(
-            cells=[
-                _cell("1", status="EMPTY", bin_id="BIN-6-001", bin_type="6格箱"),
-                _cell("1", status="EMPTY", bin_id="BIN-3-001", bin_type="3格箱"),
-                _cell(
-                    "7",
-                    status="EMPTY",
-                    bin_id="BIN-3-001",
-                    bin_type="3格箱",
-                    rack_slot_code="C",
-                    rack_slot_location_code="NHW-1CLJ-0001-1C-1",
-                ),
-            ],
+            cells=_with_required_rack_bins(
+                [
+                    _cell(
+                        "1",
+                        status="EMPTY",
+                        bin_id="BIN-6-001",
+                        bin_type="6格箱",
+                        rack_slot_code="A",
+                        rack_slot_location_code="NHW-1CLJ-0001-1A-0",
+                    ),
+                    _cell(
+                        "1",
+                        status="EMPTY",
+                        bin_id="BIN-3-001",
+                        bin_type="3格箱",
+                        rack_slot_code="B",
+                        rack_slot_location_code="NHW-1CLJ-0001-1B-0",
+                    ),
+                    _cell(
+                        "7",
+                        status="EMPTY",
+                        bin_id="BIN-3-002",
+                        bin_type="3格箱",
+                        rack_slot_code="C",
+                        rack_slot_location_code="NHW-1CLJ-0001-1C-1",
+                    ),
+                ]
+            ),
             reel_diameter="15inch",
         ),
     )
@@ -274,10 +319,10 @@ def test_plan_allocation_large_reel_uses_three_bin_large_cell_only() -> None:
         "rack_id": "RACK-001",
         "rack_slot_code": "C",
         "rack_slot_location_code": "NHW-1CLJ-0001-1C-1",
-        "bin_id": "BIN-3-001",
-        "bin_orientation_code": "BIN-3-001-A",
+        "bin_id": "BIN-3-002",
+        "bin_orientation_code": "BIN-3-002-A",
         "bin_type": "3格箱",
-        "bin_cell_location": "BIN-3-001-7",
+        "bin_cell_location": "BIN-3-002-7",
         "bin_cell_index": "7",
     }
 
@@ -466,10 +511,84 @@ def test_plan_allocation_partial_rack_snapshot_blocks_for_reconciliation() -> No
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
     assert decision.kind == "BLOCKED"
-    assert decision.reason_code == "FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID"
-    assert decision.message == "SMT 当前货架释放事件无法生成 4 个料箱快照"
+    assert decision.reason_code == "ACTIVE_RACK_SNAPSHOT_INVALID"
+    assert decision.message == "SMT 可用货架快照必须包含 A/B/C/D 4 个料箱"
     assert decision.rack_supply_request is None
     assert decision.rack_release_event is None
+
+
+def test_plan_allocation_rejects_partial_rack_even_when_empty_cell_exists() -> None:
+    """WMS/RCS 回传的可用货架不足 4 个料箱时，即使存在空格也不能分配。"""
+
+    service = SmtRackBinSchedulingService()
+    context = _context(
+        cells=[
+            _cell(
+                "1",
+                status="EMPTY",
+                bin_id="BIN-PARTIAL-001",
+                rack_slot_code="A",
+                rack_slot_location_code="RACK-PARTIAL-002-1A-0",
+            )
+        ],
+        rack_id="RACK-PARTIAL-002",
+    )
+
+    decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
+
+    assert decision.kind == "BLOCKED"
+    assert decision.reason_code == "ACTIVE_RACK_SNAPSHOT_INVALID"
+    assert decision.message == "SMT 可用货架快照必须包含 A/B/C/D 4 个料箱"
+    assert decision.bin_location is None
+
+
+def test_plan_allocation_rejects_arrived_supply_rack_with_occupied_cell() -> None:
+    """WMS/RCS 补充到位的可用货架必须全为空料格。"""
+
+    service = SmtRackBinSchedulingService()
+    context = _context(
+        cells=[
+            _cell(
+                "1",
+                status="OCCUPIED",
+                bin_id="BIN-SUPPLY-A",
+                rack_slot_code="A",
+                rack_slot_location_code="RACK-SUPPLY-001-1A-0",
+                date_code="122624",
+                lot_code="DIFFERENT",
+            ),
+            _cell(
+                "1",
+                status="EMPTY",
+                bin_id="BIN-SUPPLY-B",
+                rack_slot_code="B",
+                rack_slot_location_code="RACK-SUPPLY-001-1B-0",
+            ),
+            _cell(
+                "1",
+                status="EMPTY",
+                bin_id="BIN-SUPPLY-C",
+                rack_slot_code="C",
+                rack_slot_location_code="RACK-SUPPLY-001-1C-1",
+            ),
+            _cell(
+                "1",
+                status="EMPTY",
+                bin_id="BIN-SUPPLY-D",
+                rack_slot_code="D",
+                rack_slot_location_code="RACK-SUPPLY-001-1D-1",
+            ),
+        ],
+        rack_id="RACK-SUPPLY-001",
+    )
+    context["rack_supply"] = {"status": "REQUESTED", "dispatch_key": "external:smt_classifier:trace-001:RACK_SUPPLY"}
+
+    decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
+
+    assert decision.kind == "BLOCKED"
+    assert decision.reason_code == "ACTIVE_RACK_NOT_EMPTY"
+    assert decision.message == "SMT 可用货架料箱必须全为空料格"
+    assert decision.bin_location is None
 
 
 def test_plan_allocation_missing_rack_exchange_target_blocks_configuration() -> None:
@@ -495,12 +614,14 @@ def test_plan_allocation_ignores_locked_disabled_and_incomplete_cells() -> None:
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
         context=_context(
-            cells=[
-                _cell("1", status="OCCUPIED", date_code="122625", lot_code="8904936031") | {"locked": True},
-                _cell("2", status="EMPTY") | {"disabled": True},
-                {"status": "EMPTY", "bin_id": "BIN-001"},
-                _cell("4", status="EMPTY"),
-            ]
+            cells=_with_required_rack_bins(
+                [
+                    _cell("1", status="OCCUPIED", date_code="122625", lot_code="8904936031") | {"locked": True},
+                    _cell("2", status="EMPTY") | {"disabled": True},
+                    {"status": "EMPTY", "bin_id": "BIN-001"},
+                    _cell("4", status="EMPTY"),
+                ]
+            )
         ),
     )
 

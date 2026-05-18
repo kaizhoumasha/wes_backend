@@ -13,6 +13,7 @@ from src.app.workline.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
     SandboxEventRequest,
+    SandboxExternalCallbackRequest,
     SandboxResultRequest,
     SandboxTemplatesResponse,
 )
@@ -330,6 +331,37 @@ async def submit_sandbox_ack(
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_outbox_response(outbox)))
+
+
+@router.post(
+    "/sandbox/external-callbacks",
+    summary="[biz:workline:update] 沙箱模拟 External HTTP 回调",
+    response_model=ResponseSchemaModel[dict[str, Any]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+)
+async def submit_sandbox_external_callback(
+    payload: SandboxExternalCallbackRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[dict[str, Any]]:
+    try:
+        inbox = await workline_operation_service.submit_sandbox_external_callback(
+            db,
+            dispatch_key=payload.dispatch_key,
+            callback_type=payload.callback_type,
+            payload=payload.payload,
+            source_system=payload.source_system,
+            source_event_id=payload.source_event_id,
+            source_version=payload.source_version,
+            request_id=payload.request_id,
+            occurred_at=payload.occurred_at,
+            timestamp=payload.timestamp,
+            signature=payload.signature,
+        )
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    _enqueue_workline_processing()
+    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
 @router.post(

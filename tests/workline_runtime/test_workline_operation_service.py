@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.app.workline.models.inbox import InboxKind
+from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.outbox import DispatchType, OutboxStatus
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
@@ -15,11 +15,27 @@ class _InboxRepoStub:
         self.original = original
         self.created: dict[str, Any] | None = None
         self.get_by_id = AsyncMock(return_value=original)
+        self.get_by_idempotency_key = AsyncMock(return_value=None)
         self.create = AsyncMock(side_effect=self._create)
+        self.create_idempotent = AsyncMock(side_effect=self._create_idempotent)
 
     async def _create(self, _db: object, data: dict[str, Any]) -> Any:
         self.created = data
         return SimpleNamespace(id=88, **data)
+
+    async def _create_idempotent(self, _db: object, data: dict[str, Any], *, idempotency_key: str) -> Any:
+        self.created = data | {"idempotency_key": idempotency_key}
+        return SimpleNamespace(id=88, **self.created)
+
+    def calculate_external_http_idempotency_key(
+        self,
+        *,
+        callback_type: str,
+        trace_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        source_event_id = payload["source_event_id"]
+        return f"external_http:{callback_type}:{trace_id}:source_event:{source_event_id}"
 
 
 class _SessionRepoStub:
@@ -107,6 +123,155 @@ async def test_manual_operation_requires_open_session_state() -> None:
             operation="HOLD",
             operator_id="ops-1",
             reason="需要检查",
+            auto_commit=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_external_callback_creates_external_http_inbox_for_pending_outbox() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=28,
+        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        dispatch_type=DispatchType.EXTERNAL_HTTP,
+        status=OutboxStatus.NEW,
+        sent_at=None,
+        next_retry_at="retry-later",
+        last_error="previous dispatch wait",
+        session_id=530,
+        workline_id=45,
+        payload_json={"resume_callback_type": "WMS_RACK_ARRIVED", "trace_id": "trace-001"},
+    )
+    session = SimpleNamespace(
+        id=530,
+        status=SessionStatus.WAITING_EXTERNAL,
+        current_wait_type="EXTERNAL_HTTP",
+        workline_id=45,
+        trace_id="trace-001",
+    )
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    callback_payload = {
+        "active_bin_rack": {
+            "rack_id": "RACK-001",
+            "rack_code": "RACK-001",
+            "cells": [
+                {
+                    "rack_id": "RACK-001",
+                    "rack_slot_code": "A",
+                    "rack_slot_location_code": "RACK-001-1A-0",
+                    "bin_id": "BIN-001",
+                    "bin_orientation_code": "BIN-001-A",
+                    "bin_type": "6格箱",
+                    "bin_cell_location": "BIN-001-1",
+                    "status": "EMPTY",
+                }
+            ],
+        }
+    }
+    inbox_repo = _InboxRepoStub()
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    inbox = await service.submit_sandbox_external_callback(
+        object(),
+        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        payload=callback_payload,
+        source_event_id="wms-event-001",
+        request_id="rack-request-001",
+        auto_commit=False,
+    )
+
+    assert inbox.id == 88
+    assert inbox_repo.created is not None
+    assert inbox_repo.created["kind"] == InboxKind.EXTERNAL_HTTP
+    assert inbox_repo.created["source_system"] == SourceSystem.MANUAL
+    assert inbox_repo.created["session_id"] == 530
+    assert inbox_repo.created["workline_id"] == 45
+    assert inbox_repo.created["trace_id"] == "trace-001"
+    assert inbox_repo.created["event_id"] == "wms-event-001"
+    assert inbox_repo.created["source_message_id"] == "rack-request-001"
+    created_payload = inbox_repo.created["payload_json"]
+    assert created_payload["message_type"] == "EXTERNAL_HTTP"
+    assert created_payload["callback_type"] == "WMS_RACK_ARRIVED"
+    assert created_payload["trace_id"] == "trace-001"
+    assert created_payload["dispatch_key"] == "external:smt_classifier:trace-001:RACK_SUPPLY"
+    assert created_payload["source_system"] == "WMS"
+    assert created_payload["source_event_id"] == "wms-event-001"
+    assert created_payload["source_version"] == "1"
+    assert created_payload["request_id"] == "rack-request-001"
+    assert created_payload["signature"] == "sandbox"
+    assert created_payload["sandbox_mode"] is True
+    assert created_payload["active_bin_rack"] == callback_payload["active_bin_rack"]
+    assert "message_type" not in callback_payload
+    assert outbox.status == OutboxStatus.SENT
+    assert outbox.sent_at is not None
+    assert outbox.next_retry_at is None
+    assert outbox.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_external_callback_rejects_device_outbox() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=DispatchType.DEVICE_COMMAND,
+        status=OutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with pytest.raises(ValueError, match="仅允许 EXTERNAL_HTTP"):
+        await service.submit_sandbox_external_callback(
+            object(),
+            dispatch_key="device-command:CMD-001",
+            auto_commit=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_external_callback_requires_waiting_external_session() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=28,
+        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        dispatch_type=DispatchType.EXTERNAL_HTTP,
+        status=OutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"resume_callback_type": "WMS_RACK_ARRIVED", "trace_id": "trace-001"},
+    )
+    session = SimpleNamespace(
+        id=530,
+        status=SessionStatus.RUNNING,
+        current_wait_type=None,
+        workline_id=45,
+        trace_id="trace-001",
+    )
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with pytest.raises(ValueError, match="当前会话状态不允许模拟外部回调"):
+        await service.submit_sandbox_external_callback(
+            object(),
+            dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
             auto_commit=False,
         )
 

@@ -165,6 +165,8 @@ class SmtRackBinSchedulingService:
         "ABNORMAL": "EXCEPTION",
         "ERROR": "EXCEPTION",
     }
+    EMPTY_CELL_STATUSES: ClassVar[frozenset[str]] = frozenset({"EMPTY", "EMPTY_VERIFIED", "AVAILABLE"})
+    PENDING_RACK_SUPPLY_STATUSES: ClassVar[frozenset[str]] = frozenset({"REQUESTED", "IN_PROGRESS"})
     REQUEST_TYPE: ClassVar[str] = "SMT_RACK_SUPPLY"
     RELEASE_EVENT_TYPE: ClassVar[str] = "SINGLE_LAYER_RACK_RELEASED"
     SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("SUPPLY_EMPTY_RACK",)
@@ -230,14 +232,24 @@ class SmtRackBinSchedulingService:
                 message="SMT 料箱调度缺少当前可用料架",
             )
         active_rack_map = cast("Mapping[str, Any]", active_rack)
+        blocking_decision: SmtRackBinSchedulingDecision | None = None
+        rack_bin_snapshots = self._rack_bin_snapshots(active_rack_map)
+        if len(rack_bin_snapshots) != len(self.RACK_SLOT_CODES):
+            blocking_decision = self._invalid_active_rack_snapshot_decision()
+        elif self._requires_empty_active_rack(scheduling_context) and not self._active_rack_is_empty(
+            active_rack_map, rack_bin_snapshots
+        ):
+            blocking_decision = self._non_empty_active_rack_decision()
 
         reel_size_kind = self._reel_size_kind(scheduling_context)
-        if reel_size_kind is None:
-            return SmtRackBinSchedulingDecision(
+        if blocking_decision is None and reel_size_kind is None:
+            blocking_decision = SmtRackBinSchedulingDecision(
                 kind="BLOCKED",
                 reason_code="MISSING_OR_UNSUPPORTED_REEL_DIAMETER",
                 message="SMT 料箱调度缺少或不支持料盘尺寸，无法匹配 6/3 格箱料格",
             )
+        if blocking_decision is not None:
+            return blocking_decision
 
         cells = self._rack_cells(active_rack_map)
         compatible_cell = self._find_compatible_occupied_cell(cells, material, reel_size_kind)
@@ -498,11 +510,7 @@ class SmtRackBinSchedulingService:
         message: str,
     ) -> SmtRackBinSchedulingDecision:
         if active_rack is not None and len(self._rack_bin_snapshots(active_rack)) != len(self.RACK_SLOT_CODES):
-            return SmtRackBinSchedulingDecision(
-                kind="BLOCKED",
-                reason_code="FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID",
-                message="SMT 当前货架释放事件无法生成 4 个料箱快照",
-            )
+            return self._invalid_active_rack_snapshot_decision()
 
         target_code = self._target_code(context)
         if target_code is None:
@@ -557,6 +565,44 @@ class SmtRackBinSchedulingService:
             reason_code=reason_code,
             message=message,
         )
+
+    def _invalid_active_rack_snapshot_decision(self) -> SmtRackBinSchedulingDecision:
+        return SmtRackBinSchedulingDecision(
+            kind="BLOCKED",
+            reason_code="ACTIVE_RACK_SNAPSHOT_INVALID",
+            message="SMT 可用货架快照必须包含 A/B/C/D 4 个料箱",
+        )
+
+    def _non_empty_active_rack_decision(self) -> SmtRackBinSchedulingDecision:
+        return SmtRackBinSchedulingDecision(
+            kind="BLOCKED",
+            reason_code="ACTIVE_RACK_NOT_EMPTY",
+            message="SMT 可用货架料箱必须全为空料格",
+        )
+
+    def _requires_empty_active_rack(self, context: Mapping[str, Any]) -> bool:
+        rack_supply = context.get("rack_supply") or context.get("rack_exchange")
+        if not isinstance(rack_supply, Mapping):
+            return False
+        status = self._text_or_none(rack_supply.get("status"))
+        return status is not None and status.upper() in self.PENDING_RACK_SUPPLY_STATUSES
+
+    def _active_rack_is_empty(
+        self,
+        active_rack: Mapping[str, Any],
+        bin_snapshots: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        if any(not self._rack_bin_snapshot_is_empty(snapshot) for snapshot in bin_snapshots):
+            return False
+        return all(self._rack_cell_is_empty(cell) for cell in self._rack_cells(active_rack))
+
+    def _rack_bin_snapshot_is_empty(self, snapshot: Mapping[str, Any]) -> bool:
+        usage = self._release_bin_usage(snapshot)
+        status = self._release_bin_status(snapshot.get("status") or snapshot.get("bin_execution_status"), usage=usage)
+        return usage == 0 and status == "EMPTY_VERIFIED"
+
+    def _rack_cell_is_empty(self, cell: Mapping[str, Any]) -> bool:
+        return self._cell_status(cell) in self.EMPTY_CELL_STATUSES
 
     def _target_code(self, context: Mapping[str, Any]) -> str | None:
         keys = (
