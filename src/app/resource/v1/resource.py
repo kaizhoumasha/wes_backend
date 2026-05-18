@@ -107,6 +107,9 @@ execution_zone_api = BaseAPI(
     response_schema=ExecutionZoneResponse,
     prefix="/execution-zones",
     tags=["资源模型-执行区域"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 execution_location_api = BaseAPI(
@@ -118,6 +121,9 @@ execution_location_api = BaseAPI(
     response_schema=ExecutionLocationResponse,
     prefix="/execution-locations",
     tags=["资源模型-执行地码"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 rack_type_api = BaseAPI(
@@ -129,6 +135,9 @@ rack_type_api = BaseAPI(
     response_schema=RackTypeResponse,
     prefix="/rack-types",
     tags=["资源模型-货架类型"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 rack_slot_template_api = BaseAPI(
@@ -140,6 +149,9 @@ rack_slot_template_api = BaseAPI(
     response_schema=RackSlotTemplateResponse,
     prefix="/rack-slot-templates",
     tags=["资源模型-货架槽位模板"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 rack_api = BaseAPI(
@@ -151,6 +163,9 @@ rack_api = BaseAPI(
     response_schema=RackResponse,
     prefix="/racks",
     tags=["资源模型-货架实例"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 bin_type_api = BaseAPI(
@@ -162,6 +177,9 @@ bin_type_api = BaseAPI(
     response_schema=BinTypeResponse,
     prefix="/bin-types",
     tags=["资源模型-料箱类型"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 bin_slot_template_api = BaseAPI(
@@ -173,6 +191,9 @@ bin_slot_template_api = BaseAPI(
     response_schema=BinSlotTemplateResponse,
     prefix="/bin-slot-templates",
     tags=["资源模型-料箱槽位模板"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 bin_api = BaseAPI(
@@ -184,6 +205,9 @@ bin_api = BaseAPI(
     response_schema=BinResponse,
     prefix="/bins",
     tags=["资源模型-料箱实例"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
 )
 
 resource_state_event_api = BaseAPI(
