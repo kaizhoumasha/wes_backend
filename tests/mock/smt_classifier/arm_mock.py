@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from collections import deque
 from datetime import datetime
@@ -63,6 +64,20 @@ DEVICE_CODE = os.getenv("DEVICE_CODE") or os.getenv("DEVICE_ID", "ARM01")
 EXECUTION_TIME = float(os.getenv("EXECUTION_TIME", "2.0"))
 AUTO_EXECUTE_INTERVAL = int(os.getenv("AUTO_EXECUTE_INTERVAL", "5"))
 BARCODE_PREFIX = os.getenv("BARCODE_PREFIX", "SMT-PKG")
+MEASUREMENT_REEL_DIAMETER_ENV = "ARM_MEASUREMENT_REEL_DIAMETER"
+MEASUREMENT_REEL_THICKNESS_ENV = "ARM_MEASUREMENT_REEL_THICKNESS"
+MEASUREMENT_NUMBER_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _measurement_number_from_env(env_name: str, default: float) -> float:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    match = MEASUREMENT_NUMBER_PATTERN.search(raw_value)
+    if match is None:
+        logger.warning("忽略无效机械臂测量配置: %s=%r", env_name, raw_value)
+        return default
+    return float(match.group(0))
 
 
 class DeviceLocations(TypedDict):
@@ -587,8 +602,8 @@ class ArmSimulator:
         if task_type == "MEASUREMENT_REEL":
             data: JsonDict = {
                 "PkgID": pkg_id or barcode_seed or "",
-                "reel_diameter": 15.0,
-                "reel_thickness": 20.0,
+                "reel_diameter": _measurement_number_from_env(MEASUREMENT_REEL_DIAMETER_ENV, 15.0),
+                "reel_thickness": _measurement_number_from_env(MEASUREMENT_REEL_THICKNESS_ENV, 20.0),
                 "inspection_result": "NG" if inspection_ng_reason else "OK",
             }
             if inspection_ng_reason:

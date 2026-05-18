@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -60,6 +61,145 @@ BIN_TYPE = os.getenv("RACK_EXCHANGE_BIN_TYPE", "6格箱")
 BIN_CELL_LOCATION = os.getenv("RACK_EXCHANGE_BIN_CELL_LOCATION", f"{BIN_ID}-4")
 CELL_TYPE = os.getenv("RACK_EXCHANGE_CELL_TYPE", "SEVEN_INCH")
 REMAINING_DEPTH = os.getenv("RACK_EXCHANGE_REMAINING_DEPTH", "300")
+DEFAULT_RACK_EXCHANGE_PROFILE = "seven_inch_six_cell"
+SINGLE_CELL_OVERRIDE_ENV_NAMES = (
+    "RACK_EXCHANGE_PROFILE",
+    "RACK_EXCHANGE_RACK_SLOT_CODE",
+    "RACK_EXCHANGE_RACK_SLOT_LOCATION_CODE",
+    "RACK_EXCHANGE_BIN_ID",
+    "RACK_EXCHANGE_BIN_ORIENTATION_CODE",
+    "RACK_EXCHANGE_BIN_TYPE",
+    "RACK_EXCHANGE_BIN_CELL_LOCATION",
+    "RACK_EXCHANGE_CELL_TYPE",
+)
+RACK_EXCHANGE_PROFILE_ALIASES = {
+    "seven_inch_six_cell": "seven_inch_six_cell",
+    "7inch_6cell": "seven_inch_six_cell",
+    "7_inch_6_cell": "seven_inch_six_cell",
+    "six_cell": "seven_inch_six_cell",
+    "6_cell": "seven_inch_six_cell",
+    "6格箱": "seven_inch_six_cell",
+    "large_three_cell": "large_three_cell",
+    "15inch_3cell": "large_three_cell",
+    "15_inch_3_cell": "large_three_cell",
+    "three_cell_large": "large_three_cell",
+    "3_cell": "large_three_cell",
+    "3格箱": "large_three_cell",
+}
+RACK_EXCHANGE_PROFILES = {
+    "seven_inch_six_cell": {
+        "bin_type": "6格箱",
+        "bin_cell_index": "4",
+        "cell_type": "SEVEN_INCH",
+    },
+    "large_three_cell": {
+        "bin_type": "3格箱",
+        "bin_cell_index": "7",
+        "cell_type": "LARGE",
+    },
+}
+DEFAULT_MIXED_RACK_BINS = (
+    {
+        "rack_slot_code": "A",
+        "bin_id": "BIN-MOCK-6A",
+        "bin_type": "6格箱",
+        "cell_indexes": ("1", "2", "3", "4", "5", "6"),
+    },
+    {
+        "rack_slot_code": "B",
+        "bin_id": "BIN-MOCK-6B",
+        "bin_type": "6格箱",
+        "cell_indexes": ("1", "2", "3", "4", "5", "6"),
+    },
+    {"rack_slot_code": "C", "bin_id": "BIN-MOCK-3C", "bin_type": "3格箱", "cell_indexes": ("1", "2", "7")},
+    {"rack_slot_code": "D", "bin_id": "BIN-MOCK-3D", "bin_type": "3格箱", "cell_indexes": ("1", "2", "7")},
+)
+
+
+@dataclass(frozen=True)
+class RackCellConfig:
+    profile: str
+    rack_id: str
+    rack_slot_code: str
+    rack_slot_location_code: str
+    bin_id: str
+    bin_orientation_code: str
+    bin_type: str
+    bin_cell_location: str
+    cell_type: str
+    remaining_depth: str
+
+
+def _canonical_rack_exchange_profile(profile: str | None = None) -> str:
+    raw_profile = profile or os.getenv("RACK_EXCHANGE_PROFILE") or DEFAULT_RACK_EXCHANGE_PROFILE
+    normalized = raw_profile.strip().lower().replace("-", "_")
+    canonical = RACK_EXCHANGE_PROFILE_ALIASES.get(normalized)
+    if canonical is None:
+        supported = ", ".join(sorted(RACK_EXCHANGE_PROFILES))
+        raise ValueError(f"无效的 RACK_EXCHANGE_PROFILE={raw_profile!r}，支持: {supported}")
+    return canonical
+
+
+def _single_cell_override_requested(profile: str | None = None) -> bool:
+    return bool(profile) or any(os.getenv(env_name) for env_name in SINGLE_CELL_OVERRIDE_ENV_NAMES)
+
+
+def _rack_slot_location_code(rack_id: str, rack_slot_code: str) -> str:
+    rack_slot_side = "1" if rack_slot_code in {"C", "D"} else "0"
+    return f"{rack_id}-1{rack_slot_code}-{rack_slot_side}"
+
+
+def _build_rack_cell_config(profile: str | None = None) -> RackCellConfig:
+    profile_name = _canonical_rack_exchange_profile(profile)
+    profile_defaults = RACK_EXCHANGE_PROFILES[profile_name]
+    rack_id = os.getenv("RACK_EXCHANGE_RACK_ID", RACK_ID)
+    rack_slot_code = os.getenv("RACK_EXCHANGE_RACK_SLOT_CODE", RACK_SLOT_CODE)
+    bin_id = os.getenv("RACK_EXCHANGE_BIN_ID", BIN_ID)
+    return RackCellConfig(
+        profile=profile_name,
+        rack_id=rack_id,
+        rack_slot_code=rack_slot_code,
+        rack_slot_location_code=os.getenv(
+            "RACK_EXCHANGE_RACK_SLOT_LOCATION_CODE",
+            _rack_slot_location_code(rack_id, rack_slot_code),
+        ),
+        bin_id=bin_id,
+        bin_orientation_code=os.getenv("RACK_EXCHANGE_BIN_ORIENTATION_CODE", f"{bin_id}-A"),
+        bin_type=os.getenv("RACK_EXCHANGE_BIN_TYPE", profile_defaults["bin_type"]),
+        bin_cell_location=os.getenv(
+            "RACK_EXCHANGE_BIN_CELL_LOCATION",
+            f"{bin_id}-{profile_defaults['bin_cell_index']}",
+        ),
+        cell_type=os.getenv("RACK_EXCHANGE_CELL_TYPE", profile_defaults["cell_type"]),
+        remaining_depth=os.getenv("RACK_EXCHANGE_REMAINING_DEPTH", REMAINING_DEPTH),
+    )
+
+
+def _build_mixed_rack_cells(rack_id: str) -> list[JsonDict]:
+    cells: list[JsonDict] = []
+    remaining_depth = os.getenv("RACK_EXCHANGE_REMAINING_DEPTH", REMAINING_DEPTH)
+    for bin_config in DEFAULT_MIXED_RACK_BINS:
+        rack_slot_code = str(bin_config["rack_slot_code"])
+        bin_id = str(bin_config["bin_id"])
+        bin_type = str(bin_config["bin_type"])
+        for cell_index in bin_config["cell_indexes"]:
+            cell_type = "LARGE" if bin_type == "3格箱" and cell_index == "7" else "SEVEN_INCH"
+            cells.append(
+                {
+                    "rack_id": rack_id,
+                    "rack_slot_code": rack_slot_code,
+                    "rack_slot_location_code": _rack_slot_location_code(rack_id, rack_slot_code),
+                    "bin_id": bin_id,
+                    "bin_orientation_code": f"{bin_id}-A",
+                    "bin_type": bin_type,
+                    "bin_cell_location": f"{bin_id}-{cell_index}",
+                    "bin_cell_index": cell_index,
+                    "status": "EMPTY",
+                    "cell_type": cell_type,
+                    "remaining_depth": remaining_depth,
+                }
+            )
+    return cells
 
 
 class RackExchangeRequest(BaseModel):
@@ -100,8 +240,9 @@ def _iso_utc_now() -> str:
 
 
 class RackExchangeSimulator:
-    def __init__(self, mode: str = DEFAULT_MODE):
+    def __init__(self, mode: str = DEFAULT_MODE, profile: str | None = None):
         self.mode = mode
+        self.cell_config = _build_rack_cell_config(profile) if _single_cell_override_requested(profile) else None
         self.records: list[RackExchangeRecord] = []
 
     async def execute_request(self, request: RackExchangeRequest) -> RackExchangeRecord:
@@ -184,22 +325,30 @@ class RackExchangeSimulator:
         return payload
 
     def _build_active_bin_rack(self) -> JsonDict:
+        cell_config = self.cell_config
+        if cell_config is None:
+            rack_id = os.getenv("RACK_EXCHANGE_RACK_ID", RACK_ID)
+            return {
+                "rack_id": rack_id,
+                "rack_code": rack_id,
+                "cells": _build_mixed_rack_cells(rack_id),
+            }
         return {
-            "rack_id": RACK_ID,
-            "rack_code": RACK_ID,
+            "rack_id": cell_config.rack_id,
+            "rack_code": cell_config.rack_id,
             "cells": [
                 {
-                    "rack_id": RACK_ID,
-                    "rack_slot_code": RACK_SLOT_CODE,
-                    "rack_slot_location_code": RACK_SLOT_LOCATION_CODE,
-                    "bin_id": BIN_ID,
-                    "bin_orientation_code": BIN_ORIENTATION_CODE,
-                    "bin_type": BIN_TYPE,
-                    "bin_cell_location": BIN_CELL_LOCATION,
-                    "bin_cell_index": BIN_CELL_LOCATION.rsplit("-", 1)[-1],
+                    "rack_id": cell_config.rack_id,
+                    "rack_slot_code": cell_config.rack_slot_code,
+                    "rack_slot_location_code": cell_config.rack_slot_location_code,
+                    "bin_id": cell_config.bin_id,
+                    "bin_orientation_code": cell_config.bin_orientation_code,
+                    "bin_type": cell_config.bin_type,
+                    "bin_cell_location": cell_config.bin_cell_location,
+                    "bin_cell_index": cell_config.bin_cell_location.rsplit("-", 1)[-1],
                     "status": "EMPTY",
-                    "cell_type": CELL_TYPE,
-                    "remaining_depth": REMAINING_DEPTH,
+                    "cell_type": cell_config.cell_type,
+                    "remaining_depth": cell_config.remaining_depth,
                 }
             ],
         }

@@ -2196,9 +2196,12 @@ def _resolve_effect_source_device(inbox: Any, session: Any, devices_by_role: dic
         device_code = _optional_str(getattr(normalized_input, "device_code", None))
     if device_code is None:
         session_context = payload_dict(getattr(session, "context_json", None))
+        rack_supply = payload_dict(session_context.get("rack_supply"))
         rack_exchange = payload_dict(session_context.get("rack_exchange"))
-        device_code = _optional_str(rack_exchange.get("resume_source_device_code")) or _optional_str(
-            session_context.get("resume_source_device_code")
+        device_code = (
+            _optional_str(rack_supply.get("resume_source_device_code"))
+            or _optional_str(rack_exchange.get("resume_source_device_code"))
+            or _optional_str(session_context.get("resume_source_device_code"))
         )
     if device_code is None:
         return None

@@ -104,6 +104,28 @@ def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:
     assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
 
 
+def test_resolve_effect_source_device_uses_rack_supply_resume_code() -> None:
+    conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE01", "device_role": "CONVEYOR"})())
+    session = cast(
+        "Any",
+        type(
+            "Session",
+            (),
+            {
+                "context_json": {
+                    "rack_supply": {
+                        "resume_source_device_code": "PIPELINE01",
+                        "resume_source_device_role": "CONVEYOR",
+                    }
+                }
+            },
+        )(),
+    )
+    inbox = cast("Any", type("Inbox", (), {"payload_json": {"callback_type": "WMS_RACK_ARRIVED"}})())
+
+    assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
+
+
 def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.MonkeyPatch) -> None:
     task = workline_tasks.process_inbox_batch
     task.cleanup()
