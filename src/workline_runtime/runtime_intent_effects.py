@@ -139,6 +139,16 @@ def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
     return getattr(trace, "trace_id", None) or ctx.get("trace_id")
 
 
+def _result_status_value(result: Any) -> str | None:
+    status = getattr(result, "status", None)
+    raw = getattr(status, "value", status)
+    return raw if isinstance(raw, str) else None
+
+
+def _is_reconciling_result(result: Any) -> bool:
+    return _result_status_value(result) == "RECONCILING"
+
+
 def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
     if intent.target_device_id is not None:
         destination = Destination.device(intent.target_device_id)
@@ -206,11 +216,15 @@ class RuntimeIntentEffectApplier:
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_FACT:
-                await self._apply_resource_fact(ctx, intent)
+                result = await self._apply_resource_fact(ctx, intent)
+                if _is_reconciling_result(result):
+                    return
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
-                await self._apply_resource_reservation(ctx, intent)
+                result = await self._apply_resource_reservation(ctx, intent)
+                if _is_reconciling_result(result):
+                    return
                 continue
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
@@ -472,7 +486,7 @@ class RuntimeIntentEffectApplier:
             auto_commit=False,
         )
 
-    async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> None:
+    async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         service = self._resource_projection_service
         if service is None:
             from src.app.resource.services import resource_projection_service
@@ -480,7 +494,7 @@ class RuntimeIntentEffectApplier:
             service = resource_projection_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        _ = await service.record_resource_fact(
+        return await service.record_resource_fact(
             db=ctx_map["db"],
             session=ctx_map["session"],
             workline=ctx_map["workline"],
@@ -490,7 +504,7 @@ class RuntimeIntentEffectApplier:
             trace_id=_ctx_trace_id(ctx_map),
         )
 
-    async def _apply_resource_reservation(self, ctx: Any, intent: RuntimeIntent) -> None:
+    async def _apply_resource_reservation(self, ctx: Any, intent: RuntimeIntent) -> Any:
         service = self._bin_cell_reservation_service
         if service is None:
             from src.app.workline.services import workline_bin_cell_reservation_service
@@ -498,7 +512,7 @@ class RuntimeIntentEffectApplier:
             service = workline_bin_cell_reservation_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        _ = await service.apply_runtime_reservation(
+        return await service.apply_runtime_reservation(
             db=ctx_map["db"],
             session=ctx_map["session"],
             workline=ctx_map["workline"],

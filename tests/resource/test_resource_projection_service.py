@@ -180,6 +180,20 @@ class RecordingRuntimeHoldCreator:
         return SimpleNamespace(id=8801, **kwargs)
 
 
+class RecordingResourceSnapshotService:
+    def __init__(self) -> None:
+        self.empty_rack_calls: list[dict[str, Any]] = []
+        self.material_calls: list[dict[str, Any]] = []
+
+    async def record_empty_bin_snapshots_from_arrived_rack(self, _db: object, **kwargs: Any) -> list[SimpleNamespace]:
+        self.empty_rack_calls.append(kwargs)
+        return [SimpleNamespace(id=index + 1) for index, _ in enumerate(kwargs["bin_mounts"])]
+
+    async def record_material_mounted_snapshot(self, _db: object, **kwargs: Any) -> SimpleNamespace:
+        self.material_calls.append(kwargs)
+        return SimpleNamespace(id=9901, **kwargs)
+
+
 def _mount(**overrides: Any) -> BinMaterialMount:
     values: dict[str, Any] = {
         "bin_code": "BIN-001",
@@ -271,7 +285,12 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
 async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> None:
     events = RecordingStateEventRepo()
     mounts = RecordingBinMaterialMountRepo()
-    service = ResourceProjectionService(state_event_repo=events, bin_material_mount_repo=mounts)
+    snapshots = RecordingResourceSnapshotService()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        bin_material_mount_repo=mounts,
+        snapshot_service=snapshots,
+    )
 
     result = await service.record_material_mounted_to_bin_cell(
         SimpleNamespace(),
@@ -290,6 +309,7 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
         session_id="2001",
+        workline_session_id=2001,
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -299,6 +319,72 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
     assert mounts.created[0]["wms_inventory_id"] == "INV-001"
     assert mounts.created[0]["mount_status"] == BinMaterialMountStatus.OCCUPIED.value
     assert events.created[0]["event_type"] == "MATERIAL_MOUNTED"
+    assert snapshots.material_calls == [
+        {
+            "bin_code": "BIN-001",
+            "bin_cell_code": "BIN-001-4",
+            "bin_cell_index": "4",
+            "pkg_code": "PKG-001",
+            "material_code": "620100L00-011-G",
+            "lot_code": "8904936031",
+            "date_code": "122625",
+            "qty_snapshot": None,
+            "wms_inventory_id": "INV-001",
+            "source_session_id": 2001,
+            "source_event_id": "CMD-PICK-001",
+            "captured_at": datetime(2026, 5, 18, 9, 5, 0),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_bin_mounted_to_rack_records_empty_bin_snapshots() -> None:
+    events = RecordingStateEventRepo()
+    rack_bins = RecordingRackBinMountRepo(active_by_slot_map={}, active_by_bin_map={})
+    snapshots = RecordingResourceSnapshotService()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        rack_bin_mount_repo=rack_bins,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_bin_mounted_to_rack(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        bin_mounts=[
+            {"rack_slot_code": "A", "bin_code": "BIN-A"},
+            {"rack_slot_code": "B", "bin_code": "BIN-B"},
+            {"rack_slot_code": "C", "bin_code": "BIN-C"},
+            {"rack_slot_code": "D", "bin_code": "BIN-D"},
+        ],
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-MOUNTED-001",
+        idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert [row["bin_code"] for row in rack_bins.created] == ["BIN-A", "BIN-B", "BIN-C", "BIN-D"]
+    assert snapshots.empty_rack_calls == [
+        {
+            "rack_code": "RACK-001",
+            "bin_mounts": [
+                {"rack_slot_code": "A", "bin_code": "BIN-A"},
+                {"rack_slot_code": "B", "bin_code": "BIN-B"},
+                {"rack_slot_code": "C", "bin_code": "BIN-C"},
+                {"rack_slot_code": "D", "bin_code": "BIN-D"},
+            ],
+            "source_session_id": 2001,
+            "source_event_id": "WMS-BIN-MOUNTED-001",
+            "captured_at": datetime(2026, 5, 18, 9, 5, 0),
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -61,21 +61,23 @@ def _ctx(orch_result: OrchestratorResult, *, session: Any | None = None, db: Any
 
 
 class RecordingResourceProjectionService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "PROJECTED") -> None:
         self.calls: list[dict[str, Any]] = []
+        self.status = status
 
     async def record_resource_fact(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(status="PROJECTED")
+        return SimpleNamespace(status=self.status)
 
 
 class RecordingBinCellReservationService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "CLAIMED") -> None:
         self.calls: list[dict[str, Any]] = []
+        self.status = status
 
     async def apply_runtime_reservation(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(status="CLAIMED")
+        return SimpleNamespace(status=self.status)
 
 
 @pytest.mark.asyncio
@@ -173,6 +175,36 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload={"rack_code": "RACK-001", "workline_code": "WL-001", "position_code": "SINGLE_LAYER_A"},
+                idempotency_key="RACK_ARRIVED:conflict",
+            ),
+            RuntimeIntent.update_context({"rack_supply": {"status": "ARRIVED"}}),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resource_reservation_intent_is_applied_before_command(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="CONV01", device_role="CONVEYOR")
     target = SimpleNamespace(id=2, device_code="OUT01", device_role="OUTPUT_ARM", upstream_device_id=1)
@@ -219,6 +251,155 @@ async def test_resource_reservation_intent_is_applied_before_command(monkeypatch
     assert reservation_service.calls[0]["operation"] == "CLAIM_BIN_CELL"
     assert reservation_service.calls[0]["session"] is session
     assert created_payloads[0]["device_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reconciling_resource_reservation_stops_following_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    reservation_service = RecordingBinCellReservationService(status="RECONCILING")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_reservation(
+                operation="CONSUME_BIN_CELL",
+                payload={"bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="CONSUME_BIN_CELL:123:BIN-001:4",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert reservation_service.calls[0]["operation"] == "CONSUME_BIN_CELL"
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_consume_bin_cell_owner_mismatch_creates_hold_and_runtime_does_not_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.workline.models.bin_cell_reservation import BinCellReservationStatus, WorklineBinCellReservation
+    from src.app.workline.models.safety import WorkLineRuntimeStatus
+    from src.app.workline.services.bin_cell_reservation_service import WorklineBinCellReservationService
+    from src.app.workline.services.runtime_hold_creation_service import RuntimeHoldCreationService
+
+    class ReservationRepo:
+        def __init__(self) -> None:
+            self.consumed: list[WorklineBinCellReservation] = []
+
+        async def get_active_by_bin_cell(
+            self,
+            _db: object,
+            *,
+            bin_code: str,
+            bin_cell_index: str,
+        ) -> WorklineBinCellReservation:
+            assert bin_code == "BIN-001"
+            assert bin_cell_index == "4"
+            return WorklineBinCellReservation(
+                reservation_key="reserve:old",
+                workline_id=1001,
+                workline_code="SMT_SORTER_01",
+                session_id=2001,
+                trace_id="trace-old",
+                pkg_code="PKG-OLD",
+                bin_code="BIN-001",
+                bin_cell_code="BIN-001-4",
+                bin_cell_index="4",
+                reservation_status=BinCellReservationStatus.PLANNED,
+                reserved_at=datetime(2026, 1, 1, 0, 0, 0),
+            )
+
+        async def mark_consumed(
+            self,
+            _db: object,
+            reservation: WorklineBinCellReservation,
+            *,
+            consumed_at: datetime,
+        ) -> WorklineBinCellReservation:
+            reservation.consumed_at = consumed_at
+            self.consumed.append(reservation)
+            return reservation
+
+    class MaterialMountRepo:
+        async def get_active_by_bin_cell(self, _db: object, *, bin_code: str, bin_cell_index: str) -> object | None:
+            return None
+
+    class RuntimeHoldRepo:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+
+        async def create_open_hold(self, _db: object, **data: Any) -> SimpleNamespace:
+            self.created.append(data)
+            return SimpleNamespace(id=9901, **data)
+
+    class WorkLineRepo:
+        def __init__(self, workline: SimpleNamespace) -> None:
+            self.workline = workline
+
+        async def get_for_update(self, _db: object, workline_id: int) -> SimpleNamespace:
+            assert workline_id == 1001
+            return self.workline
+
+    session = _session(id=2002, context_json={"pkg_id": "PKG-001"})
+    workline = SimpleNamespace(
+        id=1001,
+        line_code="SMT_SORTER_01",
+        plugin_key="demo_plugin",
+        contract_version="1.0",
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    ctx["workline"] = workline
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    reservation_repo = ReservationRepo()
+    hold_repo = RuntimeHoldRepo()
+    runtime_hold_creator = RuntimeHoldCreationService(
+        repository=hold_repo,
+        workline_repository=WorkLineRepo(workline),
+    )
+    reservation_service = WorklineBinCellReservationService(
+        reservation_repository=reservation_repo,
+        material_mount_repository=MaterialMountRepo(),
+        runtime_hold_creator=runtime_hold_creator,
+    )
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_reservation(
+                operation="CONSUME_BIN_CELL",
+                payload={"bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="CONSUME_BIN_CELL:2002:CMD-OUTPUT-001:BIN-001:4",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert hold_repo.created[0]["source_reason"] == "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_reason == "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+    assert reservation_repo.consumed == []
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    assert getattr(ctx["orch_result"], "complete", False) is False
+    record_ng_flow.assert_not_awaited()
 
 
 @pytest.mark.asyncio

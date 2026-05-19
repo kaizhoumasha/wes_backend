@@ -85,7 +85,9 @@ def _legacy_relation_source_system_check() -> str:
 
 
 def _drop_constraint_if_exists(table_name: str, constraint_name: str) -> None:
-    op.execute(sa.text(f'ALTER TABLE "{SCHEMA}"."{table_name}" DROP CONSTRAINT IF EXISTS "{constraint_name}"'))
+    constraint_names = (constraint_name, f"ck_{table_name}_{constraint_name}")
+    for name in dict.fromkeys(constraint_names):
+        op.execute(sa.text(f'ALTER TABLE "{SCHEMA}"."{table_name}" DROP CONSTRAINT IF EXISTS "{name}"'))
 
 
 def _drop_index_if_exists(index_name: str) -> None:

@@ -448,11 +448,9 @@ def _build_material_mounted_fact_intent(
         return None
 
     six_in_one = context.get("six_in_one")
-    normalized_six = (
-        normalize_six_in_one_payload(dict(cast("Mapping[str, Any]", six_in_one)))
-        if isinstance(six_in_one, Mapping)
-        else {}
-    )
+    normalized_six: dict[str, Any] = {}
+    if isinstance(six_in_one, Mapping):
+        normalized_six = normalize_six_in_one_payload(dict(cast("Mapping[str, Any]", six_in_one))) or {}
     source_event_id = (
         non_empty_str(getattr(result, "command_code", None)) or f"OUTPUT_ARM:{pkg_code}:{bin_code}:{bin_cell_index}"
     )
@@ -478,12 +476,33 @@ def _build_material_mounted_fact_intent(
     )
 
 
-def _rack_position_code_from_supply(rack_supply: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
-    return (
-        non_empty_str(payload.get("position_code"))
-        or non_empty_str(rack_supply.get("target_position_code"))
-        or "SINGLE_LAYER_A"
+def _build_bin_cell_consumption_intent(
+    ctx: PluginContext,
+    *,
+    result: NormalizedCommandResult,
+) -> RuntimeIntent | None:
+    context = getattr(getattr(ctx, "session", None), "context_json", None)
+    if not isinstance(context, Mapping):
+        return None
+    bin_location = context.get("bin_location")
+    if not isinstance(bin_location, Mapping):
+        return None
+    bin_code = non_empty_str(bin_location.get("bin_id"))
+    bin_cell_index = non_empty_str(bin_location.get("bin_cell_index"))
+    if bin_code is None or bin_cell_index is None:
+        return None
+
+    session_id = getattr(getattr(ctx, "session", None), "id", None)
+    source_event_id = non_empty_str(getattr(result, "command_code", None)) or f"OUTPUT_ARM:{bin_code}:{bin_cell_index}"
+    return ctx.next.resource_reservation(
+        operation="CONSUME_BIN_CELL",
+        payload={"bin_code": bin_code, "bin_cell_index": bin_cell_index},
+        idempotency_key=f"CONSUME_BIN_CELL:{session_id}:{source_event_id}:{bin_code}:{bin_cell_index}",
     )
+
+
+def _rack_position_code_from_supply(rack_supply: Mapping[str, Any]) -> str:
+    return non_empty_str(rack_supply.get("target_position_code")) or "SINGLE_LAYER_A"
 
 
 def _workline_code_from_context(ctx: PluginContext) -> str | None:
@@ -491,6 +510,32 @@ def _workline_code_from_context(ctx: PluginContext) -> str | None:
     return non_empty_str(getattr(workline, "line_code", None)) or non_empty_str(
         getattr(workline, "workline_code", None)
     )
+
+
+def _rack_workline_code_from_supply(ctx: PluginContext, rack_supply: Mapping[str, Any]) -> str:
+    return non_empty_str(rack_supply.get("workline_code")) or _workline_code_from_context(ctx) or ""
+
+
+def _rack_supply_target_mismatch(
+    ctx: PluginContext,
+    *,
+    rack_supply: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> tuple[str, str, str] | None:
+    expected_workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
+    callback_workline_code = non_empty_str(payload.get("workline_code"))
+    if (
+        callback_workline_code is not None
+        and expected_workline_code
+        and callback_workline_code != expected_workline_code
+    ):
+        return ("workline_code", expected_workline_code, callback_workline_code)
+
+    expected_position_code = _rack_position_code_from_supply(rack_supply)
+    callback_position_code = non_empty_str(payload.get("position_code"))
+    if callback_position_code is not None and callback_position_code != expected_position_code:
+        return ("position_code", expected_position_code, callback_position_code)
+    return None
 
 
 def _rack_arrived_fact_intent(
@@ -502,13 +547,8 @@ def _rack_arrived_fact_intent(
 ) -> RuntimeIntent:
     rack_code = non_empty_str(active_bin_rack.get("rack_code")) or non_empty_str(active_bin_rack.get("rack_id")) or ""
     source_event_id = non_empty_str(payload.get("source_event_id")) or f"WMS_RACK_ARRIVED:{rack_code}"
-    workline_code = (
-        non_empty_str(payload.get("workline_code"))
-        or non_empty_str(rack_supply.get("workline_code"))
-        or _workline_code_from_context(ctx)
-        or ""
-    )
-    position_code = _rack_position_code_from_supply(rack_supply, payload)
+    workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
+    position_code = _rack_position_code_from_supply(rack_supply)
     return ctx.next.resource_fact(
         fact_type="RACK_ARRIVED",
         payload={
@@ -833,8 +873,12 @@ class SmtClassifierPlugin(WorklinePlugin):
             material_fact = _build_material_mounted_fact_intent(ctx, result=result)
             if material_fact is None:
                 return build_payload_invalid_block("OUTPUT_ARM 成功回调缺少物料占格上下文")
+            consume_reservation = _build_bin_cell_consumption_intent(ctx, result=result)
+            if consume_reservation is None:
+                return build_payload_invalid_block("OUTPUT_ARM 成功回调缺少料格预占消费上下文")
             return [
                 material_fact,
+                consume_reservation,
                 ctx.next.complete({"material_mounted": True}),
             ]
 
@@ -1085,7 +1129,7 @@ class SmtClassifierPlugin(WorklinePlugin):
             return False
         return non_empty_str(rack_supply.get("status")) in {"REQUESTED", "IN_PROGRESS"}
 
-    async def _handle_rack_supply_callback(
+    async def _handle_rack_supply_callback(  # noqa: PLR0911 - WMS/RCS 回调按状态和校验失败显式早返回
         self,
         ctx: PluginContext,
         payload: Mapping[str, Any],
@@ -1122,6 +1166,20 @@ class SmtClassifierPlugin(WorklinePlugin):
         if pkg_id is None:
             return [build_payload_invalid_block("WMS_RACK_ARRIVED 回调缺少 pkg_id")]
 
+        target_mismatch = _rack_supply_target_mismatch(ctx, rack_supply=rack_supply, payload=payload)
+        if target_mismatch is not None:
+            field_name, expected, actual = target_mismatch
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="RACK_SUPPLY_TARGET_MISMATCH",
+                    message=(
+                        f"WMS_RACK_ARRIVED 回调 {field_name} 与当前等待 Session 目标不一致"
+                        f": expected={expected}, actual={actual}"
+                    ),
+                )
+            ]
+
         active_rack_snapshot = dict(cast("Mapping[str, Any]", active_bin_rack))
         allocation_context: dict[str, Any] = {**session_context, "active_bin_rack": active_rack_snapshot}
         allocation_decision = await self._allocate_bin(ctx, pkg_id, allocation_context=allocation_context)
@@ -1150,6 +1208,15 @@ class SmtClassifierPlugin(WorklinePlugin):
         if invalid is not None or bin_location is None:
             return [invalid or build_payload_invalid_block("料箱调度结果非法")]
 
+        arrived_rack_supply = {
+            **rack_supply,
+            "status": "ARRIVED",
+            "position_code": _rack_position_code_from_supply(rack_supply),
+        }
+        workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
+        if workline_code:
+            arrived_rack_supply["workline_code"] = workline_code
+
         return [
             _rack_arrived_fact_intent(
                 ctx,
@@ -1165,7 +1232,7 @@ class SmtClassifierPlugin(WorklinePlugin):
             ctx.next.update_context(
                 {
                     "active_bin_rack": active_rack_snapshot,
-                    "rack_supply": {**rack_supply, "status": "ARRIVED"},
+                    "rack_supply": arrived_rack_supply,
                     "pkg_id": pkg_id,
                     "bin_location": bin_location,
                 }

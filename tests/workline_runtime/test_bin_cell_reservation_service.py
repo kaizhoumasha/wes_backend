@@ -69,6 +69,25 @@ class RecordingRuntimeHoldCreator:
         return SimpleNamespace(id=9901, **kwargs)
 
 
+class RecordingRuntimeHoldRepository:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    async def create_open_hold(self, _db: object, **data: Any) -> SimpleNamespace:
+        self.created.append(data)
+        return SimpleNamespace(id=9901, **data)
+
+
+class RecordingWorkLineRepository:
+    def __init__(self, workline: SimpleNamespace) -> None:
+        self.workline = workline
+        self.locked_ids: list[int] = []
+
+    async def get_for_update(self, _db: object, workline_id: int) -> SimpleNamespace:
+        self.locked_ids.append(workline_id)
+        return self.workline
+
+
 def _reservation(**overrides: Any) -> WorklineBinCellReservation:
     values: dict[str, Any] = {
         "reservation_key": "reserve:old",
@@ -166,3 +185,51 @@ async def test_consume_bin_cell_marks_current_session_reservation_consumed() -> 
     assert result.status == BinCellReservationStatusCode.CONSUMED
     assert reservation_repo.consumed == [active]
     assert active.reservation_status == BinCellReservationStatus.CONSUMED
+
+
+@pytest.mark.asyncio
+async def test_consume_bin_cell_owner_mismatch_creates_hold_and_freezes_workline() -> None:
+    from src.app.workline.models.safety import WorkLineRuntimeStatus
+    from src.app.workline.services.runtime_hold_creation_service import RuntimeHoldCreationService
+
+    active = _reservation(session_id=2001, pkg_code="PKG-OLD")
+    reservation_repo = RecordingReservationRepo(active=active)
+    hold_repo = RecordingRuntimeHoldRepository()
+    workline = SimpleNamespace(
+        id=1001,
+        line_code="SMT_SORTER_01",
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+    )
+    runtime_hold_creator = RuntimeHoldCreationService(
+        repository=hold_repo,
+        workline_repository=RecordingWorkLineRepository(workline),
+    )
+    service = WorklineBinCellReservationService(
+        reservation_repository=reservation_repo,
+        material_mount_repository=RecordingMaterialMountRepo(),
+        runtime_hold_creator=runtime_hold_creator,
+    )
+
+    result = await service.apply_runtime_reservation(
+        db=SimpleNamespace(),
+        session=SimpleNamespace(id=2002),
+        workline=workline,
+        operation="CONSUME_BIN_CELL",
+        payload_json={"bin_code": "BIN-001", "bin_cell_index": "4"},
+        idempotency_key="CONSUME_BIN_CELL:2002:CMD-OUTPUT-001:BIN-001:4",
+        trace_id="trace-001",
+    )
+
+    assert result.status == BinCellReservationStatusCode.RECONCILING
+    assert result.runtime_hold is not None
+    assert reservation_repo.consumed == []
+    assert hold_repo.created[0]["source_reason"] == "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+    assert hold_repo.created[0]["source_idempotency_key"] == (
+        "resource-reconciliation:BIN_CELL_RESERVATION_OWNER_MISMATCH:CONSUME_BIN_CELL:2002:CMD-OUTPUT-001:BIN-001:4"
+    )
+    assert hold_repo.created[0]["evidence_snapshot_json"]["active_session_id"] == 2001
+    assert hold_repo.created[0]["evidence_snapshot_json"]["incoming_session_id"] == 2002
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_reason == "BIN_CELL_RESERVATION_OWNER_MISMATCH"

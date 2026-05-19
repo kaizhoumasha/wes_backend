@@ -167,9 +167,12 @@ class WorklineBinCellReservationService:
         self,
         db: AsyncSession,
         *,
+        workline_id: int | None = None,
         session_id: int,
+        trace_id: str | None = None,
         bin_code: str,
         bin_cell_index: str,
+        source_event_id: str | None = None,
         consumed_at: datetime,
     ) -> BinCellReservationResult:
         """物理占用成功后消耗当前 session 的预占。"""
@@ -182,10 +185,27 @@ class WorklineBinCellReservationService:
         if active_reservation is None:
             return BinCellReservationResult(status=BinCellReservationStatusCode.DUPLICATE)
         if active_reservation.session_id != session_id:
+            reason_code = "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+            runtime_hold = await self._create_conflict_hold(
+                db,
+                workline_id=workline_id or int(active_reservation.workline_id),
+                session_id=session_id,
+                trace_id=trace_id,
+                reason_code=reason_code,
+                evidence={
+                    "source_event_id": source_event_id or f"CONSUME_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}",
+                    "bin_code": bin_code,
+                    "bin_cell_index": bin_cell_index,
+                    "active_session_id": active_reservation.session_id,
+                    "active_pkg_code": active_reservation.pkg_code,
+                    "incoming_session_id": session_id,
+                },
+            )
             return BinCellReservationResult(
                 status=BinCellReservationStatusCode.RECONCILING,
                 reservation=active_reservation,
-                reason_code="BIN_CELL_RESERVATION_OWNER_MISMATCH",
+                runtime_hold=runtime_hold,
+                reason_code=reason_code,
                 message="物理占用成功时 active 预占属于其他 session",
             )
         reservation = await self.reservation_repository.mark_consumed(
@@ -208,7 +228,6 @@ class WorklineBinCellReservationService:
     ) -> BinCellReservationResult:
         """RuntimeIntent 入口：执行预占 claim/consume/release。"""
 
-        _ = idempotency_key
         if operation == "CLAIM_BIN_CELL":
             return await self.claim_bin_cell(
                 db,
@@ -224,11 +243,15 @@ class WorklineBinCellReservationService:
                 reserved_at=payload_json.get("reserved_at") or timezone.now_for_db(),
             )
         if operation == "CONSUME_BIN_CELL":
+            raw_source_event_id = payload_json.get("source_event_id") or idempotency_key
             return await self.consume_bin_cell(
                 db,
+                workline_id=int(workline.id),
                 session_id=int(session.id),
+                trace_id=trace_id,
                 bin_code=str(payload_json["bin_code"]),
                 bin_cell_index=str(payload_json["bin_cell_index"]),
+                source_event_id=str(raw_source_event_id) if raw_source_event_id else None,
                 consumed_at=payload_json.get("consumed_at") or timezone.now_for_db(),
             )
         raise ValueError(f"unsupported resource reservation operation: {operation}")

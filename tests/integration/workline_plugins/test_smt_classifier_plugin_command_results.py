@@ -73,6 +73,13 @@ def _assert_bin_cell_reservation(intent, *, pkg_code: str, bin_code: str, bin_ce
     assert intent.payload_json["bin_cell_index"] == bin_cell_index
 
 
+def _assert_bin_cell_consumption(intent, *, bin_code: str, bin_cell_index: str) -> None:
+    assert intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION
+    assert intent.action == "CONSUME_BIN_CELL"
+    assert intent.payload_json["bin_code"] == bin_code
+    assert intent.payload_json["bin_cell_index"] == bin_cell_index
+
+
 def _assert_material_mounted_fact(intent, *, pkg_code: str, bin_code: str, bin_cell_index: str) -> None:
     assert intent.kind == RuntimeIntentKind.RESOURCE_FACT
     assert intent.action == "MATERIAL_MOUNTED"
@@ -199,8 +206,13 @@ class TestSmtClassifierPluginCommandResults:
             _make_inbox(_command_payload("PICK_AND_PUT", "SUCCESS")),
         )
 
-        assert [intent.kind for intent in result] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.COMPLETE]
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.RESOURCE_FACT,
+            RuntimeIntentKind.RESOURCE_RESERVATION,
+            RuntimeIntentKind.COMPLETE,
+        ]
         _assert_material_mounted_fact(result[0], pkg_code="PKG-OUTPUT-001", bin_code="BIN-001", bin_cell_index="4")
+        _assert_bin_cell_consumption(result[1], bin_code="BIN-001", bin_cell_index="4")
         assert result[0].payload_json["material_identity_key"] == "MAT:620100L00-011-G:122625:8904936031"
 
     @pytest.mark.asyncio
@@ -1052,6 +1064,49 @@ class TestSmtClassifierPluginCommandResults:
         assert result[4].payload_json["target_loc"] == "BIN-EMPTY-001"
         assert result[4].payload_json["bin_cell_location"] == "BIN-EMPTY-001-4"
         assert result[4].payload_json["bin_cell_index"] == "4"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("rack_supply_patch", "payload_patch"),
+        [
+            ({"target_position_code": "SINGLE_LAYER_A"}, {"position_code": "SINGLE_LAYER_B"}),
+            ({"workline_code": "WL-SMT-001"}, {"workline_code": "WL-SMT-OTHER"}),
+        ],
+    )
+    async def test_external_rack_arrived_blocks_mismatched_session_target(
+        self,
+        plugin,
+        mock_context,
+        rack_supply_patch,
+        payload_patch,
+    ):
+        """WMS/RCS 回调显式位置必须与当前等待 session 的目标位一致。"""
+        dispatch_key = "external:smt_classifier:trace-rack-target:RACK_SUPPLY"
+        mock_context.session.current_wait_type = "EXTERNAL_HTTP"
+        mock_context.session.context_json = {
+            "pkg_id": "SVYU00125TP4LCR02_2",
+            "rack_supply": {
+                "status": "REQUESTED",
+                "dispatch_key": dispatch_key,
+                "pkg_id": "SVYU00125TP4LCR02_2",
+                **rack_supply_patch,
+            },
+        }
+
+        result = await plugin.on_external_http(
+            mock_context,
+            _make_inbox(
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack={"rack_id": "RACK-EMPTY-001", "rack_code": "RACK-EMPTY-001", "cells": []},
+                    **payload_patch,
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "RACK_SUPPLY_TARGET_MISMATCH"
 
     @pytest.mark.asyncio
     async def test_external_rack_arrived_blocks_partial_rack_snapshot(self, plugin, mock_context):

@@ -27,6 +27,7 @@ from src.app.resource.repositories import (
     resource_state_event_repository,
 )
 from src.app.resource.services.relation_service import ResourceProjectionResult, ResourceProjectionStatus
+from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
@@ -76,6 +77,7 @@ class ResourceProjectionService:
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
         runtime_hold_creator: Any = default_runtime_hold_creation_service,
+        snapshot_service: ResourceSnapshotService = resource_snapshot_service,
     ) -> None:
         self.state_event_repo = state_event_repo
         self.rack_placement_repo = rack_placement_repo
@@ -83,6 +85,7 @@ class ResourceProjectionService:
         self.bin_material_mount_repo = bin_material_mount_repo
         self.rack_position_service = rack_position_service
         self.runtime_hold_creator = runtime_hold_creator
+        self.snapshot_service = snapshot_service
 
     @staticmethod
     def _event_code(
@@ -374,6 +377,14 @@ class ResourceProjectionService:
                     "ended_at": None,
                 },
             )
+        _ = await self.snapshot_service.record_empty_bin_snapshots_from_arrived_rack(
+            db,
+            rack_code=rack_code,
+            bin_mounts=normalized_mounts,
+            source_session_id=workline_session_id,
+            source_event_id=source_event_id,
+            captured_at=occurred_at_for_db,
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_material_mounted_to_bin_cell(
@@ -500,6 +511,21 @@ class ResourceProjectionService:
                 "started_at": occurred_at_for_db,
                 "ended_at": None,
             },
+        )
+        _ = await self.snapshot_service.record_material_mounted_snapshot(
+            db,
+            bin_code=bin_code,
+            bin_cell_code=bin_cell_code,
+            bin_cell_index=bin_cell_index,
+            pkg_code=pkg_code,
+            material_code=material_code,
+            lot_code=lot_code,
+            date_code=date_code,
+            qty_snapshot=qty_snapshot,
+            wms_inventory_id=wms_inventory_id,
+            source_session_id=workline_session_id,
+            source_event_id=source_event_id,
+            captured_at=occurred_at_for_db,
         )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 

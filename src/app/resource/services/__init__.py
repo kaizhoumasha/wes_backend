@@ -42,6 +42,7 @@ from .smt_rack_bin_scheduling_service import (
     SmtRackSupplyRequest,
     smt_rack_bin_scheduling_service,
 )
+from .snapshot_service import ResourceSnapshotService, resource_snapshot_service
 
 __all__ = [
     "BinContentSnapshotItemService",
@@ -59,6 +60,7 @@ __all__ = [
     "ResourceProjectionService",
     "ResourceProjectionStatus",
     "ResourceRelationService",
+    "ResourceSnapshotService",
     "ResourceStateEventService",
     "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
@@ -79,6 +81,7 @@ __all__ = [
     "rack_type_service",
     "resource_projection_service",
     "resource_relation_service",
+    "resource_snapshot_service",
     "resource_state_event_service",
     "smt_rack_bin_scheduling_service",
 ]
