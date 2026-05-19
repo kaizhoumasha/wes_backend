@@ -386,6 +386,179 @@ def _validated_bin_location_or_block(
     return normalized, None
 
 
+def _material_identity_key_from_context(context: Mapping[str, Any], *, pkg_code: str) -> str:
+    six_in_one = context.get("six_in_one")
+    normalized = (
+        normalize_six_in_one_payload(dict(cast("Mapping[str, Any]", six_in_one)))
+        if isinstance(six_in_one, Mapping)
+        else None
+    )
+    if normalized:
+        hhp_n = non_empty_str(normalized.get("HHPN"))
+        date_code = non_empty_str(normalized.get("DateCode"))
+        lot_code = non_empty_str(normalized.get("LotCode"))
+        if hhp_n or date_code or lot_code:
+            return f"MAT:{hhp_n or ''}:{date_code or ''}:{lot_code or ''}"
+    return f"PKG:{pkg_code}"
+
+
+def _build_bin_cell_reservation_intent(
+    ctx: PluginContext,
+    *,
+    pkg_code: str,
+    bin_location: Mapping[str, Any],
+    source_event_id: str | None,
+) -> RuntimeIntent:
+    bin_code = str(bin_location["bin_id"])
+    bin_cell_index = str(bin_location["bin_cell_index"])
+    payload = {
+        "pkg_code": pkg_code,
+        "bin_code": bin_code,
+        "bin_cell_code": non_empty_str(bin_location.get("bin_cell_location")),
+        "bin_cell_index": bin_cell_index,
+        "source_event_id": source_event_id,
+    }
+    session_id = getattr(getattr(ctx, "session", None), "id", "session")
+    return ctx.next.resource_reservation(
+        operation="CLAIM_BIN_CELL",
+        payload=payload,
+        idempotency_key=f"CLAIM_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}:{pkg_code}",
+    )
+
+
+def _build_material_mounted_fact_intent(
+    ctx: PluginContext,
+    *,
+    result: NormalizedCommandResult,
+) -> RuntimeIntent | None:
+    context = dict(cast("Mapping[str, Any]", getattr(ctx.session, "context_json", None) or {}))
+    bin_location = context.get("bin_location")
+    if not isinstance(bin_location, Mapping):
+        return None
+    pkg_code = (
+        non_empty_str(context.get("pkg_id"))
+        or non_empty_str(context.get("barcode"))
+        or _resolve_pkg_id_from_result(result)
+    )
+    if pkg_code is None:
+        return None
+    bin_code = non_empty_str(bin_location.get("bin_id"))
+    bin_cell_index = non_empty_str(bin_location.get("bin_cell_index"))
+    if bin_code is None or bin_cell_index is None:
+        return None
+
+    six_in_one = context.get("six_in_one")
+    normalized_six = (
+        normalize_six_in_one_payload(dict(cast("Mapping[str, Any]", six_in_one)))
+        if isinstance(six_in_one, Mapping)
+        else {}
+    )
+    source_event_id = (
+        non_empty_str(getattr(result, "command_code", None)) or f"OUTPUT_ARM:{pkg_code}:{bin_code}:{bin_cell_index}"
+    )
+    payload = {
+        "pkg_code": pkg_code,
+        "bin_code": bin_code,
+        "bin_cell_code": non_empty_str(bin_location.get("bin_cell_location")),
+        "bin_cell_index": bin_cell_index,
+        "material_identity_key": _material_identity_key_from_context(context, pkg_code=pkg_code),
+        "material_code": non_empty_str(normalized_six.get("HHPN")),
+        "lot_code": non_empty_str(normalized_six.get("LotCode")),
+        "date_code": non_empty_str(normalized_six.get("DateCode")),
+        "qty_snapshot": normalized_six.get("Qty"),
+        "reel_diameter": non_empty_str(context.get("reel_diameter")),
+        "reel_thickness": non_empty_str(context.get("reel_thickness")),
+        "source_system": "WES_RUNTIME",
+        "source_event_id": source_event_id,
+    }
+    return ctx.next.resource_fact(
+        fact_type="MATERIAL_MOUNTED",
+        payload=payload,
+        idempotency_key=f"MATERIAL_MOUNTED:{source_event_id}:{pkg_code}:{bin_code}:{bin_cell_index}",
+    )
+
+
+def _rack_position_code_from_supply(rack_supply: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    return (
+        non_empty_str(payload.get("position_code"))
+        or non_empty_str(rack_supply.get("target_position_code"))
+        or "SINGLE_LAYER_A"
+    )
+
+
+def _workline_code_from_context(ctx: PluginContext) -> str | None:
+    workline = getattr(ctx, "workline", None)
+    return non_empty_str(getattr(workline, "line_code", None)) or non_empty_str(
+        getattr(workline, "workline_code", None)
+    )
+
+
+def _rack_arrived_fact_intent(
+    ctx: PluginContext,
+    *,
+    payload: Mapping[str, Any],
+    rack_supply: Mapping[str, Any],
+    active_bin_rack: Mapping[str, Any],
+) -> RuntimeIntent:
+    rack_code = non_empty_str(active_bin_rack.get("rack_code")) or non_empty_str(active_bin_rack.get("rack_id")) or ""
+    source_event_id = non_empty_str(payload.get("source_event_id")) or f"WMS_RACK_ARRIVED:{rack_code}"
+    workline_code = (
+        non_empty_str(payload.get("workline_code"))
+        or non_empty_str(rack_supply.get("workline_code"))
+        or _workline_code_from_context(ctx)
+        or ""
+    )
+    position_code = _rack_position_code_from_supply(rack_supply, payload)
+    return ctx.next.resource_fact(
+        fact_type="RACK_ARRIVED",
+        payload={
+            "rack_code": rack_code,
+            "rack_kind": non_empty_str(active_bin_rack.get("rack_kind")) or "SINGLE_LAYER",
+            "workline_code": workline_code,
+            "position_code": position_code,
+            "source_system": non_empty_str(payload.get("source_system")) or "WMS",
+            "source_event_id": source_event_id,
+            "source_version": non_empty_str(payload.get("source_version")),
+            "source_task_id": non_empty_str(payload.get("request_id")),
+            "external_location_code": non_empty_str(payload.get("external_location_code")),
+            "occurred_at": payload.get("occurred_at"),
+        },
+        idempotency_key=f"WMS_RACK_ARRIVED:{rack_code}:{workline_code}:{position_code}:{source_event_id}",
+    )
+
+
+def _bin_mounted_fact_intent(
+    ctx: PluginContext,
+    *,
+    payload: Mapping[str, Any],
+    active_bin_rack: Mapping[str, Any],
+) -> RuntimeIntent:
+    rack_code = non_empty_str(active_bin_rack.get("rack_code")) or non_empty_str(active_bin_rack.get("rack_id")) or ""
+    source_event_id = non_empty_str(payload.get("source_event_id")) or f"BIN_MOUNTED:{rack_code}"
+    cells = active_bin_rack.get("cells")
+    bin_mounts: list[dict[str, Any]] = []
+    if isinstance(cells, Sequence) and not isinstance(cells, (str, bytes)):
+        for cell in cells:
+            if not isinstance(cell, Mapping):
+                continue
+            rack_slot_code = non_empty_str(cell.get("rack_slot_code"))
+            bin_code = non_empty_str(cell.get("bin_code")) or non_empty_str(cell.get("bin_id"))
+            if rack_slot_code is not None and bin_code is not None:
+                bin_mounts.append({"rack_slot_code": rack_slot_code, "bin_code": bin_code})
+    return ctx.next.resource_fact(
+        fact_type="BIN_MOUNTED",
+        payload={
+            "rack_code": rack_code,
+            "bin_mounts": bin_mounts,
+            "source_system": non_empty_str(payload.get("source_system")) or "WMS",
+            "source_event_id": source_event_id,
+            "source_version": non_empty_str(payload.get("source_version")),
+            "occurred_at": payload.get("occurred_at"),
+        },
+        idempotency_key=f"BIN_MOUNTED:{rack_code}:{source_event_id}:{len(bin_mounts)}",
+    )
+
+
 def _validate_wms_rcs_callback_envelope(payload: Mapping[str, Any]) -> str | None:
     """校验 WMS/RCS 回调进入插件处理前的最小来源包络。"""
 
@@ -657,7 +830,13 @@ class SmtClassifierPlugin(WorklinePlugin):
             ]
 
         if source_role == self.OUTPUT_ARM:
-            return ctx.next.complete()
+            material_fact = _build_material_mounted_fact_intent(ctx, result=result)
+            if material_fact is None:
+                return build_payload_invalid_block("OUTPUT_ARM 成功回调缺少物料占格上下文")
+            return [
+                material_fact,
+                ctx.next.complete({"material_mounted": True}),
+            ]
 
         return _unexpected_source_role_block(ctx, "PICK_AND_PUT SUCCESS")
 
@@ -758,6 +937,12 @@ class SmtClassifierPlugin(WorklinePlugin):
                     pkg_id=pkg_id,
                     bin_location=bin_location,
                 ).to_patch()
+            ),
+            _build_bin_cell_reservation_intent(
+                ctx,
+                pkg_code=pkg_id,
+                bin_location=bin_location,
+                source_event_id=non_empty_str(result.command_code),
             ),
             ctx.next.command(
                 device_role=self.OUTPUT_ARM,
@@ -966,6 +1151,17 @@ class SmtClassifierPlugin(WorklinePlugin):
             return [invalid or build_payload_invalid_block("料箱调度结果非法")]
 
         return [
+            _rack_arrived_fact_intent(
+                ctx,
+                payload=payload,
+                rack_supply=rack_supply,
+                active_bin_rack=active_rack_snapshot,
+            ),
+            _bin_mounted_fact_intent(
+                ctx,
+                payload=payload,
+                active_bin_rack=active_rack_snapshot,
+            ),
             ctx.next.update_context(
                 {
                     "active_bin_rack": active_rack_snapshot,
@@ -973,6 +1169,12 @@ class SmtClassifierPlugin(WorklinePlugin):
                     "pkg_id": pkg_id,
                     "bin_location": bin_location,
                 }
+            ),
+            _build_bin_cell_reservation_intent(
+                ctx,
+                pkg_code=pkg_id,
+                bin_location=bin_location,
+                source_event_id=non_empty_str(payload.get("source_event_id")),
             ),
             ctx.next.command(
                 device_role=self.OUTPUT_ARM,

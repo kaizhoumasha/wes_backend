@@ -26,6 +26,25 @@ class SandboxAckRequest(BaseModel):
     dispatch_key: str = Field(min_length=1, max_length=200, description="Dispatch Key")
 
 
+class SandboxExternalCallbackRequest(BaseModel):
+    """沙箱 External HTTP 回调模拟请求。"""
+
+    dispatch_key: str = Field(min_length=1, max_length=200, description="External HTTP Outbox Dispatch Key")
+    callback_type: str | None = Field(
+        default=None,
+        max_length=100,
+        description="外部回调类型；为空时优先使用 Outbox payload.resume_callback_type",
+    )
+    payload: dict[str, Any] = Field(default_factory=dict, description="回调 Payload 增量字段")
+    source_system: str = Field(default="WMS", pattern="^(WMS|RCS)$", description="外部来源系统")
+    source_event_id: str | None = Field(default=None, max_length=200, description="外部事件 ID；为空时自动生成")
+    source_version: str = Field(default="1", max_length=50, description="外部来源版本")
+    request_id: str | None = Field(default=None, max_length=200, description="外部请求 ID；为空时自动生成")
+    occurred_at: datetime | None = Field(default=None, description="外部事件发生时间")
+    timestamp: datetime | None = Field(default=None, description="外部回调时间")
+    signature: str = Field(default="sandbox", max_length=500, description="沙箱签名占位")
+
+
 class ReplayInboxRequest(BaseModel):
     """Replay 请求。"""
 
@@ -94,6 +113,7 @@ __all__ = [
     "SandboxAckRequest",
     "SandboxEventRequest",
     "SandboxEventTemplate",
+    "SandboxExternalCallbackRequest",
     "SandboxResultRequest",
     "SandboxResultTemplate",
     "SandboxTemplatesResponse",

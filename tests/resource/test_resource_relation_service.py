@@ -92,7 +92,7 @@ class ConflictingBinMountRepo:
             rack_slot_code="A01",
             bin_code="BIN-OLD",
             mount_status="MOUNTED",
-            source_system="WMS_RCS",
+            source_system="WMS",
             source_event_id="old-event",
             started_at=datetime(2026, 5, 16, 8, 30, 0),
         )
@@ -261,14 +261,14 @@ async def test_record_full_box_exchange_physical_completed_projects_bin_mounts()
 
     assert result.status == ResourceProjectionStatus.PROJECTED
     assert state_events.created[0]["event_type"] == "EXCHANGE_STATUS_UPDATED"
-    assert state_events.created[0]["resource_type"] == "EXCHANGE_TASK"
+    assert state_events.created[0]["resource_type"] == "BIN"
     assert state_events.created[0]["resource_code"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
     assert len(bin_mounts.created) == 2
     assert bin_mounts.created[0]["rack_code"] == "RACK-002"
     assert bin_mounts.created[0]["rack_slot_code"] == "A01"
     assert bin_mounts.created[0]["bin_code"] == "BIN-001"
     assert bin_mounts.created[0]["mount_status"] == "MOUNTED"
-    assert bin_mounts.created[0]["source_system"] == "WMS_RCS"
+    assert bin_mounts.created[0]["source_system"] == "WMS"
 
 
 @pytest.mark.asyncio
@@ -337,7 +337,7 @@ async def test_record_full_box_exchange_physical_completed_missing_relations_cre
     assert result.runtime_hold.id == 9001
     assert runtime_holds.created[0]["source_reason"] == "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
     assert runtime_holds.created[0]["source_event_id"] == "wms-event-physical-missing"
-    assert runtime_holds.created[0]["evidence"]["resource_type"] == "EXCHANGE_TASK"
+    assert runtime_holds.created[0]["evidence"]["resource_type"] == "BIN"
     assert runtime_holds.created[0]["evidence"]["exchange_request_code"] == (
         "external:smt:release-001:FULL_BIN_EXCHANGE"
     )

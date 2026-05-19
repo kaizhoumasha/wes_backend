@@ -64,7 +64,7 @@ def test_failed_command_evidence_uses_trace_response_builder_projection() -> Non
 
 
 def test_build_trace_response_includes_resource_evidence() -> None:
-    """Trace 响应应暴露资源事实、交换任务、WMS 证据和当前投影证据链。"""
+    """Trace 响应暴露 Phase B 保留的资源事实、当前投影和 RuntimeHold 证据。"""
 
     from src.app.workline.services.trace_response_builder import build_trace_response
     from src.workline_runtime.trace_context import TraceContext
@@ -87,10 +87,6 @@ def test_build_trace_response_includes_resource_evidence() -> None:
                 resource_code="external:smt:release-001:FULL_BIN_EXCHANGE",
             )
         ],
-        rack_releases=[SimpleNamespace(rack_release_id="release-001")],
-        rack_release_bin_snapshots=[SimpleNamespace(slot_code="A01", bin_code="BIN-001")],
-        full_box_exchange_tasks=[SimpleNamespace(exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE")],
-        wms_writeback_evidence=[SimpleNamespace(evidence_code="wms-confirmed-001")],
         rack_bin_mounts=[SimpleNamespace(rack_code="RACK-001", rack_slot_code="A01", bin_code="BIN-001")],
         runtime_holds=[
             SimpleNamespace(
@@ -104,12 +100,10 @@ def test_build_trace_response_includes_resource_evidence() -> None:
     response = build_trace_response(result)
 
     assert response.resource_evidence.resource_state_events[0]["event_type"] == "EXCHANGE_STATUS_UPDATED"
-    assert response.resource_evidence.full_box_exchange_tasks[0]["exchange_request_code"] == (
-        "external:smt:release-001:FULL_BIN_EXCHANGE"
-    )
-    assert response.resource_evidence.rack_releases[0]["rack_release_id"] == "release-001"
-    assert response.resource_evidence.rack_release_bin_snapshots[0]["slot_code"] == "A01"
-    assert response.resource_evidence.wms_writeback_evidence[0]["evidence_code"] == "wms-confirmed-001"
+    assert response.resource_evidence.full_box_exchange_tasks == []
+    assert response.resource_evidence.rack_releases == []
+    assert response.resource_evidence.rack_release_bin_snapshots == []
+    assert response.resource_evidence.wms_writeback_evidence == []
     assert response.resource_evidence.rack_bin_mounts[0]["bin_code"] == "BIN-001"
     assert response.resource_evidence.runtime_holds[0]["source_reason"] == (
         "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
@@ -192,7 +186,7 @@ def resource_state_event_obj() -> SimpleNamespace:
     return SimpleNamespace(
         id=89,
         event_type="EXCHANGE_STATUS_UPDATED",
-        resource_type="EXCHANGE_TASK",
+        resource_type="BIN",
         resource_code="external:smt:release-001:FULL_BIN_EXCHANGE",
         source_event_id="wms-event-001",
         trace_id="trace-1",
@@ -484,21 +478,16 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
     outbox_obj: SimpleNamespace,
     inbox_obj: SimpleNamespace,
     timeline_obj: SimpleNamespace,
-    full_box_exchange_task_obj: SimpleNamespace,
     resource_state_event_obj: SimpleNamespace,
-    rack_release_obj: SimpleNamespace,
-    rack_release_snapshot_obj: SimpleNamespace,
-    wms_evidence_obj: SimpleNamespace,
     rack_bin_mount_obj: SimpleNamespace,
     runtime_hold_obj: SimpleNamespace,
 ) -> None:
-    """从 exchange_request_code 能追到运行时链路和资源证据链。"""
+    """从 exchange_request_code 能追到运行时链路和 Phase B 保留的资源证据链。"""
 
     exchange_request_code = "external:smt:release-001:FULL_BIN_EXCHANGE"
     outbox_obj.dispatch_key = exchange_request_code
     cast("Any", service.callback_log_repo).get_by_trace_id = AsyncMock(return_value=[callback_log_1])
     db = _db_with_execute_results(
-        _ResultStub(scalar=full_box_exchange_task_obj),
         _ResultStub(scalar=outbox_obj),
         _ResultStub(rows=[]),
         _ResultStub(rows=[outbox_obj]),
@@ -506,9 +495,6 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
         _ResultStub(rows=[inbox_obj]),
         _ResultStub(rows=[timeline_obj]),
         _ResultStub(rows=[resource_state_event_obj]),
-        _ResultStub(rows=[wms_evidence_obj]),
-        _ResultStub(rows=[rack_release_obj]),
-        _ResultStub(rows=[rack_release_snapshot_obj]),
         _ResultStub(rows=[rack_bin_mount_obj]),
         _ResultStub(rows=[runtime_hold_obj]),
     )
@@ -518,14 +504,14 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
     assert result.trace.dispatch_key == exchange_request_code
     assert result.trace.session_id == 11
     assert result.outboxes and result.outboxes[0].dispatch_key == exchange_request_code
-    assert result.full_box_exchange_tasks == [full_box_exchange_task_obj]
     assert result.resource_state_events == [resource_state_event_obj]
-    assert result.wms_writeback_evidence == [wms_evidence_obj]
-    assert result.rack_releases == [rack_release_obj]
-    assert result.rack_release_bin_snapshots == [rack_release_snapshot_obj]
+    assert not hasattr(result, "full_box_exchange_tasks")
+    assert not hasattr(result, "wms_writeback_evidence")
+    assert not hasattr(result, "rack_releases")
+    assert not hasattr(result, "rack_release_bin_snapshots")
     assert result.rack_bin_mounts == [rack_bin_mount_obj]
     assert result.runtime_holds == [runtime_hold_obj]
-    assert db.execute.await_count == 13
+    assert db.execute.await_count == 9
 
 
 @pytest.mark.asyncio

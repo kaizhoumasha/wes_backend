@@ -1,10 +1,21 @@
 """WorkLine Service 导出"""
 
+from .bin_cell_reservation_service import (
+    BinCellReservationResult,
+    BinCellReservationStatusCode,
+    WorklineBinCellReservationService,
+    workline_bin_cell_reservation_service,
+)
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
+from .full_box_exchange_task_service import (
+    WorklineFullBoxExchangeTaskService,
+    workline_full_box_exchange_task_service,
+)
 from .inbox_service import WorklineInboxService, inbox_service
 from .ng_return_item_service import NgReturnItemService, ng_return_item_service
 from .operation_service import WorklineOperationService, workline_operation_service
+from .rack_position_service import WorklineRackPositionService, workline_rack_position_service
 from .runtime_hold_creation_service import RuntimeHoldCreationService, runtime_hold_creation_service
 from .runtime_hold_query_service import RuntimeHoldQueryService, runtime_hold_query_service
 from .runtime_hold_release_service import RuntimeHoldReleaseService, runtime_hold_release_service
@@ -19,6 +30,7 @@ from .smt_full_box_exchange_candidate_service import (
     SmtFullBoxExchangeCandidateScanResult,
     SmtFullBoxExchangeCandidateService,
     SmtFullBoxExchangeCandidateStatus,
+    SmtRackReleaseLifecycleStatus,
     smt_full_box_exchange_candidate_service,
 )
 from .timeline_sequence_service import add_timeline_with_sequence, allocate_timeline_seq_no
@@ -26,6 +38,8 @@ from .trace_query_service import TraceQueryResult, TraceQueryService, trace_quer
 from .workline_service import WorkLineService, workline_service
 
 __all__ = [
+    "BinCellReservationResult",
+    "BinCellReservationStatusCode",
     "NgReturnItemService",
     "RuntimeHoldCreationService",
     "RuntimeHoldQueryService",
@@ -35,15 +49,19 @@ __all__ = [
     "SmtFullBoxExchangeCandidateScanResult",
     "SmtFullBoxExchangeCandidateService",
     "SmtFullBoxExchangeCandidateStatus",
+    "SmtRackReleaseLifecycleStatus",
     "TraceQueryResult",
     "TraceQueryService",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",
     "WorkLineService",
+    "WorklineBinCellReservationService",
     "WorklineDiagnosticService",
     "WorklineDispatchAttemptService",
+    "WorklineFullBoxExchangeTaskService",
     "WorklineInboxService",
     "WorklineOperationService",
+    "WorklineRackPositionService",
     "WorklineRuntimeReconciliationService",
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
@@ -55,9 +73,12 @@ __all__ = [
     "runtime_query_service",
     "smt_full_box_exchange_candidate_service",
     "trace_query_service",
+    "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
     "workline_dispatch_attempt_service",
+    "workline_full_box_exchange_task_service",
     "workline_operation_service",
+    "workline_rack_position_service",
     "workline_runtime_reconciliation_service",
     "workline_safety_service",
     "workline_service",

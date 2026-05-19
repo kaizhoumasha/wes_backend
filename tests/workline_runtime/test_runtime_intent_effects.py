@@ -60,6 +60,24 @@ def _ctx(orch_result: OrchestratorResult, *, session: Any | None = None, db: Any
     }
 
 
+class RecordingResourceProjectionService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def record_resource_fact(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(status="PROJECTED")
+
+
+class RecordingBinCellReservationService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def apply_runtime_reservation(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(status="CLAIMED")
+
+
 @pytest.mark.asyncio
 async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
@@ -120,6 +138,87 @@ async def test_update_context_and_complete(monkeypatch: pytest.MonkeyPatch) -> N
     assert session.ended_at == ctx["now"]
     record_ng_flow.assert_awaited_once()
     emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    resource_projection = RecordingResourceProjectionService()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={"pkg_code": "PKG-001", "bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="MATERIAL_MOUNTED:CMD-001:PKG-001:BIN-001:4",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    assert resource_projection.calls[0]["db"] is ctx["db"]
+    assert resource_projection.calls[0]["session"] is session
+    assert resource_projection.calls[0]["idempotency_key"] == "MATERIAL_MOUNTED:CMD-001:PKG-001:BIN-001:4"
+    assert session.status == "COMPLETED"
+    assert session.context_json["material_mounted"] is True
+    record_ng_flow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resource_reservation_intent_is_applied_before_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = SimpleNamespace(id=1, device_code="CONV01", device_role="CONVEYOR")
+    target = SimpleNamespace(id=2, device_code="OUT01", device_role="OUTPUT_ARM", upstream_device_id=1)
+    created_payloads: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["source_device"] = source
+    ctx["devices_by_role"] = {"CONVEYOR": [source], "OUTPUT_ARM": [target]}
+    reservation_service = RecordingBinCellReservationService()
+
+    async def fake_create(_repo, _db, payload):
+        created_payloads.append(payload)
+        return SimpleNamespace(
+            id=88,
+            command_code="CMD-OUTPUT",
+            task_type="PICK_AND_PUT",
+            priority=5,
+            timeout_ms=30000,
+            params={},
+        )
+
+    monkeypatch.setattr(workline_effects, "_enforce_device_command_governance", lambda *_, **__: None)
+    monkeypatch.setattr("src.app.device.repositories.command_repository.DeviceCommandRepository.create", fake_create)
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_reservation(
+                operation="CLAIM_BIN_CELL",
+                payload={"pkg_code": "PKG-001", "bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="CLAIM_BIN_CELL:123:BIN-001:4:PKG-001",
+            ),
+            RuntimeIntent.command(
+                action="PICK_AND_PUT",
+                payload={"barcode": "PKG-001", "bin_id": "BIN-001", "bin_cell_index": "4"},
+                destination=Destination.role("OUTPUT_ARM"),
+                timeout_seconds=300,
+            ),
+        ],
+    )
+
+    assert reservation_service.calls[0]["operation"] == "CLAIM_BIN_CELL"
+    assert reservation_service.calls[0]["session"] is session
+    assert created_payloads[0]["device_id"] == 2
 
 
 @pytest.mark.asyncio

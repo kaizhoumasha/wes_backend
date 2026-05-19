@@ -125,6 +125,30 @@ def test_device_event_intent_builder():
     assert intent.payload_json["event_id"] == "smt-release:release-001"
 
 
+def test_plugin_next_resource_fact_builds_runtime_intent():
+    intent = PluginNext().resource_fact(
+        fact_type="MATERIAL_MOUNTED",
+        payload={"pkg_code": "PKG-001", "bin_code": "BIN-001", "bin_cell_index": "4"},
+        idempotency_key="MATERIAL_MOUNTED:CMD-001:PKG-001:BIN-001:4",
+    )
+
+    assert intent.kind == RuntimeIntentKind.RESOURCE_FACT
+    assert intent.action == "MATERIAL_MOUNTED"
+    assert intent.idempotency_key == "MATERIAL_MOUNTED:CMD-001:PKG-001:BIN-001:4"
+
+
+def test_plugin_next_resource_reservation_builds_runtime_intent():
+    intent = PluginNext().resource_reservation(
+        operation="CLAIM_BIN_CELL",
+        payload={"pkg_code": "PKG-001", "bin_code": "BIN-001", "bin_cell_index": "4"},
+        idempotency_key="CLAIM_BIN_CELL:2001:BIN-001:4:PKG-001",
+    )
+
+    assert intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION
+    assert intent.action == "CLAIM_BIN_CELL"
+    assert intent.idempotency_key == "CLAIM_BIN_CELL:2001:BIN-001:4:PKG-001"
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

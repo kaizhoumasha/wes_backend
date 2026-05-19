@@ -7,8 +7,6 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from src.app.resource.models import RackReleaseStatus
-from src.app.resource.repositories import rack_release_bin_snapshot_repository, rack_release_repository
 from src.app.workline.services.inbox_service import DuplicateInboxError, WorklineInboxService, inbox_service
 
 if TYPE_CHECKING:
@@ -21,6 +19,13 @@ class SmtFullBoxExchangeCandidateStatus(str, Enum):
     INBOX_CREATED = "INBOX_CREATED"
     ALREADY_LINKED = "ALREADY_LINKED"
     SKIPPED = "SKIPPED"
+
+
+class SmtRackReleaseLifecycleStatus(str, Enum):
+    """WorkLine 内部使用的单层货架释放候选状态。"""
+
+    CANDIDATE = "CANDIDATE"
+    INBOX_CREATED = "INBOX_CREATED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +49,28 @@ class SmtFullBoxExchangeCandidateScanResult(TypedDict):
     errors: int
 
 
+class _EmptyRackReleaseRepository:
+    """Phase B 后 resource 域不再提供 RackRelease 表，默认扫描为空。"""
+
+    async def get_by_release_id(self, _db: Any, _rack_release_id: str) -> Any | None:
+        return None
+
+    async def list_full_box_exchange_candidates(self, _db: Any, *, limit: int) -> list[Any]:
+        _ = limit
+        return []
+
+    async def update(self, _db: Any, _id: int, data: dict[str, Any]) -> Any | None:
+        _ = data
+        return None
+
+
+class _EmptyRackReleaseSnapshotRepository:
+    """Phase B 后 resource 域不再提供 RackReleaseBinSnapshot 表。"""
+
+    async def list_by_release_id(self, _db: Any, _rack_release_id: str) -> list[Any]:
+        return []
+
+
 class SmtFullBoxExchangeCandidateService:
     """从单层货架释放事实派生满箱交换插件入口 Inbox。"""
 
@@ -54,12 +81,12 @@ class SmtFullBoxExchangeCandidateService:
     def __init__(
         self,
         *,
-        rack_release_repo: Any = rack_release_repository,
-        rack_release_snapshot_repo: Any = rack_release_bin_snapshot_repository,
+        rack_release_repo: Any | None = None,
+        rack_release_snapshot_repo: Any | None = None,
         inbox_service: WorklineInboxService = inbox_service,
     ) -> None:
-        self.rack_release_repo = rack_release_repo
-        self.rack_release_snapshot_repo = rack_release_snapshot_repo
+        self.rack_release_repo = rack_release_repo or _EmptyRackReleaseRepository()
+        self.rack_release_snapshot_repo = rack_release_snapshot_repo or _EmptyRackReleaseSnapshotRepository()
         self.inbox_service = inbox_service
 
     async def create_inbox_for_release(
@@ -87,7 +114,7 @@ class SmtFullBoxExchangeCandidateService:
             )
 
         release_status = _enum_value(getattr(release, "release_status", None))
-        if release_status != RackReleaseStatus.CANDIDATE.value:
+        if release_status != SmtRackReleaseLifecycleStatus.CANDIDATE.value:
             return self._skipped(rack_release_id, "RACK_RELEASE_STATUS_NOT_CANDIDATE", "释放周期状态不可派生 Inbox")
 
         if getattr(release, "moved_out_at", None) is None:
@@ -202,7 +229,7 @@ class SmtFullBoxExchangeCandidateService:
     ) -> None:
         update_payload: dict[str, Any] = {
             "inbox_id": inbox_id,
-            "release_status": RackReleaseStatus.INBOX_CREATED.value,
+            "release_status": SmtRackReleaseLifecycleStatus.INBOX_CREATED.value,
         }
         version = getattr(release, "version", None)
         if version is not None:
@@ -339,5 +366,6 @@ __all__ = [
     "SmtFullBoxExchangeCandidateScanResult",
     "SmtFullBoxExchangeCandidateService",
     "SmtFullBoxExchangeCandidateStatus",
+    "SmtRackReleaseLifecycleStatus",
     "smt_full_box_exchange_candidate_service",
 ]

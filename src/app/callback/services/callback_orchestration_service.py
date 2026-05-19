@@ -556,9 +556,9 @@ class CallbackOrchestrationService:
 
     def _resolve_full_box_exchange_task_service(self) -> Any:
         if self._full_box_exchange_task_service is None:
-            from src.app.resource.services import full_box_exchange_task_service
+            from src.app.workline.services import workline_full_box_exchange_task_service
 
-            self._full_box_exchange_task_service = full_box_exchange_task_service
+            self._full_box_exchange_task_service = workline_full_box_exchange_task_service
         return self._full_box_exchange_task_service
 
 

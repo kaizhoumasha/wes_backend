@@ -1,5 +1,13 @@
 """WorkLine 模型导出"""
 
+from .bin_cell_reservation import (
+    BinCellReservationStatus,
+    WorklineBinCellReservation,
+    WorklineBinCellReservationBase,
+    WorklineBinCellReservationCreate,
+    WorklineBinCellReservationResponse,
+    WorklineBinCellReservationUpdate,
+)
 from .diagnostic import (
     DiagnosticStatus,
     WorklineDiagnostic,
@@ -27,6 +35,14 @@ from .outbox import (
     WorklineOutbox,
     WorklineOutboxBase,
     WorklineOutboxCreate,
+)
+from .rack_position import (
+    WorklineRackPosition,
+    WorklineRackPositionBase,
+    WorklineRackPositionCreate,
+    WorklineRackPositionResponse,
+    WorklineRackPositionRole,
+    WorklineRackPositionUpdate,
 )
 from .runtime import (
     DiagnosticCardResponse,
@@ -103,6 +119,7 @@ from .workline import (
 )
 
 __all__ = [
+    "BinCellReservationStatus",
     "ClearWorkLineEstopRequest",
     "DiagnosticCardResponse",
     "DiagnosticStatus",
@@ -163,6 +180,11 @@ __all__ = [
     "WorkLineRunMode",
     "WorkLineRuntimeStatus",
     "WorkLineUpdate",
+    "WorklineBinCellReservation",
+    "WorklineBinCellReservationBase",
+    "WorklineBinCellReservationCreate",
+    "WorklineBinCellReservationResponse",
+    "WorklineBinCellReservationUpdate",
     "WorklineDiagnostic",
     "WorklineDiagnosticBase",
     "WorklineDiagnosticCreate",
@@ -175,6 +197,12 @@ __all__ = [
     "WorklineOutbox",
     "WorklineOutboxBase",
     "WorklineOutboxCreate",
+    "WorklineRackPosition",
+    "WorklineRackPositionBase",
+    "WorklineRackPositionCreate",
+    "WorklineRackPositionResponse",
+    "WorklineRackPositionRole",
+    "WorklineRackPositionUpdate",
     "WorklineSafetyIncident",
     "WorklineSafetyIncidentStatus",
     "WorklineSession",

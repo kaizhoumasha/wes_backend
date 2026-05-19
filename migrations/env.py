@@ -36,29 +36,25 @@ from src.app.resource.models import (  # noqa: F401
     Bin,
     BinContentSnapshot,
     BinContentSnapshotItem,
+    BinMaterialMount,
     BinSlotTemplate,
     BinType,
-    ExecutionLocation,
-    ExecutionZone,
-    FullBoxExchangeTask,
     Rack,
     RackBinMount,
-    RackMaterialMount,
     RackPlacement,
-    RackRelease,
-    RackReleaseBinSnapshot,
     RackSlotTemplate,
     RackType,
     ResourceStateEvent,
-    WmsWritebackEvidence,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 
 # 导入所有 workline 模型
 from src.app.workline.models import (  # noqa: F401
     WorkLine,
+    WorklineBinCellReservation,
     WorklineInbox,
     WorklineOutbox,
+    WorklineRackPosition,
     WorklineSession,
     WorklineTimeline,
 )
