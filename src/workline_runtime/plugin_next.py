@@ -64,6 +64,32 @@ class PluginNext:
             canonical_event_type=canonical_event_type,
         )
 
+    def resource_fact(
+        self,
+        *,
+        fact_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.resource_fact(
+            fact_type=fact_type,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    def resource_reservation(
+        self,
+        *,
+        operation: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.resource_reservation(
+            operation=operation,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+
     def block(
         self,
         scope: BlockScope,

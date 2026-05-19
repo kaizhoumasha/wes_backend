@@ -19,6 +19,8 @@ class RuntimeIntentKind(str, Enum):
     COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
     DEVICE_EVENT = "DEVICE_EVENT"
+    RESOURCE_FACT = "RESOURCE_FACT"
+    RESOURCE_RESERVATION = "RESOURCE_RESERVATION"
     ROUTE = "ROUTE"
     COMPLETE = "COMPLETE"
     BLOCK = "BLOCK"
@@ -85,6 +87,7 @@ class RuntimeIntent(BaseModel):
     dispatch_key: str | None = None
     target_code: str | None = None
     source_system: str | None = None
+    idempotency_key: str | None = None
     payload_json: dict[str, Any] = Field(default_factory=dict)
     destination: Destination | None = None
     timeout_seconds: int | None = None
@@ -165,6 +168,36 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
+    def resource_fact(
+        cls,
+        *,
+        fact_type: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.RESOURCE_FACT,
+            action=fact_type,
+            idempotency_key=idempotency_key,
+            payload_json=deepcopy(payload),
+        )
+
+    @classmethod
+    def resource_reservation(
+        cls,
+        *,
+        operation: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.RESOURCE_RESERVATION,
+            action=operation,
+            idempotency_key=idempotency_key,
+            payload_json=deepcopy(payload),
+        )
+
+    @classmethod
     def block(
         cls,
         *,
@@ -228,7 +261,7 @@ class RuntimeIntent(BaseModel):
         )
 
     @model_validator(mode="after")
-    def validate_intent(self) -> RuntimeIntent:
+    def validate_intent(self) -> RuntimeIntent:  # noqa: PLR0912
         if self.kind == RuntimeIntentKind.COMMAND and not self.action:
             raise ValueError("COMMAND intent requires action")
         if self.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
@@ -253,6 +286,16 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("DEVICE_EVENT intent requires data")
             if not isinstance(self.payload_json.get("data"), dict):
                 raise ValueError("DEVICE_EVENT intent data must be a dict")
+        if self.kind == RuntimeIntentKind.RESOURCE_FACT:
+            if not self.action:
+                raise ValueError("RESOURCE_FACT intent requires action")
+            if not self.payload_json:
+                raise ValueError("RESOURCE_FACT intent requires payload")
+        if self.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
+            if not self.action:
+                raise ValueError("RESOURCE_RESERVATION intent requires action")
+            if not self.payload_json:
+                raise ValueError("RESOURCE_RESERVATION intent requires payload")
         if self.kind == RuntimeIntentKind.BLOCK:
             if self.block_scope is None:
                 raise ValueError("BLOCK intent requires block_scope")

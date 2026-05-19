@@ -4,11 +4,11 @@ from typing import Any
 
 import pytest
 
-from src.app.resource.models import BinStatus, RackReleaseStatus
 from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.smt_full_box_exchange_candidate_service import (
     SmtFullBoxExchangeCandidateService,
     SmtFullBoxExchangeCandidateStatus,
+    SmtRackReleaseLifecycleStatus,
 )
 
 
@@ -110,7 +110,7 @@ def _release(**overrides: Any) -> Any:
         "source_classifier_line_code": "WL-SMT-CLASSIFIER-01",
         "source_task_batch_id": "batch-001",
         "source_event_id": "classifier-release-event-001",
-        "release_status": RackReleaseStatus.CANDIDATE,
+        "release_status": SmtRackReleaseLifecycleStatus.CANDIDATE,
         "released_at": datetime(2026, 5, 16, 10, 0, tzinfo=UTC),
         "moved_out_at": datetime(2026, 5, 16, 10, 3, tzinfo=UTC),
         "inbox_id": None,
@@ -128,7 +128,7 @@ def _snapshots(count: int = 4) -> list[Any]:
             slot_code=f"S{index}",
             bin_code=f"BIN-{index:03d}",
             bin_type_code="SMT_BIN",
-            bin_execution_status=BinStatus.IN_USE,
+            bin_execution_status="IN_USE",
             usage_snapshot=0.9,
             material_summary_json={"pkg_count": index},
             wms_inventory_refs_json={"inventory_version": f"v{index}"},
@@ -179,7 +179,7 @@ async def test_candidate_service_creates_single_layer_release_inbox_and_marks_re
     ]
     assert release_repo.updated_payload == {
         "inbox_id": 701,
-        "release_status": RackReleaseStatus.INBOX_CREATED.value,
+        "release_status": SmtRackReleaseLifecycleStatus.INBOX_CREATED.value,
         "version": 0,
     }
 
@@ -300,7 +300,7 @@ async def test_candidate_service_returns_existing_inbox_after_duplicate_inbox_ra
     assert result.inbox is existing_inbox
     assert release_repo.updated_payload == {
         "inbox_id": 702,
-        "release_status": RackReleaseStatus.INBOX_CREATED.value,
+        "release_status": SmtRackReleaseLifecycleStatus.INBOX_CREATED.value,
         "version": 0,
     }
 

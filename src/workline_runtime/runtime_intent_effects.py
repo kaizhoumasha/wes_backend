@@ -22,6 +22,8 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
     RuntimeIntentKind.DEVICE_EVENT,
+    RuntimeIntentKind.RESOURCE_FACT,
+    RuntimeIntentKind.RESOURCE_RESERVATION,
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
@@ -163,9 +165,13 @@ class RuntimeIntentEffectApplier:
         *,
         full_box_exchange_task_service: Any | None = None,
         inbox_service: Any | None = None,
+        resource_projection_service: Any | None = None,
+        bin_cell_reservation_service: Any | None = None,
     ) -> None:
         self._full_box_exchange_task_service = full_box_exchange_task_service
         self._inbox_service = inbox_service
+        self._resource_projection_service = resource_projection_service
+        self._bin_cell_reservation_service = bin_cell_reservation_service
 
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
@@ -197,6 +203,14 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
                 await self._apply_device_event(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.RESOURCE_FACT:
+                await self._apply_resource_fact(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
+                await self._apply_resource_reservation(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
@@ -458,6 +472,42 @@ class RuntimeIntentEffectApplier:
             auto_commit=False,
         )
 
+    async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> None:
+        service = self._resource_projection_service
+        if service is None:
+            from src.app.resource.services import resource_projection_service
+
+            service = resource_projection_service
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        _ = await service.record_resource_fact(
+            db=ctx_map["db"],
+            session=ctx_map["session"],
+            workline=ctx_map["workline"],
+            fact_type=str(intent.action),
+            payload_json=dict(intent.payload_json),
+            idempotency_key=intent.idempotency_key,
+            trace_id=_ctx_trace_id(ctx_map),
+        )
+
+    async def _apply_resource_reservation(self, ctx: Any, intent: RuntimeIntent) -> None:
+        service = self._bin_cell_reservation_service
+        if service is None:
+            from src.app.workline.services import workline_bin_cell_reservation_service
+
+            service = workline_bin_cell_reservation_service
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        _ = await service.apply_runtime_reservation(
+            db=ctx_map["db"],
+            session=ctx_map["session"],
+            workline=ctx_map["workline"],
+            operation=str(intent.action),
+            payload_json=dict(intent.payload_json),
+            idempotency_key=intent.idempotency_key,
+            trace_id=_ctx_trace_id(ctx_map),
+        )
+
     async def _record_full_box_exchange_task(
         self,
         ctx: Any,
@@ -469,9 +519,9 @@ class RuntimeIntentEffectApplier:
     ) -> None:
         service = self._full_box_exchange_task_service
         if service is None:
-            from src.app.resource.services import full_box_exchange_task_service
+            from src.app.workline.services import workline_full_box_exchange_task_service
 
-            service = full_box_exchange_task_service
+            service = workline_full_box_exchange_task_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
         _ = await service.record_requested_from_external_request(
