@@ -112,45 +112,63 @@ class RecordingNoMaterialMountRepo:
         return []
 
 
-class RecordingSessionRepo:
-    async def list_latest_by_workline_id(
-        self,
-        _db: object,
-        workline_id: int,
-        *,
-        limit: int,
-    ) -> list[SimpleNamespace]:
-        assert workline_id == 1001
-        assert limit == 50
+class RecordingNoReservationRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes
+        return []
+
+
+class RecordingActiveReservationRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
         return [
             SimpleNamespace(
-                context_json={
-                    "active_bin_rack": {
-                        "rack_id": "RACK-ACTIVE-001",
-                        "rack_code": "RACK-ACTIVE-001",
-                        "cells": [
-                            _cell("A", "BIN-ACTIVE-A"),
-                            _cell("B", "BIN-ACTIVE-B"),
-                            _cell("C", "BIN-ACTIVE-C"),
-                            _cell("D", "BIN-ACTIVE-D"),
-                        ],
-                    }
-                },
-                ended_at=datetime(2026, 5, 18, 9, 0, 0),
+                session_id=42,
+                pkg_code="PKG-PLANNED-001",
+                bin_code="BIN-ACTIVE-A",
+                bin_cell_index="7",
+                metadata_json={"material_identity_key": "MAT:PLANNED:VENDOR:20260520:LOT-001"},
             )
         ]
 
 
-class RecordingSessionRepoWithStaleBinSnapshots:
-    async def list_latest_by_workline_id(
+class RecordingSessionRepo:
+    async def get_latest_active_rack_template_session(
         self,
         _db: object,
-        workline_id: int,
         *,
-        limit: int,
-    ) -> list[SimpleNamespace]:
+        workline_id: int,
+        rack_code: str,
+    ) -> SimpleNamespace:
         assert workline_id == 1001
-        assert limit == 50
+        assert rack_code == "RACK-ACTIVE-001"
+        return SimpleNamespace(
+            context_json={
+                "active_bin_rack": {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_code": "RACK-ACTIVE-001",
+                    "cells": [
+                        _cell("A", "BIN-ACTIVE-A"),
+                        _cell("B", "BIN-ACTIVE-B"),
+                        _cell("C", "BIN-ACTIVE-C"),
+                        _cell("D", "BIN-ACTIVE-D"),
+                    ],
+                }
+            },
+            ended_at=datetime(2026, 5, 18, 9, 0, 0),
+        )
+
+
+class RecordingSessionRepoWithStaleBinSnapshots:
+    async def get_latest_active_rack_template_session(
+        self,
+        _db: object,
+        *,
+        workline_id: int,
+        rack_code: str,
+    ) -> SimpleNamespace:
+        assert workline_id == 1001
+        assert rack_code == "RACK-ACTIVE-001"
         stale_bins = [
             {
                 "slot_code": slot,
@@ -162,37 +180,35 @@ class RecordingSessionRepoWithStaleBinSnapshots:
             }
             for slot in ("A", "B", "C", "D")
         ]
-        return [
-            SimpleNamespace(
-                context_json={
-                    "active_bin_rack": {
-                        "rack_id": "RACK-ACTIVE-001",
-                        "rack_code": "RACK-ACTIVE-001",
-                        "cells": [
-                            _cell("A", "BIN-ACTIVE-A"),
-                            _cell("B", "BIN-ACTIVE-B"),
-                            _cell("C", "BIN-ACTIVE-C"),
-                            _cell("D", "BIN-ACTIVE-D"),
-                        ],
-                        "bins": stale_bins,
-                        "bin_snapshots": stale_bins,
-                    }
-                },
-                ended_at=datetime(2026, 5, 18, 9, 0, 0),
-            )
-        ]
+        return SimpleNamespace(
+            context_json={
+                "active_bin_rack": {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_code": "RACK-ACTIVE-001",
+                    "cells": [
+                        _cell("A", "BIN-ACTIVE-A"),
+                        _cell("B", "BIN-ACTIVE-B"),
+                        _cell("C", "BIN-ACTIVE-C"),
+                        _cell("D", "BIN-ACTIVE-D"),
+                    ],
+                    "bins": stale_bins,
+                    "bin_snapshots": stale_bins,
+                }
+            },
+            ended_at=datetime(2026, 5, 18, 9, 0, 0),
+        )
 
 
 class RecordingSessionRepoWithStaleEmptyCell:
-    async def list_latest_by_workline_id(
+    async def get_latest_active_rack_template_session(
         self,
         _db: object,
-        workline_id: int,
         *,
-        limit: int,
-    ) -> list[SimpleNamespace]:
+        workline_id: int,
+        rack_code: str,
+    ) -> SimpleNamespace:
         assert workline_id == 1001
-        assert limit == 50
+        assert rack_code == "RACK-ACTIVE-001"
         stale_cell = {
             **_cell("D", "BIN-ACTIVE-D"),
             "status": "OCCUPIED",
@@ -211,35 +227,33 @@ class RecordingSessionRepoWithStaleEmptyCell:
             "reel_thickness": "20",
             "wms_inventory_id": "INV-OLD-D",
         }
-        return [
-            SimpleNamespace(
-                context_json={
-                    "active_bin_rack": {
-                        "rack_id": "RACK-ACTIVE-001",
-                        "rack_code": "RACK-ACTIVE-001",
-                        "cells": [
-                            _cell("A", "BIN-ACTIVE-A"),
-                            _cell("B", "BIN-ACTIVE-B"),
-                            _cell("C", "BIN-ACTIVE-C"),
-                            stale_cell,
-                        ],
-                    }
-                },
-                ended_at=datetime(2026, 5, 18, 9, 0, 0),
-            )
-        ]
+        return SimpleNamespace(
+            context_json={
+                "active_bin_rack": {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_code": "RACK-ACTIVE-001",
+                    "cells": [
+                        _cell("A", "BIN-ACTIVE-A"),
+                        _cell("B", "BIN-ACTIVE-B"),
+                        _cell("C", "BIN-ACTIVE-C"),
+                        stale_cell,
+                    ],
+                }
+            },
+            ended_at=datetime(2026, 5, 18, 9, 0, 0),
+        )
 
 
 class RecordingSessionRepoWithLockedEmptyCell:
-    async def list_latest_by_workline_id(
+    async def get_latest_active_rack_template_session(
         self,
         _db: object,
-        workline_id: int,
         *,
-        limit: int,
-    ) -> list[SimpleNamespace]:
+        workline_id: int,
+        rack_code: str,
+    ) -> SimpleNamespace:
         assert workline_id == 1001
-        assert limit == 50
+        assert rack_code == "RACK-ACTIVE-001"
         locked_cell = {
             **_cell("D", "BIN-ACTIVE-D"),
             "status": "LOCKED",
@@ -250,23 +264,21 @@ class RecordingSessionRepoWithLockedEmptyCell:
             "material_identity_key": "MAT:OLD-HHPN:OLD-MFR:OLD-DC:OLD-LC",
             "reels": [{"pkg_code": "OLD-PKG", "cell_stack_position": 1}],
         }
-        return [
-            SimpleNamespace(
-                context_json={
-                    "active_bin_rack": {
-                        "rack_id": "RACK-ACTIVE-001",
-                        "rack_code": "RACK-ACTIVE-001",
-                        "cells": [
-                            _cell("A", "BIN-ACTIVE-A"),
-                            _cell("B", "BIN-ACTIVE-B"),
-                            _cell("C", "BIN-ACTIVE-C"),
-                            locked_cell,
-                        ],
-                    }
-                },
-                ended_at=datetime(2026, 5, 18, 9, 0, 0),
-            )
-        ]
+        return SimpleNamespace(
+            context_json={
+                "active_bin_rack": {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_code": "RACK-ACTIVE-001",
+                    "cells": [
+                        _cell("A", "BIN-ACTIVE-A"),
+                        _cell("B", "BIN-ACTIVE-B"),
+                        _cell("C", "BIN-ACTIVE-C"),
+                        locked_cell,
+                    ],
+                }
+            },
+            ended_at=datetime(2026, 5, 18, 9, 0, 0),
+        )
 
 
 def _cell(slot: str, bin_code: str) -> dict[str, Any]:
@@ -289,6 +301,7 @@ async def test_get_active_bin_rack_restores_snapshot_from_projection_and_last_se
         rack_bin_mount_repo=RecordingRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
         session_repo=RecordingSessionRepo(),
     )
 
@@ -337,6 +350,7 @@ async def test_get_active_bin_rack_removes_stale_top_level_bin_snapshots_after_o
         rack_bin_mount_repo=RecordingRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
         session_repo=RecordingSessionRepoWithStaleBinSnapshots(),
     )
 
@@ -361,6 +375,7 @@ async def test_get_active_bin_rack_rejects_template_with_bins_missing_active_mou
         rack_bin_mount_repo=RecordingPartialRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingNoOccupancyRepo(),
         bin_material_mount_repo=RecordingNoMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
         session_repo=RecordingSessionRepo(),
     )
 
@@ -380,6 +395,7 @@ async def test_get_active_bin_rack_clears_template_cell_without_active_occupancy
         rack_bin_mount_repo=RecordingRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
         session_repo=RecordingSessionRepoWithStaleEmptyCell(),
     )
 
@@ -418,6 +434,7 @@ async def test_get_active_bin_rack_preserves_locked_template_cell_without_active
         rack_bin_mount_repo=RecordingRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
         session_repo=RecordingSessionRepoWithLockedEmptyCell(),
     )
 
@@ -441,3 +458,33 @@ async def test_get_active_bin_rack_preserves_locked_template_cell_without_active
         "reels",
     ):
         assert stale_key not in cell_d
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_marks_planned_reservation_cell_locked() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingActiveReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is not None
+    cell_a = next(cell for cell in snapshot["cells"] if cell["bin_id"] == "BIN-ACTIVE-A")
+    assert cell_a["status"] == "LOCKED"
+    assert cell_a["locked"] is True
+    assert cell_a["reservation_status"] == "PLANNED"
+    assert cell_a["reservation_session_id"] == 42
+    assert cell_a["reserved_pkg_code"] == "PKG-PLANNED-001"
+    assert cell_a["reserved_material_identity_key"] == "MAT:PLANNED:VENDOR:20260520:LOT-001"
+
+    cell_c = next(cell for cell in snapshot["cells"] if cell["bin_id"] == "BIN-ACTIVE-C")
+    assert cell_c["status"] == "OCCUPIED"

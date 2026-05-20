@@ -3716,23 +3716,38 @@ class OutboxDispatcher:
 
                     device_id = _resolve_entity_id(device)
                     if command is not None and device_id is not None and command_id is not None:
-                        ack_received_at = timezone.now_for_db()
-                        command.status = CommandStatus.ACK_RECEIVED
-                        command.sent_at = command.sent_at or ack_received_at
-                        command.ack_received_at = ack_received_at
-                        command.ack_code = response.status_code
-                        command.ack_message = "HTTP 200"
-                        _ = await device_service.mark_command_dispatched(
-                            db,
-                            device_id=device_id,
-                            command_id=command_id,
-                            auto_commit=False,
-                        )
-                        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
-                            db,
-                            command_id=command_id,
-                            ack_received_at=ack_received_at,
-                        )
+                        # Mock/设备可能在 HTTP 200 返回前已经完成并回调；刷新后若已是终态，
+                        # 不能再把设备占用投影覆盖回 RUNNING。
+                        await db.refresh(command)
+                        terminal_statuses = {
+                            CommandStatus.COMPLETED.value,
+                            CommandStatus.FAILED.value,
+                            CommandStatus.TIMEOUT.value,
+                            CommandStatus.CANCELLED.value,
+                        }
+                        if _enum_value(getattr(command, "status", None)) in terminal_statuses:
+                            logger.info(
+                                "设备指令 ACK 返回前已收到完成回调，跳过 ACK/RUNNING 投影: "
+                                f"device_code={outbox.target_code}, command_code={command_code}"
+                            )
+                        else:
+                            ack_received_at = timezone.now_for_db()
+                            command.status = CommandStatus.ACK_RECEIVED
+                            command.sent_at = command.sent_at or ack_received_at
+                            command.ack_received_at = ack_received_at
+                            command.ack_code = response.status_code
+                            command.ack_message = "HTTP 200"
+                            _ = await device_service.mark_command_dispatched(
+                                db,
+                                device_id=device_id,
+                                command_id=command_id,
+                                auto_commit=False,
+                            )
+                            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+                                db,
+                                command_id=command_id,
+                                ack_received_at=ack_received_at,
+                            )
                     else:
                         logger.warning(
                             "设备指令已 ACK，但 WES 侧设备运行态未更新: "

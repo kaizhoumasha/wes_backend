@@ -73,6 +73,39 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return list(result.scalars().all())
 
+    async def get_latest_active_rack_template_session(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        rack_code: str,
+    ) -> WorklineSession | None:
+        """查询可作为当前 active rack 结构模板的最新会话。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        active_rack = columns.context_json["active_bin_rack"]
+        template_source_statuses = (
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+            SessionStatus.COMPLETED,
+        )
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(template_source_statuses),
+                or_(
+                    active_rack["rack_code"].as_string() == rack_code,
+                    active_rack["rack_id"].as_string() == rack_code,
+                ),
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def get_open_session_by_business_key(
         self,
         db: AsyncSession,
