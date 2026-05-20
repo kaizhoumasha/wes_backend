@@ -134,6 +134,45 @@ class RecordingBinMaterialMountRepo:
         return BinMaterialMount(**data)
 
 
+class RecordingBinCellOccupancyRepo:
+    def __init__(
+        self,
+        *,
+        active_by_cell: SimpleNamespace | None = None,
+        active_by_material_identity: list[SimpleNamespace] | None = None,
+    ) -> None:
+        self.active_by_cell = active_by_cell
+        self.active_by_material_identity = active_by_material_identity or []
+        self.created: list[dict[str, Any]] = []
+        self.saved: list[dict[str, Any]] = []
+
+    async def get_active_by_bin_cell(
+        self,
+        _db: object,
+        *,
+        bin_code: str,
+        bin_cell_index: str,
+    ) -> SimpleNamespace | None:
+        assert (bin_code, bin_cell_index) == ("BIN-001", "4")
+        return self.active_by_cell
+
+    async def list_active_by_material_identity(
+        self,
+        _db: object,
+        material_identity_key: str,
+    ) -> list[SimpleNamespace]:
+        assert material_identity_key.startswith("MAT:620100L00-011-G:")
+        return self.active_by_material_identity
+
+    async def create(self, _db: object, data: dict[str, Any]) -> SimpleNamespace:
+        self.created.append(data)
+        return SimpleNamespace(id=7701, **data)
+
+    async def save(self, _db: object, occupancy: SimpleNamespace) -> SimpleNamespace:
+        self.saved.append(dict(vars(occupancy)))
+        return occupancy
+
+
 class RecordingRackBinMountRepo:
     def __init__(
         self,
@@ -212,6 +251,30 @@ def _mount(**overrides: Any) -> BinMaterialMount:
     return BinMaterialMount(**values)
 
 
+def _occupancy(**overrides: Any) -> SimpleNamespace:
+    values: dict[str, Any] = {
+        "id": 7701,
+        "bin_code": "BIN-001",
+        "bin_cell_code": "BIN-001-4",
+        "bin_cell_index": "4",
+        "material_identity_key": "MAT:620100L00-011-G:122625:8904936031",
+        "material_code": "620100L00-011-G",
+        "lot_code": "8904936031",
+        "date_code": "122625",
+        "reel_count": 1,
+        "used_depth_mm": 2.5,
+        "capacity_depth_mm": 5.0,
+        "remaining_depth_mm": 2.5,
+        "occupancy_status": "OCCUPIED",
+        "source_system": ResourceSourceSystem.WES_RUNTIME,
+        "source_event_id": "old-event",
+        "started_at": datetime(2026, 5, 18, 8, 0, 0),
+        "ended_at": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def _rack_bin_mount(**overrides: Any) -> RackBinMount:
     values: dict[str, Any] = {
         "rack_code": "RACK-001",
@@ -285,10 +348,12 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
 async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> None:
     events = RecordingStateEventRepo()
     mounts = RecordingBinMaterialMountRepo()
+    occupancies = RecordingBinCellOccupancyRepo()
     snapshots = RecordingResourceSnapshotService()
     service = ResourceProjectionService(
         state_event_repo=events,
         bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
         snapshot_service=snapshots,
     )
 
@@ -310,11 +375,19 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
         trace_id="trace-001",
         session_id="2001",
         workline_session_id=2001,
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=10.0,
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
-    assert mounts.material_identity_lookups == ["MAT:620100L00-011-G:122625:8904936031"]
+    assert mounts.material_identity_lookups == []
+    assert occupancies.created[0]["bin_code"] == "BIN-001"
+    assert occupancies.created[0]["reel_count"] == 1
+    assert occupancies.created[0]["used_depth_mm"] == 2.5
+    assert occupancies.created[0]["remaining_depth_mm"] == 7.5
     assert mounts.created[0]["bin_code"] == "BIN-001"
+    assert mounts.created[0]["bin_cell_occupancy_id"] == 7701
+    assert mounts.created[0]["cell_stack_position"] == 1
     assert mounts.created[0]["pkg_code"] == "PKG-001"
     assert mounts.created[0]["wms_inventory_id"] == "INV-001"
     assert mounts.created[0]["mount_status"] == BinMaterialMountStatus.OCCUPIED.value
@@ -330,6 +403,8 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
             "date_code": "122625",
             "qty_snapshot": None,
             "wms_inventory_id": "INV-001",
+            "reel_diameter": None,
+            "reel_thickness": "2.5",
             "source_session_id": 2001,
             "source_event_id": "CMD-PICK-001",
             "captured_at": datetime(2026, 5, 18, 9, 5, 0),
@@ -390,10 +465,19 @@ async def test_record_bin_mounted_to_rack_records_empty_bin_snapshots() -> None:
 @pytest.mark.asyncio
 async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
-    mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount())
+    occupancies = RecordingBinCellOccupancyRepo(
+        active_by_cell=_occupancy(
+            material_identity_key="MAT:DIFFERENT:122624:DIFFERENT",
+            material_code="DIFFERENT",
+            lot_code="DIFFERENT",
+            date_code="122624",
+            source_event_id="old-event",
+        )
+    )
     service = ResourceProjectionService(
         state_event_repo=RecordingStateEventRepo(),
-        bin_material_mount_repo=mounts,
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_occupancy_repo=occupancies,
         runtime_hold_creator=runtime_holds,
     )
 
@@ -422,25 +506,191 @@ async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> No
 
     assert result.status == ResourceProjectionStatus.RECONCILING
     assert result.reason_code == "BIN_CELL_MATERIAL_MOUNT_CONFLICT"
-    assert mounts.created == []
+    assert occupancies.created == []
     assert runtime_holds.created[0]["source_reason"] == "BIN_CELL_MATERIAL_MOUNT_CONFLICT"
-    assert runtime_holds.created[0]["evidence"]["active_pkg_code"] == "PKG-OLD"
+    assert runtime_holds.created[0]["evidence"]["active_material_identity_key"] == "MAT:DIFFERENT:122624:DIFFERENT"
 
 
 @pytest.mark.asyncio
-async def test_record_material_mounted_to_duplicate_material_identity_creates_hold() -> None:
+async def test_record_material_mounted_to_same_identity_same_cell_projects_as_aggregate() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
-    mounts = RecordingBinMaterialMountRepo(
-        active_by_material_identity=_mount(
-            bin_code="BIN-OLD",
-            bin_cell_code="BIN-OLD-5",
-            bin_cell_index="5",
-            pkg_code="PKG-OLD",
+    snapshots = RecordingResourceSnapshotService()
+    mounts = RecordingBinMaterialMountRepo()
+    occupancies = RecordingBinCellOccupancyRepo(active_by_cell=_occupancy())
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+        runtime_hold_creator=runtime_holds,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=5.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert result.projection is None
+    assert mounts.created[0]["pkg_code"] == "PKG-001"
+    assert mounts.created[0]["bin_cell_occupancy_id"] == 7701
+    assert mounts.created[0]["cell_stack_position"] == 2
+    assert occupancies.saved[0]["reel_count"] == 2
+    assert occupancies.saved[0]["used_depth_mm"] == 5.0
+    assert occupancies.saved[0]["remaining_depth_mm"] == 0.0
+    assert occupancies.saved[0]["occupancy_status"] == "FULL"
+    assert runtime_holds.created == []
+    assert snapshots.material_calls[0]["pkg_code"] == "PKG-001"
+
+
+@pytest.mark.asyncio
+async def test_record_material_mounted_to_legacy_identity_same_cell_projects_as_aggregate() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    snapshots = RecordingResourceSnapshotService()
+    mounts = RecordingBinMaterialMountRepo()
+    occupancies = RecordingBinCellOccupancyRepo(
+        active_by_cell=_occupancy(material_identity_key="MAT:620100L00-011-G:122625:8904936031")
+    )
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+        runtime_hold_creator=runtime_holds,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:CC0402JRNPO9BN220:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=5.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert runtime_holds.created == []
+    assert occupancies.saved[0]["material_identity_key"] == "MAT:620100L00-011-G:CC0402JRNPO9BN220:122625:8904936031"
+    assert occupancies.saved[0]["reel_count"] == 2
+    assert mounts.created[0]["bin_cell_occupancy_id"] == 7701
+
+
+@pytest.mark.asyncio
+async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_remaining_depth() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    snapshots = RecordingResourceSnapshotService()
+    mounts = RecordingBinMaterialMountRepo()
+    occupancies = RecordingBinCellOccupancyRepo(
+        active_by_cell=_occupancy(
+            reel_count=1,
+            used_depth_mm=3.0,
+            capacity_depth_mm=5.0,
+            remaining_depth_mm=2.0,
+            occupancy_status="OCCUPIED",
         )
     )
     service = ResourceProjectionService(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+        runtime_hold_creator=runtime_holds,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=5.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "BIN_CELL_CAPACITY_EXCEEDED"
+    assert "重新分配" in (result.message or "")
+    assert mounts.created == []
+    assert occupancies.saved == []
+    assert snapshots.material_calls == []
+    assert runtime_holds.created[0]["source_reason"] == "BIN_CELL_CAPACITY_EXCEEDED"
+    evidence = runtime_holds.created[0]["evidence"]
+    assert evidence["active_bin_code"] == "BIN-001"
+    assert evidence["active_bin_cell_index"] == "4"
+    assert evidence["incoming_reel_thickness"] == 2.5
+    assert evidence["remaining_depth_mm"] == 2.0
+    assert evidence["requires_reallocation"] is True
+
+
+@pytest.mark.asyncio
+async def test_record_material_mounted_to_same_identity_other_nonfull_cell_creates_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    occupancies = RecordingBinCellOccupancyRepo(
+        active_by_material_identity=[
+            _occupancy(
+                bin_code="BIN-OLD",
+                bin_cell_code="BIN-OLD-5",
+                bin_cell_index="5",
+                remaining_depth_mm=2.5,
+                occupancy_status="OCCUPIED",
+            )
+        ]
+    )
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_occupancy_repo=occupancies,
         runtime_hold_creator=runtime_holds,
     )
 
@@ -469,9 +719,69 @@ async def test_record_material_mounted_to_duplicate_material_identity_creates_ho
 
     assert result.status == ResourceProjectionStatus.RECONCILING
     assert result.reason_code == "MATERIAL_IDENTITY_MOUNT_CONFLICT"
-    assert mounts.created == []
     assert runtime_holds.created[0]["source_reason"] == "MATERIAL_IDENTITY_MOUNT_CONFLICT"
-    assert runtime_holds.created[0]["evidence"]["active_pkg_code"] == "PKG-OLD"
+    assert runtime_holds.created[0]["evidence"]["active_bin_code"] == "BIN-OLD"
+
+
+@pytest.mark.asyncio
+async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_cannot_fit_reel() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    snapshots = RecordingResourceSnapshotService()
+    mounts = RecordingBinMaterialMountRepo()
+    occupancies = RecordingBinCellOccupancyRepo(
+        active_by_material_identity=[
+            _occupancy(
+                bin_code="BIN-OLD",
+                bin_cell_code="BIN-OLD-5",
+                bin_cell_index="5",
+                used_depth_mm=3.0,
+                capacity_depth_mm=5.0,
+                remaining_depth_mm=2.0,
+                occupancy_status="OCCUPIED",
+            )
+        ]
+    )
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+        runtime_hold_creator=runtime_holds,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=5.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert runtime_holds.created == []
+    assert occupancies.created[0]["bin_code"] == "BIN-001"
+    assert occupancies.created[0]["bin_cell_index"] == "4"
+    assert occupancies.created[0]["used_depth_mm"] == 2.5
+    assert occupancies.created[0]["remaining_depth_mm"] == 2.5
+    assert mounts.created[0]["bin_cell_occupancy_id"] == 7701
+    assert snapshots.material_calls[0]["bin_code"] == "BIN-001"
 
 
 @pytest.mark.asyncio

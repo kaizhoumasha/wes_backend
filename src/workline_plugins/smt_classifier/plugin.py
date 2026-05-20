@@ -346,6 +346,11 @@ def _rack_supply_context(
         "pkg_id": pkg_id,
         "resume_callback_type": "WMS_RACK_ARRIVED",
     }
+    target_position_code = non_empty_str(request.payload.get("target_position_code")) or non_empty_str(
+        request.payload.get("position_code")
+    )
+    if target_position_code is not None:
+        context["target_position_code"] = target_position_code
     if resume_source_device_code is not None:
         context["resume_source_device_code"] = resume_source_device_code
     if resume_source_device_role is not None:
@@ -395,10 +400,11 @@ def _material_identity_key_from_context(context: Mapping[str, Any], *, pkg_code:
     )
     if normalized:
         hhp_n = non_empty_str(normalized.get("HHPN"))
+        mfr_pn = non_empty_str(normalized.get("MfrPN"))
         date_code = non_empty_str(normalized.get("DateCode"))
         lot_code = non_empty_str(normalized.get("LotCode"))
         if hhp_n or date_code or lot_code:
-            return f"MAT:{hhp_n or ''}:{date_code or ''}:{lot_code or ''}"
+            return f"MAT:{hhp_n or ''}:{mfr_pn or ''}:{date_code or ''}:{lot_code or ''}"
     return f"PKG:{pkg_code}"
 
 
@@ -416,6 +422,10 @@ def _build_bin_cell_reservation_intent(
         "bin_code": bin_code,
         "bin_cell_code": non_empty_str(bin_location.get("bin_cell_location")),
         "bin_cell_index": bin_cell_index,
+        "material_identity_key": _material_identity_key_from_context(
+            dict(cast("Mapping[str, Any]", getattr(ctx.session, "context_json", None) or {})),
+            pkg_code=pkg_code,
+        ),
         "source_event_id": source_event_id,
     }
     session_id = getattr(getattr(ctx, "session", None), "id", "session")
@@ -466,6 +476,7 @@ def _build_material_mounted_fact_intent(
         "qty_snapshot": normalized_six.get("Qty"),
         "reel_diameter": non_empty_str(context.get("reel_diameter")),
         "reel_thickness": non_empty_str(context.get("reel_thickness")),
+        "cell_capacity_depth_mm": bin_location.get("capacity_depth_mm"),
         "source_system": "WES_RUNTIME",
         "source_event_id": source_event_id,
     }
@@ -501,8 +512,73 @@ def _build_bin_cell_consumption_intent(
     )
 
 
-def _rack_position_code_from_supply(rack_supply: Mapping[str, Any]) -> str:
-    return non_empty_str(rack_supply.get("target_position_code")) or "SINGLE_LAYER_A"
+def _build_bin_cell_release_intent(
+    ctx: PluginContext,
+    *,
+    result: NormalizedCommandResult,
+) -> RuntimeIntent | None:
+    context = getattr(getattr(ctx, "session", None), "context_json", None)
+    if not isinstance(context, Mapping):
+        return None
+    bin_location = context.get("bin_location")
+    if not isinstance(bin_location, Mapping):
+        return None
+    bin_code = non_empty_str(bin_location.get("bin_id"))
+    bin_cell_index = non_empty_str(bin_location.get("bin_cell_index"))
+    if bin_code is None or bin_cell_index is None:
+        return None
+
+    session_id = getattr(getattr(ctx, "session", None), "id", None)
+    source_event_id = (
+        non_empty_str(getattr(result, "command_code", None)) or f"PICK_AND_PUT_FAILED:{bin_code}:{bin_cell_index}"
+    )
+    return ctx.next.resource_reservation(
+        operation="RELEASE_BIN_CELL",
+        payload={
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "source_event_id": source_event_id,
+        },
+        idempotency_key=f"RELEASE_BIN_CELL:{session_id}:{source_event_id}:{bin_code}:{bin_cell_index}",
+    )
+
+
+def _pick_failed_output_arm_intents(
+    ctx: PluginContext,
+    *,
+    result: NormalizedCommandResult,
+    error_code: str,
+    error_message: str,
+    requires_manual_hold: bool,
+) -> RuntimeIntent | list[RuntimeIntent]:
+    release_reservation = _build_bin_cell_release_intent(ctx, result=result)
+    if requires_manual_hold:
+        manual_hold_intents = _manual_hold_intents(ctx, error_code=error_code, error_message=error_message)
+        if release_reservation is None:
+            return manual_hold_intents
+        return [release_reservation, *manual_hold_intents]
+
+    block_intent = ctx.next.block(
+        scope=BlockScope.COMMAND,
+        reason_code=error_code,
+        message=error_message,
+    )
+    if release_reservation is None:
+        return block_intent
+    return [release_reservation, block_intent]
+
+
+def _rack_expected_position_code_from_supply(rack_supply: Mapping[str, Any]) -> str | None:
+    return non_empty_str(rack_supply.get("target_position_code")) or non_empty_str(rack_supply.get("position_code"))
+
+
+def _rack_position_code_from_supply(
+    rack_supply: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any] | None = None,
+) -> str:
+    callback_position_code = non_empty_str(payload.get("position_code")) if payload is not None else None
+    return _rack_expected_position_code_from_supply(rack_supply) or callback_position_code or "SINGLE_LAYER_A"
 
 
 def _workline_code_from_context(ctx: PluginContext) -> str | None:
@@ -531,9 +607,13 @@ def _rack_supply_target_mismatch(
     ):
         return ("workline_code", expected_workline_code, callback_workline_code)
 
-    expected_position_code = _rack_position_code_from_supply(rack_supply)
+    expected_position_code = _rack_expected_position_code_from_supply(rack_supply)
     callback_position_code = non_empty_str(payload.get("position_code"))
-    if callback_position_code is not None and callback_position_code != expected_position_code:
+    if (
+        expected_position_code is not None
+        and callback_position_code is not None
+        and callback_position_code != expected_position_code
+    ):
         return ("position_code", expected_position_code, callback_position_code)
     return None
 
@@ -548,7 +628,7 @@ def _rack_arrived_fact_intent(
     rack_code = non_empty_str(active_bin_rack.get("rack_code")) or non_empty_str(active_bin_rack.get("rack_id")) or ""
     source_event_id = non_empty_str(payload.get("source_event_id")) or f"WMS_RACK_ARRIVED:{rack_code}"
     workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
-    position_code = _rack_position_code_from_supply(rack_supply)
+    position_code = _rack_position_code_from_supply(rack_supply, payload=payload)
     return ctx.next.resource_fact(
         fact_type="RACK_ARRIVED",
         payload={
@@ -577,14 +657,20 @@ def _bin_mounted_fact_intent(
     source_event_id = non_empty_str(payload.get("source_event_id")) or f"BIN_MOUNTED:{rack_code}"
     cells = active_bin_rack.get("cells")
     bin_mounts: list[dict[str, Any]] = []
+    seen_mounts: set[tuple[str, str]] = set()
     if isinstance(cells, Sequence) and not isinstance(cells, (str, bytes)):
         for cell in cells:
             if not isinstance(cell, Mapping):
                 continue
             rack_slot_code = non_empty_str(cell.get("rack_slot_code"))
             bin_code = non_empty_str(cell.get("bin_code")) or non_empty_str(cell.get("bin_id"))
-            if rack_slot_code is not None and bin_code is not None:
-                bin_mounts.append({"rack_slot_code": rack_slot_code, "bin_code": bin_code})
+            if rack_slot_code is None or bin_code is None:
+                continue
+            mount_key = (rack_slot_code, bin_code)
+            if mount_key in seen_mounts:
+                continue
+            seen_mounts.add(mount_key)
+            bin_mounts.append({"rack_slot_code": rack_slot_code, "bin_code": bin_code})
     return ctx.next.resource_fact(
         fact_type="BIN_MOUNTED",
         payload={
@@ -597,6 +683,39 @@ def _bin_mounted_fact_intent(
         },
         idempotency_key=f"BIN_MOUNTED:{rack_code}:{source_event_id}:{len(bin_mounts)}",
     )
+
+
+def _duplicate_bin_mount_message(active_bin_rack: Mapping[str, Any]) -> str | None:
+    cells = active_bin_rack.get("cells")
+    if not isinstance(cells, Sequence) or isinstance(cells, (str, bytes)):
+        return None
+
+    bin_by_slot: dict[str, str] = {}
+    slot_by_bin: dict[str, str] = {}
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            continue
+        rack_slot_code = non_empty_str(cell.get("rack_slot_code"))
+        bin_code = non_empty_str(cell.get("bin_code")) or non_empty_str(cell.get("bin_id"))
+        if rack_slot_code is None or bin_code is None:
+            continue
+
+        mounted_bin = bin_by_slot.get(rack_slot_code)
+        if mounted_bin is not None and mounted_bin != bin_code:
+            return (
+                "WMS_RACK_ARRIVED 回调 active_bin_rack 同一槽位出现多个料箱"
+                f": rack_slot_code={rack_slot_code}, bin_codes={mounted_bin},{bin_code}"
+            )
+        bin_by_slot[rack_slot_code] = bin_code
+
+        mounted_slot = slot_by_bin.get(bin_code)
+        if mounted_slot is not None and mounted_slot != rack_slot_code:
+            return (
+                "WMS_RACK_ARRIVED 回调 active_bin_rack 同一料箱出现在多个槽位"
+                f": bin_code={bin_code}, rack_slot_codes={mounted_slot},{rack_slot_code}"
+            )
+        slot_by_bin[bin_code] = rack_slot_code
+    return None
 
 
 def _validate_wms_rcs_callback_envelope(payload: Mapping[str, Any]) -> str | None:
@@ -919,12 +1038,12 @@ class SmtClassifierPlugin(WorklinePlugin):
             )
 
         if source_role == self.OUTPUT_ARM:
-            if requires_manual_hold:
-                return _manual_hold_intents(ctx, error_code=error_code, error_message=error_msg)
-            return ctx.next.block(
-                scope=BlockScope.COMMAND,
-                reason_code=error_code,
-                message=error_msg,
+            return _pick_failed_output_arm_intents(
+                ctx,
+                result=result,
+                error_code=error_code,
+                error_message=error_msg,
+                requires_manual_hold=requires_manual_hold,
             )
 
         return _unexpected_source_role_block(ctx, "PICK_AND_PUT FAILED")
@@ -1160,6 +1279,15 @@ class SmtClassifierPlugin(WorklinePlugin):
         active_bin_rack = payload.get("active_bin_rack")
         if not isinstance(active_bin_rack, Mapping):
             return [build_payload_invalid_block("WMS_RACK_ARRIVED 回调缺少 active_bin_rack")]
+        duplicate_mount_message = _duplicate_bin_mount_message(active_bin_rack)
+        if duplicate_mount_message is not None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="ACTIVE_RACK_BIN_MOUNT_DUPLICATE",
+                    message=duplicate_mount_message,
+                )
+            ]
 
         session_context = dict(cast("Mapping[str, Any]", getattr(ctx.session, "context_json", None) or {}))
         pkg_id = non_empty_str(rack_supply.get("pkg_id")) or non_empty_str(session_context.get("pkg_id"))
@@ -1211,7 +1339,7 @@ class SmtClassifierPlugin(WorklinePlugin):
         arrived_rack_supply = {
             **rack_supply,
             "status": "ARRIVED",
-            "position_code": _rack_position_code_from_supply(rack_supply),
+            "position_code": _rack_position_code_from_supply(rack_supply, payload=payload),
         }
         workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
         if workline_code:
@@ -1284,6 +1412,14 @@ class SmtClassifierPlugin(WorklinePlugin):
         )
         _merge_runtime_trace_context(ctx, context)
         _merge_runtime_config_context(ctx, context)
+        if not isinstance(context.get("active_bin_rack"), Mapping):
+            active_rack_snapshot_provider = ctx.services.active_rack_snapshot_provider
+            if active_rack_snapshot_provider is not None:
+                active_bin_rack = active_rack_snapshot_provider.active_bin_rack(context=context)
+                if inspect.isawaitable(active_bin_rack):
+                    active_bin_rack = await active_bin_rack
+                if isinstance(active_bin_rack, Mapping):
+                    context["active_bin_rack"] = dict(cast("Mapping[str, Any]", active_bin_rack))
         if hasattr(allocator, "plan_allocation"):
             allocation = allocator.plan_allocation(barcode, context=context)
         else:

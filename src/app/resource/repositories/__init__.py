@@ -1,4 +1,5 @@
 from .resource_repository import (
+    BinCellOccupancyRepository,
     BinContentSnapshotItemRepository,
     BinContentSnapshotRepository,
     BinMaterialMountRepository,
@@ -11,6 +12,7 @@ from .resource_repository import (
     RackSlotTemplateRepository,
     RackTypeRepository,
     ResourceStateEventRepository,
+    bin_cell_occupancy_repository,
     bin_content_snapshot_item_repository,
     bin_content_snapshot_repository,
     bin_material_mount_repository,
@@ -26,6 +28,7 @@ from .resource_repository import (
 )
 
 __all__ = [
+    "BinCellOccupancyRepository",
     "BinContentSnapshotItemRepository",
     "BinContentSnapshotRepository",
     "BinMaterialMountRepository",
@@ -38,6 +41,7 @@ __all__ = [
     "RackSlotTemplateRepository",
     "RackTypeRepository",
     "ResourceStateEventRepository",
+    "bin_cell_occupancy_repository",
     "bin_content_snapshot_item_repository",
     "bin_content_snapshot_repository",
     "bin_material_mount_repository",

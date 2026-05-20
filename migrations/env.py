@@ -34,6 +34,7 @@ from src.app.device.models import (  # noqa: F401
 )
 from src.app.resource.models import (  # noqa: F401
     Bin,
+    BinCellOccupancy,
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinMaterialMount,

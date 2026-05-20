@@ -200,9 +200,211 @@ def test_plan_allocation_same_dc_lc_chooses_occupied_compatible_cell() -> None:
         "bin_type": "6格箱",
         "bin_cell_location": "BIN-001-2",
         "bin_cell_index": "2",
+        "expected_stack_height": 1,
     }
     assert decision.full_box_exchange_request is None
     assert decision.external_request is None
+
+
+def test_plan_allocation_same_dc_lc_skips_occupied_cell_with_different_vendor_identity() -> None:
+    """active 快照缺厂商字段时，也要用 material_identity_key 避免不同厂商物料叠放。"""
+
+    service = SmtRackBinSchedulingService()
+    occupied = _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031")
+    occupied.update(
+        {
+            "HHPN": "620100L00-011-G",
+            "material_identity_key": "MAT:620100L00-011-G:DIFFERENT-MFR:122625:8904936031",
+        }
+    )
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    occupied,
+                    _cell("3", status="EMPTY"),
+                ]
+            )
+        ),
+    )
+
+    assert isinstance(decision, SmtRackBinSchedulingDecision)
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location is not None
+    assert decision.bin_location["bin_cell_index"] == "3"
+
+
+def test_plan_allocation_same_identity_ignores_stale_vendor_snapshot_field() -> None:
+    """canonical identity 已匹配时，旧模板残留的 vendor 字段不能阻断同料叠放。"""
+
+    service = SmtRackBinSchedulingService()
+    occupied = _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031")
+    occupied.update(
+        {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "DIFFERENT-MFR-FROM-OLD-TEMPLATE",
+            "material_identity_key": "MAT:620100L00-011-G:CC0402JRNPO9BN220:122625:8904936031",
+        }
+    )
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    occupied,
+                    _cell("3", status="EMPTY"),
+                ]
+            )
+        ),
+    )
+
+    assert isinstance(decision, SmtRackBinSchedulingDecision)
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location is not None
+    assert decision.bin_location["bin_cell_index"] == "2"
+
+
+def test_plan_allocation_matches_legacy_identity_without_vendor_to_canonical_identity() -> None:
+    """旧 active key 缺 vendor 时，同 HHPN/DC/LC 的新 canonical key 仍应复用原格位。"""
+
+    service = SmtRackBinSchedulingService()
+    occupied = _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031")
+    occupied.update(
+        {
+            "HHPN": "620100L00-011-G",
+            "material_identity_key": "MAT:620100L00-011-G:122625:8904936031",
+        }
+    )
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    occupied,
+                    _cell("3", status="EMPTY"),
+                ]
+            )
+        ),
+    )
+
+    assert isinstance(decision, SmtRackBinSchedulingDecision)
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location is not None
+    assert decision.bin_location["bin_cell_index"] == "2"
+
+
+def test_plan_allocation_same_dc_lc_skips_full_compatible_cell() -> None:
+    """同 DC/LC 兼容格位剩余深度不足时，应继续寻找空料格。"""
+
+    service = SmtRackBinSchedulingService()
+    full_cell = _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031")
+    full_cell.update(
+        {
+            "HHPN": "620100L00-011-G",
+            "reel_count": 2,
+            "used_depth_mm": 5.0,
+            "capacity_depth_mm": 5.0,
+            "remaining_depth_mm": 0.0,
+        }
+    )
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    _cell("1", status="EMPTY"),
+                    full_cell,
+                    _cell("3", status="EMPTY"),
+                ]
+            ),
+            reel_diameter="7inch",
+        )
+        | {"reel_thickness": "2.5"},
+    )
+
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location["bin_cell_location"] == "BIN-001-1"
+
+
+def test_plan_allocation_treats_zero_remaining_depth_as_full_without_capacity_fallback() -> None:
+    """remaining_depth_mm=0 时不能因缺少 capacity/used 兜底而继续复用该格位。"""
+
+    service = SmtRackBinSchedulingService()
+    full_cell = _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031")
+    full_cell.update(
+        {
+            "HHPN": "620100L00-011-G",
+            "reel_count": 2,
+            "remaining_depth_mm": 0.0,
+        }
+    )
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    _cell("1", status="EMPTY"),
+                    full_cell,
+                ]
+            ),
+            reel_diameter="7inch",
+        )
+        | {"reel_thickness": "2.5"},
+    )
+
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location["bin_cell_location"] == "BIN-001-1"
+
+
+def test_plan_allocation_skips_empty_cell_when_capacity_depth_is_insufficient() -> None:
+    """选择空格位时也必须校验料盘厚度，不能把料盘放进深度不足的空格。"""
+
+    service = SmtRackBinSchedulingService()
+    shallow_empty_cell = _cell("1", status="EMPTY")
+    shallow_empty_cell["capacity_depth_mm"] = 1.0
+    deep_empty_cell = _cell("2", status="EMPTY")
+    deep_empty_cell["max_depth_mm"] = 5.0
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    shallow_empty_cell,
+                    deep_empty_cell,
+                ]
+            ),
+            reel_diameter="7inch",
+        )
+        | {"reel_thickness": "2.5"},
+    )
+
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location["bin_cell_location"] == "BIN-001-2"
+    assert decision.bin_location["capacity_depth_mm"] == 5.0
+
+
+def test_plan_allocation_carries_max_depth_as_capacity_depth() -> None:
+    """上游只提供 max_depth_mm 时，调度结果仍应携带聚合容量字段。"""
+
+    service = SmtRackBinSchedulingService()
+    empty_cell = _cell("1", status="EMPTY")
+    empty_cell["max_depth_mm"] = 5.0
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(cells=_with_required_rack_bins([empty_cell])),
+    )
+
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location["bin_cell_location"] == "BIN-001-1"
+    assert decision.bin_location["capacity_depth_mm"] == 5.0
 
 
 def test_plan_allocation_different_dc_lc_chooses_first_empty_cell() -> None:
@@ -271,6 +473,7 @@ def test_plan_allocation_7inch_prefers_empty_six_bin_cell_before_three_bin_cell(
         "bin_type": "6格箱",
         "bin_cell_location": "BIN-6-001-1",
         "bin_cell_index": "1",
+        "expected_stack_height": 1,
     }
 
 
@@ -324,6 +527,7 @@ def test_plan_allocation_large_reel_uses_three_bin_large_cell_only() -> None:
         "bin_type": "3格箱",
         "bin_cell_location": "BIN-3-002-7",
         "bin_cell_index": "7",
+        "expected_stack_height": 1,
     }
 
 
@@ -419,6 +623,28 @@ def test_plan_allocation_without_active_rack_requests_supply_only() -> None:
     assert decision.rack_supply_request.payload["reason_code"] == "NO_ACTIVE_RACK"
 
 
+def test_plan_allocation_without_active_rack_preserves_target_position_code() -> None:
+    """补空架请求必须保留当前工作线目标停靠位，避免回调默认写入 A 位。"""
+
+    service = SmtRackBinSchedulingService()
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context={
+            "trace_id": "trace-supply-002",
+            "six_in_one": SIX_IN_ONE,
+            "reel_diameter": "7inch",
+            "active_bin_rack": None,
+            "wms_rcs_rack_supply_url": "http://wms-rcs/api/rack-supply",
+            "position_code": "SINGLE_LAYER_B",
+        },
+    )
+
+    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.rack_supply_request is not None
+    assert decision.rack_supply_request.payload["target_position_code"] == "SINGLE_LAYER_B"
+
+
 def test_plan_allocation_with_unusable_active_rack_requests_supply_and_release_event() -> None:
     """有当前货架但无可用格位时，SMT 请求新货架并通知满箱交换插件处理旧货架。"""
 
@@ -478,6 +704,30 @@ async def test_plan_allocation_release_event_matches_full_box_exchange_contract(
         RuntimeIntentKind.EXTERNAL_REQUEST,
     ]
     assert len(result[1].payload_json["exchange_bins"]) == 4
+
+
+def test_release_event_treats_occupied_cells_with_unknown_depth_usage_as_non_empty() -> None:
+    """占用格位缺少 used/stack 深度时，释放事件不能把有料箱按空箱上报。"""
+
+    service = SmtRackBinSchedulingService()
+    cells = _full_rack_cells("NHW-1CLJ-0096")
+    for cell in cells:
+        cell["capacity_depth_mm"] = 5.0
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(cells=cells, rack_id="NHW-1CLJ-0096"),
+    )
+
+    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.rack_release_event is not None
+    snapshots = decision.rack_release_event.data["bin_snapshots"]
+    assert len(snapshots) == 4
+    for snapshot in snapshots:
+        assert snapshot["status"] == "FULL"
+        assert snapshot["bin_execution_status"] == "FULL"
+        assert snapshot["usage"] == 1.0
+        assert snapshot["usage_snapshot"] == 1.0
 
 
 def test_plan_allocation_partial_rack_snapshot_blocks_for_reconciliation() -> None:

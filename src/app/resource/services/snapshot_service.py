@@ -123,6 +123,8 @@ class ResourceSnapshotService:
         source_session_id: int | None,
         source_event_id: str,
         captured_at: datetime,
+        reel_diameter: str | None = None,
+        reel_thickness: str | None = None,
     ) -> BinContentSnapshot:
         """OUTPUT_ARM 成功放入后，写入该料箱最新的物料占格快照。"""
 
@@ -153,6 +155,8 @@ class ResourceSnapshotService:
             "lot_code": lot_code,
             "date_code": date_code,
             "qty_snapshot": qty_snapshot,
+            "thickness_mm": self._positive_float(reel_thickness),
+            "dims_json": {"reel_diameter": reel_diameter} if reel_diameter else {},
             "wms_inventory_id": wms_inventory_id,
         }
         snapshot = _require_snapshot(
@@ -167,6 +171,15 @@ class ResourceSnapshotService:
         )
         _ = await self.snapshot_item_repo.create(db, item_payload)
         return snapshot
+
+    def _positive_float(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
 
 
 resource_snapshot_service = ResourceSnapshotService()

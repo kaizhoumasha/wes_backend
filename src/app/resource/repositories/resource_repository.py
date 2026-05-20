@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.resource.models import (
     Bin,
+    BinCellOccupancy,
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinMaterialMount,
@@ -216,31 +217,47 @@ class RackBinMountRepository(BaseRepository[RackBinMount]):
         )
         return result.scalar_one_or_none()
 
+    async def list_active_by_rack_code(self, db: AsyncSession, rack_code: str) -> list[RackBinMount]:
+        """查询货架当前 active bin mounts。"""
+
+        columns = cast("Any", RackBinMount).__table__.c
+        result = await db.execute(
+            select(RackBinMount)
+            .where(
+                columns.rack_code == rack_code,
+                columns.ended_at.is_(None),
+            )
+            .order_by(columns.rack_slot_code.asc())
+        )
+        return list(result.scalars().all())
+
 
 class BinMaterialMountRepository(BaseRepository[BinMaterialMount]):
-    """物料料箱格位投影 Repository。"""
+    """料盘/PKG 料箱格位明细 Repository。"""
 
     def __init__(self) -> None:
         super().__init__(BinMaterialMount)
 
-    async def get_active_by_bin_cell(
+    async def list_active_by_bin_cell(
         self,
         db: AsyncSession,
         *,
         bin_code: str,
         bin_cell_index: str,
-    ) -> BinMaterialMount | None:
-        """查询料箱格位当前 active material mount。"""
+    ) -> list[BinMaterialMount]:
+        """查询料箱格位当前 active material mount 明细。"""
 
         columns = cast("Any", BinMaterialMount).__table__.c
         result = await db.execute(
-            select(BinMaterialMount).where(
+            select(BinMaterialMount)
+            .where(
                 columns.bin_code == bin_code,
                 columns.bin_cell_index == bin_cell_index,
                 columns.ended_at.is_(None),
             )
+            .order_by(columns.cell_stack_position.desc(), columns.id.desc())
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
 
     async def get_active_by_pkg_code(self, db: AsyncSession, pkg_code: str) -> BinMaterialMount | None:
         """查询 PKG 当前 active material mount。"""
@@ -286,6 +303,99 @@ class BinMaterialMountRepository(BaseRepository[BinMaterialMount]):
         )
         return list(result.scalars().all())
 
+    async def list_active_by_bin_codes(self, db: AsyncSession, bin_codes: list[str]) -> list[BinMaterialMount]:
+        """按料箱编码批量查询 active material mounts。"""
+
+        unique_bin_codes = list(dict.fromkeys(bin_codes))
+        if not unique_bin_codes:
+            return []
+
+        columns = cast("Any", BinMaterialMount).__table__.c
+        result = await db.execute(
+            select(BinMaterialMount)
+            .where(
+                columns.bin_code.in_(unique_bin_codes),
+                columns.ended_at.is_(None),
+            )
+            .order_by(
+                columns.bin_code.asc(),
+                columns.bin_cell_index.asc(),
+                columns.cell_stack_position.desc(),
+                columns.id.desc(),
+            )
+        )
+        return list(result.scalars().all())
+
+
+class BinCellOccupancyRepository(BaseRepository[BinCellOccupancy]):
+    """料箱格位聚合占用 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(BinCellOccupancy)
+
+    async def get_active_by_bin_cell(
+        self,
+        db: AsyncSession,
+        *,
+        bin_code: str,
+        bin_cell_index: str,
+    ) -> BinCellOccupancy | None:
+        """查询料箱格位当前 active 聚合占用。"""
+
+        columns = cast("Any", BinCellOccupancy).__table__.c
+        result = await db.execute(
+            select(BinCellOccupancy).where(
+                columns.bin_code == bin_code,
+                columns.bin_cell_index == bin_cell_index,
+                columns.ended_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_active_by_material_identity(
+        self,
+        db: AsyncSession,
+        material_identity_key: str,
+    ) -> list[BinCellOccupancy]:
+        """按物料属性身份查询 active 料格聚合占用。"""
+
+        columns = cast("Any", BinCellOccupancy).__table__.c
+        result = await db.execute(
+            select(BinCellOccupancy)
+            .where(
+                columns.material_identity_key == material_identity_key,
+                columns.ended_at.is_(None),
+            )
+            .order_by(columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_active_by_bin_codes(self, db: AsyncSession, bin_codes: list[str]) -> list[BinCellOccupancy]:
+        """按料箱编码批量查询 active 料格聚合占用。"""
+
+        unique_bin_codes = list(dict.fromkeys(bin_codes))
+        if not unique_bin_codes:
+            return []
+
+        columns = cast("Any", BinCellOccupancy).__table__.c
+        result = await db.execute(
+            select(BinCellOccupancy)
+            .where(
+                columns.bin_code.in_(unique_bin_codes),
+                columns.ended_at.is_(None),
+            )
+            .order_by(columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def save(self, db: AsyncSession, occupancy: BinCellOccupancy) -> BinCellOccupancy:
+        """保存已变更的料格聚合占用。"""
+
+        db.add(occupancy)
+        await db.flush()
+        await db.refresh(occupancy)
+        return occupancy
+
 
 class BinContentSnapshotRepository(BaseRepository[BinContentSnapshot]):
     """料箱内容快照头 Repository。"""
@@ -311,10 +421,12 @@ resource_state_event_repository = ResourceStateEventRepository()
 rack_placement_repository = RackPlacementRepository()
 rack_bin_mount_repository = RackBinMountRepository()
 bin_material_mount_repository = BinMaterialMountRepository()
+bin_cell_occupancy_repository = BinCellOccupancyRepository()
 bin_content_snapshot_repository = BinContentSnapshotRepository()
 bin_content_snapshot_item_repository = BinContentSnapshotItemRepository()
 
 __all__ = [
+    "BinCellOccupancyRepository",
     "BinContentSnapshotItemRepository",
     "BinContentSnapshotRepository",
     "BinMaterialMountRepository",
@@ -327,6 +439,7 @@ __all__ = [
     "RackSlotTemplateRepository",
     "RackTypeRepository",
     "ResourceStateEventRepository",
+    "bin_cell_occupancy_repository",
     "bin_content_snapshot_item_repository",
     "bin_content_snapshot_repository",
     "bin_material_mount_repository",

@@ -1,5 +1,10 @@
 """Resource Service 导出。"""
 
+from .active_rack_snapshot_service import (
+    SmtActiveRackSnapshotProvider,
+    SmtActiveRackSnapshotService,
+    smt_active_rack_snapshot_service,
+)
 from .projection_service import ResourceProjectionService, resource_projection_service
 from .relation_service import (
     ResourceProjectionResult,
@@ -8,6 +13,7 @@ from .relation_service import (
     resource_relation_service,
 )
 from .resource_service import (
+    BinCellOccupancyService,
     BinContentSnapshotItemService,
     BinContentSnapshotService,
     BinMaterialMountService,
@@ -20,6 +26,7 @@ from .resource_service import (
     RackSlotTemplateService,
     RackTypeService,
     ResourceStateEventService,
+    bin_cell_occupancy_service,
     bin_content_snapshot_item_service,
     bin_content_snapshot_service,
     bin_material_mount_service,
@@ -45,6 +52,7 @@ from .smt_rack_bin_scheduling_service import (
 from .snapshot_service import ResourceSnapshotService, resource_snapshot_service
 
 __all__ = [
+    "BinCellOccupancyService",
     "BinContentSnapshotItemService",
     "BinContentSnapshotService",
     "BinMaterialMountService",
@@ -62,12 +70,15 @@ __all__ = [
     "ResourceRelationService",
     "ResourceSnapshotService",
     "ResourceStateEventService",
+    "SmtActiveRackSnapshotProvider",
+    "SmtActiveRackSnapshotService",
     "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
     "SmtRackReleaseEvent",
     "SmtRackSupplyRequest",
+    "bin_cell_occupancy_service",
     "bin_content_snapshot_item_service",
     "bin_content_snapshot_service",
     "bin_material_mount_service",
@@ -83,5 +94,6 @@ __all__ = [
     "resource_relation_service",
     "resource_snapshot_service",
     "resource_state_event_service",
+    "smt_active_rack_snapshot_service",
     "smt_rack_bin_scheduling_service",
 ]

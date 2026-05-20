@@ -1799,3 +1799,35 @@ Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
 - **Resolved**: 2026-05-06T14:31:00+08:00
 - **Commit/PR**: n/a
 - **Notes**: 已恢复被覆盖的 `.learnings` 文件内容，并改为仅追加本次学习记录。
+
+---
+
+## [LRN-20260519-001] correction
+
+**Logged**: 2026-05-19T23:40:35+08:00
+**Priority**: high
+**Status**: pending
+**Category**: correction
+**Area**: docs
+
+### Summary
+工业自动化方案必须先锚定物理工位和执行主体，再抽象 Workline Session。
+
+### Details
+用户纠正了 SMT 分拣入库文档中的目标侧供箱建模。此前把 `TARGET_RACK_SUPPLY` 抽象成“检查五层货架区可用货架”，容易让 WES 越过现场边界去全局选择货架。正确口径是：先检查分拣机五层货架工作位是否已有可用货架；若没有，WES 请求 WMS 分配可用五层货架，由 WMS 调度 AGV 将该货架送至分拣机五层货架工作位；AGV 到位回调后，WES 再触发 `TARGET_BIN_FLOW` 请求 CTU 从当前操作面取料箱。AGV 负责五层货架搬运和换面，CTU 只负责目标料箱在五层货架与流水线之间搬运，流水线步进电机负责料箱点位移动。
+
+### Suggested Action
+后续审计或编写工业自动化方案时，按以下顺序建模：
+1. 先确认真实物理工位，例如分拣机五层货架工作位、单层货架 STATION、流水线扫码位/工作位/出料位；
+2. 再确认每个动作的执行主体和权责边界，尤其区分 WES、WMS、AGV、CTU、流水线、机械臂；
+3. 最后再设计 Session、业务键、状态流和回调合同；
+4. 对“检查、分配、调度、到位、换面、取箱、投料、扫码、准入”等词逐个明确主语，避免让 WES 替代 WMS/RCS 做资源分配或设备控制。
+
+### Metadata
+- Source: user_feedback
+- Related Files: docs/business/smt_sorter_inbound_workflow_guide.md, docs/superpowers/specs/2026-05-19-smt-sorter-inbound-plugin-spec.md
+- Tags: industrial-automation, workline, docs, session-design, wes-wms-boundary
+- Pattern-Key: docs.industrial_workline_physical_anchor
+- Recurrence-Count: 1
+- First-Seen: 2026-05-19
+- Last-Seen: 2026-05-19

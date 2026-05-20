@@ -80,12 +80,64 @@ def _assert_bin_cell_consumption(intent, *, bin_code: str, bin_cell_index: str) 
     assert intent.payload_json["bin_cell_index"] == bin_cell_index
 
 
+def _assert_bin_cell_release(intent, *, bin_code: str, bin_cell_index: str) -> None:
+    assert intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION
+    assert intent.action == "RELEASE_BIN_CELL"
+    assert intent.payload_json["bin_code"] == bin_code
+    assert intent.payload_json["bin_cell_index"] == bin_cell_index
+
+
 def _assert_material_mounted_fact(intent, *, pkg_code: str, bin_code: str, bin_cell_index: str) -> None:
     assert intent.kind == RuntimeIntentKind.RESOURCE_FACT
     assert intent.action == "MATERIAL_MOUNTED"
     assert intent.payload_json["pkg_code"] == pkg_code
     assert intent.payload_json["bin_code"] == bin_code
     assert intent.payload_json["bin_cell_index"] == bin_cell_index
+
+
+def _empty_single_layer_rack(rack_id: str = "RACK-EMPTY-001") -> dict[str, object]:
+    return {
+        "rack_id": rack_id,
+        "rack_code": rack_id,
+        "cells": [
+            {
+                "rack_id": rack_id,
+                "rack_slot_code": slot_code,
+                "rack_slot_location_code": f"NHW-1CLJ-0097-1{slot_code}-{side}",
+                "bin_id": f"BIN-EMPTY-{slot_code}",
+                "bin_orientation_code": f"BIN-EMPTY-{slot_code}-A",
+                "bin_type": "6格箱",
+                "bin_cell_location": cell_location,
+                "status": "EMPTY",
+            }
+            for slot_code, side, cell_location in (
+                ("C", "1", "4"),
+                ("A", "0", "1"),
+                ("B", "0", "1"),
+                ("D", "1", "1"),
+            )
+        ],
+    }
+
+
+def _rack_supply_session_context(*, pkg_id: str, dispatch_key: str) -> dict[str, object]:
+    return {
+        "pkg_id": pkg_id,
+        "reel_diameter": "178.5",
+        "six_in_one": {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": pkg_id,
+        },
+        "rack_supply": {
+            "status": "REQUESTED",
+            "dispatch_key": dispatch_key,
+            "pkg_id": pkg_id,
+        },
+    }
 
 
 class TestSmtClassifierPluginCommandResults:
@@ -190,6 +242,7 @@ class TestSmtClassifierPluginCommandResults:
             "pkg_id": "PKG-OUTPUT-001",
             "six_in_one": {
                 "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
                 "DateCode": "122625",
                 "LotCode": "8904936031",
                 "PkgID": "PKG-OUTPUT-001",
@@ -213,7 +266,9 @@ class TestSmtClassifierPluginCommandResults:
         ]
         _assert_material_mounted_fact(result[0], pkg_code="PKG-OUTPUT-001", bin_code="BIN-001", bin_cell_index="4")
         _assert_bin_cell_consumption(result[1], bin_code="BIN-001", bin_cell_index="4")
-        assert result[0].payload_json["material_identity_key"] == "MAT:620100L00-011-G:122625:8904936031"
+        assert (
+            result[0].payload_json["material_identity_key"] == "MAT:620100L00-011-G:CC0402JRNPO9BN220:122625:8904936031"
+        )
 
     @pytest.mark.asyncio
     async def test_pick_success_from_unexpected_role_blocks_material(self, plugin, mock_context):
@@ -441,8 +496,15 @@ class TestSmtClassifierPluginCommandResults:
 
     @pytest.mark.asyncio
     async def test_pick_failed_from_output_arm_manual_hold_updates_context_then_blocks(self, plugin, mock_context):
-        """出料臂人工介入类错误先写上下文，再以 MATERIAL BLOCK 终止。"""
+        """出料臂人工介入类错误先释放料格预占，再以 MATERIAL BLOCK 终止。"""
         mock_context.source_device_role = "OUTPUT_ARM"
+        mock_context.session.context_json = {
+            "bin_location": {
+                "bin_id": "BIN-001",
+                "bin_cell_location": "BIN-001-4",
+                "bin_cell_index": "4",
+            }
+        }
 
         result = await plugin.on_command_result(
             mock_context,
@@ -455,16 +517,28 @@ class TestSmtClassifierPluginCommandResults:
             ),
         )
 
-        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.BLOCK]
-        assert result[0].context_patch["manual_hold"] is True
-        assert result[1].block_scope == BlockScope.MATERIAL
-        assert result[1].reason_code == "BIN_FULL"
-        assert result[1].message == "料箱已满"
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.RESOURCE_RESERVATION,
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.BLOCK,
+        ]
+        _assert_bin_cell_release(result[0], bin_code="BIN-001", bin_cell_index="4")
+        assert result[1].context_patch["manual_hold"] is True
+        assert result[2].block_scope == BlockScope.MATERIAL
+        assert result[2].reason_code == "BIN_FULL"
+        assert result[2].message == "料箱已满"
 
     @pytest.mark.asyncio
     async def test_pick_failed_from_output_arm_unknown_blocks_command(self, plugin, mock_context):
-        """出料臂未知失败按 COMMAND BLOCK 返回原始错误信息。"""
+        """出料臂未知失败先释放料格预占，再按 COMMAND BLOCK 返回原始错误信息。"""
         mock_context.source_device_role = "OUTPUT_ARM"
+        mock_context.session.context_json = {
+            "bin_location": {
+                "bin_id": "BIN-001",
+                "bin_cell_location": "BIN-001-4",
+                "bin_cell_index": "4",
+            }
+        }
 
         result = await plugin.on_command_result(
             mock_context,
@@ -477,10 +551,11 @@ class TestSmtClassifierPluginCommandResults:
             ),
         )
 
-        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
-        assert result[0].block_scope == BlockScope.COMMAND
-        assert result[0].reason_code == "OUTPUT_ERROR"
-        assert result[0].message == "出料异常"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.RESOURCE_RESERVATION, RuntimeIntentKind.BLOCK]
+        _assert_bin_cell_release(result[0], bin_code="BIN-001", bin_cell_index="4")
+        assert result[1].block_scope == BlockScope.COMMAND
+        assert result[1].reason_code == "OUTPUT_ERROR"
+        assert result[1].message == "出料异常"
 
     @pytest.mark.asyncio
     async def test_pick_failed_accepts_normalized_failure_alias(self, plugin, mock_context):
@@ -684,6 +759,92 @@ class TestSmtClassifierPluginCommandResults:
         assert result[0].context_patch["bin_location"]["bin_id"] == "BIN-SVC-002"
 
     @pytest.mark.asyncio
+    async def test_conveyor_success_restores_active_rack_snapshot_from_runtime_service(self, plugin, mock_context):
+        """新会话缺少 active_bin_rack 时，应从运行时资源服务恢复当前货架状态。"""
+        pkg_id = "SVYU00125TP4LCR02_3"
+        six_in_one = {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": pkg_id,
+        }
+        restored_rack = {
+            "rack_id": "RACK-ACTIVE-001",
+            "rack_code": "RACK-ACTIVE-001",
+            "cells": [
+                {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_slot_code": "A",
+                    "rack_slot_location_code": "RACK-ACTIVE-001-1A-0",
+                    "bin_id": "BIN-ACTIVE-A",
+                    "bin_type": "3格箱",
+                    "bin_cell_location": "BIN-ACTIVE-A-7",
+                    "status": "EMPTY",
+                },
+                {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_slot_code": "B",
+                    "rack_slot_location_code": "RACK-ACTIVE-001-1B-0",
+                    "bin_id": "BIN-ACTIVE-B",
+                    "bin_type": "3格箱",
+                    "bin_cell_location": "BIN-ACTIVE-B-7",
+                    "status": "EMPTY",
+                },
+                {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_slot_code": "C",
+                    "rack_slot_location_code": "RACK-ACTIVE-001-1C-1",
+                    "bin_id": "BIN-ACTIVE-C",
+                    "bin_type": "3格箱",
+                    "bin_cell_location": "BIN-ACTIVE-C-7",
+                    "status": "OCCUPIED",
+                    "DateCode": "122625",
+                    "LotCode": "8904936031",
+                },
+                {
+                    "rack_id": "RACK-ACTIVE-001",
+                    "rack_slot_code": "D",
+                    "rack_slot_location_code": "RACK-ACTIVE-001-1D-1",
+                    "bin_id": "BIN-ACTIVE-D",
+                    "bin_type": "3格箱",
+                    "bin_cell_location": "BIN-ACTIVE-D-7",
+                    "status": "EMPTY",
+                },
+            ],
+        }
+
+        class ActiveRackSnapshotProvider:
+            async def active_bin_rack(self, *, context: dict) -> dict:
+                assert context["six_in_one"] == six_in_one
+                assert "active_bin_rack" not in context
+                return restored_rack
+
+        mock_context.session.context_json = {
+            "six_in_one": six_in_one,
+            "reel_diameter": "15inch",
+        }
+        mock_context.services = WorklineRuntimeServices(
+            bin_allocator=SmtRackBinSchedulingService(),
+            active_rack_snapshot_provider=ActiveRackSnapshotProvider(),
+        )
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": pkg_id})),
+        )
+
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.RESOURCE_RESERVATION,
+            RuntimeIntentKind.COMMAND,
+        ]
+        assert result[0].context_patch["bin_location"]["bin_id"] == "BIN-ACTIVE-C"
+        assert result[0].context_patch["bin_location"]["bin_cell_index"] == "7"
+        _assert_bin_cell_reservation(result[1], pkg_code=pkg_id, bin_code="BIN-ACTIVE-C", bin_cell_index="7")
+
+    @pytest.mark.asyncio
     async def test_conveyor_success_passes_trace_and_session_token_to_allocator(self, plugin, mock_context):
         """调度料箱时，将真实 trace/session token 合并到 allocator context。"""
 
@@ -734,6 +895,7 @@ class TestSmtClassifierPluginCommandResults:
                             "dispatch_key": "external:smt_classifier:trace-001:RACK_SUPPLY",
                             "actions": ["SUPPLY_EMPTY_RACK"],
                             "pkg_id": barcode,
+                            "target_position_code": "SINGLE_LAYER_B",
                         },
                         timeout_seconds=1800,
                         source_system="WMS_RCS",
@@ -768,6 +930,7 @@ class TestSmtClassifierPluginCommandResults:
             "reason_code": "NO_ACTIVE_RACK",
             "requested_actions": ["SUPPLY_EMPTY_RACK"],
             "pkg_id": "CALLBACK-PKG-003",
+            "target_position_code": "SINGLE_LAYER_B",
             "resume_source_device_code": "PIPELINE02",
             "resume_source_device_role": "CONVEYOR",
             "resume_callback_type": "WMS_RACK_ARRIVED",
@@ -967,6 +1130,16 @@ class TestSmtClassifierPluginCommandResults:
                 },
                 {
                     "rack_id": "RACK-EMPTY-001",
+                    "rack_slot_code": "C",
+                    "rack_slot_location_code": "NHW-1CLJ-0097-1C-1",
+                    "bin_id": "BIN-EMPTY-001",
+                    "bin_orientation_code": "BIN-EMPTY-001-A",
+                    "bin_type": "6格箱",
+                    "bin_cell_location": "5",
+                    "status": "EMPTY",
+                },
+                {
+                    "rack_id": "RACK-EMPTY-001",
                     "rack_slot_code": "A",
                     "rack_slot_location_code": "NHW-1CLJ-0097-1A-0",
                     "bin_id": "BIN-EMPTY-A",
@@ -1053,6 +1226,7 @@ class TestSmtClassifierPluginCommandResults:
             "bin_type": "6格箱",
             "bin_cell_location": "BIN-EMPTY-001-4",
             "bin_cell_index": "4",
+            "expected_stack_height": 1,
         }
         _assert_bin_cell_reservation(result[3], pkg_code=pkg_id, bin_code="BIN-EMPTY-001", bin_cell_index="4")
         _assert_command(result[4], action="PICK_AND_PUT", device_role="OUTPUT_ARM")
@@ -1064,6 +1238,60 @@ class TestSmtClassifierPluginCommandResults:
         assert result[4].payload_json["target_loc"] == "BIN-EMPTY-001"
         assert result[4].payload_json["bin_cell_location"] == "BIN-EMPTY-001-4"
         assert result[4].payload_json["bin_cell_index"] == "4"
+        assert result[4].payload_json["expected_stack_height"] == 1
+
+    @pytest.mark.asyncio
+    async def test_external_rack_arrived_uses_callback_position_when_session_target_missing(
+        self,
+        plugin,
+        mock_context,
+    ):
+        """旧 session 缺少目标停靠位时，已回传的合法 position_code 应用于到架事实。"""
+        pkg_id = "SVYU00125TP4LCR02_2"
+        dispatch_key = "external:smt_classifier:trace-rack-position:RACK_SUPPLY"
+        mock_context.session.current_wait_type = "EXTERNAL_HTTP"
+        mock_context.workline = MagicMock(line_code="WL-SMT-001")
+        mock_context.session.context_json = {
+            "pkg_id": pkg_id,
+            "reel_diameter": "178.5",
+            "six_in_one": {
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "7387",
+                "DateCode": "122625",
+                "LotCode": "8904936031",
+                "PkgID": pkg_id,
+            },
+            "rack_supply": {
+                "status": "REQUESTED",
+                "dispatch_key": dispatch_key,
+                "pkg_id": pkg_id,
+            },
+        }
+        mock_context.services = WorklineRuntimeServices(bin_allocator=SmtRackBinSchedulingService())
+
+        result = await plugin.on_external_http(
+            mock_context,
+            _make_inbox(
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack=_empty_single_layer_rack(),
+                    position_code="SINGLE_LAYER_B",
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.RESOURCE_FACT,
+            RuntimeIntentKind.RESOURCE_FACT,
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.RESOURCE_RESERVATION,
+            RuntimeIntentKind.COMMAND,
+        ]
+        assert result[0].action == "RACK_ARRIVED"
+        assert result[0].payload_json["position_code"] == "SINGLE_LAYER_B"
+        assert result[2].context_patch["rack_supply"]["position_code"] == "SINGLE_LAYER_B"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1162,6 +1390,70 @@ class TestSmtClassifierPluginCommandResults:
         assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
         assert result[0].reason_code == "ACTIVE_RACK_SNAPSHOT_INVALID"
         assert str(result[0].message) == "SMT 可用货架快照必须包含 A/B/C/D 4 个料箱"
+
+    @pytest.mark.asyncio
+    async def test_external_rack_arrived_blocks_duplicate_bin_across_slots(self, plugin, mock_context):
+        """WMS/RCS 回传同一料箱挂到多个槽位时阻断，不生成 BIN_MOUNTED 事实。"""
+        pkg_id = "SVYU00125TP4LCR02_2"
+        dispatch_key = "external:smt_classifier:trace-rack-duplicate-bin:RACK_SUPPLY"
+        active_bin_rack = _empty_single_layer_rack("RACK-DUP-BIN-001")
+        cells = active_bin_rack["cells"]
+        assert isinstance(cells, list)
+        assert isinstance(cells[0], dict)
+        assert isinstance(cells[1], dict)
+        cells[1]["bin_id"] = cells[0]["bin_id"]
+        cells[1]["bin_orientation_code"] = cells[0]["bin_orientation_code"]
+        mock_context.session.current_wait_type = "EXTERNAL_HTTP"
+        mock_context.session.context_json = _rack_supply_session_context(pkg_id=pkg_id, dispatch_key=dispatch_key)
+        mock_context.services = WorklineRuntimeServices(bin_allocator=SmtRackBinSchedulingService())
+
+        result = await plugin.on_external_http(
+            mock_context,
+            _make_inbox(
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack=active_bin_rack,
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "ACTIVE_RACK_BIN_MOUNT_DUPLICATE"
+        assert "同一料箱" in str(result[0].message)
+        assert "BIN-EMPTY-C" in str(result[0].message)
+
+    @pytest.mark.asyncio
+    async def test_external_rack_arrived_blocks_duplicate_slot_with_different_bins(self, plugin, mock_context):
+        """WMS/RCS 回传同一槽位挂多个料箱时阻断，不生成 BIN_MOUNTED 事实。"""
+        pkg_id = "SVYU00125TP4LCR02_2"
+        dispatch_key = "external:smt_classifier:trace-rack-duplicate-slot:RACK_SUPPLY"
+        active_bin_rack = _empty_single_layer_rack("RACK-DUP-SLOT-001")
+        cells = active_bin_rack["cells"]
+        assert isinstance(cells, list)
+        assert isinstance(cells[1], dict)
+        assert isinstance(cells[2], dict)
+        cells[2]["rack_slot_code"] = cells[1]["rack_slot_code"]
+        cells[2]["rack_slot_location_code"] = cells[1]["rack_slot_location_code"]
+        mock_context.session.current_wait_type = "EXTERNAL_HTTP"
+        mock_context.session.context_json = _rack_supply_session_context(pkg_id=pkg_id, dispatch_key=dispatch_key)
+        mock_context.services = WorklineRuntimeServices(bin_allocator=SmtRackBinSchedulingService())
+
+        result = await plugin.on_external_http(
+            mock_context,
+            _make_inbox(
+                _wms_callback_payload(
+                    callback_type="WMS_RACK_ARRIVED",
+                    dispatch_key=dispatch_key,
+                    active_bin_rack=active_bin_rack,
+                )
+            ),
+        )
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].reason_code == "ACTIVE_RACK_BIN_MOUNT_DUPLICATE"
+        assert "同一槽位" in str(result[0].message)
+        assert "A" in str(result[0].message)
 
     @pytest.mark.asyncio
     async def test_external_rack_arrived_blocks_non_empty_supply_rack(self, plugin, mock_context):

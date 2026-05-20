@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from src.app.resource.models import (
+    BinCellOccupancyStatus,
     BinMaterialMountStatus,
     RackBinMountStatus,
     RackKind,
@@ -17,15 +18,18 @@ from src.app.resource.models import (
     ResourceType,
 )
 from src.app.resource.repositories import (
+    BinCellOccupancyRepository,
     BinMaterialMountRepository,
     RackBinMountRepository,
     RackPlacementRepository,
     ResourceStateEventRepository,
+    bin_cell_occupancy_repository,
     bin_material_mount_repository,
     rack_bin_mount_repository,
     rack_placement_repository,
     resource_state_event_repository,
 )
+from src.app.resource.services.material_identity import material_identity_keys_match, material_identity_lookup_keys
 from src.app.resource.services.relation_service import ResourceProjectionResult, ResourceProjectionStatus
 from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
 from src.app.workline.services.rack_position_service import (
@@ -65,6 +69,21 @@ def _db_time(value: Any) -> Any:
     return timezone.to_db_datetime(value) or timezone.now_for_db()
 
 
+def _positive_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _occupancy_status_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").upper()
+
+
 class ResourceProjectionService:
     """统一处理资源事实写入、active 投影和冲突 RuntimeHold。"""
 
@@ -75,6 +94,7 @@ class ResourceProjectionService:
         rack_placement_repo: RackPlacementRepository = rack_placement_repository,
         rack_bin_mount_repo: RackBinMountRepository = rack_bin_mount_repository,
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
+        bin_cell_occupancy_repo: BinCellOccupancyRepository = bin_cell_occupancy_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
         runtime_hold_creator: Any = default_runtime_hold_creation_service,
         snapshot_service: ResourceSnapshotService = resource_snapshot_service,
@@ -83,6 +103,7 @@ class ResourceProjectionService:
         self.rack_placement_repo = rack_placement_repo
         self.rack_bin_mount_repo = rack_bin_mount_repo
         self.bin_material_mount_repo = bin_material_mount_repo
+        self.bin_cell_occupancy_repo = bin_cell_occupancy_repo
         self.rack_position_service = rack_position_service
         self.runtime_hold_creator = runtime_hold_creator
         self.snapshot_service = snapshot_service
@@ -408,6 +429,7 @@ class ResourceProjectionService:
         qty_snapshot: float | None = None,
         reel_diameter: str | None = None,
         reel_thickness: str | None = None,
+        cell_capacity_depth_mm: float | None = None,
         trace_id: str | None = None,
         session_id: str | None = None,
         workline_id: int | None = None,
@@ -450,19 +472,47 @@ class ResourceProjectionService:
                     "lot_code": lot_code,
                     "date_code": date_code,
                     "wms_inventory_id": wms_inventory_id,
+                    "reel_diameter": reel_diameter,
+                    "reel_thickness": reel_thickness,
+                    "cell_capacity_depth_mm": cell_capacity_depth_mm,
                 },
                 "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
             },
         )
 
-        conflict = await self._first_material_mount_conflict(
+        snapshot_kwargs = {
+            "bin_code": bin_code,
+            "bin_cell_code": bin_cell_code,
+            "bin_cell_index": bin_cell_index,
+            "pkg_code": pkg_code,
+            "material_code": material_code,
+            "lot_code": lot_code,
+            "date_code": date_code,
+            "qty_snapshot": qty_snapshot,
+            "wms_inventory_id": wms_inventory_id,
+            "reel_diameter": reel_diameter,
+            "reel_thickness": reel_thickness,
+            "source_session_id": workline_session_id,
+            "source_event_id": source_event_id,
+            "captured_at": occurred_at_for_db,
+        }
+        active_cell = await self.bin_cell_occupancy_repo.get_active_by_bin_cell(
             db,
             bin_code=bin_code,
             bin_cell_index=bin_cell_index,
+        )
+
+        conflict = await self._first_material_mount_conflict(
+            db,
             material_identity_key=material_identity_key,
             pkg_code=pkg_code,
             wms_inventory_id=wms_inventory_id,
+            active_cell=active_cell,
+            bin_code=bin_code,
+            bin_cell_index=bin_cell_index,
+            reel_thickness=reel_thickness,
+            cell_capacity_depth_mm=cell_capacity_depth_mm,
         )
         if conflict is not None:
             runtime_hold = await self._create_material_mount_conflict_hold(
@@ -487,9 +537,33 @@ class ResourceProjectionService:
                 message=conflict["message"],
             )
 
+        occupancy = await self._upsert_bin_cell_occupancy(
+            db,
+            active_cell=active_cell,
+            bin_code=bin_code,
+            bin_cell_code=bin_cell_code,
+            bin_cell_index=bin_cell_index,
+            material_identity_key=material_identity_key,
+            material_code=material_code,
+            lot_code=lot_code,
+            date_code=date_code,
+            reel_thickness=reel_thickness,
+            cell_capacity_depth_mm=cell_capacity_depth_mm,
+            source_system=source_system,
+            source_event_id=source_event_id,
+            source_version=source_version,
+            trace_id=trace_id,
+            session_id=session_id,
+            occurred_at_for_db=occurred_at_for_db,
+        )
+        occupancy_id = getattr(occupancy, "id", None)
+        cell_stack_position = self._current_cell_stack_position(occupancy)
+
         _ = await self.bin_material_mount_repo.create(
             db,
             {
+                "bin_cell_occupancy_id": occupancy_id,
+                "cell_stack_position": cell_stack_position,
                 "bin_code": bin_code,
                 "bin_cell_code": bin_cell_code,
                 "bin_cell_index": bin_cell_index,
@@ -512,21 +586,7 @@ class ResourceProjectionService:
                 "ended_at": None,
             },
         )
-        _ = await self.snapshot_service.record_material_mounted_snapshot(
-            db,
-            bin_code=bin_code,
-            bin_cell_code=bin_cell_code,
-            bin_cell_index=bin_cell_index,
-            pkg_code=pkg_code,
-            material_code=material_code,
-            lot_code=lot_code,
-            date_code=date_code,
-            qty_snapshot=qty_snapshot,
-            wms_inventory_id=wms_inventory_id,
-            source_session_id=workline_session_id,
-            source_event_id=source_event_id,
-            captured_at=occurred_at_for_db,
-        )
+        _ = await self.snapshot_service.record_material_mounted_snapshot(db, **snapshot_kwargs)
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_resource_fact(
@@ -611,6 +671,8 @@ class ResourceProjectionService:
                 qty_snapshot=payload_json.get("qty_snapshot"),
                 reel_diameter=payload_json.get("reel_diameter"),
                 reel_thickness=payload_json.get("reel_thickness"),
+                cell_capacity_depth_mm=payload_json.get("cell_capacity_depth_mm")
+                or payload_json.get("capacity_depth_mm"),
                 trace_id=trace_id,
                 session_id=session_id,
                 workline_id=workline_id,
@@ -625,29 +687,61 @@ class ResourceProjectionService:
         self,
         db: AsyncSession,
         *,
-        bin_code: str,
-        bin_cell_index: str,
         material_identity_key: str,
         pkg_code: str | None,
         wms_inventory_id: str | None,
+        active_cell: Any | None,
+        bin_code: str,
+        bin_cell_index: str,
+        reel_thickness: str | None,
+        cell_capacity_depth_mm: float | None,
     ) -> dict[str, Any] | None:
-        active_cell = await self.bin_material_mount_repo.get_active_by_bin_cell(
-            db,
-            bin_code=bin_code,
-            bin_cell_index=bin_cell_index,
-        )
         if active_cell is not None:
-            return {
-                "reason_code": "BIN_CELL_MATERIAL_MOUNT_CONFLICT",
-                "message": "料箱格位已有 active 物料占用",
-                "active": active_cell,
-            }
-        active_identity = await self.bin_material_mount_repo.get_active_by_material_identity(db, material_identity_key)
-        if active_identity:
+            active_identity_key = getattr(active_cell, "material_identity_key", None)
+            if not material_identity_keys_match(active_identity_key, material_identity_key):
+                return {
+                    "reason_code": "BIN_CELL_MATERIAL_MOUNT_CONFLICT",
+                    "message": "料箱格位已有其他物料 active 聚合占用",
+                    "active": active_cell,
+                }
+            if (
+                _occupancy_status_value(getattr(active_cell, "occupancy_status", None))
+                == BinCellOccupancyStatus.FULL.value
+            ):
+                return {
+                    "reason_code": "BIN_CELL_FULL",
+                    "message": "料箱格位已满，不能继续追加料盘",
+                    "active": active_cell,
+                }
+            capacity_conflict = self._active_cell_capacity_conflict(
+                active_cell,
+                reel_thickness=reel_thickness,
+                cell_capacity_depth_mm=cell_capacity_depth_mm,
+            )
+            if capacity_conflict is not None:
+                return {
+                    "reason_code": "BIN_CELL_CAPACITY_EXCEEDED",
+                    "message": "料箱格位剩余深度不足，应重新分配新的料格",
+                    "active": active_cell,
+                    "evidence": capacity_conflict,
+                }
+
+        active_identity = await self._list_active_by_material_identity_variants(db, material_identity_key)
+        reusable_other_cell = [
+            occupancy
+            for occupancy in active_identity
+            if (
+                getattr(occupancy, "bin_code", None),
+                str(getattr(occupancy, "bin_cell_index", "")),
+            )
+            != (bin_code, bin_cell_index)
+            and self._active_cell_can_accept_reel(occupancy, reel_thickness=reel_thickness)
+        ]
+        if reusable_other_cell:
             return {
                 "reason_code": "MATERIAL_IDENTITY_MOUNT_CONFLICT",
-                "message": "物料身份已有 active 占用",
-                "active": active_identity[0],
+                "message": "相同物料身份已有未满 active 格位，应继续写入该格位",
+                "active": reusable_other_cell[0],
             }
         if pkg_code:
             active_pkg = await self.bin_material_mount_repo.get_active_by_pkg_code(db, pkg_code)
@@ -666,6 +760,157 @@ class ResourceProjectionService:
                     "active": active_wms,
                 }
         return None
+
+    def _active_cell_capacity_conflict(
+        self,
+        active_cell: Any,
+        *,
+        reel_thickness: str | None,
+        cell_capacity_depth_mm: float | None,
+    ) -> dict[str, Any] | None:
+        incoming_depth = _positive_float(reel_thickness)
+        if incoming_depth is None or incoming_depth == 0:
+            return None
+
+        active_capacity = _positive_float(getattr(active_cell, "capacity_depth_mm", None))
+        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+        capacity_depth = active_capacity if active_capacity is not None else incoming_capacity
+        used_depth = _positive_float(getattr(active_cell, "used_depth_mm", None))
+        remaining_depth = _positive_float(getattr(active_cell, "remaining_depth_mm", None))
+
+        if remaining_depth is None:
+            if capacity_depth is None or used_depth is None:
+                return None
+            remaining_depth = self._remaining_depth(capacity_depth=capacity_depth, used_depth=used_depth)
+
+        if remaining_depth is None or incoming_depth <= remaining_depth:
+            return None
+
+        return {
+            "incoming_reel_thickness": incoming_depth,
+            "remaining_depth_mm": remaining_depth,
+            "capacity_depth_mm": capacity_depth,
+            "used_depth_mm": used_depth,
+            "requires_reallocation": True,
+        }
+
+    def _active_cell_can_accept_reel(self, active_cell: Any, *, reel_thickness: str | None) -> bool:
+        if _occupancy_status_value(getattr(active_cell, "occupancy_status", None)) == BinCellOccupancyStatus.FULL.value:
+            return False
+        # 同物料旧格位剩余深度不足时，调度应允许切换到新格位，而不是强制回写旧格位触发 HOLD。
+        return (
+            self._active_cell_capacity_conflict(
+                active_cell,
+                reel_thickness=reel_thickness,
+                cell_capacity_depth_mm=None,
+            )
+            is None
+        )
+
+    async def _upsert_bin_cell_occupancy(
+        self,
+        db: AsyncSession,
+        *,
+        active_cell: Any | None,
+        bin_code: str,
+        bin_cell_code: str | None,
+        bin_cell_index: str,
+        material_identity_key: str,
+        material_code: str | None,
+        lot_code: str | None,
+        date_code: str | None,
+        reel_thickness: str | None,
+        cell_capacity_depth_mm: float | None,
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        source_version: str | None,
+        trace_id: str | None,
+        session_id: str | None,
+        occurred_at_for_db: datetime,
+    ) -> Any:
+        incoming_depth = _positive_float(reel_thickness) or 0.0
+        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+
+        if active_cell is None:
+            used_depth = incoming_depth
+            capacity_depth = incoming_capacity
+            remaining_depth = self._remaining_depth(capacity_depth=capacity_depth, used_depth=used_depth)
+            return await self.bin_cell_occupancy_repo.create(
+                db,
+                {
+                    "bin_code": bin_code,
+                    "bin_cell_code": bin_cell_code,
+                    "bin_cell_index": bin_cell_index,
+                    "material_identity_key": material_identity_key,
+                    "material_code": material_code,
+                    "lot_code": lot_code,
+                    "date_code": date_code,
+                    "reel_count": 1,
+                    "used_depth_mm": used_depth,
+                    "capacity_depth_mm": capacity_depth,
+                    "remaining_depth_mm": remaining_depth,
+                    "occupancy_status": self._occupancy_status(remaining_depth),
+                    "source_system": source_system,
+                    "source_event_id": source_event_id,
+                    "source_version": source_version,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "started_at": occurred_at_for_db,
+                    "ended_at": None,
+                    "metadata_json": {},
+                },
+            )
+
+        active_cell.reel_count = int(getattr(active_cell, "reel_count", 0) or 0) + 1
+        active_cell.material_identity_key = material_identity_key
+        active_cell.used_depth_mm = float(getattr(active_cell, "used_depth_mm", 0.0) or 0.0) + incoming_depth
+        if incoming_capacity is not None:
+            active_cell.capacity_depth_mm = incoming_capacity
+        active_cell.remaining_depth_mm = self._remaining_depth(
+            capacity_depth=_positive_float(getattr(active_cell, "capacity_depth_mm", None)),
+            used_depth=float(active_cell.used_depth_mm),
+        )
+        active_cell.occupancy_status = self._occupancy_status(active_cell.remaining_depth_mm)
+        active_cell.source_system = source_system
+        active_cell.source_event_id = source_event_id
+        active_cell.source_version = source_version
+        active_cell.trace_id = trace_id
+        active_cell.session_id = session_id
+        return await self.bin_cell_occupancy_repo.save(db, active_cell)
+
+    async def _list_active_by_material_identity_variants(
+        self,
+        db: AsyncSession,
+        material_identity_key: str,
+    ) -> list[Any]:
+        active_identity: list[Any] = []
+        seen: set[tuple[Any, str | None, str]] = set()
+        for lookup_key in material_identity_lookup_keys(material_identity_key):
+            for occupancy in await self.bin_cell_occupancy_repo.list_active_by_material_identity(db, lookup_key):
+                identity = (
+                    getattr(occupancy, "id", None),
+                    getattr(occupancy, "bin_code", None),
+                    str(getattr(occupancy, "bin_cell_index", "")),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                active_identity.append(occupancy)
+        return active_identity
+
+    def _remaining_depth(self, *, capacity_depth: float | None, used_depth: float) -> float | None:
+        if capacity_depth is None:
+            return None
+        return max(capacity_depth - used_depth, 0.0)
+
+    def _occupancy_status(self, remaining_depth: float | None) -> str:
+        if remaining_depth is not None and remaining_depth <= 0:
+            return BinCellOccupancyStatus.FULL.value
+        return BinCellOccupancyStatus.OCCUPIED.value
+
+    def _current_cell_stack_position(self, occupancy: Any) -> int:
+        reel_count = int(getattr(occupancy, "reel_count", 0) or 0)
+        return max(reel_count, 1)
 
     async def _create_placement_conflict_hold(
         self,
@@ -722,6 +967,19 @@ class ResourceProjectionService:
         if workline_id is None:
             return None
         active = conflict["active"]
+        evidence = {
+            "resource_type": ResourceType.MATERIAL.value,
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "active_bin_code": getattr(active, "bin_code", None),
+            "active_bin_cell_index": getattr(active, "bin_cell_index", None),
+            "active_material_identity_key": getattr(active, "material_identity_key", None),
+            "active_pkg_code": getattr(active, "pkg_code", None),
+            "active_wms_inventory_id": getattr(active, "wms_inventory_id", None),
+            "incoming_pkg_code": pkg_code,
+            "incoming_wms_inventory_id": wms_inventory_id,
+        }
+        evidence.update(conflict.get("evidence") or {})
         return await self.runtime_hold_creator.create_for_resource_reconciliation(
             db,
             workline_id=workline_id,
@@ -731,15 +989,7 @@ class ResourceProjectionService:
             contract_version=contract_version,
             source_reason=conflict["reason_code"],
             source_event_id=source_event_id,
-            evidence={
-                "resource_type": ResourceType.MATERIAL.value,
-                "bin_code": bin_code,
-                "bin_cell_index": bin_cell_index,
-                "active_pkg_code": getattr(active, "pkg_code", None),
-                "active_wms_inventory_id": getattr(active, "wms_inventory_id", None),
-                "incoming_pkg_code": pkg_code,
-                "incoming_wms_inventory_id": wms_inventory_id,
-            },
+            evidence=evidence,
         )
 
     async def _create_rack_bin_mount_conflict_hold(

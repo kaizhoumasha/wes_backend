@@ -76,6 +76,8 @@ async def test_record_material_mounted_snapshot_writes_head_and_occupied_cell_it
         date_code="122625",
         qty_snapshot=7387,
         wms_inventory_id="INV-001",
+        reel_diameter="7inch",
+        reel_thickness="2.5",
         source_session_id=2001,
         source_event_id="CMD-PICK-001",
         captured_at=datetime(2026, 5, 18, 9, 5, 0),
@@ -96,6 +98,8 @@ async def test_record_material_mounted_snapshot_writes_head_and_occupied_cell_it
             "lot_code": "8904936031",
             "date_code": "122625",
             "qty_snapshot": 7387,
+            "thickness_mm": 2.5,
+            "dims_json": {"reel_diameter": "7inch"},
             "wms_inventory_id": "INV-001",
         }
     ]

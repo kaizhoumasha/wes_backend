@@ -58,6 +58,21 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         result = await db.execute(query)
         return list(result.scalars().all())
 
+    async def list_latest_by_workline_id(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        limit: int = 50,
+    ) -> list[WorklineSession]:
+        """查询作业线最近会话。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession).where(columns.workline_id == workline_id).order_by(columns.id.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_open_session_by_business_key(
         self,
         db: AsyncSession,

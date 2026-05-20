@@ -2303,7 +2303,7 @@ async def _load_related_entities(
         "device": device,
         "command": command,
         "devices_by_role": devices_by_role,
-        "services": build_workline_runtime_services(),
+        "services": build_workline_runtime_services(db=db, workline=workline),
         "safety_checked": safety_checked,
     }
 

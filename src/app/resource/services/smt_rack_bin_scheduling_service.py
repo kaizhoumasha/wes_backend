@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, cast
 
+from src.app.resource.services.material_identity import material_identity_keys_match
+
 SmtRackBinSchedulingDecisionKind = Literal[
     "ALLOCATED",
     "RACK_EXCHANGE_REQUIRED",
@@ -250,13 +252,20 @@ class SmtRackBinSchedulingService:
             )
         if blocking_decision is not None:
             return blocking_decision
+        reel_size_kind = cast("SmtReelSizeKind", reel_size_kind)
 
         cells = self._rack_cells(active_rack_map)
-        compatible_cell = self._find_compatible_occupied_cell(cells, material, reel_size_kind)
+        reel_thickness = self._reel_thickness(scheduling_context)
+        compatible_cell = self._find_compatible_occupied_cell(
+            cells,
+            material,
+            reel_size_kind,
+            reel_thickness=reel_thickness,
+        )
         if compatible_cell is not None:
             return SmtRackBinSchedulingDecision(bin_location=self._bin_location(compatible_cell, active_rack_map))
 
-        empty_cell = self._find_first_empty_cell(cells, reel_size_kind)
+        empty_cell = self._find_first_empty_cell(cells, reel_size_kind, reel_thickness=reel_thickness)
         if empty_cell is not None:
             return SmtRackBinSchedulingDecision(bin_location=self._bin_location(empty_cell, active_rack_map))
 
@@ -286,23 +295,91 @@ class SmtRackBinSchedulingService:
         ]
 
     def _find_compatible_occupied_cell(
-        self, cells: Sequence[Mapping[str, Any]], material: Mapping[str, Any], reel_size_kind: SmtReelSizeKind
+        self,
+        cells: Sequence[Mapping[str, Any]],
+        material: Mapping[str, Any],
+        reel_size_kind: SmtReelSizeKind,
+        *,
+        reel_thickness: float | None,
     ) -> Mapping[str, Any] | None:
         for cell in cells:
             if not self._is_schedulable_cell(cell) or self._cell_status(cell) != "OCCUPIED":
                 continue
             if not self._is_cell_compatible_with_reel(cell, reel_size_kind):
                 continue
-            if cell.get("DateCode") == material["DateCode"] and cell.get("LotCode") == material["LotCode"]:
+            if not self._cell_has_capacity_for_reel(cell, reel_thickness):
+                continue
+            if self._cell_matches_material(cell, material):
                 return cell
         return None
 
+    def _cell_matches_material(self, cell: Mapping[str, Any], material: Mapping[str, Any]) -> bool:
+        if cell.get("DateCode") != material["DateCode"] or cell.get("LotCode") != material["LotCode"]:
+            return False
+        cell_identity = self._text_or_none(cell.get("material_identity_key"))
+        incoming_identity = self._material_identity_key(material)
+        if cell_identity is not None and incoming_identity is not None:
+            return material_identity_keys_match(cell_identity, incoming_identity)
+        cell_material = self._text_or_none(cell.get("HHPN") or cell.get("material_code"))
+        incoming_material = self._text_or_none(material.get("HHPN") or material.get("material_code"))
+        if cell_material is not None and incoming_material is not None and cell_material != incoming_material:
+            return False
+        cell_vendor = self._text_or_none(cell.get("MfrPN") or cell.get("vendor_code"))
+        incoming_vendor = self._text_or_none(material.get("MfrPN") or material.get("vendor_code"))
+        return not (cell_vendor is not None and incoming_vendor is not None and cell_vendor != incoming_vendor)
+
+    def _material_identity_key(self, material: Mapping[str, Any]) -> str | None:
+        material_code = self._text_or_none(material.get("HHPN") or material.get("material_code"))
+        vendor_code = self._text_or_none(material.get("MfrPN") or material.get("vendor_code"))
+        date_code = self._text_or_none(material.get("DateCode") or material.get("date_code"))
+        lot_code = self._text_or_none(material.get("LotCode") or material.get("lot_code"))
+        if material_code or date_code or lot_code:
+            return f"MAT:{material_code or ''}:{vendor_code or ''}:{date_code or ''}:{lot_code or ''}"
+        return None
+
+    def _cell_has_capacity_for_reel(self, cell: Mapping[str, Any], reel_thickness: float | None) -> bool:
+        cell_status = self._cell_status(cell)
+        if cell_status in {"FULL", "FULL_SNAPSHOT", "CLOSED"}:
+            return False
+
+        remaining_depth = self._positive_float(
+            self._first_present(cell, "remaining_depth_mm", "remaining_depth", "available_depth_mm")
+        )
+        if remaining_depth is not None:
+            return self._depth_can_accept_reel(remaining_depth, reel_thickness)
+
+        capacity_depth = self._positive_float(self._first_present(cell, "capacity_depth_mm", "max_depth_mm"))
+        used_depth = self._positive_float(self._first_present(cell, "used_depth_mm", "stack_depth_mm"))
+        if capacity_depth is not None:
+            if used_depth is None:
+                if cell_status in self.EMPTY_CELL_STATUSES:
+                    used_depth = 0.0
+                elif reel_thickness is None:
+                    return capacity_depth > 0
+                else:
+                    return False
+            remaining_depth = max(capacity_depth - used_depth, 0.0)
+            return self._depth_can_accept_reel(remaining_depth, reel_thickness)
+
+        return True
+
+    def _depth_can_accept_reel(self, remaining_depth: float, reel_thickness: float | None) -> bool:
+        if reel_thickness is None:
+            return remaining_depth > 0
+        return remaining_depth + 1e-9 >= reel_thickness
+
     def _find_first_empty_cell(
-        self, cells: Sequence[Mapping[str, Any]], reel_size_kind: SmtReelSizeKind
+        self,
+        cells: Sequence[Mapping[str, Any]],
+        reel_size_kind: SmtReelSizeKind,
+        *,
+        reel_thickness: float | None = None,
     ) -> Mapping[str, Any] | None:
         for preferred_bin_type, preferred_suffixes in self._empty_cell_priority(reel_size_kind):
             for cell in cells:
                 if not self._is_schedulable_cell(cell) or self._cell_status(cell) != "EMPTY":
+                    continue
+                if not self._cell_has_capacity_for_reel(cell, reel_thickness):
                     continue
                 normalized = self.normalize_bin_location(cell)
                 if normalized is None:
@@ -458,6 +535,25 @@ class SmtRackBinSchedulingService:
         text = str(value).strip()
         return text or None
 
+    def _first_present(self, values: Mapping[str, Any], *keys: str) -> Any | None:
+        for key in keys:
+            value = values.get(key)
+            if value is not None:
+                return value
+        return None
+
+    def _positive_float(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _reel_thickness(self, context: Mapping[str, Any]) -> float | None:
+        return self._positive_float(context.get("reel_thickness") or context.get("thickness_mm"))
+
     def _reel_size_kind(self, context: Mapping[str, Any]) -> SmtReelSizeKind | None:
         value = context.get("reel_diameter") or context.get("reel_size") or context.get("diameter")
         if value is None:
@@ -489,7 +585,7 @@ class SmtRackBinSchedulingService:
             raise ValueError("invalid SMT bin cell location")
 
         rack_id = normalized.get("rack_id") or active_rack.get("rack_id") or active_rack.get("rack_code")
-        return {
+        result: dict[str, Any] = {
             "rack_id": rack_id,
             "rack_slot_code": normalized.get("rack_slot_code"),
             "rack_slot_location_code": normalized.get("rack_slot_location_code"),
@@ -499,6 +595,22 @@ class SmtRackBinSchedulingService:
             "bin_cell_location": normalized["bin_cell_location"],
             "bin_cell_index": normalized["bin_cell_index"],
         }
+        for key in (
+            "material_identity_key",
+            "reel_count",
+            "used_depth_mm",
+            "remaining_depth_mm",
+        ):
+            if key in normalized:
+                result[key] = normalized[key]
+        capacity_depth = self._positive_float(normalized.get("capacity_depth_mm"))
+        if capacity_depth is None:
+            capacity_depth = self._positive_float(normalized.get("max_depth_mm"))
+        if capacity_depth is not None:
+            result["capacity_depth_mm"] = capacity_depth
+        reel_count = self._positive_float(normalized.get("reel_count"))
+        result["expected_stack_height"] = int(reel_count or 0) + 1
+        return result
 
     def _rack_exchange_decision(
         self,
@@ -550,6 +662,9 @@ class SmtRackBinSchedulingService:
             "resume_callback_type": "WMS_RACK_ARRIVED",
             "reason_code": reason_code,
         }
+        target_position_code = self._target_position_code(context)
+        if target_position_code is not None:
+            payload["target_position_code"] = target_position_code
         trace_id = self._trace_id(context)
         if trace_id is not None:
             payload["trace_id"] = trace_id
@@ -780,10 +895,30 @@ class SmtRackBinSchedulingService:
         return status if status in self.RELEASE_BIN_STATUSES else None
 
     def _rack_bin_usage(self, cells: Sequence[Mapping[str, Any]]) -> float:
+        depth_usage = self._rack_bin_depth_usage(cells)
+        if depth_usage is not None:
+            return depth_usage
         capacity = self._rack_bin_capacity(cells)
         if capacity <= 0:
             return 0.0
         return min(self._occupied_cell_count(cells) / capacity, 1.0)
+
+    def _rack_bin_depth_usage(self, cells: Sequence[Mapping[str, Any]]) -> float | None:
+        used_total = 0.0
+        capacity_total = 0.0
+        occupied_statuses = {"OCCUPIED", "IN_USE", "FULL", "FULL_SNAPSHOT", "CLOSED"}
+        for cell in cells:
+            capacity = self._positive_float(self._first_present(cell, "capacity_depth_mm", "max_depth_mm"))
+            used = self._positive_float(self._first_present(cell, "used_depth_mm", "stack_depth_mm"))
+            if self._cell_status(cell) in occupied_statuses and (capacity is None or used is None):
+                return None
+            if capacity is None or capacity <= 0:
+                continue
+            capacity_total += capacity
+            used_total += used or 0.0
+        if capacity_total <= 0:
+            return None
+        return min(used_total / capacity_total, 1.0)
 
     def _rack_bin_capacity(self, cells: Sequence[Mapping[str, Any]]) -> int:
         if not cells:
@@ -836,6 +971,15 @@ class SmtRackBinSchedulingService:
             if isinstance(workline, Mapping)
             else None
         )
+
+    def _target_position_code(self, context: Mapping[str, Any]) -> str | None:
+        rack_supply = context.get("rack_supply") or context.get("rack_exchange")
+        if isinstance(rack_supply, Mapping):
+            value = self._first_text(cast("Mapping[str, Any]", rack_supply), ("target_position_code", "position_code"))
+            if value is not None:
+                return value
+
+        return self._first_text(context, ("target_position_code", "position_code"))
 
     def _trace_id(self, context: Mapping[str, Any]) -> str | None:
         keys = ("trace_id", "trace_code")
