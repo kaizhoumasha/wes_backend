@@ -30,23 +30,6 @@ class SmtRackSupplyRequest:
     source_system: str = "WMS_RCS"
 
 
-@dataclass(frozen=True, slots=True)
-class SmtFullBoxExchangeRequest(SmtRackSupplyRequest):
-    """兼容旧名称的 SMT 外部请求。"""
-
-
-@dataclass(frozen=True, slots=True)
-class SmtRackReleaseEvent:
-    """SMT 当前货架释放事件，交由满箱交换插件处理。"""
-
-    device_code: str
-    event_type: str
-    data: Mapping[str, Any]
-    event_id: str | None = None
-    causation_id: str | None = None
-    canonical_event_type: str = "SINGLE_LAYER_RACK_RELEASED"
-
-
 @dataclass(frozen=True, slots=True, init=False)
 class SmtRackBinSchedulingDecision:
     """SMT 货架/料箱调度决策。"""
@@ -54,7 +37,6 @@ class SmtRackBinSchedulingDecision:
     kind: SmtRackBinSchedulingDecisionKind
     bin_location: Mapping[str, Any] | None
     rack_supply_request: SmtRackSupplyRequest | None
-    rack_release_event: SmtRackReleaseEvent | None
     reason_code: str | None
     message: str | None
 
@@ -64,35 +46,22 @@ class SmtRackBinSchedulingDecision:
         kind: SmtRackBinSchedulingDecisionKind | None = None,
         bin_location: Mapping[str, Any] | None = None,
         rack_supply_request: SmtRackSupplyRequest | None = None,
-        rack_release_event: SmtRackReleaseEvent | None = None,
-        external_request: SmtRackSupplyRequest | None = None,
         reason_code: str | None = None,
         message: str | None = None,
-        full_box_exchange_request: SmtRackSupplyRequest | None = None,
     ) -> None:
-        """创建调度决策，并兼容旧 full_box_exchange_request 构造参数。"""
+        """创建调度决策。"""
 
-        requests = [
-            request
-            for request in (rack_supply_request, external_request, full_box_exchange_request)
-            if request is not None
-        ]
-        if len(requests) > 1:
-            raise ValueError("rack_supply_request, external_request and full_box_exchange_request cannot be combined")
-
-        request = requests[0] if requests else None
-        resolved_kind = kind or self._infer_kind(bin_location=bin_location, rack_supply_request=request)
+        resolved_kind = kind or self._infer_kind(bin_location=bin_location, rack_supply_request=rack_supply_request)
         if resolved_kind == "ALLOCATED" and bin_location is None:
             raise ValueError("ALLOCATED decision requires bin_location")
-        if resolved_kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"} and request is None:
+        if resolved_kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"} and rack_supply_request is None:
             raise ValueError(f"{resolved_kind} decision requires rack_supply_request")
         if resolved_kind == "BLOCKED" and not reason_code:
             raise ValueError("BLOCKED decision requires reason_code")
 
         object.__setattr__(self, "kind", resolved_kind)
         object.__setattr__(self, "bin_location", dict(bin_location) if bin_location is not None else None)
-        object.__setattr__(self, "rack_supply_request", request)
-        object.__setattr__(self, "rack_release_event", rack_release_event)
+        object.__setattr__(self, "rack_supply_request", rack_supply_request)
         object.__setattr__(self, "reason_code", reason_code)
         object.__setattr__(self, "message", message)
 
@@ -107,18 +76,6 @@ class SmtRackBinSchedulingDecision:
         if bin_location is None and rack_supply_request is not None:
             return "RACK_SUPPLY_REQUIRED"
         raise ValueError("SmtRackBinSchedulingDecision requires exactly one scheduling result")
-
-    @property
-    def external_request(self) -> SmtRackSupplyRequest | None:
-        """兼容旧插件读取的外部请求字段。"""
-
-        return self.rack_supply_request
-
-    @property
-    def full_box_exchange_request(self) -> SmtRackSupplyRequest | None:
-        """兼容旧插件读取的满箱交换字段。"""
-
-        return self.rack_supply_request
 
 
 class SmtRackBinSchedulingService:
@@ -169,9 +126,9 @@ class SmtRackBinSchedulingService:
     }
     EMPTY_CELL_STATUSES: ClassVar[frozenset[str]] = frozenset({"EMPTY", "EMPTY_VERIFIED", "AVAILABLE"})
     PENDING_RACK_SUPPLY_STATUSES: ClassVar[frozenset[str]] = frozenset({"REQUESTED", "IN_PROGRESS"})
-    REQUEST_TYPE: ClassVar[str] = "SMT_RACK_SUPPLY"
-    RELEASE_EVENT_TYPE: ClassVar[str] = "SINGLE_LAYER_RACK_RELEASED"
+    SUPPLY_REQUEST_TYPE: ClassVar[str] = "SMT_RACK_SUPPLY"
     SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("SUPPLY_EMPTY_RACK",)
+    MOVE_OUT_AND_SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK")
     REQUIRED_MATERIAL_FIELDS: ClassVar[tuple[str, ...]] = ("DateCode", "LotCode", "PkgID")
     REQUIRED_LOCATION_FIELDS: ClassVar[tuple[str, ...]] = ("bin_id", "bin_type", "bin_cell_location")
 
@@ -632,29 +589,9 @@ class SmtRackBinSchedulingService:
                 message="SMT 新货架补充请求缺少 WMS/RCS 目标地址配置",
             )
 
-        if active_rack is not None and self._release_event_device_code(context) is None:
-            return SmtRackBinSchedulingDecision(
-                kind="BLOCKED",
-                reason_code="FULL_BOX_RELEASE_EVENT_DEVICE_MISSING",
-                message="SMT 当前货架释放事件缺少满箱交换插件入口设备编码配置",
-            )
-
-        rack_release_event = self._rack_release_event(
-            context=context,
-            material=material,
-            active_rack=active_rack,
-            reason_code=reason_code,
-        )
-        if active_rack is not None and rack_release_event is None:
-            return SmtRackBinSchedulingDecision(
-                kind="BLOCKED",
-                reason_code="FULL_BOX_RELEASE_EVENT_SNAPSHOT_INVALID",
-                message="SMT 当前货架释放事件无法生成 4 个料箱快照",
-            )
-
         dispatch_key = self._dispatch_key(context=context, material=material, active_rack=active_rack)
         payload: dict[str, Any] = {
-            "request_type": self.REQUEST_TYPE,
+            "request_type": self.SUPPLY_REQUEST_TYPE,
             "dispatch_key": dispatch_key,
             "material": dict(material),
             "current_rack_snapshot": dict(active_rack or {}),
@@ -662,6 +599,21 @@ class SmtRackBinSchedulingService:
             "resume_callback_type": "WMS_RACK_ARRIVED",
             "reason_code": reason_code,
         }
+        if active_rack is not None:
+            rack_id = self._active_rack_id(active_rack)
+            bin_snapshots = self._rack_bin_snapshots(active_rack)
+            token = self._context_dispatch_token(context) or f"{material.get('PkgID')}:{rack_id}"
+            payload.update(
+                {
+                    "actions": list(self.MOVE_OUT_AND_SUPPLY_ACTIONS),
+                    "single_layer_rack_id": rack_id,
+                    "single_layer_rack_code": rack_id,
+                    "source_classifier_line_code": self._workline_code(context),
+                    "source_task_batch_id": token,
+                    "move_out_reason_code": reason_code,
+                    "active_rack_bin_snapshots": bin_snapshots,
+                }
+            )
         target_position_code = self._target_position_code(context)
         if target_position_code is not None:
             payload["target_position_code"] = target_position_code
@@ -676,7 +628,6 @@ class SmtRackBinSchedulingService:
                 target_code=target_code,
                 payload=payload,
             ),
-            rack_release_event=rack_release_event,
             reason_code=reason_code,
             message=message,
         )
@@ -733,46 +684,6 @@ class SmtRackBinSchedulingService:
 
         config = context.get("config")
         return self._first_text(cast("Mapping[str, Any]", config), keys) if isinstance(config, Mapping) else None
-
-    def _rack_release_event(
-        self,
-        *,
-        context: Mapping[str, Any],
-        material: Mapping[str, Any],
-        active_rack: Mapping[str, Any] | None,
-        reason_code: str,
-    ) -> SmtRackReleaseEvent | None:
-        if active_rack is None:
-            return None
-
-        device_code = self._release_event_device_code(context)
-        if device_code is None:
-            return None
-
-        rack_id = self._active_rack_id(active_rack)
-        bin_snapshots = self._rack_bin_snapshots(active_rack)
-        if len(bin_snapshots) != len(self.RACK_SLOT_CODES):
-            return None
-
-        token = self._context_dispatch_token(context) or f"{material.get('PkgID')}:{rack_id}"
-        event_id = f"smt-rack-release:{token}:{rack_id}"
-        data: dict[str, Any] = {
-            "rack_release_id": event_id,
-            "single_layer_rack_id": rack_id,
-            "single_layer_rack_code": rack_id,
-            "source_classifier_line_code": self._workline_code(context),
-            "source_task_batch_id": token,
-            "release_reason_code": reason_code,
-            "material": dict(material),
-            "bin_snapshots": bin_snapshots,
-        }
-        return SmtRackReleaseEvent(
-            device_code=device_code,
-            event_type=self.RELEASE_EVENT_TYPE,
-            data=data,
-            event_id=event_id,
-            causation_id=self._trace_id(context),
-        )
 
     def _rack_bin_snapshots(self, active_rack: Mapping[str, Any]) -> list[dict[str, Any]]:
         raw_bins = active_rack.get("bins") or active_rack.get("bin_snapshots")
@@ -948,15 +859,6 @@ class SmtRackBinSchedulingService:
             return "IN_USE"
         return "EMPTY_VERIFIED"
 
-    def _release_event_device_code(self, context: Mapping[str, Any]) -> str | None:
-        keys = ("smt_full_box_release_device_code", "full_box_release_device_code")
-        value = self._first_text(context, keys)
-        if value is not None:
-            return value
-
-        config = context.get("config")
-        return self._first_text(cast("Mapping[str, Any]", config), keys) if isinstance(config, Mapping) else None
-
     def _active_rack_id(self, active_rack: Mapping[str, Any]) -> str:
         return str(active_rack.get("rack_id") or active_rack.get("rack_code") or "")
 
@@ -1035,11 +937,9 @@ smt_rack_bin_scheduling_service = SmtRackBinSchedulingService()
 
 
 __all__ = [
-    "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackReleaseEvent",
     "SmtRackSupplyRequest",
     "smt_rack_bin_scheduling_service",
 ]

@@ -41,11 +41,9 @@ from .resource_service import (
     resource_state_event_service,
 )
 from .smt_rack_bin_scheduling_service import (
-    SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
-    SmtRackReleaseEvent,
     SmtRackSupplyRequest,
     smt_rack_bin_scheduling_service,
 )
@@ -72,11 +70,9 @@ __all__ = [
     "ResourceStateEventService",
     "SmtActiveRackSnapshotProvider",
     "SmtActiveRackSnapshotService",
-    "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackReleaseEvent",
     "SmtRackSupplyRequest",
     "bin_cell_occupancy_service",
     "bin_content_snapshot_item_service",

@@ -149,6 +149,29 @@ def test_plugin_next_resource_reservation_builds_runtime_intent():
     assert intent.idempotency_key == "CLAIM_BIN_CELL:2001:BIN-001:4:PKG-001"
 
 
+def test_plugin_next_rack_task_request_builds_runtime_intent():
+    intent = PluginNext().rack_task_request(
+        task_type="FULL_BOX_EXCHANGE",
+        task_key="rack-task:full-box:release-001",
+        dispatch_key="external:rack_exchange:release-001:FULL_BOX_EXCHANGE",
+        target_code="http://wms-rcs/api/full-box-exchange",
+        payload={"request_type": "SMT_FULL_BOX_EXCHANGE", "rack_release_id": "release-001"},
+        timeout_seconds=1800,
+        source_system="WMS_RCS",
+        rack_code="RACK-001",
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert intent.kind == RuntimeIntentKind.RACK_TASK_REQUEST
+    assert intent.action == "FULL_BOX_EXCHANGE"
+    assert intent.idempotency_key == "rack-task:full-box:release-001"
+    assert intent.dispatch_key == "external:rack_exchange:release-001:FULL_BOX_EXCHANGE"
+    assert intent.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert intent.payload_json["rack_release_id"] == "release-001"
+    assert intent.rack_code == "RACK-001"
+    assert intent.position_code == "SINGLE_LAYER_A"
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

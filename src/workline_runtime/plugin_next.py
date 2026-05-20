@@ -43,6 +43,33 @@ class PluginNext:
             source_system=source_system,
         )
 
+    def rack_task_request(
+        self,
+        *,
+        task_type: str,
+        task_key: str,
+        dispatch_key: str,
+        target_code: str,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+        source_system: str | None = None,
+        rack_code: str | None = None,
+        position_code: str | None = None,
+        context_patch: dict[str, Any] | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.rack_task_request(
+            task_type=task_type,
+            task_key=task_key,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            source_system=source_system,
+            rack_code=rack_code,
+            position_code=position_code,
+            context_patch=context_patch,
+        )
+
     def device_event(
         self,
         *,

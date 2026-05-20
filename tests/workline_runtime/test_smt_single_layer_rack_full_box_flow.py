@@ -1,4 +1,4 @@
-"""SMT 单层货架从补架到满箱交换的专项模拟。"""
+"""SMT 单层货架从补架到满架换补的专项模拟。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import pytest
 
 from src.app.resource.services import SmtRackBinSchedulingService
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin
-from src.workline_plugins.smt_full_box_exchange import SmtFullBoxExchangePlugin
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
@@ -19,8 +18,6 @@ from src.workline_runtime.runtime_intent import RuntimeIntentKind
 WORKLINE_CODE = "WL-CONVEYOR-01"
 RACK_ID = "RACK-SL-DEV-001"
 RACK_SUPPLY_TARGET = "http://127.0.0.1:8009/api/v1/device/command"
-FULL_BOX_EXCHANGE_TARGET = "http://127.0.0.1:8010/api/full-box-exchange"
-FULL_BOX_RELEASE_DEVICE = "SMT-FULL-BOX-EVENT"
 CELL_CAPACITY = 5
 MATERIAL_CODES = [f"MAT-SMT-{index:03d}" for index in range(1, 11)]
 
@@ -143,7 +140,6 @@ def _base_context(plan: ReelPlan, *, active_rack: dict[str, Any] | None, trace_i
         "reel_thickness": 1.0,
         "active_bin_rack": active_rack,
         "wms_rcs_rack_supply_url": RACK_SUPPLY_TARGET,
-        "smt_full_box_release_device_code": FULL_BOX_RELEASE_DEVICE,
     }
 
 
@@ -239,12 +235,11 @@ def _assert_full_rack(rack: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_layer_rack_flow_from_startup_to_full_box_exchange() -> None:
-    """从开机无货架开始，模拟粗分机补架、出料填满和满箱交换闭环。"""
+async def test_single_layer_rack_flow_from_startup_to_rack_move_out_supply() -> None:
+    """从开机无货架开始，模拟粗分机补架、出料填满和换补架请求。"""
 
     scheduler = SmtRackBinSchedulingService()
     classifier = SmtClassifierPlugin()
-    full_box_plugin = SmtFullBoxExchangePlugin()
     rack = _build_single_layer_rack()
     _assert_rack_shape(rack)
 
@@ -263,11 +258,12 @@ async def test_single_layer_rack_flow_from_startup_to_full_box_exchange() -> Non
 
     assert [intent.kind for intent in boot_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.EXTERNAL_REQUEST,
+        RuntimeIntentKind.RACK_TASK_REQUEST,
     ]
     rack_supply = boot_intents[0].context_patch["rack_supply"]
     assert rack_supply["reason_code"] == "NO_ACTIVE_RACK"
     assert boot_intents[1].target_code == RACK_SUPPLY_TARGET
+    assert boot_intents[1].action == "RACK_SUPPLY"
     assert boot_intents[1].payload_json["request_type"] == "SMT_RACK_SUPPLY"
     assert boot_intents[1].payload_json["actions"] == ["SUPPLY_EMPTY_RACK"]
 
@@ -320,72 +316,32 @@ async def test_single_layer_rack_flow_from_startup_to_full_box_exchange() -> Non
 
     assert overflow_decision.kind == "RACK_SUPPLY_REQUIRED"
     assert overflow_decision.rack_supply_request is not None
-    assert overflow_decision.rack_release_event is not None
-    assert overflow_decision.rack_release_event.event_type == "SINGLE_LAYER_RACK_RELEASED"
-    assert overflow_decision.rack_release_event.data["single_layer_rack_id"] == RACK_ID
-    assert overflow_decision.rack_release_event.data["release_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
-    assert len(overflow_decision.rack_release_event.data["bin_snapshots"]) == 4
-    assert {item["status"] for item in overflow_decision.rack_release_event.data["bin_snapshots"]} == {"FULL"}
+    overflow_payload = overflow_decision.rack_supply_request.payload
+    assert overflow_payload["request_type"] == "SMT_RACK_SUPPLY"
+    assert overflow_payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"]
+    assert overflow_payload["single_layer_rack_id"] == RACK_ID
+    assert overflow_payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert len(overflow_payload["active_rack_bin_snapshots"]) == 4
+    assert {item["status"] for item in overflow_payload["active_rack_bin_snapshots"]} == {"FULL"}
 
-    exchange_ctx = _plugin_ctx(
-        context={},
+    overflow_ctx = _plugin_ctx(
+        context=_base_context(overflow_plan, active_rack=rack, trace_id="trace-overflow"),
         trace_id="trace-overflow",
-        current_wait_type="DEVICE_EVENT",
         config={
-            "external_endpoints": {"wms_rcs_full_box_exchange_url": FULL_BOX_EXCHANGE_TARGET},
-            "exchange_area_code": "SMT_FULL_BOX_EXCHANGE_A",
             "callback_url": "http://localhost:8001/api/v1/callback/external",
-            "timeouts": {"external_exchange_seconds": 1800},
         },
     )
-    release_event = overflow_decision.rack_release_event
-    exchange_intents = await full_box_plugin.on_device_event(
-        exchange_ctx,
-        SimpleNamespace(
-            id=1,
-            trace_id=release_event.causation_id,
-            payload_json={
-                "message_type": "DEVICE_EVENT",
-                "event_type": release_event.event_type,
-                "canonical_event_type": release_event.canonical_event_type,
-                "data": dict(release_event.data),
-            },
-        ),
+    overflow_intents = await classifier.handle_conveyor_success(
+        overflow_ctx,
+        _move_forward_success(overflow_plan, trace_id="trace-overflow"),
     )
 
-    assert [intent.kind for intent in exchange_intents] == [
+    assert [intent.kind for intent in overflow_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.EXTERNAL_REQUEST,
+        RuntimeIntentKind.RACK_TASK_REQUEST,
     ]
-    exchange_context = exchange_intents[0].context_patch
-    exchange_request = exchange_intents[1]
-    assert exchange_context["exchange_required"] is True
-    assert exchange_context["qualified_bin_count"] == 4
-    assert exchange_request.target_code == FULL_BOX_EXCHANGE_TARGET
-    assert exchange_request.payload_json["request_type"] == "SMT_FULL_BOX_EXCHANGE"
-    assert len(exchange_request.payload_json["exchange_bins"]) == 4
-
-    complete_intents = await full_box_plugin.on_external_http(
-        _plugin_ctx(
-            context=exchange_context,
-            trace_id="trace-overflow",
-            current_wait_type="EXTERNAL_HTTP",
-        ),
-        SimpleNamespace(
-            payload_json={
-                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
-                "trace_id": "trace-overflow",
-                "rack_release_id": exchange_context["rack_release_id"],
-                "dispatch_key": exchange_request.dispatch_key,
-                "exchange_request_code": exchange_request.dispatch_key,
-                "exchange_status": "BUSINESS_COMPLETED",
-                "wms_confirmation": {
-                    "wms_document_id": "WMS-FULL-BOX-DEV-001",
-                    "inventory_version": "INV-FULL-BOX-DEV-001",
-                },
-            },
-        ),
-    )
-
-    assert [intent.kind for intent in complete_intents] == [RuntimeIntentKind.COMPLETE]
-    assert complete_intents[0].context_patch["full_box_exchange"]["exchange_status"] == "BUSINESS_COMPLETED"
+    rack_supply_request = overflow_intents[1]
+    assert rack_supply_request.action == "RACK_SUPPLY"
+    assert rack_supply_request.payload_json["request_type"] == "SMT_RACK_SUPPLY"
+    assert rack_supply_request.payload_json["single_layer_rack_id"] == RACK_ID
+    assert len(rack_supply_request.payload_json["active_rack_bin_snapshots"]) == 4

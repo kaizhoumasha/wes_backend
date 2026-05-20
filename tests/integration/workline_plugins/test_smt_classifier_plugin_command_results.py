@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.app.workline.domain.services import (
-    SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingService,
+    SmtRackSupplyRequest,
 )
 from src.workline_plugins.smt_classifier.contract import build_output_to_bin_params
 from src.workline_runtime.runtime_intent import BlockScope, DestinationKind, RuntimeIntentKind
@@ -887,7 +887,7 @@ class TestSmtClassifierPluginCommandResults:
                 assert barcode == "CALLBACK-PKG-003"
                 assert context["reel_diameter"] == "178.5"
                 return SmtRackBinSchedulingDecision(
-                    rack_supply_request=SmtFullBoxExchangeRequest(
+                    rack_supply_request=SmtRackSupplyRequest(
                         dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
                         target_code="http://wms-rcs/api/rack-supply",
                         payload={
@@ -919,7 +919,7 @@ class TestSmtClassifierPluginCommandResults:
 
         assert [intent.kind for intent in result] == [
             RuntimeIntentKind.UPDATE_CONTEXT,
-            RuntimeIntentKind.EXTERNAL_REQUEST,
+            RuntimeIntentKind.RACK_TASK_REQUEST,
         ]
         assert result[0].context_patch["pkg_id"] == "CALLBACK-PKG-003"
         assert result[0].context_patch["rack_supply"] == {
@@ -941,6 +941,8 @@ class TestSmtClassifierPluginCommandResults:
         assert result[1].dispatch_key == "external:smt_classifier:trace-001:RACK_SUPPLY"
         assert result[1].target_code == "http://wms-rcs/api/rack-supply"
         assert result[1].payload_json["request_type"] == "SMT_RACK_SUPPLY"
+        assert result[1].action == "RACK_SUPPLY"
+        assert result[1].idempotency_key == "external:smt_classifier:trace-001:RACK_SUPPLY"
         assert result[1].timeout_seconds == 1800
 
     @pytest.mark.asyncio
@@ -952,7 +954,7 @@ class TestSmtClassifierPluginCommandResults:
                 assert barcode == "CALLBACK-PKG-005"
                 return {
                     "kind": "RACK_SUPPLY_REQUIRED",
-                    "external_request": {
+                    "rack_supply_request": {
                         "dispatch_key": "external:smt_classifier:trace-005:RACK_SUPPLY",
                         "target_code": "http://wms-rcs/api/rack-supply",
                         "payload": {
@@ -974,10 +976,11 @@ class TestSmtClassifierPluginCommandResults:
 
         assert [intent.kind for intent in result] == [
             RuntimeIntentKind.UPDATE_CONTEXT,
-            RuntimeIntentKind.EXTERNAL_REQUEST,
+            RuntimeIntentKind.RACK_TASK_REQUEST,
         ]
         assert result[0].context_patch["rack_supply"]["dispatch_key"] == "external:smt_classifier:trace-005:RACK_SUPPLY"
         assert "full_box_exchange" not in result[0].context_patch
+        assert result[1].action == "RACK_SUPPLY"
         assert result[1].target_code == "http://wms-rcs/api/rack-supply"
 
     @pytest.mark.asyncio
@@ -991,7 +994,6 @@ class TestSmtClassifierPluginCommandResults:
         mock_context.source_device_role = "CONVEYOR"
         mock_context.config = {
             "wms_rcs_rack_supply_url": "http://wms-rcs/api/rack-supply",
-            "smt_full_box_release_device_code": "SMT-FULL-BOX-EVENT",
         }
         mock_context.session.context_json = {
             "reel_diameter": "178.5",

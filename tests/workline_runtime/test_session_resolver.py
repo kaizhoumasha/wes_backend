@@ -129,6 +129,16 @@ class MockOutboxRepository:
         return self.outboxes.get(dispatch_key)
 
 
+class MockRackTaskRepository:
+    def __init__(self) -> None:
+        self.tasks: dict[str, object] = {}
+        self.find_calls: list[tuple[str, str]] = []
+
+    async def get_by_dispatch_key(self, db: object, dispatch_key: str) -> object | None:
+        self.find_calls.append(("dispatch_key", dispatch_key))
+        return self.tasks.get(dispatch_key)
+
+
 def make_inbox(
     kind: InboxKind,
     device_id: int | None = None,
@@ -192,6 +202,7 @@ class TestSessionResolver:
         resolver.session_repo = mock_session_repo
         resolver.command_repo = MockCommandRepository()
         resolver.outbox_repo = MockOutboxRepository()
+        resolver.rack_task_repo = MockRackTaskRepository()
         return resolver
 
     @pytest.mark.asyncio
@@ -389,57 +400,6 @@ class TestSessionResolver:
         assert ("business_key", 1, "ORDER_001") in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_same_trace_different_workline_creates_independent_session(
-        self,
-        mock_db,
-        mock_session_repo,
-        resolver,
-    ):
-        """同一 trace 下的第二插件入口事件不能复用其他作业线的 open session。"""
-        smt_session = SimpleNamespace(
-            id=100,
-            session_code="SESSION_SMT_100",
-            workline_id=45,
-            plugin_key="smt_classifier",
-            business_key="SMT_REEL_001",
-            status=SessionStatus.WAITING_EXTERNAL,
-            ingress_count=1,
-            last_request_id="req-smt",
-            last_ingress_at=None,
-            trace_id="trace-shared-001",
-            context_json={},
-        )
-        mock_session_repo.sessions[100] = smt_session
-        inbox = make_inbox(
-            kind=InboxKind.DEVICE_EVENT,
-            device_id=44,
-            trace_id="trace-shared-001",
-            source_message_id="release-001",
-            payload_json={
-                "event_type": "SINGLE_LAYER_RACK_RELEASED",
-                "data": {
-                    "rack_release_id": "release-001",
-                    "single_layer_rack_id": "RACK-001",
-                },
-            },
-        )
-
-        session = await resolver.resolve_or_create(
-            db=mock_db,
-            inbox=inbox,
-            workline=make_workline(workline_id=50, plugin_key="smt_full_box_exchange"),
-            devices_by_role=make_devices_by_role(),
-        )
-
-        assert session.id != smt_session.id
-        assert session.workline_id == 50
-        assert session.plugin_key == "smt_full_box_exchange"
-        assert session.business_key == "release-001"
-        assert session.trace_id == "trace-shared-001"
-        assert inbox.session_id is None
-        assert len(mock_session_repo.created_sessions) == 1
-
-    @pytest.mark.asyncio
     async def test_resolve_device_event_reuses_terminal_session_for_same_business_key_without_time_window(
         self,
         mock_db,
@@ -588,7 +548,7 @@ class TestSessionResolver:
             id=301,
             session_code="SESSION_FULLBOX_301",
             workline_id=50,
-            plugin_key="smt_full_box_exchange",
+            plugin_key="smt_classifier",
             business_key="release-001",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={},
@@ -596,7 +556,7 @@ class TestSessionResolver:
         )
         mock_session_repo.sessions[300] = smt_session
         mock_session_repo.sessions[301] = fullbox_session
-        dispatch_key = "external:smt_full_box_exchange:release-001:FULL_BIN_EXCHANGE"
+        dispatch_key = "external:rack_exchange:release-001:FULL_BOX_EXCHANGE"
         resolver.outbox_repo.outboxes[dispatch_key] = SimpleNamespace(
             id=77,
             session_id=301,
@@ -623,6 +583,59 @@ class TestSessionResolver:
         assert inbox.session_id == 301
         assert inbox.workline_id == 50
         assert resolver.outbox_repo.find_calls == [("dispatch_key", dispatch_key)]
+
+    @pytest.mark.asyncio
+    async def test_resolve_external_http_uses_rack_task_material_session_when_outbox_has_no_session(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """rack task outbox 不绑定 session 时，应通过 material_session_id 恢复物料 session。"""
+        material_session = SimpleNamespace(
+            id=300,
+            session_code="SESSION_SMT_300",
+            workline_id=45,
+            plugin_key="smt_classifier",
+            business_key="SMT_REEL_001",
+            status=SessionStatus.RUNNING,
+            context_json={"waiting_rack_task_id": 901},
+            trace_id="trace-shared-001",
+        )
+        mock_session_repo.sessions[300] = material_session
+        dispatch_key = "external:smt_classifier:trace-001:RACK_SUPPLY"
+        resolver.outbox_repo.outboxes[dispatch_key] = SimpleNamespace(
+            id=77,
+            session_id=None,
+            workline_id=45,
+            dispatch_key=dispatch_key,
+        )
+        resolver.rack_task_repo.tasks[dispatch_key] = SimpleNamespace(
+            id=901,
+            dispatch_key=dispatch_key,
+            workline_id=45,
+            material_session_id=300,
+        )
+        inbox = make_inbox(
+            kind=InboxKind.EXTERNAL_HTTP,
+            trace_id="trace-shared-001",
+            payload_json={
+                "callback_type": "WMS_RACK_ARRIVED",
+                "dispatch_key": dispatch_key,
+            },
+        )
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=None,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.id == 300
+        assert inbox.session_id == 300
+        assert inbox.workline_id == 45
+        assert resolver.rack_task_repo.find_calls == [("dispatch_key", dispatch_key)]
 
     @pytest.mark.asyncio
     async def test_resolve_manual_hold_by_session_id(

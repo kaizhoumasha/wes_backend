@@ -24,6 +24,7 @@ from src.app.device.repositories.command_repository import DeviceCommandReposito
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository, outbox_repository
+from src.app.workline.repositories.rack_task_repository import WorklineRackTaskRepository, workline_rack_task_repository
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -269,6 +270,7 @@ class SessionResolver:
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         outbox_repo: WorklineOutboxRepository | None = None,
+        rack_task_repo: WorklineRackTaskRepository | None = None,
     ) -> None:
         """初始化 SessionResolver
 
@@ -278,6 +280,7 @@ class SessionResolver:
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or DeviceCommandRepository()
         self.outbox_repo = outbox_repo or outbox_repository
+        self.rack_task_repo = rack_task_repo or workline_rack_task_repository
 
     async def resolve_or_create(
         self,
@@ -481,6 +484,10 @@ class SessionResolver:
                     inbox.session_id = session_by_dispatch_key.id
                     inbox.workline_id = getattr(session_by_dispatch_key, "workline_id", None)
                     return session_by_dispatch_key
+            if outbox is not None:
+                session_by_rack_task = await self._resolve_rack_task_material_session(db, inbox, dispatch_key)
+                if session_by_rack_task is not None:
+                    return session_by_rack_task
 
         if not trace_id:
             raise ValueError("trace_id is required for EXTERNAL_HTTP")
@@ -496,6 +503,34 @@ class SessionResolver:
 
         inbox.session_id = session.id
         inbox.workline_id = getattr(session, "workline_id", None)
+        return session
+
+    async def _resolve_rack_task_material_session(
+        self,
+        db: AsyncSession,
+        inbox: "WorklineInbox",
+        dispatch_key: str,
+    ) -> WorklineSession | None:
+        """通过 rack task 找回被挂起的物料 session。"""
+
+        rack_task = await self.rack_task_repo.get_by_dispatch_key(db, dispatch_key)
+        if rack_task is None:
+            return None
+
+        workline_id = getattr(rack_task, "workline_id", None)
+        if isinstance(workline_id, int):
+            inbox.workline_id = workline_id
+
+        material_session_id = getattr(rack_task, "material_session_id", None)
+        if not isinstance(material_session_id, int):
+            return None
+
+        session = await self.session_repo.get_by_id(db, material_session_id)
+        if session is None:
+            return None
+
+        inbox.session_id = session.id
+        inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
         return session
 
     async def _resolve_by_session_id(

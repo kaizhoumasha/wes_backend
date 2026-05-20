@@ -552,7 +552,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
 
 
 @pytest.mark.asyncio
-async def test_external_request_intent_records_full_box_exchange_task(
+async def test_rack_task_request_creates_rack_task_outbox_without_waiting_material_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
@@ -561,43 +561,57 @@ async def test_external_request_intent_records_full_box_exchange_task(
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
-    class RecordingFullBoxExchangeTaskService:
-        async def record_requested_from_external_request(self, **kwargs: Any) -> None:
+    class RecordingRackTaskService:
+        async def record_requested_from_rack_task_request(self, **kwargs: Any) -> SimpleNamespace:
             task_calls.append(kwargs)
+            return SimpleNamespace(id=901, task_key=kwargs["task_key"])
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
         timelines.append(kwargs)
 
     monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
 
-    await RuntimeIntentEffectApplier(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService()).apply(
+    await RuntimeIntentEffectApplier(rack_task_service=RecordingRackTaskService()).apply(
         ctx,
         [
-            RuntimeIntent.external_request(
-                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-                target_code="http://wms-rcs/api/full-box-exchange",
+            RuntimeIntent.rack_task_request(
+                task_type="RACK_SUPPLY",
+                task_key="rack-task:supply:trace-runtime",
+                dispatch_key="external:smt_classifier:trace-runtime:RACK_SUPPLY",
+                target_code="http://wms-rcs/api/rack-supply",
                 payload={
-                    "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
-                    "rack_release_id": "release-001",
-                    "exchange_area_code": "SMT-EXCHANGE",
-                    "requested_bins": [{"bin_code": "BIN-001", "rack_slot_code": "A01"}],
+                    "request_type": "SMT_RACK_SUPPLY",
+                    "dispatch_key": "external:smt_classifier:trace-runtime:RACK_SUPPLY",
                 },
                 timeout_seconds=1800,
                 source_system="WMS_RCS",
+                rack_code="RACK-001",
+                position_code="SINGLE_LAYER_A",
+                context_patch={"rack_supply": {"status": "REQUESTED"}},
             )
         ],
     )
 
     outbox = db.add.call_args.args[0]
+    assert outbox.session_id is None
+    assert outbox.workline_id == 1
+    assert outbox.dispatch_type == "EXTERNAL_HTTP"
+    assert outbox.target_type == "HTTP_ENDPOINT"
+    assert outbox.dispatch_key == "external:smt_classifier:trace-runtime:RACK_SUPPLY"
     assert len(task_calls) == 1
-    assert task_calls[0]["db"] is db
     assert task_calls[0]["session"] is session
+    assert task_calls[0]["workline"] is ctx["workline"]
     assert task_calls[0]["outbox"] is outbox
-    assert task_calls[0]["dispatch_key"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
-    assert task_calls[0]["target_code"] == "http://wms-rcs/api/full-box-exchange"
-    assert task_calls[0]["payload_json"]["rack_release_id"] == "release-001"
-    assert task_calls[0]["trace_id"] == "trace-runtime"
-    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
+    assert task_calls[0]["task_type"] == "RACK_SUPPLY"
+    assert task_calls[0]["task_key"] == "rack-task:supply:trace-runtime"
+    assert task_calls[0]["rack_code"] == "RACK-001"
+    assert task_calls[0]["position_code"] == "SINGLE_LAYER_A"
+    assert session.status == "RUNNING"
+    assert session.current_wait_type is None
+    assert session.awaiting_command_id is None
+    assert session.context_json["rack_supply"]["status"] == "REQUESTED"
+    assert session.context_json["waiting_rack_task_id"] == 901
+    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED"]
 
 
 @pytest.mark.asyncio

@@ -927,8 +927,8 @@ async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
-        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_EXCHANGE_AND_SUPPLY",
+        request_type="SMT_RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_SUPPLY",
         trace_id="trace-rack-mock",
         material={
             "PkgID": "PKG-RACK-MOCK-001",
@@ -937,7 +937,7 @@ async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest
             "DateCode": "122625",
             "LotCode": "8904936031",
         },
-        actions=["EXCHANGE_RACK", "SUPPLY_EMPTY_BIN"],
+        actions=["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"],
         resume_callback_type="WMS_RACK_ARRIVED",
     )
 
@@ -979,11 +979,11 @@ async def test_rack_exchange_mock_progress_mode_keeps_waiting(monkeypatch: pytes
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
-        dispatch_key="external:smt_classifier:trace-rack-progress:RACK_EXCHANGE_AND_SUPPLY",
+        request_type="SMT_RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-rack-progress:RACK_SUPPLY",
         trace_id="trace-rack-progress",
         material={"PkgID": "PKG-RACK-MOCK-002"},
-        actions=["EXCHANGE_RACK"],
+        actions=["MOVE_OUT_ACTIVE_RACK"],
         resume_callback_type="WMS_RACK_ARRIVED",
     )
 

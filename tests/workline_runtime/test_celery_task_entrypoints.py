@@ -74,12 +74,9 @@ def test_map_command_task_type_preserves_plugin_task_type(task_type: str) -> Non
     assert _map_command_task_type(task_type) == task_type
 
 
-def test_smt_full_box_exchange_candidate_scan_task_is_registered() -> None:
-    assert hasattr(workline_tasks, "scan_smt_full_box_exchange_candidates_batch")
-    assert config.beat_schedule["scan-smt-full-box-exchange-candidates-batch"] == {
-        "task": "src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
-        "schedule": 60.0,
-    }
+def test_smt_full_box_exchange_candidate_scan_task_is_removed() -> None:
+    assert not hasattr(workline_tasks, "scan_smt_full_box_exchange_candidates_batch")
+    assert "scan-smt-full-box-exchange-candidates-batch" not in config.beat_schedule
 
 
 def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:

@@ -237,7 +237,7 @@ class TestCallbackEnqueueFallback:
         db_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_external_records_full_box_exchange_callback(self) -> None:
+    async def test_process_external_records_rack_task_callback(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         calls: list[dict[str, Any]] = []
@@ -246,11 +246,11 @@ class TestCallbackEnqueueFallback:
             async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
                 return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
 
-        class RecordingFullBoxExchangeTaskService:
+        class RecordingRackTaskService:
             async def record_callback_from_external_http(self, **kwargs: Any) -> None:
                 calls.append(kwargs)
 
-        service = CallbackOrchestrationService(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService())
+        service = CallbackOrchestrationService(rack_task_service=RecordingRackTaskService())
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(

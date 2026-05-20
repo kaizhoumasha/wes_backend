@@ -9,10 +9,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from pydantic import ValidationError
 
 from src.app.resource.services import (
-    SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
-    SmtRackReleaseEvent,
     SmtRackSupplyRequest,
     smt_rack_bin_scheduling_service,
 )
@@ -152,7 +150,7 @@ def _resolve_pkg_id_from_result(result: NormalizedCommandResult) -> str | None:
     return cast("str | None", data.get("PkgID") or data.get("pkg_id") or None)
 
 
-def _normalize_external_request_fields(
+def _normalize_rack_supply_request_fields(
     value: Any,
     *,
     field_name: str,
@@ -175,27 +173,10 @@ def _normalize_external_request_fields(
     )
 
 
-def _normalize_full_box_exchange_request(value: Any) -> SmtFullBoxExchangeRequest:
-    if isinstance(value, SmtFullBoxExchangeRequest):
-        return value
-    dispatch_key, target_code, payload, timeout_seconds, source_system = _normalize_external_request_fields(
-        value,
-        field_name="full_box_exchange_request",
-        type_name="SmtFullBoxExchangeRequest",
-    )
-    return SmtFullBoxExchangeRequest(
-        dispatch_key=dispatch_key,
-        target_code=target_code,
-        payload=payload,
-        timeout_seconds=timeout_seconds,
-        source_system=source_system,
-    )
-
-
 def _normalize_rack_supply_request(value: Any) -> SmtRackSupplyRequest:
     if isinstance(value, SmtRackSupplyRequest):
         return value
-    dispatch_key, target_code, payload, timeout_seconds, source_system = _normalize_external_request_fields(
+    dispatch_key, target_code, payload, timeout_seconds, source_system = _normalize_rack_supply_request_fields(
         value,
         field_name="rack_supply_request",
         type_name="SmtRackSupplyRequest",
@@ -206,29 +187,6 @@ def _normalize_rack_supply_request(value: Any) -> SmtRackSupplyRequest:
         payload=payload,
         timeout_seconds=timeout_seconds,
         source_system=source_system,
-    )
-
-
-def _normalize_rack_release_event(value: Any) -> SmtRackReleaseEvent | None:
-    if value is None:
-        return None
-    if isinstance(value, SmtRackReleaseEvent):
-        return value
-    if not isinstance(value, Mapping):
-        raise TypeError("rack_release_event must be a mapping or SmtRackReleaseEvent")
-
-    release_event = cast("Mapping[str, Any]", value)
-    data = release_event.get("data")
-    if not isinstance(data, Mapping):
-        raise TypeError("rack_release_event.data must be a mapping")
-    event_data = cast("Mapping[str, Any]", data)
-    return SmtRackReleaseEvent(
-        device_code=str(release_event.get("device_code") or ""),
-        event_type=str(release_event.get("event_type") or "SINGLE_LAYER_RACK_RELEASED"),
-        data=dict(event_data),
-        event_id=non_empty_str(release_event.get("event_id")),
-        causation_id=non_empty_str(release_event.get("causation_id")),
-        canonical_event_type=str(release_event.get("canonical_event_type") or "SINGLE_LAYER_RACK_RELEASED"),
     )
 
 
@@ -248,15 +206,10 @@ def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecisi
         raise TypeError("bin scheduling result must be a mapping or SmtRackBinSchedulingDecision")
 
     decision = cast("Mapping[str, Any]", value)
-    if "full_box_exchange_request" in decision:
-        return SmtRackBinSchedulingDecision(
-            full_box_exchange_request=_normalize_full_box_exchange_request(decision["full_box_exchange_request"])
-        )
     if "rack_supply_request" in decision:
         return SmtRackBinSchedulingDecision(
             kind=_normalize_scheduling_decision_kind(decision.get("kind"), "RACK_SUPPLY_REQUIRED"),
             rack_supply_request=_normalize_rack_supply_request(decision["rack_supply_request"]),
-            rack_release_event=_normalize_rack_release_event(decision.get("rack_release_event")),
             reason_code=non_empty_str(decision.get("reason_code")),
             message=non_empty_str(decision.get("message")),
         )
@@ -271,16 +224,8 @@ def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecisi
             reason_code=reason_code,
             message=non_empty_str(decision.get("message")),
         )
-    if kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"} or "external_request" in decision:
-        if "external_request" not in decision:
-            raise TypeError(f"{kind or 'external'} bin scheduling result must include external_request")
-        return SmtRackBinSchedulingDecision(
-            kind="RACK_SUPPLY_REQUIRED" if kind == "RACK_SUPPLY_REQUIRED" else None,
-            external_request=_normalize_rack_supply_request(decision["external_request"]),
-            rack_release_event=_normalize_rack_release_event(decision.get("rack_release_event")),
-            reason_code=non_empty_str(decision.get("reason_code")),
-            message=non_empty_str(decision.get("message")),
-        )
+    if kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"}:
+        raise TypeError(f"{kind} bin scheduling result must include rack_supply_request")
     if kind is not None and kind != "ALLOCATED":
         raise TypeError(f"unsupported bin scheduling decision kind: {kind}")
 
@@ -359,7 +304,7 @@ def _rack_supply_context(
 
 
 def _is_rack_supply_request(request: SmtRackSupplyRequest) -> bool:
-    return request.payload.get("request_type") in {"SMT_RACK_SUPPLY", "SMT_RACK_EXCHANGE_AND_SUPPLY"}
+    return request.payload.get("request_type") == "SMT_RACK_SUPPLY"
 
 
 def _validated_bin_location_or_block(
@@ -1149,29 +1094,21 @@ class SmtClassifierPlugin(WorklinePlugin):
                 resume_source_device_role=resume_source_device_role,
             )
 
-        intents: list[RuntimeIntent] = [ctx.next.update_context(context_patch)]
-        release_event = allocation_decision.rack_release_event
-        if release_event is not None:
-            intents.append(
-                ctx.next.device_event(
-                    device_code=release_event.device_code,
-                    event_type=release_event.event_type,
-                    data=dict(release_event.data),
-                    event_id=release_event.event_id,
-                    causation_id=release_event.causation_id,
-                    canonical_event_type=release_event.canonical_event_type,
-                )
-            )
-        intents.append(
-            ctx.next.external_request(
+        return [
+            ctx.next.update_context(context_patch),
+            ctx.next.rack_task_request(
+                task_type="RACK_SUPPLY",
+                task_key=request.dispatch_key,
                 dispatch_key=request.dispatch_key,
                 target_code=request.target_code,
                 payload=dict(request.payload),
                 timeout_seconds=request.timeout_seconds,
                 source_system=request.source_system,
-            )
-        )
-        return intents
+                rack_code=non_empty_str(request.payload.get("rack_code")),
+                position_code=non_empty_str(request.payload.get("target_position_code"))
+                or non_empty_str(request.payload.get("position_code")),
+            ),
+        ]
 
     @on_command("MOVE_FORWARD", result="FAILED")
     async def handle_conveyor_failed(
@@ -1244,9 +1181,18 @@ class SmtClassifierPlugin(WorklinePlugin):
         return await self._handle_rack_supply_callback(ctx, payload, callback_type, rack_supply)
 
     def _is_pending_rack_supply_callback(self, ctx: PluginContext, rack_supply: Mapping[str, Any]) -> bool:
-        if getattr(ctx.session, "current_wait_type", None) != "EXTERNAL_HTTP":
+        if non_empty_str(rack_supply.get("status")) not in {"REQUESTED", "IN_PROGRESS"}:
             return False
-        return non_empty_str(rack_supply.get("status")) in {"REQUESTED", "IN_PROGRESS"}
+        if getattr(ctx.session, "current_wait_type", None) == "EXTERNAL_HTTP":
+            return True
+        session_context = getattr(ctx.session, "context_json", None)
+        if not isinstance(session_context, Mapping):
+            return False
+        return bool(
+            session_context.get("waiting_rack_task_id")
+            or non_empty_str(session_context.get("waiting_rack_task_key"))
+            == non_empty_str(rack_supply.get("dispatch_key"))
+        )
 
     async def _handle_rack_supply_callback(  # noqa: PLR0911 - WMS/RCS 回调按状态和校验失败显式早返回
         self,

@@ -64,8 +64,8 @@ class ExternalCallbackOutcome:
 class CallbackOrchestrationService:
     """处理 callback 的业务编排。"""
 
-    def __init__(self, *, full_box_exchange_task_service: Any | None = None) -> None:
-        self._full_box_exchange_task_service = full_box_exchange_task_service
+    def __init__(self, *, rack_task_service: Any | None = None) -> None:
+        self._rack_task_service = rack_task_service
 
     def _is_duplicate_inbox_error(self, error: ValueError) -> bool:
         return _DUPLICATE_ERROR_MARKER in str(error)
@@ -541,7 +541,7 @@ class CallbackOrchestrationService:
                 trace = trace.with_inbox(duplicate_inbox)
 
         if not is_duplicate:
-            await self._resolve_full_box_exchange_task_service().record_callback_from_external_http(
+            await self._resolve_rack_task_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
                 trace_id=trace.trace_id,
@@ -554,12 +554,12 @@ class CallbackOrchestrationService:
             is_duplicate=is_duplicate,
         )
 
-    def _resolve_full_box_exchange_task_service(self) -> Any:
-        if self._full_box_exchange_task_service is None:
-            from src.app.workline.services import workline_full_box_exchange_task_service
+    def _resolve_rack_task_service(self) -> Any:
+        if self._rack_task_service is None:
+            from src.app.workline.services import workline_rack_task_service
 
-            self._full_box_exchange_task_service = workline_full_box_exchange_task_service
-        return self._full_box_exchange_task_service
+            self._rack_task_service = workline_rack_task_service
+        return self._rack_task_service
 
 
 callback_orchestration_service = CallbackOrchestrationService()
