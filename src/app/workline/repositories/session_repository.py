@@ -2,10 +2,11 @@
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.session import WorklineSession
+from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.workline.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 
@@ -121,16 +122,16 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
-    async def get_by_correlation_id(
+    async def get_by_trace_id(
         self,
         db: AsyncSession,
-        correlation_id: str,
+        trace_id: str,
     ) -> WorklineSession | None:
-        """根据关联 ID 查询会话
+        """根据 Trace ID 查询会话
 
         Args:
             db: 数据库会话
-            correlation_id: 关联 ID（串联业务流程）
+            trace_id: Trace ID（串联业务流程）
 
         Returns:
             匹配的会话（如果有）
@@ -138,9 +139,19 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession).where(
-                columns.correlation_id == correlation_id,
+                columns.trace_id == trace_id,
             )
         )
+        return result.scalar_one_or_none()
+
+    async def get_for_update(
+        self,
+        db: AsyncSession,
+        session_id: int,
+    ) -> WorklineSession | None:
+        """根据 ID 查询并锁定 Session。"""
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(select(WorklineSession).where(columns.id == session_id).with_for_update())
         return result.scalar_one_or_none()
 
     async def get_open_session_by_awaiting_command_id(
@@ -172,7 +183,8 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
     ) -> list[WorklineSession]:
         """获取已超时的 Session 列表
 
-        只查询处于等待状态且 deadline_at 已过期的 Session。
+        查询 ACK_RECEIVED 后执行等待或外部系统等待已过期的 Session；
+        no-ACK 派发失败不属于 TIMER_TIMEOUT。
 
         Args:
             db: 数据库会话
@@ -182,23 +194,116 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             超时的 Session 列表
         """
         columns = cast("Any", WorklineSession).__table__.c
-        # 等待状态：可能超时的状态
-        waiting_statuses = [
-            "WAITING_DEVICE_RESULT",
-            "WAITING_EXTERNAL",
-        ]
-
+        command_columns = cast("Any", DeviceCommand).__table__.c
         now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession)
+            .outerjoin(DeviceCommand, columns.awaiting_command_id == command_columns.id)
             .where(
-                columns.status.in_(waiting_statuses),
                 columns.deadline_at.isnot(None),
                 columns.deadline_at < now,
+                or_(
+                    and_(
+                        columns.status == SessionStatus.WAITING_DEVICE_RESULT,
+                        columns.awaiting_command_id.isnot(None),
+                        command_columns.status == CommandStatus.ACK_RECEIVED,
+                        command_columns.ack_received_at.isnot(None),
+                    ),
+                    columns.status == SessionStatus.WAITING_EXTERNAL,
+                ),
             )
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def get_pending_reconciliation_by_command_id(
+        self,
+        db: AsyncSession,
+        command_id: int,
+    ) -> WorklineSession | None:
+        """查询指定 command 当前未解除的 runtime reconciliation owner session。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.reconciliation_command_id == command_id,
+                columns.reconciliation_state == RuntimeReconciliationState.PENDING,
+            )
+            .order_by(columns.reconciliation_occurred_at.desc(), columns.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_pending_reconciliation_owner_for_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> WorklineSession | None:
+        """查询 WorkLine 当前 runtime reconciliation owner session。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.reconciliation_state == RuntimeReconciliationState.PENDING,
+            )
+            .order_by(columns.reconciliation_occurred_at.asc(), columns.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_pending_reconciliations_for_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> int:
+        """统计 WorkLine 尚未解除的 runtime reconciliation 数量。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(func.count(columns.id)).where(
+                columns.workline_id == workline_id,
+                columns.reconciliation_state == RuntimeReconciliationState.PENDING,
+            )
+        )
+        return int(result.scalar_one() or 0)
+
+    async def fail_open_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        incident_id: int,
+    ) -> int:
+        """将 WorkLine 未完成 Session 终止为失败。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+            )
+            .with_for_update()
+        )
+        sessions = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for session in sessions:
+            session.status = SessionStatus.FAILED
+            session.failure_domain = "SAFETY"
+            session.failure_code = "WORKLINE_ESTOPPED"
+            session.failure_message = f"WorkLine 急停冻结，incident_id={incident_id}"
+            session.ended_at = now
+        return len(sessions)
 
 
 # 创建单例

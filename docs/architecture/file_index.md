@@ -1,5 +1,7 @@
 # P9 WES Backend 项目文件索引
 
+> Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
+
 **最后更新**: 2026年4月21日
 **同步状态**: ⚠️ 已完成高优先级文档入口修正；其余内容请以实际仓库结构为准
 
@@ -75,6 +77,7 @@
 | `CLAUDE.md` | Claude Code 开发指南（架构、规范、最佳实践） | 📖 必读文档 |
 | `DOCKER.md` | Docker 使用说明 | 📚 参考资料 |
 | `Jenkinsfile` | Jenkins CI/CD 配置 | 📚参考资料 |
+| `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
 | `docs/devops/prod-release-deploy.md` | 生产环境手动发布与回滚 Runbook | 📖 必读文档 |
 
 #### 🚀 应用入口
@@ -337,7 +340,7 @@
 | | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
-| | `session_repository.py` | Session Repository（按 business_key / correlation_id / awaiting_command_id 查询） | 🔧 架构核心 |
+| | `session_repository.py` | Session Repository（按 business_key / trace_id / awaiting_command_id 查询） | 🔧 架构核心 |
 | | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
@@ -370,7 +373,7 @@
 | `payloads.py` | 共享 Payload 定义（Pydantic 模型；`SixInOne` 已迁至 `contracts/` 统一维护） | 🔄 常用功能 |
 | `contracts/` | 运行时统一合同模型（`SixInOne` SSOT、标准设备错误码） | 🔧 架构核心 |
 | `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
-| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / correlation_id / session / command / outbox 绑定） | 🔧 架构核心 |
+| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / trace_id / session / command / outbox 绑定） | 🔧 架构核心 |
 | `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
 | `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
 | `device_target_resolver.py` | 基于 source device + topology + role 解析命令目标设备 | 🔧 架构核心 |
@@ -383,24 +386,23 @@
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `smt_classifier/plugin.py` | 当前标准化改造样板插件：保留业务状态机与流程决策，协议细节下沉到局部模块 | 🔄 常用功能 |
+| `smt_classifier/plugin.py` | 当前标准化改造样板插件：只产出 RuntimeIntent，协议细节下沉到局部模块，运行时拥有拓扑、Session、命令和终态副作用 | 🔄 常用功能 |
 | `smt_classifier/contract.py` | SMT 粗分机插件协议模型（事件/结果 Payload） | 🔄 常用功能 |
 | `smt_classifier/normalizers.py` | SMT 粗分机插件数据解析与设备错误码兼容辅助 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
-- **性能对比报告**：`docs/plugin_performance_comparison.md` 📚 参考资料
-- **系统 vs 插件能力**：`docs/system_vs_plugin_capabilities.md` 📚 参考资料
-- **工作线流程图**：`docs/workline_flow_diagram.md` 📚 参考资料
-- **Transition 流程详解**：`docs/transition_flow_guide.md` 📚 参考资料
-- **快速验证指南**：`docs/plugin_validation_quickstart.md` 📚 参考资料
+- **插件模板说明**：`docs/templates/workline_plugin/README.md` 📖 必读文档
+- **RuntimeIntent 架构设计**：`docs/business/workline_plugin_architecture_design.md` 📖 必读文档
+- **Runtime 工作流指南**：`docs/business/workline_runtime_workflow_guide.md` 📖 必读文档
+- **旧 PluginResult 资料归档**：`docs/archive/legacy-plugin-result/README.md` 📚 历史对照
 
 **核心特性**：
-- **装饰器驱动**：`@on_event()`, `@on_command()`, `@step()` 自动路由
+- **装饰器驱动**：`@on_event()`, `@on_command()` 类型化路由
 - **Pydantic 自动验证**：Payload 自动解析和类型安全
-- **状态机集成**：声明式状态迁移，自动校验
-- **链式响应构建**：`PluginResultBuilder` 简化结果构建
-- **代码减少 70%**：1915 行 → ~500 行（SmtClassifierPlugin 示例）
+- **RuntimeIntent 输出**：插件只声明上下文更新、命令、等待、业务 NG、完成或阻断意图
+- **运行时拥有副作用**：拓扑解析、Session 生命周期、命令/outbox、等待状态和终态写入集中在 Runtime
+- **无插件状态机**：不再使用 per-plugin `state_machine.py`、`transitions`、`PluginResultBuilder` 或 `plugin_state`
 
 #### 🔔 回调模块 (src/app/callback/)
 

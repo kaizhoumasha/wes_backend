@@ -15,10 +15,10 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import ValidationError
 
 from src.workline_runtime.plugin_context import PluginContext
 from src.workline_runtime.plugin_sdk.contracts import ResolvedExecutionContext
+from src.workline_runtime.services import WorklineRuntimeServices
 
 
 class TestPluginContextCreation:
@@ -53,8 +53,8 @@ class TestPluginContextCreation:
 
     @pytest.fixture
     def mock_services(self):
-        """创建模拟的服务容器"""
-        return MagicMock()
+        """创建运行时服务容器"""
+        return WorklineRuntimeServices()
 
     @pytest.fixture
     def mock_runtime(self):
@@ -69,7 +69,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={"scan_timeout": 30},
             binding_config={"SCANNER": {"device_id": 1}},
             runtime=mock_runtime,
@@ -81,7 +81,7 @@ class TestPluginContextCreation:
         assert ctx.workline == mock_workline
         assert ctx.session == mock_session
         assert ctx.devices_by_role["SCANNER"][0] == mock_device
-        assert ctx.correlation_id == "corr-123"
+        assert ctx.trace_id == "trace-123"
         assert ctx.config["scan_timeout"] == 30
 
     def test_get_device_by_role_found(self, mock_workline, mock_session, mock_services, mock_runtime):
@@ -94,7 +94,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -117,7 +117,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -139,7 +139,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role=devices_by_role,
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -159,7 +159,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -177,7 +177,7 @@ class TestPluginContextCreation:
             workline=mock_workline,
             session=mock_session,
             devices_by_role={},
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
@@ -193,16 +193,16 @@ class TestPluginContextCreation:
     def test_arbitrary_types_allowed(self, mock_workline, mock_session, mock_services, mock_runtime):
         """测试 arbitrary_types_allowed 配置允许任意类型"""
         # MagicMock 不是 Pydantic 默认支持的类型
-        # 但 Config.arbitrary_types_allowed = True 应该允许
+        # 但 Config.arbitrary_types_allowed = True 应该允许业务实体字段
         ctx = PluginContext(
             workline=mock_workline,  # MagicMock
             session=mock_session,  # MagicMock
             devices_by_role={},  # dict[str, list[MagicMock]]
-            correlation_id="corr-123",
+            trace_id="trace-123",
             config={},
             binding_config={},
             runtime=mock_runtime,
-            services=mock_services,  # MagicMock
+            services=mock_services,
             logger=logging.getLogger("test"),
             clock=lambda: datetime.now(),
         )

@@ -10,7 +10,7 @@ import time
 from typing import Any, cast
 
 from redis.asyncio import ConnectionPool, Redis
-from redis.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from redis.exceptions import AuthenticationError, ConnectionError, MaxConnectionsError, TimeoutError
 
 from src.core.conf import settings
 from src.core.logger import logger
@@ -86,15 +86,16 @@ class RedisManager:
                 f"   系统将自动检测 Redis 恢复并重连"
             )
 
-    async def reconnect(self) -> bool:
+    async def reconnect(self, *, force: bool = False) -> bool:
         """
         尝试重新连接 Redis
 
+        :param force: 是否忽略重连频率限制，连接池耗尽等确定性故障需要立即清理
         :return: 重连是否成功
         """
         # 限制重连频率（避免过于频繁）
         current_time = time.time()
-        if current_time - self._last_reconnect_attempt < self._reconnect_interval:
+        if not force and current_time - self._last_reconnect_attempt < self._reconnect_interval:
             return False
 
         self._last_reconnect_attempt = current_time
@@ -130,6 +131,10 @@ class RedisManager:
                 elif not ping_result:
                     raise ConnectionError("Redis ping failed")
                 return True
+            except MaxConnectionsError:
+                logger.warning("Redis 连接池耗尽，强制重建连接池...")
+                self.is_available = False
+                return await self.reconnect(force=True)
             except TimeoutError:
                 logger.warning("Redis 连接超时，尝试重连...")
                 self.is_available = False

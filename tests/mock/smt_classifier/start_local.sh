@@ -37,6 +37,9 @@ echo ""
 echo "项目根目录: $PROJECT_ROOT"
 echo "WES 事件回调: $WES_EVENT_CALLBACK_URL"
 echo "WES 结果回调: $WES_RESULT_CALLBACK_URL"
+echo "货架初始化: 默认混合单层货架（2个6格箱 + 2个3格箱）"
+echo "ARM 测量直径: ${ARM_MEASUREMENT_REEL_DIAMETER:-15inch}"
+echo "ARM 测量厚度: ${ARM_MEASUREMENT_REEL_THICKNESS:-20}"
 echo ""
 
 # 检查 WES 是否运行

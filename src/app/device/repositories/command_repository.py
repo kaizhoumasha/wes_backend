@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 
 class DeviceCommandRepository(BaseRepository[DeviceCommand]):
@@ -39,7 +40,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
     async def get_pending_commands(
         self,
         db: AsyncSession,
-        device_id: str | None = None,
+        device_id: int | None = None,
         limit: int = 100,
     ) -> list[DeviceCommand]:
         """
@@ -56,7 +57,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         columns = cast("Any", DeviceCommand).__table__.c
         statement = select(DeviceCommand).where(columns.status == CommandStatus.PENDING)
 
-        if device_id:
+        if device_id is not None:
             statement = statement.where(columns.device_id == device_id)
 
         statement = statement.order_by(columns.priority.desc()).limit(limit)
@@ -87,6 +88,26 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
         return timeout_commands[:limit]
 
+    async def get_ack_timed_out_commands(self, db: AsyncSession, limit: int = 100) -> list[DeviceCommand]:
+        """获取已发送但一直没有收到 ACK 的超时指令。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = (
+            select(DeviceCommand)
+            .where(
+                columns.status == CommandStatus.SENT,
+                columns.sent_at.is_not(None),
+                columns.ack_received_at.is_(None),
+                columns.session_id_int.is_not(None),
+                columns.workline_id.is_not(None),
+            )
+            .order_by(columns.sent_at.asc(), columns.id.asc())
+        )
+
+        result = await db.execute(statement)
+        commands = list(result.scalars().all())
+        return [command for command in commands if command.is_timeout()][:limit]
+
     async def get_active_commands_for_device(
         self,
         db: AsyncSession,
@@ -113,24 +134,24 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def get_commands_by_correlation_id(self, db: AsyncSession, correlation_id: str) -> list[DeviceCommand]:
+    async def get_commands_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[DeviceCommand]:
         """
-        根据关联 ID 查询所有相关指令
+        根据 Trace ID 查询所有相关指令
 
         Args:
             db: 数据库会话
-            correlation_id: 关联 ID
+            trace_id: Trace ID
 
         Returns:
             相关指令列表
         """
         columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(columns.correlation_id == correlation_id).order_by(columns.created_at)
+        statement = select(DeviceCommand).where(columns.trace_id == trace_id).order_by(columns.created_at)
 
         result = await db.execute(statement)
         return list(result.scalars().all())
 
-    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: str | None = None) -> int:
+    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: int | None = None) -> int:
         """
         统计指定状态的指令数量
 
@@ -147,11 +168,42 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         columns = cast("Any", DeviceCommand).__table__.c
         statement = select(func.count(columns.id)).where(columns.status == status)
 
-        if device_id:
+        if device_id is not None:
             statement = statement.where(columns.device_id == device_id)
 
         result = await db.execute(statement)
         return result.scalar_one() or 0
+
+    async def cancel_active_by_workline(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        incident_id: int,
+    ) -> int:
+        """取消 WorkLine 尚未闭环的设备指令。"""
+
+        active_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(active_statuses),
+            )
+            .with_for_update()
+        )
+        commands = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for command in commands:
+            command.status = CommandStatus.CANCELLED
+            command.completed_at = now
+            command.error_detail = {
+                "error_code": "CANCELLED_BY_ESTOP",
+                "error_message": "WorkLine 急停冻结，指令已取消",
+                "safety_incident_id": incident_id,
+            }
+        return len(commands)
 
 
 # 创建单例

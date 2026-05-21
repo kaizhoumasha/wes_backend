@@ -22,7 +22,6 @@ def test_template_assets_cover_required_files() -> None:
         "plugin.py.tmpl",
         "contract.py.tmpl",
         "context.py.tmpl",
-        "state_machine.py.tmpl",
         "tests.py.tmpl",
         "sandbox_happy_path.md",
         "fixtures/event_happy_path.json",
@@ -77,8 +76,11 @@ def test_code_templates_do_not_use_legacy_step_code() -> None:
         assert "step_code" not in content
         assert "ClassificationResult" not in content
 
-    for name in ("context.py.tmpl", "plugin.py.tmpl", "tests.py.tmpl"):
-        assert "plugin_state" in (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+    removed_state_key = "plugin" + "_state"
+    for path in TEMPLATE_DIR.glob("*.py.tmpl"):
+        assert removed_state_key not in path.read_text(encoding="utf-8")
+    assert f"{removed_state_key}=" not in plugin_template
 
 
 def test_plugin_guide_uses_current_result_classifier_contract() -> None:

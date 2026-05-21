@@ -10,6 +10,7 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceDetailResponse,
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
+    RuntimeTracePathResponse,
     RuntimeWorklineDetailResponse,
     RuntimeWorklineSummary,
 )
@@ -28,8 +29,11 @@ router = APIRouter(tags=["运行监控"])
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
-async def get_runtime_overview(db: AsyncSessionDep) -> ResponseSchemaModel[RuntimeOverviewResponse]:
-    result = await runtime_query_service.get_overview(db)
+async def get_runtime_overview(
+    db: AsyncSessionDep,
+    include_sim: bool = Query(default=False, alias="includeSim"),
+) -> ResponseSchemaModel[RuntimeOverviewResponse]:
+    result = await runtime_query_service.get_overview(db, include_sim=include_sim)
     return cast("ResponseSchemaModel[RuntimeOverviewResponse]", response_builder.success(data=result))
 
 
@@ -40,8 +44,11 @@ async def get_runtime_overview(db: AsyncSessionDep) -> ResponseSchemaModel[Runti
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
-async def get_runtime_worklines(db: AsyncSessionDep) -> ResponseSchemaModel[list[RuntimeWorklineSummary]]:
-    result = await runtime_query_service.list_worklines(db)
+async def get_runtime_worklines(
+    db: AsyncSessionDep,
+    exclude_simulation: bool = Query(default=False, alias="excludeSimulation"),
+) -> ResponseSchemaModel[list[RuntimeWorklineSummary]]:
+    result = await runtime_query_service.list_worklines(db, exclude_simulation=exclude_simulation)
     return cast("ResponseSchemaModel[list[RuntimeWorklineSummary]]", response_builder.success(data=result))
 
 
@@ -102,6 +109,46 @@ async def get_runtime_device_detail(
             ),
         )
     return cast("ResponseSchemaModel[RuntimeDeviceDetailResponse]", response_builder.success(data=result))
+
+
+@router.get(
+    "/sessions/{session_id}/path",
+    summary="[biz:workline:list] Session 设备路径视图",
+    response_model=ResponseSchemaModel[RuntimeTracePathResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_session_path(
+    session_id: int,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[RuntimeTracePathResponse]:
+    result = await runtime_query_service.get_session_path(db, session_id)
+    if result is None:
+        return cast(
+            "ResponseSchemaModel[RuntimeTracePathResponse]",
+            response_builder.fail(code=DEFAULT_NOT_FOUND, message=f"Session 路径不存在: {session_id}"),
+        )
+    return cast("ResponseSchemaModel[RuntimeTracePathResponse]", response_builder.success(data=result))
+
+
+@router.get(
+    "/traces/{trace_id}/path",
+    summary="[biz:workline:list] Trace 设备路径视图",
+    response_model=ResponseSchemaModel[RuntimeTracePathResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_trace_path(
+    trace_id: str,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[RuntimeTracePathResponse]:
+    result = await runtime_query_service.get_trace_path(db, trace_id)
+    if result is None:
+        return cast(
+            "ResponseSchemaModel[RuntimeTracePathResponse]",
+            response_builder.fail(code=DEFAULT_NOT_FOUND, message=f"Trace 路径不存在: {trace_id}"),
+        )
+    return cast("ResponseSchemaModel[RuntimeTracePathResponse]", response_builder.success(data=result))
 
 
 __all__ = ["router"]

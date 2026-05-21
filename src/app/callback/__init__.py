@@ -10,6 +10,6 @@ router_v1 = APIRouter(prefix="/v1/callback", tags=["Callback"])
 # 注册回调路由
 router_v1.include_router(callback_router)
 # 注册回调日志查询路由
-router_v1.include_router(callback_log_router, prefix="/logs")
+router_v1.include_router(callback_log_router)
 
 __all__ = ["router_v1"]

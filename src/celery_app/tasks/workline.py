@@ -11,9 +11,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, NoReturn, TypedDict, cast
 
 from celery import Task
@@ -21,8 +24,10 @@ from sqlalchemy import text
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models import DeviceStatus, parse_device_capabilities
-from src.app.device.models.command import DeviceCommand  # noqa: F401
+from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device  # noqa: F401
+from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEFAULT_COMMAND_PRIORITY,
@@ -33,9 +38,14 @@ from src.celery_app.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
 )
 from src.core.logger import logger
+from src.database import db as db_module
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_plugin_registry import (
+    get_plugin_contract_version,
+    get_workline_plugin_definition,
+    parse_workline_six_in_one,
+)
 from src.workline_runtime.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -48,11 +58,12 @@ from src.workline_runtime.diagnostics import (
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.plugin_state import project_plugin_state_for_trace
 from src.workline_runtime.run_mode import is_simulation_run_mode, normalize_run_mode
+from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
+from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.types import BusinessDecisionIntent, FailureIntent
 from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
@@ -72,7 +83,7 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
     """
 
     data_field = payload.get("data")
-    data = data_field if isinstance(data_field, dict) else {}
+    data = cast("dict[str, Any]", data_field) if isinstance(data_field, dict) else {}
     fields = ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID", "ProductNo", "PONumber", "barcode")
     return any(isinstance(data.get(field), str) and data.get(field) for field in fields)
 
@@ -82,6 +93,17 @@ def _enqueue_outbox_dispatch() -> None:
         "src.celery_app.tasks.workline.dispatch_outbox_batch",
         kwargs={"limit": 50},
     )
+
+
+def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
+    for intent in result.intents or []:
+        if intent.kind == RuntimeIntentKind.COMMAND:
+            return True
+        if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
+            return True
+        if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
+            return True
+    return False
 
 
 # ============================================
@@ -103,6 +125,7 @@ class ScanResult(TypedDict):
 
     scanned: int
     timeouts_created: int
+    ack_timeouts_reconciled: int
     errors: int
 
 
@@ -111,6 +134,16 @@ class DeviceHeartbeatScanResult(TypedDict):
 
     scanned: int
     marked_offline: int
+
+
+class SmtFullBoxExchangeCandidateScanResult(TypedDict):
+    """SMT 满箱交换候选扫描结果"""
+
+    scanned: int
+    inbox_created: int
+    already_linked: int
+    skipped: int
+    errors: int
 
 
 class DispatchResult(TypedDict):
@@ -130,22 +163,56 @@ class LoadedEntities(TypedDict):
     device: Any | None
     command: Any | None
     devices_by_role: dict[str, list[Any]]
-    services: Any | None
+    services: WorklineRuntimeServices
+    safety_checked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _InboxDiagnosticSnapshot:
+    """Inbox 诊断快照，避免 rollback 后访问已过期 ORM 字段。"""
+
+    id: int | None
+    kind: Any | None
+    source_message_id: str | None
+    trace_id: str | None
+    event_id: str | None
+    causation_id: str | None
+    workline_id: int | None
+    session_id: int | None
+    device_id: int | None
+    command_id: int | None
+    payload_json: dict[str, Any]
 
 
 # 常量已提取到 src.celery_app.constants
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
+_DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE = "SMT_FULL_EXCHANGE_TRIGGER_01"
+_ENTRY_DEVICE_EVENT_TYPES = frozenset({"SCAN_COMPLETED"})
+_TERMINAL_SESSION_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
+_BUSY_SESSION_STATUSES = frozenset({"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"})
+_TERMINAL_COMMAND_STATUSES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
+_WORKLINE_TASK_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 class _DeviceCommandGovernanceError(RuntimeError):
     """设备治理字段在运行时拒绝命令创建/派发时抛出的显式异常。"""
 
-    def __init__(self, *, domain: str, code: str, message: str):
+    def __init__(
+        self,
+        *,
+        domain: str,
+        code: str,
+        message: str,
+        device_id: int | None = None,
+        device_code: str | None = None,
+    ):
         super().__init__(message)
         self.domain = domain
         self.code = code
         self.message = message
+        self.device_id = device_id
+        self.device_code = device_code
 
 
 # ============================================
@@ -161,18 +228,47 @@ def _resolve_entity_id(entity: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
+    """在事务回滚前提取诊断需要的 Inbox 字段。"""
+
+    return _InboxDiagnosticSnapshot(
+        id=_resolve_entity_id(inbox),
+        kind=getattr(inbox, "kind", None),
+        source_message_id=_optional_str(getattr(inbox, "source_message_id", None)),
+        trace_id=_optional_str(getattr(inbox, "trace_id", None)),
+        event_id=_optional_str(getattr(inbox, "event_id", None)),
+        causation_id=_optional_str(getattr(inbox, "causation_id", None)),
+        workline_id=_optional_int(getattr(inbox, "workline_id", None)),
+        session_id=_optional_int(getattr(inbox, "session_id", None)),
+        device_id=_optional_int(getattr(inbox, "device_id", None)),
+        command_id=_optional_int(getattr(inbox, "command_id", None)),
+        payload_json=dict(payload_dict(getattr(inbox, "payload_json", None))),
+    )
+
+
 def _should_resolve_session(inbox: Any) -> bool:
     """仅在具备足够归属信息时才触发 SessionResolver。"""
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
+    if _canonical_event_type(payload) in RESERVED_RUNTIME_EVENTS:
+        return False
 
     if kind == "DEVICE_EVENT":
         return bool(getattr(inbox, "device_id", None) or payload.get("device_code") or payload.get("business_key"))
     if kind == "COMMAND_RESULT":
         return bool(getattr(inbox, "command_id", None) or payload.get("command_code"))
     if kind == EXTERNAL_HTTP_INBOX_KIND:
-        return bool(getattr(inbox, "correlation_id", None))
+        return bool(getattr(inbox, "trace_id", None))
     if kind in {"TIMER_TIMEOUT", "MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL", "REPLAY_REQUEST"}:
         return isinstance(getattr(inbox, "session_id", None), int)
     return False
@@ -197,19 +293,48 @@ def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retri
     )
 
 
-def _run_async(coro: Awaitable[Any]) -> Any:
-    """在 Celery 同步任务中运行异步函数"""
+def _get_sync_event_loop() -> asyncio.AbstractEventLoop:
+    global _WORKLINE_TASK_LOOP
+
     try:
-        loop = asyncio.get_event_loop()
+        _ = asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        if _WORKLINE_TASK_LOOP is None or _WORKLINE_TASK_LOOP.is_closed():
+            _WORKLINE_TASK_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_WORKLINE_TASK_LOOP)
+        return _WORKLINE_TASK_LOOP
+
+    raise RuntimeError("当前事件循环正在运行，无法同步执行 Workline Celery 任务")
+
+
+def _lazy_init_db(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """在直接调用或 Worker 子进程未完成 signal 初始化时懒初始化数据库。"""
+    if db_module.AsyncSessionLocal is not None:
+        return
+
+    from src.database.db import init_db
+
+    init_loop = loop or _get_sync_event_loop()
+    init_loop.run_until_complete(init_db())
+    logger.info("✓ Workline Celery 任务懒初始化数据库连接成功")
+
+
+def _run_async(coro: Awaitable[Any]) -> Any:
+    """在 Celery 同步任务中运行异步函数。"""
+    try:
+        loop = _get_sync_event_loop()
+        _lazy_init_db(loop)
+    except Exception:
+        with suppress(Exception):
+            cast("Any", coro).close()
+        raise
+
     return loop.run_until_complete(coro)
 
 
-def _resolve_required_pk(entity: Any, entity_name: str, *field_names: str) -> int:
+def _resolve_required_pk(entity: Any, entity_name: str, *_field_names: str) -> int:
     """提取必需的整型主键，不存在时抛出 ValueError。"""
-    _ = field_names
+
     pk = _resolve_entity_id(entity)
     if pk is None:
         raise ValueError(f"{entity_name} missing primary key")
@@ -225,13 +350,295 @@ def _canonical_event_type(payload: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _kind_value(entity: Any) -> str | None:
+    value = getattr(getattr(entity, "kind", None), "value", getattr(entity, "kind", None))
+    return value if isinstance(value, str) and value else None
+
+
+def _session_status_value(session: Any) -> str | None:
+    value = getattr(getattr(session, "status", None), "value", getattr(session, "status", None))
+    return value if isinstance(value, str) and value else None
+
+
+def _command_status_value(command: Any) -> str | None:
+    value = getattr(getattr(command, "status", None), "value", getattr(command, "status", None))
+    return value if isinstance(value, str) else None
+
+
+def _command_code_value(command: Any, payload: dict[str, Any]) -> str | None:
+    command_code = getattr(command, "command_code", None)
+    if isinstance(command_code, str) and command_code:
+        return command_code
+
+    payload_command_code = payload.get("command_code")
+    return payload_command_code if isinstance(payload_command_code, str) and payload_command_code else None
+
+
+def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
+    """从插件 manifest 获取入口事件类型，缺省时保留当前 SMT 入口。"""
+
+    plugin_key = _string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return _ENTRY_DEVICE_EVENT_TYPES
+
+    event_source_roles = getattr(definition.manifest, "event_source_roles", None)
+    if not isinstance(event_source_roles, Mapping):
+        return _ENTRY_DEVICE_EVENT_TYPES
+
+    event_types = frozenset(
+        event_type for event_type in event_source_roles if isinstance(event_type, str) and event_type
+    )
+    return event_types or _ENTRY_DEVICE_EVENT_TYPES
+
+
+def _is_duplicate_entry_event_for_session(
+    *,
+    inbox: Any,
+    payload: dict[str, Any],
+    session: Any | None,
+    workline: Any | None,
+) -> bool:
+    """识别同一处理周期内重复/迟到的入口事件。
+
+    入口事件的业务语义是“为一个物料处理周期建因”。同一 session 一旦离开
+    初始态，后续相同入口事件只应作为证据归档，不能进入普通失败重试；否则
+    retry 到期后可能在已完成 session 上重放整条命令链。
+    """
+
+    if session is None:
+        return False
+    if _kind_value(inbox) != "DEVICE_EVENT":
+        return False
+    if _canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
+        return False
+
+    status = _session_status_value(session)
+    if status in _TERMINAL_SESSION_STATUSES or status in _BUSY_SESSION_STATUSES:
+        return True
+
+    if getattr(session, "awaiting_command_id", None) is not None:
+        return True
+
+    current_wait_type = _string_value(getattr(session, "current_wait_type", None))
+    return bool(current_wait_type)
+
+
+def _is_current_wait_command_result(*, session: Any, command: Any, payload: dict[str, Any]) -> bool:
+    """判断 COMMAND_RESULT 是否仍对应 session 当前声明的等待锚点。"""
+
+    _ = payload
+    command_id = _resolve_entity_id(command)
+    awaiting_command_id = _optional_int(getattr(session, "awaiting_command_id", None))
+    return command_id is not None and awaiting_command_id == command_id
+
+
+def _is_late_or_duplicate_command_result_for_session(
+    *,
+    inbox: Any,
+    payload: dict[str, Any],
+    session: Any | None,
+    command: Any | None,
+) -> bool:
+    """识别已消费过或迟到的 COMMAND_RESULT。
+
+    callback 服务会先把 DeviceCommand 更新成终态，再写 COMMAND_RESULT inbox。
+    因此“命令已终态”本身不能说明 inbox 是重复；真正的单一事实来源是
+    session 当前等待锚点。只有当结果不再匹配当前等待命令，或 session 已经
+    终态时，才把它作为历史证据归档。
+    """
+
+    if session is None or command is None:
+        return False
+    if _kind_value(inbox) != "COMMAND_RESULT":
+        return False
+
+    command_status = _command_status_value(command)
+    if command_status not in _TERMINAL_COMMAND_STATUSES:
+        return False
+
+    if _session_status_value(session) in _TERMINAL_SESSION_STATUSES:
+        return True
+
+    return not _is_current_wait_command_result(session=session, command=command, payload=payload)
+
+
+def _normalized_entry_material_evidence(*, plugin_key: str | None, payload: dict[str, Any]) -> dict[str, str]:
+    """提取插件拥有的入口物料证据，当前优先复用 SixInOne parser。"""
+
+    try:
+        six_in_one = parse_workline_six_in_one(plugin_key, payload_dict(payload.get("data")))
+    except (TypeError, ValueError):
+        return {}
+    if six_in_one is None:
+        return {}
+
+    evidence: dict[str, str] = {}
+    for field_name, raw_value in six_in_one.iter_business_fields():
+        if not isinstance(field_name, str) or not field_name:
+            continue
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            if value:
+                evidence[field_name] = value
+    return evidence
+
+
+def _duplicate_entry_material_conflict(
+    *,
+    session: Any,
+    workline: Any,
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """判断重复入口事件是否与会话初始物料证据冲突。"""
+
+    plugin_key = _string_value(getattr(session, "plugin_key", None)) or _string_value(
+        getattr(workline, "plugin_key", None)
+    )
+    if not plugin_key:
+        return None
+
+    session_ctx = _session_context(session)
+    initial_payload = payload_dict(session_ctx.get("initial_payload") or session_ctx.get("source_payload"))
+    if not initial_payload:
+        return None
+
+    expected = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=initial_payload)
+    actual = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=payload)
+    if not expected or not actual:
+        return None
+
+    conflicts = {
+        field_name: {"expected": expected[field_name], "actual": actual[field_name]}
+        for field_name in sorted(expected.keys() & actual.keys())
+        if expected[field_name] != actual[field_name]
+    }
+    if not conflicts:
+        return None
+
+    details = {
+        "reason": "ENTRY_MATERIAL_IDENTITY_CONFLICT",
+        "conflicts": conflicts,
+        "expected": expected,
+        "actual": actual,
+    }
+    message = "ENTRY_MATERIAL_IDENTITY_CONFLICT: duplicate entry event conflicts with session initial material evidence"
+    return message, details
+
+
+async def _record_duplicate_entry_archive_timeline(
+    db: Any,
+    *,
+    session: Any,
+    workline: Any,
+    inbox: Any,
+    payload: dict[str, Any],
+    reason: str,
+) -> None:
+    """为重复入口归档留一条显式 timeline 证据。"""
+
+    from src.app.workline.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+        WorklineTimeline,
+    )
+
+    session_id = _resolve_entity_id(session)
+    workline_id = _resolve_entity_id(workline) or _optional_int(getattr(session, "workline_id", None))
+    if session_id is None or workline_id is None:
+        return
+
+    timeline = WorklineTimeline(
+        session_id=session_id,
+        workline_id=workline_id,
+        trace_id=_optional_str(getattr(inbox, "trace_id", None)) or _optional_str(getattr(session, "trace_id", None)),
+        seq_no=0,
+        occurred_at=timezone.now_for_db(),
+        stage=TimelineStage.INGEST,
+        action_type=TimelineActionType.EVENT_PROCESSED,
+        actor_type=TimelineActorType.ORCHESTRATOR,
+        actor_code="workline-inbox-consumer",
+        status=TimelineStatus.SUCCESS,
+        message="DUPLICATE_ENTRY_ARCHIVED",
+        payload_json={
+            "reason": reason,
+            "event_type": _canonical_event_type(payload),
+            "inbox_id": _resolve_entity_id(inbox),
+            "session_status": _session_status_value(session),
+            "awaiting_command_id": _optional_int(getattr(session, "awaiting_command_id", None)),
+        },
+        related_inbox_id=_resolve_entity_id(inbox),
+    )
+    try:
+        _ = await _add_timeline(db, timeline)
+    except Exception as exc:
+        logger.warning(f"重复入口归档 timeline 记录失败: {exc}")
+
+
+async def _record_late_command_result_archive_timeline(
+    db: Any,
+    *,
+    session: Any,
+    workline: Any,
+    inbox: Any,
+    command: Any,
+    payload: dict[str, Any],
+    reason: str,
+) -> None:
+    """为迟到/重复 COMMAND_RESULT 归档留一条显式 timeline 证据。"""
+
+    from src.app.workline.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+        WorklineTimeline,
+    )
+
+    session_id = _resolve_entity_id(session)
+    workline_id = _resolve_entity_id(workline) or _optional_int(getattr(session, "workline_id", None))
+    if session_id is None or workline_id is None:
+        return
+
+    timeline = WorklineTimeline(
+        session_id=session_id,
+        workline_id=workline_id,
+        trace_id=_optional_str(getattr(inbox, "trace_id", None)) or _optional_str(getattr(session, "trace_id", None)),
+        seq_no=0,
+        occurred_at=timezone.now_for_db(),
+        stage=TimelineStage.INGEST,
+        action_type=TimelineActionType.EVENT_PROCESSED,
+        actor_type=TimelineActorType.ORCHESTRATOR,
+        actor_code="workline-inbox-consumer",
+        status=TimelineStatus.SUCCESS,
+        message="LATE_COMMAND_RESULT_ARCHIVED",
+        payload_json={
+            "reason": reason,
+            "command_code": _command_code_value(command, payload),
+            "command_status": _command_status_value(command),
+            "inbox_id": _resolve_entity_id(inbox),
+            "session_status": _session_status_value(session),
+            "awaiting_command_id": _optional_int(getattr(session, "awaiting_command_id", None)),
+            "current_wait_type": _string_value(getattr(session, "current_wait_type", None)),
+        },
+        related_inbox_id=_resolve_entity_id(inbox),
+        related_command_id=_resolve_entity_id(command),
+    )
+    try:
+        _ = await _add_timeline(db, timeline)
+    except Exception as exc:
+        logger.warning(f"迟到命令结果归档 timeline 记录失败: {exc}")
+
+
 def _outbox_trace_extra(outbox: Any, trace: TraceContext | None = None) -> dict[str, Any]:
     """提取 Outbox 派发链路的稳定追踪字段。"""
 
     resolved_trace = trace.with_outbox(outbox) if trace is not None else TraceContext.from_runtime(outbox=outbox)
     return resolved_trace.project_outbox_trace(
         outbox=outbox,
-        dispatch_type=getattr(getattr(outbox, "dispatch_type", None), "value", getattr(outbox, "dispatch_type", None)),
+        dispatch_type=_enum_value(getattr(outbox, "dispatch_type", None)),
         target_code=getattr(outbox, "target_code", None),
     )
 
@@ -251,7 +658,8 @@ def _cached_outbox_session(outbox: Any) -> Any | None:
     """读取已加载的 outbox.session，避免为判断运行模式触发隐式懒加载。"""
 
     try:
-        session = vars(outbox).get("session")
+        state = cast("dict[str, Any]", vars(outbox))
+        session = state.get("session")
     except TypeError:
         session = getattr(outbox, "session", None)
     return session if session is not None else None
@@ -322,7 +730,7 @@ def _log_diagnostic(
     outbox: Any | None = None,
     transition: str | None = None,
     extra: dict[str, Any] | None = None,
-) -> None:
+) -> Any:
     payload = payload_dict(getattr(inbox, "payload_json", None)) if inbox is not None else {}
     trace = TraceContext.from_runtime(
         session=session,
@@ -330,34 +738,49 @@ def _log_diagnostic(
         inbox=inbox,
         command=command,
         outbox=outbox,
-        correlation_id=getattr(inbox, "correlation_id", None) or getattr(session, "correlation_id", None),
+        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
         canonical_event_type=_canonical_event_type(payload),
         transition=transition,
     )
     if device is not None:
         trace = trace.with_device(device)
-    card = build_diagnostic_card(
-        build_diagnostic_event(
-            error_code=error_code,
-            context=build_diagnostic_context(
-                trace=trace,
-                session=session,
-                inbox=inbox,
-                command=command,
-                device=device,
-                outbox=outbox,
-                workline=workline,
-                canonical_event_type=trace.canonical_event_type,
-                transition=transition,
-                extra=extra,
-            ),
-            message=message,
-            error_domain=error_domain,
-            problem_class=problem_class,
-            technical_summary=message,
-        )
+    event = build_diagnostic_event(
+        error_code=error_code,
+        context=build_diagnostic_context(
+            trace=trace,
+            session=session,
+            inbox=inbox,
+            command=command,
+            device=device,
+            outbox=outbox,
+            workline=workline,
+            canonical_event_type=trace.canonical_event_type,
+            transition=transition,
+            extra=extra,
+        ),
+        message=message,
+        error_domain=error_domain,
+        problem_class=problem_class,
+        technical_summary=message,
     )
+    card = build_diagnostic_card(event)
     logger.warning(f"[WorklineDiagnostic] {card.model_dump_json(exclude_none=True)}")
+    return event
+
+
+async def _record_diagnostic(db: Any, **kwargs: Any) -> None:
+    """记录诊断日志并尽力持久化诊断卡片。"""
+
+    event = _log_diagnostic(**kwargs)
+    try:
+        _ = await workline_diagnostic_service.record_event(
+            db,
+            event=event,
+            evidence=kwargs.get("extra"),
+            auto_commit=False,
+        )
+    except Exception as exc:
+        logger.warning(f"工作线诊断持久化失败: {exc}")
 
 
 def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
@@ -390,7 +813,7 @@ def _resolve_runtime_contract_version(*, workline: Any, plugin_key: str | None) 
     return contract_version if isinstance(contract_version, str) and contract_version else None
 
 
-def _sync_session_contract_snapshot(session: Any, *, workline: Any, context: dict[str, Any]) -> None:
+def _sync_session_contract_snapshot(session: Any, *, workline: Any) -> None:
     plugin_key = getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None)
     if isinstance(plugin_key, str) and plugin_key:
         session.plugin_key = plugin_key
@@ -399,16 +822,12 @@ def _sync_session_contract_snapshot(session: Any, *, workline: Any, context: dic
     if resolved_contract_version and getattr(session, "contract_version", None) != resolved_contract_version:
         session.contract_version = resolved_contract_version
 
-    step_code = project_plugin_state_for_trace(context)
-    if isinstance(step_code, str) and step_code:
-        session.step_code = step_code
-
 
 def _clear_session_wait(session: Any) -> None:
     session.current_wait_type = None
-    session.current_wait_token = None
     session.waiting_since = None
     session.deadline_at = None
+    session.current_wait_timeout_seconds = None
     session.awaiting_command_id = None
 
 
@@ -418,12 +837,11 @@ def _clear_session_failure(session: Any) -> None:
     session.failure_message = None
 
 
-def _session_write_snapshot(session: Any) -> tuple[Any, Any, Any]:
+def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
     """提取写入前的最小 session 快照，用于锁内防止 stale write。"""
 
     return (
         getattr(session, "status", None),
-        getattr(session, "step_code", None),
         getattr(session, "awaiting_command_id", None),
     )
 
@@ -469,6 +887,7 @@ _DEVICE_COMMAND_RESERVED_FIELDS = {
     "device_code",
     "command_code",
     "task_type",
+    "command_type",
     "priority",
     "timeout",
     "params",
@@ -501,6 +920,8 @@ def _normalize_vendor_command_payload(
     payload: JsonDict = {
         "command_code": _string_value(raw_payload.get("command_code")) or default_command_code,
         "task_type": _string_value(raw_payload.get("task_type"), action),
+        "command_type": _string_value(raw_payload.get("command_type"))
+        or _string_value(raw_payload.get("task_type"), action),
         "priority": priority if isinstance(priority, int) else DEFAULT_COMMAND_PRIORITY,
         "timeout": timeout if isinstance(timeout, int) else DEFAULT_COMMAND_TIMEOUT_MS,
         "params": {
@@ -519,9 +940,10 @@ def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> di
     resolved_device_code = _string_value(device_code)
     normalized_task_type = _normalize_command_task_type(getattr(command, "task_type", None))
     command_params = payload_dict(getattr(command, "params", None))
-    payload = {
+    payload: dict[str, Any] = {
         "command_code": command.command_code,
         "task_type": normalized_task_type,
+        "command_type": normalized_task_type,
         "priority": command.priority,
         "timeout": command.timeout_ms,
         "params": command_params,
@@ -548,14 +970,28 @@ def _resolve_device_command_path(device: Any) -> str:
     return callback_path
 
 
+def _resolve_device_protocol_scheme(device: Any) -> str:
+    raw_protocol = getattr(device, "protocol", None)
+    scheme = str(raw_protocol).lower() if raw_protocol else "http"
+    return scheme if scheme in {"http", "https"} else "http"
+
+
 def _raise_device_command_governance_error(
     *,
     domain: str,
     code: str,
     message: str,
+    device_id: int | None = None,
+    device_code: str | None = None,
     cause: Exception | None = None,
 ) -> NoReturn:
-    error = _DeviceCommandGovernanceError(domain=domain, code=code, message=message)
+    error = _DeviceCommandGovernanceError(
+        domain=domain,
+        code=code,
+        message=message,
+        device_id=device_id,
+        device_code=device_code,
+    )
     if cause is not None:
         raise error from cause
     raise error
@@ -570,9 +1006,11 @@ def _enforce_device_command_governance(
     *,
     command_type: str | None,
     stage_label: str,
+    allow_busy: bool = False,
 ) -> None:
     """消费设备治理字段，拒绝不允许的命令创建/派发。"""
 
+    device_id = _resolve_entity_id(device)
     device_code = _string_value(getattr(device, "device_code", None), "UNKNOWN_DEVICE")
     resolved_command_type = command_type or "UNKNOWN"
 
@@ -606,7 +1044,7 @@ def _enforce_device_command_governance(
         )
 
     current_command_id = getattr(device, "current_command_id", None)
-    if device_status == DeviceStatus.RUNNING.value or current_command_id is not None:
+    if (device_status == DeviceStatus.RUNNING.value or current_command_id is not None) and not allow_busy:
         _raise_device_command_governance_error(
             domain=FailureDomain.ORCHESTRATION.value,
             code="DEVICE_BUSY",
@@ -614,6 +1052,8 @@ def _enforce_device_command_governance(
                 f"设备 {device_code} 正在执行任务，拒绝{stage_label}: "
                 f"current_command_id={current_command_id}, command_type={resolved_command_type}"
             ),
+            device_id=device_id,
+            device_code=device_code,
         )
 
     try:
@@ -684,11 +1124,11 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     failed_outbox: Any,
     error_message: str,
 ) -> None:
-    """Outbox 已永久失败时，同步关闭对应 DeviceCommand，避免设备占用投影被旧命令卡住。"""
+    """Outbox 已永久失败时，进入通信 ACK runtime reconciliation。"""
 
-    from src.app.device.models.command import CommandStatus
     from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.workline.models.outbox import DispatchType, OutboxStatus
+    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
     if getattr(failed_outbox, "status", None) != OutboxStatus.FAILED:
         return
@@ -703,41 +1143,303 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     command_repo = DeviceCommandRepository()
     command = await command_repo.get_by_command_code(db, command_code)
     command_id = _resolve_entity_id(command)
-    active_statuses = {CommandStatus.PENDING.value, CommandStatus.SENT.value, CommandStatus.ACK_RECEIVED.value}
-    if command_id is None or _enum_value(getattr(command, "status", None)) not in active_statuses:
+    if command_id is None:
         return
 
-    _ = await command_repo.update(
+    _ = await workline_runtime_reconciliation_service.handle_dispatch_ack_exhausted(
         db,
-        command_id,
-        {
-            "status": CommandStatus.FAILED,
-            "completed_at": timezone.now_for_db(),
-            "error_detail": {
-                "message": error_message,
-                "source": "OUTBOX_DISPATCH",
-            },
-        },
+        outbox=failed_outbox,
+        command=command,
+        error_message=error_message,
     )
-    await _release_device_runtime_if_failed_command_was_current(db, command=command, command_id=command_id)
+
+
+async def _mark_outbox_blocked_by_workline_state(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    safety_error: Exception,
+) -> str:
+    """按 WorkLine 运行态阻断 outbox；RECONCILING 进入 parked 队列，ESTOP 保持本地失败。"""
+
+    reason = str(safety_error)
+    if "WORKLINE_RECONCILING" in reason:
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+        _ = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
+            db,
+            outbox=outbox,
+            reason="CALLBACK_DEADLINE_EXPIRED",
+        )
+        return "blocked_resource"
+
+    _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_id)
+    return "failed"
+
+
+def _count_workline_safety_block_result(result: DispatchResult, block_state: str) -> None:
+    if block_state == "blocked_resource":
+        result["skipped"] += 1
+    else:
+        result["failed"] += 1
+    result["dispatched"] += 1
+
+
+def _dispatch_failure_diagnostic_code(failed_outbox: Any) -> ErrorCode:
+    if _enum_value(getattr(failed_outbox, "status", None)) == "FAILED":
+        return ErrorCode.OUTBOX_DISPATCH_FAILED
+    return ErrorCode.OUTBOX_ACK_TIMEOUT
+
+
+async def _block_outbox_for_workline_safety(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    safety_error: WorkLineSafetyBlocked,
+    trace: TraceContext,
+    dispatch_attempt: Any | None = None,
+    attempt_service: Any | None = None,
+    final_guard: bool = False,
+) -> str:
+    await _record_diagnostic(
+        db,
+        inbox=None,
+        outbox=outbox,
+        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+        message=str(safety_error),
+        extra=_outbox_trace_extra(outbox, trace=trace),
+    )
+    if dispatch_attempt is not None and attempt_service is not None:
+        _ = await attempt_service.finalize_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            success=False,
+            error_message=str(safety_error),
+            auto_commit=False,
+        )
+    block_state = await _mark_outbox_blocked_by_workline_state(
+        db,
+        outbox_repo=outbox_repo,
+        outbox=outbox,
+        outbox_id=outbox_id,
+        safety_error=safety_error,
+    )
+    await db.commit()
+    guard_label = "最终安全状态" if final_guard else "安全状态"
+    logger.warning(
+        f"Outbox {outbox_id} 因 WorkLine {guard_label}阻断派发 ({_outbox_trace_log_suffix(outbox, trace=trace)})"
+    )
+    return block_state
+
+
+async def _block_outbox_for_device_busy(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    governance_error: _DeviceCommandGovernanceError,
+    dispatch_attempt: Any | None = None,
+    attempt_service: Any | None = None,
+) -> bool:
+    """目标设备仍忙时，暂停 outbox 并等待设备释放后重派。"""
+
+    if governance_error.code != "DEVICE_BUSY":
+        raise governance_error
+
+    if dispatch_attempt is not None and attempt_service is not None:
+        _ = await attempt_service.finalize_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            success=False,
+            error_message=governance_error.message,
+            response={"result": "blocked_resource", "reason": governance_error.code},
+            auto_commit=False,
+        )
+
+    blocked_outbox = await outbox_repo.mark_as_blocked_by_device_busy(
+        db,
+        outbox_id,
+        blocked_device_id=governance_error.device_id,
+        blocked_workline_id=getattr(outbox, "workline_id", None),
+        reason=governance_error.code,
+        last_error=governance_error.message,
+    )
+    await db.commit()
+
+    if blocked_outbox is None:
+        logger.warning(
+            f"Outbox {outbox_id} 因设备忙暂停时被 fencing 拒绝，保留当前状态 ({_outbox_trace_log_suffix(outbox)})"
+        )
+        return False
+
+    logger.info(f"Outbox {outbox_id} 因设备 {governance_error.device_code or governance_error.device_id} 忙暂停派发")
+    return True
+
+
+def _latest_dispatch_attempt(attempts: list[Any]) -> Any | None:
+    if not attempts:
+        return None
+    return max(attempts, key=lambda item: getattr(item, "attempt_no", 0) or 0)
+
+
+def _is_device_busy_attempt(attempt: Any | None) -> bool:
+    if attempt is None:
+        return False
+    if _enum_value(getattr(attempt, "status", None)) != "FAILED":
+        return False
+
+    response = payload_dict(getattr(attempt, "response_json", None))
+    reason = _string_value(response.get("reason"))
+    if reason == "DEVICE_BUSY":
+        return True
+
+    error_message = _string_value(getattr(attempt, "error_message", None))
+    return "DEVICE_BUSY" in error_message
+
+
+def _is_device_idle_for_requeue(device: Any | None) -> bool:
+    if device is None:
+        return False
+    return (
+        _enum_value(getattr(device, "device_status", None)) == DeviceStatus.IDLE.value
+        and getattr(device, "current_command_id", None) is None
+    )
+
+
+def _is_same_session_current_command(*, outbox: Any, command: Any | None, device: Any | None) -> bool:
+    command_id = _resolve_entity_id(command)
+    if command_id is None or device is None:
+        return False
+    command_session_id = _optional_int(getattr(command, "session_id_int", None))
+    outbox_session_id = getattr(outbox, "session_id", None)
+    return (
+        getattr(device, "current_command_id", None) == command_id
+        and outbox_session_id is not None
+        and command_session_id == outbox_session_id
+    )
+
+
+def _is_dispatched_command(command: Any | None) -> bool:
+    return _enum_value(getattr(command, "status", None)) in {"SENT", "ACK_RECEIVED"}
+
+
+async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
+    """恢复 attempt 已结束但 outbox 仍卡在 DISPATCHING 的设备忙派发。"""
+
+    from src.app.device.repositories.device_repository import device_repository
+    from src.app.workline.repositories.dispatch_attempt_repository import workline_dispatch_attempt_repository
+
+    getter = getattr(outbox_repo, "get_dispatching_device_messages", None)
+    if not callable(getter):
+        return 0
+
+    repaired = 0
+    dispatching_messages = getter(db, limit=limit)
+    if not isawaitable(dispatching_messages):
+        return 0
+
+    for outbox in await dispatching_messages:
+        outbox_id = _resolve_entity_id(outbox)
+        if outbox_id is None:
+            continue
+
+        attempts = await workline_dispatch_attempt_repository.get_by_outbox_id(db, outbox_id)
+        latest_attempt = _latest_dispatch_attempt(attempts)
+        if not _is_device_busy_attempt(latest_attempt):
+            continue
+
+        target_code = _string_value(getattr(outbox, "target_code", None))
+        if not target_code:
+            continue
+
+        device = await device_repository.get_by_device_code(db, target_code)
+        device_id = _resolve_entity_id(device)
+        if device_id is None:
+            continue
+
+        error_message = _string_value(getattr(latest_attempt, "error_message", None), default="DEVICE_BUSY")
+        blocked = await outbox_repo.mark_as_blocked_by_device_busy(
+            db,
+            outbox_id,
+            blocked_device_id=device_id,
+            blocked_workline_id=getattr(outbox, "workline_id", None),
+            reason="DEVICE_BUSY",
+            last_error=error_message,
+        )
+        if blocked is None:
+            continue
+
+        repaired += 1
+        if _is_device_idle_for_requeue(device):
+            _ = await outbox_repo.release_blocked_by_device(
+                db,
+                device_id=device_id,
+                workline_id=getattr(outbox, "workline_id", None),
+            )
+        await db.commit()
+
+    if repaired:
+        logger.info(f"已恢复 {repaired} 条设备忙残留派发 outbox")
+    return repaired
+
+
+async def _repair_self_blocked_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
+    """恢复同一命令已占用设备运行态却被误标为 DEVICE_BUSY 的 outbox。"""
+
+    from src.app.device.repositories.command_repository import DeviceCommandRepository
+    from src.app.device.repositories.device_repository import device_repository
+
+    getter = getattr(outbox_repo, "get_blocked_device_busy_messages", None)
+    if not callable(getter):
+        return 0
+
+    blocked_messages = getter(db, limit=limit)
+    if not isawaitable(blocked_messages):
+        return 0
+
+    repaired = 0
+    command_repo = DeviceCommandRepository()
+    for outbox in await blocked_messages:
+        outbox_id = _resolve_entity_id(outbox)
+        if outbox_id is None:
+            continue
+
+        payload = payload_dict(getattr(outbox, "payload_json", None))
+        command_code = _string_value(payload.get("command_code"))
+        if not command_code:
+            continue
+
+        command = await command_repo.get_by_command_code(db, command_code)
+        target_code = _string_value(getattr(outbox, "target_code", None))
+        if not target_code:
+            continue
+
+        device = await device_repository.get_by_device_code(db, target_code)
+        if not _is_dispatched_command(command):
+            continue
+        if not _is_same_session_current_command(outbox=outbox, command=command, device=device):
+            continue
+
+        marked = await outbox_repo.mark_blocked_device_busy_as_sent(db, outbox_id)
+        if marked is None:
+            continue
+        repaired += 1
+        await db.commit()
+
+    if repaired:
+        logger.info(f"已恢复 {repaired} 条同命令自阻塞 DEVICE_BUSY outbox")
+    return repaired
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from sqlalchemy import func, select
+    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 
-    from src.app.workline.models.timeline import WorklineTimeline
-
-    assigned_seq_no = seq_no
-    if assigned_seq_no is None:
-        result = await db.execute(
-            select(func.max(WorklineTimeline.seq_no)).where(WorklineTimeline.session_id == timeline.session_id)  # type: ignore[arg-type]
-        )
-        max_seq_no = result.scalar_one_or_none()
-        assigned_seq_no = (max_seq_no or 0) + 1
-
-    timeline.seq_no = assigned_seq_no
-    db.add(timeline)
-    return assigned_seq_no
+    return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
 
 class EffectApplyContext(TypedDict):
@@ -757,7 +1459,7 @@ class EffectApplyContext(TypedDict):
     source_device: Any | None
     orch_result: OrchestratorResult
     current_status: str | None
-    correlation_id: str | None
+    trace_id: str | None
     trace: TraceContext
     session_ctx: dict[str, Any]
     now: Any
@@ -807,7 +1509,7 @@ def _build_effect_apply_context(
         session=session,
         workline=workline,
         inbox=inbox,
-        correlation_id=getattr(inbox, "correlation_id", None) or getattr(session, "correlation_id", None),
+        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
     )
     return {
         "db": db,
@@ -818,7 +1520,7 @@ def _build_effect_apply_context(
         "source_device": source_device,
         "orch_result": orch_result,
         "current_status": getattr(session, "status", None),
-        "correlation_id": trace.correlation_id,
+        "trace_id": trace.trace_id,
         "trace": trace,
         "session_ctx": _session_context(session),
         "now": timezone.now_for_db(),
@@ -831,10 +1533,8 @@ def _build_effect_apply_context(
 def _apply_context_patch(ctx: EffectApplyContext) -> None:
     """先应用 context patch，再执行后续 effect。
 
-    顺序很关键：
-    - command effect 需要读取最新的 `plugin_state` 投影
-    - session contract snapshot 也依赖最新 context
-    - 第三方插件开发者通常会把运行时决策写进 context，这些值应立即对后续 effect 可见
+    第三方插件开发者只能把业务数据写进 context；runtime-owned
+    字段已在 Orchestrator 阶段被拦截。
     """
 
     orch_result = ctx["orch_result"]
@@ -842,28 +1542,29 @@ def _apply_context_patch(ctx: EffectApplyContext) -> None:
     workline = ctx["workline"]
     session_ctx = ctx["session_ctx"]
 
-    if orch_result.context_patch:
-        session_ctx.update(orch_result.context_patch)
+    context_patch = getattr(orch_result, "context_patch", None)
+    if context_patch:
+        session_ctx.update(context_patch)
         _set_session_context(session, session_ctx)
-        _sync_session_contract_snapshot(session, workline=workline, context=session_ctx)
+        _sync_session_contract_snapshot(session, workline=workline)
         # 同步 barcode 到 session 字段，便于主数据和排障视图直接读取。
-        if "barcode" in orch_result.context_patch:
-            barcode_value = orch_result.context_patch["barcode"]
+        if "barcode" in context_patch:
+            barcode_value = context_patch["barcode"]
             if barcode_value:
                 session.barcode = barcode_value
         return
 
-    _sync_session_contract_snapshot(session, workline=workline, context=session_ctx)
+    _sync_session_contract_snapshot(session, workline=workline)
 
 
 def _sync_effect_trace_fields(ctx: EffectApplyContext) -> None:
     """同步 effect 执行后的基础追踪字段。"""
 
     session = ctx["session"]
-    correlation_id = ctx["correlation_id"]
+    trace_id = ctx["trace_id"]
 
-    if correlation_id and getattr(session, "correlation_id", None) != correlation_id:
-        session.correlation_id = correlation_id
+    if trace_id and getattr(session, "trace_id", None) != trace_id:
+        session.trace_id = trace_id
 
     session.last_inbox_id = _resolve_entity_id(ctx["inbox"])
 
@@ -893,11 +1594,7 @@ def _decision_timeline_payload(ctx: EffectApplyContext) -> dict[str, Any]:
     }
 
 
-def _business_decision_timeline_payload(
-    ctx: EffectApplyContext,
-    *,
-    decision: BusinessDecisionIntent,
-) -> dict[str, Any]:
+def _business_decision_timeline_payload(ctx: EffectApplyContext, *, decision: Any) -> dict[str, Any]:
     """构造业务判定 timeline payload。
 
     业务 NG 是插件给出的业务结果，不代表系统失败；这里仅沉淀可检索投影。
@@ -981,7 +1678,7 @@ async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
     orch_result = ctx["orch_result"]
-    if not orch_result.transition:
+    if not getattr(orch_result, "transition", None):
         return
 
     await _emit_timeline(
@@ -1000,7 +1697,7 @@ async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
 
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    for decision in ctx["orch_result"].business_decisions or []:
+    for decision in getattr(ctx["orch_result"], "business_decisions", None) or []:
         await _emit_timeline(
             ctx,
             stage=TimelineStage.DECISION,
@@ -1025,7 +1722,7 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
 
     db = ctx["db"]
 
-    for decision in ctx["orch_result"].decisions or []:
+    for decision in getattr(ctx["orch_result"], "decisions", None) or []:
         if not isinstance(decision, dict):
             continue
 
@@ -1069,47 +1766,6 @@ async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
         )
 
 
-async def _resolve_target_device(ctx: EffectApplyContext, *, device_repo: Any, command_intent: Any) -> Any:
-    """统一解析命令目标设备。"""
-
-    from src.workline_runtime.device_target_resolver import resolve_command_target
-
-    device_by_id = _device_map_from_roles(ctx["devices_by_role"])
-    target_device_id = getattr(command_intent, "target_device_id", None)
-    if isinstance(target_device_id, int):
-        target_device = device_by_id.get(target_device_id)
-        if target_device is None:
-            target_device = await device_repo.get_by_id(ctx["db"], target_device_id)
-        if target_device is None:
-            raise ValueError(f"Target device not found: {target_device_id}")
-        return target_device
-
-    return resolve_command_target(
-        command_intent=command_intent,
-        source_device=ctx["source_device"],
-        devices=list(device_by_id.values()),
-    )
-
-
-async def _validate_command_effects(ctx: EffectApplyContext) -> None:
-    """在真正落外部 decision / command 前，先消费设备治理字段。"""
-
-    from src.app.device.repositories import DeviceRepository
-
-    device_repo = DeviceRepository()
-    for command_intent in ctx["orch_result"].commands or []:
-        target_device = await _resolve_target_device(
-            ctx,
-            device_repo=device_repo,
-            command_intent=command_intent,
-        )
-        _enforce_device_command_governance(
-            target_device,
-            command_type=command_intent.action,
-            stage_label="命令创建",
-        )
-
-
 def _build_command_create_payload(
     ctx: EffectApplyContext,
     *,
@@ -1134,12 +1790,14 @@ def _build_command_create_payload(
         "priority": priority_value if isinstance(priority_value, int) else DEFAULT_COMMAND_PRIORITY,
         "timeout_ms": timeout_value if isinstance(timeout_value, int) else DEFAULT_COMMAND_TIMEOUT_MS,
         "params": business_params,
-        "correlation_id": ctx["trace"].correlation_id or ctx["correlation_id"],
+        "trace_id": ctx["trace"].trace_id or ctx["trace_id"],
+        "event_id": ctx["trace"].event_id,
+        "causation_id": ctx["trace"].causation_id,
         "session_id": str(session.id),
+        "session_id_int": session.id,
         "workline_id": session.workline_id,
         "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
         "contract_version": getattr(session, "contract_version", None),
-        "step_code": project_plugin_state_for_trace(ctx["session_ctx"]),
     }
 
 
@@ -1193,99 +1851,33 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
     )
 
 
-async def _apply_command_effects(ctx: EffectApplyContext) -> None:
-    """应用 plugin 产出的命令 effect。
-
-    这里坚持两条原则：
-    1. 先创建 DeviceCommand，再创建对应 Outbox
-    2. `awaiting_command_id` 取第一条命令，供 wait transition 复用
-
-    这样做可以让“等待哪个命令结果”在 session 上有稳定锚点，
-    也更利于后续 replay/debug 能力落地。
-    """
-
-    from src.app.device.repositories import DeviceRepository
-    from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    db = ctx["db"]
-    command_repo = DeviceCommandRepository()
-    device_repo = DeviceRepository()
-
-    for command_intent in ctx["orch_result"].commands or []:
-        target_device = await _resolve_target_device(ctx, device_repo=device_repo, command_intent=command_intent)
-        target_device_id = _resolve_required_pk(target_device, "target_device")
-        _enforce_device_command_governance(
-            target_device,
-            command_type=command_intent.action,
-            stage_label="命令创建",
-        )
-
-        device_code = getattr(target_device, "device_code", None)
-        if not isinstance(device_code, str) or not device_code:
-            raise ValueError(f"Target device missing device_code: {target_device_id}")
-
-        generated_command_code = _build_command_code(_map_command_task_type(command_intent.action))
-        vendor_payload = _normalize_vendor_command_payload(
-            command_intent.parameters,
-            action=command_intent.action,
-            default_command_code=generated_command_code,
-        )
-        logger.info(
-            f"[Orchestrator] Command parameters: command_intent.parameters={command_intent.parameters}, "
-            f"vendor_payload={vendor_payload}"
-        )
-        resolved_command_code = _string_value(vendor_payload.get("command_code"), generated_command_code)
-        command_data = _build_command_create_payload(
-            ctx,
-            command_intent=command_intent,
-            vendor_payload=vendor_payload,
-            target_device_id=target_device_id,
-            resolved_command_code=resolved_command_code,
-        )
-        command = await command_repo.create(db, command_data)
-        if command is None:
-            raise RuntimeError("Failed to create device command from PluginResult")
-
-        if ctx["awaiting_command_id"] is None:
-            ctx["awaiting_command_id"] = command.id
-            ctx["awaiting_command_code"] = command.command_code
-
-        command_outbox = _build_command_outbox_model(ctx, command=command, device_code=device_code)
-        db.add(command_outbox)
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.COMMAND_SENT,
-            payload=_command_timeline_payload(
-                ctx,
-                command_code=command.command_code,
-                command_type=command_intent.action,
-                dispatch_key=command_outbox.dispatch_key,
-                parameters=payload_dict(vendor_payload.get("params")),
-            ),
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            actor_code=device_code,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            related_command_id=command.id,
-            status=TimelineStatus.PENDING,
-        )
-
-
 async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    failure = ctx["orch_result"].failure
+    failure = getattr(ctx["orch_result"], "failure", None)
     if failure is None:
         return False
 
     session = ctx["session"]
+    should_cancel_pending_outboxes = bool(
+        getattr(session, "awaiting_command_id", None) is not None
+        or getattr(session, "current_wait_type", None) == "COMMAND_RESULT"
+    )
     session.status = "FAILED"
     _clear_session_wait(session)
     session.ended_at = ctx["now"]
     session.failure_domain = failure.domain
     session.failure_code = failure.code
     session.failure_message = failure.message
+    session_id = _resolve_entity_id(session)
+    if should_cancel_pending_outboxes and session_id is not None:
+        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+
+        _ = await WorklineOutboxRepository().cancel_active_by_session(
+            ctx["db"],
+            session_id=session_id,
+            reason=failure.code,
+        )
     await _emit_timeline(
         ctx,
         stage=TimelineStage.FAIL,
@@ -1326,11 +1918,20 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.workline.services.ng_return_item_service import ng_return_item_service
 
-    if not ctx["orch_result"].complete:
+    if not getattr(ctx["orch_result"], "complete", False):
         return False
 
     session = ctx["session"]
+    _ = await ng_return_item_service.record_completed_ng_flow(
+        ctx["db"],
+        session=session,
+        workline=ctx["workline"],
+        inbox=ctx["inbox"],
+        transition=getattr(ctx["orch_result"], "transition", None),
+        occurred_at=ctx["now"],
+    )
     session.status = "COMPLETED"
     _clear_session_wait(session)
     session.ended_at = ctx["now"]
@@ -1349,7 +1950,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
 async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
 
-    wait = ctx["orch_result"].wait
+    wait = getattr(ctx["orch_result"], "wait", None)
     if wait is None:
         return False
 
@@ -1360,10 +1961,13 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
 
     session.status = _wait_session_status(wait.wait_type)
     session.current_wait_type = wait.wait_type
-    session.current_wait_token = resolved_wait_token
     session.waiting_since = ctx["now"]
-    session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
     session.awaiting_command_id = ctx["awaiting_command_id"]
+    session.current_wait_timeout_seconds = wait.deadline_seconds
+    if wait.wait_type == "COMMAND_RESULT":
+        session.deadline_at = None
+    else:
+        session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
     session.ended_at = None
     await _emit_timeline(
         ctx,
@@ -1393,7 +1997,7 @@ def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
     """
 
     session = ctx["session"]
-    transition = ctx["orch_result"].transition
+    transition = getattr(ctx["orch_result"], "transition", None)
 
     if transition == "manual_hold":
         session.status = "MANUAL_HOLD"
@@ -1418,11 +2022,11 @@ def _apply_running_fallback(ctx: EffectApplyContext) -> None:
     session = ctx["session"]
 
     if (
-        orch_result.transition
-        or orch_result.context_patch
-        or orch_result.business_decisions
-        or orch_result.commands
-        or orch_result.decisions
+        getattr(orch_result, "transition", None)
+        or getattr(orch_result, "context_patch", None)
+        or getattr(orch_result, "business_decisions", None)
+        or getattr(orch_result, "commands", None)
+        or getattr(orch_result, "decisions", None)
     ):
         session.status = "RUNNING"
 
@@ -1446,7 +2050,7 @@ async def _apply_orchestrator_effects(
     具体 effect 交由更小的内部 handlers 处理。
 
     执行顺序说明：
-    1. 先落 context patch 与 trace fields
+    1. 先落 context patch、runtime transition decision 与 trace fields
     2. 记录插件业务判定
     3. 消费设备治理字段并创建 decisions / commands（因为 wait 可能依赖 command id）
     4. 最后应用 failure / cancel / complete / wait / fallback 状态变更
@@ -1462,38 +2066,9 @@ async def _apply_orchestrator_effects(
         orch_result=orch_result,
     )
 
-    _apply_context_patch(ctx)
-    _sync_effect_trace_fields(ctx)
-    await _apply_transition_timeline(ctx)
-    await _apply_business_decisions(ctx)
+    from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 
-    try:
-        await _validate_command_effects(ctx)
-        await _apply_external_decisions(ctx)
-        await _apply_command_effects(ctx)
-    except _DeviceCommandGovernanceError as exc:
-        orch_result.failure = FailureIntent(domain=exc.domain, code=exc.code, message=exc.message)
-        orch_result.decisions = []
-        orch_result.commands = []
-        orch_result.wait = None
-        orch_result.complete = False
-
-    # failure / cancel / complete / wait 的优先级必须稳定，避免出现“既完成又取消”的歧义。
-    if await _apply_failure_transition(ctx):
-        return
-
-    _clear_session_failure(session)
-
-    if await _apply_manual_cancel_transition(ctx):
-        return
-    if await _apply_completion_transition(ctx):
-        return
-    if await _apply_wait_transition(ctx):
-        return
-    if _apply_non_terminal_transition(ctx):
-        return
-
-    _apply_running_fallback(ctx)
+    await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
 
 
 async def _load_workline_session(db: Any, inbox: Any, session_repo: Any) -> Any | None:
@@ -1533,8 +2108,7 @@ async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | 
         cache = get_cache()
         return await device_command_service.get_by_id(db, cache, command_id)
 
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     command_code = payload.get("command_code")
     if not command_code:
         return None
@@ -1555,8 +2129,8 @@ def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
         inbox.device_id = command.device_id
     if getattr(inbox, "workline_id", None) is None and command.workline_id is not None:
         inbox.workline_id = command.workline_id
-    if getattr(inbox, "correlation_id", None) is None and command.correlation_id:
-        inbox.correlation_id = command.correlation_id
+    if getattr(inbox, "trace_id", None) is None and command.trace_id:
+        inbox.trace_id = command.trace_id
 
 
 async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | None:
@@ -1569,8 +2143,7 @@ async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | No
         cache = get_cache()
         return await device_service.get_by_id(db, cache, device_id)
 
-    raw_payload = getattr(inbox, "payload_json", None)
-    payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+    payload = payload_dict(getattr(inbox, "payload_json", None))
     device_code = payload.get("device_code")
     if not device_code:
         return None
@@ -1613,7 +2186,58 @@ async def _load_devices_by_role(db: Any, workline: Any, device_repo: Any) -> dic
     return devices_by_role
 
 
-async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
+def _resolve_effect_source_device(inbox: Any, session: Any, devices_by_role: dict[str, list[Any]]) -> Any | None:
+    """为 RuntimeIntent effect 层恢复无 device_id 回调的来源设备。"""
+
+    payload = payload_dict(getattr(inbox, "payload_json", None))
+    device_code = _optional_str(payload.get("device_code")) or _optional_str(payload.get("location"))
+    if device_code is None:
+        normalized_input = getattr(inbox, "normalized_input", None)
+        device_code = _optional_str(getattr(normalized_input, "device_code", None))
+    if device_code is None:
+        session_context = payload_dict(getattr(session, "context_json", None))
+        rack_supply = payload_dict(session_context.get("rack_supply"))
+        rack_exchange = payload_dict(session_context.get("rack_exchange"))
+        device_code = (
+            _optional_str(rack_supply.get("resume_source_device_code"))
+            or _optional_str(rack_exchange.get("resume_source_device_code"))
+            or _optional_str(session_context.get("resume_source_device_code"))
+        )
+    if device_code is None:
+        return None
+
+    for devices in devices_by_role.values():
+        for device in devices:
+            if _optional_str(getattr(device, "device_code", None)) == device_code:
+                return device
+    return None
+
+
+async def _assert_workline_accepting_runtime_event(
+    db: Any,
+    *,
+    workline: Any | None,
+    resolved_event_type: str | None,
+) -> bool:
+    if resolved_event_type is None or resolved_event_type == "ESTOP_PRESSED":
+        return True
+
+    workline_pk = _resolve_entity_id(workline)
+    if workline_pk is None:
+        return False
+
+    from src.app.workline.services.safety_service import workline_safety_service
+
+    await workline_safety_service.assert_accepting_work(db, workline_id=workline_pk)
+    return True
+
+
+async def _load_related_entities(
+    db: Any,
+    inbox: Any,
+    *,
+    resolved_event_type: str | None = None,
+) -> LoadedEntities:
     """加载关联实体
 
     Args:
@@ -1645,6 +2269,10 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
     if workline is None and device is not None:
         workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
 
+    safety_checked = await _assert_workline_accepting_runtime_event(
+        db, workline=workline, resolved_event_type=resolved_event_type
+    )
+
     devices_by_role = await _load_devices_by_role(db, workline, device_repo)
 
     if session is None and _should_resolve_session(inbox):
@@ -1662,9 +2290,12 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
             if workline is None and device is not None:
                 workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
             devices_by_role = await _load_devices_by_role(db, workline, device_repo)
-
-    # 服务容器（Phase 2 简化实现）
-    services: dict[str, Any] = {}
+            if not safety_checked:
+                safety_checked = await _assert_workline_accepting_runtime_event(
+                    db, workline=workline, resolved_event_type=resolved_event_type
+                )
+    if device is None and session is not None:
+        device = _resolve_effect_source_device(inbox, session, devices_by_role)
 
     return {
         "session": session,
@@ -1672,7 +2303,8 @@ async def _load_related_entities(db: Any, inbox: Any) -> LoadedEntities:
         "device": device,
         "command": command,
         "devices_by_role": devices_by_role,
-        "services": services,
+        "services": build_workline_runtime_services(),
+        "safety_checked": safety_checked,
     }
 
 
@@ -1692,9 +2324,8 @@ class WorklineTask(Task):
     def db(self) -> Any:
         """懒加载数据库会话"""
         if self._db is None:
-            from src.database.db import AsyncSessionLocal as AsyncSessionLocalDynamic
-
-            session_local = AsyncSessionLocalDynamic
+            _lazy_init_db()
+            session_local = db_module.AsyncSessionLocal
             if session_local is None:
                 raise RuntimeError("数据库未初始化，请先调用 init_db()")
             self._db = session_local()
@@ -1744,7 +2375,7 @@ class ProcessInboxMessages:
     """
 
     @staticmethod
-    async def _process_batch(db: Any, limit: int = 10) -> ProcessResult:
+    async def _process_batch(db: Any, limit: int = 10) -> ProcessResult:  # noqa: PLR0912
         """批量处理 Inbox 消息
 
         处理流程：
@@ -1788,7 +2419,8 @@ class ProcessInboxMessages:
         messages = await inbox_service.get_new_messages(db, limit=limit)
 
         for inbox in messages:
-            inbox_pk_text = str(getattr(inbox, "id", "unknown"))
+            diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
+            inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))
             inbox_pk: int | None = None  # 初始化，避免 basedpyright 警告
             try:
                 inbox_pk = _resolve_required_pk(inbox, "inbox", "id", "inbox_id")
@@ -1802,8 +2434,7 @@ class ProcessInboxMessages:
                     continue
 
                 # ========== 前置验证：检查必填字段 ==========
-                raw_payload = getattr(inbox, "payload_json", None)
-                payload: dict[str, Any] = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
+                payload = payload_dict(getattr(inbox, "payload_json", None))
                 resolved_event_type = _canonical_event_type(payload)
 
                 # SCAN_COMPLETED 事件必须包含条码信息。
@@ -1813,7 +2444,12 @@ class ProcessInboxMessages:
                 if resolved_event_type == "SCAN_COMPLETED" and not _scan_completed_has_any_barcode_payload(payload):
                     error_msg = "SCAN_COMPLETED 缺少条码信息（HHPN/MfrPN/Qty/DateCode/LotCode/PkgID 或 barcode）"
                     logger.warning(f"Inbox {inbox_pk} {error_msg}")
-                    _log_diagnostic(inbox=inbox, error_code=ErrorCode.CALLBACK_SCHEMA_INVALID, message=error_msg)
+                    await _record_diagnostic(
+                        db,
+                        inbox=inbox,
+                        error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+                        message=error_msg,
+                    )
                     _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                     await db.commit()
                     result["failed"] += 1
@@ -1821,13 +2457,70 @@ class ProcessInboxMessages:
                     continue
 
                 # 加载关联实体
-                entities = await _load_related_entities(db, inbox)
+                entities = await _load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
                 session = entities["session"]
                 workline = entities["workline"]
 
+                if resolved_event_type == "ESTOP_PRESSED":
+                    from src.app.workline.services.safety_service import workline_safety_service
+
+                    workline_pk = _resolve_entity_id(workline)
+                    if workline_pk is None:
+                        error_msg = "ESTOP_PRESSED missing workline context"
+                        await _record_diagnostic(
+                            db,
+                            inbox=inbox,
+                            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+                            message=error_msg,
+                            session=session,
+                            workline=workline,
+                            device=entities["device"],
+                            command=entities["command"],
+                        )
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
+                        await db.commit()
+                        result["failed"] += 1
+                        result["processed"] += 1
+                        logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
+                        continue
+
+                    incident = await workline_safety_service.handle_estop(
+                        db,
+                        workline_id=workline_pk,
+                        source_inbox_id=inbox_pk,
+                        source_device_id=_resolve_entity_id(entities["device"]) or getattr(inbox, "device_id", None),
+                        source_command_id=_resolve_entity_id(entities["command"]) or getattr(inbox, "command_id", None),
+                        trigger_payload=payload,
+                    )
+                    _ = await inbox_service.mark_as_processed(db, inbox_pk, auto_commit=False)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(f"Inbox {inbox_pk} 已处理 WorkLine 急停: incident_id={incident.id}")
+                    continue
+
+                inbox_kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
+                if inbox_kind == "TIMER_TIMEOUT":
+                    from src.app.workline.services.runtime_reconciliation_service import (
+                        workline_runtime_reconciliation_service,
+                    )
+
+                    _ = await workline_runtime_reconciliation_service.handle_timer_timeout(db, inbox=inbox)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(f"Inbox {inbox_pk} 已处理系统级 TIMER_TIMEOUT 对账")
+                    continue
+
+                if not entities.get("safety_checked", True):
+                    _ = await _assert_workline_accepting_runtime_event(
+                        db, workline=workline, resolved_event_type=resolved_event_type
+                    )
+
                 if session is None or workline is None:
                     error_msg = "Inbox processing missing session/workline context"
-                    _log_diagnostic(
+                    await _record_diagnostic(
+                        db,
                         inbox=inbox,
                         error_code=ErrorCode.SESSION_CONTEXT_MISSING,
                         message=error_msg,
@@ -1843,6 +2536,90 @@ class ProcessInboxMessages:
                     logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
                     continue
 
+                if _is_duplicate_entry_event_for_session(
+                    inbox=inbox, payload=payload, session=session, workline=workline
+                ):
+                    material_conflict = _duplicate_entry_material_conflict(
+                        session=session,
+                        workline=workline,
+                        payload=payload,
+                    )
+                    if material_conflict is not None:
+                        conflict_message, conflict_details = material_conflict
+                        await _record_diagnostic(
+                            db,
+                            inbox=inbox,
+                            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+                            message=conflict_message,
+                            session=session,
+                            workline=workline,
+                            device=entities["device"],
+                            command=entities["command"],
+                            extra=conflict_details,
+                        )
+                        _ = await inbox_service.mark_as_dead_letter(
+                            db,
+                            inbox_pk,
+                            conflict_message,
+                            auto_commit=False,
+                        )
+                        await db.commit()
+                        result["failed"] += 1
+                        result["processed"] += 1
+                        logger.warning(
+                            f"Inbox {inbox_pk} rejected conflicting duplicate entry event: "
+                            f"session_id={_resolve_entity_id(session)}, conflicts={conflict_details['conflicts']}"
+                        )
+                        continue
+
+                    await _record_duplicate_entry_archive_timeline(
+                        db,
+                        session=session,
+                        workline=workline,
+                        inbox=inbox,
+                        payload=payload,
+                        reason="SESSION_ALREADY_IN_PROGRESS_OR_TERMINAL",
+                    )
+                    _ = await inbox_service.mark_as_processed(db, inbox_pk, auto_commit=False)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(
+                        f"Inbox {inbox_pk} archived duplicate entry event: "
+                        f"session_id={_resolve_entity_id(session)}, "
+                        f"status={_session_status_value(session)}, "
+                        f"awaiting_command_id={getattr(session, 'awaiting_command_id', None)}"
+                    )
+                    continue
+
+                if _is_late_or_duplicate_command_result_for_session(
+                    inbox=inbox,
+                    payload=payload,
+                    session=session,
+                    command=entities["command"],
+                ):
+                    await _record_late_command_result_archive_timeline(
+                        db,
+                        session=session,
+                        workline=workline,
+                        inbox=inbox,
+                        command=entities["command"],
+                        payload=payload,
+                        reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
+                    )
+                    _ = await inbox_service.mark_as_processed(db, inbox_pk, auto_commit=False)
+                    await db.commit()
+                    result["success"] += 1
+                    result["processed"] += 1
+                    logger.warning(
+                        f"Inbox {inbox_pk} archived late command result: "
+                        f"session_id={_resolve_entity_id(session)}, "
+                        f"command_id={_resolve_entity_id(entities['command'])}, "
+                        f"status={_session_status_value(session)}, "
+                        f"awaiting_command_id={getattr(session, 'awaiting_command_id', None)}"
+                    )
+                    continue
+
                 write_effects_applied = False
                 enqueue_outbox_dispatch = False
                 session_snapshot = _session_write_snapshot(session)
@@ -1854,12 +2631,35 @@ class ProcessInboxMessages:
                     _inbox: Any = inbox,
                     _devices_by_role: dict[str, list[Any]] = entities["devices_by_role"],
                     _device: Any | None = entities["device"],
+                    _command: Any | None = entities["command"],
                     _inbox_pk: int = inbox_pk,
-                    _session_snapshot: tuple[Any, Any, Any] = session_snapshot,
+                    _session_snapshot: tuple[Any, Any] = session_snapshot,
                 ) -> None:
                     nonlocal write_effects_applied, enqueue_outbox_dispatch
                     try:
                         await db.refresh(_session)
+                        _payload = payload_dict(getattr(_inbox, "payload_json", None))
+                        if _is_late_or_duplicate_command_result_for_session(
+                            inbox=_inbox,
+                            payload=_payload,
+                            session=_session,
+                            command=_command,
+                        ):
+                            await _record_late_command_result_archive_timeline(
+                                db,
+                                session=_session,
+                                workline=_workline,
+                                inbox=_inbox,
+                                command=_command,
+                                payload=_payload,
+                                reason="COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE",
+                            )
+                            _ = await inbox_service.mark_as_processed(db, _inbox_pk, auto_commit=False)
+                            await db.commit()
+                            write_effects_applied = True
+                            enqueue_outbox_dispatch = False
+                            return
+
                         if _session_write_snapshot(_session) != _session_snapshot:
                             raise RuntimeError(
                                 "Session state changed before WRITE apply; refusing stale orchestrator effects"
@@ -1879,7 +2679,26 @@ class ProcessInboxMessages:
                         _ = await inbox_service.mark_as_processed(db, _inbox_pk, auto_commit=False)
                         await db.commit()
                         write_effects_applied = True
-                        enqueue_outbox_dispatch = bool(write_result.commands or write_result.decisions)
+                        enqueue_outbox_dispatch = _result_requires_outbox_dispatch(write_result)
+                        # 通知前端工作线运行态已变更，key 用于增量刷新定位
+                        from src.app.sys.services.event_stream_service import (
+                            WORKLINE_RUNTIME_CHANGED_EVENT,
+                            defer_sse_event,
+                        )
+
+                        defer_sse_event(
+                            db,
+                            WORKLINE_RUNTIME_CHANGED_EVENT,
+                            {
+                                "domain": "workline_trace",
+                                "entity": "session",
+                                "action": "updated",
+                                "keys": {
+                                    "workline_id": getattr(_workline, "id", None),
+                                    "session_id": getattr(_session, "id", None),
+                                },
+                            },
+                        )
                     except Exception:
                         await db.rollback()
                         raise
@@ -1893,7 +2712,7 @@ class ProcessInboxMessages:
                         inbox=inbox,
                         devices_by_role=entities["devices_by_role"],
                         services=entities["services"],
-                        correlation_id=inbox.correlation_id or "",
+                        trace_id=inbox.trace_id or "",
                         write_callback=_write_callback,
                     ),
                     timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -1910,14 +2729,13 @@ class ProcessInboxMessages:
                     if enqueue_outbox_dispatch:
                         _enqueue_outbox_dispatch()
                 else:
-                    error_msg = orch_result.error or (
-                        orch_result.failure.message if orch_result.failure is not None else "Unknown error"
-                    )
+                    error_msg = orch_result.error or "Unknown error"
                     mapped_error_code, mapped_error_domain = map_failure_to_diagnostic(
-                        failure=orch_result.failure,
+                        failure=None,
                         error_code=orch_result.error_code,
                     )
-                    _log_diagnostic(
+                    await _record_diagnostic(
+                        db,
                         inbox=inbox,
                         error_code=mapped_error_code,
                         error_domain=mapped_error_domain,
@@ -1927,7 +2745,6 @@ class ProcessInboxMessages:
                         workline=workline,
                         device=entities["device"],
                         command=entities["command"],
-                        transition=orch_result.transition,
                     )
                     _ = await inbox_service.mark_as_failed(db, inbox_pk, error_msg, auto_commit=False)
                     await db.commit()
@@ -1938,15 +2755,16 @@ class ProcessInboxMessages:
 
             except SessionResolveError as e:
                 logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
-                _log_diagnostic(
-                    inbox=inbox,
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
                     error_code=ErrorCode.SESSION_RESOLVE_FAILED,
                     message=str(e),
                 )
-                with suppress(Exception):
-                    await db.rollback()
                 try:
-                    inbox_pk = _resolve_entity_id(inbox)
+                    inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
                         await db.commit()
@@ -1955,19 +2773,41 @@ class ProcessInboxMessages:
                 result["failed"] += 1
                 result["processed"] += 1
 
+            except WorkLineSafetyBlocked as e:
+                logger.warning(f"Inbox {inbox_pk_text} blocked by WorkLine safety state: {e}")
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
+                    error_code=ErrorCode.UNKNOWN,
+                    error_domain=ErrorDomain.WORKFLOW,
+                    message=str(e),
+                )
+                try:
+                    inbox_pk = diagnostic_inbox.id
+                    if inbox_pk is not None:
+                        _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
+                        await db.commit()
+                except Exception as mark_error:
+                    logger.warning(f"Inbox {inbox_pk_text} safety blocked 补记失败: {mark_error}")
+                result["failed"] += 1
+                result["processed"] += 1
+
             except TimeoutError:
                 # 处理超时，不阻塞其他消息
                 logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
-                _log_diagnostic(
-                    inbox=inbox,
-                    error_code=ErrorCode.DEVICE_TIMEOUT,
-                    message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-                )
                 with suppress(Exception):
                     await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
+                    error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT,
+                    message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                )
                 try:
                     # 使用已解析的 inbox_pk（如果在前面解析成功）
-                    pk_to_mark = locals().get("inbox_pk") or _resolve_entity_id(inbox)
+                    pk_to_mark = locals().get("inbox_pk") or diagnostic_inbox.id
                     if pk_to_mark is not None:
                         _ = await inbox_service.mark_as_failed(
                             db,
@@ -1983,15 +2823,16 @@ class ProcessInboxMessages:
 
             except Exception as e:
                 logger.exception(f"Inbox {inbox_pk_text} 处理异常")
-                _log_diagnostic(
-                    inbox=inbox,
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
                     error_code=ErrorCode.UNKNOWN,
                     message=str(e),
                 )
-                with suppress(Exception):
-                    await db.rollback()
                 try:
-                    inbox_pk = _resolve_entity_id(inbox)
+                    inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
                         _ = await inbox_service.mark_as_failed(db, inbox_pk, str(e), auto_commit=False)
                         await db.commit()
@@ -2000,16 +2841,19 @@ class ProcessInboxMessages:
                 result["failed"] += 1
                 result["processed"] += 1
 
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
         return result
 
 
 class TimeoutScanner:
-    """超时扫描器内部类
+    """系统 timeout inbox 扫描器内部类
 
     职责：
-    - 扫描超时的 Session（deadline_at < now）
-    - 为超时 Session 创建 timeout 类型的 Inbox 消息
-    - 触发后续编排流程处理超时
+    - 扫描 ACK 后执行等待超时的 Session（deadline_at < now）
+    - 为超时 Session 幂等创建系统 TIMER_TIMEOUT Inbox
+    - 后续由 runtime reconciliation handler 处理，不进入插件 timeout 编排
 
     调用方式：
     - 通过 Celery 任务 scan_timeouts_batch 间接调用
@@ -2024,7 +2868,7 @@ class TimeoutScanner:
         1. 查询 deadline_at < NOW() 的超时 Session
         2. 遍历每个超时会话：
            a. 创建 type='timeout' 的 Inbox 消息
-           b. 继承原 Session 的 correlation_id
+           b. 继承原 Session 的 trace_id
         3. 提交数据库事务
 
         Args:
@@ -2035,6 +2879,7 @@ class TimeoutScanner:
             扫描结果统计 {
                 "scanned": 扫描的 Session 数,
                 "timeouts_created": 创建的超时 Inbox 数,
+                "ack_timeouts_reconciled": ACK 前超时并进入对账的指令数,
                 "errors": 错误数
             }
         """
@@ -2042,14 +2887,20 @@ class TimeoutScanner:
             WorklineSessionRepository,
         )
         from src.app.workline.services.inbox_service import inbox_service
+        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
         result: ScanResult = {
             "scanned": 0,
             "timeouts_created": 0,
+            "ack_timeouts_reconciled": 0,
             "errors": 0,
         }
 
-        # 获取超时 Session
+        from src.app.device.repositories.command_repository import DeviceCommandRepository
+        from src.app.device.repositories.device_repository import device_repository
+        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+
+        # 获取 ACK 后执行等待超时 Session
         session_repo = WorklineSessionRepository()
         sessions = await session_repo.get_timed_out_sessions(db, limit=limit)
         result["scanned"] = len(sessions)
@@ -2060,13 +2911,30 @@ class TimeoutScanner:
                 if session_pk is None:
                     raise ValueError("Timed out session missing primary key")
 
-                # 创建超时 Inbox
+                awaiting_command_id = getattr(session, "awaiting_command_id", None)
+                command = (
+                    await db.get(DeviceCommand, awaiting_command_id) if isinstance(awaiting_command_id, int) else None
+                )
+                if _enum_value(getattr(session, "status", None)) == "WAITING_DEVICE_RESULT" and command is None:
+                    raise ValueError(f"Timed out session awaiting command missing: session_id={session_pk}")
+                command_device_id = getattr(command, "device_id", None)
+                device = await device_repository.get_by_id(db, command_device_id) if command_device_id else None
+
+                # 幂等创建系统 timeout Inbox
                 _ = await inbox_service.create_timeout_inbox(
                     db=db,
                     session_id=session_pk,
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
-                    correlation_id=session.correlation_id,
+                    trace_id=session.trace_id,
+                    wait_token=getattr(command, "command_code", None),
+                    wait_type=getattr(session, "current_wait_type", None),
+                    awaiting_command_id=awaiting_command_id,
+                    command_code=getattr(command, "command_code", None),
+                    device_id=command_device_id,
+                    device_code=getattr(device, "device_code", None),
+                    command_status=_enum_value(getattr(command, "status", None)) if command is not None else None,
+                    ack_received_at=getattr(command, "ack_received_at", None),
                     auto_commit=False,
                 )
                 result["timeouts_created"] += 1
@@ -2076,8 +2944,40 @@ class TimeoutScanner:
                 logger.error(f"Session {session_pk or 'unknown'} 创建超时 Inbox 失败: {e}")
                 result["errors"] += 1
 
+        # 获取 ACK 前通信等待超时 Command：设备已经接收出站指令派发，但一直没有 ACK。
+        command_repo = DeviceCommandRepository()
+        outbox_repo = WorklineOutboxRepository()
+        ack_timeout_commands = await command_repo.get_ack_timed_out_commands(db, limit=limit)
+        result["scanned"] += len(ack_timeout_commands)
+
+        for command in ack_timeout_commands:
+            command_code = getattr(command, "command_code", None)
+            try:
+                if not isinstance(command_code, str) or not command_code:
+                    raise ValueError("ACK timed out command missing command_code")
+
+                outbox = await outbox_repo.get_by_dispatch_key(db, f"device-command:{command_code}")
+                if outbox is None:
+                    raise ValueError(f"ACK timed out command outbox missing: command_code={command_code}")
+
+                session = await workline_runtime_reconciliation_service.handle_dispatch_ack_exhausted(
+                    db,
+                    outbox=outbox,
+                    command=command,
+                    error_message="COMMAND_ACK_TIMEOUT",
+                )
+                if session is not None:
+                    result["ack_timeouts_reconciled"] += 1
+                    logger.info(f"Command {command_code} ACK 等待超时，已进入 runtime reconciliation")
+            except Exception as e:
+                logger.error(f"Command {command_code or 'unknown'} ACK 等待超时处理失败: {e}")
+                result["errors"] += 1
+
         # 提交事务
         await db.commit()
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
 
         return result
 
@@ -2112,6 +3012,28 @@ class DeviceHeartbeatScanner:
             "scanned": marked_offline,
             "marked_offline": marked_offline,
         }
+
+
+class SmtFullBoxExchangeCandidateScanner:
+    """SMT 满箱交换候选释放补偿扫描器。"""
+
+    @staticmethod
+    async def _scan(
+        db: Any,
+        *,
+        source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
+        limit: int = 50,
+    ) -> SmtFullBoxExchangeCandidateScanResult:
+        from src.app.workline.services.smt_full_box_exchange_candidate_service import (
+            smt_full_box_exchange_candidate_service,
+        )
+
+        return await smt_full_box_exchange_candidate_service.scan_candidates(
+            db,
+            source_device_code=source_device_code,
+            limit=limit,
+            auto_commit=True,
+        )
 
 
 @celery_app.task(
@@ -2200,7 +3122,7 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
     1. 查询 deadline_at < NOW() 的超时 Session
     2. 遍历每个超时会话：
        a. 创建 type='TIMEOUT' 的 Inbox 消息
-       b. 继承原 Session 的 correlation_id
+       b. 继承原 Session 的 trace_id
     3. 提交数据库事务
 
     执行模式：
@@ -2219,6 +3141,7 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
         扫描结果统计 {
             "scanned": 扫描的 Session 数,
             "timeouts_created": 创建的超时 Inbox 数,
+            "ack_timeouts_reconciled": ACK 前超时并进入对账的指令数,
             "errors": 错误数
         }
 
@@ -2286,13 +3209,52 @@ def scan_device_heartbeats_batch(
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
+    base=WorklineTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def scan_smt_full_box_exchange_candidates_batch(
+    self: WorklineTask,
+    source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
+    limit: int = 50,
+) -> SmtFullBoxExchangeCandidateScanResult:
+    """扫描 SMT 单层货架释放候选，派生满箱交换插件入口 Inbox。"""
+
+    logger.info(f"开始扫描 SMT 满箱交换候选释放, source_device_code={source_device_code}, limit={limit}")
+
+    async def _scan() -> SmtFullBoxExchangeCandidateScanResult:
+        async with self.db as db:
+            return await SmtFullBoxExchangeCandidateScanner._scan(
+                db,
+                source_device_code=source_device_code,
+                limit=limit,
+            )
+
+    try:
+        result = _run_async(_scan())
+        _ensure_non_empty_retry_result(
+            "scan_smt_full_box_exchange_candidates_batch",
+            result,
+            int(getattr(self.request, "retries", 0) or 0),
+        )
+        logger.info(f"SMT 满箱交换候选释放扫描完成: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"SMT 满箱交换候选释放扫描失败: {e}")
+        countdown = 60 * (2**self.request.retries)
+        raise self.retry(exc=e, countdown=countdown) from None
+
+
 class OutboxDispatcher:
     """Outbox 派发器内部类（用于测试）"""
 
     MAX_RETRIES = 3
 
     @staticmethod
-    async def _dispatch(db: Any, limit: int = 50) -> DispatchResult:
+    async def _dispatch(db: Any, limit: int = 50) -> DispatchResult:  # noqa: PLR0912
         """派发 Outbox 消息
 
         Args:
@@ -2305,6 +3267,8 @@ class OutboxDispatcher:
         from src.app.workline.repositories.outbox_repository import (
             WorklineOutboxRepository,
         )
+        from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked, workline_safety_service
 
         result: DispatchResult = {
             "dispatched": 0,
@@ -2315,42 +3279,143 @@ class OutboxDispatcher:
 
         # 获取待派发消息
         outbox_repo = WorklineOutboxRepository()
+        _ = await _repair_orphaned_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
+        _ = await _repair_self_blocked_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
         messages = await outbox_repo.get_pending_messages(db, limit=limit)
 
         for outbox in messages:
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)
+            dispatch_attempt: Any | None = None
             try:
                 outbox_pk = _resolve_required_pk(outbox, "outbox", "id", "outbox_id")
-                # 尝试标记为派发中（并发控制）
+                outbox_workline_id = getattr(outbox, "workline_id", None)
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        block_state = await _block_outbox_for_workline_safety(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox=outbox,
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
+                        )
+                        _count_workline_safety_block_result(result, block_state)
+                        continue
+
+                # 尝试标记为派发中（并发控制）。前置 WorkLine 锁已释放前按统一锁序完成。
                 updated = await outbox_repo.mark_as_dispatching(db, outbox_pk)
                 if updated is None:
+                    await db.commit()
                     # 已被其他 worker 处理
                     result["skipped"] += 1
                     continue
+                await db.commit()
+
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        block_state = await _block_outbox_for_workline_safety(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox=outbox,
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
+                        )
+                        _count_workline_safety_block_result(result, block_state)
+                        continue
+                    await db.commit()
+
+                dispatch_attempt = await workline_dispatch_attempt_service.create_attempt(
+                    db,
+                    outbox=outbox,
+                    auto_commit=False,
+                )
+                await db.commit()
+
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        block_state = await _block_outbox_for_workline_safety(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox=outbox,
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
+                            dispatch_attempt=dispatch_attempt,
+                            attempt_service=workline_dispatch_attempt_service,
+                            final_guard=True,
+                        )
+                        _count_workline_safety_block_result(result, block_state)
+                        continue
+                    await db.commit()
 
                 # 派发消息
                 success = await OutboxDispatcher._dispatch_single(db, outbox)
 
                 if success:
-                    trace_extra = _outbox_trace_extra(outbox, trace=trace)
-                    _ = await outbox_repo.mark_as_sent(db, outbox_pk)
+                    sent_outbox = await outbox_repo.mark_as_sent(db, outbox_pk)
+                    if dispatch_attempt is not None:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=True,
+                            response={
+                                "result": "sent",
+                                "outbox_finalization": "sent" if sent_outbox is not None else "fenced",
+                            },
+                            auto_commit=False,
+                        )
+                    if sent_outbox is None:
+                        await db.commit()
+                        result["skipped"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 物理派发成功但终态更新被 fencing 拒绝，保留当前安全状态 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        result["dispatched"] += 1
+                        continue
+                    await db.commit()
                     result["success"] += 1
                     logger.info(f"Outbox {outbox_pk} 派发成功 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 else:
                     trace_extra = _outbox_trace_extra(outbox, trace=trace)
-                    _log_diagnostic(
-                        inbox=None,
-                        outbox=outbox,
-                        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                        message="Dispatch failed",
-                        extra=trace_extra,
-                    )
                     failed_outbox = await outbox_repo.mark_as_failed(
                         db,
                         outbox_pk,
                         "Dispatch failed",
                         OutboxDispatcher.MAX_RETRIES,
+                    )
+                    if dispatch_attempt is not None:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=False,
+                            error_message="Dispatch failed",
+                            auto_commit=False,
+                        )
+                    if failed_outbox is None:
+                        await db.commit()
+                        result["skipped"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} 物理派发失败但失败更新被 fencing 拒绝，保留当前安全状态 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                        result["dispatched"] += 1
+                        continue
+                    await _record_diagnostic(
+                        db,
+                        inbox=None,
+                        outbox=outbox,
+                        error_code=_dispatch_failure_diagnostic_code(failed_outbox),
+                        message="Dispatch failed",
+                        extra=trace_extra,
                     )
                     await _mark_device_command_failed_if_dispatch_exhausted(
                         db,
@@ -2358,20 +3423,89 @@ class OutboxDispatcher:
                         failed_outbox=failed_outbox,
                         error_message="Dispatch failed",
                     )
+                    await db.commit()
                     result["failed"] += 1
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
 
                 result["dispatched"] += 1
 
+            except _DeviceCommandGovernanceError as e:
+                outbox_pk = _resolve_entity_id(outbox)
+                if e.code == "DEVICE_BUSY":
+                    logger.info(
+                        f"Outbox {outbox_pk_text} 等待目标设备空闲: {e.message} "
+                        f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                    )
+                    try:
+                        if outbox_pk is not None:
+                            _ = await _block_outbox_for_device_busy(
+                                db,
+                                outbox_repo=outbox_repo,
+                                outbox=outbox,
+                                outbox_id=outbox_pk,
+                                governance_error=e,
+                                dispatch_attempt=dispatch_attempt,
+                                attempt_service=workline_dispatch_attempt_service,
+                            )
+                        else:
+                            await db.commit()
+                    except Exception as mark_error:
+                        logger.warning(f"Outbox {outbox_pk_text} 设备忙暂停补记失败: {mark_error}")
+                        result["failed"] += 1
+                        result["dispatched"] += 1
+                        continue
+                    result["skipped"] += 1
+                    result["dispatched"] += 1
+                    continue
+
+                logger.warning(
+                    f"Outbox {outbox_pk_text} 命令治理拒绝: {e.message} "
+                    f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                )
+                if dispatch_attempt is not None:
+                    try:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=False,
+                            error_message=e.message,
+                            response={"result": "failed", "reason": e.code},
+                            auto_commit=False,
+                        )
+                    except Exception as attempt_error:
+                        logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
+                if outbox_pk is not None:
+                    _ = await outbox_repo.mark_as_failed(
+                        db,
+                        outbox_pk,
+                        e.message,
+                        OutboxDispatcher.MAX_RETRIES,
+                    )
+                    await _record_diagnostic(
+                        db,
+                        inbox=None,
+                        outbox=outbox,
+                        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
+                        message=e.message,
+                        extra=_outbox_trace_extra(outbox, trace=trace),
+                    )
+                await db.commit()
+                result["failed"] += 1
+                result["dispatched"] += 1
+
             except Exception as e:
                 logger.error(f"Outbox {outbox_pk_text} 派发异常: {e} ({_outbox_trace_log_suffix(outbox, trace=trace)})")
-                _log_diagnostic(
-                    inbox=None,
-                    outbox=outbox,
-                    error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                    message=str(e),
-                    extra=_outbox_trace_extra(outbox, trace=trace),
-                )
+                if dispatch_attempt is not None:
+                    try:
+                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                            db,
+                            attempt=dispatch_attempt,
+                            success=False,
+                            error_message=str(e),
+                            auto_commit=False,
+                        )
+                    except Exception as attempt_error:
+                        logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
                 try:
                     outbox_pk = _resolve_entity_id(outbox)
                     if outbox_pk is not None:
@@ -2381,18 +3515,36 @@ class OutboxDispatcher:
                             str(e),
                             OutboxDispatcher.MAX_RETRIES,
                         )
+                        if failed_outbox is None:
+                            await db.commit()
+                            result["skipped"] += 1
+                            logger.warning(
+                                f"Outbox {outbox_pk} 物理派发异常但失败更新被 fencing 拒绝，保留当前安全状态 "
+                                f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                            )
+                            result["dispatched"] += 1
+                            continue
+                        await _record_diagnostic(
+                            db,
+                            inbox=None,
+                            outbox=outbox,
+                            error_code=_dispatch_failure_diagnostic_code(failed_outbox),
+                            message=str(e),
+                            extra=_outbox_trace_extra(outbox, trace=trace),
+                        )
                         await _mark_device_command_failed_if_dispatch_exhausted(
                             db,
                             outbox=outbox,
                             failed_outbox=failed_outbox,
                             error_message=str(e),
                         )
+                        await db.commit()
                 except Exception as mark_error:
                     logger.warning(f"Outbox {outbox_pk_text} 异常补记失败: {mark_error}")
                 result["failed"] += 1
                 result["dispatched"] += 1
 
-        # 提交事务
+        # 前面的领取、派发账本和终态更新都按消息提交；这里保留空提交兼容无消息路径。
         await db.commit()
         from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 
@@ -2414,7 +3566,7 @@ class OutboxDispatcher:
         from src.app.workline.models.outbox import DispatchType
 
         if await OutboxDispatcher._should_dispatch_to_sandbox(db, outbox):
-            return await OutboxDispatcher._dispatch_sandbox(outbox)
+            return await OutboxDispatcher._dispatch_sandbox(db, outbox)
         if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
             return await OutboxDispatcher._dispatch_device_command(db, outbox)
         if outbox.dispatch_type == DispatchType.EXTERNAL_HTTP:
@@ -2436,12 +3588,19 @@ class OutboxDispatcher:
         return is_simulation_run_mode(run_mode)
 
     @staticmethod
-    async def _dispatch_sandbox(outbox: Any) -> bool:
+    async def _dispatch_sandbox(db: Any, outbox: Any) -> bool:
         """派发到沙箱工作台。
 
         沙箱不改写 payload；Outbox 标记 SENT 后，由调试人员按原 callback/result 协议手工回传。
+        对设备命令，SENT 已代表硬件侧待完成任务，必须同步占用设备运行态，避免沙箱假并发。
         """
 
+        from src.app.workline.models.outbox import DispatchType
+
+        if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
+            reserved = await OutboxDispatcher._reserve_sandbox_device_command(db, outbox)
+            if not reserved:
+                return False
         logger.info(
             "Outbox 沙箱派发完成，等待调试人员手工回调 "
             f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
@@ -2449,11 +3608,69 @@ class OutboxDispatcher:
         return True
 
     @staticmethod
+    async def _reserve_sandbox_device_command(db: Any, outbox: Any) -> bool:
+        """沙箱设备命令进入待回传队列时，占用 WES 侧设备运行态。"""
+
+        from src.app.device.models.command import CommandStatus
+        from src.app.device.repositories.command_repository import DeviceCommandRepository
+        from src.app.device.repositories.device_repository import device_repository
+        from src.app.device.services import device_service
+
+        device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
+        if device is None:
+            logger.error(f"沙箱设备不存在: {outbox.target_code}")
+            return False
+
+        payload = payload_dict(getattr(outbox, "payload_json", None))
+        command_code = _string_value(payload.get("command_code"))
+        if not command_code:
+            logger.error(f"沙箱设备指令缺少 command_code: outbox_id={getattr(outbox, 'id', None)}")
+            return False
+
+        command = await DeviceCommandRepository().get_by_command_code(db, command_code)
+        command_id = _resolve_entity_id(command)
+        device_id = _resolve_entity_id(device)
+        is_same_reserved_command = _is_same_session_current_command(outbox=outbox, command=command, device=device)
+        _enforce_device_command_governance(
+            device,
+            command_type=_resolve_command_type_for_governance(payload),
+            stage_label="沙箱命令派发",
+            allow_busy=is_same_reserved_command,
+        )
+        if is_same_reserved_command:
+            logger.info(
+                f"沙箱设备命令已占用运行态，按已派发处理: device_code={outbox.target_code}, command_code={command_code}"
+            )
+            return True
+
+        if device_id is None or command_id is None:
+            logger.warning(
+                "沙箱设备指令已进入待回传，但 WES 侧设备运行态未更新: "
+                f"device_code={outbox.target_code}, command_code={command_code}"
+            )
+            return False
+        if command is None:
+            return False
+
+        if _enum_value(getattr(command, "status", None)) == CommandStatus.PENDING.value:
+            command.status = CommandStatus.SENT
+            command.sent_at = command.sent_at or timezone.now_for_db()
+
+        _ = await device_service.mark_command_dispatched(
+            db,
+            device_id=device_id,
+            command_id=command_id,
+            auto_commit=False,
+        )
+        return True
+
+    @staticmethod
     async def _dispatch_device_command(db: Any, outbox: Any) -> bool:
         """派发设备指令。"""
-        try:
-            import httpx
+        import httpx
 
+        payload: dict[str, Any] = {}
+        try:
             from src.app.device.repositories.device_repository import device_repository
 
             device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
@@ -2462,44 +3679,59 @@ class OutboxDispatcher:
                 return False
 
             payload = payload_dict(getattr(outbox, "payload_json", None))
+            from src.app.device.models.command import CommandStatus
             from src.app.device.repositories.command_repository import DeviceCommandRepository
 
             command_code = _string_value(payload.get("command_code"))
+            command_repo = DeviceCommandRepository()
+            command = await command_repo.get_by_command_code(db, command_code) if command_code else None
+            command_id = _resolve_entity_id(command)
+            is_same_reserved_command = _is_same_session_current_command(outbox=outbox, command=command, device=device)
             _enforce_device_command_governance(
                 device,
                 command_type=_resolve_command_type_for_governance(payload),
                 stage_label="命令派发",
+                allow_busy=is_same_reserved_command,
             )
+            if is_same_reserved_command:
+                logger.warning(
+                    "设备命令已占用运行态但尚未 ACK，按通信 ACK 重试/耗尽处理: "
+                    f"device_code={outbox.target_code}, command_code={command_code}"
+                )
+                return False
 
-            # 确保 scheme 是 http 或 https
-            protocol_value = getattr(device, "protocol", None)
-            if protocol_value:
-                scheme = str(protocol_value).lower()
-                if scheme not in ("http", "https"):
-                    scheme = "http"
-            else:
-                scheme = "http"
-
+            # 确保 scheme 是 http 或 https。
+            scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
             logger.info(f"发送设备指令到 {url}: {payload.get('command_code')}")
-            timeout = (device.timeout or 10000) / 1000
+            timeout = 10.0
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload)
                 if response.status_code == 200:
                     from src.app.device.services import device_service
-
-                    command = (
-                        await DeviceCommandRepository().get_by_command_code(db, command_code) if command_code else None
+                    from src.app.workline.services.runtime_reconciliation_service import (
+                        workline_runtime_reconciliation_service,
                     )
-                    command_id = _resolve_entity_id(command)
+
                     device_id = _resolve_entity_id(device)
-                    if device_id is not None and command_id is not None:
+                    if command is not None and device_id is not None and command_id is not None:
+                        ack_received_at = timezone.now_for_db()
+                        command.status = CommandStatus.ACK_RECEIVED
+                        command.sent_at = command.sent_at or ack_received_at
+                        command.ack_received_at = ack_received_at
+                        command.ack_code = response.status_code
+                        command.ack_message = "HTTP 200"
                         _ = await device_service.mark_command_dispatched(
                             db,
                             device_id=device_id,
                             command_id=command_id,
                             auto_commit=False,
+                        )
+                        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+                            db,
+                            command_id=command_id,
+                            ack_received_at=ack_received_at,
                         )
                     else:
                         logger.warning(
@@ -2514,9 +3746,12 @@ class OutboxDispatcher:
                 else:
                     logger.warning(f"设备指令发送失败: HTTP {response.status_code}")
                 return False
+        except httpx.TimeoutException as e:
+            logger.warning(f"设备指令 ACK 通信超时: {payload.get('command_code')}")
+            raise RuntimeError("OUTBOX_ACK_TIMEOUT") from e
         except _DeviceCommandGovernanceError as e:
             logger.warning(str(e))
-            raise RuntimeError(str(e)) from e
+            raise
         except Exception as e:
             logger.error(f"设备指令派发失败: {e}")
             return False

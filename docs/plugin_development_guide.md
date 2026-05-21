@@ -15,8 +15,8 @@
 - 定义本业务线的 `plugin_key`、`contract_version` 和 manifest。
 - 声明设备角色、事件来源、命令目标和设备能力要求。
 - 定义业务 payload 模型、业务键解析器和结果分类器。
-- 定义类型化 context 和状态机。
-- 通过 handler 把事件和命令结果转成 `PluginResult`：状态迁移、业务决策、命令、等待、完成或 failure。
+- 定义类型化 context。
+- 通过 handler 把事件和命令结果转成 `RuntimeIntent` 或 `list[RuntimeIntent]`：更新上下文、下发命令、业务 NG、阻断或完成。
 
 ### 插件不负责什么
 
@@ -24,7 +24,8 @@
 - 不查询数据库拼设备拓扑，拓扑由平台根据 `Device.upstream_device_id` 和 manifest 校验。
 - 不把 sandbox 标志写入消息 payload。
 - 不在 runtime、callback、dispatcher 中为某个业务插件开私有分支。
-- 不使用 legacy `step_code` 作为业务状态字段；统一使用 `plugin_state`。
+- 不维护插件私有状态机，不写 Session 状态，不维护物料当前位置。
+- 不处理命令幂等、ACK、Result、Timeout、Retry；这些属于 Runtime。
 
 ## 白皮书包络
 
@@ -70,7 +71,6 @@ src/workline_plugins/<plugin_key>/
   __init__.py
   contract.py
   context.py
-  state_machine.py
   plugin.py
 tests/workline_plugins/test_<plugin_key>_plugin.py
 ```
@@ -147,7 +147,6 @@ from src.workline_runtime.plugin_context import PluginContext
 class ExampleContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    plugin_state: str = "IDLE"
     business_key: str | None = None
     expected_value: float | None = None
     tolerance: float | None = None
@@ -165,81 +164,17 @@ class ExampleContext(BaseModel):
         return self.model_dump(exclude_none=True)
 ```
 
-## state_machine.py
-
-状态机应显式声明状态和 trigger。插件 handler 通过 `.transition("<trigger>")` 声明业务意图，状态合法性由平台和状态机兜底校验。
-
-```python
-from enum import StrEnum
-
-from transitions import Machine
-
-
-class ExampleState(StrEnum):
-    IDLE = "IDLE"
-    WAITING_MEASURE = "WAITING_MEASURE"
-    WAITING_DIVERT = "WAITING_DIVERT"
-    MANUAL_HOLD = "MANUAL_HOLD"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
-
-
-class ExampleStateMachine:
-    states = [state.value for state in ExampleState]
-    transitions = [
-        {"trigger": "item_arrived", "source": ExampleState.IDLE.value, "dest": ExampleState.WAITING_MEASURE.value},
-        {
-            "trigger": "measure_ok",
-            "source": ExampleState.WAITING_MEASURE.value,
-            "dest": ExampleState.WAITING_DIVERT.value,
-        },
-        {
-            "trigger": "measure_ng",
-            "source": ExampleState.WAITING_MEASURE.value,
-            "dest": ExampleState.WAITING_DIVERT.value,
-        },
-        {"trigger": "divert_ok", "source": ExampleState.WAITING_DIVERT.value, "dest": ExampleState.COMPLETED.value},
-        {"trigger": "manual_hold", "source": ExampleState.WAITING_DIVERT.value, "dest": ExampleState.MANUAL_HOLD.value},
-        {
-            "trigger": "fail",
-            "source": [
-                ExampleState.IDLE.value,
-                ExampleState.WAITING_MEASURE.value,
-                ExampleState.WAITING_DIVERT.value,
-                ExampleState.MANUAL_HOLD.value,
-            ],
-            "dest": ExampleState.ERROR.value,
-        },
-    ]
-
-    def __init__(self, initial: str = ExampleState.IDLE.value):
-        self.state = initial
-        self.machine = Machine(
-            model=self,
-            states=self.states,
-            transitions=self.transitions,
-            initial=initial,
-            auto_transitions=False,
-            ignore_invalid_triggers=False,
-        )
-
-    def may_trigger(self, trigger: str) -> bool:
-        return bool(getattr(self, f"may_{trigger}", lambda: False)())
-```
-
 ## plugin.py
 
 插件入口必须把 manifest、handler 和业务结果写清楚。
 
 ```python
-from src.workline_runtime.plugin_base import PluginResultBuilder, WorklinePlugin, on_command, on_event, step
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
-from src.workline_runtime.types import CommandTargetScope
 
 from .context import ExampleContext
 from .contract import ItemArrivedPayload, MeasureCompletedData, build_measure_params, classify_result, resolve_business_key
-from .state_machine import ExampleState, ExampleStateMachine
 
 
 class ExamplePlugin(WorklinePlugin):
@@ -254,7 +189,6 @@ class ExamplePlugin(WorklinePlugin):
         ),
         business_key_resolver=resolve_business_key,
         result_classifier=classify_result,
-        state_machine_class=ExampleStateMachine,
         context_model=ExampleContext,
         event_source_roles={"ITEM_ARRIVED": "ENTRY_SENSOR"},
         command_target_roles={"MEASURE_ITEM": "MEASURE_DEVICE"},
@@ -262,64 +196,70 @@ class ExamplePlugin(WorklinePlugin):
 
     @on_event("ITEM_ARRIVED")
     async def handle_item_arrived(self, ctx, event: ItemArrivedPayload):
-        return (
-            PluginResultBuilder(ctx)
-            .transition("item_arrived")
-            .command(
-                command_type="MEASURE_ITEM",
-                target_scope=CommandTargetScope.DOWNSTREAM,
-                device_role="MEASURE_DEVICE",
-                parameters=build_measure_params(
-                    business_key=event.data.business_key,
-                    station_code=event.data.station_code,
-                ),
-            )
-            .wait(event_type="MEASURE_ITEM", timeout_seconds=120)
-            .context(
+        return [
+            ctx.next.update_context(
                 ExampleContext(
-                    plugin_state=ExampleState.WAITING_MEASURE,
                     business_key=event.data.business_key,
                     expected_value=event.data.expected_value,
                     tolerance=event.data.tolerance,
                 ).to_patch()
+            ),
+            ctx.next.command(
+                action="MEASURE_ITEM",
+                device_role="MEASURE_DEVICE",
+                destination_role="MEASURE_DEVICE",
+                payload=build_measure_params(
+                    business_key=event.data.business_key,
+                    station_code=event.data.station_code,
+                ),
+                timeout_seconds=120,
             )
-            .build()
-        )
+        ]
 
     @on_command("MEASURE_ITEM", result="SUCCESS")
-    @step(ExampleState.WAITING_MEASURE)
     async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
         data = MeasureCompletedData.model_validate(result.data)
         business_ctx = ExampleContext.from_session(ctx)
         is_ng = abs(data.actual_value - business_ctx.expected_value) > business_ctx.tolerance
-        builder = PluginResultBuilder(ctx).transition("measure_ng" if is_ng else "measure_ok")
         if is_ng:
-            builder.business_decision(
+            return ctx.next.mark_ng(
                 reason_code="VALUE_OUT_OF_TOLERANCE",
                 message="业务检测超出允差",
-                business_key=data.business_key,
-                evidence={
+                payload={
+                    "business_key": data.business_key,
                     "expected_value": business_ctx.expected_value,
                     "actual_value": data.actual_value,
                     "tolerance": business_ctx.tolerance,
                 },
             )
-        return builder.build()
+        return ctx.next.complete({"business_key": data.business_key})
 ```
 
-## 业务 NG 与系统异常
+## 业务 NG、异常流与错误
 
-必须区分业务结果和系统异常，否则 trace、timeline、运营查询会混淆。
+必须区分业务结果和系统错误，否则 trace、timeline、运营查询会混淆。第一性原则：
 
-| 类型 | 含义 | 插件表达 |
-| --- | --- | --- |
-| 业务 NG | 业务规则判断出的预期结果，例如重量超差、质检不合格 | `.business_decision(...)`，可继续派发分流命令 |
-| 数据非法 | 回调 payload 缺字段、业务数据类型错误、包络不符合协议 | `build_payload_invalid_failure(...)` 或 `failure(domain="DATA", ...)` |
-| 硬件异常 | 设备返回 `FAILED`、设备离线、传感器异常 | `failure(domain="HARDWARE", ...)` |
-| 超时 | 等待设备或外部系统回调超时 | `failure(domain="TIMEOUT", ...)` |
-| 系统异常 | 插件 bug、状态迁移非法、配置缺失、runtime 异常 | `failure(domain="SOFTWARE", ...)` 或由平台诊断 |
+> 只要系统知道下一步去哪，并且能自动推进，就不是错误。
 
-业务 NG 不是系统 failure。业务 NG 应携带 `reason_code`、`message`、`business_key` 和 evidence，便于 trace/timeline 查询。
+因此，错误只保留给“流程无法继续推进，需要人工、维修、对账或外部介入”的情况。NG 是物料的业务结果，不是系统失败；已建模异常流是非主路径，不是失败。
+
+| 类型 | 含义 | 是否算错误 | 插件表达 |
+| --- | --- | --- | --- |
+| OK | 业务判断通过，可走正常下游 | 否 | `RuntimeIntent.command(...)` 或 `RuntimeIntent.complete(...)` |
+| 业务 NG | 业务规则判断出的预期结果，例如重量超差、质检不合格、扫码判定 NG | 否 | `RuntimeIntent.mark_ng(...)`，再 `command(...)` 到 NG 设备/缓存位，或 `complete(...)` |
+| 已建模异常流 | 非主路径，但插件和 Runtime 已知道如何处理，例如返工、转 NG、人工复核前置动作 | 否 | `mark_ng(...)`、`command(...)`、`continue_next(...)`、`complete(...)` |
+| 阻断 | 当前自动流程不能继续，但可以由人工处理、恢复、重试或对账 | 是 | `RuntimeIntent.block(...)`，说明 `reason_code`、责任域和 evidence |
+| 硬件/通信故障 | 设备离线、动作失败、ACK/Result 超时、物料位置不确定 | 是 | 插件不要伪装成业务 NG；Runtime 进入阻断/对账路径 |
+| 数据非法 | payload 缺字段、业务数据类型错误、包络不符合协议 | 视边界而定 | 未入站由 callback/inbox 拒绝；已入 Session 但无法解释时 `block(...)` |
+| 系统异常 | 插件 bug、配置缺失、拓扑不可达、Runtime 校验失败 | 是 | 插件避免吞掉；Runtime 记录诊断并阻断 |
+
+插件开发硬规则：
+
+- 不把业务 NG 写入 `failure_code`、`error_code`、`FAILED` 或设备故障态。
+- 不用 `CommandResult.FAILED` 表达“检测结果 NG”。设备动作成功但业务结果 NG 时，设备应回 `result=SUCCESS`，并在 `data` 中携带 `inspection_result=NG`、`ng_reason` 等业务字段。
+- 只有设备动作未完成、位置不确定、通信失败、超时、拓扑不可达、插件意图非法等“无法自动推进”的情况，才进入错误/阻断。
+- 业务 NG 必须携带 `reason_code`、`message`、`business_key` 或可解析物料身份，以及 evidence，便于 trace/timeline 查询和统计。
+- 插件只做业务决策；Session 状态、设备状态、命令幂等、超时、重试、对账和阻断恢复由 Runtime 负责。
 
 ## Sandbox 调试
 
@@ -341,11 +281,11 @@ Sandbox 是 WORKLINE 级调试能力，不是 dry-run，也不是插件级 repla
 4. Runtime 创建或解析 Session，插件 handler 产生命令，Outbox 进入 sandbox 派发。
 5. 调试人员读取沙箱待处理指令，按设备实际协议人工构造 result 回调。
 6. 回调仍走 callback 入口，业务字段放在 `data`，Session 继续推进。
-7. 重复处理后续沙箱指令，直到 Session `COMPLETED`、业务 NG 分流或 failure。
+7. 重复处理后续沙箱指令，直到 Session `COMPLETED`、业务 NG 分流完成或进入阻断/错误。
 
 ### 插件级诊断与 Sandbox 的区别
 
-插件级诊断工具只解释单条 payload 会命中哪个 handler、解析出什么 context、返回什么 `PluginResult`。它不创建真实 Session，不写 Outbox，也不验证派发和手工 callback 闭环。
+插件级诊断工具只解释单条 payload 会命中哪个 handler、解析出什么 context、返回什么 `RuntimeIntent`。它不创建真实 Session，不写 Outbox，也不验证派发和手工 callback 闭环。
 
 WORKLINE 级调试必须用 sandbox，因为只有 sandbox 覆盖事件输入、命令派发、手工 callback 和 Session 推进。
 
@@ -353,13 +293,14 @@ WORKLINE 级调试必须用 sandbox，因为只有 sandbox 覆盖事件输入、
 
 每个新插件至少覆盖：
 
-- manifest：`plugin_key`、`contract_version`、设备角色、事件来源、命令目标、状态机和 context model。
+- manifest：`plugin_key`、`contract_version`、设备角色、事件来源、命令目标和 context model。
 - 包络：event/result 业务字段只在 `data`，下发命令业务字段只在 `params`。
 - 业务键：`business_key_resolver` 不依赖 runtime 私有逻辑。
-- 状态机：合法 trigger 可走通，非法 trigger 被拒绝。
+- 当前事实：handler 只根据 Session context、设备事件和命令结果生成下一步 `RuntimeIntent`。
 - happy path：一个事件产生一个命令，等待一个回调，Session 能继续推进。
-- 业务 NG：表达为 `business_decision`，不写成系统 failure。
-- 系统异常：设备 `FAILED`、payload 非法、timeout 至少覆盖一个。
+- 业务 NG：表达为 `RuntimeIntent.mark_ng(...)`，不写成系统 failure，并验证后续 NG 分流或完成。
+- 已建模异常流：例如返工、转 NG、人工复核前置动作，必须验证不会污染 `failure_code` / 设备 `error_code`。
+- 系统错误：设备动作失败、payload 已入 Session 但无法解释、timeout 至少覆盖一个，必须进入 `block(...)` 或 Runtime 对账路径。
 - sandbox：`SIMULATION` 不改变消息 payload，派发到 sandbox，由手工 callback 推进。
 
 建议先运行：
@@ -376,11 +317,11 @@ uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_
 
 1. 从 `docs/templates/workline_plugin/` 复制模板。
 2. 先写 `contract.py`，锁定 `data` / `params` 和业务键。
-3. 写 `context.py` 和 `state_machine.py`，明确业务状态。
+3. 写 `context.py`，明确插件需要读取和更新的业务事实。
 4. 写 manifest，声明设备角色、能力和拓扑方向。
 5. 写第一个事件 handler，让它产生一个命令和 wait。
 6. 写第一个命令 result handler，让它推进状态或完成。
-7. 补业务 NG 和系统异常。
+7. 补业务 NG、已建模异常流和真正系统错误。
 8. 用插件级诊断检查 handler，再用 sandbox 跑完整 WORKLINE happy path。
 
 ## 参考

@@ -29,6 +29,9 @@ class CallbackEventRequest(BaseModel):
         description="事件时间戳（Unix 时间戳，毫秒）。设备无时钟可不传，服务器将使用接收时间",
     )
     data: dict[str, Any] | None = Field(default=None, description="事件负载数据")
+    trace_id: str | None = Field(default=None, description="统一 Trace ID")
+    event_id: str | None = Field(default=None, description="供应商事件 ID")
+    causation_id: str | None = Field(default=None, description="因果事件 ID")
 
     @field_validator("timestamp")
     @classmethod

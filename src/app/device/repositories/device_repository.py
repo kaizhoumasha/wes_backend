@@ -93,6 +93,46 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return list(result.scalars().all())
 
+    async def get_non_maintenance_by_workline_for_update(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> list[Device]:
+        """锁定 WorkLine 下可被急停投影接管的设备。"""
+
+        columns = cast("Any", Device).__table__.c
+        result = await db.execute(
+            select(Device)
+            .where(
+                columns.work_line_id == workline_id,
+                columns.device_status.in_([DeviceStatus.IDLE, DeviceStatus.RUNNING]),
+                columns.maintenance_mode.is_(False),
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
+    async def get_safety_error_by_workline_for_update(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> list[Device]:
+        """锁定 WorkLine 下由急停派生的设备错误投影。"""
+
+        columns = cast("Any", Device).__table__.c
+        result = await db.execute(
+            select(Device)
+            .where(
+                columns.work_line_id == workline_id,
+                columns.device_status == DeviceStatus.ERROR,
+                columns.error_code == "WORKLINE_ESTOPPED",
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
     async def after_device_change(
         self,
         _db: AsyncSession,

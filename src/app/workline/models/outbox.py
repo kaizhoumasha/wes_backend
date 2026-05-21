@@ -12,14 +12,13 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.workline.models.session import WorklineSession
@@ -34,7 +33,7 @@ class OutboxStatus(str, Enum):
     NEW = "NEW"  # 新消息
     DISPATCHING = "DISPATCHING"  # 派发中
     SENT = "SENT"  # 已发送
-    ACKED = "ACKED"  # 已确认
+    BLOCKED_RESOURCE = "BLOCKED_RESOURCE"  # 因运行时资源隔离暂缓派发
     FAILED = "FAILED"  # 失败
     CANCELLED = "CANCELLED"  # 已取消
 
@@ -92,6 +91,7 @@ class WorklineOutboxBase(BaseMixin):
 
     dispatch_key: str = Field(
         max_length=200,
+        unique=True,
         index=True,
         description="派发键（用于幂等和去重）",
     )
@@ -157,13 +157,6 @@ class WorklineOutboxBase(BaseMixin):
         description="最后一次错误",
     )
 
-    # 时间戳
-    created_at: datetime = Field(
-        default_factory=lambda: timezone.now_for_db(),
-        index=True,
-        description="创建时间",
-    )
-
     sent_at: datetime | None = Field(
         default=None,
         description="发送时间",
@@ -173,6 +166,29 @@ class WorklineOutboxBase(BaseMixin):
         default=None,
         description="完成时间",
     )
+
+    blocked_by_reconciliation_session_id: int | None = Field(
+        default=None,
+        index=True,
+        description="阻断该 outbox 的 runtime reconciliation owner session ID",
+    )
+    blocked_by_runtime_hold_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger,
+            ForeignKey(
+                "wes_biz.runtime_holds.id",
+                name="fk_workline_outbox_blocked_by_runtime_hold_id",
+                use_alter=True,
+            ),
+            nullable=True,
+            index=True,
+        ),
+        description="阻断该 outbox 的 RuntimeHold.id",
+    )
+    blocked_device_id: int | None = Field(default=None, index=True, description="阻断相关设备 ID")
+    blocked_workline_id: int | None = Field(default=None, index=True, description="阻断相关工作线 ID")
+    blocked_reason: str | None = Field(default=None, max_length=100, description="阻断原因")
 
 
 # ==================== 数据库表模型 ====================
@@ -196,9 +212,9 @@ class WorklineOutbox(
     - attempt_count/next_retry_at: 重试相关
 
     状态机:
-        NEW → DISPATCHING → SENT → ACKED
-               ↓              ↓
-             FAILED      CANCELLED
+        NEW → DISPATCHING → SENT
+          ↓        ↓          ↓
+        BLOCKED_RESOURCE / FAILED / CANCELLED
 
     派发类型:
     - DEVICE_COMMAND: 派发设备指令

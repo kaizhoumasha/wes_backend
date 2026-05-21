@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
-from src.workline_runtime.plugin_state import PluginHandlerKind
-from src.workline_runtime.types import CommandTargetScope
+from src.workline_runtime.plugin_next import PluginNext
+from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_plugins.{{PLUGIN_MODULE}}.context import {{CONTEXT_CLASS}}
 from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
     ItemArrivedPayload,
@@ -17,21 +17,19 @@ from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
     resolve_business_key,
 )
 from src.workline_plugins.{{PLUGIN_MODULE}}.plugin import {{PLUGIN_CLASS}}
-from src.workline_plugins.{{PLUGIN_MODULE}}.state_machine import {{STATE_ENUM}}, {{STATE_MACHINE_CLASS}}
 
 
-def make_ctx(plugin_state={{STATE_ENUM}}.IDLE):
+def make_ctx(context_json=None):
     return SimpleNamespace(
-        session=SimpleNamespace(context_json={"plugin_state": plugin_state}),
-        handler_kind=PluginHandlerKind.EVENT,
+        session=SimpleNamespace(id=1, context_json=context_json or {}),
         run_mode="SIMULATION",
+        next=PluginNext(),
     )
 
 
 def test_manifest_contract() -> None:
     manifest = {{PLUGIN_CLASS}}.manifest
     assert manifest.plugin_key == "{{PLUGIN_KEY}}"
-    assert manifest.state_machine_class is {{STATE_MACHINE_CLASS}}
     assert manifest.context_model is {{CONTEXT_CLASS}}
     assert manifest.event_source_roles["ITEM_ARRIVED"] == ("ENTRY_SENSOR",)
     assert manifest.command_target_roles["MEASURE_ITEM"] == ("MEASURE_DEVICE",)
@@ -65,14 +63,6 @@ def test_command_params_helpers() -> None:
     )["destination_lane"] == "PASS_LANE"
 
 
-def test_state_machine_contract() -> None:
-    machine = {{STATE_MACHINE_CLASS}}()
-    assert machine.may_trigger("item_arrived") is True
-    machine.item_arrived()
-    assert machine.state == {{STATE_ENUM}}.WAITING_MEASURE.value
-    assert machine.may_trigger("divert_ok") is False
-
-
 @pytest.mark.asyncio
 async def test_happy_path_event_creates_measure_command() -> None:
     plugin = {{PLUGIN_CLASS}}()
@@ -91,21 +81,23 @@ async def test_happy_path_event_creates_measure_command() -> None:
         }
     )
 
-    result = await plugin.handle_item_arrived(ctx, event)
+    intents = await plugin.handle_item_arrived(ctx, event)
 
-    assert result.transition == "item_arrived"
-    assert len(result.commands) == 1
-    assert result.commands[0].command_type == "MEASURE_ITEM"
-    assert result.commands[0].target_scope is CommandTargetScope.DOWNSTREAM
-    assert result.commands[0].parameters["business_key"] == "ITEM-001"
-    assert result.waits[0].event_type == "MEASURE_ITEM"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].context_patch["business_key"] == "ITEM-001"
+    assert intents[1].action == "MEASURE_ITEM"
+    assert intents[1].device_role == "MEASURE_DEVICE"
+    assert intents[1].payload_json["business_key"] == "ITEM-001"
+    assert intents[1].timeout_seconds == 120
 
 
 @pytest.mark.asyncio
 async def test_business_ng_is_decision_not_failure() -> None:
     plugin = {{PLUGIN_CLASS}}()
-    ctx = make_ctx({{STATE_ENUM}}.WAITING_MEASURE)
-    ctx.session.context_json.update({"expected_value": 10.0, "tolerance": 0.5})
+    ctx = make_ctx({"expected_value": 10.0, "tolerance": 0.5})
     command_result = NormalizedCommandResult(
         command_type="MEASURE_ITEM",
         command_code="CMD-001",
@@ -114,7 +106,12 @@ async def test_business_ng_is_decision_not_failure() -> None:
         data={"business_key": "ITEM-001", "actual_value": 11.0},
     )
 
-    result = await plugin.handle_measure_success(ctx, command_result)
+    intents = await plugin.handle_measure_success(ctx, command_result)
 
-    assert result.failure is None
-    assert result.business_decisions[0].reason_code == "VALUE_OUT_OF_TOLERANCE"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.MARK_NG,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[1].reason_code == "VALUE_OUT_OF_TOLERANCE"
+    assert intents[2].action == "DIVERT_ITEM"

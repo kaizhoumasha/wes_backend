@@ -4,13 +4,16 @@
 包含 WorkLine 数据库表模型和相关的 Pydantic Schemas
 """
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
+from pydantic import BaseModel
 from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -98,8 +101,6 @@ class WorkLineBase(BaseMixin):
         ),
         description="工作线运行模式",
     )
-    owner_team: str | None = Field(default=None, max_length=100, description="工作线主责团队")
-    support_contact: str | None = Field(default=None, max_length=100, description="工作线支持联系人")
     diagnostic_profile: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
@@ -107,8 +108,6 @@ class WorkLineBase(BaseMixin):
     )
     description: str | None = Field(default=None, max_length=500, description="作业线描述")
     is_active: bool = Field(default=True, description="是否启用")
-    capacity: int | None = Field(default=None, description="产能（件/小时）")
-    sort_order: int = Field(default=0, description="排序顺序")
 
 
 class WorkLine(
@@ -126,11 +125,34 @@ class WorkLine(
     除基础信息外，它还是插件运行容器：
     - plugin_key / contract_version: 默认插件和契约来源
     - runtime_config_json: 运行时行为配置
-    - owner_team / support_contact / diagnostic_profile: 诊断与支持归属
+    - diagnostic_profile: 诊断展示与分类配置
     """
 
     __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+
+    runtime_status: WorkLineRuntimeStatus = Field(
+        default=WorkLineRuntimeStatus.READY,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                WorkLineRuntimeStatus,
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="WorkLine 运行安全状态",
+    )
+    active_safety_incident_id: int | None = Field(
+        default=None,
+        index=True,
+        description="当前生效的安全事件 ID",
+    )
+    stopped_at: datetime | None = Field(default=None, index=True, description="进入急停冻结的时间")
+    stopped_reason: str | None = Field(default=None, max_length=200, description="进入急停冻结的原因")
+    resumed_at: datetime | None = Field(default=None, index=True, description="恢复 READY 的时间")
 
     @property
     def plugin_definition(self) -> WorklinePluginDefinition | None:
@@ -144,13 +166,6 @@ class WorkLine(
 
         definition = self.plugin_definition
         return definition.plugin_class if definition else None
-
-    @property
-    def state_machine_class(self) -> type[Any] | None:
-        """按 plugin_key 解析状态机类。"""
-
-        definition = self.plugin_definition
-        return definition.state_machine_class if definition else None
 
     @property
     def resolved_runtime_config(self) -> dict[str, Any]:
@@ -169,8 +184,6 @@ class WorkLine(
         """供排错与页面复用的作业线诊断摘要。"""
 
         return {
-            "owner_team": self.owner_team,
-            "support_contact": self.support_contact,
             "diagnostic_profile": dict(self.diagnostic_profile or {}),
         }
 
@@ -188,3 +201,12 @@ class WorkLineResponse(WorkLineBase):
 
     id: int
     version: int
+
+
+class WorkLinePluginOption(BaseModel):
+    """作业线插件下拉选项。"""
+
+    plugin_key: str = Field(description="工作线执行插件标识")
+    label: str = Field(description="插件显示文本")
+    contract_versions: list[str] = Field(default_factory=list, description="可选契约版本")
+    default_contract_version: str = Field(description="默认契约版本")

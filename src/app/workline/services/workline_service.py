@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories import device_repository
-from src.app.workline.models import WorkLine, WorkLineRunMode
+from src.app.workline.models import WorkLine, WorkLinePluginOption, WorkLineRunMode
 from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
@@ -15,6 +15,7 @@ from src.utils.device_cache import workline_device_cache
 from src.workline_plugin_registry import (
     get_plugin_contract_version,
     get_workline_plugin_definition,
+    list_workline_plugin_definitions,
     validate_workline_plugin_assignment,
 )
 from src.workline_runtime.run_mode import is_sandbox_allowed_environment, is_simulation_run_mode, normalize_run_mode
@@ -38,9 +39,26 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         plugin_key = data.get("plugin_key", getattr(current, "plugin_key", None))
         return plugin_key if isinstance(plugin_key, str) and plugin_key else None
 
+    def list_plugin_options(self) -> list[WorkLinePluginOption]:
+        """从插件注册表导出作业线插件/契约版本选项。"""
+
+        options: list[WorkLinePluginOption] = []
+        for definition in list_workline_plugin_definitions():
+            manifest = definition.manifest
+            options.append(
+                WorkLinePluginOption(
+                    plugin_key=definition.plugin_key,
+                    label=definition.plugin_key,
+                    contract_versions=[manifest.contract_version],
+                    default_contract_version=manifest.contract_version,
+                )
+            )
+        return options
+
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""
         self._validate_plugin_key(data.get("plugin_key"))
+        self._validate_plugin_contract_version(data)
         self._validate_run_mode(data)
         self._validate_runtime_config(data)
         self._apply_runtime_defaults(data)
@@ -59,6 +77,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             raise ValueError(f"WorkLine 不存在: {id}")
 
         await self._validate_plugin_assignment(db, current=current, data=data)
+        self._validate_plugin_contract_version(data, current=current)
         self._validate_run_mode(data, current=current)
         self._validate_runtime_config(data, current=current)
         self._apply_runtime_defaults(data, current=current)
@@ -109,6 +128,21 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             raise BadRequestException(message=str(exc)) from exc
 
     @staticmethod
+    def _validate_plugin_contract_version(data: dict[str, Any], current: WorkLine | None = None) -> None:
+        """校验契约版本快照必须来自插件 manifest。"""
+
+        contract_version = data.get("contract_version")
+        if not isinstance(contract_version, str) or not contract_version:
+            return
+
+        plugin_key = WorkLineService._resolve_plugin_key(data, current)
+        resolved = get_plugin_contract_version(plugin_key)
+        if isinstance(resolved, str) and resolved and contract_version != resolved:
+            from src.core.exceptions import BadRequestException
+
+            raise BadRequestException(message=f"插件 {plugin_key} 的契约版本必须为 {resolved}")
+
+    @staticmethod
     def _validate_run_mode(data: dict[str, Any], current: WorkLine | None = None) -> None:
         """校验 WORKLINE 级运行模式。
 
@@ -128,12 +162,16 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _apply_runtime_defaults(data: dict[str, Any], current: WorkLine | None = None) -> None:
         """为工作线写入运行时治理默认值。"""
+        plugin_key_explicit = "plugin_key" in data
         plugin_key = WorkLineService._resolve_plugin_key(data, current)
-        contract_version = data.get("contract_version", getattr(current, "contract_version", None))
-        if (not isinstance(contract_version, str) or not contract_version) and plugin_key is not None:
-            resolved = get_plugin_contract_version(plugin_key)
-            if isinstance(resolved, str) and resolved:
-                data.setdefault("contract_version", resolved)
+        if plugin_key is None:
+            if plugin_key_explicit and "contract_version" not in data:
+                data["contract_version"] = None
+            return
+
+        resolved = get_plugin_contract_version(plugin_key)
+        if isinstance(resolved, str) and resolved:
+            data["contract_version"] = resolved
 
     @staticmethod
     def _validate_runtime_config(data: dict[str, Any], current: WorkLine | None = None) -> None:

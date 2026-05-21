@@ -1,13 +1,10 @@
 """
-插件开发框架 - 简化插件开发的核心基类和装饰器
-
-提供装饰器驱动的声明式插件开发模式，减少样板代码 70%+。
+插件开发框架 - 简化插件开发的核心基类和装饰器。
 
 核心特性：
 1. 自动路由：根据事件类型/命令类型自动路由到处理方法
 2. 自动解析：Pydantic Model 自动验证 payload
-3. 状态机集成：声明式状态迁移
-4. 响应构建器：链式调用简化 PluginResult 构建
+3. handler 返回 RuntimeIntent 列表，由 Runtime 统一落地状态与副作用
 
 示例：
     class MyPlugin(WorklinePlugin):
@@ -15,43 +12,24 @@
         contract_version = "1.0"
 
         @on_event("SCAN_COMPLETED")
-        @step("IDLE", "WAITING_INSPECTION")
         async def handle_scan(
             self, ctx: PluginContext, event: ScanEventPayload
-        ) -> PluginResult:
-            return (
-                PluginResultBuilder(ctx)
-                .transition("scan_ok")
-                .command(
-                command_type="PICK",
-                target_scope=CommandTargetScope.DOWNSTREAM,
-                device_role="ARM",
-            )
-                .build()
-            )
+        ) -> list[RuntimeIntent]:
+            return [ctx.next.command(action="PICK", destination_role="ARM")]
 """
 
 from __future__ import annotations
 
 import inspect
 import typing
-import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
 from src.core.logger import logger
-from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
-from src.workline_runtime.types import (
-    BusinessDecisionIntent,
-    CommandIntent,
-    CommandTargetScope,
-    FailureIntent,
-    PluginResult,
-    WaitIntent,
-)
+from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
+from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 from src.workline_runtime.utils import ensure_dict, non_empty_str
 
 if TYPE_CHECKING:
@@ -74,6 +52,34 @@ AsyncTimeoutHandler = Callable[..., Any]
 
 
 ParsedModelT = TypeVar("ParsedModelT", bound=BaseModel)
+
+_MANUAL_OPERATION_TRANSITION = {
+    "HOLD": "manual_hold",
+    "RESUME": "manual_resume",
+    "CANCEL": "manual_cancel",
+}
+_MANUAL_KIND_OPERATION = {
+    "MANUAL_HOLD": "HOLD",
+    "MANUAL_RESUME": "RESUME",
+    "MANUAL_CANCEL": "CANCEL",
+}
+
+
+def _inbox_kind_value(inbox: Any) -> str | None:
+    """Extract kind.value from inbox object if present."""
+    kind = getattr(inbox, "kind", None)
+    value = getattr(kind, "value", kind)
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_manual_operation(inbox: Any) -> tuple[str | None, dict[str, Any]]:
+    payload = ensure_dict(getattr(inbox, "payload_json", None))
+    operation = non_empty_str(payload.get("operation"))
+    if operation:
+        return operation.upper(), payload
+
+    kind_operation = _MANUAL_KIND_OPERATION.get(_inbox_kind_value(inbox) or "")
+    return kind_operation, payload
 
 
 # ==================== Payload 基类 ====================
@@ -193,24 +199,23 @@ def try_parse_normalized_result_data(result: Any, model: type[ParsedModelT]) -> 
         return None
 
 
-def build_payload_invalid_failure(ctx: Any, message: str):
-    """构造标准 payload 缺失/非法时的统一失败返回。"""
+def build_payload_invalid_block(message: str) -> RuntimeIntent:
+    """构造标准 payload 缺失/非法时的 MATERIAL 阻塞意图。"""
 
-    return PluginResultBuilder(ctx).failure(domain="DATA", code="PAYLOAD_INVALID", message=message).build()
-
-
-def build_state_mismatch_failure(ctx: Any, command_type: str, result_name: str, step_code: str | None):
-    """构造命令结果落在非法状态时的统一失败返回。"""
-
-    return (
-        PluginResultBuilder(ctx)
-        .failure(
-            domain="SOFTWARE",
-            code="STATE_MISMATCH",
-            message=f"{command_type} {result_name} 不期望在状态 {step_code}",
-        )
-        .build()
+    return RuntimeIntent.block(
+        scope=BlockScope.MATERIAL,
+        reason_code="PAYLOAD_INVALID",
+        message=message,
+        suggested_action="检查设备回调 payload",
     )
+
+
+def payload_invalid_block_if_missing_envelope(result: Any, message: str) -> RuntimeIntent | None:
+    """标准化命令结果缺少最小包络字段时，返回统一 payload 非法阻塞意图。"""
+
+    if resolve_normalized_command_envelope(result) is None:
+        return build_payload_invalid_block(message)
+    return None
 
 
 def _merge_handler_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -268,7 +273,7 @@ def _resolve_handler_model_arg(
 
         normalized_candidate = normalize_inbox_input(
             inbox,
-            correlation_id=non_empty_str(getattr(ctx, "correlation_id", None)) or "",
+            trace_id=non_empty_str(getattr(ctx, "trace_id", None)) or "",
         )
         if isinstance(normalized_candidate, param_type):
             return normalized_candidate
@@ -277,6 +282,20 @@ def _resolve_handler_model_arg(
         logger.debug(f"标准化 Inbox 输入失败，回退到原始 payload 解析: {exc}")
 
     return param_type.model_validate(_merge_handler_payload(payload))
+
+
+def _normalize_handler_result(result: Any) -> list[RuntimeIntent]:
+    """归一化插件 handler 返回值。"""
+
+    if result is None:
+        return []
+    if isinstance(result, RuntimeIntent):
+        return [result]
+    if isinstance(result, Sequence) and not isinstance(result, (str, bytes, bytearray)):
+        result_sequence = cast("Sequence[Any]", result)
+        if all(isinstance(intent, RuntimeIntent) for intent in result_sequence):
+            return list(cast("Sequence[RuntimeIntent]", result_sequence))
+    raise TypeError("Plugin handler must return RuntimeIntent, list[RuntimeIntent], or None")
 
 
 # ==================== 装饰器 ====================
@@ -294,6 +313,7 @@ def on_event(event_type: str) -> Callable[..., Any]:
         async def handle_scan(self, ctx, event: ScanEventPayload):
             ...
     """
+    assert_not_reserved_runtime_event(event_type, owner="@on_event", declaration_surface="@on_event")
 
     def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         method._event_type = event_type  # type: ignore[attr-defined]
@@ -324,197 +344,6 @@ def on_command(command_type: str, result: str | None = None) -> Callable[..., An
     return decorator
 
 
-def on_timeout() -> Callable[..., Any]:
-    """
-    标记方法处理超时事件
-
-    Example:
-        @on_timeout()
-        async def handle_timeout(self, ctx, inbox):
-            ...
-    """
-
-    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
-        method._is_timeout_handler = True  # type: ignore[attr-defined]
-        return method
-
-    return decorator
-
-
-def step(expected: str | None = None, target: str | None = None) -> Callable[..., Any]:
-    """
-    声明状态迁移
-
-    Args:
-        expected: 期望的前置状态（None 表示任意状态）
-        target: 目标状态（None 表示保持当前状态）
-
-    Example:
-        @step("IDLE", "WAITING_INSPECTION")
-        async def handle_scan(self, ctx, event):
-            ...
-    """
-
-    def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
-        method._expected_step = expected  # type: ignore[attr-defined]
-        method._target_step = target  # type: ignore[attr-defined]
-        return method
-
-    return decorator
-
-
-# ==================== 响应构建器 ====================
-
-
-@dataclass
-class PluginResultBuilder:
-    """
-    插件结果构建器 - 链式调用简化 PluginResult 构建
-
-    Example:
-        result = (
-            PluginResultBuilder(ctx)
-            .transition("scan_ok")
-            .command(
-                command_type="PICK",
-                target_scope=CommandTargetScope.DOWNSTREAM,
-                device_role="ARM",
-            )
-            .wait(event_type="INSPECTION_COMPLETED", timeout_seconds=300)
-            .failure(domain="HARDWARE", code="TIMEOUT", message="超时")
-            .context({"last_scan": "ABC123"})
-            .build()
-        )
-    """
-
-    ctx: PluginContext
-
-    def __post_init__(self):
-        self._transition: str | None = None
-        self._commands: list[CommandIntent] = []
-        self._business_decisions: list[BusinessDecisionIntent] = []
-        self._wait: WaitIntent | None = None
-        self._failure: FailureIntent | None = None
-        self._complete: bool = False
-        self._context_patch: dict[str, Any] = {}
-
-    def transition(self, name: str) -> PluginResultBuilder:
-        """设置状态迁移"""
-        self._transition = name
-        return self
-
-    def command(
-        self,
-        *,
-        command_type: str,
-        target_scope: CommandTargetScope = CommandTargetScope.CURRENT,
-        device_role: str | None = None,
-        parameters: dict[str, Any] | None = None,
-    ) -> PluginResultBuilder:
-        """添加命令
-
-        Args:
-            command_type: 命令类型（如 "PICK_AND_PUT"）
-            target_scope: 目标范围（默认当前设备，也可指定直接下游）
-            device_role: 目标设备角色约束（如 "INPUT_ARM"）
-            parameters: 命令参数
-        """
-
-        self._commands.append(
-            CommandIntent(
-                action=command_type,
-                target_scope=target_scope,
-                device_role=device_role,
-                parameters=parameters or {},
-            )
-        )
-        return self
-
-    def business_decision(
-        self,
-        *,
-        reason_code: str,
-        message: str,
-        evidence: dict[str, Any] | None = None,
-        business_key: str | None = None,
-        classification: str = "business_decision",
-    ) -> PluginResultBuilder:
-        """记录业务判定事实。
-
-        业务 NG 是产线业务结果，不等同于系统异常或设备故障。
-        该意图只进入时间线/查询投影，不触发失败状态。
-        """
-
-        self._business_decisions.append(
-            BusinessDecisionIntent(
-                classification=classification,
-                reason_code=reason_code,
-                message=message,
-                evidence=evidence or {},
-                business_key=business_key,
-            )
-        )
-        return self
-
-    def wait(
-        self,
-        event_type: str | None = None,
-        timeout_seconds: int | None = None,
-    ) -> PluginResultBuilder:
-        """设置等待条件
-
-        Args:
-            event_type: 等待的事件类型（用于生成 wait_token）
-            timeout_seconds: 超时秒数
-        """
-        # 生成 wait_token（用于回调匹配）
-        session_id = getattr(self.ctx.session, "id", "unknown")
-        wait_token = f"{session_id}-{event_type}-{uuid.uuid4().hex[:8]}"
-
-        self._wait = WaitIntent(
-            wait_type="COMMAND_RESULT",  # 固定为命令结果等待
-            wait_token=wait_token,
-            deadline_seconds=timeout_seconds or 300,  # 默认5分钟
-        )
-        return self
-
-    def failure(
-        self,
-        domain: str,
-        code: str,
-        message: str,
-    ) -> PluginResultBuilder:
-        """设置失败归因"""
-        self._failure = FailureIntent(
-            domain=domain,
-            code=code,
-            message=message,
-        )
-        return self
-
-    def complete(self) -> PluginResultBuilder:
-        """标记完成"""
-        self._complete = True
-        return self
-
-    def context(self, patch: dict[str, Any]) -> PluginResultBuilder:
-        """更新上下文"""
-        self._context_patch.update(patch)
-        return self
-
-    def build(self) -> PluginResult:
-        """构建结果"""
-        result = PluginResult()
-        result.transition = self._transition
-        result.commands = self._commands
-        result.business_decisions = self._business_decisions
-        result.wait = self._wait
-        result.failure = self._failure
-        result.complete = self._complete
-        result.context_patch = self._context_patch
-        return result
-
-
 # ==================== 插件基类 ====================
 
 
@@ -525,14 +354,12 @@ class WorklinePlugin:
     子类只需要：
     1. 定义 plugin_key 和 contract_version
     2. 用 @on_event / @on_command 标记处理方法
-    3. 用 @step 声明状态迁移
-    4. 用 PluginResultBuilder 构建响应
+    3. 返回 RuntimeIntent 或 RuntimeIntent 列表
 
     框架自动处理：
     - 事件路由（根据 payload 类型分发）
     - Payload 解析（Pydantic 自动验证）
-    - 状态迁移校验（前置状态检查）
-    - 默认实现（on_timeout, on_manual_operation 等）
+    - 默认实现（on_manual_operation 等）
     """
 
     plugin_key: str = "base"
@@ -542,18 +369,20 @@ class WorklinePlugin:
         """子类初始化时建立路由表"""
         cls._event_handlers: dict[str, Callable[..., Any]] = {}
         cls._command_handlers: dict[tuple[str, str | None], Callable[..., Any]] = {}
-        cls._timeout_handler: Callable[..., Any] | None = None
 
         for _, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if hasattr(method, "_event_type"):
+                assert_not_reserved_runtime_event(
+                    method._event_type,  # type: ignore[attr-defined]
+                    owner=f"{cls.__name__}.{method.__name__}",
+                    declaration_surface="@on_event",
+                )
                 cls._event_handlers[method._event_type] = method  # type: ignore[attr-defined]
             if hasattr(method, "_command_type"):
                 key = (method._command_type, method._command_result)  # type: ignore[attr-defined]
                 cls._command_handlers[key] = method
-            if getattr(method, "_is_timeout_handler", False):
-                cls._timeout_handler = method
 
-    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
+    async def on_device_event(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """设备事件处理 - 优先按标准化 canonical_event_type 路由。"""
         payload = inbox.payload_json or {}
         event_type = _resolve_event_route_type(ctx, payload)
@@ -563,16 +392,16 @@ class WorklinePlugin:
             return await self._invoke_handler(handler, ctx, inbox, payload)
 
         ctx.logger.warning(f"No handler for event_type={event_type}")
-        return PluginResult()
+        return []
 
-    async def on_command_result(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
+    async def on_command_result(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """命令结果处理 - 兼容原始结果与标准化结果语义。"""
         payload = inbox.payload_json or {}
         route_keys = _command_result_route_keys(ctx, payload)
 
         if not route_keys:
             ctx.logger.warning("No command_type in payload")
-            return PluginResult()
+            return []
 
         for key in route_keys:
             if key in self._command_handlers:
@@ -582,24 +411,20 @@ class WorklinePlugin:
         command_type = route_keys[0][0]
         result = non_empty_str(payload.get("result"))
         ctx.logger.warning(f"No handler for command_type={command_type}, result={result}")
-        return PluginResult()
+        return []
 
-    async def on_timeout(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """超时处理 - 调用标记的方法或返回默认"""
-        handler = type(self)._timeout_handler
-        if handler:
-            return await self._invoke_handler(handler, ctx, inbox, inbox.payload_json or {})
-        return PluginResult()
-
-    async def on_external_http(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
+    async def on_external_http(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """外部 HTTP 回调 - 默认空实现"""
         ctx.logger.info(f"Received external HTTP: {inbox.id}")
-        return PluginResult()
+        return []
 
-    async def on_manual_operation(self, ctx: PluginContext, inbox: WorklineInbox) -> PluginResult:
-        """人工操作 - 默认空实现"""
+    async def on_manual_operation(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """人工操作由 Runtime 服务处理，插件默认不产生业务意图。"""
         ctx.logger.info(f"Received manual operation: {inbox.id}")
-        return PluginResult()
+        operation, _payload = _resolve_manual_operation(inbox)
+        if operation not in _MANUAL_OPERATION_TRANSITION:
+            ctx.logger.warning(f"Unsupported manual operation: {operation}")
+        return []
 
     async def _invoke_handler(
         self,
@@ -607,22 +432,8 @@ class WorklinePlugin:
         ctx: PluginContext,
         inbox: WorklineInbox,
         payload: dict[str, Any],
-    ) -> PluginResult:
-        """调用处理方法（支持 Pydantic 自动解析 + 状态校验）"""
-        # ========== 前置：状态校验 ==========
-        expected_step = getattr(handler, "_expected_step", None)
-        if expected_step:
-            current_step = get_plugin_state(ctx.session.context_json)
-            if current_step != expected_step:
-                ctx.logger.error(f"State mismatch: expected {expected_step}, got {current_step}")
-                return PluginResult(
-                    failure=FailureIntent(
-                        domain="SOFTWARE",
-                        code="STATE_MISMATCH",
-                        message=f"Expected state {expected_step}, current is {current_step}",
-                    )
-                )
-
+    ) -> list[RuntimeIntent]:
+        """调用处理方法（支持 Pydantic 自动解析）。"""
         # ========== 参数解析 ==========
         sig = inspect.signature(handler)
         params = list(sig.parameters.values())
@@ -638,45 +449,24 @@ class WorklinePlugin:
                     args.append(_resolve_handler_model_arg(ctx, inbox, payload, param_type))
                 except Exception as e:
                     ctx.logger.exception("Payload validation failed")
-                    return PluginResult(
-                        failure=FailureIntent(
-                            domain="DATA",
-                            code="PAYLOAD_INVALID",
-                            message=f"Payload validation error: {e}",
-                        )
-                    )
+                    return [build_payload_invalid_block(f"Payload validation error: {e}")]
             else:
                 args.append(inbox)
 
         # ========== 调用业务逻辑 ==========
         result = await handler(*args)
-        if not isinstance(result, PluginResult):
-            result = PluginResult()
-
-        # ========== 后置：目标状态设置 ==========
-        target_step = getattr(handler, "_target_step", None)
-        if target_step and result.failure is None:
-            # 只有成功结果才自动添加 plugin_state 到 context_patch
-            set_plugin_state(result.context_patch, target_step)
-            # 如果没有显式设置 transition，则用 target_step 作为 transition
-            if not result.transition:
-                result.transition = target_step
-
-        return result
+        return _normalize_handler_result(result)
 
 
 __all__ = [
     "CommandResultPayload",
     "EventPayload",
-    "PluginResultBuilder",
     "WorklinePlugin",
-    "build_payload_invalid_failure",
-    "build_state_mismatch_failure",
+    "build_payload_invalid_block",
     "on_command",
     "on_event",
-    "on_timeout",
+    "payload_invalid_block_if_missing_envelope",
     "resolve_normalized_command_envelope",
     "resolve_normalized_command_failure",
-    "step",
     "try_parse_normalized_result_data",
 ]

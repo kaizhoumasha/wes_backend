@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -53,8 +53,6 @@ class ResolvedWorklineRuntimeConfig(BaseModel):
     contract_version: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
-    owner_team: str | None = None
-    support_contact: str | None = None
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -66,7 +64,7 @@ class ResolvedExecutionContext(BaseModel):
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
 
 def _enum_str(value: Any) -> Any:
@@ -113,8 +111,6 @@ def resolve_workline_runtime_config(workline: Any | None) -> ResolvedWorklineRun
         contract_version=getattr(workline, "contract_version", None),
         config=_dict_value(getattr(workline, "config", None)),
         runtime_config=_dict_value(getattr(workline, "runtime_config_json", None)),
-        owner_team=getattr(workline, "owner_team", None),
-        support_contact=getattr(workline, "support_contact", None),
         diagnostic_profile=_dict_value(getattr(workline, "diagnostic_profile", None)),
     )
 

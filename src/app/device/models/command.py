@@ -146,10 +146,10 @@ class CommandRequest(CommandBase):
         max_length=100,
         description="全局唯一指令编码，为空时自动生成",
     )
-    correlation_id: str | None = Field(
+    trace_id: str | None = Field(
         default=None,
         max_length=100,
-        description="关联 ID（串联整个流程）",
+        description="Trace ID（串联整个流程）",
     )
 
 
@@ -165,7 +165,7 @@ class CommandResponse(CommandBase):
     result_data: dict[str, Any] | None
     error_detail: dict[str, Any] | None
     retry_count: int
-    correlation_id: str | None
+    trace_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -184,6 +184,9 @@ class CommandCallbackResult(BaseMixin):
         default=None,
         description="错误详情（result=FAILED 时必填）",
     )
+    trace_id: str | None = Field(default=None, description="统一 Trace ID")
+    event_id: str | None = Field(default=None, description="供应商事件 ID")
+    causation_id: str | None = Field(default=None, description="因果事件 ID")
 
 
 class CommandAck(BaseMixin):
@@ -215,7 +218,7 @@ class DeviceCommand(
 
     当前模型补充指令生命周期相关字段:
     - command_code
-    - correlation_id
+    - trace_id
     - status
     - sent_at / ack_received_at / completed_at
     - result / result_data / error_detail
@@ -238,12 +241,22 @@ class DeviceCommand(
         description="全局唯一指令编码",
     )
 
-    # 关联 ID（串联整个流程）
-    correlation_id: str | None = Field(
+    trace_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="关联 ID（串联整个流程）",
+        description="统一 Trace ID（串联整个流程）",
+    )
+    event_id: str | None = Field(
+        default=None,
+        max_length=200,
+        index=True,
+        description="供应商事件 ID",
+    )
+    causation_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description="因果事件 ID",
     )
 
     # 会话 ID（跟踪单个任务会话）
@@ -252,6 +265,12 @@ class DeviceCommand(
         max_length=100,
         index=True,
         description="会话 ID（跟踪单个任务会话）",
+    )
+    session_id_int: int | None = Field(
+        default=None,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="会话 ID 数值投影（兼容历史字符串 session_id）",
     )
 
     # 作业线 ID（关联到 WorkLine）
@@ -272,13 +291,6 @@ class DeviceCommand(
         max_length=50,
         description="命令生成时绑定的协议版本",
     )
-    step_code: str | None = Field(
-        default=None,
-        max_length=100,
-        index=True,
-        description="命令生成时的步骤语义编码",
-    )
-
     # 🔥 状态字段：使用 VARCHAR + CHECK 约束
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,
@@ -394,7 +406,7 @@ class DeviceCommandCreate(ModelFactory(CommandBase).for_create()):
     """设备指令创建 Schema"""
 
     command_code: str | None = None
-    correlation_id: str | None = None
+    trace_id: str | None = None
 
 
 class DeviceCommandUpdate(ModelFactory(CommandBase).for_update()):

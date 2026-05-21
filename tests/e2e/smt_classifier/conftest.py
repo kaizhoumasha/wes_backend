@@ -374,6 +374,7 @@ async def wait_for_session_completed(
     conn: asyncpg.Connection,
     timeout_seconds: int = 30,
     poll_interval: float = 0.5,
+    after_session_id: int | None = None,
 ) -> dict[str, Any]:
     """轮询等待会话完成
 
@@ -393,11 +394,13 @@ async def wait_for_session_completed(
     while time.time() < deadline:
         session = await conn.fetchrow(
             """
-            SELECT id, status, step_code, failure_domain, failure_code
+            SELECT id, status, failure_domain, failure_code
             FROM wes_biz.workline_sessions
+            WHERE ($1::bigint IS NULL OR id > $1::bigint)
             ORDER BY id DESC
             LIMIT 1
-            """
+            """,
+            after_session_id,
         )
 
         if session and session["status"] == "COMPLETED":
@@ -507,7 +510,7 @@ def mock_plugin_context(mock_devices: dict[str, MagicMock]) -> MagicMock:
     ctx.session.workline_id = 3001
     ctx.session.status = "NEW"
     ctx.session.context_json = {}
-    ctx.session.correlation_id = "test-correlation-001"
+    ctx.session.trace_id = "test-trace-001"
 
     ctx.workline = MagicMock()
     ctx.workline.id = 3001
@@ -523,7 +526,7 @@ def mock_plugin_context(mock_devices: dict[str, MagicMock]) -> MagicMock:
     ctx.get_device_by_role = mock_get_device_by_role
     ctx.logger = logging.getLogger("mock_plugin_context")
     ctx.clock = datetime.now
-    ctx.correlation_id = "test-correlation-001"
+    ctx.trace_id = "test-trace-001"
 
     return ctx
 

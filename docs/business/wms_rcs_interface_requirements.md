@@ -12,6 +12,13 @@
 > `WorklineInbox` 类型、工作线边界与运行时主链路语义时，以
 > `workline_business_data_event_flow_spec.md` 为准。
 
+> **第零阶段口径冻结（2026-05-13）**:
+> SMT 运行时资源和满箱交换边界以
+> `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 为准。
+> WMS/RCS 执行类回调统一走 `/api/v1/callback/external`，用于恢复
+> `WAITING_EXTERNAL` Session；`/api/v1/callback/event` 只保留给设备事件、
+> 历史业务通知或不承载同一运行时任务的非等待事件。
+
 ---
 
 ## 1. 设计原则
@@ -33,12 +40,13 @@
 
 ### 1.3 核心架构原则（遵循 workline_plugin_architecture_design.md）
 
-**WMS 作为"外部系统"调用 WES 时，必须遵循白皮书定义的标准回调接口：**
+**WMS/RCS 作为"外部系统"调用 WES 时，必须区分执行回调与普通事件：**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    WES 统一入口层                            │
 │  ┌─────────────────────────────────────────────────────────┐ │
+│  │           POST /api/v1/callback/external                │ │
 │  │           POST /api/v1/callback/event                   │ │
 │  │           POST /api/v1/callback/result                  │ │
 │  └─────────────────────────────────────────────────────────┘ │
@@ -48,7 +56,7 @@
 │  │              WorklineInbox (统一编排入口)                │ │
 │  │   - DEVICE_EVENT (设备事件)                              │ │
 │  │   - COMMAND_RESULT (指令结果)                            │ │
-│  │   - EXTERNAL_CALLBACK (外部系统回调 - WMS)               │ │
+│  │   - EXTERNAL_HTTP (外部系统执行回调 - WMS/RCS)           │ │
 │  │   - TIMEOUT (超时)                                       │ │
 │  │   - MANUAL_OPERATION (人工操作)                          │ │
 │  └─────────────────────────────────────────────────────────┘ │
@@ -69,7 +77,8 @@
 - **WES 不同步基础数据**: 所有需要用到的基础数据向 WMS 请求
 - **WMS 是库存唯一真实源**: 所有库存变动必须在 WMS 端事务提交成功后，物理动作方可视为完成
 - **不过度设计**: WES 只关注需要它完成的功能
-- **统一入口**: 所有外部输入通过 `callback/event` 和 `callback/result` 进入 WES
+- **执行回调入口**: 所有需要恢复 Runtime 等待态的 WMS/RCS 执行结果通过 `/api/v1/callback/external` 进入 WES
+- **普通事件入口**: 设备事件和不承载同一运行时等待任务的历史业务通知可继续使用 `/api/v1/callback/event` 或专用北向接口
 
 ---
 
@@ -813,17 +822,21 @@ Authorization: Bearer <WES_TOKEN>
 
 ---
 
-## 3. WMS → WES 标准回调接口（遵循白皮书规范）
+## 3. WMS/RCS → WES 标准回调接口
 
-> **重要**: WMS 作为"外部系统"调用 WES，必须使用白皮书定义的标准回调接口
+> **重要**: WMS/RCS 作为外部执行系统调用 WES 时，必须区分运行时执行回调和普通业务通知。
+> 需要恢复 `WAITING_EXTERNAL` Session 的执行结果使用 `/api/v1/callback/external`；
+> GRN、栈板等不承载同一运行时等待任务的业务通知可继续使用 `/api/v1/callback/event`。
 
-### 3.1 统一入口：POST /api/v1/callback/event
+### 3.1 运行时执行入口：POST /api/v1/callback/external
 
 **设计原则**（遵循 workline_plugin_architecture_design.md §6.1）:
 
 - 所有进入编排器的输入统一落为 `WorklineInbox`
 - Callback API 只做接收、校验、原始落库、ACK、写 Inbox
 - 不直接承载复杂业务逻辑
+- 满箱交换、货架到达、搬运完成等外部执行结果必须携带 `trace_id`、`dispatch_key`、`source_event_id` 和 `source_version`
+- 同一运行时任务不得同时通过 `/callback/event` 和 `/callback/external` 回传结果
 
 ### 3.2 扩展事件类型（需新增）
 
@@ -851,8 +864,8 @@ class EventType(str, Enum):
     WMS_PALLET_ARRIVED = "WMS_PALLET_ARRIVED"       # 栈板到达通知
     WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"           # 货架到达通知
     WMS_INVENTORY_UPDATED = "WMS_INVENTORY_UPDATED" # 库存更新通知
-    WMS_TRANSPORT_COMPLETED = "WMS_TRANSPORT_COMPLETED"  # 搬运任务完成
-    WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"    # 交换任务完成
+    WMS_TRANSPORT_COMPLETED = "WMS_TRANSPORT_COMPLETED"  # 搬运任务执行结果
+    WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"  # 满箱交换执行结果
 ```
 
 ### 3.3 事件上报格式（遵循白皮书 3.2.2）
@@ -1092,7 +1105,7 @@ class WorklineInbox(BaseModel):
 
 ### 5.2 接入层职责
 
-Callback API (`callback/event`, `callback/result`) 只做：
+Callback API (`callback/external`, `callback/event`, `callback/result`) 只做：
 
 1. **请求校验**: 验证请求格式、权限
 2. **原始日志落库**: 记录 `CallbackLog`，并在结果回调时关联/更新 `DeviceCommand`
@@ -1129,38 +1142,39 @@ Callback API (`callback/event`, `callback/result`) 只做：
 ```mermaid
 sequenceDiagram
     participant WMS
-    participant WES_Callback as WES /callback/event
+    participant WES_Event as WES /callback/event
+    participant WES_External as WES /callback/external
     participant WES_Inbox as WES WorklineInbox
     participant WES_Orchestrator as WES Orchestrator
     participant ECS
     participant RCS
 
-    Note over WMS,WES_Callback: 1. GRN 单据接入（通过标准回调接口）
-    WMS->>WES_Callback: POST /api/v1/callback/event {event_type: "WMS_GRN_RECEIVED", ...}
-    WES_Callback->>WES_Inbox: 写入 Inbox (kind=EXTERNAL_CALLBACK)
-    WES_Callback-->>WMS: 200 OK (立即返回)
+    Note over WMS,WES_Event: 1. GRN 单据接入（普通业务通知）
+    WMS->>WES_Event: POST /api/v1/callback/event {event_type: "WMS_GRN_RECEIVED", ...}
+    WES_Event->>WES_Inbox: 写入 Inbox
+    WES_Event-->>WMS: 200 OK (立即返回)
     WES_Orchestrator->>WES_Inbox: 消费 Inbox
     WES_Orchestrator->>WES_Orchestrator: 解析 -> 创建 Session
 
-    Note over WMS,WES_Callback: 2. 栈板到达通知
-    WMS->>WES_Callback: POST /api/v1/callback/event
+    Note over WMS,WES_Event: 2. 栈板到达通知
+    WMS->>WES_Event: POST /api/v1/callback/event
 {event_type: "WMS_PALLET_ARRIVED", ...}
-    WES_Callback-->>WMS: 200 OK
+    WES_Event-->>WMS: 200 OK
 
     Note over WES_Orchestrator,WMS: 3. 空架补给请求
     WES_Orchestrator->>WMS: POST /api/wes/rack-supply-request
     WMS->>RCS: 调度 AGV
     RCS-->>WMS: 完成
 
-    Note over WMS,WES_Callback: 4. 货架到达通知
-    WMS->>WES_Callback: POST /api/v1/callback/event
-{event_type: "WMS_RACK_ARRIVED", ...}
-    WES_Callback-->>WMS: 200 OK
+    Note over WMS,WES_External: 4. 货架到达执行结果
+    WMS->>WES_External: POST /api/v1/callback/external
+{callback_type: "WMS_RACK_ARRIVED", trace_id, dispatch_key, source_event_id, ...}
+    WES_External-->>WMS: 200 OK
 
-    Note over ECS,WES_Callback: 5. 设备事件（视觉扫描）
-    ECS->>WES_Callback: POST /api/v1/callback/event
+    Note over ECS,WES_Event: 5. 设备事件（视觉扫描）
+    ECS->>WES_Event: POST /api/v1/callback/event
 {event_type: "SCAN_COMPLETED", ...}
-    WES_Callback-->>ECS: 200 OK
+    WES_Event-->>ECS: 200 OK
 
     Note over WES_Orchestrator,WMS: 6. PKG 绑定通知
     WES_Orchestrator->>WMS: POST /api/wms/kitting/pkg-binding
@@ -1170,25 +1184,29 @@ sequenceDiagram
     WMS->>RCS: 调度 AGV
     RCS-->>WMS: 完成
 
-    Note over WMS,WES_Callback: 8. 搬运完成通知
-    WMS->>WES_Callback: POST /api/v1/callback/event
-{event_type: "WMS_TRANSPORT_COMPLETED", ...}
+    Note over WMS,WES_External: 8. 搬运完成执行结果
+    WMS->>WES_External: POST /api/v1/callback/external
+{callback_type: "WMS_TRANSPORT_COMPLETED", trace_id, dispatch_key, source_event_id, ...}
 ```
 
 ---
 
 ## 7. 接口清单汇总
 
-### 7.1 WMS 调用 WES 的接口（通过标准回调入口）
+### 7.1 WMS/RCS 调用 WES 的接口（通过标准回调入口）
 
 | 接口 | 事件类型 | 用途 | 优先级 |
 |------|----------|------|--------|
 | `POST /api/v1/callback/event` | `WMS_GRN_RECEIVED` | GRN 单据接收 | P0 |
 | `POST /api/v1/callback/event` | `WMS_PALLET_ARRIVED` | 栈板到达通知 | P0 |
-| `POST /api/v1/callback/event` | `WMS_RACK_ARRIVED` | 货架到达通知 | P0 |
-| `POST /api/v1/callback/event` | `WMS_TRANSPORT_COMPLETED` | 搬运任务完成 | P0 |
-| `POST /api/v1/callback/event` | `WMS_EXCHANGE_COMPLETED` | 交换任务完成 | P1 |
+| `POST /api/v1/callback/external` | `WMS_RACK_ARRIVED` | 货架到达执行结果；需要恢复 Runtime 等待态时使用 | P0 |
+| `POST /api/v1/callback/external` | `WMS_TRANSPORT_COMPLETED` | 搬运任务执行结果；需要恢复 Runtime 等待态时使用 | P0 |
+| `POST /api/v1/callback/external` | `WMS_FULL_BOX_EXCHANGE_RESULT` | 满箱交换排队、物理完成、WMS 确认、失败或对账结果 | P0 |
 | `POST /api/v1/callback/result` | - | RCS 任务结果回传 | P0 |
+
+> 同一运行时任务只能选择一个回调入口。满箱交换、货架到达、搬运完成等需要命中
+> `WAITING_EXTERNAL` Session 的执行结果统一走 `/api/v1/callback/external`。
+> `/callback/event` 不再承载同一任务的并行结果回调。
 
 ### 7.2 WES 调用 WMS 的接口
 
@@ -1227,20 +1245,59 @@ WMS_PALLET_ARRIVED = "WMS_PALLET_ARRIVED"
 WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
 WMS_INVENTORY_UPDATED = "WMS_INVENTORY_UPDATED"
 WMS_TRANSPORT_COMPLETED = "WMS_TRANSPORT_COMPLETED"
-WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
+WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"
 ```
+
+### 7.4 WMS/RCS 执行回调最小包络
+
+| 字段 | 要求 |
+|------|------|
+| `callback_type` | 必填，示例：`WMS_FULL_BOX_EXCHANGE_RESULT`。 |
+| `trace_id` | 必填，用于恢复 WES Trace 和 Session。 |
+| `dispatch_key` | 必填，WES `WorklineOutbox(EXTERNAL_HTTP)` 派发键。 |
+| `exchange_request_code` | 满箱交换必填，与 `dispatch_key` 同源。 |
+| `rack_release_id` | 满箱交换必填，必须与 Session context 一致。 |
+| `wms_rcs_task_id` | 必填，WMS/RCS 侧任务 ID。 |
+| `source_system` | 必填，`WMS` 或 `RCS`。 |
+| `source_event_id` | 必填，来源侧稳定事件 ID；WES 幂等优先使用它。 |
+| `source_version` | 必填，来源侧单调版本或业务版本。 |
+| `occurred_at` | 必填，来源事实发生时间。 |
+| `request_id` | 必填，来源请求唯一 ID，用于重放防护。 |
+| `timestamp` | 必填，签名时间窗校验。 |
+| `signature` | 必填，按双方约定的 canonical payload 计算。 |
+
+满箱交换的 `exchange_status` 必须使用拆分状态：
+
+| 状态 | 含义 |
+|------|------|
+| `ACCEPTED` / `QUEUED` / `IN_PROGRESS` | 外部系统已受理、排队或执行中；WES 继续等待。 |
+| `PHYSICAL_COMPLETED` | 外部物理交换完成，但不代表 WES 投影或 WMS 库存确认完成。 |
+| `RESOURCE_PROJECTED` | WES 已根据可信交换后关系更新资源当前投影。 |
+| `WMS_CONFIRMED` | WMS 已完成库存、单据或业务版本确认。 |
+| `BUSINESS_COMPLETED` | 物理动作、资源投影和 WMS 确认全部完成。 |
+| `WMS_REJECTED` / `REJECTED` / `FAILED` / `CANCELLED` | 需要阻断、诊断或 RuntimeHold。 |
+
+`PHYSICAL_COMPLETED` 或 `RESOURCE_PROJECTED` 前必须携带可信 `post_exchange_relations`。
+缺失、冲突、迟到或旧版本只追加 evidence，不能覆盖 active `RackBinMount`。
 
 ---
 
 ## 8. 实施建议
 
-### 8.1 第一阶段：扩展 plugin contract
+### 8.1 第零阶段：锁定 ADR/SRS 与 WMS/RCS 合同
+
+1. 以 `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 作为 WES/WMS/RCS 权责边界。
+2. 修订 SRS 中 WES 锁空箱、交换库存属性、自动扣减库存等旧口径。
+3. 锁定 `/api/v1/callback/external` 作为运行时执行回调入口。
+4. 锁定签名、时间窗、`request_id`、`source_event_id`、`source_version` 和 canonical hash 幂等规则。
+
+### 8.2 第一阶段：扩展 plugin contract
 
 1. 在对应 plugin 的 `contract.py` 中新增 WMS 相关事件类型
 2. 更新 callback 入站的 plugin contract 校验逻辑
 3. 不再向 `src/app/device/models` 或 runtime 通用层补充 WMS 枚举
 
-### 8.2 第二阶段：实现 WorklineInbox
+### 8.3 第二阶段：实现 WorklineInbox
 
 根据 workline_plugin_architecture_design.md：
 
@@ -1248,11 +1305,11 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 2. 修改 `callback/event` 接口，写入 Inbox
 3. 实现 `WorklineOrchestrator` 消费 Inbox
 
-### 8.3 第三阶段：WMS 适配
+### 8.4 第三阶段：WMS 适配
 
 1. WMS 侧定义虚拟设备：`WMS_SYSTEM`, `WMS_RCS`
-2. WMS 调用 WES 时使用标准回调接口
-3. WMS 生成 `request_id` 作为来源消息幂等键；业务主链路追溯仍由 WES 侧 `correlation_id` 统一维护
+2. WMS/RCS 执行类结果调用 `/api/v1/callback/external`
+3. WMS 生成 `request_id` 和 `source_event_id` 作为来源消息幂等键；业务主链路追溯仍由 WES 侧 `trace_id` 统一维护
 
 ---
 
@@ -1276,11 +1333,12 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 ### 10.1 WMS 侧开发要点
 
 **事件上报要求**:
-1. 所有调用 WES `callback/event` 和 `callback/result` 的请求必须携带唯一 `request_id`
+1. 所有调用 WES `/callback/external`、`/callback/event` 和 `/callback/result` 的请求必须携带唯一 `request_id`
 2. `request_id` 格式建议：`REQ-{YYYYMMDD}-{SEQ}`，如 `REQ-20260314-001`
-3. `request_id` 在 WES 侧作为 `source_message_id` / 幂等键使用，不等同于 `correlation_id`
-4. 若 WES 返回 200 OK，表示事件已接收；若返回 4xx/5xx，WMS 需记录失败并重试
-5. 重复事件会被 WES 拦截，WMS 不应依赖重复上报来保证可靠性
+3. 执行类回调必须额外携带稳定 `source_event_id`、`source_version`、`occurred_at`、`timestamp` 和 `signature`
+4. `request_id` 在 WES 侧作为来源请求防重证据；执行类回调幂等优先使用 `source_event_id`，不等同于 `trace_id`
+5. 若 WES 返回 200 OK，表示事件已接收；若返回 4xx/5xx，WMS 需记录失败并重试
+6. 重复事件会被 WES 拦截，WMS 不应依赖重复上报来保证可靠性
 
 **数据一致性**:
 - WMS 是库存唯一真实源，WES 所有库存查询都实时透传 WMS
@@ -1295,9 +1353,10 @@ WMS_EXCHANGE_COMPLETED = "WMS_EXCHANGE_COMPLETED"
 3. 若 WMS 接口超时或返回 5xx，WES 需触发熔断并告警
 
 **编排器集成**:
-1. 所有 WMS 回调事件必须写入 `WorklineInbox`，不得直接处理
+1. 所有 WMS/RCS 执行回调必须写入 `WorklineInbox`，不得直接处理
 2. 编排器根据 `workline_id + business_key` 创建/恢复 `WorklineSession`
-3. 业务决策必须由插件输出 `PluginResult`，编排器统一生成 Timeline/Outbox
+3. 业务决策必须由插件输出 `RuntimeIntent`，Runtime 统一生成 Timeline/Outbox
+4. 需要等待外部系统的插件必须使用 `RuntimeIntent.external_request(...)`，由 Runtime 设置 `WAITING_EXTERNAL` 和 `deadline_at`
 
 ### 10.3 联调测试建议
 

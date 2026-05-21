@@ -41,7 +41,7 @@ class TestTimelineGenerator:
         session = MagicMock()
         session.id = 1001
         session.workline_id = 2001
-        session.correlation_id = "corr-abc-123"
+        session.trace_id = "trace-abc-123"
         return session
 
     def test_generate_creates_timeline_with_session_info(self, generator, mock_session):
@@ -55,7 +55,7 @@ class TestTimelineGenerator:
         assert isinstance(timeline, WorklineTimeline)
         assert timeline.session_id == 1001
         assert timeline.workline_id == 2001
-        assert timeline.correlation_id == "corr-abc-123"
+        assert timeline.trace_id == "trace-abc-123"
 
     def test_generate_includes_from_and_to_status(self, generator, mock_session):
         """测试生成 Timeline 记录包含状态转换信息"""
@@ -168,12 +168,12 @@ class TestTimelineGenerator:
         assert timeline.from_status == "RUNNING"
         assert timeline.to_status == "WAITING_DEVICE_RESULT"
 
-    def test_generate_handles_none_correlation_id(self, generator):
-        """测试处理 correlation_id 为 None 的情况"""
+    def test_generate_handles_none_trace_id(self, generator):
+        """测试处理 trace_id 为 None 的情况"""
         session = MagicMock()
         session.id = 1001
         session.workline_id = 2001
-        session.correlation_id = None
+        session.trace_id = None
 
         timeline = generator.generate(
             session=session,
@@ -183,7 +183,7 @@ class TestTimelineGenerator:
 
         assert timeline.session_id == 1001
         assert timeline.workline_id == 2001
-        assert timeline.correlation_id is None
+        assert timeline.trace_id is None
 
     def test_generate_with_none_payload(self, generator, mock_session):
         """测试处理 payload 为 None 的情况"""

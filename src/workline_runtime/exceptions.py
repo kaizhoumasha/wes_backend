@@ -14,7 +14,3 @@ class PluginNotFoundError(WorklineRuntimeError):
 
 class LockAcquireError(WorklineRuntimeError):
     """锁获取失败异常。"""
-
-
-class StateMachineError(WorklineRuntimeError):
-    """状态机相关异常。"""

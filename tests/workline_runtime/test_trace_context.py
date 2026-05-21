@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from src.workline_runtime.diagnostics import build_diagnostic_context
 from src.workline_runtime.plugin_context import PluginContextBuilder
+from src.workline_runtime.services import WorklineRuntimeServices
 from src.workline_runtime.trace_context import TraceContext
 
 
@@ -12,7 +13,7 @@ class TestTraceContext:
         session = SimpleNamespace(
             id=11,
             workline_id=2,
-            correlation_id="corr-session",
+            trace_id="trace-session",
             plugin_key="smt_classifier",
             contract_version="1.2.3",
             last_request_id="req-session",
@@ -21,7 +22,7 @@ class TestTraceContext:
         inbox = SimpleNamespace(
             id=33,
             source_message_id="req-001",
-            correlation_id="corr-001",
+            trace_id="trace-001",
             workline_id=2,
             device_id=5,
             command_id=7,
@@ -34,7 +35,7 @@ class TestTraceContext:
         command = SimpleNamespace(
             id=7,
             command_code="CMD-01",
-            correlation_id="corr-001",
+            trace_id="trace-001",
             workline_id=2,
             device_id=5,
             plugin_key="smt_classifier",
@@ -51,7 +52,7 @@ class TestTraceContext:
         )
 
         assert trace.request_id == "req-001"
-        assert trace.correlation_id == "corr-001"
+        assert trace.trace_id == "trace-001"
         assert trace.workline_id == 2
         assert trace.session_id == 11
         assert trace.inbox_id == 33
@@ -69,7 +70,7 @@ class TestTraceContext:
         session = SimpleNamespace(
             id=21,
             workline_id=3,
-            correlation_id="corr-ctx-001",
+            trace_id="trace-ctx-001",
             plugin_key="smt_classifier",
             contract_version="2.0.0",
             last_request_id="req-ctx-001",
@@ -79,13 +80,13 @@ class TestTraceContext:
         inbox = SimpleNamespace(
             id=55,
             source_message_id="req-ctx-001",
-            correlation_id="corr-ctx-001",
+            trace_id="trace-ctx-001",
             workline_id=3,
             device_id=8,
             payload_json={"device_code": "DEV-CTX-01", "event_type": "SCAN_COMPLETED"},
         )
         devices_by_role = {"SCANNER": [SimpleNamespace(id=8, device_code="DEV-CTX-01", device_role="SCANNER")]}
-        services = SimpleNamespace()
+        services = WorklineRuntimeServices()
 
         trace = TraceContext.from_runtime(session=session, workline=workline, inbox=inbox)
         diagnostic = build_diagnostic_context(trace=trace, session=session, inbox=inbox, workline=workline)
@@ -99,14 +100,14 @@ class TestTraceContext:
         )
 
         assert diagnostic.request_id == "req-ctx-001"
-        assert diagnostic.correlation_id == "corr-ctx-001"
+        assert diagnostic.trace_id == "trace-ctx-001"
         assert diagnostic.session_id == 21
         assert diagnostic.workline_id == 3
         assert diagnostic.plugin_key == "smt_classifier"
         assert diagnostic.canonical_event_type == "SCAN_COMPLETED"
-        assert ctx.correlation_id == "corr-ctx-001"
+        assert ctx.trace_id == "trace-ctx-001"
         assert ctx.trace.request_id == "req-ctx-001"
-        assert ctx.trace.correlation_id == "corr-ctx-001"
+        assert ctx.trace.trace_id == "trace-ctx-001"
         assert ctx.diagnostics is not None
-        assert ctx.diagnostics.correlation_id == "corr-ctx-001"
+        assert ctx.diagnostics.trace_id == "trace-ctx-001"
         assert ctx.diagnostics.session_id == 21

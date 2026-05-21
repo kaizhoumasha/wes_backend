@@ -1,11 +1,24 @@
-"""Workline 领域服务导出。
-
-当前领域服务：
-
-- `BarcodeDecisionService`: 条码提取、合法性校验、业务 NG 判定
-- `barcode_decision_service`: 条码判定服务单例
-"""
+"""Workline 领域服务导出。"""
 
 from .barcode_decision_service import BarcodeDecisionService, barcode_decision_service
+from .smt_rack_bin_scheduling_service import (
+    SmtFullBoxExchangeRequest,
+    SmtRackBinSchedulingDecision,
+    SmtRackBinSchedulingDecisionKind,
+    SmtRackBinSchedulingService,
+    SmtRackReleaseEvent,
+    SmtRackSupplyRequest,
+    smt_rack_bin_scheduling_service,
+)
 
-__all__ = ["BarcodeDecisionService", "barcode_decision_service"]
+__all__ = [
+    "BarcodeDecisionService",
+    "SmtFullBoxExchangeRequest",
+    "SmtRackBinSchedulingDecision",
+    "SmtRackBinSchedulingDecisionKind",
+    "SmtRackBinSchedulingService",
+    "SmtRackReleaseEvent",
+    "SmtRackSupplyRequest",
+    "barcode_decision_service",
+    "smt_rack_bin_scheduling_service",
+]

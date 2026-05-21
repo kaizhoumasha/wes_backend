@@ -127,6 +127,43 @@ class BusinessErrorCode(ResponseCode):
     DATA_CONFLICT = ("4021", "数据冲突", 400)
     CASCADING_DELETE_ERROR = ("4022", "级联删除错误", 400)
 
+    # Runtime Hold 领域错误
+    RUNTIME_HOLD_MISSING_RELEASE_EVIDENCE = (
+        "RUNTIME_HOLD_MISSING_RELEASE_EVIDENCE",
+        "Runtime Hold 缺少释放证据",
+        422,
+    )
+    RUNTIME_HOLD_VERSION_CONFLICT = (
+        "RUNTIME_HOLD_VERSION_CONFLICT",
+        "Runtime Hold 版本冲突",
+        409,
+    )
+    RUNTIME_HOLD_EVIDENCE_CHANGED = (
+        "RUNTIME_HOLD_EVIDENCE_CHANGED",
+        "Runtime Hold 证据已变化",
+        409,
+    )
+    RUNTIME_HOLD_ALREADY_RESOLVED = (
+        "RUNTIME_HOLD_ALREADY_RESOLVED",
+        "Runtime Hold 已解除",
+        409,
+    )
+    RUNTIME_HOLD_REASON_UNMAPPED = (
+        "RUNTIME_HOLD_REASON_UNMAPPED",
+        "Runtime Hold NG 原因未映射",
+        422,
+    )
+    RUNTIME_HOLD_HANDOFF_LOCATION_UNMAPPED = (
+        "RUNTIME_HOLD_HANDOFF_LOCATION_UNMAPPED",
+        "Runtime Hold NG 位置未映射",
+        422,
+    )
+    RUNTIME_HOLD_MATERIAL_CONFLICT = (
+        "RUNTIME_HOLD_MATERIAL_CONFLICT",
+        "Runtime Hold 物料处置冲突",
+        409,
+    )
+
 
 # ==================== 服务器错误 (5xxx) ====================
 

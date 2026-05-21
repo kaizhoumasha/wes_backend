@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, Text, UniqueConstraint
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -127,11 +127,11 @@ class WorklineTimelineBase(BaseMixin):
         description="作业线 ID（关联 WorkLine.id）",
     )
 
-    correlation_id: str | None = Field(
+    trace_id: str | None = Field(
         default=None,
         max_length=100,
         index=True,
-        description="关联 ID（串联业务流程）",
+        description="Trace ID（串联业务流程）",
     )
 
     # 序列号（同一 session_id 内单调递增）
@@ -282,6 +282,10 @@ class WorklineTimeline(
 
     __tablename__: ClassVar[str] = "workline_timelines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq_no", name="uq_workline_timelines_session_seq_no"),
+        {"schema": SchemaType.BIZ.value},
+    )
 
     # 关系定义
     session: "WorklineSession" = Relationship(

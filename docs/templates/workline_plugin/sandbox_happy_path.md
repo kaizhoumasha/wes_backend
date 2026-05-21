@@ -20,4 +20,4 @@ Sandbox 用于 WORKLINE 级调试。它会保留真实编排链路，只把真�
 7. 如需验证业务 NG，使用 `fixtures/result_business_ng.json`，插件应产生 business decision，而不是 failure。
 8. 如需验证系统异常，使用 `fixtures/result_system_failure.json`，插件应产生 hardware failure。
 
-插件级 payload 诊断只能解释 handler/context/`PluginResult`，不能替代本流程。
+插件级 payload 诊断只能解释 handler/context/`RuntimeIntent`，不能替代本流程。

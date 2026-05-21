@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -43,7 +44,7 @@ class TestInputOkFlow:
     流程（硬件说明书 9.11.1）：
     1. 设备上报扫码事件
     2. WES 判断条码 OK
-    3. WES 下发进料 OK 命令：串杆位置 -> 流水线进料位置
+    3. WES 下发料盘测量命令
     4. 设备回传任务结果，携带条码、尺寸、厚度信息
     5. WES 下发移料命令：流水线进料位置 -> 流水线出料位置
     6. 设备回传移料结果
@@ -68,6 +69,8 @@ class TestInputOkFlow:
 
         # 步骤 1: 设备上报扫码事件
         logger.info("步骤 1: ARM01 上报扫码事件")
+        previous_session_id = await db_conn.fetchval("SELECT COALESCE(MAX(id), 0) FROM wes_biz.workline_sessions")
+        pkg_id = f"MEASURE_OK_{int(time.time() * 1000)}"
 
         scan_event: dict[str, Any] = {
             "device_code": "ARM01",
@@ -75,10 +78,12 @@ class TestInputOkFlow:
             "timestamp": int(time.time() * 1000),
             "data": {
                 "location": "STATION_INPUT1",
-                "LotCode": "LOTOK001",
-                "DateCode": "20260409",
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
                 "Qty": "100",
-                "ProductNo": "PN001",
+                "DateCode": "20260409",
+                "LotCode": "LOTOK001",
+                "PkgID": pkg_id,
             },
         }
 
@@ -87,7 +92,7 @@ class TestInputOkFlow:
         logger.info(f"✓ 扫码事件已接收: {response.json()}")
 
         # 等待会话完成（自动轮询）
-        session = await wait_for_session_completed(db_conn, timeout_seconds=30)
+        session = await wait_for_session_completed(db_conn, timeout_seconds=30, after_session_id=previous_session_id)
         logger.info(f"会话已完成: id={session['id']}, status={session['status']}")
 
         # 验证命令执行记录
@@ -104,7 +109,7 @@ class TestInputOkFlow:
 
         # 验证命令顺序
         assert commands[0]["device_code"] == "ARM01"
-        assert commands[0]["task_type"] in ("PICK_AND_PLACE", "PICK_AND_PUT")
+        assert commands[0]["task_type"] == "MEASUREMENT_REEL"
         assert commands[0]["status"] == "COMPLETED"
         assert commands[0]["result"] == "SUCCESS"
 
@@ -151,12 +156,14 @@ class TestInputNgFlowScanNg:
 
         # 步骤 1: 设备上报扫码事件（无效条码）
         logger.info("步骤 1: ARM01 上报扫码事件（无效条码）")
+        event_id = f"SCAN-NG-{uuid.uuid4().hex}"
 
         scan_event: dict[str, Any] = {
             "device_code": "ARM01",
             "event_type": "SCAN_COMPLETED",
             "timestamp": int(time.time() * 1000),
             "data": {
+                "event_id": event_id,
                 "location": "STATION_INPUT1",
                 "LotCode": "X",  # 无效条码（长度不足）
             },
@@ -168,14 +175,18 @@ class TestInputNgFlowScanNg:
 
         # 等待扫码 NG 链路完成（自动轮询）
         deadline = time.time() + 10
+        session = None
         while time.time() < deadline:
             session = await db_conn.fetchrow(
                 """
-                SELECT id, status, failure_domain, failure_code, failure_message
-                FROM wes_biz.workline_sessions
-                ORDER BY id DESC
+                SELECT s.id, s.status, s.failure_domain, s.failure_code, s.failure_message
+                FROM wes_biz.workline_inbox AS i
+                JOIN wes_biz.workline_sessions AS s ON s.id = i.session_id
+                WHERE i.payload_json->'data'->>'event_id' = $1
+                ORDER BY i.id DESC
                 LIMIT 1
-                """
+                """,
+                event_id,
             )
             if session and session["status"] in ("FAILED", "COMPLETED"):
                 break
@@ -219,12 +230,12 @@ class TestInputNgFlowSizeNg:
     1. 设备上报扫码事件
     2. WES 判断条码 OK
     3. WES 下发进料 OK 命令：串杆位置 -> 流水线进料位置
-    4. 设备回传结果，携带检测信息
-    5. 若尺寸或厚度 NG，设备返回语义错误码 `INSPECTION_SIZE_NG` 或 `INSPECTION_THICKNESS_NG`
+    4. 设备回传成功结果，携带检测信息
+    5. 若尺寸或厚度 NG，设备回传 `result=SUCCESS`，并在 `data` 中携带 `inspection_result=NG`
     6. WES 下发进料 NG 命令：流水线进料位置 -> NG 缓存位
     7. 设备回传进料 NG 结果
 
-    注意：通过 Mock 服务的 error_code 参数模拟硬件错误。
+    注意：检测 NG 是业务结果，不是硬件错误。
     """
 
     @pytest.mark.asyncio
@@ -242,6 +253,7 @@ class TestInputNgFlowSizeNg:
 
         # 步骤 1: 设备上报扫码事件
         logger.info("步骤 1: ARM01 上报扫码事件")
+        previous_session_id = await db_conn.fetchval("SELECT COALESCE(MAX(id), 0) FROM wes_biz.workline_sessions")
 
         scan_event: dict[str, Any] = {
             "device_code": "ARM01",
@@ -249,7 +261,11 @@ class TestInputNgFlowSizeNg:
             "timestamp": int(time.time() * 1000),
             "data": {
                 "location": "STATION_INPUT1",
-                "LotCode": "LOTSIZENG",
+                "HHPN": "620100L00-011-G",
+                "MfrPN": "CC0402JRNPO9BN220",
+                "Qty": "100",
+                "LotCode": "LOT-MEASURE-SIZE-NG",
+                "PkgID": f"MEASURE_SIZE_NG_{int(time.time() * 1000)}",
                 "DateCode": "20260409",
             },
         }
@@ -265,9 +281,11 @@ class TestInputNgFlowSizeNg:
                 """
                 SELECT id, status
                 FROM wes_biz.workline_sessions
+                WHERE id > $1
                 ORDER BY id DESC
                 LIMIT 1
-                """
+                """,
+                previous_session_id,
             )
             if session and session["status"] in ("COMPLETED", "FAILED"):
                 break
@@ -283,16 +301,19 @@ class TestInputNgFlowSizeNg:
         for cmd in commands:
             logger.info(f"  - {cmd['device_code']}: {cmd['task_type']} -> {cmd['status']}/{cmd['result']}")
 
-        # 验证1: 进料命令失败（尺寸检测 NG）
-        assert len(commands) >= 1
+        # 验证1: 测量命令成功，检测 NG 放在业务 data 中，不写成命令失败
+        assert len(commands) >= 2
         assert commands[0]["device_code"] == "ARM01"
-        assert commands[0]["task_type"] in ("PICK_AND_PLACE", "PICK_AND_PUT")
-        assert commands[0]["result"] == "FAILED"
+        assert commands[0]["task_type"] == "MEASUREMENT_REEL"
+        assert commands[0]["status"] == "COMPLETED"
+        assert commands[0]["result"] == "SUCCESS"
 
         # 验证2: NG 移料命令生成
         assert len(commands) == 2
         assert commands[1]["device_code"] == "ARM01"
         assert commands[1]["task_type"] in ("PICK_AND_PLACE", "PICK_AND_PUT")
+        assert commands[1]["status"] == "COMPLETED"
+        assert commands[1]["result"] == "SUCCESS"
 
         logger.info(f"NG 移料命令状态: {commands[1]['status']}/{commands[1]['result']}")
         logger.info(f"会话最终状态: {session['status']}")

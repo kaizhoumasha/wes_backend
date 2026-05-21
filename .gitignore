@@ -233,3 +233,7 @@ config.json
 views.json
 .claude-plugin/plugin.json
 sessions/**
+.gstack/**
+.gitnexus
+.zread/*
+.claude/skills/*

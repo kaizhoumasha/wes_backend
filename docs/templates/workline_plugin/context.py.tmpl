@@ -8,15 +8,12 @@ from pydantic import BaseModel, ConfigDict
 
 from src.workline_runtime.plugin_context import PluginContext
 
-from .state_machine import {{STATE_ENUM}}
-
 
 class {{CONTEXT_CLASS}}(BaseModel):
-    """Session context_json 的插件视图。"""
+    """Session context_json 的插件业务数据视图。"""
 
     model_config = ConfigDict(extra="ignore")
 
-    plugin_state: {{STATE_ENUM}} = {{STATE_ENUM}}.IDLE
     business_key: str | None = None
     station_code: str | None = None
     expected_value: float | None = None

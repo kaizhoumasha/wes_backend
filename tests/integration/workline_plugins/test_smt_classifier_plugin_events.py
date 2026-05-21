@@ -1,4 +1,4 @@
-"""SMT 分类插件事件入口测试。"""
+"""SMT 分类插件事件入口 RuntimeIntent 测试。"""
 
 from __future__ import annotations
 
@@ -7,56 +7,78 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.workline_plugins.smt_classifier import SmtClassifierPlugin, smt_classifier_plugin
-from src.workline_runtime.types import CommandTargetScope
+from src.workline_runtime.runtime_intent import BlockScope, DestinationKind, RuntimeIntentKind
+
+
+def _make_inbox(payload: dict) -> MagicMock:
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.payload_json = payload
+    inbox.kind = None
+    inbox.trace_id = "trace-smt-events"
+    return inbox
+
+
+def _scan_payload(pkg_id: str = "SVYU00125TP4LCR02_2") -> dict:
+    return {
+        "device_code": "SCANNER01",
+        "event_type": "SCAN_COMPLETED",
+        "data": {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": pkg_id,
+            "location": "LOC01",
+        },
+    }
+
+
+def _assert_command(intent, *, action: str, device_role: str, timeout: int = 300) -> None:
+    assert intent.kind == RuntimeIntentKind.COMMAND
+    assert intent.action == action
+    assert intent.device_role == device_role
+    assert intent.destination.kind == DestinationKind.ROLE
+    assert intent.destination.value == device_role
+    assert intent.timeout_seconds == timeout
 
 
 class TestSmtClassifierPluginEvents:
-    """SMT 分类插件事件入口测试。"""
+    """SMT 分类插件事件入口 RuntimeIntent 测试。"""
 
     @pytest.mark.asyncio
-    async def test_scan_completed_ok_flow(self, plugin, mock_context):
-        """测试扫码 OK 流程会进入测量等待态。"""
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
-                "PkgID": "SVYU00125TP4LCR02_2",
-                "location": "LOC01",
-            },
+    async def test_scan_completed_ok_updates_context_and_measures(self, plugin, mock_context):
+        """扫码 OK 后写入上下文，并下发测量命令到进料臂。"""
+
+        result = await plugin.on_device_event(mock_context, _make_inbox(_scan_payload()))
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        assert result[0].context_patch["device_code"] == "SCANNER01"
+        assert result[0].context_patch["location"] == "LOC01"
+        assert result[0].context_patch["barcode"] == "SVYU00125TP4LCR02_2"
+        assert len(result[0].context_patch["barcodes"]) == 6
+        _assert_command(result[1], action="MEASUREMENT_REEL", device_role="INPUT_ARM")
+        assert result[1].payload_json == {"pkg_id": "SVYU00125TP4LCR02_2"}
+
+    @pytest.mark.asyncio
+    async def test_scan_completed_persists_six_in_one_context(self, plugin, mock_context):
+        """扫码 OK 后保存完整 6 合 1 上下文，供后续料箱调度使用。"""
+
+        result = await plugin.on_device_event(mock_context, _make_inbox(_scan_payload()))
+
+        assert result[0].context_patch["six_in_one"] == {
+            "HHPN": "620100L00-011-G",
+            "MfrPN": "CC0402JRNPO9BN220",
+            "Qty": "7387",
+            "DateCode": "122625",
+            "LotCode": "8904936031",
+            "PkgID": "SVYU00125TP4LCR02_2",
         }
 
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ok"
-        assert result.failure is None
-        assert result.commands is not None
-        assert len(result.commands) == 1
-        assert result.commands[0].action == "MEASUREMENT_REEL"
-        assert result.commands[0].target_scope == CommandTargetScope.CURRENT
-        assert result.commands[0].device_role is None
-        assert result.commands[0].parameters["pkg_id"] == "SVYU00125TP4LCR02_2"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-MEASUREMENT_REEL-")
-        assert result.wait.deadline_seconds == 300
-        assert result.context_patch["device_code"] == "SCANNER01"
-        assert result.context_patch["location"] == "LOC01"
-        assert result.context_patch["plugin_state"] == "WAITING_MEASUREMENT"
-        assert len(result.context_patch["barcodes"]) == 6
-
     @pytest.mark.asyncio
-    async def test_scan_completed_incomplete_barcodes_routes_to_scan_ng(self, plugin, mock_context):
-        """测试条码不完整时会进入 scan_ng，并继续等待 NG 分流结果。"""
+    async def test_scan_completed_incomplete_barcodes_marks_ng_and_picks_to_ng(self, plugin, mock_context):
+        """条码不完整时标记 NG，写入 SCAN_NG 上下文，并下发 NG 分流。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
@@ -67,91 +89,59 @@ class TestSmtClassifierPluginEvents:
             },
         }
 
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ng"
-        assert result.failure is None
-        assert len(result.business_decisions) == 1
-        assert result.business_decisions[0].classification == "business_decision"
-        assert result.business_decisions[0].reason_code
-        assert result.commands is not None
-        assert result.commands[0].action == "PICK_AND_PUT"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
-        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
-
-    @pytest.mark.asyncio
-    async def test_scan_completed_ng_flow(self, plugin, mock_context):
-        """测试扫码 NG 流程，命中业务 NG 规则。"""
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
-                "PkgID": "LOTSIZENG_001",
-                "location": "LOC01",
-            },
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.MARK_NG,
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.COMMAND,
+        ]
+        assert result[0].reason_code == "BARCODE_INCOMPLETE"
+        assert result[0].payload_json["barcode"] == ""
+        assert result[1].context_patch["pick_place_reason"] == "SCAN_NG"
+        assert result[1].context_patch["scan_ng_reason_code"] == "BARCODE_INCOMPLETE"
+        _assert_command(result[2], action="PICK_AND_PUT", device_role="INPUT_ARM")
+        assert result[2].payload_json == {
+            "barcode": "",
+            "source_type": "INPUT_PLATFORM",
+            "target_type": "NG_PLATFORM",
         }
 
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+    @pytest.mark.asyncio
+    async def test_scan_completed_ng_rule_marks_ng_and_picks_to_ng(self, plugin, mock_context):
+        """业务规则判定 NG 时标记 SCAN_NG，并下发 NG 分流。"""
 
-        result = await plugin.on_device_event(mock_context, inbox)
+        result = await plugin.on_device_event(mock_context, _make_inbox(_scan_payload("LOTSIZENG_001")))
 
-        assert result.transition == "scan_ng"
-        assert result.failure is None
-        assert len(result.business_decisions) == 1
-        assert result.business_decisions[0].reason_code == "SCAN_NG"
-        assert result.business_decisions[0].business_key == "LOTSIZENG_001"
-        assert result.business_decisions[0].evidence["device_code"] == "SCANNER01"
-        assert result.commands is not None
-        assert len(result.commands) == 1
-        assert result.commands[0].action == "PICK_AND_PUT"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
-        assert result.commands[0].parameters["target_type"] == "NG_PLATFORM"
-        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
+        assert [intent.kind for intent in result] == [
+            RuntimeIntentKind.MARK_NG,
+            RuntimeIntentKind.UPDATE_CONTEXT,
+            RuntimeIntentKind.COMMAND,
+        ]
+        assert result[0].reason_code == "SCAN_NG"
+        assert result[0].message == "扫码判定 NG"
+        assert result[0].payload_json["barcode"] == "LOTSIZENG_001"
+        assert result[0].payload_json["device_code"] == "SCANNER01"
+        assert result[1].context_patch["barcode"] == "LOTSIZENG_001"
+        assert result[1].context_patch["pick_place_reason"] == "SCAN_NG"
+        _assert_command(result[2], action="PICK_AND_PUT", device_role="INPUT_ARM")
+        assert result[2].payload_json["target_type"] == "NG_PLATFORM"
 
     @pytest.mark.asyncio
-    async def test_scan_completed_requires_data(self, plugin, mock_context):
-        """测试扫码事件缺少 data 时返回 MISSING_SCAN_DATA。"""
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-        }
+    async def test_scan_completed_without_data_blocks_material(self, plugin, mock_context):
+        """扫码事件缺少 data 时返回 MISSING_SCAN_DATA BLOCK。"""
+        payload = {"device_code": "SCANNER01", "event_type": "SCAN_COMPLETED"}
 
-        inbox = MagicMock()
-        inbox.id = 11
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "MISSING_SCAN_DATA"
-        assert result.business_decisions == []
-        assert not result.commands
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "MISSING_SCAN_DATA"
+        assert result[0].message == "扫码事件缺少 data 字段"
 
     @pytest.mark.asyncio
     async def test_scan_completed_rejects_flattened_business_fields(self, plugin, mock_context):
-        """测试扫码事件业务字段必须放在 data 中，不能拍平到顶层。"""
+        """扫码事件业务字段必须放在 data 中，不能拍平到顶层。"""
         payload = {
             "device_code": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
@@ -164,171 +154,52 @@ class TestSmtClassifierPluginEvents:
             "location": "LOC01",
         }
 
-        inbox = MagicMock()
-        inbox.id = 12
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ng"
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "MISSING_SCAN_DATA"
-        assert result.business_decisions == []
-        assert not result.commands
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "MISSING_SCAN_DATA"
 
     @pytest.mark.asyncio
-    async def test_scan_invalid_barcode(self, plugin, mock_context):
-        """测试无效条码时会进入 scan_ng，并继续等待 NG 分流结果。"""
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
-                "PkgID": "X",
-                "location": "LOC01",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ng"
-        assert result.failure is None
-        assert len(result.business_decisions) == 1
-        assert result.business_decisions[0].business_key == "X"
-        assert result.commands is not None
-        assert result.commands[0].action == "PICK_AND_PUT"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-PICK_AND_PUT-")
-        assert result.context_patch["pick_place_reason"] == "SCAN_NG"
-        assert result.context_patch["plugin_state"] == "WAITING_PICK_PLACE"
-
-    @pytest.mark.asyncio
-    async def test_scan_completed_rejects_legacy_device_id(self, plugin, mock_context):
-        """测试扫码事件不再接受 legacy device_id。"""
+    async def test_scan_completed_rejects_invalid_payload_as_block(self, plugin, mock_context):
+        """扫码事件 payload 包络非法时返回 PAYLOAD_INVALID BLOCK。"""
         payload = {
             "device_id": "SCANNER01",
             "event_type": "SCAN_COMPLETED",
-            "LotCode": "LOTABC123",
-            "location": "LOC01",
+            "data": {"LotCode": "LOTABC123", "location": "LOC01"},
         }
 
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
 
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "DATA"
-        assert result.failure.code == "PAYLOAD_INVALID"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.BLOCK]
+        assert result[0].block_scope == BlockScope.MATERIAL
+        assert result[0].reason_code == "PAYLOAD_INVALID"
 
     @pytest.mark.asyncio
     async def test_scan_completed_accepts_canonical_event_type(self, plugin, mock_context):
-        """测试粗分机插件可按标准化 canonical_event_type 路由扫码事件。"""
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "VENDOR_SCAN_DONE",
-            "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
-                "PkgID": "SVYU00125TP4LCR02_2",
-                "location": "LOC01",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 101
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
+        """标准化 canonical_event_type 可路由到扫码 handler。"""
+        payload = _scan_payload()
+        payload["event_type"] = "VENDOR_SCAN_DONE"
         mock_context.normalized_input = MagicMock(canonical_event_type="SCAN_COMPLETED")
 
-        result = await plugin.on_device_event(mock_context, inbox)
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
 
-        assert result.transition == "scan_ok"
-        assert result.commands is not None
-        assert result.commands[0].action == "MEASUREMENT_REEL"
-        assert result.wait is not None
-        assert result.wait.wait_type == "COMMAND_RESULT"
-        assert result.wait.wait_token.startswith("42-MEASUREMENT_REEL-")
-
-    @pytest.mark.asyncio
-    async def test_estop_event_returns_hardware_failure(self, plugin, mock_context):
-        """测试急停事件会直接落到硬件失败。"""
-        payload = {
-            "device_code": "ARM01",
-            "event_type": "ESTOP_PRESSED",
-            "data": None,
-        }
-
-        inbox = MagicMock()
-        inbox.id = 102
-        inbox.payload_json = payload
-        mock_context.session.context_json = {"plugin_state": "WAITING_PICK_PLACE"}
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.failure is not None
-        assert result.failure.domain == "HARDWARE"
-        assert result.failure.code == "ESTOP"
-        assert result.failure.message == "急停触发: ARM01"
-
-    @pytest.mark.asyncio
-    async def test_idle_to_waiting_measurement(self, plugin, mock_context):
-        """测试 IDLE → WAITING_MEASUREMENT 迁移。"""
-        mock_context.session.context_json = {"plugin_state": "IDLE"}
-
-        payload = {
-            "device_code": "SCANNER01",
-            "event_type": "SCAN_COMPLETED",
-            "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
-                "PkgID": "SVYU00125TP4LCR02_2",
-                "location": "LOC01",
-            },
-        }
-
-        inbox = MagicMock()
-        inbox.id = 1
-        inbox.payload_json = payload
-
-        result = await plugin.on_device_event(mock_context, inbox)
-
-        assert result.transition == "scan_ok"
-        assert result.context_patch.get("plugin_state") == "WAITING_MEASUREMENT"
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        _assert_command(result[1], action="MEASUREMENT_REEL", device_role="INPUT_ARM")
 
 
 class TestSmtClassifierPluginBasics:
     """插件注册测试。"""
 
     def test_plugin_key(self):
-        """验证 plugin_key。"""
         assert SmtClassifierPlugin.plugin_key == "smt_classifier"
 
     def test_contract_version(self):
-        """验证 contract_version。"""
         assert SmtClassifierPlugin.contract_version == "1.0"
 
+    def test_manifest_does_not_export_state_machine(self):
+        assert not hasattr(SmtClassifierPlugin.manifest, "state" + "_machine_class")
+
     def test_plugin_instance(self):
-        """验证插件实例可创建。"""
         assert smt_classifier_plugin is not None
         assert isinstance(smt_classifier_plugin, SmtClassifierPlugin)

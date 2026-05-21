@@ -1654,3 +1654,148 @@ Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
 - **Resolved**: 2026-04-24T19:40:00+08:00
 - **Promoted**: docs/plugin_development_guide.md
 - **Notes**: 文档已新增 Handler 签名选择规则章节
+
+---
+
+## [LRN-20260425-001] best_practice
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: high
+**Status**: resolved
+**Category**: best_practice
+**Area**: backend
+
+### Summary
+同一设备硬件任务队列不能只依赖状态字段读值，真实派发前必须锁定设备行。
+
+### Details
+本轮实现 DEVICE 队列语义时，最初通过 `device_status == RUNNING` 或 `current_command_id is not None` 阻止下一条同设备命令。这个逻辑在单 worker 下成立，但多 Celery worker 并发时，两个事务可能同时读到 `IDLE`，从而同时向同一硬件设备下发命令。
+
+正确做法是：真实设备 HTTP 派发前通过 Repository 查询并 `SELECT ... FOR UPDATE` 锁定设备行，再检查 `device_status/current_command_id/maintenance_mode/capabilities`，ACK 后在同一事务内更新占用投影。
+
+### Suggested Action
+后续所有“单资源串行化”的运行态治理遵循：
+1. 先锁定资源行；
+2. 在锁内做状态/能力检查；
+3. 在同一事务内写入占用或释放投影；
+4. 用回归测试证明派发路径使用锁定查询。
+
+### Metadata
+- Source: review
+- Related Files: src/app/device/repositories/device_repository.py, src/celery_app/tasks/workline.py, tests/workline_runtime/test_outbox_dispatcher.py
+- Tags: concurrency, celery, device-queue, row-lock, outbox
+- Pattern-Key: backend.device_dispatch_lock_before_hardware_side_effect
+- Recurrence-Count: 1
+- First-Seen: 2026-04-25
+- Last-Seen: 2026-04-25
+
+### Resolution
+- **Resolved**: 2026-04-25T10:46:30Z
+- **Commit/PR**: 67f506c / #10
+- **Notes**: 新增 `get_by_device_code_for_update()`，派发前锁定设备行，并补充锁定查询回归测试。
+
+---
+
+## [LRN-20260425-002] correction
+
+**Logged**: 2026-04-25T10:49:23Z
+**Priority**: medium
+**Status**: resolved
+**Category**: correction
+**Area**: docs
+
+### Summary
+用户明确要求“使用中文信息”，后续状态更新和最终汇总应使用中文。
+
+### Details
+在 PR 合并/清理流程中，用户提醒“使用中文信息”。本项目文档、业务沟通和多数状态说明以中文为主；当用户明确指定语言时，工具进度说明、PR/merge 结果摘要和后续收尾都应保持中文，避免英文模板化输出。
+
+### Suggested Action
+在该工作区内：
+1. 用户使用中文或明确要求中文时，默认用中文回复；
+2. 命令名、路径、PR 标题等技术标识保留原文；
+3. 汇总要简洁列出结果、提交号、PR 链接和验证状态。
+
+### Metadata
+- Source: user_feedback
+- Related Files: AGENTS.md
+- Tags: communication, language-preference, chinese
+- Pattern-Key: communication.prefer_chinese_when_user_requests_chinese
+- Recurrence-Count: 1
+- First-Seen: 2026-04-25
+- Last-Seen: 2026-04-25
+
+### Resolution
+- **Resolved**: 2026-04-25T10:49:23Z
+- **Commit/PR**: n/a
+- **Notes**: 后续本工作区状态更新和最终答复使用中文。
+
+---
+
+## [LRN-20260506-001] correction
+
+**Logged**: 2026-05-06T14:27:29+08:00
+**Priority**: high
+**Status**: promoted
+**Category**: correction
+**Area**: docs
+
+### Summary
+计划/规划文档应保持可读性，不能塞入大段实现代码。
+
+### Details
+用户纠正：`docs/superpowers/plans/2026-05-06-workline-emergency-stop.md` 中填入了太多完整代码和测试代码，破坏了计划文档可读性。正确做法是让计划文档承载目标、架构决策、业务约定、任务边界、验收标准、风险和验证方式；实现细节应在编码阶段通过 TDD、diff、测试和提交体现。
+
+### Suggested Action
+后续编写计划文档时，只保留关键接口名、文件职责、状态流、错误码、数据字段、测试场景和验证命令。避免完整类实现、完整函数实现和大段测试代码。该规则已提升到 `AGENTS.md` 和 `CLAUDE.md`。
+
+### Metadata
+- Source: user_feedback
+- Related Files: AGENTS.md, CLAUDE.md, docs/superpowers/plans/2026-05-06-workline-emergency-stop.md
+- Tags: planning, documentation, readability
+- Pattern-Key: docs.planning_readability
+- Recurrence-Count: 1
+- First-Seen: 2026-05-06
+- Last-Seen: 2026-05-06
+
+### Resolution
+- **Resolved**: 2026-05-06T14:27:29+08:00
+- **Promoted**: AGENTS.md, CLAUDE.md
+- **Notes**: 已在两个根级协作文件中加入 Planning Document Readability 规则。
+
+---
+
+## [LRN-20260506-002] correction
+
+**Logged**: 2026-05-06T14:31:00+08:00
+**Priority**: high
+**Status**: resolved
+**Category**: correction
+**Area**: docs
+
+### Summary
+`.learnings` 只能追加记录，初始化或记录学习时不得覆盖既有内容。
+
+### Details
+用户纠正：`.learnings` 里的内容应该是追加，而不是覆盖。此前初始化命令对已存在的 `LEARNINGS.md`、`ERRORS.md`、`FEATURE_REQUESTS.md` 写入了默认头部，导致既有学习和错误记录被替换。正确做法是先检测文件是否存在；已存在时只追加新的学习条目，不重写文件头或历史内容。
+
+### Suggested Action
+后续使用 self-improvement 时：
+1. 先检查 `.learnings` 文件是否存在；
+2. 已存在的文件不写默认模板；
+3. 新学习只追加到对应文件末尾；
+4. 若误覆盖，立即用 git diff 确认并恢复，再重新追加。
+
+### Metadata
+- Source: user_feedback
+- Related Files: .learnings/LEARNINGS.md, .learnings/ERRORS.md, .learnings/FEATURE_REQUESTS.md
+- Tags: self-improvement, learnings, append-only, data-preservation
+- Pattern-Key: learnings.append_not_overwrite
+- Recurrence-Count: 1
+- First-Seen: 2026-05-06
+- Last-Seen: 2026-05-06
+
+### Resolution
+- **Resolved**: 2026-05-06T14:31:00+08:00
+- **Commit/PR**: n/a
+- **Notes**: 已恢复被覆盖的 `.learnings` 文件内容，并改为仅追加本次学习记录。

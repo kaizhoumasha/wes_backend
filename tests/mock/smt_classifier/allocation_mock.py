@@ -139,15 +139,27 @@ class AllocationSimulator:
         return response
 
     def _build_target_bin(self, request: AllocationRequest, request_count: int) -> JsonDict:
+        bin_id = f"BIN-{100 + request_count}"
+        reel_diameter = request.reel_diameter or "15inch"
+        is_large_reel = "13" in str(reel_diameter) or "15" in str(reel_diameter)
+        bin_type = "3格箱" if is_large_reel else "6格箱"
+        cell_suffix = "7" if is_large_reel else str((request_count - 1) % 6 + 1)
+        rack_id = f"NHW-1CLJ-{request_count:04d}"
+        rack_slot_code = ("A", "B", "C", "D")[(request_count - 1) % 4]
+        rack_slot_side = "1" if rack_slot_code in {"C", "D"} else "0"
         return {
             "station_location_id": "STATION_OUTPUT1",
-            "rack_id": f"RACK_{request_count:03d}",
-            "bin_id": f"BIN_{100 + request_count}",
-            "bin_type": "三格箱",
-            "bin_cell_location": str(request_count),
+            "rack_id": rack_id,
+            "rack_slot_code": rack_slot_code,
+            "rack_slot_location_code": f"{rack_id}-1{rack_slot_code}-{rack_slot_side}",
+            "bin_id": bin_id,
+            "bin_orientation_code": f"{bin_id}-A",
+            "bin_type": bin_type,
+            "bin_cell_location": f"{bin_id}-{cell_suffix}",
+            "bin_cell_index": cell_suffix,
             "reel_layer": "15",
             "reel_thickness": request.reel_thickness or "20",
-            "reel_diameter": request.reel_diameter or "15inch",
+            "reel_diameter": reel_diameter,
             "reel_totalthickness": "300",
         }
 

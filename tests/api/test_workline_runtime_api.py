@@ -40,10 +40,11 @@ def _permission_names(module, path: str, method: str) -> list[str]:
 class TestWorklineRuntimeRoutePermissions:
     def test_trace_routes_require_workline_list_permission(self) -> None:
         assert _permission_names(trace_module, "/request/{request_id}", "GET") == ["biz:workline:list"]
-        assert _permission_names(trace_module, "/correlation/{correlation_id}", "GET") == ["biz:workline:list"]
+        assert _permission_names(trace_module, "/trace/{trace_id}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/session/{session_id}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/command/{command_code}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/dispatch/{dispatch_key}", "GET") == ["biz:workline:list"]
+        assert _permission_names(trace_module, "/exchange/{exchange_request_code}", "GET") == ["biz:workline:list"]
         assert _permission_names(trace_module, "/query", "POST") == ["biz:workline:list"]
 
     def test_runtime_routes_require_expected_permissions(self) -> None:
@@ -60,12 +61,14 @@ class TestWorklineTraceApi:
         from src.app.workline.v1.trace import get_trace_by_request_id
 
         trace_result = SimpleNamespace(
-            trace=_TraceContextStub(request_id="req-001", correlation_id="corr-001"),
+            trace=_TraceContextStub(request_id="req-001", trace_id="trace-001"),
             callback_logs=[],
             inboxes=[],
             session=None,
+            sessions=[],
             commands=[],
             outboxes=[],
+            dispatch_attempts=[],
             timelines=[],
             diagnostics=[],
         )
@@ -97,6 +100,47 @@ class TestWorklineTraceApi:
         mock_get_trace_list.assert_awaited_once_with(AnyArgHashable(), payload)
         assert response["data"].total == 1
 
+    @pytest.mark.asyncio
+    async def test_get_trace_by_exchange_request_code_uses_trace_query_service(self) -> None:
+        from src.app.workline.v1.trace import get_trace_by_exchange_request_code
+
+        trace_result = SimpleNamespace(
+            trace=_TraceContextStub(
+                trace_id="trace-001",
+                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
+            ),
+            callback_logs=[],
+            inboxes=[],
+            session=None,
+            sessions=[],
+            commands=[],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=[],
+            diagnostics=[],
+            resource_state_events=[],
+            rack_releases=[],
+            rack_release_bin_snapshots=[],
+            full_box_exchange_tasks=[],
+            wms_writeback_evidence=[],
+            rack_bin_mounts=[],
+        )
+
+        with patch(
+            "src.app.workline.v1.trace.trace_query_service.by_exchange_request_code",
+            new=AsyncMock(return_value=trace_result),
+        ) as mock_by_exchange_request_code:
+            response = await get_trace_by_exchange_request_code(
+                "external:smt:release-001:FULL_BIN_EXCHANGE",
+                db=AsyncMock(),
+            )
+
+        mock_by_exchange_request_code.assert_awaited_once_with(
+            AnyArgHashable(),
+            "external:smt:release-001:FULL_BIN_EXCHANGE",
+        )
+        assert response["data"].trace.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
+
 
 def test_trace_callback_log_item_allows_null_updated_at() -> None:
     from datetime import datetime
@@ -106,9 +150,9 @@ def test_trace_callback_log_item_allows_null_updated_at() -> None:
     item = TraceCallbackLogItem(
         id=1,
         callback_type="event",
-        device_id="ARM01",
+        subject_code="ARM01",
         request_id="req-001",
-        correlation_id="corr-001",
+        trace_id="trace-001",
         response_status=200,
         response_time_ms=12,
         error_message=None,
@@ -134,9 +178,9 @@ class TestWorklineRuntimeApi:
             "src.app.workline.v1.runtime.runtime_query_service.get_overview",
             new=AsyncMock(return_value=result),
         ) as mock_get_overview:
-            response = await get_runtime_overview(db=AsyncMock())
+            response = await get_runtime_overview(db=AsyncMock(), include_sim=False)
 
-        mock_get_overview.assert_awaited_once_with(AnyArgHashable())
+        mock_get_overview.assert_awaited_once_with(AnyArgHashable(), include_sim=False)
         assert response["data"].stats == []
 
     @pytest.mark.asyncio
@@ -242,11 +286,10 @@ class TestRuntimeQueryService:
         session_a = SimpleNamespace(
             id=11,
             session_code="S11",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
-            step_code=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -257,11 +300,10 @@ class TestRuntimeQueryService:
         session_b = SimpleNamespace(
             id=12,
             session_code="S12",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=5,
             status="RUNNING",
-            step_code=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -287,6 +329,51 @@ class TestRuntimeQueryService:
         assert result.items == trace_items
         mock_items.assert_awaited_once_with(AnyArgHashable(), [session_a, session_b])
 
+    def test_build_trace_list_item_exposes_operator_business_identity(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        session = SimpleNamespace(
+            id=11,
+            session_code="S11",
+            trace_id="trace-11",
+            last_request_id=None,
+            business_key="stable-key-11",
+            barcode=None,
+            context_json={
+                "initial_payload": {
+                    "data": {
+                        "PkgID": "SVYU00125TP4LCR02_9",
+                        "HHPN": "620100L00-011-G",
+                    }
+                }
+            },
+            workline_id=5,
+            status="FAILED",
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=None,
+            last_ingress_at=None,
+            deadline_at=None,
+        )
+        workline = SimpleNamespace(line_name="SMT 线", line_code="WL-5")
+
+        item = service._build_trace_list_item(
+            session,
+            workline,
+            None,
+            None,
+            None,
+            now,
+            latest_device=None,
+            action_source="NONE",
+        )
+
+        assert item.business_key == "stable-key-11"
+        assert item.barcode == "SVYU00125TP4LCR02_9"
+
     @pytest.mark.asyncio
     async def test_get_overview_uses_failure_count_query_instead_of_recent_list_length(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
@@ -300,6 +387,7 @@ class TestRuntimeQueryService:
             patch.object(service, "list_devices", new=AsyncMock(return_value=[])),
             patch.object(service, "_load_recent_failed_sessions", new=AsyncMock(return_value=recent_failed_sessions)),
             patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_simulation_workline_ids", new=AsyncMock(return_value=[99])) as mock_sim_ids,
             patch.object(service, "_count_by_status", new=AsyncMock(side_effect=[7, 9, 10])),
             patch.object(service, "_count_waiting_sessions", new=AsyncMock(return_value=8), create=True),
             patch.object(
@@ -311,7 +399,8 @@ class TestRuntimeQueryService:
         ):
             result = await service.get_overview(db)
 
-        mock_failed_count.assert_awaited_once_with(AnyArgHashable())
+        mock_sim_ids.assert_awaited_once_with(AnyArgHashable())
+        mock_failed_count.assert_awaited_once_with(AnyArgHashable(), exclude_workline_ids=[99])
         failed_card = next(item for item in result.stats if item.key == "failed_sessions")
         assert failed_card.value == 42
 
@@ -328,9 +417,13 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
+            run_mode="AUTO",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
         )
         timed_out_session = SimpleNamespace(
             status="WAITING_EXTERNAL",
@@ -359,9 +452,13 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
+            run_mode="AUTO",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
         )
         running_session = SimpleNamespace(
             status="RUNNING",
@@ -386,6 +483,37 @@ class TestRuntimeQueryService:
         assert summary.waiting_session_count == 1
         assert summary.failed_session_count == 0
 
+    def test_build_workline_summary_exposes_safety_projection(self) -> None:
+        from src.app.workline.models.safety import WorkLineRuntimeStatus
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        stopped_at = timezone.now_for_db()
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=5,
+            line_code="WL-05",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            is_active=True,
+            run_mode="AUTO",
+            runtime_status=WorkLineRuntimeStatus.ESTOPPED,
+            active_safety_incident_id=1001,
+            stopped_at=stopped_at,
+            stopped_reason="ESTOP_PRESSED",
+            resumed_at=None,
+        )
+
+        summary = service._build_workline_summary(workline, [], [])
+
+        assert summary.runtime_status == WorkLineRuntimeStatus.ESTOPPED.value
+        assert summary.active_safety_incident_id == 1001
+        assert summary.stopped_at == stopped_at
+        assert summary.stopped_reason == "ESTOP_PRESSED"
+        assert summary.resumed_at is None
+
     def test_build_workline_summary_requires_persisted_workline(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
@@ -398,8 +526,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
         )
 
@@ -455,9 +581,9 @@ class TestRuntimeQueryService:
         callback_log = SimpleNamespace(
             id=None,
             callback_type="event",
-            device_id="ARM-01",
+            subject_code="ARM-01",
             request_id=None,
-            correlation_id=None,
+            trace_id=None,
             response_status=200,
             response_time_ms=15,
             error_message=None,
@@ -479,7 +605,7 @@ class TestRuntimeQueryService:
             id=None,
             device_id=1,
             command_code="CMD-01",
-            correlation_id=None,
+            trace_id=None,
             workline_id=8,
             session_id="9",
             task_type="MOVE",
@@ -492,7 +618,6 @@ class TestRuntimeQueryService:
             ack_code=None,
             ack_message=None,
             ack_trace_id=None,
-            step_code=None,
             params={},
             result_data=None,
             error_detail=None,
@@ -509,11 +634,10 @@ class TestRuntimeQueryService:
         session = SimpleNamespace(
             id=None,
             session_code="S-01",
-            correlation_id=None,
+            trace_id=None,
             last_request_id=None,
             workline_id=8,
             status="RUNNING",
-            step_code=None,
             current_wait_type=None,
             failure_domain=None,
             failure_code=None,
@@ -523,7 +647,275 @@ class TestRuntimeQueryService:
         )
 
         with pytest.raises(ValueError, match=r"session\.id"):
-            service._build_trace_list_item(session, None, None, None, None, timezone.now_for_db())
+            service._build_trace_list_item(
+                session,
+                None,
+                None,
+                None,
+                None,
+                timezone.now_for_db(),
+                latest_device=None,
+                action_source="NONE",
+            )
+
+    def test_build_trace_response_preserves_diagnostic_context(self) -> None:
+        from src.app.workline.services.trace_response_builder import build_trace_response
+        from src.workline_runtime.diagnostics import DiagnosticContext
+
+        result = SimpleNamespace(
+            trace=_TraceContextStub(request_id="req-001", trace_id="trace-001"),
+            session=None,
+            sessions=[],
+            callback_logs=[],
+            inboxes=[],
+            commands=[],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=[],
+            diagnostics=[
+                DiagnosticContext(
+                    request_id="req-001",
+                    trace_id="trace-001",
+                    session_id=21,
+                    inbox_id=31,
+                    command_code="CMD-001",
+                    device_code="ARM01",
+                    workline_id=45,
+                    plugin_key="smt_classifier",
+                    canonical_event_type="SCAN_COMPLETED",
+                    transition="WAITING->RUNNING",
+                    extra={"source": "session_snapshot"},
+                )
+            ],
+        )
+
+        response = build_trace_response(result)
+
+        assert response.diagnostics[0].request_id == "req-001"
+        assert response.diagnostics[0].trace_id == "trace-001"
+        assert response.diagnostics[0].session_id == 21
+        assert response.diagnostics[0].inbox_id == 31
+        assert response.diagnostics[0].command_code == "CMD-001"
+        assert response.diagnostics[0].device_code == "ARM01"
+        assert response.diagnostics[0].workline_id == 45
+        assert response.diagnostics[0].plugin_key == "smt_classifier"
+        assert response.diagnostics[0].canonical_event_type == "SCAN_COMPLETED"
+        assert response.diagnostics[0].transition == "WAITING->RUNNING"
+        assert response.diagnostics[0].extra == {"source": "session_snapshot"}
+
+    def test_build_trace_path_groups_timelines_by_owner(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        session = SimpleNamespace(
+            id=20,
+            workline_id=45,
+            current_wait_type=None,
+            awaiting_command_id=None,
+            failure_domain=None,
+            failure_message=None,
+        )
+        command = SimpleNamespace(
+            id=101,
+            device_id=301,
+            device_code="ARM01",
+            command_code="CMD-101",
+            task_type="MOVE",
+            status="COMPLETED",
+            result="SUCCESS",
+            completed_at=now,
+            sent_at=now,
+        )
+        inbox = SimpleNamespace(
+            id=201,
+            device_id=302,
+            device_code="SCAN01",
+            kind="DEVICE_EVENT",
+            status="PROCESSED",
+            processed_at=now,
+            received_at=now,
+            error_message=None,
+        )
+
+        def timeline(**overrides):
+            defaults = {
+                "id": 1,
+                "session_id": 20,
+                "workline_id": 45,
+                "trace_id": "trace-20",
+                "seq_no": 1,
+                "occurred_at": now,
+                "stage": "INGEST",
+                "action_type": "EVENT_RECEIVED",
+                "actor_type": "ORCHESTRATOR",
+                "actor_code": "runtime",
+                "from_status": None,
+                "to_status": None,
+                "status": "SUCCESS",
+                "failure_domain": None,
+                "message": None,
+                "payload_json": {},
+                "related_inbox_id": None,
+                "related_command_id": None,
+            }
+            defaults.update(overrides)
+            return SimpleNamespace(**defaults)
+
+        timelines = [
+            timeline(
+                id=1,
+                seq_no=1,
+                action_type="EVENT_RECEIVED",
+                actor_type="MANUAL_OPERATOR",
+                actor_code="sandbox",
+                related_command_id=None,
+                related_inbox_id=None,
+                payload_json={"trigger": "sandbox_event_submit"},
+            ),
+            timeline(
+                id=2,
+                seq_no=2,
+                action_type="SESSION_CREATED",
+                actor_type="ORCHESTRATOR",
+                actor_code="runtime",
+                related_command_id=None,
+                related_inbox_id=None,
+                payload_json={},
+            ),
+            timeline(
+                id=3,
+                seq_no=3,
+                action_type="COMMAND_COMPLETED",
+                actor_type="DEVICE",
+                actor_code="ARM01",
+                related_command_id=101,
+                related_inbox_id=None,
+                payload_json={},
+            ),
+            timeline(
+                id=4,
+                seq_no=4,
+                action_type="EVENT_PROCESSED",
+                actor_type="DEVICE",
+                actor_code="SCAN01",
+                related_command_id=None,
+                related_inbox_id=201,
+                payload_json={},
+            ),
+            timeline(
+                id=5,
+                seq_no=5,
+                action_type="EXTERNAL_CALL_COMPLETED",
+                actor_type="EXTERNAL_SYSTEM",
+                actor_code="erp",
+                related_command_id=None,
+                related_inbox_id=None,
+                payload_json={},
+            ),
+        ]
+        result = SimpleNamespace(
+            trace=SimpleNamespace(trace_id="trace-20"),
+            session=session,
+            commands=[command],
+            inboxes=[inbox],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=timelines,
+            sessions=[],
+            callback_logs=[],
+            diagnostics=[],
+        )
+
+        with patch("src.app.workline.services.runtime_query_service.build_trace_response", return_value=None):
+            path = service._build_trace_path(result)
+
+        groups = {group.group_key: group for group in path.timeline_groups}
+
+        assert [event.id for event in groups["operator:sandbox"].events] == [1]
+        assert [event.id for event in groups["orchestrator:session"].events] == [2]
+        assert [event.id for event in groups["device:301"].events] == [3]
+        assert [event.id for event in groups["device:302"].events] == [4]
+        assert [event.id for event in groups["external:erp"].events] == [5]
+
+    def test_build_trace_path_uses_canonical_device_identity_for_timeline_groups(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        session = SimpleNamespace(
+            id=20,
+            workline_id=45,
+            current_wait_type=None,
+            awaiting_command_id=None,
+            failure_domain=None,
+            failure_message=None,
+        )
+        command = SimpleNamespace(
+            id=101,
+            device_id=39,
+            command_code="CMD-101",
+            task_type="MOVE",
+            status="COMPLETED",
+            result="SUCCESS",
+            completed_at=now,
+            sent_at=now,
+        )
+        device = SimpleNamespace(
+            id=39,
+            device_code="ARM03",
+            device_name="右侧进料机械臂",
+        )
+
+        def timeline(**overrides):
+            defaults = {
+                "id": 1,
+                "session_id": 20,
+                "workline_id": 45,
+                "trace_id": "trace-20",
+                "seq_no": 1,
+                "occurred_at": now,
+                "stage": "INGEST",
+                "action_type": "COMMAND_SENT",
+                "actor_type": "DEVICE",
+                "actor_code": "ARM03",
+                "from_status": None,
+                "to_status": None,
+                "status": "SUCCESS",
+                "failure_domain": None,
+                "message": None,
+                "payload_json": {},
+                "related_inbox_id": None,
+                "related_command_id": None,
+            }
+            defaults.update(overrides)
+            return SimpleNamespace(**defaults)
+
+        result = SimpleNamespace(
+            trace=SimpleNamespace(trace_id="trace-20"),
+            session=session,
+            commands=[command],
+            inboxes=[],
+            outboxes=[],
+            dispatch_attempts=[],
+            timelines=[
+                timeline(id=1, related_command_id=101),
+                timeline(id=2, related_command_id=None, actor_code="ARM03"),
+            ],
+            sessions=[],
+            callback_logs=[],
+            diagnostics=[],
+        )
+
+        with patch("src.app.workline.services.runtime_query_service.build_trace_response", return_value=None):
+            path = service._build_trace_path(result, devices=[device])
+
+        groups = {group.group_key: group for group in path.timeline_groups}
+
+        assert list(groups) == ["device:39"]
+        assert groups["device:39"].display_name == "右侧进料机械臂"
+        assert groups["device:39"].device_code == "ARM03"
+        assert [event.id for event in groups["device:39"].events] == [1, 2]
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_returns_none_for_soft_deleted_workline(self) -> None:
@@ -539,8 +931,6 @@ class TestRuntimeQueryService:
             zone_name=None,
             plugin_key=None,
             contract_version=None,
-            owner_team=None,
-            support_contact=None,
             is_active=True,
         )
         db = AsyncMock()
@@ -560,6 +950,74 @@ class TestRuntimeQueryService:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_workline_detail_returns_recent_completed_traces(self) -> None:
+        from src.app.workline.models.runtime import RuntimeTraceListItem
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        now = timezone.now_for_db()
+        completed_session = SimpleNamespace(
+            id=20,
+            status="COMPLETED",
+            last_ingress_at=None,
+            waiting_since=None,
+            ended_at=now,
+            started_at=now - timedelta(minutes=5),
+            created_at=now - timedelta(minutes=6),
+        )
+        completed_trace = RuntimeTraceListItem(
+            session_id=20,
+            session_code="SES-20",
+            workline_id=45,
+            status="COMPLETED",
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        async def build_trace_items(_db, sessions):
+            if sessions == [completed_session]:
+                return [completed_trace]
+            return []
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(
+                service,
+                "_load_recent_completed_sessions_for_workline",
+                new=AsyncMock(return_value=[completed_session]),
+                create=True,
+            ) as mock_completed_sessions,
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(side_effect=build_trace_items)),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        mock_completed_sessions.assert_awaited_once_with(AnyArgHashable(), 45, limit=10)
+        assert result is not None
+        assert result.recent_completed_traces == [completed_trace]
+
+    @pytest.mark.asyncio
     async def test_load_active_sessions_for_device_queries_sessions_directly(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
@@ -570,8 +1028,10 @@ class TestRuntimeQueryService:
 
         result = await service._load_active_sessions_for_device(db, device_id=9, limit=10)
 
+        executed_query = db.execute.await_args.args[0]
         assert result == [active_session]
         assert db.execute.await_count == 1
+        assert "session_id_int" in str(executed_query)
 
     @pytest.mark.asyncio
     async def test_load_latest_command_by_session_uses_window_query(self) -> None:
@@ -579,7 +1039,7 @@ class TestRuntimeQueryService:
 
         service = RuntimeQueryService()
         db = AsyncMock()
-        latest_command = SimpleNamespace(id=2, session_id="11")
+        latest_command = SimpleNamespace(id=2, session_id="SES-11", session_id_int=11)
         db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [latest_command]))
 
         result = await service._load_latest_command_by_session(db, [11])

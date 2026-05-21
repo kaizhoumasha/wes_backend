@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
 
 def canonicalize_event_type(event_type: str, *, workline: Any | None = None) -> str:

@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+import hashlib
+import json
+from collections.abc import Mapping
+from typing import Any, cast
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
-from src.workline_runtime.contracts import DeviceErrorCode, SixInOne
+from src.app.resource.services import SmtRackBinSchedulingService
+from src.workline_runtime.contracts import SixInOne
+from src.workline_runtime.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    material_identity_input_to_hash,
+)
+from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
+from src.workline_runtime.utils import non_empty_str
+
+_SCAN_COMPLETED_EVENT = "SCAN_COMPLETED"
+WMS_RACK_EXCHANGE_PROGRESS = "WMS_RACK_EXCHANGE_PROGRESS"
+WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
+WMS_RACK_EXCHANGE_FAILED = "WMS_RACK_EXCHANGE_FAILED"
+INSPECTION_SIZE_NG_REASON = "INSPECTION_SIZE_NG"
+INSPECTION_THICKNESS_NG_REASON = "INSPECTION_THICKNESS_NG"
+INSPECTION_NG_REASONS = frozenset({INSPECTION_SIZE_NG_REASON, INSPECTION_THICKNESS_NG_REASON})
 
 
 def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
@@ -15,7 +35,8 @@ def _normalize_contract_data(payload: Any, **extra_fields: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
 
-    normalized = normalize_six_in_one_payload(payload) or {}
+    payload_map = cast("dict[str, Any]", payload)
+    normalized: dict[str, Any] = normalize_six_in_one_payload(payload_map) or {}
     normalized.update(extra_fields)
     return normalized
 
@@ -47,12 +68,167 @@ def parse_six_in_one_payload(payload: dict[str, Any] | None) -> SixInOne | None:
     return six_in_one if six_in_one.has_any_value else None
 
 
+def _build_incomplete_scan_business_key(payload_json: dict[str, Any], six_in_one: SixInOne) -> str | None:
+    """为缺 PkgID 的扫码事件生成稳定会话键，让插件能执行 NG 分流。"""
+
+    event_type = non_empty_str(payload_json.get("canonical_event_type"))
+    if event_type is None:
+        event_type = non_empty_str(payload_json.get("event_type"))
+    if event_type != _SCAN_COMPLETED_EVENT:
+        return None
+
+    device_code = non_empty_str(payload_json.get("device_code"))
+    if device_code is None:
+        return None
+
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else {}
+    event_identity = payload_json.get("event_id") or data.get("event_id") or data.get("vendor_event_id")
+    business_fields: dict[str, Any] = {field: value for field, value in six_in_one.iter_business_fields() if value}
+    identity_payload: dict[str, Any] = {
+        "device_code": device_code,
+        "event_type": event_type,
+        "fields": business_fields,
+    }
+    if event_identity:
+        identity_payload["event_identity"] = event_identity
+    serialized = json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    return f"incomplete-scan:{digest}"
+
+
 def resolve_smt_business_key(payload_json: dict[str, Any]) -> str | None:
     """从 SMT 事件包络中解析稳定业务键。"""
 
-    data = payload_json.get("data")
-    six_in_one = parse_six_in_one_payload(data if isinstance(data, dict) else None)
-    return six_in_one.business_key if six_in_one and six_in_one.business_key else None
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] | None = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else None
+    six_in_one = parse_six_in_one_payload(data)
+    if six_in_one is None:
+        return None
+    if six_in_one.business_key:
+        return six_in_one.business_key
+    return _build_incomplete_scan_business_key(payload_json, six_in_one)
+
+
+def _payload_data(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    raw_data = payload.get("data")
+    if isinstance(raw_data, dict):
+        return cast("dict[str, Any]", raw_data)
+    return dict(payload)
+
+
+def _normalized_material_display(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    normalized = normalize_six_in_one_payload(_payload_data(payload)) or {}
+    return {key: value for key, value in normalized.items() if value not in (None, "")}
+
+
+def _pkg_id_candidates(input_value: MaterialIdentityInput) -> list[str]:
+    candidates: list[str] = []
+    for payload in (
+        input_value.material_scan_payload,
+        input_value.source_payload,
+        input_value.command_payload,
+        input_value.session_context,
+        input_value.plugin_context,
+    ):
+        pkg_id = non_empty_str(_normalized_material_display(payload).get("PkgID"))
+        if pkg_id is not None:
+            candidates.append(pkg_id)
+    return candidates
+
+
+def resolve_smt_material_identity(input_value: MaterialIdentityInput) -> MaterialIdentity:
+    """Resolve SMT material identity from plugin-owned SixInOne evidence."""
+
+    evidence_hash = material_identity_input_to_hash(input_value)
+    unique_pkg_ids: tuple[str, ...] = tuple(dict.fromkeys(_pkg_id_candidates(input_value)))
+    if not unique_pkg_ids:
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.MISSING,
+            raw_evidence_hash=evidence_hash,
+        )
+    if len(unique_pkg_ids) > 1:
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.AMBIGUOUS,
+            display={"PkgID_candidates": list(unique_pkg_ids)},
+            raw_evidence_hash=evidence_hash,
+        )
+
+    pkg_id = next(iter(unique_pkg_ids))
+    display: dict[str, Any] = {"PkgID": pkg_id}
+    for payload in (
+        input_value.source_payload,
+        input_value.material_scan_payload,
+        input_value.command_payload,
+        input_value.session_context,
+        input_value.plugin_context,
+    ):
+        display.update(_normalized_material_display(payload))
+    display["PkgID"] = pkg_id
+    return MaterialIdentity(
+        resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+        idempotency_key=f"smt:{pkg_id}",
+        business_key=pkg_id,
+        display=display,
+        raw_evidence_hash=evidence_hash,
+    )
+
+
+def smt_ng_reason_catalog() -> tuple[NgReasonDefinition, ...]:
+    """Map SMT business-decision reason codes into the canonical NG taxonomy."""
+
+    return (
+        NgReasonDefinition(
+            canonical_code="SCAN_NG",
+            label="扫码异常",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=("SCAN_NG",),
+        ),
+        NgReasonDefinition(
+            canonical_code="SCAN_NG_BY_RULE",
+            label="扫码规则判定 NG",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=("SCAN_NG_BY_RULE",),
+        ),
+        NgReasonDefinition(
+            canonical_code=INSPECTION_SIZE_NG_REASON,
+            label="尺寸检测异常",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=(INSPECTION_SIZE_NG_REASON,),
+        ),
+        NgReasonDefinition(
+            canonical_code=INSPECTION_THICKNESS_NG_REASON,
+            label="厚度检测异常",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=(INSPECTION_THICKNESS_NG_REASON,),
+        ),
+        NgReasonDefinition(
+            canonical_code="BARCODE_INVALID",
+            label="条码无效",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=("BARCODE_INVALID",),
+        ),
+        NgReasonDefinition(
+            canonical_code="BARCODE_INCOMPLETE",
+            label="条码不完整",
+            source=NgReasonSource.PLUGIN,
+            plugin_key="smt_classifier",
+            contract_version="1.0",
+            maps_from=("BARCODE_INCOMPLETE",),
+        ),
+    )
 
 
 def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
@@ -62,19 +238,18 @@ def classify_smt_command_result(payload_json: dict[str, Any]) -> str | None:
     """
 
     result = str(payload_json.get("result") or "").strip().upper()
-    data = payload_json.get("data") if isinstance(payload_json.get("data"), dict) else {}
-    error_detail = payload_json.get("error_detail") if isinstance(payload_json.get("error_detail"), dict) else {}
+    raw_data = payload_json.get("data")
+    data: dict[str, Any] = cast("dict[str, Any]", raw_data) if isinstance(raw_data, dict) else {}
+    raw_error_detail = payload_json.get("error_detail")
+    error_detail: dict[str, Any] = (
+        cast("dict[str, Any]", raw_error_detail) if isinstance(raw_error_detail, dict) else {}
+    )
 
     inspection_result = str(data.get("inspection_result") or "").strip().upper()
     if result == "SUCCESS" and inspection_result == "NG":
         return "business_decision"
 
     error_code = error_detail.get("error_code") or error_detail.get("code")
-    if error_code in {
-        DeviceErrorCode.INSPECTION_SIZE_NG.value,
-        DeviceErrorCode.INSPECTION_THICKNESS_NG.value,
-    }:
-        return "business_decision"
     if error_code:
         return "hardware_failure"
 
@@ -96,12 +271,12 @@ def build_move_forward_params(pkg_id: str) -> dict[str, str]:
 def build_pick_scan_ng_params(*, barcode: str, location: str) -> dict[str, str]:
     """构造扫码 NG 分流命令业务参数。"""
 
+    # 保留 location 入参兼容插件调用；实际点位由硬件 mock 按平台类型解析。
+    _ = location
     return {
         "barcode": barcode,
         "source_type": "INPUT_PLATFORM",
         "target_type": "NG_PLATFORM",
-        "source_loc": location,
-        "target_loc": "STATION_NG_PLATFORM1",
     }
 
 
@@ -128,20 +303,22 @@ def build_output_to_bin_params(
         "reel_diameter": reel_diameter,
         "target_type": "BIN",
         "target_loc": bin_location["bin_id"],
+        "rack_id": bin_location["rack_id"],
+        "rack_slot_code": bin_location["rack_slot_code"],
+        "rack_slot_location_code": bin_location["rack_slot_location_code"],
+        "bin_id": bin_location["bin_id"],
+        "bin_orientation_code": bin_location["bin_orientation_code"],
         "bin_type": bin_location["bin_type"],
+        "bin_cell_location": bin_location["bin_cell_location"],
+        "bin_cell_index": bin_location["bin_cell_index"],
     }
 
 
 def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
-    """构造无外部分配服务时的确定性料箱分配结果。"""
+    """兼容旧调用：实际料箱调度逻辑已收敛到领域服务。"""
 
-    checksum = sum(ord(char) for char in pkg_id) or 1
-    bin_types = ("三格箱", "五格箱", "九格箱")
-    return {
-        "bin_id": f"BIN_{checksum % 900 + 100}",
-        "bin_type": bin_types[checksum % len(bin_types)],
-        "bin_cell_location": str(checksum % 9 + 1),
-    }
+    allocation = SmtRackBinSchedulingService().allocate(pkg_id)
+    return {key: str(value) for key, value in allocation.items()}
 
 
 class ScanEventData(SixInOne, BaseModel):
@@ -152,14 +329,15 @@ class ScanEventData(SixInOne, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_payload(cls, data: Any) -> Any:
-        return _normalize_contract_data(data, location=data.get("location") if isinstance(data, dict) else None)
+        data_map = cast("dict[str, Any]", data) if isinstance(data, dict) else None
+        return _normalize_contract_data(data, location=data_map.get("location") if data_map is not None else None)
 
 
 class ScanEventPayload(BaseModel):
     """扫码完成事件 Payload。"""
 
     device_code: str
-    event_type: str = Field(default="SCAN_COMPLETED")
+    event_type: str = Field(default=_SCAN_COMPLETED_EVENT)
     timestamp: int | None = Field(default=None)
     data: ScanEventData | None = Field(default=None)
 
@@ -172,16 +350,23 @@ class MeasurementResultData(SixInOne, BaseModel):
 
     reel_diameter: float | None = Field(default=None, description="料盘直径测量值")
     reel_thickness: float | None = Field(default=None, description="料盘厚度测量值")
+    inspection_result: str | None = Field(default=None, description="检测结果：OK/NG")
+    reason_code: str | None = Field(default=None, description="业务 NG 原因码")
+    reason_message: str | None = Field(default=None, description="业务 NG 原因说明")
 
     @model_validator(mode="before")
     @classmethod
     def _normalize_payload(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        data_map = cast("dict[str, Any]", data)
         return _normalize_contract_data(
-            data,
-            reel_diameter=data.get("reel_diameter"),
-            reel_thickness=data.get("reel_thickness"),
+            data_map,
+            reel_diameter=data_map.get("reel_diameter"),
+            reel_thickness=data_map.get("reel_thickness"),
+            inspection_result=data_map.get("inspection_result"),
+            reason_code=data_map.get("reason_code") or data_map.get("ng_reason"),
+            reason_message=data_map.get("reason_message") or data_map.get("ng_message"),
         )
 
 
@@ -209,6 +394,9 @@ class EStopEventPayload(BaseModel):
 
 
 __all__ = [
+    "WMS_RACK_ARRIVED",
+    "WMS_RACK_EXCHANGE_FAILED",
+    "WMS_RACK_EXCHANGE_PROGRESS",
     "EStopEventPayload",
     "MeasurementResultData",
     "PickPlaceResultData",
@@ -224,4 +412,6 @@ __all__ = [
     "normalize_six_in_one_payload",
     "parse_six_in_one_payload",
     "resolve_smt_business_key",
+    "resolve_smt_material_identity",
+    "smt_ng_reason_catalog",
 ]

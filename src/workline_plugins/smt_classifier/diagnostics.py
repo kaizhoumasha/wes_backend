@@ -19,17 +19,17 @@ class SmtPluginDiagnosticResult(BaseModel):
     normalized_input: dict[str, Any]
     parsed_context: SmtClassifierContext
     selected_handler: str | None = None
-    plugin_result: Any
+    runtime_intents: Any
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-def _make_inbox(payload_json: dict[str, Any], *, kind: str, correlation_id: str | None = None) -> Any:
+def _make_inbox(payload_json: dict[str, Any], *, kind: str, trace_id: str | None = None) -> Any:
     return SimpleNamespace(
         id=None,
         kind=SimpleNamespace(value=kind),
         payload_json=payload_json,
-        correlation_id=correlation_id,
+        trace_id=trace_id,
     )
 
 
@@ -87,13 +87,13 @@ async def diagnose_smt_payload(
 ) -> SmtPluginDiagnosticResult:
     """诊断单条 SMT payload 会如何被插件解释。
 
-    该入口只覆盖 handler / context / 状态机解释，不替代 WORKLINE 级 sandbox 调试。
+    该入口只覆盖 handler / context / RuntimeIntent 解释，不替代 WORKLINE 级 sandbox 调试。
     """
 
-    inbox = _make_inbox(payload_json, kind=kind, correlation_id=getattr(ctx, "correlation_id", None))
+    inbox = _make_inbox(payload_json, kind=kind, trace_id=getattr(ctx, "trace_id", None))
     normalized_input = normalize_inbox_input(
         inbox,
-        correlation_id=getattr(ctx, "correlation_id", None) or "",
+        trace_id=getattr(ctx, "trace_id", None) or "",
         plugin_key=getattr(plugin, "plugin_key", None),
     )
     ctx.normalized_input = normalized_input
@@ -102,16 +102,16 @@ async def diagnose_smt_payload(
     selected_handler: str | None
     if kind == "COMMAND_RESULT":
         selected_handler = _select_command_handler(plugin, normalized_input, payload_json)
-        plugin_result = await plugin.on_command_result(ctx, inbox)
+        runtime_intents = await plugin.on_command_result(ctx, inbox)
     else:
         selected_handler = _select_event_handler(plugin, normalized_input, payload_json)
-        plugin_result = await plugin.on_device_event(ctx, inbox)
+        runtime_intents = await plugin.on_device_event(ctx, inbox)
 
     return SmtPluginDiagnosticResult(
         normalized_input=normalized_input.model_dump(),
         parsed_context=parsed_context,
         selected_handler=selected_handler,
-        plugin_result=plugin_result,
+        runtime_intents=runtime_intents,
     )
 
 

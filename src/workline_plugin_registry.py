@@ -25,13 +25,6 @@ class WorklinePluginDefinition:
         return getattr(import_module(self.plugin_module), self.plugin_class_name)
 
     @property
-    def state_machine_class(self) -> type[Any] | None:
-        """惰性解析插件声明的状态机类。"""
-
-        state_machine_class = self.manifest.state_machine_class
-        return state_machine_class if isinstance(state_machine_class, type) else None
-
-    @property
     def manifest(self) -> "WorklinePluginManifest":
         """惰性解析插件 manifest。"""
 
@@ -64,6 +57,12 @@ WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
         plugin_class_name="SmtClassifierPlugin",
         contract_module=None,
     ),
+    "smt_full_box_exchange": WorklinePluginDefinition(
+        plugin_key="smt_full_box_exchange",
+        plugin_module="src.workline_plugins.smt_full_box_exchange",
+        plugin_class_name="SmtFullBoxExchangePlugin",
+        contract_module="src.workline_plugins.smt_full_box_exchange.contract",
+    ),
 }
 
 
@@ -73,6 +72,12 @@ def get_workline_plugin_definition(plugin_key: str | None) -> WorklinePluginDefi
     if not plugin_key:
         return None
     return WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
+
+
+def list_workline_plugin_definitions() -> list[WorklinePluginDefinition]:
+    """按插件标识稳定导出已注册插件定义。"""
+
+    return [WORKLINE_PLUGIN_REGISTRY[key] for key in sorted(WORKLINE_PLUGIN_REGISTRY)]
 
 
 def parse_workline_six_in_one(plugin_key: str | None, payload: dict[str, Any] | None) -> Any | None:
@@ -159,6 +164,7 @@ __all__ = [
     "classify_workline_result",
     "get_plugin_contract_version",
     "get_workline_plugin_definition",
+    "list_workline_plugin_definitions",
     "parse_workline_six_in_one",
     "resolve_workline_business_key",
     "validate_workline_plugin_assignment",

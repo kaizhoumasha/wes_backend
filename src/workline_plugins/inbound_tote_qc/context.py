@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
-
-from src.workline_runtime.plugin_state import get_plugin_state, set_plugin_state
-
-from .state_machine import InboundToteQcState
 
 
 class InboundToteQcContext(BaseModel):
     """入库料箱复核插件上下文快照。"""
 
-    plugin_state: str = InboundToteQcState.IDLE
     tote_id: str | None = None
     station_code: str | None = None
     expected_weight_kg: float | None = None
@@ -27,18 +23,14 @@ class InboundToteQcContext(BaseModel):
 
     @classmethod
     def from_mapping(cls, value: Any) -> InboundToteQcContext:
-        raw_context = dict(value) if isinstance(value, dict) else {}
-        raw_context["plugin_state"] = get_plugin_state(raw_context, default=InboundToteQcState.IDLE)
-        return cls.model_validate(raw_context)
+        return cls.model_validate(dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {})
 
     @classmethod
     def from_session(cls, session: Any) -> InboundToteQcContext:
         return cls.from_mapping(getattr(session, "context_json", None))
 
-    def to_patch(self, *, plugin_state: str | None = None, exclude_none: bool = True) -> dict[str, Any]:
-        patch = self.model_dump(exclude_none=exclude_none)
-        set_plugin_state(patch, plugin_state or self.plugin_state)
-        return patch
+    def to_patch(self, *, exclude_none: bool = True) -> dict[str, Any]:
+        return self.model_dump(exclude_none=exclude_none)
 
 
 def parse_inbound_tote_qc_context(ctx: Any) -> InboundToteQcContext:

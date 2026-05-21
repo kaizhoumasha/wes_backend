@@ -64,7 +64,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
         "系统无法匹配当前业务会话，请联系支持人员。",
-        ["检查 business_key / correlation_id 归属逻辑", "核对设备与作业线绑定关系"],
+        ["检查 business_key / trace_id 归属逻辑", "核对设备与作业线绑定关系"],
     ),
     ErrorCode.PLUGIN_EXECUTION_FAILED: (
         Severity.ERROR,
@@ -101,12 +101,33 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "设备响应超时，请检查设备状态和通信链路。",
         ["检查设备响应耗时", "检查 timeout 配置是否合理"],
     ),
-    ErrorCode.OUTBOX_DISPATCH_FAILED: (
-        Severity.ERROR,
+    ErrorCode.OUTBOX_ACK_TIMEOUT: (
+        Severity.WARNING,
         Recoverability.AUTO_RETRYABLE,
         ProblemClass.HARDWARE,
-        "系统向设备或外部系统派发失败。",
-        ["检查派发目标配置", "检查最近 outbox 失败记录"],
+        "设备派发 ACK 未在通信窗口内返回，系统将按同一 command_code 自动重试。",
+        ["检查设备服务网络", "查看 outbox dispatch attempt 失败证据"],
+    ),
+    ErrorCode.CALLBACK_DEADLINE_EXPIRED: (
+        Severity.CRITICAL,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.HARDWARE,
+        "设备已 ACK 但执行结果未按时回传，物理状态未知，需人工对账。",
+        ["现场确认设备动作状态", "通过 runtime reconciliation resolve 解除隔离"],
+    ),
+    ErrorCode.OUTBOX_DISPATCH_FAILED: (
+        Severity.ERROR,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.HARDWARE,
+        "设备派发重试耗尽，无法确认设备是否收到命令，需人工对账。",
+        ["核对 command_code 是否被设备接收", "现场确认物理状态后解除隔离"],
+    ),
+    ErrorCode.INBOX_PROCESSING_TIMEOUT: (
+        Severity.ERROR,
+        Recoverability.MANUAL_RETRYABLE,
+        ProblemClass.SOFTWARE,
+        "Inbox worker 处理超时，未完成本次编排事务。",
+        ["检查 worker 日志和锁等待", "修复后重试或 replay inbox"],
     ),
     ErrorCode.CONFIG_INVALID: (
         Severity.ERROR,
@@ -120,7 +141,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.SOFTWARE,
         "系统出现未分类异常，请联系技术支持。",
-        ["检查任务日志", "结合 correlation_id 排查全链路"],
+        ["检查任务日志", "结合 trace_id 排查全链路"],
     ),
 }
 
@@ -128,7 +149,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
 def build_diagnostic_context(
     *,
     request_id: str | None = None,
-    correlation_id: str | None = None,
+    trace_id: str | None = None,
     session: Any | None = None,
     inbox: Any | None = None,
     outbox: Any | None = None,
@@ -149,7 +170,7 @@ def build_diagnostic_context(
         command=command,
         outbox=outbox,
         request_id=request_id,
-        correlation_id=correlation_id,
+        trace_id=trace_id,
         canonical_event_type=canonical_event_type,
         transition=transition,
     )
@@ -158,7 +179,7 @@ def build_diagnostic_context(
 
     return DiagnosticContext(
         request_id=resolved_trace.request_id or _safe_str(request_id),
-        correlation_id=resolved_trace.correlation_id or _safe_str(correlation_id),
+        trace_id=resolved_trace.trace_id or _safe_str(trace_id),
         session_id=resolved_trace.session_id or _safe_int(getattr(session, "id", None)),
         inbox_id=resolved_trace.inbox_id or _safe_int(getattr(inbox, "id", None)),
         outbox_id=resolved_trace.outbox_id or _safe_int(getattr(outbox, "id", None)),

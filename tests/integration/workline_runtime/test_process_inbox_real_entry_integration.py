@@ -21,7 +21,7 @@ async def test_process_inbox_batch_entry_marks_message_processed(
     test_prefix: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    correlation_id = f"{test_prefix}_process_entry"
+    trace_id = f"{test_prefix}_process_entry"
     line_code = f"{test_prefix}_line"
     device_code = f"{test_prefix}_DEVICE"
 
@@ -51,7 +51,7 @@ async def test_process_inbox_batch_entry_marks_message_processed(
             event_type="MATERIAL_ARRIVED",
             timestamp=1710000000000,
             data={"event_id": f"{test_prefix}_evt"},
-            correlation_id=correlation_id,
+            trace_id=trace_id,
         )
         await setup_db.commit()
         inbox_id = created.id
@@ -64,7 +64,7 @@ async def test_process_inbox_batch_entry_marks_message_processed(
         query = (
             select(WorklineInbox)
             .where(
-                WorklineInbox.correlation_id == correlation_id,  # type: ignore[arg-type]
+                WorklineInbox.trace_id == trace_id,  # type: ignore[arg-type]
                 WorklineInbox.status == InboxStatus.NEW,  # type: ignore[arg-type]
             )
             .order_by(WorklineInbox.received_at)

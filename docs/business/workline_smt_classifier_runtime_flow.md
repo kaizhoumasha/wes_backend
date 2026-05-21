@@ -104,7 +104,6 @@
 | `status` | `NEW / RUNNING / WAITING_* / COMPLETED / FAILED / CANCELLED` |
 | `context_json` | 插件上下文快照 |
 | `current_wait_type` | 当前等待类型 |
-| `current_wait_token` | 当前等待令牌 |
 | `deadline_at` | 当前等待的截止时间 |
 | `awaiting_command_id` | 当前等待的命令 ID |
 | `failure_domain / failure_code / failure_message` | 失败归因 |
@@ -228,7 +227,7 @@ sequenceDiagram
 
     CEL->>SES: resolve/create session
     CEL->>PLG: process inbox
-    PLG-->>CEL: PluginResult
+    PLG-->>CEL: RuntimeIntent list
     CEL->>SES: update status/context
     CEL->>CMD: create command
     CEL->>OUT: create outbox
@@ -353,7 +352,7 @@ sequenceDiagram
 - `scan_result == NG`
 - 进入 `_handle_ng_flow()`
 
-返回的 `PluginResult` 关键内容：
+返回的 `RuntimeIntent` 关键内容：
 
 ```json
 {
@@ -399,7 +398,6 @@ sequenceDiagram
 | `context_json.barcode` | `SMTLOT20260327001` |
 | `context_json.ng_reason` | `SCAN_NG` |
 | `current_wait_type` | `COMMAND_RESULT` |
-| `current_wait_token` | `ng_pick_place_<session_id>` |
 | `awaiting_command_id` | 新命令 ID |
 | `deadline_at` | `now + 300s` |
 | `last_inbox_id` | 当前 DEVICE_EVENT Inbox ID |
@@ -553,7 +551,6 @@ ARM mock 设备行为：
 |------|--------|
 | `status` | `COMPLETED` |
 | `current_wait_type` | `null` |
-| `current_wait_token` | `null` |
 | `awaiting_command_id` | `null` |
 | `ended_at` | 当前时间 |
 | `context_json.stage` | `COMPLETED` |
@@ -703,6 +700,27 @@ ARM mock 设备行为：
 
 于是系统会创建第二条 `DeviceCommand` 和第二条 `Outbox`，目标设备变为 `ARM02`。
 
+#### 6.3.1 料箱格调度与换架补料恢复约定
+
+当前实现中，`MOVE_FORWARD SUCCESS` 之后不会立即默认下发 `OUTPUT_ARM`，而是先执行料箱格调度：
+
+- 若目标料箱中已有相同 `DateCode / LotCode` 的占用格，则优先合并到该格，避免同批次物料被拆散。
+- 若 `DateCode / LotCode` 不同，则只能选择空格，不能混放到已有不同批次的格位。
+- 若当前货架/料箱不满足上述分配条件，WES 发起 `SMT_RACK_EXCHANGE_AND_SUPPLY` 外部请求，等待 WMS/RCS 完成换架或补料。
+
+换架补料回调的运行时约定如下：
+
+- `WMS_RACK_EXCHANGE_PROGRESS` 只更新等待上下文，用于记录外部系统进度，不触发出料命令。
+- `WMS_RACK_EXCHANGE_FAILED` 会阻断当前物料，Session 进入人工阻断/人工介入态，避免继续占用流水线下游资源。
+- `WMS_RACK_ARRIVED` 表示可用货架/料箱已到位；Runtime 会基于最新上下文重新执行料箱格分配，只有重新分配成功后才下发 `OUTPUT_ARM` 的 `PICK_AND_PUT`。
+- 重复或迟到的 `WMS_RACK_ARRIVED` 回调不会再次下发出料命令；若当前物料已经失败、完成，或已存在有效出料等待上下文，回调只按幂等结果处理。
+
+出料命令必须携带明确的目标格位：
+
+- `params.bin_cell_location` 是 `OUTPUT_ARM` 执行出料放置的必需字段。
+- payload 现在显式携带 `bin_id / bin_type / bin_cell_location`，用于表达目标料箱和格位。
+- `target_loc` 仍保留为兼容字段，供旧 mock 或旧设备适配层继续读取，但业务语义以 `bin_cell_location` 为准。
+
 ### 6.4 阶段 4: OUTPUT_ARM 回调成功，Session 完成
 
 `ARM02` 完成 `PICK_AND_PUT` 后回调成功，插件再次处理 `COMMAND_RESULT`：
@@ -847,8 +865,8 @@ IDLE
 
 1. 设备只负责上报事件或结果
 2. 所有输入统一先落为 `WorklineInbox`
-3. 所有业务决策统一由插件产出 `PluginResult`
-4. 所有状态变化统一写回 `WorklineSession`
+3. 所有业务决策统一由插件产出 `RuntimeIntent`
+4. 所有运行态变化由 Runtime 写回 `WorklineSession`
 5. 所有副作用统一写入 `WorklineOutbox`
 6. 真正的外发由 `dispatch_outbox_batch` 完成
 7. `MOVE_FORWARD SUCCESS` 后先做同步库位分配，只有拿到完整 `target_bin` 才允许创建 `ARM02` 命令

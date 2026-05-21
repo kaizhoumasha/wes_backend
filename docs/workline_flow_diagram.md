@@ -1,5 +1,7 @@
 # 工作线插件化编排完整流程
 
+> Legacy notes: 本图记录旧 `PluginResult` 编排流程，仅用于历史对照；当前生产链路以 `RuntimeIntent` 为插件输出，以 Runtime/TIMELINE 事实驱动监控和统计。
+
 ## 您的理解 vs 实际流程
 
 ### 您的理解
@@ -109,7 +111,7 @@ flowchart LR
         P1["on_device_event()"]
         P2["on_command_result()"]
         P3["on_external_http()"]
-        P4["on_timeout()"]
+        P4["系统级 runtime reconciliation"]
         P5["on_manual_operation()"]
     end
     
@@ -338,7 +340,7 @@ sequenceDiagram
 | **主动触发** | 设备自发 | `DEVICE_EVENT` | 扫码完成、急停、故障 | `on_device_event()` |
 | **被动触发** | 命令驱动 | `COMMAND_RESULT` | 机械臂完成、流水线到位 | `on_command_result()` |
 | **外部系统** | WMS/MES | `EXTERNAL_HTTP` | AGV 到站、上层系统指令 | `on_external_http()` |
-| **定时器** | 系统定时 | `TIMER_TIMEOUT` | 超时检测、周期性任务 | `on_timeout()` |
+| **定时器** | 系统定时 | `TIMER_TIMEOUT` | Callback deadline 对账隔离 | 系统级 runtime reconciliation |
 | **人工操作** | UI/API | `MANUAL_*` | 人工暂停、恢复、取消 | `on_manual_operation()` |
 
 ### 关键设计：编排循环
