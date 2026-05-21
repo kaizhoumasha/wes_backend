@@ -97,6 +97,13 @@ docs/
 *.md
 !README.md
 
+# CI tests require plugin template docs inside the testing image.
+!docs/
+!docs/plugin_development_guide.md
+!docs/templates/
+!docs/templates/workline_plugin/
+!docs/templates/workline_plugin/**
+
 # 临时文件
 tmp/
 temp/
