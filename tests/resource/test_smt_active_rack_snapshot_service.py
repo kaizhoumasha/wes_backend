@@ -10,15 +10,42 @@ from src.app.resource.services.active_rack_snapshot_service import SmtActiveRack
 
 
 class RecordingRackPlacementRepo:
-    async def get_active_by_workline_position(
+    async def list_active_by_workline_position(
         self,
         _db: object,
         *,
         workline_code: str,
         position_code: str,
-    ) -> SimpleNamespace:
+    ) -> list[SimpleNamespace]:
         assert (workline_code, position_code) == ("WL-SMT-001", "SINGLE_LAYER_A")
-        return SimpleNamespace(rack_code="RACK-ACTIVE-001")
+        return [SimpleNamespace(rack_code="RACK-ACTIVE-001")]
+
+
+class RecordingRackPlacementRepoForPosition:
+    def __init__(self, expected_position_code: str) -> None:
+        self.expected_position_code = expected_position_code
+
+    async def list_active_by_workline_position(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> list[SimpleNamespace]:
+        assert (workline_code, position_code) == ("WL-SMT-001", self.expected_position_code)
+        return [SimpleNamespace(rack_code="RACK-ACTIVE-001")]
+
+
+class RecordingMultipleRackPlacementRepo:
+    async def list_active_by_workline_position(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> list[SimpleNamespace]:
+        assert (workline_code, position_code) == ("WL-SMT-001", "SINGLE_LAYER_A")
+        return [SimpleNamespace(rack_code="RACK-ACTIVE-001"), SimpleNamespace(rack_code="RACK-ACTIVE-002")]
 
 
 class RecordingRackBinMountRepo:
@@ -30,6 +57,11 @@ class RecordingRackBinMountRepo:
             SimpleNamespace(rack_slot_code="C", bin_code="BIN-ACTIVE-C"),
             SimpleNamespace(rack_slot_code="D", bin_code="BIN-ACTIVE-D"),
         ]
+
+
+class FailingRackBinMountRepo:
+    async def list_active_by_rack_code(self, _db: object, rack_code: str) -> list[SimpleNamespace]:
+        raise AssertionError(f"ambiguous placement should not select rack: {rack_code}")
 
 
 class RecordingPartialRackBinMountRepo:
@@ -344,6 +376,27 @@ async def test_get_active_bin_rack_restores_snapshot_from_projection_and_last_se
 
 
 @pytest.mark.asyncio
+async def test_get_active_bin_rack_uses_rack_operation_work_position_code() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepoForPosition("SINGLE_LAYER_B"),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={"rack_operation": {"work_position_code": "SINGLE_LAYER_B"}},
+    )
+
+    assert snapshot is not None
+    assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+
+
+@pytest.mark.asyncio
 async def test_get_active_bin_rack_removes_stale_top_level_bin_snapshots_after_overlay() -> None:
     service = SmtActiveRackSnapshotService(
         rack_placement_repo=RecordingRackPlacementRepo(),
@@ -373,6 +426,26 @@ async def test_get_active_bin_rack_rejects_template_with_bins_missing_active_mou
     service = SmtActiveRackSnapshotService(
         rack_placement_repo=RecordingRackPlacementRepo(),
         rack_bin_mount_repo=RecordingPartialRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingNoOccupancyRepo(),
+        bin_material_mount_repo=RecordingNoMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_returns_none_when_position_has_multiple_active_placements() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingMultipleRackPlacementRepo(),
+        rack_bin_mount_repo=FailingRackBinMountRepo(),
         bin_cell_occupancy_repo=RecordingNoOccupancyRepo(),
         bin_material_mount_repo=RecordingNoMaterialMountRepo(),
         bin_cell_reservation_repo=RecordingNoReservationRepo(),

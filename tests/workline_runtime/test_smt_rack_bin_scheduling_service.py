@@ -60,8 +60,7 @@ def _context(
             "rack_code": rack_id,
             "cells": cells,
         },
-        "wms_rcs_rack_supply_url": "http://wms-rcs/api/rack-supply",
-        "wms_rcs_rack_exchange_url": "http://wms-rcs/api/rack-exchange",
+        "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
     }
 
 
@@ -163,7 +162,7 @@ def test_plan_allocation_same_dc_lc_chooses_occupied_compatible_cell() -> None:
         "bin_cell_index": "2",
         "expected_stack_height": 1,
     }
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
 def test_plan_allocation_same_dc_lc_skips_occupied_cell_with_different_vendor_identity() -> None:
@@ -388,7 +387,7 @@ def test_plan_allocation_different_dc_lc_chooses_first_empty_cell() -> None:
 
     assert decision.kind == "ALLOCATED"
     assert decision.bin_location["bin_cell_location"] == "BIN-001-3"
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
 def test_plan_allocation_7inch_prefers_empty_six_bin_cell_before_three_bin_cell() -> None:
@@ -491,8 +490,8 @@ def test_plan_allocation_large_reel_uses_three_bin_large_cell_only() -> None:
     }
 
 
-def test_plan_allocation_large_reel_requires_exchange_without_three_bin_large_cell() -> None:
-    """当前货架没有 3 格箱大尺寸格时，大尺寸料盘触发换架补充。"""
+def test_plan_allocation_large_reel_requires_operation_without_three_bin_large_cell() -> None:
+    """当前货架没有 3 格箱大尺寸格时，大尺寸料盘触发换架 operation。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -501,16 +500,17 @@ def test_plan_allocation_large_reel_requires_exchange_without_three_bin_large_ce
         context=_context(cells=_full_rack_cells(), reel_diameter="15inch"),
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.bin_location is None
     assert decision.reason_code == "NO_COMPATIBLE_OR_EMPTY_CELL"
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"]
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.payload["request_type"] == "SMT_RACK_OPERATION"
+    assert decision.rack_operation_request.payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert decision.rack_operation_request.payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
 
 
-def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_exchange() -> None:
-    """满架且无兼容格位时只生成换架外部请求决策。"""
+def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operation() -> None:
+    """满架且无兼容格位时只生成换架 operation 决策。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -519,24 +519,46 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_exchang
         context=_context(cells=_full_rack_cells()),
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.bin_location is None
     assert decision.reason_code == "NO_COMPATIBLE_OR_EMPTY_CELL"
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.dispatch_key == "external:smt_classifier:trace-001:RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["material"] == SIX_IN_ONE
-    assert decision.rack_supply_request.payload["current_rack_snapshot"]["rack_id"] == "RACK-001"
-    assert decision.rack_supply_request.payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"]
-    assert decision.rack_supply_request.payload["resume_callback_type"] == "WMS_RACK_ARRIVED"
-    assert decision.rack_supply_request.payload["dispatch_key"] == decision.rack_supply_request.dispatch_key
-    assert decision.rack_supply_request.payload["trace_id"] == "trace-001"
-    assert decision.rack_supply_request.payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
-    assert len(decision.rack_supply_request.payload["active_rack_bin_snapshots"]) == 4
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-001:RACK_OPERATION"
+    payload = decision.rack_operation_request.payload
+    assert payload["request_type"] == "SMT_RACK_OPERATION"
+    assert payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert payload["operation_key"] == decision.rack_operation_request.operation_key
+    assert payload["material"] == SIX_IN_ONE
+    assert payload["current_rack_snapshot"]["rack_id"] == "RACK-001"
+    assert payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
+    assert payload["trace_id"] == "trace-001"
+    assert payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert payload["work_position_code"] == "SINGLE_LAYER_A"
+    assert payload["new_rack_kind"] == "SINGLE_LAYER"
+    assert payload["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
+    assert payload["target_code"] == "http://wms-rcs/api/rack-operation"
+    assert payload["reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert len(payload["active_rack_bin_snapshots"]) == 4
 
 
-def test_plan_allocation_missing_active_rack_requires_rack_exchange_with_reason() -> None:
-    """缺少当前可用料架时返回明确的等待换架原因。"""
+def test_plan_allocation_accepts_legacy_rack_supply_target_alias() -> None:
+    """兼容 seed_e2e_test_data 仍在使用的 wms_rcs_rack_supply_url。"""
+
+    service = SmtRackBinSchedulingService()
+    context = _context(cells=_full_rack_cells())
+    context.pop("wms_rcs_rack_operation_url")
+    context["wms_rcs_rack_supply_url"] = "http://wms-rcs/api/rack-exchange"
+
+    decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
+
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-exchange"
+    assert decision.rack_operation_request.payload["target_code"] == "http://wms-rcs/api/rack-exchange"
+
+
+def test_plan_allocation_missing_active_rack_requires_rack_operation_with_reason() -> None:
+    """缺少当前可用料架时返回明确的等待 operation 原因。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -545,18 +567,18 @@ def test_plan_allocation_missing_active_rack_requires_rack_exchange_with_reason(
         context={
             "six_in_one": SIX_IN_ONE,
             "active_bin_rack": None,
-            "wms_rcs_rack_exchange_url": "http://wms-rcs/api/rack-exchange",
+            "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
         },
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.reason_code == "NO_ACTIVE_RACK"
     assert decision.bin_location is None
-    assert decision.rack_supply_request is not None
+    assert decision.rack_operation_request is not None
 
 
-def test_plan_allocation_without_active_rack_requests_supply_only() -> None:
-    """初次开工无货架时只请求新货架补充，不触发满箱交换释放事件。"""
+def test_plan_allocation_without_active_rack_requests_operation_allocate_only() -> None:
+    """初次开工无货架时只请求补新架 operation，不携带当前货架移出动作。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -567,22 +589,26 @@ def test_plan_allocation_without_active_rack_requests_supply_only() -> None:
             "six_in_one": SIX_IN_ONE,
             "reel_diameter": "7inch",
             "active_bin_rack": None,
-            "wms_rcs_rack_supply_url": "http://wms-rcs/api/rack-supply",
+            "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
         },
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.bin_location is None
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.dispatch_key == "external:smt_classifier:trace-supply-001:RACK_SUPPLY"
-    assert decision.rack_supply_request.target_code == "http://wms-rcs/api/rack-supply"
-    assert decision.rack_supply_request.payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["actions"] == ["SUPPLY_EMPTY_RACK"]
-    assert decision.rack_supply_request.payload["reason_code"] == "NO_ACTIVE_RACK"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-supply-001:RACK_OPERATION"
+    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-operation"
+    payload = decision.rack_operation_request.payload
+    assert payload["request_type"] == "SMT_RACK_OPERATION"
+    assert payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert payload["operation_key"] == decision.rack_operation_request.operation_key
+    assert payload["actions"] == ["ALLOCATE_AND_MOVE_RACK"]
+    assert payload["reason_code"] == "NO_ACTIVE_RACK"
+    assert "active_rack_bin_snapshots" not in payload
 
 
 def test_plan_allocation_without_active_rack_preserves_target_position_code() -> None:
-    """补空架请求必须保留当前工作线目标停靠位，避免回调默认写入 A 位。"""
+    """补空架 operation 必须保留当前工作线目标停靠位。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -593,50 +619,51 @@ def test_plan_allocation_without_active_rack_preserves_target_position_code() ->
             "six_in_one": SIX_IN_ONE,
             "reel_diameter": "7inch",
             "active_bin_rack": None,
-            "wms_rcs_rack_supply_url": "http://wms-rcs/api/rack-supply",
+            "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
             "position_code": "SINGLE_LAYER_B",
         },
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.payload["target_position_code"] == "SINGLE_LAYER_B"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.payload["work_position_code"] == "SINGLE_LAYER_B"
 
 
-def test_plan_allocation_with_unusable_active_rack_requests_move_out_and_supply() -> None:
-    """有当前货架但无可用格位时，SMT 只请求货架换补任务并携带当前快照。"""
+def test_plan_allocation_with_unusable_active_rack_requests_replace_operation() -> None:
+    """有当前货架但无可用格位时，SMT 只请求换架 operation 并携带当前快照。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(
         cells=_full_rack_cells("NHW-1CLJ-0096"),
         rack_id="NHW-1CLJ-0096",
     )
-    context["wms_rcs_rack_supply_url"] = "http://wms-rcs/api/rack-supply"
+    context["wms_rcs_rack_operation_url"] = "http://wms-rcs/api/rack-operation"
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.bin_location is None
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"]
-    assert decision.rack_supply_request.payload["single_layer_rack_id"] == "NHW-1CLJ-0096"
-    assert decision.rack_supply_request.payload["single_layer_rack_code"] == "NHW-1CLJ-0096"
-    assert decision.rack_supply_request.payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
-    assert len(decision.rack_supply_request.payload["active_rack_bin_snapshots"]) == 4
+    assert decision.rack_operation_request is not None
+    payload = decision.rack_operation_request.payload
+    assert payload["request_type"] == "SMT_RACK_OPERATION"
+    assert payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
+    assert payload["single_layer_rack_id"] == "NHW-1CLJ-0096"
+    assert payload["single_layer_rack_code"] == "NHW-1CLJ-0096"
+    assert payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert len(payload["active_rack_bin_snapshots"]) == 4
 
 
-def test_plan_allocation_move_out_supply_payload_contains_current_rack_bin_snapshots() -> None:
-    """SMT 移出补架请求应携带当前 4 个料箱快照，后续任务域据此处理货架离位。"""
+def test_plan_allocation_replace_operation_payload_contains_current_rack_bin_snapshots() -> None:
+    """SMT 换架 operation 应携带当前 4 个料箱快照，后续任务域据此处理货架离位。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(cells=_full_rack_cells("NHW-1CLJ-0096"), rack_id="NHW-1CLJ-0096")
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
-    assert decision.rack_supply_request is not None
-    snapshots = decision.rack_supply_request.payload["active_rack_bin_snapshots"]
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.rack_operation_request is not None
+    snapshots = decision.rack_operation_request.payload["active_rack_bin_snapshots"]
     assert len(snapshots) == 4
     assert {snapshot["slot_code"] for snapshot in snapshots} == {"A", "B", "C", "D"}
     assert {snapshot["bin_id"] for snapshot in snapshots} == {"BIN-001", "BIN-002", "BIN-003", "BIN-004"}
@@ -647,12 +674,12 @@ def test_plan_allocation_move_out_supply_payload_contains_current_rack_bin_snaps
         assert snapshot["usage_snapshot"] == 1.0
         assert "bin_cell_location" not in snapshot
 
-    assert decision.rack_supply_request.payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert decision.rack_supply_request.payload["single_layer_rack_id"] == "NHW-1CLJ-0096"
+    assert decision.rack_operation_request.payload["request_type"] == "SMT_RACK_OPERATION"
+    assert decision.rack_operation_request.payload["single_layer_rack_id"] == "NHW-1CLJ-0096"
 
 
-def test_move_out_supply_payload_treats_occupied_cells_with_unknown_depth_usage_as_non_empty() -> None:
-    """占用格位缺少 used/stack 深度时，换补架请求不能把有料箱按空箱上报。"""
+def test_replace_operation_payload_treats_occupied_cells_with_unknown_depth_usage_as_non_empty() -> None:
+    """占用格位缺少 used/stack 深度时，换架 operation 不能把有料箱按空箱上报。"""
 
     service = SmtRackBinSchedulingService()
     cells = _full_rack_cells("NHW-1CLJ-0096")
@@ -664,9 +691,9 @@ def test_move_out_supply_payload_treats_occupied_cells_with_unknown_depth_usage_
         context=_context(cells=cells, rack_id="NHW-1CLJ-0096"),
     )
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
-    assert decision.rack_supply_request is not None
-    snapshots = decision.rack_supply_request.payload["active_rack_bin_snapshots"]
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.rack_operation_request is not None
+    snapshots = decision.rack_operation_request.payload["active_rack_bin_snapshots"]
     assert len(snapshots) == 4
     for snapshot in snapshots:
         assert snapshot["status"] == "FULL"
@@ -708,7 +735,7 @@ def test_plan_allocation_partial_rack_snapshot_blocks_for_reconciliation() -> No
     assert decision.kind == "BLOCKED"
     assert decision.reason_code == "ACTIVE_RACK_SNAPSHOT_INVALID"
     assert decision.message == "SMT 可用货架快照必须包含 A/B/C/D 4 个料箱"
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
 def test_plan_allocation_rejects_partial_rack_even_when_empty_cell_exists() -> None:
@@ -736,8 +763,8 @@ def test_plan_allocation_rejects_partial_rack_even_when_empty_cell_exists() -> N
     assert decision.bin_location is None
 
 
-def test_plan_allocation_rejects_arrived_supply_rack_with_occupied_cell() -> None:
-    """WMS/RCS 补充到位的可用货架必须全为空料格。"""
+def test_plan_allocation_rejects_arrived_operation_rack_with_occupied_cell() -> None:
+    """WMS/RCS operation 到位的可用货架必须全为空料格。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(
@@ -745,7 +772,7 @@ def test_plan_allocation_rejects_arrived_supply_rack_with_occupied_cell() -> Non
             _cell(
                 "1",
                 status="OCCUPIED",
-                bin_id="BIN-SUPPLY-A",
+                bin_id="BIN-OPERATION-A",
                 rack_slot_code="A",
                 rack_slot_location_code="RACK-SUPPLY-001-1A-0",
                 date_code="122624",
@@ -754,28 +781,31 @@ def test_plan_allocation_rejects_arrived_supply_rack_with_occupied_cell() -> Non
             _cell(
                 "1",
                 status="EMPTY",
-                bin_id="BIN-SUPPLY-B",
+                bin_id="BIN-OPERATION-B",
                 rack_slot_code="B",
                 rack_slot_location_code="RACK-SUPPLY-001-1B-0",
             ),
             _cell(
                 "1",
                 status="EMPTY",
-                bin_id="BIN-SUPPLY-C",
+                bin_id="BIN-OPERATION-C",
                 rack_slot_code="C",
                 rack_slot_location_code="RACK-SUPPLY-001-1C-1",
             ),
             _cell(
                 "1",
                 status="EMPTY",
-                bin_id="BIN-SUPPLY-D",
+                bin_id="BIN-OPERATION-D",
                 rack_slot_code="D",
                 rack_slot_location_code="RACK-SUPPLY-001-1D-1",
             ),
         ],
-        rack_id="RACK-SUPPLY-001",
+        rack_id="RACK-OPERATION-001",
     )
-    context["rack_supply"] = {"status": "REQUESTED", "dispatch_key": "external:smt_classifier:trace-001:RACK_SUPPLY"}
+    context["rack_operation"] = {
+        "status": "SUCCEEDED",
+        "operation_key": "external:smt_classifier:trace-001:RACK_OPERATION",
+    }
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
@@ -785,19 +815,36 @@ def test_plan_allocation_rejects_arrived_supply_rack_with_occupied_cell() -> Non
     assert decision.bin_location is None
 
 
-def test_plan_allocation_missing_rack_exchange_target_blocks_configuration() -> None:
+def test_plan_allocation_missing_rack_operation_target_blocks_configuration() -> None:
     """缺少 WMS/RCS 目标地址时阻断物料，避免把请求类型当作 HTTP URL 派发。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(cells=_full_rack_cells())
-    context.pop("wms_rcs_rack_exchange_url")
-    context.pop("wms_rcs_rack_supply_url")
+    context.pop("wms_rcs_rack_operation_url")
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
     assert decision.kind == "BLOCKED"
-    assert decision.reason_code == "RACK_SUPPLY_TARGET_MISSING"
-    assert decision.rack_supply_request is None
+    assert decision.reason_code == "RACK_OPERATION_TARGET_MISSING"
+    assert decision.rack_operation_request is None
+
+
+def test_plan_allocation_pending_rack_operation_blocks_duplicate_request() -> None:
+    """已有等待中的 rack operation 时不重复创建新的换架请求。"""
+
+    service = SmtRackBinSchedulingService()
+    context = _context(cells=_full_rack_cells())
+    context["waiting_rack_operation_key"] = "external:smt_classifier:trace-001:RACK_OPERATION"
+    context["rack_operation"] = {
+        "operation_key": "external:smt_classifier:trace-001:RACK_OPERATION",
+        "status": "PENDING",
+    }
+
+    decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
+
+    assert decision.kind == "BLOCKED"
+    assert decision.reason_code == "RACK_OPERATION_PENDING"
+    assert decision.rack_operation_request is None
 
 
 def test_plan_allocation_ignores_locked_disabled_and_incomplete_cells() -> None:
@@ -821,7 +868,7 @@ def test_plan_allocation_ignores_locked_disabled_and_incomplete_cells() -> None:
 
     assert decision.kind == "ALLOCATED"
     assert decision.bin_location["bin_cell_location"] == "BIN-001-4"
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
 def test_plan_allocation_context_without_rack_snapshot_uses_deterministic_allocator() -> None:
@@ -833,11 +880,11 @@ def test_plan_allocation_context_without_rack_snapshot_uses_deterministic_alloca
 
     assert decision.kind == "ALLOCATED"
     assert decision.bin_location == service.allocate("PKG-001")
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
-def test_plan_allocation_missing_material_fields_blocks_without_rack_supply_request() -> None:
-    """真实调度上下文缺少物料关键字段时阻断物料，不生成换架请求。"""
+def test_plan_allocation_missing_material_fields_blocks_without_rack_operation_request() -> None:
+    """真实调度上下文缺少物料关键字段时阻断物料，不生成换架 operation。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -850,11 +897,11 @@ def test_plan_allocation_missing_material_fields_blocks_without_rack_supply_requ
     assert decision.bin_location is None
     assert decision.reason_code == "MISSING_MATERIAL_FIELDS"
     assert decision.message == "SMT 料箱调度缺少物料字段: DateCode, LotCode"
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
-def test_plan_allocation_pkg_id_mismatch_blocks_without_rack_supply_request() -> None:
-    """PkgID 与 barcode 不一致时阻断物料，不生成虚拟格位或换架请求。"""
+def test_plan_allocation_pkg_id_mismatch_blocks_without_rack_operation_request() -> None:
+    """PkgID 与 barcode 不一致时阻断物料，不生成虚拟格位或换架 operation。"""
 
     service = SmtRackBinSchedulingService()
 
@@ -866,23 +913,23 @@ def test_plan_allocation_pkg_id_mismatch_blocks_without_rack_supply_request() ->
     assert decision.kind == "BLOCKED"
     assert decision.bin_location is None
     assert decision.reason_code == "PKG_ID_MISMATCH"
-    assert decision.rack_supply_request is None
+    assert decision.rack_operation_request is None
 
 
-def test_plan_allocation_rack_exchange_uses_external_dispatch_and_target_contract() -> None:
-    """换架请求使用外部调度 key，并从上下文读取 WMS/RCS 目标地址。"""
+def test_plan_allocation_rack_operation_uses_external_operation_key_and_target_contract() -> None:
+    """换架 operation 使用外部 operation key，并从上下文读取 WMS/RCS 目标地址。"""
 
     service = SmtRackBinSchedulingService()
 
     context = _context(cells=_full_rack_cells())
-    context["wms_rcs_rack_exchange_url"] = "http://wms-rcs/api/rack-exchange"
+    context["wms_rcs_rack_operation_url"] = "http://wms-rcs/api/rack-operation"
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
-    assert decision.kind == "RACK_SUPPLY_REQUIRED"
-    assert decision.rack_supply_request is not None
-    assert decision.rack_supply_request.dispatch_key == "external:smt_classifier:trace-001:RACK_SUPPLY"
-    assert decision.rack_supply_request.target_code == "http://wms-rcs/api/rack-supply"
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-001:RACK_OPERATION"
+    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-operation"
 
 
 def test_runtime_services_injects_default_smt_rack_bin_scheduler() -> None:

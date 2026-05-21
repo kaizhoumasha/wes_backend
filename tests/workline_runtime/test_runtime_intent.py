@@ -80,30 +80,28 @@ def test_resource_reservation_intent_describes_planned_bin_cell_claim():
     assert intent.payload_json["bin_code"] == "BIN-001"
 
 
-def test_rack_task_request_intent_describes_rack_level_external_work():
-    intent = RuntimeIntent.rack_task_request(
-        task_type="RACK_SUPPLY",
-        task_key="rack-task:supply:trace-001",
-        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
-        target_code="http://wms-rcs/api/rack-supply",
-        payload={"request_type": "SMT_RACK_SUPPLY", "dispatch_key": "external:smt_classifier:trace-001:RACK_SUPPLY"},
+def test_rack_operation_request_intent_describes_rack_operation():
+    intent = RuntimeIntent.rack_operation_request(
+        operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+        operation_key="rack-operation:trace-001",
+        target_code="http://wms-rcs/api/rack-operation",
+        payload={
+            "work_position_code": "SINGLE_LAYER_A",
+            "new_rack_kind": "SINGLE_LAYER",
+            "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+            "trace_id": "trace-001",
+        },
         timeout_seconds=1800,
-        source_system="WMS_RCS",
-        rack_code="RACK-001",
-        position_code="SINGLE_LAYER_A",
-        context_patch={"waiting_rack_task_key": "rack-task:supply:trace-001"},
     )
 
-    assert intent.kind == RuntimeIntentKind.RACK_TASK_REQUEST
-    assert intent.action == "RACK_SUPPLY"
-    assert intent.idempotency_key == "rack-task:supply:trace-001"
-    assert intent.dispatch_key == "external:smt_classifier:trace-001:RACK_SUPPLY"
-    assert intent.target_code == "http://wms-rcs/api/rack-supply"
+    assert intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST
+    assert intent.action == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert intent.idempotency_key == "rack-operation:trace-001"
+    assert intent.dispatch_key is None
+    assert intent.target_code == "http://wms-rcs/api/rack-operation"
     assert intent.timeout_seconds == 1800
-    assert intent.source_system == "WMS_RCS"
-    assert intent.rack_code == "RACK-001"
-    assert intent.position_code == "SINGLE_LAYER_A"
-    assert intent.context_patch["waiting_rack_task_key"] == "rack-task:supply:trace-001"
+    assert intent.payload_json["work_position_code"] == "SINGLE_LAYER_A"
+    assert intent.payload_json["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
 
 
 def test_resource_fact_intent_requires_fact_type_and_payload():
@@ -114,23 +112,50 @@ def test_resource_fact_intent_requires_fact_type_and_payload():
         RuntimeIntent(kind=RuntimeIntentKind.RESOURCE_FACT, action="MATERIAL_MOUNTED", payload_json={})
 
 
-def test_rack_task_request_intent_requires_task_type_key_target_payload_and_timeout():
-    with pytest.raises(ValueError, match="RACK_TASK_REQUEST intent requires action"):
+def test_rack_operation_request_requires_operation_key_target_payload_and_timeout():
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires operation_type"):
         RuntimeIntent(
-            kind=RuntimeIntentKind.RACK_TASK_REQUEST,
-            idempotency_key="rack-task:supply:trace-001",
-            dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
-            target_code="http://wms-rcs/api/rack-supply",
-            payload_json={"request_type": "SMT_RACK_SUPPLY"},
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            idempotency_key="rack-operation:trace-001",
+            target_code="http://wms-rcs/api/rack-operation",
+            payload_json={"work_position_code": "SINGLE_LAYER_A"},
             timeout_seconds=1800,
         )
 
-    with pytest.raises(ValueError, match="RACK_TASK_REQUEST intent requires task_key"):
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires operation_key"):
         RuntimeIntent(
-            kind=RuntimeIntentKind.RACK_TASK_REQUEST,
-            action="RACK_SUPPLY",
-            dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
-            target_code="http://wms-rcs/api/rack-supply",
-            payload_json={"request_type": "SMT_RACK_SUPPLY"},
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            action="REPLACE_CLASSIFIER_WORK_RACK",
+            target_code="http://wms-rcs/api/rack-operation",
+            payload_json={"work_position_code": "SINGLE_LAYER_A"},
             timeout_seconds=1800,
+        )
+
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires target_code"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            action="REPLACE_CLASSIFIER_WORK_RACK",
+            idempotency_key="rack-operation:trace-001",
+            payload_json={"work_position_code": "SINGLE_LAYER_A"},
+            timeout_seconds=1800,
+        )
+
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires payload"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            action="REPLACE_CLASSIFIER_WORK_RACK",
+            idempotency_key="rack-operation:trace-001",
+            target_code="http://wms-rcs/api/rack-operation",
+            payload_json={},
+            timeout_seconds=1800,
+        )
+
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires timeout_seconds"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            action="REPLACE_CLASSIFIER_WORK_RACK",
+            idempotency_key="rack-operation:trace-001",
+            target_code="http://wms-rcs/api/rack-operation",
+            payload_json={"work_position_code": "SINGLE_LAYER_A"},
+            timeout_seconds=0,
         )

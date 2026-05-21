@@ -6,7 +6,7 @@ Session 归属解析器
 规则（按 InboxKind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
 - COMMAND_RESULT: 按 command_code -> awaiting_command_id / trace_id 恢复 Session
-- EXTERNAL_HTTP: 优先按 dispatch_key -> outbox 恢复 Session，回退 trace_id
+- EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
@@ -29,6 +29,7 @@ from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.core.logger import logger
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import (
     get_plugin_contract_version,
@@ -458,7 +459,8 @@ class SessionResolver:
     ) -> WorklineSession:
         """处理 EXTERNAL_HTTP 类型的 Session 解析
 
-        优先按 dispatch_key 找到 Outbox 绑定的 Session；无绑定时回退 trace_id。
+        优先按 dispatch_key 找到 rack task，并通过 operation_key 找回等待中的物料 Session；
+        找不到等待 Session 时回退 outbox/session_id 与 trace_id。
 
         Args:
             db: 数据库会话
@@ -476,6 +478,10 @@ class SessionResolver:
         dispatch_key = non_empty_str(payload_json.get("dispatch_key"))
 
         if dispatch_key is not None:
+            session_by_rack_operation = await self._resolve_rack_task_material_session(db, inbox, dispatch_key)
+            if session_by_rack_operation is not None:
+                return session_by_rack_operation
+
             outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
             session_id = getattr(outbox, "session_id", None) if outbox is not None else None
             if isinstance(session_id, int):
@@ -484,10 +490,6 @@ class SessionResolver:
                     inbox.session_id = session_by_dispatch_key.id
                     inbox.workline_id = getattr(session_by_dispatch_key, "workline_id", None)
                     return session_by_dispatch_key
-            if outbox is not None:
-                session_by_rack_task = await self._resolve_rack_task_material_session(db, inbox, dispatch_key)
-                if session_by_rack_task is not None:
-                    return session_by_rack_task
 
         if not trace_id:
             raise ValueError("trace_id is required for EXTERNAL_HTTP")
@@ -511,22 +513,44 @@ class SessionResolver:
         inbox: "WorklineInbox",
         dispatch_key: str,
     ) -> WorklineSession | None:
-        """通过 rack task 找回被挂起的物料 session。"""
+        """通过 rack task operation_key 找回被挂起的物料 session。"""
 
         rack_task = await self.rack_task_repo.get_by_dispatch_key(db, dispatch_key)
         if rack_task is None:
+            logger.warning(
+                "Rack task callback fallback to trace/outbox because rack task was not found: "
+                f"dispatch_key={dispatch_key}"
+            )
             return None
 
         workline_id = getattr(rack_task, "workline_id", None)
         if isinstance(workline_id, int):
             inbox.workline_id = workline_id
-
-        material_session_id = getattr(rack_task, "material_session_id", None)
-        if not isinstance(material_session_id, int):
+        else:
+            logger.warning(
+                "Rack task callback fallback to trace/outbox because workline_id is missing: "
+                f"dispatch_key={dispatch_key}"
+            )
             return None
 
-        session = await self.session_repo.get_by_id(db, material_session_id)
+        operation_key = non_empty_str(getattr(rack_task, "operation_key", None))
+        if operation_key is None:
+            logger.warning(
+                "Rack task callback fallback to trace/outbox because operation_key is missing: "
+                f"dispatch_key={dispatch_key}, workline_id={workline_id}"
+            )
+            return None
+
+        session = await self.session_repo.get_open_session_by_waiting_rack_operation_key(
+            db,
+            workline_id=workline_id,
+            operation_key=operation_key,
+        )
         if session is None:
+            logger.warning(
+                "Rack task callback fallback to trace/outbox because no open session is waiting for operation: "
+                f"dispatch_key={dispatch_key}, workline_id={workline_id}, operation_key={operation_key}"
+            )
             return None
 
         inbox.session_id = session.id

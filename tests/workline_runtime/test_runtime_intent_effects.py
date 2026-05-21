@@ -193,7 +193,7 @@ async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: py
                 payload={"rack_code": "RACK-001", "workline_code": "WL-001", "position_code": "SINGLE_LAYER_A"},
                 idempotency_key="RACK_ARRIVED:conflict",
             ),
-            RuntimeIntent.update_context({"rack_supply": {"status": "ARRIVED"}}),
+            RuntimeIntent.update_context({"rack_operation": {"status": "ARRIVED"}}),
             RuntimeIntent.complete({"material_mounted": True}),
         ],
     )
@@ -552,66 +552,290 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
 
 
 @pytest.mark.asyncio
-async def test_rack_task_request_creates_rack_task_outbox_without_waiting_material_session(
+async def test_rack_operation_request_creates_operation_tasks_and_waits_by_operation_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
-    task_calls: list[dict[str, Any]] = []
+    operation_calls: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["workline"].line_code = "WL-SMT-01"
 
-    class RecordingRackTaskService:
-        async def record_requested_from_rack_task_request(self, **kwargs: Any) -> SimpleNamespace:
-            task_calls.append(kwargs)
-            return SimpleNamespace(id=901, task_key=kwargs["task_key"])
+    class RecordingRackOperationService:
+        async def request_replace_classifier_work_rack(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append({"db": db, **kwargs})
+            return [
+                SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1),
+                SimpleNamespace(id=902, operation_key=kwargs["operation_key"], sequence_no=2),
+            ]
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
         timelines.append(kwargs)
 
     monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
 
-    await RuntimeIntentEffectApplier(rack_task_service=RecordingRackTaskService()).apply(
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
         ctx,
         [
-            RuntimeIntent.rack_task_request(
-                task_type="RACK_SUPPLY",
-                task_key="rack-task:supply:trace-runtime",
-                dispatch_key="external:smt_classifier:trace-runtime:RACK_SUPPLY",
-                target_code="http://wms-rcs/api/rack-supply",
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
                 payload={
-                    "request_type": "SMT_RACK_SUPPLY",
-                    "dispatch_key": "external:smt_classifier:trace-runtime:RACK_SUPPLY",
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "trace_id": "trace-from-payload",
                 },
                 timeout_seconds=1800,
-                source_system="WMS_RCS",
-                rack_code="RACK-001",
-                position_code="SINGLE_LAYER_A",
-                context_patch={"rack_supply": {"status": "REQUESTED"}},
             )
         ],
     )
 
-    outbox = db.add.call_args.args[0]
-    assert outbox.session_id is None
-    assert outbox.workline_id == 1
-    assert outbox.dispatch_type == "EXTERNAL_HTTP"
-    assert outbox.target_type == "HTTP_ENDPOINT"
-    assert outbox.dispatch_key == "external:smt_classifier:trace-runtime:RACK_SUPPLY"
-    assert len(task_calls) == 1
-    assert task_calls[0]["session"] is session
-    assert task_calls[0]["workline"] is ctx["workline"]
-    assert task_calls[0]["outbox"] is outbox
-    assert task_calls[0]["task_type"] == "RACK_SUPPLY"
-    assert task_calls[0]["task_key"] == "rack-task:supply:trace-runtime"
-    assert task_calls[0]["rack_code"] == "RACK-001"
-    assert task_calls[0]["position_code"] == "SINGLE_LAYER_A"
-    assert session.status == "RUNNING"
-    assert session.current_wait_type is None
+    assert db.add.call_count == 0
+    assert len(operation_calls) == 1
+    assert operation_calls[0]["db"] is db
+    assert operation_calls[0]["session"] is session
+    assert operation_calls[0]["workline"] is ctx["workline"]
+    assert operation_calls[0]["operation_key"] == "rack-operation:trace-runtime"
+    assert operation_calls[0]["work_position_code"] == "SINGLE_LAYER_A"
+    assert operation_calls[0]["new_rack_kind"] == "SINGLE_LAYER"
+    assert operation_calls[0]["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
+    assert operation_calls[0]["supply_target_code"] == "http://wms-rcs/api/rack-operation"
+    assert operation_calls[0]["trace_id"] == "trace-from-payload"
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RACK_OPERATION"
     assert session.awaiting_command_id is None
-    assert session.context_json["rack_supply"]["status"] == "REQUESTED"
-    assert session.context_json["waiting_rack_task_id"] == 901
-    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED"]
+    assert session.current_wait_timeout_seconds == 1800
+    assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
+    assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["status"] == "PENDING"
+    assert [timeline["action_type"].value for timeline in timelines] == ["WAIT_STARTED"]
+    assert timelines[0]["payload"]["wait_token"] == "rack-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_stores_operation_wait_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_calls: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(
+        status="RUNNING",
+        current_wait_type=None,
+        awaiting_command_id=None,
+        context_json={"rack_operation": {"status": "OLD"}},
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingRackOperationService:
+        async def request_replace_classifier_work_rack(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append({"db": db, **kwargs})
+            return [SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1)]
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert operation_calls[0]["trace_id"] == "trace-runtime"
+    assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_preserves_operation_metadata_written_by_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SimpleNamespace(add=MagicMock())
+    operation_key = "rack-operation:trace-runtime"
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingRackOperationService:
+        async def request_replace_classifier_work_rack(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            context_json = dict(getattr(kwargs["session"], "context_json", None) or {})
+            rack_operation = dict(context_json.get("rack_operation") or {})
+            rack_operation.update(
+                {
+                    "operation_key": kwargs["operation_key"],
+                    "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                    "status": "PENDING",
+                    "task_count": 2,
+                    "task_sequences": [1, 2],
+                    "released_rack_codes": ["RACK-OLD"],
+                }
+            )
+            context_json["waiting_rack_operation_key"] = kwargs["operation_key"]
+            context_json["rack_operation"] = rack_operation
+            kwargs["session"].context_json = context_json
+            return [
+                SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1),
+                SimpleNamespace(id=902, operation_key=kwargs["operation_key"], sequence_no=2),
+            ]
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.update_context(
+                {
+                    "rack_operation": {
+                        "operation_key": operation_key,
+                        "status": "REQUESTED",
+                        "pkg_id": "PKG-001",
+                    },
+                    "waiting_rack_operation_key": operation_key,
+                }
+            ),
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key=operation_key,
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                },
+                timeout_seconds=1800,
+            ),
+        ],
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["status"] == "PENDING"
+    assert rack_operation["pkg_id"] == "PKG-001"
+    assert rack_operation["task_sequences"] == [1, 2]
+    assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("intent_kwargs", "message"),
+    [
+        (
+            {
+                "operation_type": "TURN_RACK_SIDE",
+                "payload": {
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "trace_id": "trace-runtime",
+                },
+            },
+            "unsupported rack operation request type: TURN_RACK_SIDE",
+        ),
+        (
+            {
+                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                "payload": {
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "trace_id": "trace-runtime",
+                },
+            },
+            "RACK_OPERATION_REQUEST intent requires payload.work_position_code",
+        ),
+        (
+            {
+                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                "payload": {
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "trace_id": "trace-runtime",
+                },
+            },
+            "RACK_OPERATION_REQUEST intent requires payload.new_rack_kind",
+        ),
+        (
+            {
+                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                "payload": {
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "trace_id": "trace-runtime",
+                },
+            },
+            "RACK_OPERATION_REQUEST intent requires payload.move_out_target_position_role",
+        ),
+    ],
+)
+async def test_rack_operation_request_rejects_invalid_operation_contract(
+    intent_kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    with pytest.raises(ValueError, match=message):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.rack_operation_request(
+                    operation_key="rack-operation:trace-runtime",
+                    target_code="http://wms-rcs/api/rack-operation",
+                    timeout_seconds=1800,
+                    **intent_kwargs,
+                )
+            ],
+        )
+
+    assert session.context_json == {}
+    assert session.status == "RUNNING"
+    assert ctx["db"].add.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_requires_trace_id() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, trace_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    ctx["trace"] = SimpleNamespace(trace_id=None)
+    ctx["trace_id"] = None
+
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires trace_id"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.rack_operation_request(
+                    operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                    operation_key="rack-operation:trace-runtime",
+                    target_code="http://wms-rcs/api/rack-operation",
+                    payload={
+                        "work_position_code": "SINGLE_LAYER_A",
+                        "new_rack_kind": "SINGLE_LAYER",
+                        "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    },
+                    timeout_seconds=1800,
+                )
+            ],
+        )
+
+    assert session.context_json == {}
+    assert session.status == "RUNNING"
+    assert ctx["db"].add.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -887,6 +1111,31 @@ def test_result_requires_outbox_dispatch_for_external_request() -> None:
     )
 
     assert workline_effects._result_requires_outbox_dispatch(result) is True
+
+
+def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
+    result = OrchestratorResult(
+        success=True,
+        intents=[
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert workline_effects._result_requires_outbox_dispatch(result) is True
+
+
+def test_wait_session_status_maps_rack_operation_to_external_wait() -> None:
+    assert workline_effects._wait_session_status("RACK_OPERATION") == "WAITING_EXTERNAL"
 
 
 @pytest.mark.asyncio

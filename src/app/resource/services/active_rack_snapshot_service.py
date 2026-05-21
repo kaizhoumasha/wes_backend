@@ -160,11 +160,14 @@ class SmtActiveRackSnapshotService:
             return None
 
         position_code = self._position_code(runtime_context)
-        placement = await self.rack_placement_repo.get_active_by_workline_position(
+        placements = await self.rack_placement_repo.list_active_by_workline_position(
             db,
             workline_code=workline_code,
             position_code=position_code,
         )
+        if len(placements) != 1:
+            return None
+        placement = placements[0]
         rack_code = _text_or_none(getattr(placement, "rack_code", None))
         if rack_code is None:
             return None
@@ -213,14 +216,22 @@ class SmtActiveRackSnapshotService:
         )
 
     def _position_code(self, context: Mapping[str, Any]) -> str:
-        rack_supply = context.get("rack_supply") or context.get("rack_exchange")
-        if isinstance(rack_supply, Mapping):
-            value = _text_or_none(rack_supply.get("position_code")) or _text_or_none(
-                rack_supply.get("target_position_code")
+        rack_operation = context.get("rack_operation")
+        if isinstance(rack_operation, Mapping):
+            value = (
+                _text_or_none(rack_operation.get("work_position_code"))
+                or _text_or_none(rack_operation.get("target_position_code"))
+                or _text_or_none(rack_operation.get("position_code"))
             )
             if value is not None:
                 return value
-        return _text_or_none(context.get("position_code")) or DEFAULT_SMT_RACK_POSITION_CODE
+
+        return (
+            _text_or_none(context.get("work_position_code"))
+            or _text_or_none(context.get("target_position_code"))
+            or _text_or_none(context.get("position_code"))
+            or DEFAULT_SMT_RACK_POSITION_CODE
+        )
 
     def _active_rack_from_context(
         self,

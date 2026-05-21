@@ -100,7 +100,6 @@ def test_build_trace_response_includes_resource_evidence() -> None:
     response = build_trace_response(result)
 
     assert response.resource_evidence.resource_state_events[0]["event_type"] == "EXCHANGE_STATUS_UPDATED"
-    assert response.resource_evidence.full_box_exchange_tasks == []
     assert response.resource_evidence.rack_releases == []
     assert response.resource_evidence.rack_release_bin_snapshots == []
     assert response.resource_evidence.wms_writeback_evidence == []
@@ -165,19 +164,6 @@ def outbox_obj() -> SimpleNamespace:
         target_code="ARM-01",
         status="SENT",
         created_at=1,
-    )
-
-
-@pytest.fixture
-def full_box_exchange_task_obj() -> SimpleNamespace:
-    return SimpleNamespace(
-        id=88,
-        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
-        rack_release_id="release-001",
-        session_id=11,
-        outbox_id=44,
-        dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-        trace_id="trace-1",
     )
 
 
@@ -505,7 +491,6 @@ async def test_by_exchange_request_code_aggregates_runtime_and_resource_evidence
     assert result.trace.session_id == 11
     assert result.outboxes and result.outboxes[0].dispatch_key == exchange_request_code
     assert result.resource_state_events == [resource_state_event_obj]
-    assert not hasattr(result, "full_box_exchange_tasks")
     assert not hasattr(result, "wms_writeback_evidence")
     assert not hasattr(result, "rack_releases")
     assert not hasattr(result, "rack_release_bin_snapshots")

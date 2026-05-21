@@ -18,7 +18,7 @@ from src.utils.timezone import timezone
 class RuntimeIntentKind(str, Enum):
     COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
-    RACK_TASK_REQUEST = "RACK_TASK_REQUEST"
+    RACK_OPERATION_REQUEST = "RACK_OPERATION_REQUEST"
     DEVICE_EVENT = "DEVICE_EVENT"
     RESOURCE_FACT = "RESOURCE_FACT"
     RESOURCE_RESERVATION = "RESOURCE_RESERVATION"
@@ -141,32 +141,22 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
-    def rack_task_request(
+    def rack_operation_request(
         cls,
         *,
-        task_type: str,
-        task_key: str,
-        dispatch_key: str,
+        operation_type: str,
+        operation_key: str,
         target_code: str,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, Any],
         timeout_seconds: int | None,
-        source_system: str | None = None,
-        rack_code: str | None = None,
-        position_code: str | None = None,
-        context_patch: dict[str, Any] | None = None,
     ) -> RuntimeIntent:
         return cls(
-            kind=RuntimeIntentKind.RACK_TASK_REQUEST,
-            action=task_type,
-            idempotency_key=task_key,
-            dispatch_key=dispatch_key,
+            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
+            action=operation_type,
+            idempotency_key=operation_key,
             target_code=target_code,
-            source_system=source_system,
-            rack_code=rack_code,
-            position_code=position_code,
-            payload_json=deepcopy(payload) if payload is not None else {},
+            payload_json=deepcopy(payload),
             timeout_seconds=timeout_seconds,
-            context_patch=deepcopy(context_patch) if context_patch is not None else {},
         )
 
     @classmethod
@@ -305,19 +295,17 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("EXTERNAL_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:
                 raise ValueError("EXTERNAL_REQUEST intent requires timeout_seconds")
-        if self.kind == RuntimeIntentKind.RACK_TASK_REQUEST:
+        if self.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
             if not self.action:
-                raise ValueError("RACK_TASK_REQUEST intent requires action")
+                raise ValueError("RACK_OPERATION_REQUEST intent requires operation_type")
             if not self.idempotency_key:
-                raise ValueError("RACK_TASK_REQUEST intent requires task_key")
-            if not self.dispatch_key:
-                raise ValueError("RACK_TASK_REQUEST intent requires dispatch_key")
+                raise ValueError("RACK_OPERATION_REQUEST intent requires operation_key")
             if not self.target_code:
-                raise ValueError("RACK_TASK_REQUEST intent requires target_code")
+                raise ValueError("RACK_OPERATION_REQUEST intent requires target_code")
             if not self.payload_json:
-                raise ValueError("RACK_TASK_REQUEST intent requires payload")
+                raise ValueError("RACK_OPERATION_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:
-                raise ValueError("RACK_TASK_REQUEST intent requires timeout_seconds")
+                raise ValueError("RACK_OPERATION_REQUEST intent requires timeout_seconds")
         if self.kind == RuntimeIntentKind.DEVICE_EVENT:
             if not self.payload_json.get("device_code"):
                 raise ValueError("DEVICE_EVENT intent requires device_code")

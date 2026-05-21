@@ -292,7 +292,6 @@ class TraceResourceEvidenceResponse(BaseModel):
     resource_state_events: list[dict[str, Any]] = Field(default_factory=list)
     rack_releases: list[dict[str, Any]] = Field(default_factory=list)
     rack_release_bin_snapshots: list[dict[str, Any]] = Field(default_factory=list)
-    full_box_exchange_tasks: list[dict[str, Any]] = Field(default_factory=list)
     wms_writeback_evidence: list[dict[str, Any]] = Field(default_factory=list)
     rack_bin_mounts: list[dict[str, Any]] = Field(default_factory=list)
     runtime_holds: list[dict[str, Any]] = Field(default_factory=list)

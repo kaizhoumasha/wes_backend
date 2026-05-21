@@ -18,9 +18,9 @@ from src.database.schema_conf import SchemaType
 class WorklineRackTaskType(str, Enum):
     """工作线货架级任务类型。"""
 
-    RACK_SUPPLY = "RACK_SUPPLY"
-    FULL_BOX_EXCHANGE = "FULL_BOX_EXCHANGE"
-    MOVE_TO_EMPTY_AREA = "MOVE_TO_EMPTY_AREA"
+    MOVE_RACK = "MOVE_RACK"
+    ALLOCATE_AND_MOVE_RACK = "ALLOCATE_AND_MOVE_RACK"
+    TURN_RACK_SIDE = "TURN_RACK_SIDE"
 
 
 class WorklineRackTaskStatus(str, Enum):
@@ -31,6 +31,7 @@ class WorklineRackTaskStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    TIMEOUT = "TIMEOUT"
     RECONCILING = "RECONCILING"
     CANCELLED = "CANCELLED"
 
@@ -39,6 +40,9 @@ class WorklineRackTaskBase(BaseMixin):
     """货架级任务基础字段。"""
 
     task_key: str = Field(min_length=1, max_length=240, index=True, description="任务幂等键")
+    operation_key: str = Field(min_length=1, max_length=240, index=True, description="货架操作幂等键")
+    operation_type: str = Field(min_length=1, max_length=100, index=True, description="货架操作类型")
+    sequence_no: int = Field(index=True, description="同一货架操作下的任务序号")
     task_type: WorklineRackTaskType = Field(
         index=True,
         sa_type=cast("Any", SQLAEnum(WorklineRackTaskType, native_enum=False, create_constraint=True, length=50)),
@@ -58,8 +62,11 @@ class WorklineRackTaskBase(BaseMixin):
         foreign_key="wes_biz.workline_sessions.id",
         description="关联的物料/料盘 Session.id",
     )
+    rack_kind: str | None = Field(default=None, max_length=50, index=True, description="货架类型")
     rack_code: str | None = Field(default=None, max_length=100, index=True, description="货架编码")
-    position_code: str | None = Field(default=None, max_length=100, index=True, description="目标位置编码")
+    source_position_code: str | None = Field(default=None, max_length=100, index=True, description="来源位置编码")
+    target_position_code: str | None = Field(default=None, max_length=100, index=True, description="目标位置编码")
+    target_position_role: str | None = Field(default=None, max_length=50, index=True, description="目标位置角色")
     dispatch_key: str | None = Field(default=None, max_length=240, index=True, description="外部派发幂等键")
     outbox_id: int | None = Field(
         default=None,
@@ -73,6 +80,7 @@ class WorklineRackTaskBase(BaseMixin):
     source_event_id: str | None = Field(default=None, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="请求证据")
+    actions_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="调度动作 payload")
     callback_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="回调证据")
     result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="结果证据")
     error_code: str | None = Field(default=None, max_length=100, index=True, description="错误码")
@@ -90,8 +98,10 @@ class WorklineRackTask(WorklineRackTaskBase, DataTableMixin, table=True):
     __table_args__ = (
         Index("ux_workline_rack_tasks_key", "task_key", unique=True),
         Index("ux_workline_rack_tasks_dispatch_key", "dispatch_key", unique=True),
-        Index("ix_workline_rack_tasks_session_status", "material_session_id", "task_status"),
-        Index("ix_workline_rack_tasks_rack_status", "rack_code", "task_status"),
+        Index("ux_workline_rack_tasks_operation_sequence", "operation_key", "sequence_no", unique=True),
+        Index("ix_workline_rack_tasks_operation_status", "operation_key", "task_status"),
+        Index("ix_workline_rack_tasks_session_operation", "material_session_id", "operation_key"),
+        Index("ix_workline_rack_tasks_target_status", "workline_code", "target_position_code", "task_status"),
         {"schema": SchemaType.BIZ.value},
     )
 

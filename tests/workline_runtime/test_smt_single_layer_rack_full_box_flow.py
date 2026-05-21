@@ -17,7 +17,7 @@ from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
 WORKLINE_CODE = "WL-CONVEYOR-01"
 RACK_ID = "RACK-SL-DEV-001"
-RACK_SUPPLY_TARGET = "http://127.0.0.1:8009/api/v1/device/command"
+RACK_OPERATION_TARGET = "http://127.0.0.1:8009/api/v1/device/command"
 CELL_CAPACITY = 5
 MATERIAL_CODES = [f"MAT-SMT-{index:03d}" for index in range(1, 11)]
 
@@ -47,6 +47,10 @@ class ReelPlan:
 def _rack_slot_location(rack_id: str, slot_code: str) -> str:
     side = "1" if slot_code in {"C", "D"} else "0"
     return f"{rack_id}-1{slot_code}-{side}"
+
+
+def _rack_operation_task_dispatch_key(operation_key: str, sequence_no: int = 2) -> str:
+    return f"rack-operation:{operation_key}:{sequence_no}:ALLOCATE_AND_MOVE_RACK"
 
 
 def _build_single_layer_rack(rack_id: str = RACK_ID) -> dict[str, Any]:
@@ -139,7 +143,7 @@ def _base_context(plan: ReelPlan, *, active_rack: dict[str, Any] | None, trace_i
         "reel_diameter": plan.reel_diameter,
         "reel_thickness": 1.0,
         "active_bin_rack": active_rack,
-        "wms_rcs_rack_supply_url": RACK_SUPPLY_TARGET,
+        "wms_rcs_rack_operation_url": RACK_OPERATION_TARGET,
     }
 
 
@@ -235,7 +239,7 @@ def _assert_full_rack(rack: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_layer_rack_flow_from_startup_to_rack_move_out_supply() -> None:
+async def test_single_layer_rack_flow_from_startup_to_rack_replace_operation() -> None:
     """从开机无货架开始，模拟粗分机补架、出料填满和换补架请求。"""
 
     scheduler = SmtRackBinSchedulingService()
@@ -258,20 +262,41 @@ async def test_single_layer_rack_flow_from_startup_to_rack_move_out_supply() -> 
 
     assert [intent.kind for intent in boot_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.RACK_TASK_REQUEST,
+        RuntimeIntentKind.RACK_OPERATION_REQUEST,
     ]
-    rack_supply = boot_intents[0].context_patch["rack_supply"]
-    assert rack_supply["reason_code"] == "NO_ACTIVE_RACK"
-    assert boot_intents[1].target_code == RACK_SUPPLY_TARGET
-    assert boot_intents[1].action == "RACK_SUPPLY"
-    assert boot_intents[1].payload_json["request_type"] == "SMT_RACK_SUPPLY"
-    assert boot_intents[1].payload_json["actions"] == ["SUPPLY_EMPTY_RACK"]
+    rack_operation = boot_intents[0].context_patch["rack_operation"]
+    assert rack_operation["reason_code"] == "NO_ACTIVE_RACK"
+    assert boot_intents[0].context_patch["waiting_rack_operation_key"] == rack_operation["operation_key"]
+    assert boot_intents[1].target_code == RACK_OPERATION_TARGET
+    assert boot_intents[1].action == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert boot_intents[1].idempotency_key == rack_operation["operation_key"]
+    assert boot_intents[1].payload_json["request_type"] == "SMT_RACK_OPERATION"
+    assert boot_intents[1].payload_json["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert boot_intents[1].payload_json["actions"] == ["ALLOCATE_AND_MOVE_RACK"]
+    assert boot_intents[1].payload_json["work_position_code"] == "SINGLE_LAYER_A"
+    assert boot_intents[1].payload_json["new_rack_kind"] == "SINGLE_LAYER"
+    assert boot_intents[1].payload_json["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
 
     arrived_context = {**boot_ctx.session.context_json, **boot_intents[0].context_patch}
+    task_dispatch_key = _rack_operation_task_dispatch_key(rack_operation["operation_key"])
+    arrived_context["rack_operation"].update(
+        {
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "task_count": 1,
+            "required_task_count": 1,
+            "task_sequences": [2],
+            "task_dispatch_keys": [task_dispatch_key],
+            "required_task_dispatch_keys": [task_dispatch_key],
+        }
+    )
     arrived_intents = await classifier.on_external_http(
-        _plugin_ctx(context=arrived_context, trace_id=trace_id, current_wait_type="EXTERNAL_HTTP"),
+        _plugin_ctx(context=arrived_context, trace_id=trace_id, current_wait_type="RACK_OPERATION"),
         SimpleNamespace(
-            payload_json=_rack_arrived_payload(rack=rack, dispatch_key=rack_supply["dispatch_key"], trace_id=trace_id)
+            payload_json=_rack_arrived_payload(
+                rack=rack,
+                dispatch_key=task_dispatch_key,
+                trace_id=trace_id,
+            )
         ),
     )
 
@@ -314,11 +339,12 @@ async def test_single_layer_rack_flow_from_startup_to_rack_move_out_supply() -> 
         context=_base_context(overflow_plan, active_rack=rack, trace_id="trace-overflow"),
     )
 
-    assert overflow_decision.kind == "RACK_SUPPLY_REQUIRED"
-    assert overflow_decision.rack_supply_request is not None
-    overflow_payload = overflow_decision.rack_supply_request.payload
-    assert overflow_payload["request_type"] == "SMT_RACK_SUPPLY"
-    assert overflow_payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK"]
+    assert overflow_decision.kind == "RACK_OPERATION_REQUIRED"
+    assert overflow_decision.rack_operation_request is not None
+    overflow_payload = overflow_decision.rack_operation_request.payload
+    assert overflow_payload["request_type"] == "SMT_RACK_OPERATION"
+    assert overflow_payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert overflow_payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
     assert overflow_payload["single_layer_rack_id"] == RACK_ID
     assert overflow_payload["move_out_reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
     assert len(overflow_payload["active_rack_bin_snapshots"]) == 4
@@ -338,10 +364,13 @@ async def test_single_layer_rack_flow_from_startup_to_rack_move_out_supply() -> 
 
     assert [intent.kind for intent in overflow_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.RACK_TASK_REQUEST,
+        RuntimeIntentKind.RACK_OPERATION_REQUEST,
     ]
-    rack_supply_request = overflow_intents[1]
-    assert rack_supply_request.action == "RACK_SUPPLY"
-    assert rack_supply_request.payload_json["request_type"] == "SMT_RACK_SUPPLY"
-    assert rack_supply_request.payload_json["single_layer_rack_id"] == RACK_ID
-    assert len(rack_supply_request.payload_json["active_rack_bin_snapshots"]) == 4
+    rack_operation_request = overflow_intents[1]
+    assert rack_operation_request.action == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert rack_operation_request.payload_json["request_type"] == "SMT_RACK_OPERATION"
+    assert rack_operation_request.payload_json["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert rack_operation_request.payload_json["single_layer_rack_id"] == RACK_ID
+    assert rack_operation_request.payload_json["work_position_code"] == "SINGLE_LAYER_A"
+    assert rack_operation_request.payload_json["target_code"] == RACK_OPERATION_TARGET
+    assert len(rack_operation_request.payload_json["active_rack_bin_snapshots"]) == 4

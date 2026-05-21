@@ -44,7 +44,7 @@ from .smt_rack_bin_scheduling_service import (
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
-    SmtRackSupplyRequest,
+    SmtRackOperationRequest,
     smt_rack_bin_scheduling_service,
 )
 from .snapshot_service import ResourceSnapshotService, resource_snapshot_service
@@ -73,7 +73,7 @@ __all__ = [
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackSupplyRequest",
+    "SmtRackOperationRequest",
     "bin_cell_occupancy_service",
     "bin_content_snapshot_item_service",
     "bin_content_snapshot_service",

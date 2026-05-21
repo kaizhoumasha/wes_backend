@@ -79,7 +79,7 @@ def test_smt_full_box_exchange_candidate_scan_task_is_removed() -> None:
     assert "scan-smt-full-box-exchange-candidates-batch" not in config.beat_schedule
 
 
-def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:
+def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:
     conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE02", "device_role": "CONVEYOR"})())
     session = cast(
         "Any",
@@ -88,7 +88,7 @@ def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:
             (),
             {
                 "context_json": {
-                    "rack_exchange": {
+                    "rack_operation": {
                         "resume_source_device_code": "PIPELINE02",
                         "resume_source_device_role": "STALE_ROLE",
                     }
@@ -101,7 +101,7 @@ def test_resolve_effect_source_device_uses_rack_exchange_resume_code() -> None:
     assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
 
 
-def test_resolve_effect_source_device_uses_rack_supply_resume_code() -> None:
+def test_resolve_effect_source_device_uses_rack_operation_resume_code_for_conveyor() -> None:
     conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE01", "device_role": "CONVEYOR"})())
     session = cast(
         "Any",
@@ -110,7 +110,7 @@ def test_resolve_effect_source_device_uses_rack_supply_resume_code() -> None:
             (),
             {
                 "context_json": {
-                    "rack_supply": {
+                    "rack_operation": {
                         "resume_source_device_code": "PIPELINE01",
                         "resume_source_device_role": "CONVEYOR",
                     }

@@ -12,18 +12,17 @@ from src.app.resource.services.material_identity import material_identity_keys_m
 
 SmtRackBinSchedulingDecisionKind = Literal[
     "ALLOCATED",
-    "RACK_EXCHANGE_REQUIRED",
-    "RACK_SUPPLY_REQUIRED",
+    "RACK_OPERATION_REQUIRED",
     "BLOCKED",
 ]
 SmtReelSizeKind = Literal["SEVEN_INCH", "LARGE"]
 
 
 @dataclass(frozen=True, slots=True)
-class SmtRackSupplyRequest:
-    """SMT 新货架补充外部请求。"""
+class SmtRackOperationRequest:
+    """SMT 货架 operation 外部请求。"""
 
-    dispatch_key: str
+    operation_key: str
     target_code: str
     payload: Mapping[str, Any]
     timeout_seconds: int = 1800
@@ -36,7 +35,7 @@ class SmtRackBinSchedulingDecision:
 
     kind: SmtRackBinSchedulingDecisionKind
     bin_location: Mapping[str, Any] | None
-    rack_supply_request: SmtRackSupplyRequest | None
+    rack_operation_request: SmtRackOperationRequest | None
     reason_code: str | None
     message: str | None
 
@@ -45,23 +44,26 @@ class SmtRackBinSchedulingDecision:
         *,
         kind: SmtRackBinSchedulingDecisionKind | None = None,
         bin_location: Mapping[str, Any] | None = None,
-        rack_supply_request: SmtRackSupplyRequest | None = None,
+        rack_operation_request: SmtRackOperationRequest | None = None,
         reason_code: str | None = None,
         message: str | None = None,
     ) -> None:
         """创建调度决策。"""
 
-        resolved_kind = kind or self._infer_kind(bin_location=bin_location, rack_supply_request=rack_supply_request)
+        resolved_kind = kind or self._infer_kind(
+            bin_location=bin_location,
+            rack_operation_request=rack_operation_request,
+        )
         if resolved_kind == "ALLOCATED" and bin_location is None:
             raise ValueError("ALLOCATED decision requires bin_location")
-        if resolved_kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"} and rack_supply_request is None:
-            raise ValueError(f"{resolved_kind} decision requires rack_supply_request")
+        if resolved_kind == "RACK_OPERATION_REQUIRED" and rack_operation_request is None:
+            raise ValueError("RACK_OPERATION_REQUIRED decision requires rack_operation_request")
         if resolved_kind == "BLOCKED" and not reason_code:
             raise ValueError("BLOCKED decision requires reason_code")
 
         object.__setattr__(self, "kind", resolved_kind)
         object.__setattr__(self, "bin_location", dict(bin_location) if bin_location is not None else None)
-        object.__setattr__(self, "rack_supply_request", rack_supply_request)
+        object.__setattr__(self, "rack_operation_request", rack_operation_request)
         object.__setattr__(self, "reason_code", reason_code)
         object.__setattr__(self, "message", message)
 
@@ -69,12 +71,12 @@ class SmtRackBinSchedulingDecision:
     def _infer_kind(
         *,
         bin_location: Mapping[str, Any] | None,
-        rack_supply_request: SmtRackSupplyRequest | None,
+        rack_operation_request: SmtRackOperationRequest | None,
     ) -> SmtRackBinSchedulingDecisionKind:
-        if bin_location is not None and rack_supply_request is None:
+        if bin_location is not None and rack_operation_request is None:
             return "ALLOCATED"
-        if bin_location is None and rack_supply_request is not None:
-            return "RACK_SUPPLY_REQUIRED"
+        if bin_location is None and rack_operation_request is not None:
+            return "RACK_OPERATION_REQUIRED"
         raise ValueError("SmtRackBinSchedulingDecision requires exactly one scheduling result")
 
 
@@ -125,10 +127,14 @@ class SmtRackBinSchedulingService:
         "ERROR": "EXCEPTION",
     }
     EMPTY_CELL_STATUSES: ClassVar[frozenset[str]] = frozenset({"EMPTY", "EMPTY_VERIFIED", "AVAILABLE"})
-    PENDING_RACK_SUPPLY_STATUSES: ClassVar[frozenset[str]] = frozenset({"REQUESTED", "IN_PROGRESS"})
-    SUPPLY_REQUEST_TYPE: ClassVar[str] = "SMT_RACK_SUPPLY"
-    SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("SUPPLY_EMPTY_RACK",)
-    MOVE_OUT_AND_SUPPLY_ACTIONS: ClassVar[tuple[str, ...]] = ("MOVE_OUT_ACTIVE_RACK", "SUPPLY_EMPTY_RACK")
+    PENDING_RACK_OPERATION_STATUSES: ClassVar[frozenset[str]] = frozenset({"PENDING", "REQUESTED", "IN_PROGRESS"})
+    RACK_OPERATION_REQUEST_TYPE: ClassVar[str] = "SMT_RACK_OPERATION"
+    RACK_OPERATION_TYPE: ClassVar[str] = "REPLACE_CLASSIFIER_WORK_RACK"
+    ALLOCATE_RACK_ACTIONS: ClassVar[tuple[str, ...]] = ("ALLOCATE_AND_MOVE_RACK",)
+    REPLACE_RACK_ACTIONS: ClassVar[tuple[str, ...]] = ("MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK")
+    DEFAULT_WORK_POSITION_CODE: ClassVar[str] = "SINGLE_LAYER_A"
+    DEFAULT_NEW_RACK_KIND: ClassVar[str] = "SINGLE_LAYER"
+    DEFAULT_MOVE_OUT_TARGET_POSITION_ROLE: ClassVar[str] = "SMT_EMPTY_RACK_AREA"
     REQUIRED_MATERIAL_FIELDS: ClassVar[tuple[str, ...]] = ("DateCode", "LotCode", "PkgID")
     REQUIRED_LOCATION_FIELDS: ClassVar[tuple[str, ...]] = ("bin_id", "bin_type", "bin_cell_location")
 
@@ -167,23 +173,16 @@ class SmtRackBinSchedulingService:
             return SmtRackBinSchedulingDecision(bin_location=self.allocate(barcode))
 
         material = self._material_from_context(scheduling_context)
-        missing_material_fields = [field for field in self.REQUIRED_MATERIAL_FIELDS if not material.get(field)]
-        if missing_material_fields:
-            return SmtRackBinSchedulingDecision(
-                kind="BLOCKED",
-                reason_code="MISSING_MATERIAL_FIELDS",
-                message=f"SMT 料箱调度缺少物料字段: {', '.join(missing_material_fields)}",
-            )
-        if material["PkgID"] != barcode:
-            return SmtRackBinSchedulingDecision(
-                kind="BLOCKED",
-                reason_code="PKG_ID_MISMATCH",
-                message="SMT 料箱调度条码与六合一码 PkgID 不一致",
-            )
+        material_block = self._material_block_decision(material, barcode=barcode)
+        if material_block is not None:
+            return material_block
+        pending_operation_decision = self._pending_rack_operation_decision(scheduling_context)
+        if pending_operation_decision is not None:
+            return pending_operation_decision
 
         active_rack = scheduling_context.get("active_bin_rack")
         if not isinstance(active_rack, Mapping):
-            return self._rack_exchange_decision(
+            return self._rack_operation_decision(
                 context=scheduling_context,
                 material=material,
                 active_rack=None,
@@ -226,7 +225,7 @@ class SmtRackBinSchedulingService:
         if empty_cell is not None:
             return SmtRackBinSchedulingDecision(bin_location=self._bin_location(empty_cell, active_rack_map))
 
-        return self._rack_exchange_decision(
+        return self._rack_operation_decision(
             context=scheduling_context,
             material=material,
             active_rack=active_rack_map,
@@ -237,6 +236,27 @@ class SmtRackBinSchedulingService:
     def _material_from_context(self, context: Mapping[str, Any]) -> dict[str, Any]:
         six_in_one = context.get("six_in_one")
         return dict(cast("Mapping[str, Any]", six_in_one)) if isinstance(six_in_one, Mapping) else {}
+
+    def _material_block_decision(
+        self,
+        material: Mapping[str, Any],
+        *,
+        barcode: str,
+    ) -> SmtRackBinSchedulingDecision | None:
+        missing_material_fields = [field for field in self.REQUIRED_MATERIAL_FIELDS if not material.get(field)]
+        if missing_material_fields:
+            return SmtRackBinSchedulingDecision(
+                kind="BLOCKED",
+                reason_code="MISSING_MATERIAL_FIELDS",
+                message=f"SMT 料箱调度缺少物料字段: {', '.join(missing_material_fields)}",
+            )
+        if material["PkgID"] != barcode:
+            return SmtRackBinSchedulingDecision(
+                kind="BLOCKED",
+                reason_code="PKG_ID_MISMATCH",
+                message="SMT 料箱调度条码与六合一码 PkgID 不一致",
+            )
+        return None
 
     def _active_rack_or_none(self, value: Any) -> Mapping[str, Any] | None:
         return cast("Mapping[str, Any]", value) if isinstance(value, Mapping) else None
@@ -569,7 +589,7 @@ class SmtRackBinSchedulingService:
         result["expected_stack_height"] = int(reel_count or 0) + 1
         return result
 
-    def _rack_exchange_decision(
+    def _rack_operation_decision(
         self,
         *,
         context: Mapping[str, Any],
@@ -585,18 +605,23 @@ class SmtRackBinSchedulingService:
         if target_code is None:
             return SmtRackBinSchedulingDecision(
                 kind="BLOCKED",
-                reason_code="RACK_SUPPLY_TARGET_MISSING",
-                message="SMT 新货架补充请求缺少 WMS/RCS 目标地址配置",
+                reason_code="RACK_OPERATION_TARGET_MISSING",
+                message="SMT 货架 operation 请求缺少 WMS/RCS 目标地址配置",
             )
 
-        dispatch_key = self._dispatch_key(context=context, material=material, active_rack=active_rack)
+        operation_key = self._operation_key(context=context, material=material, active_rack=active_rack)
+        work_position_code = self._work_position_code(context)
         payload: dict[str, Any] = {
-            "request_type": self.SUPPLY_REQUEST_TYPE,
-            "dispatch_key": dispatch_key,
+            "request_type": self.RACK_OPERATION_REQUEST_TYPE,
+            "operation_type": self.RACK_OPERATION_TYPE,
+            "operation_key": operation_key,
+            "target_code": target_code,
+            "work_position_code": work_position_code,
+            "new_rack_kind": self._new_rack_kind(context),
+            "move_out_target_position_role": self._move_out_target_position_role(context),
             "material": dict(material),
             "current_rack_snapshot": dict(active_rack or {}),
-            "actions": list(self.SUPPLY_ACTIONS),
-            "resume_callback_type": "WMS_RACK_ARRIVED",
+            "actions": list(self.ALLOCATE_RACK_ACTIONS),
             "reason_code": reason_code,
         }
         if active_rack is not None:
@@ -605,7 +630,7 @@ class SmtRackBinSchedulingService:
             token = self._context_dispatch_token(context) or f"{material.get('PkgID')}:{rack_id}"
             payload.update(
                 {
-                    "actions": list(self.MOVE_OUT_AND_SUPPLY_ACTIONS),
+                    "actions": list(self.REPLACE_RACK_ACTIONS),
                     "single_layer_rack_id": rack_id,
                     "single_layer_rack_code": rack_id,
                     "source_classifier_line_code": self._workline_code(context),
@@ -614,17 +639,14 @@ class SmtRackBinSchedulingService:
                     "active_rack_bin_snapshots": bin_snapshots,
                 }
             )
-        target_position_code = self._target_position_code(context)
-        if target_position_code is not None:
-            payload["target_position_code"] = target_position_code
         trace_id = self._trace_id(context)
         if trace_id is not None:
             payload["trace_id"] = trace_id
 
         return SmtRackBinSchedulingDecision(
-            kind="RACK_SUPPLY_REQUIRED",
-            rack_supply_request=SmtRackSupplyRequest(
-                dispatch_key=dispatch_key,
+            kind="RACK_OPERATION_REQUIRED",
+            rack_operation_request=SmtRackOperationRequest(
+                operation_key=operation_key,
                 target_code=target_code,
                 payload=payload,
             ),
@@ -647,11 +669,28 @@ class SmtRackBinSchedulingService:
         )
 
     def _requires_empty_active_rack(self, context: Mapping[str, Any]) -> bool:
-        rack_supply = context.get("rack_supply") or context.get("rack_exchange")
-        if not isinstance(rack_supply, Mapping):
+        rack_operation = context.get("rack_operation")
+        if not isinstance(rack_operation, Mapping):
             return False
-        status = self._text_or_none(rack_supply.get("status"))
-        return status is not None and status.upper() in self.PENDING_RACK_SUPPLY_STATUSES
+        status = self._text_or_none(rack_operation.get("status"))
+        return status is not None and status.upper() in {"SUCCEEDED", "ARRIVED"}
+
+    def _pending_rack_operation_decision(self, context: Mapping[str, Any]) -> SmtRackBinSchedulingDecision | None:
+        waiting_operation_key = self._text_or_none(context.get("waiting_rack_operation_key"))
+        rack_operation = context.get("rack_operation")
+        if not isinstance(rack_operation, Mapping):
+            return None
+        status = self._text_or_none(rack_operation.get("status"))
+        operation_key = self._text_or_none(rack_operation.get("operation_key"))
+        if status is None or status.upper() not in self.PENDING_RACK_OPERATION_STATUSES:
+            return None
+        if waiting_operation_key is not None and operation_key is not None and waiting_operation_key != operation_key:
+            return None
+        return SmtRackBinSchedulingDecision(
+            kind="BLOCKED",
+            reason_code="RACK_OPERATION_PENDING",
+            message="SMT 货架 operation 仍在等待中，不重复创建换架请求",
+        )
 
     def _active_rack_is_empty(
         self,
@@ -672,10 +711,9 @@ class SmtRackBinSchedulingService:
 
     def _target_code(self, context: Mapping[str, Any]) -> str | None:
         keys = (
+            "wms_rcs_rack_operation_url",
             "wms_rcs_rack_supply_url",
-            "rack_supply_target_code",
-            "wms_rcs_rack_exchange_url",
-            "rack_exchange_target_code",
+            "rack_operation_target_code",
             "wms_rcs_target_code",
         )
         value = self._first_text(context, keys)
@@ -874,14 +912,28 @@ class SmtRackBinSchedulingService:
             else None
         )
 
-    def _target_position_code(self, context: Mapping[str, Any]) -> str | None:
-        rack_supply = context.get("rack_supply") or context.get("rack_exchange")
-        if isinstance(rack_supply, Mapping):
-            value = self._first_text(cast("Mapping[str, Any]", rack_supply), ("target_position_code", "position_code"))
+    def _work_position_code(self, context: Mapping[str, Any]) -> str:
+        rack_operation = context.get("rack_operation")
+        if isinstance(rack_operation, Mapping):
+            value = self._first_text(
+                cast("Mapping[str, Any]", rack_operation),
+                ("work_position_code", "target_position_code", "position_code"),
+            )
             if value is not None:
                 return value
 
-        return self._first_text(context, ("target_position_code", "position_code"))
+        return self._first_text(context, ("work_position_code", "target_position_code", "position_code")) or (
+            self.DEFAULT_WORK_POSITION_CODE
+        )
+
+    def _new_rack_kind(self, context: Mapping[str, Any]) -> str:
+        return self._first_text(context, ("new_rack_kind", "rack_kind")) or self.DEFAULT_NEW_RACK_KIND
+
+    def _move_out_target_position_role(self, context: Mapping[str, Any]) -> str:
+        return (
+            self._first_text(context, ("move_out_target_position_role", "target_position_role"))
+            or self.DEFAULT_MOVE_OUT_TARGET_POSITION_ROLE
+        )
 
     def _trace_id(self, context: Mapping[str, Any]) -> str | None:
         keys = ("trace_id", "trace_code")
@@ -900,7 +952,7 @@ class SmtRackBinSchedulingService:
                 return str(value)
         return None
 
-    def _dispatch_key(
+    def _operation_key(
         self,
         *,
         context: Mapping[str, Any],
@@ -913,12 +965,19 @@ class SmtRackBinSchedulingService:
             if active_rack is not None:
                 rack_id = str(active_rack.get("rack_id") or active_rack.get("rack_code") or "")
             token = f"{material.get('PkgID')}:{rack_id}"
-        return f"external:smt_classifier:{token}:RACK_SUPPLY"
+        return f"external:smt_classifier:{token}:RACK_OPERATION"
 
     def _context_dispatch_token(self, context: Mapping[str, Any]) -> str | None:
         value = self._first_text(
             context,
-            ("dispatch_key", "trace_id", "trace_code", "session_id", "session_code", "workline_session_id"),
+            (
+                "operation_key",
+                "trace_id",
+                "trace_code",
+                "session_id",
+                "session_code",
+                "workline_session_id",
+            ),
         )
         if value is not None:
             return value
@@ -926,7 +985,7 @@ class SmtRackBinSchedulingService:
         session = context.get("session")
         return (
             self._first_text(
-                cast("Mapping[str, Any]", session), ("dispatch_key", "trace_id", "session_id", "id", "code")
+                cast("Mapping[str, Any]", session), ("operation_key", "trace_id", "session_id", "id", "code")
             )
             if isinstance(session, Mapping)
             else None
@@ -940,6 +999,6 @@ __all__ = [
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackSupplyRequest",
+    "SmtRackOperationRequest",
     "smt_rack_bin_scheduling_service",
 ]

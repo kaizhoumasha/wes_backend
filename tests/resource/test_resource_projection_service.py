@@ -13,6 +13,7 @@ from src.app.resource.models import (
     RackBinMountStatus,
     RackKind,
     RackPlacement,
+    RackPlacementStatus,
     ResourceSourceSystem,
     ResourceStateEvent,
     ResourceStateEventType,
@@ -41,31 +42,77 @@ class RecordingRackPlacementRepo:
         *,
         active_by_rack: RackPlacement | None = None,
         active_by_position: RackPlacement | None = None,
+        active_by_position_list: list[RackPlacement] | None = None,
     ) -> None:
         self.active_by_rack = active_by_rack
         self.active_by_position = active_by_position
+        self.active_by_position_list = active_by_position_list
         self.created: list[dict[str, Any]] = []
+        self.updated: list[tuple[int, dict[str, Any]]] = []
 
     async def get_active_by_rack_code(self, _db: object, rack_code: str) -> RackPlacement | None:
-        assert rack_code == "RACK-001"
-        return self.active_by_rack
+        if self.active_by_rack is not None and self.active_by_rack.rack_code == rack_code:
+            return self.active_by_rack
+        return None
 
-    async def get_active_by_workline_position(
+    async def list_active_by_workline_position(
         self,
         _db: object,
         *,
         workline_code: str,
         position_code: str,
-    ) -> RackPlacement | None:
+    ) -> list[RackPlacement]:
         assert (workline_code, position_code) == ("SMT_SORTER_01", "SINGLE_LAYER_A")
-        return self.active_by_position
+        if self.active_by_position_list is not None:
+            return self.active_by_position_list
+        return [self.active_by_position] if self.active_by_position is not None else []
+
+    async def count_active_by_workline_position(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> int:
+        return len(
+            await self.list_active_by_workline_position(
+                _db,
+                workline_code=workline_code,
+                position_code=position_code,
+            )
+        )
 
     async def create(self, _db: object, data: dict[str, Any]) -> RackPlacement:
         self.created.append(data)
         return RackPlacement(**data)
 
+    async def update(self, _db: object, id: int, data: dict[str, Any]) -> RackPlacement | None:
+        self.updated.append((id, data))
+        candidates = [
+            placement
+            for placement in [
+                self.active_by_rack,
+                self.active_by_position,
+                *(self.active_by_position_list or []),
+            ]
+            if placement is not None and getattr(placement, "id", None) == id
+        ]
+        if not candidates:
+            return None
+        placement = candidates[0]
+        for key, value in data.items():
+            setattr(placement, key, value)
+        return placement
+
 
 class RecordingRackPositionService:
+    def __init__(self, *, capacity: int = 1, enabled: bool = True) -> None:
+        self.capacity = capacity
+        self.enabled = enabled
+        self.locked_calls: list[tuple[str, str, RackKind]] = []
+        self.locked_capacity_calls: list[tuple[str, str, RackKind]] = []
+        self.regular_calls: list[tuple[str, str, RackKind]] = []
+
     async def require_enabled_position(
         self,
         _db: object,
@@ -74,19 +121,46 @@ class RecordingRackPositionService:
         position_code: str,
         rack_kind: RackKind,
     ) -> SimpleNamespace:
+        self.regular_calls.append((workline_code, position_code, rack_kind))
+        raise AssertionError("projection must use locked position lookup")
+
+    async def require_enabled_position_for_update(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+        rack_kind: RackKind,
+    ) -> SimpleNamespace:
+        self.locked_calls.append((workline_code, position_code, rack_kind))
+        raise AssertionError("projection must use locked capacity lookup")
+
+    async def require_position_capacity_for_update(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+        rack_kind: RackKind,
+    ) -> tuple[SimpleNamespace, int]:
+        self.locked_capacity_calls.append((workline_code, position_code, rack_kind))
         assert (workline_code, position_code, rack_kind) == (
             "SMT_SORTER_01",
             "SINGLE_LAYER_A",
             RackKind.SINGLE_LAYER,
         )
-        return SimpleNamespace(
+        if not self.enabled:
+            raise ValueError("workline rack position disabled: SMT_SORTER_01/SINGLE_LAYER_A")
+        position = SimpleNamespace(
             workline_id=1001,
             workline_code=workline_code,
             position_code=position_code,
-            position_role="OUTPUT_BUFFER",
+            position_role="SMT_SORTER_STATION",
+            capacity=self.capacity,
             logic_location_code="SMT_SORTER_01_SINGLE_A",
             external_location_code="RCS-SINGLE-A",
         )
+        return position, self.capacity
 
 
 class RecordingBinMaterialMountRepo:
@@ -289,6 +363,27 @@ def _rack_bin_mount(**overrides: Any) -> RackBinMount:
     return RackBinMount(**values)
 
 
+def _rack_placement(**overrides: Any) -> RackPlacement:
+    values: dict[str, Any] = {
+        "id": 7101,
+        "rack_code": "RACK-001",
+        "rack_kind": RackKind.SINGLE_LAYER,
+        "location_code": "SMT_SORTER_01_SINGLE_A",
+        "workline_id": 1001,
+        "workline_code": "SMT_SORTER_01",
+        "position_code": "SINGLE_LAYER_A",
+        "position_role": "SMT_SORTER_STATION",
+        "logic_location_code": "SMT_SORTER_01_SINGLE_A",
+        "external_location_code": "RCS-SINGLE-A",
+        "source_system": ResourceSourceSystem.WMS,
+        "source_event_id": "old-event",
+        "started_at": datetime(2026, 5, 18, 8, 0, 0),
+        "ended_at": None,
+    }
+    values.update(overrides)
+    return RackPlacement(**values)
+
+
 def test_event_code_distinguishes_long_source_event_ids_by_resource_code() -> None:
     source_event_id = "WMS-RACK-ARRIVED-" + ("X" * 190)
 
@@ -315,10 +410,11 @@ def test_event_code_distinguishes_long_source_event_ids_by_resource_code() -> No
 async def test_record_rack_arrived_at_workline_position_projects_active_placement() -> None:
     events = RecordingStateEventRepo()
     placements = RecordingRackPlacementRepo()
+    positions = RecordingRackPositionService()
     service = ResourceProjectionService(
         state_event_repo=events,
         rack_placement_repo=placements,
-        rack_position_service=RecordingRackPositionService(),
+        rack_position_service=positions,
     )
 
     result = await service.record_rack_arrived_at_workline_position(
@@ -342,6 +438,205 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
     assert placements.created[0]["workline_code"] == "SMT_SORTER_01"
     assert placements.created[0]["position_code"] == "SINGLE_LAYER_A"
     assert placements.created[0]["logic_location_code"] == "SMT_SORTER_01_SINGLE_A"
+    assert positions.locked_capacity_calls == [("SMT_SORTER_01", "SINGLE_LAYER_A", RackKind.SINGLE_LAYER)]
+    assert positions.locked_calls == []
+    assert positions.regular_calls == []
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_allows_second_rack_when_position_capacity_two() -> None:
+    placements = RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(capacity=2),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-002",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-002",
+        idempotency_key="RACK_ARRIVED:wms-event-002:RACK-002",
+        occurred_at=datetime(2026, 5, 18, 9, 1, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert placements.created[0]["rack_code"] == "RACK-002"
+    assert placements.created[0]["position_code"] == "SINGLE_LAYER_A"
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_reconciles_when_capacity_exhausted() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    placements = RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(capacity=1),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-002",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-002",
+        idempotency_key="RACK_ARRIVED:wms-event-002:RACK-002",
+        occurred_at=datetime(2026, 5, 18, 9, 1, 0),
+        workline_id=1001,
+        workline_session_id=2001,
+        trace_id="trace-002",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "WORKLINE_POSITION_CAPACITY_EXHAUSTED"
+    assert placements.created == []
+    assert runtime_holds.created[0]["source_reason"] == "WORKLINE_POSITION_CAPACITY_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_releases_declared_old_rack_before_capacity_check() -> None:
+    old_placement = _rack_placement(id=7101, rack_code="RACK-OLD")
+    placements = RecordingRackPlacementRepo(active_by_position_list=[old_placement])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(capacity=1),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-NEW",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-replace-001",
+        idempotency_key="RACK_ARRIVED:wms-event-replace-001:RACK-NEW",
+        occurred_at=datetime(2026, 5, 18, 9, 1, 0),
+        released_rack_codes=["RACK-OLD"],
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert placements.updated == [
+        (
+            7101,
+            {
+                "placement_status": RackPlacementStatus.DEPARTED.value,
+                "ended_at": datetime(2026, 5, 18, 9, 1, 0),
+            },
+        )
+    ]
+    assert old_placement.placement_status == RackPlacementStatus.DEPARTED.value
+    assert placements.created[0]["rack_code"] == "RACK-NEW"
+    assert placements.created[0]["position_code"] == "SINGLE_LAYER_A"
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_reconciles_when_position_disabled() -> None:
+    events = RecordingStateEventRepo()
+    runtime_holds = RecordingRuntimeHoldCreator()
+    placements = RecordingRackPlacementRepo()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(enabled=False),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-002",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-disabled-001",
+        idempotency_key="RACK_ARRIVED:wms-event-disabled-001:RACK-002",
+        occurred_at=datetime(2026, 5, 18, 9, 1, 0),
+        workline_id=1001,
+        workline_session_id=2001,
+        trace_id="trace-disabled",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "WORKLINE_RACK_POSITION_UNAVAILABLE"
+    assert placements.created == []
+    assert "validation_error" in events.created[0]["payload_json"]
+    assert runtime_holds.created[0]["source_reason"] == "WORKLINE_RACK_POSITION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_is_idempotent_for_same_rack_same_position() -> None:
+    active = _rack_placement()
+    placements = RecordingRackPlacementRepo(active_by_rack=active, active_by_position_list=[active])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(capacity=1),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-001-repeat",
+        idempotency_key="RACK_ARRIVED:wms-event-001-repeat:RACK-001",
+        occurred_at=datetime(2026, 5, 18, 9, 2, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert result.projection is active
+    assert placements.created == []
+    assert placements.updated == []
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_moves_same_rack_from_old_position() -> None:
+    active = _rack_placement(
+        id=7102,
+        workline_code="SMT_SORTER_01",
+        position_code="OLD_POSITION",
+        location_code="OLD_POSITION",
+    )
+    placements = RecordingRackPlacementRepo(active_by_rack=active, active_by_position_list=[])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(capacity=1),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-move-001",
+        idempotency_key="RACK_ARRIVED:wms-event-move-001:RACK-001",
+        occurred_at=datetime(2026, 5, 18, 9, 3, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert placements.updated[0][0] == 7102
+    assert placements.updated[0][1]["ended_at"] == datetime(2026, 5, 18, 9, 3, 0)
+    assert placements.created[0]["rack_code"] == "RACK-001"
+    assert placements.created[0]["position_code"] == "SINGLE_LAYER_A"
 
 
 @pytest.mark.asyncio

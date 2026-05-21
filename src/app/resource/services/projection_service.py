@@ -69,6 +69,29 @@ def _db_time(value: Any) -> Any:
     return timezone.to_db_datetime(value) or timezone.now_for_db()
 
 
+def _normalized_text_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str | bytes):
+        candidates = [values]
+    else:
+        try:
+            candidates = list(values)
+        except TypeError:
+            candidates = [values]
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
 def _positive_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -158,6 +181,7 @@ class ResourceProjectionService:
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
         contract_version: str | None = None,
+        released_rack_codes: Sequence[str] | None = None,
     ) -> ResourceProjectionResult:
         """记录货架到达工作线停靠位事实，并更新 active placement。"""
 
@@ -165,15 +189,82 @@ class ResourceProjectionService:
         if existing_event is not None:
             return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
 
-        position = await self.rack_position_service.require_enabled_position(
-            db,
-            workline_code=workline_code,
-            position_code=position_code,
-            rack_kind=rack_kind,
-        )
+        occurred_at_for_db = _db_time(occurred_at)
+        normalized_released_rack_codes = [
+            released_rack_code
+            for released_rack_code in _normalized_text_list(released_rack_codes)
+            if released_rack_code != rack_code
+        ]
+        try:
+            position, capacity = await self.rack_position_service.require_position_capacity_for_update(
+                db,
+                workline_code=workline_code,
+                position_code=position_code,
+                rack_kind=rack_kind,
+            )
+        except ValueError as exc:
+            event = await self.state_event_repo.create(
+                db,
+                {
+                    "event_code": self._event_code(
+                        event_type=ResourceStateEventType.RACK_ARRIVED,
+                        source_system=source_system,
+                        source_event_id=source_event_id,
+                        resource_code=rack_code,
+                    ),
+                    "idempotency_key": idempotency_key,
+                    "event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                    "resource_type": ResourceType.RACK.value,
+                    "resource_code": rack_code,
+                    "source_system": source_system,
+                    "source_event_id": source_event_id,
+                    "source_version": source_version,
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "workline_id": workline_id,
+                    "workline_code": workline_code,
+                    "position_code": position_code,
+                    "logic_location_code": None,
+                    "external_location_code": external_location_code,
+                    "payload_json": {
+                        "rack_code": rack_code,
+                        "rack_kind": rack_kind.value,
+                        "workline_code": workline_code,
+                        "position_code": position_code,
+                        "source_task_id": source_task_id,
+                        "external_location_code": external_location_code,
+                        "released_rack_codes": normalized_released_rack_codes,
+                        "validation_error": str(exc),
+                    },
+                    "occurred_at": occurred_at_for_db,
+                    "received_at": timezone.now_for_db(),
+                },
+            )
+            reason_code = "WORKLINE_RACK_POSITION_UNAVAILABLE"
+            runtime_hold = await self._create_placement_reconciliation_hold(
+                db,
+                reason_code=reason_code,
+                rack_code=rack_code,
+                incoming={"workline_code": workline_code, "position_code": position_code},
+                active_placements=[],
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+                evidence={"validation_error": str(exc)},
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code=reason_code,
+                message=f"工作线停靠位不可用，已追加事实但不创建当前投影: {exc}",
+            )
+
         resolved_workline_id = workline_id if workline_id is not None else getattr(position, "workline_id", None)
         resolved_external_location = external_location_code or getattr(position, "external_location_code", None)
-        occurred_at_for_db = _db_time(occurred_at)
         event = await self.state_event_repo.create(
             db,
             {
@@ -204,6 +295,7 @@ class ResourceProjectionService:
                     "position_code": position_code,
                     "source_task_id": source_task_id,
                     "external_location_code": resolved_external_location,
+                    "released_rack_codes": normalized_released_rack_codes,
                 },
                 "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
@@ -212,63 +304,77 @@ class ResourceProjectionService:
 
         active_by_rack = await self.rack_placement_repo.get_active_by_rack_code(db, rack_code)
         if active_by_rack is not None and (
-            active_by_rack.workline_code != workline_code or active_by_rack.position_code != position_code
+            active_by_rack.workline_code == workline_code and active_by_rack.position_code == position_code
         ):
-            runtime_hold = await self._create_placement_conflict_hold(
-                db,
-                reason_code="RACK_PLACEMENT_CONFLICT",
-                rack_code=rack_code,
-                active_placement=active_by_rack,
-                incoming={"workline_code": workline_code, "position_code": position_code},
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=resolved_workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
-            )
-            return ResourceProjectionResult(
-                status=ResourceProjectionStatus.RECONCILING,
-                event=event,
-                projection=active_by_rack,
-                runtime_hold=runtime_hold,
-                reason_code="RACK_PLACEMENT_CONFLICT",
-                message="货架已有不同 active 工作线停靠位，已追加事实但不覆盖当前投影",
-            )
-
-        active_by_position = await self.rack_placement_repo.get_active_by_workline_position(
-            db,
-            workline_code=workline_code,
-            position_code=position_code,
-        )
-        if active_by_position is not None and active_by_position.rack_code != rack_code:
-            runtime_hold = await self._create_placement_conflict_hold(
-                db,
-                reason_code="WORKLINE_POSITION_OCCUPIED",
-                rack_code=rack_code,
-                active_placement=active_by_position,
-                incoming={"workline_code": workline_code, "position_code": position_code},
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=resolved_workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
-            )
-            return ResourceProjectionResult(
-                status=ResourceProjectionStatus.RECONCILING,
-                event=event,
-                projection=active_by_position,
-                runtime_hold=runtime_hold,
-                reason_code="WORKLINE_POSITION_OCCUPIED",
-                message="工作线停靠位已有其他 active 货架，已追加事实但不覆盖当前投影",
-            )
-
-        if active_by_rack is not None:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.PROJECTED,
                 event=event,
                 projection=active_by_rack,
+            )
+
+        active_placements = await self.rack_placement_repo.list_active_by_workline_position(
+            db,
+            workline_code=workline_code,
+            position_code=position_code,
+        )
+        if normalized_released_rack_codes:
+            released_rack_code_set = set(normalized_released_rack_codes)
+            remaining_active_placements: list[RackPlacement] = []
+            for active_placement in active_placements:
+                active_rack_code = str(getattr(active_placement, "rack_code", "")).strip()
+                if active_rack_code in released_rack_code_set:
+                    active_placement_id = getattr(active_placement, "id", None)
+                    if active_placement_id is None:
+                        raise ValueError(f"active rack placement missing id: {active_rack_code}")
+                    await self.rack_placement_repo.update(
+                        db,
+                        active_placement_id,
+                        {
+                            "placement_status": RackPlacementStatus.DEPARTED.value,
+                            "ended_at": occurred_at_for_db,
+                        },
+                    )
+                    continue
+                remaining_active_placements.append(active_placement)
+            active_placements = remaining_active_placements
+
+        active_count = len(active_placements)
+        if active_count >= capacity:
+            reason_code = "WORKLINE_POSITION_CAPACITY_EXHAUSTED"
+            runtime_hold = await self._create_placement_reconciliation_hold(
+                db,
+                reason_code=reason_code,
+                rack_code=rack_code,
+                incoming={"workline_code": workline_code, "position_code": position_code},
+                active_placements=active_placements,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=resolved_workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+                evidence={"capacity": capacity, "active_count": active_count},
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                projection=active_placements[0] if active_placements else None,
+                runtime_hold=runtime_hold,
+                reason_code=reason_code,
+                message="工作线停靠位 active 货架数已达到容量，已追加事实但不创建当前投影",
+            )
+
+        if active_by_rack is not None:
+            active_rack_id = getattr(active_by_rack, "id", None)
+            if active_rack_id is None:
+                raise ValueError(f"active rack placement missing id: {rack_code}")
+            await self.rack_placement_repo.update(
+                db,
+                active_rack_id,
+                {
+                    "placement_status": RackPlacementStatus.DEPARTED.value,
+                    "ended_at": occurred_at_for_db,
+                },
             )
 
         projection = await self.rack_placement_repo.create(
@@ -624,6 +730,7 @@ class ResourceProjectionService:
                 source_version=payload_json.get("source_version"),
                 source_task_id=payload_json.get("source_task_id"),
                 external_location_code=payload_json.get("external_location_code"),
+                released_rack_codes=payload_json.get("released_rack_codes"),
                 trace_id=trace_id,
                 session_id=session_id,
                 workline_id=workline_id,
@@ -946,6 +1053,45 @@ class ResourceProjectionService:
                 "incoming_workline_code": incoming.get("workline_code"),
                 "incoming_position_code": incoming.get("position_code"),
             },
+        )
+
+    async def _create_placement_reconciliation_hold(
+        self,
+        db: AsyncSession,
+        *,
+        reason_code: str,
+        rack_code: str,
+        incoming: dict[str, Any],
+        active_placements: Sequence[RackPlacement],
+        source_event_id: str,
+        trace_id: str | None,
+        session_id: int | None,
+        workline_id: int | None,
+        plugin_key: str | None,
+        contract_version: str | None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Any | None:
+        if workline_id is None:
+            return None
+        active_rack_codes = [placement.rack_code for placement in active_placements]
+        hold_evidence = {
+            "resource_type": ResourceType.RACK.value,
+            "rack_code": rack_code,
+            "active_rack_codes": active_rack_codes,
+            "incoming_workline_code": incoming.get("workline_code"),
+            "incoming_position_code": incoming.get("position_code"),
+        }
+        hold_evidence.update(evidence or {})
+        return await self.runtime_hold_creator.create_for_resource_reconciliation(
+            db,
+            workline_id=workline_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_reason=reason_code,
+            source_event_id=source_event_id,
+            evidence=hold_evidence,
         )
 
     async def _create_material_mount_conflict_hold(

@@ -15,7 +15,7 @@ from .services import (
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
-    SmtRackSupplyRequest,
+    SmtRackOperationRequest,
     barcode_decision_service,
 )
 
@@ -26,6 +26,6 @@ __all__ = [
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackSupplyRequest",
+    "SmtRackOperationRequest",
     "barcode_decision_service",
 ]

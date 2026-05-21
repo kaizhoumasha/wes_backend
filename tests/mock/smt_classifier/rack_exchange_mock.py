@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from uvicorn import Config, Server
 
 project_root = Path(__file__).parent.parent.parent.parent
@@ -202,15 +202,29 @@ def _build_mixed_rack_cells(rack_id: str) -> list[JsonDict]:
     return cells
 
 
+class RackExchangeAction(BaseModel):
+    action: str
+    required: bool = True
+
+
 class RackExchangeRequest(BaseModel):
-    request_type: str = "SMT_RACK_SUPPLY"
+    request_type: str = "SMT_RACK_OPERATION"
     dispatch_key: str
     trace_id: str | None = None
     material: JsonDict = Field(default_factory=dict)
     current_rack_snapshot: JsonDict = Field(default_factory=dict)
-    actions: list[str] = Field(default_factory=list)
+    actions: list[RackExchangeAction] = Field(default_factory=list)
     resume_callback_type: str = "WMS_RACK_ARRIVED"
     reason_code: str | None = None
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def _normalize_actions(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [value]
+        return value
 
 
 class RackExchangeResponse(BaseModel):
@@ -279,7 +293,7 @@ class RackExchangeSimulator:
                 record=record,
                 callback_type=callback_type,
                 extra={
-                    "reason_code": request.reason_code or "RCS_RACK_SUPPLY_FAILED",
+                    "reason_code": request.reason_code or "RCS_RACK_OPERATION_FAILED",
                     "reason_message": "WMS/RCS mock rack supply failed",
                 },
             )

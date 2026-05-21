@@ -121,7 +121,6 @@ class TestWorklineTraceApi:
             resource_state_events=[],
             rack_releases=[],
             rack_release_bin_snapshots=[],
-            full_box_exchange_tasks=[],
             wms_writeback_evidence=[],
             rack_bin_mounts=[],
         )

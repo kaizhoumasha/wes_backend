@@ -423,11 +423,10 @@ class RackPlacement(RackPlacementBase, DataTableMixin, table=True):
             postgresql_where="ended_at IS NULL",
         ),
         Index(
-            "ux_resource_rack_placements_active_workline_position",
+            "ix_resource_rack_placements_workline_position_active",
             "workline_code",
             "position_code",
-            unique=True,
-            postgresql_where="ended_at IS NULL AND workline_code IS NOT NULL AND position_code IS NOT NULL",
+            "ended_at",
         ),
         Index("ix_resource_rack_placements_location_active", "location_code", "ended_at"),
     )

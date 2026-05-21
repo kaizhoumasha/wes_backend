@@ -21,7 +21,7 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
-    RuntimeIntentKind.RACK_TASK_REQUEST,
+    RuntimeIntentKind.RACK_OPERATION_REQUEST,
     RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.RESOURCE_FACT,
     RuntimeIntentKind.RESOURCE_RESERVATION,
@@ -47,9 +47,11 @@ def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
 
 
 def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
-    return intent.kind in {RuntimeIntentKind.COMMAND, RuntimeIntentKind.EXTERNAL_REQUEST} or (
-        intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None
-    )
+    return intent.kind in {
+        RuntimeIntentKind.COMMAND,
+        RuntimeIntentKind.EXTERNAL_REQUEST,
+        RuntimeIntentKind.RACK_OPERATION_REQUEST,
+    } or (intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None)
 
 
 def _command_producing_intent_to_command_intent(intent: RuntimeIntent) -> RuntimeIntent:
@@ -102,7 +104,7 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
         if _is_command_producing_intent(intent):
             command_producing_count += 1
             command_producing_seen = True
-            if intent.kind != RuntimeIntentKind.EXTERNAL_REQUEST:
+            if intent.kind in {RuntimeIntentKind.COMMAND, RuntimeIntentKind.CONTINUE_NEXT}:
                 _validate_command_destination(_command_producing_intent_to_command_intent(intent))
 
         if intent.kind in _TERMINAL_INTENT_KINDS and index != len(intents) - 1:
@@ -140,6 +142,20 @@ def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
     return getattr(trace, "trace_id", None) or ctx.get("trace_id")
 
 
+def _non_empty_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _required_payload_text(payload_json: Mapping[str, Any], field_name: str) -> str:
+    value = _non_empty_text(payload_json.get(field_name))
+    if value is None:
+        raise ValueError(f"RACK_OPERATION_REQUEST intent requires payload.{field_name}")
+    return value
+
+
 def _result_status_value(result: Any) -> str | None:
     status = getattr(result, "status", None)
     raw = getattr(status, "value", status)
@@ -174,12 +190,12 @@ class RuntimeIntentEffectApplier:
     def __init__(
         self,
         *,
-        rack_task_service: Any | None = None,
+        rack_operation_service: Any | None = None,
         inbox_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
     ) -> None:
-        self._rack_task_service = rack_task_service
+        self._rack_operation_service = rack_operation_service
         self._inbox_service = inbox_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
@@ -212,8 +228,8 @@ class RuntimeIntentEffectApplier:
                 await self._apply_external_request(ctx, intent)
                 continue
 
-            if intent.kind == RuntimeIntentKind.RACK_TASK_REQUEST:
-                await self._apply_rack_task_request(ctx, intent)
+            if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
+                await self._apply_rack_operation_request(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
@@ -462,73 +478,107 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
 
-    async def _apply_rack_task_request(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.outbox import DispatchType, TargetType, WorklineOutbox
+    async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
             TimelineStatus,
         )
+        from src.app.workline.services.rack_operation_service import WorklineRackOperationType
         from src.celery_app.tasks import workline as workline_effects
 
-        dispatch_key = str(intent.dispatch_key)
-        target_code = str(intent.target_code)
         payload_json = dict(intent.payload_json)
+        operation_type = str(intent.action)
+        operation_key = str(intent.idempotency_key)
+        target_code = str(intent.target_code)
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
 
-        outbox = WorklineOutbox(
-            session_id=None,
-            workline_id=session.workline_id,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            dispatch_key=dispatch_key,
-            target_type=TargetType.HTTP_ENDPOINT,
-            target_code=target_code,
-            payload_json=payload_json,
-        )
-        ctx["db"].add(outbox)
-        task = await self._record_rack_task_request(
-            ctx,
-            outbox=outbox,
-            task_type=str(intent.action),
-            task_key=str(intent.idempotency_key),
-            dispatch_key=dispatch_key,
-            target_code=target_code,
-            payload_json=payload_json,
-            timeout_seconds=timeout_seconds,
-            source_system=intent.source_system,
-            rack_code=intent.rack_code,
-            position_code=intent.position_code,
+        if operation_type != WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value:
+            raise ValueError(f"unsupported rack operation request type: {operation_type}")
+
+        service = self._rack_operation_service
+        if service is None:
+            from src.app.workline.services import workline_rack_operation_service
+
+            service = workline_rack_operation_service
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))
+        if trace_id is None:
+            raise ValueError("RACK_OPERATION_REQUEST intent requires trace_id")
+        tasks = await service.request_replace_classifier_work_rack(
+            ctx_map["db"],
+            operation_key=operation_key,
+            workline=ctx_map["workline"],
+            session=session,
+            work_position_code=_required_payload_text(payload_json, "work_position_code"),
+            new_rack_kind=_required_payload_text(payload_json, "new_rack_kind"),
+            move_out_target_position_role=_required_payload_text(payload_json, "move_out_target_position_role"),
+            supply_target_code=target_code,
+            trace_id=trace_id,
         )
 
-        context_patch = dict(intent.context_patch)
-        task_id = getattr(task, "id", None)
-        if isinstance(task_id, int):
-            context_patch["waiting_rack_task_id"] = task_id
-        context_patch["waiting_rack_task_key"] = str(intent.idempotency_key)
-        _merge_context_patch(ctx, context_patch)
-        workline_effects._apply_context_patch(ctx)
+        self._mark_session_waiting_for_rack_operation(
+            ctx,
+            operation_key=operation_key,
+            operation_type=operation_type,
+            task_count=len(tasks),
+            timeout_seconds=timeout_seconds,
+        )
 
         workline_effects._clear_session_failure(session)
-        workline_effects._clear_session_wait(session)
-        session.status = "RUNNING"
-        session.ended_at = None
         await workline_effects._emit_timeline(
             ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
-            payload=workline_effects._external_decision_timeline_payload(
+            stage=TimelineStage.WAITING,
+            action_type=TimelineActionType.WAIT_STARTED,
+            payload=workline_effects._wait_timeline_payload(
                 ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
+                wait_type="RACK_OPERATION",
+                wait_token=operation_key,
+                deadline_seconds=timeout_seconds,
             ),
+            from_status=ctx["current_status"],
+            to_status=session.status,
             actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code=intent.source_system or "EXTERNAL_SYSTEM",
+            actor_code="WMS_RCS",
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
             status=TimelineStatus.PENDING,
         )
+
+    def _mark_session_waiting_for_rack_operation(
+        self,
+        ctx: Any,
+        *,
+        operation_key: str,
+        operation_type: str,
+        task_count: int,
+        timeout_seconds: int,
+    ) -> None:
+        session = ctx["session"]
+        context_json = dict(getattr(session, "context_json", None) or {})
+        existing_operation = context_json.get("rack_operation")
+        rack_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
+        rack_operation.update(
+            {
+                "operation_key": operation_key,
+                "operation_type": operation_type,
+                "status": "PENDING",
+                "task_count": task_count,
+            }
+        )
+        context_json["waiting_rack_operation_key"] = operation_key
+        context_json["rack_operation"] = rack_operation
+        session.context_json = context_json
+        ctx["session_ctx"] = dict(context_json)
+        session.status = "WAITING_EXTERNAL"
+        session.current_wait_type = "RACK_OPERATION"
+        session.waiting_since = ctx["now"]
+        session.awaiting_command_id = None
+        session.current_wait_timeout_seconds = timeout_seconds
+        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
+        session.ended_at = None
 
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
         service = self._inbox_service
@@ -586,45 +636,6 @@ class RuntimeIntentEffectApplier:
             payload_json=dict(intent.payload_json),
             idempotency_key=intent.idempotency_key,
             trace_id=_ctx_trace_id(ctx_map),
-        )
-
-    async def _record_rack_task_request(
-        self,
-        ctx: Any,
-        *,
-        outbox: Any,
-        task_type: str,
-        task_key: str,
-        dispatch_key: str,
-        target_code: str,
-        payload_json: dict[str, Any],
-        timeout_seconds: int,
-        source_system: str | None,
-        rack_code: str | None,
-        position_code: str | None,
-    ) -> Any:
-        service = self._rack_task_service
-        if service is None:
-            from src.app.workline.services import workline_rack_task_service
-
-            service = workline_rack_task_service
-
-        ctx_map = cast("Mapping[str, Any]", ctx)
-        return await service.record_requested_from_rack_task_request(
-            db=ctx_map["db"],
-            session=ctx_map["session"],
-            workline=ctx_map["workline"],
-            outbox=outbox,
-            task_type=task_type,
-            task_key=task_key,
-            dispatch_key=dispatch_key,
-            target_code=target_code,
-            payload_json=payload_json,
-            timeout_seconds=timeout_seconds,
-            source_system=source_system,
-            trace_id=_ctx_trace_id(ctx_map),
-            rack_code=rack_code,
-            position_code=position_code,
         )
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:

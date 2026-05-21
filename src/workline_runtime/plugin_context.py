@@ -40,12 +40,9 @@ def _safe_dict(value: Any) -> dict[str, Any]:
 
 def _source_device_code_from_session(session: Any | None) -> str | None:
     context = _safe_dict(getattr(session, "context_json", None))
-    rack_supply = _safe_dict(context.get("rack_supply"))
-    rack_exchange = _safe_dict(context.get("rack_exchange"))
-    return (
-        _safe_str(rack_supply.get("resume_source_device_code"))
-        or _safe_str(rack_exchange.get("resume_source_device_code"))
-        or _safe_str(context.get("resume_source_device_code"))
+    rack_operation = _safe_dict(context.get("rack_operation"))
+    return _safe_str(rack_operation.get("resume_source_device_code")) or _safe_str(
+        context.get("resume_source_device_code")
     )
 
 

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from src.app.resource.services import (
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
-    SmtRackSupplyRequest,
+    SmtRackOperationRequest,
     smt_rack_bin_scheduling_service,
 )
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
@@ -65,6 +65,32 @@ _WMS_RCS_CALLBACK_REQUIRED_FIELDS = (
     "timestamp",
     "signature",
 )
+_RACK_OPERATION_TASK_TYPES_BY_SEQUENCE = {
+    ("REPLACE_CLASSIFIER_WORK_RACK", 1): "MOVE_RACK",
+    ("REPLACE_CLASSIFIER_WORK_RACK", 2): "ALLOCATE_AND_MOVE_RACK",
+}
+_RACK_EXCHANGE_PROGRESS_CALLBACK_TYPES = frozenset({WMS_RACK_EXCHANGE_PROGRESS, "RCS_RACK_EXCHANGE_PROGRESS"})
+_RACK_ARRIVED_CALLBACK_TYPES = frozenset({WMS_RACK_ARRIVED, "RCS_RACK_ARRIVED"})
+_RACK_EXCHANGE_FAILED_CALLBACK_TYPES = frozenset({WMS_RACK_EXCHANGE_FAILED, "RCS_RACK_EXCHANGE_FAILED"})
+_RACK_OPERATION_CALLBACK_TYPES = (
+    _RACK_EXCHANGE_PROGRESS_CALLBACK_TYPES | _RACK_ARRIVED_CALLBACK_TYPES | _RACK_EXCHANGE_FAILED_CALLBACK_TYPES
+)
+_RACK_OPERATION_WAITING_STATUSES = frozenset(
+    {
+        "REQUESTED",
+        "PENDING",
+        "IN_PROGRESS",
+        "ACCEPTED",
+        "QUEUED",
+        "PHYSICAL_COMPLETED",
+        "RESOURCE_PROJECTED",
+        "WMS_CONFIRMED",
+    }
+)
+_RACK_OPERATION_PRE_PROJECTION_STATUSES = frozenset({"RECONCILING"})
+DEFAULT_CLASSIFIER_WORK_POSITION_CODE = "SINGLE_LAYER_A"
+DEFAULT_CLASSIFIER_NEW_RACK_KIND = "SINGLE_LAYER"
+DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE = "SMT_EMPTY_RACK_AREA"
 
 
 def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
@@ -150,7 +176,7 @@ def _resolve_pkg_id_from_result(result: NormalizedCommandResult) -> str | None:
     return cast("str | None", data.get("PkgID") or data.get("pkg_id") or None)
 
 
-def _normalize_rack_supply_request_fields(
+def _normalize_rack_operation_request_fields(
     value: Any,
     *,
     field_name: str,
@@ -165,7 +191,7 @@ def _normalize_rack_supply_request_fields(
         raise TypeError(f"{field_name}.payload must be a mapping")
 
     return (
-        str(request.get("dispatch_key") or ""),
+        str(request.get("operation_key") or ""),
         str(request.get("target_code") or ""),
         dict(cast("Mapping[str, Any]", payload)),
         int(request.get("timeout_seconds") or 1800),
@@ -173,16 +199,16 @@ def _normalize_rack_supply_request_fields(
     )
 
 
-def _normalize_rack_supply_request(value: Any) -> SmtRackSupplyRequest:
-    if isinstance(value, SmtRackSupplyRequest):
+def _normalize_rack_operation_request(value: Any) -> SmtRackOperationRequest:
+    if isinstance(value, SmtRackOperationRequest):
         return value
-    dispatch_key, target_code, payload, timeout_seconds, source_system = _normalize_rack_supply_request_fields(
+    operation_key, target_code, payload, timeout_seconds, source_system = _normalize_rack_operation_request_fields(
         value,
-        field_name="rack_supply_request",
-        type_name="SmtRackSupplyRequest",
+        field_name="rack_operation_request",
+        type_name="SmtRackOperationRequest",
     )
-    return SmtRackSupplyRequest(
-        dispatch_key=dispatch_key,
+    return SmtRackOperationRequest(
+        operation_key=operation_key,
         target_code=target_code,
         payload=payload,
         timeout_seconds=timeout_seconds,
@@ -194,7 +220,7 @@ def _normalize_scheduling_decision_kind(
     value: Any, default: SmtRackBinSchedulingDecisionKind
 ) -> SmtRackBinSchedulingDecisionKind:
     kind = str(value or default)
-    if kind not in {"ALLOCATED", "RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED", "BLOCKED"}:
+    if kind not in {"ALLOCATED", "RACK_OPERATION_REQUIRED", "BLOCKED"}:
         raise TypeError(f"unsupported bin scheduling decision kind: {kind}")
     return cast("SmtRackBinSchedulingDecisionKind", kind)
 
@@ -206,10 +232,10 @@ def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecisi
         raise TypeError("bin scheduling result must be a mapping or SmtRackBinSchedulingDecision")
 
     decision = cast("Mapping[str, Any]", value)
-    if "rack_supply_request" in decision:
+    if "rack_operation_request" in decision:
         return SmtRackBinSchedulingDecision(
-            kind=_normalize_scheduling_decision_kind(decision.get("kind"), "RACK_SUPPLY_REQUIRED"),
-            rack_supply_request=_normalize_rack_supply_request(decision["rack_supply_request"]),
+            kind=_normalize_scheduling_decision_kind(decision.get("kind"), "RACK_OPERATION_REQUIRED"),
+            rack_operation_request=_normalize_rack_operation_request(decision["rack_operation_request"]),
             reason_code=non_empty_str(decision.get("reason_code")),
             message=non_empty_str(decision.get("message")),
         )
@@ -224,8 +250,8 @@ def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecisi
             reason_code=reason_code,
             message=non_empty_str(decision.get("message")),
         )
-    if kind in {"RACK_EXCHANGE_REQUIRED", "RACK_SUPPLY_REQUIRED"}:
-        raise TypeError(f"{kind} bin scheduling result must include rack_supply_request")
+    if kind == "RACK_OPERATION_REQUIRED":
+        raise TypeError("RACK_OPERATION_REQUIRED bin scheduling result must include rack_operation_request")
     if kind is not None and kind != "ALLOCATED":
         raise TypeError(f"unsupported bin scheduling decision kind: {kind}")
 
@@ -268,8 +294,8 @@ def _merge_runtime_config_context(ctx: PluginContext, context: dict[str, Any]) -
         context["config"] = merged_config
 
 
-def _rack_supply_context(
-    request: SmtRackSupplyRequest,
+def _rack_operation_context(
+    request: SmtRackOperationRequest,
     *,
     pkg_id: str,
     reason_code: str | None,
@@ -283,7 +309,7 @@ def _rack_supply_context(
 
     context: dict[str, Any] = {
         "status": "REQUESTED",
-        "dispatch_key": request.dispatch_key,
+        "operation_key": request.operation_key,
         "target_code": request.target_code,
         "source_system": request.source_system,
         "reason_code": reason_code or non_empty_str(request.payload.get("reason_code")),
@@ -291,11 +317,14 @@ def _rack_supply_context(
         "pkg_id": pkg_id,
         "resume_callback_type": "WMS_RACK_ARRIVED",
     }
-    target_position_code = non_empty_str(request.payload.get("target_position_code")) or non_empty_str(
-        request.payload.get("position_code")
+    work_position_code = (
+        non_empty_str(request.payload.get("work_position_code"))
+        or non_empty_str(request.payload.get("target_position_code"))
+        or non_empty_str(request.payload.get("position_code"))
     )
-    if target_position_code is not None:
-        context["target_position_code"] = target_position_code
+    if work_position_code is not None:
+        context["work_position_code"] = work_position_code
+        context["target_position_code"] = work_position_code
     if resume_source_device_code is not None:
         context["resume_source_device_code"] = resume_source_device_code
     if resume_source_device_role is not None:
@@ -303,8 +332,44 @@ def _rack_supply_context(
     return context
 
 
-def _is_rack_supply_request(request: SmtRackSupplyRequest) -> bool:
-    return request.payload.get("request_type") == "SMT_RACK_SUPPLY"
+def _rack_operation_payload(
+    ctx: Any,
+    request: SmtRackOperationRequest,
+    *,
+    reason_code: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(request.payload)
+    payload["operation_type"] = "REPLACE_CLASSIFIER_WORK_RACK"
+    payload["operation_key"] = request.operation_key
+    work_position_code = (
+        non_empty_str(payload.get("work_position_code"))
+        or non_empty_str(payload.get("target_position_code"))
+        or non_empty_str(payload.get("position_code"))
+        or DEFAULT_CLASSIFIER_WORK_POSITION_CODE
+    )
+    payload["work_position_code"] = work_position_code
+    payload["new_rack_kind"] = (
+        non_empty_str(payload.get("new_rack_kind"))
+        or non_empty_str(payload.get("rack_kind"))
+        or DEFAULT_CLASSIFIER_NEW_RACK_KIND
+    )
+    payload["move_out_target_position_role"] = (
+        non_empty_str(payload.get("move_out_target_position_role"))
+        or non_empty_str(payload.get("target_position_role"))
+        or DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE
+    )
+    payload["target_code"] = request.target_code
+    resolved_reason_code = non_empty_str(payload.get("reason_code")) or reason_code
+    if resolved_reason_code is not None:
+        payload["reason_code"] = resolved_reason_code
+    trace_id = non_empty_str(payload.get("trace_id")) or non_empty_str(getattr(ctx, "trace_id", None))
+    if trace_id is not None:
+        payload["trace_id"] = trace_id
+    return payload
+
+
+def _is_rack_operation_request(request: SmtRackOperationRequest) -> bool:
+    return request.payload.get("request_type") == "SMT_RACK_OPERATION"
 
 
 def _validated_bin_location_or_block(
@@ -513,17 +578,21 @@ def _pick_failed_output_arm_intents(
     return [release_reservation, block_intent]
 
 
-def _rack_expected_position_code_from_supply(rack_supply: Mapping[str, Any]) -> str | None:
-    return non_empty_str(rack_supply.get("target_position_code")) or non_empty_str(rack_supply.get("position_code"))
+def _rack_expected_position_code_from_operation(rack_operation: Mapping[str, Any]) -> str | None:
+    return (
+        non_empty_str(rack_operation.get("work_position_code"))
+        or non_empty_str(rack_operation.get("target_position_code"))
+        or non_empty_str(rack_operation.get("position_code"))
+    )
 
 
-def _rack_position_code_from_supply(
-    rack_supply: Mapping[str, Any],
+def _rack_position_code_from_operation(
+    rack_operation: Mapping[str, Any],
     *,
     payload: Mapping[str, Any] | None = None,
 ) -> str:
     callback_position_code = non_empty_str(payload.get("position_code")) if payload is not None else None
-    return _rack_expected_position_code_from_supply(rack_supply) or callback_position_code or "SINGLE_LAYER_A"
+    return _rack_expected_position_code_from_operation(rack_operation) or callback_position_code or "SINGLE_LAYER_A"
 
 
 def _workline_code_from_context(ctx: PluginContext) -> str | None:
@@ -533,17 +602,78 @@ def _workline_code_from_context(ctx: PluginContext) -> str | None:
     )
 
 
-def _rack_workline_code_from_supply(ctx: PluginContext, rack_supply: Mapping[str, Any]) -> str:
-    return non_empty_str(rack_supply.get("workline_code")) or _workline_code_from_context(ctx) or ""
+def _rack_workline_code_from_operation(ctx: PluginContext, rack_operation: Mapping[str, Any]) -> str:
+    return non_empty_str(rack_operation.get("workline_code")) or _workline_code_from_context(ctx) or ""
 
 
-def _rack_supply_target_mismatch(
+def _rack_operation_expected_dispatch_keys(rack_operation: Mapping[str, Any]) -> set[str]:
+    dispatch_keys: set[str] = set()
+    for field_name in ("dispatch_key", "task_dispatch_key"):
+        dispatch_key = non_empty_str(rack_operation.get(field_name))
+        if dispatch_key is not None:
+            dispatch_keys.add(dispatch_key)
+
+    for field_name in ("dispatch_keys", "task_dispatch_keys", "required_task_dispatch_keys"):
+        raw_dispatch_keys = rack_operation.get(field_name)
+        if isinstance(raw_dispatch_keys, Sequence) and not isinstance(raw_dispatch_keys, (str, bytes)):
+            dispatch_keys.update(
+                dispatch_key
+                for raw_dispatch_key in raw_dispatch_keys
+                if (dispatch_key := non_empty_str(raw_dispatch_key)) is not None
+            )
+
+    operation_key = non_empty_str(rack_operation.get("operation_key"))
+    operation_type = non_empty_str(rack_operation.get("operation_type"))
+    raw_sequences = rack_operation.get("task_sequences")
+    if (
+        operation_key is None
+        or operation_type is None
+        or not isinstance(raw_sequences, Sequence)
+        or isinstance(raw_sequences, (str, bytes))
+    ):
+        return dispatch_keys
+
+    for raw_sequence in raw_sequences:
+        if isinstance(raw_sequence, bool):
+            continue
+        sequence_no = raw_sequence if isinstance(raw_sequence, int) else None
+        if sequence_no is None:
+            continue
+        task_type = _RACK_OPERATION_TASK_TYPES_BY_SEQUENCE.get((operation_type, sequence_no))
+        if task_type is not None:
+            dispatch_keys.add(f"rack-operation:{operation_key}:{sequence_no}:{task_type}")
+    return dispatch_keys
+
+
+def _rack_operation_released_rack_codes(rack_operation: Mapping[str, Any]) -> list[str]:
+    raw_codes = rack_operation.get("released_rack_codes") or rack_operation.get("move_out_rack_codes")
+    if raw_codes is None:
+        return []
+    if isinstance(raw_codes, str | bytes):
+        candidates = [raw_codes]
+    elif isinstance(raw_codes, Sequence):
+        candidates = list(raw_codes)
+    else:
+        candidates = [raw_codes]
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_code in candidates:
+        rack_code = non_empty_str(raw_code)
+        if rack_code is None or rack_code in seen:
+            continue
+        result.append(rack_code)
+        seen.add(rack_code)
+    return result
+
+
+def _rack_operation_target_mismatch(
     ctx: PluginContext,
     *,
-    rack_supply: Mapping[str, Any],
+    rack_operation: Mapping[str, Any],
     payload: Mapping[str, Any],
 ) -> tuple[str, str, str] | None:
-    expected_workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
+    expected_workline_code = _rack_workline_code_from_operation(ctx, rack_operation)
     callback_workline_code = non_empty_str(payload.get("workline_code"))
     if (
         callback_workline_code is not None
@@ -552,7 +682,7 @@ def _rack_supply_target_mismatch(
     ):
         return ("workline_code", expected_workline_code, callback_workline_code)
 
-    expected_position_code = _rack_expected_position_code_from_supply(rack_supply)
+    expected_position_code = _rack_expected_position_code_from_operation(rack_operation)
     callback_position_code = non_empty_str(payload.get("position_code"))
     if (
         expected_position_code is not None
@@ -567,27 +697,31 @@ def _rack_arrived_fact_intent(
     ctx: PluginContext,
     *,
     payload: Mapping[str, Any],
-    rack_supply: Mapping[str, Any],
+    rack_operation: Mapping[str, Any],
     active_bin_rack: Mapping[str, Any],
 ) -> RuntimeIntent:
     rack_code = non_empty_str(active_bin_rack.get("rack_code")) or non_empty_str(active_bin_rack.get("rack_id")) or ""
     source_event_id = non_empty_str(payload.get("source_event_id")) or f"WMS_RACK_ARRIVED:{rack_code}"
-    workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
-    position_code = _rack_position_code_from_supply(rack_supply, payload=payload)
+    workline_code = _rack_workline_code_from_operation(ctx, rack_operation)
+    position_code = _rack_position_code_from_operation(rack_operation, payload=payload)
+    fact_payload = {
+        "rack_code": rack_code,
+        "rack_kind": non_empty_str(active_bin_rack.get("rack_kind")) or "SINGLE_LAYER",
+        "workline_code": workline_code,
+        "position_code": position_code,
+        "source_system": non_empty_str(payload.get("source_system")) or "WMS",
+        "source_event_id": source_event_id,
+        "source_version": non_empty_str(payload.get("source_version")),
+        "source_task_id": non_empty_str(payload.get("request_id")),
+        "external_location_code": non_empty_str(payload.get("external_location_code")),
+        "occurred_at": payload.get("occurred_at"),
+    }
+    released_rack_codes = _rack_operation_released_rack_codes(rack_operation)
+    if released_rack_codes:
+        fact_payload["released_rack_codes"] = released_rack_codes
     return ctx.next.resource_fact(
         fact_type="RACK_ARRIVED",
-        payload={
-            "rack_code": rack_code,
-            "rack_kind": non_empty_str(active_bin_rack.get("rack_kind")) or "SINGLE_LAYER",
-            "workline_code": workline_code,
-            "position_code": position_code,
-            "source_system": non_empty_str(payload.get("source_system")) or "WMS",
-            "source_event_id": source_event_id,
-            "source_version": non_empty_str(payload.get("source_version")),
-            "source_task_id": non_empty_str(payload.get("request_id")),
-            "external_location_code": non_empty_str(payload.get("external_location_code")),
-            "occurred_at": payload.get("occurred_at"),
-        },
+        payload=fact_payload,
         idempotency_key=f"WMS_RACK_ARRIVED:{rack_code}:{workline_code}:{position_code}:{source_event_id}",
     )
 
@@ -1013,6 +1147,17 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         smt_ctx = parse_smt_context(ctx)
         reel_diameter = smt_ctx.reel_diameter or ""
+        waiting_operation_intents = await self._waiting_rack_operation_intents(
+            ctx,
+            pkg_id=pkg_id,
+            reel_diameter=reel_diameter,
+            source_event_id=non_empty_str(result.command_code),
+            resume_source_device_code=non_empty_str(result.device_code),
+            resume_source_device_role=_source_device_role(ctx) or self.CONVEYOR,
+        )
+        if waiting_operation_intents is not None:
+            return waiting_operation_intents
+
         allocation_decision = await self._allocate_bin(ctx, pkg_id)
         if allocation_decision.kind == "BLOCKED":
             return ctx.next.block(
@@ -1021,8 +1166,8 @@ class SmtClassifierPlugin(WorklinePlugin):
                 message=allocation_decision.message or "SMT 料箱调度阻断",
             )
 
-        if allocation_decision.rack_supply_request is not None:
-            return self._rack_supply_required_intents(
+        if allocation_decision.rack_operation_request is not None:
+            return self._rack_operation_required_intents(
                 ctx,
                 allocation_decision,
                 pkg_id=pkg_id,
@@ -1039,6 +1184,183 @@ class SmtClassifierPlugin(WorklinePlugin):
 
         logger.info(f"Bin allocated: {bin_location}")
 
+        return self._allocated_bin_intents(
+            ctx,
+            pkg_id=pkg_id,
+            reel_diameter=str(reel_diameter),
+            bin_location=bin_location,
+            source_event_id=non_empty_str(result.command_code),
+        )
+
+    def _rack_operation_required_intents(
+        self,
+        ctx: PluginContext,
+        allocation_decision: SmtRackBinSchedulingDecision,
+        *,
+        pkg_id: str,
+        resume_source_device_code: str | None = None,
+        resume_source_device_role: str | None = None,
+    ) -> list[RuntimeIntent]:
+        request = allocation_decision.rack_operation_request
+        if request is None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="RACK_OPERATION_REQUEST_MISSING",
+                    message="SMT 料箱调度缺少货架 operation 请求",
+                )
+            ]
+
+        request_payload = _rack_operation_payload(ctx, request, reason_code=allocation_decision.reason_code)
+        request_reason_code = non_empty_str(request_payload.get("reason_code"))
+        if request_reason_code is None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="RACK_OPERATION_REASON_MISSING",
+                    message="SMT 货架 operation 请求缺少 reason_code",
+                )
+            ]
+
+        context_patch = SmtClassifierContext(pkg_id=pkg_id).to_patch()
+        if _is_rack_operation_request(request):
+            context_patch["rack_operation"] = _rack_operation_context(
+                request,
+                pkg_id=pkg_id,
+                reason_code=request_reason_code,
+                resume_source_device_code=resume_source_device_code,
+                resume_source_device_role=resume_source_device_role,
+            )
+        context_patch["waiting_rack_operation_key"] = request.operation_key
+
+        return [
+            ctx.next.update_context(context_patch),
+            ctx.next.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key=request.operation_key,
+                target_code=request.target_code,
+                payload=request_payload,
+                timeout_seconds=request.timeout_seconds,
+            ),
+        ]
+
+    async def _waiting_rack_operation_intents(
+        self,
+        ctx: PluginContext,
+        *,
+        pkg_id: str,
+        reel_diameter: str,
+        source_event_id: str | None,
+        resume_source_device_code: str | None,
+        resume_source_device_role: str | None,
+    ) -> list[RuntimeIntent] | None:
+        session_context = dict(cast("Mapping[str, Any]", getattr(ctx.session, "context_json", None) or {}))
+        waiting_operation_key = non_empty_str(session_context.get("waiting_rack_operation_key"))
+        if waiting_operation_key is None:
+            return None
+
+        status_provider = ctx.services.rack_operation_status_provider
+        if status_provider is None:
+            return [
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code="RACK_OPERATION_STATUS_PROVIDER_MISSING",
+                    message="SMT 货架 operation 等待态缺少状态读取服务",
+                )
+            ]
+
+        status = str(await status_provider.derive_operation_status(waiting_operation_key)).upper()
+        existing_operation = session_context.get("rack_operation")
+        rack_operation = (
+            dict(cast("Mapping[str, Any]", existing_operation)) if isinstance(existing_operation, Mapping) else {}
+        )
+        rack_operation.update({"operation_key": waiting_operation_key, "status": status})
+
+        status_intents = self._waiting_rack_operation_status_intents(
+            ctx,
+            status=status,
+            rack_operation=rack_operation,
+        )
+        if status_intents is not None:
+            return status_intents
+
+        allocation_context = {**session_context, "waiting_rack_operation_key": None, "rack_operation": rack_operation}
+        allocation_decision = await self._allocate_bin(ctx, pkg_id, allocation_context=allocation_context)
+        if allocation_decision.kind == "BLOCKED":
+            return [
+                ctx.next.update_context({"waiting_rack_operation_key": None, "rack_operation": rack_operation}),
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code=allocation_decision.reason_code or "BIN_SCHEDULING_BLOCKED",
+                    message=allocation_decision.message or "SMT 料箱调度阻断",
+                ),
+            ]
+
+        if allocation_decision.rack_operation_request is not None:
+            return self._rack_operation_required_intents(
+                ctx,
+                allocation_decision,
+                pkg_id=pkg_id,
+                resume_source_device_code=resume_source_device_code,
+                resume_source_device_role=resume_source_device_role,
+            )
+
+        bin_location, invalid = _validated_bin_location_or_block(
+            allocation_decision.bin_location,
+            reel_diameter=reel_diameter,
+        )
+        if invalid is not None or bin_location is None:
+            return [invalid or build_payload_invalid_block("料箱调度结果非法")]
+
+        return [
+            ctx.next.update_context({"waiting_rack_operation_key": None, "rack_operation": rack_operation}),
+            *self._allocated_bin_intents(
+                ctx,
+                pkg_id=pkg_id,
+                reel_diameter=str(reel_diameter),
+                bin_location=bin_location,
+                source_event_id=source_event_id,
+            ),
+        ]
+
+    def _waiting_rack_operation_status_intents(
+        self,
+        ctx: PluginContext,
+        *,
+        status: str,
+        rack_operation: Mapping[str, Any],
+    ) -> list[RuntimeIntent] | None:
+        if status == "SUCCEEDED":
+            return None
+        if status == "PENDING":
+            return [ctx.next.update_context({"rack_operation": dict(rack_operation)})]
+        if status in {"FAILED", "RECONCILING"}:
+            reason_code = f"RACK_OPERATION_{status}"
+            return [
+                ctx.next.update_context({"rack_operation": dict(rack_operation)}),
+                ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code=reason_code,
+                    message=f"SMT 货架 operation 状态为 {status}，当前物料等待人工处理",
+                ),
+            ]
+        return [
+            ctx.next.block(
+                scope=BlockScope.MATERIAL,
+                reason_code="RACK_OPERATION_STATUS_UNSUPPORTED",
+                message=f"SMT 货架 operation 状态不支持: {status}",
+            )
+        ]
+
+    def _allocated_bin_intents(
+        self,
+        ctx: PluginContext,
+        *,
+        pkg_id: str,
+        reel_diameter: str,
+        bin_location: Mapping[str, Any],
+        source_event_id: str | None,
+    ) -> list[RuntimeIntent]:
         return [
             ctx.next.update_context(
                 SmtClassifierContext(
@@ -1050,7 +1372,7 @@ class SmtClassifierPlugin(WorklinePlugin):
                 ctx,
                 pkg_code=pkg_id,
                 bin_location=bin_location,
-                source_event_id=non_empty_str(result.command_code),
+                source_event_id=source_event_id,
             ),
             ctx.next.command(
                 device_role=self.OUTPUT_ARM,
@@ -1062,51 +1384,6 @@ class SmtClassifierPlugin(WorklinePlugin):
                 ),
                 destination_role=self.OUTPUT_ARM,
                 timeout_seconds=300,
-            ),
-        ]
-
-    def _rack_supply_required_intents(
-        self,
-        ctx: PluginContext,
-        allocation_decision: SmtRackBinSchedulingDecision,
-        *,
-        pkg_id: str,
-        resume_source_device_code: str | None = None,
-        resume_source_device_role: str | None = None,
-    ) -> list[RuntimeIntent]:
-        request = allocation_decision.rack_supply_request
-        if request is None:
-            return [
-                ctx.next.block(
-                    scope=BlockScope.MATERIAL,
-                    reason_code="RACK_SUPPLY_REQUEST_MISSING",
-                    message="SMT 料箱调度缺少新货架补充请求",
-                )
-            ]
-
-        context_patch = SmtClassifierContext(pkg_id=pkg_id).to_patch()
-        if _is_rack_supply_request(request):
-            context_patch["rack_supply"] = _rack_supply_context(
-                request,
-                pkg_id=pkg_id,
-                reason_code=allocation_decision.reason_code,
-                resume_source_device_code=resume_source_device_code,
-                resume_source_device_role=resume_source_device_role,
-            )
-
-        return [
-            ctx.next.update_context(context_patch),
-            ctx.next.rack_task_request(
-                task_type="RACK_SUPPLY",
-                task_key=request.dispatch_key,
-                dispatch_key=request.dispatch_key,
-                target_code=request.target_code,
-                payload=dict(request.payload),
-                timeout_seconds=request.timeout_seconds,
-                source_system=request.source_system,
-                rack_code=non_empty_str(request.payload.get("rack_code")),
-                position_code=non_empty_str(request.payload.get("target_position_code"))
-                or non_empty_str(request.payload.get("position_code")),
             ),
         ]
 
@@ -1147,26 +1424,22 @@ class SmtClassifierPlugin(WorklinePlugin):
         payload = cast("Mapping[str, Any]", raw_payload)
 
         callback_type = non_empty_str(payload.get("callback_type"))
-        if callback_type not in {
-            WMS_RACK_EXCHANGE_PROGRESS,
-            WMS_RACK_ARRIVED,
-            WMS_RACK_EXCHANGE_FAILED,
-        }:
+        if callback_type not in _RACK_OPERATION_CALLBACK_TYPES:
             return [build_payload_invalid_block("EXTERNAL_HTTP 回调 callback_type 不支持")]
 
         envelope_error = _validate_wms_rcs_callback_envelope(payload)
         if envelope_error is not None:
             return [build_payload_invalid_block(envelope_error)]
 
-        rack_supply = self._rack_supply_from_context(ctx)
-        if rack_supply is None:
-            return [build_payload_invalid_block("EXTERNAL_HTTP 回调缺少待处理 rack_supply 上下文")]
+        rack_operation = self._rack_operation_from_context(ctx)
+        if rack_operation is None:
+            return [build_payload_invalid_block("EXTERNAL_HTTP 回调缺少待处理 rack_operation 上下文")]
 
-        expected_dispatch_key = non_empty_str(rack_supply.get("dispatch_key"))
+        expected_dispatch_keys = _rack_operation_expected_dispatch_keys(rack_operation)
         callback_dispatch_key = non_empty_str(payload.get("dispatch_key"))
-        if expected_dispatch_key is None or callback_dispatch_key is None:
+        if not expected_dispatch_keys or callback_dispatch_key is None:
             return [build_payload_invalid_block("EXTERNAL_HTTP 回调缺少 dispatch_key")]
-        if callback_dispatch_key != expected_dispatch_key:
+        if callback_dispatch_key not in expected_dispatch_keys:
             return [
                 ctx.next.block(
                     scope=BlockScope.MATERIAL,
@@ -1175,39 +1448,49 @@ class SmtClassifierPlugin(WorklinePlugin):
                 )
             ]
 
-        if not self._is_pending_rack_supply_callback(ctx, rack_supply):
-            return [ctx.next.update_context({"rack_supply": rack_supply})]
+        if not self._is_pending_rack_operation_callback(ctx, rack_operation) and not (
+            callback_type in _RACK_ARRIVED_CALLBACK_TYPES
+            and self._is_pre_projection_rack_arrival_callback(ctx, rack_operation)
+        ):
+            return [ctx.next.update_context({"rack_operation": rack_operation})]
 
-        return await self._handle_rack_supply_callback(ctx, payload, callback_type, rack_supply)
+        return await self._handle_rack_operation_callback(ctx, payload, callback_type, rack_operation)
 
-    def _is_pending_rack_supply_callback(self, ctx: PluginContext, rack_supply: Mapping[str, Any]) -> bool:
-        if non_empty_str(rack_supply.get("status")) not in {"REQUESTED", "IN_PROGRESS"}:
+    def _is_pending_rack_operation_callback(self, ctx: PluginContext, rack_operation: Mapping[str, Any]) -> bool:
+        status = non_empty_str(rack_operation.get("status"))
+        if status is None or status.upper() not in _RACK_OPERATION_WAITING_STATUSES:
             return False
-        if getattr(ctx.session, "current_wait_type", None) == "EXTERNAL_HTTP":
-            return True
+        return self._rack_operation_matches_waiting_context(ctx, rack_operation)
+
+    def _is_pre_projection_rack_arrival_callback(self, ctx: PluginContext, rack_operation: Mapping[str, Any]) -> bool:
+        status = non_empty_str(rack_operation.get("status"))
+        if status is None or status.upper() not in _RACK_OPERATION_PRE_PROJECTION_STATUSES:
+            return False
+        return self._rack_operation_matches_waiting_context(ctx, rack_operation)
+
+    def _rack_operation_matches_waiting_context(self, ctx: PluginContext, rack_operation: Mapping[str, Any]) -> bool:
         session_context = getattr(ctx.session, "context_json", None)
         if not isinstance(session_context, Mapping):
             return False
-        return bool(
-            session_context.get("waiting_rack_task_id")
-            or non_empty_str(session_context.get("waiting_rack_task_key"))
-            == non_empty_str(rack_supply.get("dispatch_key"))
-        )
+        waiting_operation_key = non_empty_str(session_context.get("waiting_rack_operation_key"))
+        operation_key = non_empty_str(rack_operation.get("operation_key"))
+        return waiting_operation_key is not None and waiting_operation_key == operation_key
 
-    async def _handle_rack_supply_callback(  # noqa: PLR0911 - WMS/RCS 回调按状态和校验失败显式早返回
+    async def _handle_rack_operation_callback(  # noqa: PLR0911 - WMS/RCS 回调按状态和校验失败显式早返回
         self,
         ctx: PluginContext,
         payload: Mapping[str, Any],
         callback_type: str,
-        rack_supply: dict[str, Any],
+        rack_operation: dict[str, Any],
     ) -> list[RuntimeIntent]:
-        """处理已通过 dispatch_key 校验的新货架补充回调。"""
+        """处理已通过 operation_key 校验的货架 operation 回调。"""
 
-        if callback_type == WMS_RACK_EXCHANGE_PROGRESS:
+        if callback_type in _RACK_EXCHANGE_PROGRESS_CALLBACK_TYPES:
             status = non_empty_str(payload.get("status")) or "IN_PROGRESS"
-            return [ctx.next.update_context({"rack_supply": {**rack_supply, "status": status}})]
+            updated_operation = {**rack_operation, "status": status}
+            return [ctx.next.update_context({"rack_operation": updated_operation})]
 
-        if callback_type == WMS_RACK_EXCHANGE_FAILED:
+        if callback_type in _RACK_EXCHANGE_FAILED_CALLBACK_TYPES:
             reason_code = non_empty_str(payload.get("reason_code")) or "WMS_RACK_EXCHANGE_FAILED"
             message = (
                 non_empty_str(payload.get("reason_message"))
@@ -1236,17 +1519,17 @@ class SmtClassifierPlugin(WorklinePlugin):
             ]
 
         session_context = dict(cast("Mapping[str, Any]", getattr(ctx.session, "context_json", None) or {}))
-        pkg_id = non_empty_str(rack_supply.get("pkg_id")) or non_empty_str(session_context.get("pkg_id"))
+        pkg_id = non_empty_str(rack_operation.get("pkg_id")) or non_empty_str(session_context.get("pkg_id"))
         if pkg_id is None:
             return [build_payload_invalid_block("WMS_RACK_ARRIVED 回调缺少 pkg_id")]
 
-        target_mismatch = _rack_supply_target_mismatch(ctx, rack_supply=rack_supply, payload=payload)
+        target_mismatch = _rack_operation_target_mismatch(ctx, rack_operation=rack_operation, payload=payload)
         if target_mismatch is not None:
             field_name, expected, actual = target_mismatch
             return [
                 ctx.next.block(
                     scope=BlockScope.MATERIAL,
-                    reason_code="RACK_SUPPLY_TARGET_MISMATCH",
+                    reason_code="RACK_OPERATION_TARGET_MISMATCH",
                     message=(
                         f"WMS_RACK_ARRIVED 回调 {field_name} 与当前等待 Session 目标不一致"
                         f": expected={expected}, actual={actual}"
@@ -1255,7 +1538,13 @@ class SmtClassifierPlugin(WorklinePlugin):
             ]
 
         active_rack_snapshot = dict(cast("Mapping[str, Any]", active_bin_rack))
-        allocation_context: dict[str, Any] = {**session_context, "active_bin_rack": active_rack_snapshot}
+        operation_for_allocation = {**rack_operation, "status": "SUCCEEDED"}
+        allocation_context: dict[str, Any] = {
+            **session_context,
+            "active_bin_rack": active_rack_snapshot,
+            "rack_operation": operation_for_allocation,
+            "waiting_rack_operation_key": None,
+        }
         allocation_decision = await self._allocate_bin(ctx, pkg_id, allocation_context=allocation_context)
         if allocation_decision.kind == "BLOCKED":
             return [
@@ -1265,13 +1554,13 @@ class SmtClassifierPlugin(WorklinePlugin):
                     message=allocation_decision.message or "SMT 料箱调度阻断",
                 )
             ]
-        if allocation_decision.rack_supply_request is not None:
-            return self._rack_supply_required_intents(
+        if allocation_decision.rack_operation_request is not None:
+            return self._rack_operation_required_intents(
                 ctx,
                 allocation_decision,
                 pkg_id=pkg_id,
-                resume_source_device_code=non_empty_str(rack_supply.get("resume_source_device_code")),
-                resume_source_device_role=non_empty_str(rack_supply.get("resume_source_device_role")),
+                resume_source_device_code=non_empty_str(rack_operation.get("resume_source_device_code")),
+                resume_source_device_role=non_empty_str(rack_operation.get("resume_source_device_role")),
             )
 
         reel_diameter = parse_smt_context(ctx).reel_diameter or ""
@@ -1282,20 +1571,20 @@ class SmtClassifierPlugin(WorklinePlugin):
         if invalid is not None or bin_location is None:
             return [invalid or build_payload_invalid_block("料箱调度结果非法")]
 
-        arrived_rack_supply = {
-            **rack_supply,
+        arrived_rack_operation = {
+            **rack_operation,
             "status": "ARRIVED",
-            "position_code": _rack_position_code_from_supply(rack_supply, payload=payload),
+            "position_code": _rack_position_code_from_operation(rack_operation, payload=payload),
         }
-        workline_code = _rack_workline_code_from_supply(ctx, rack_supply)
+        workline_code = _rack_workline_code_from_operation(ctx, rack_operation)
         if workline_code:
-            arrived_rack_supply["workline_code"] = workline_code
+            arrived_rack_operation["workline_code"] = workline_code
 
         return [
             _rack_arrived_fact_intent(
                 ctx,
                 payload=payload,
-                rack_supply=rack_supply,
+                rack_operation=rack_operation,
                 active_bin_rack=active_rack_snapshot,
             ),
             _bin_mounted_fact_intent(
@@ -1306,7 +1595,8 @@ class SmtClassifierPlugin(WorklinePlugin):
             ctx.next.update_context(
                 {
                     "active_bin_rack": active_rack_snapshot,
-                    "rack_supply": arrived_rack_supply,
+                    "rack_operation": arrived_rack_operation,
+                    "waiting_rack_operation_key": None,
                     "pkg_id": pkg_id,
                     "bin_location": bin_location,
                 }
@@ -1330,16 +1620,15 @@ class SmtClassifierPlugin(WorklinePlugin):
             ),
         ]
 
-    def _rack_supply_from_context(self, ctx: PluginContext) -> dict[str, Any] | None:
+    def _rack_operation_from_context(self, ctx: PluginContext) -> dict[str, Any] | None:
         context = getattr(ctx.session, "context_json", None)
         if not isinstance(context, Mapping):
             return None
         session_context = cast("Mapping[str, Any]", context)
-        rack_supply = session_context.get("rack_supply")
-        if isinstance(rack_supply, Mapping):
-            return dict(cast("Mapping[str, Any]", rack_supply))
-        rack_exchange = session_context.get("rack_exchange")
-        return dict(cast("Mapping[str, Any]", rack_exchange)) if isinstance(rack_exchange, Mapping) else None
+        rack_operation = session_context.get("rack_operation")
+        if isinstance(rack_operation, Mapping):
+            return dict(cast("Mapping[str, Any]", rack_operation))
+        return None
 
     async def _allocate_bin(
         self,

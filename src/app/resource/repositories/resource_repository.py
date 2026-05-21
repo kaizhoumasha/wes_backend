@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.resource.models import (
@@ -160,24 +160,72 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
         )
         return result.scalar_one_or_none()
 
-    async def get_active_by_workline_position(
+    async def get_first_active_by_workline_position(
         self,
         db: AsyncSession,
         *,
         workline_code: str,
         position_code: str,
     ) -> RackPlacement | None:
-        """查询工作线停靠位当前 active placement。"""
+        """查询工作线停靠位第一条 active placement。
+
+        仅用于 legacy/diagnostic 场景；容量判断必须使用 list/count 方法。
+        """
 
         columns = cast("Any", RackPlacement).__table__.c
         result = await db.execute(
-            select(RackPlacement).where(
+            select(RackPlacement)
+            .where(
+                columns.workline_code == workline_code,
+                columns.position_code == position_code,
+                columns.ended_at.is_(None),
+            )
+            .order_by(columns.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_active_by_workline_position(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> list[RackPlacement]:
+        """查询工作线停靠位当前 active placements。"""
+
+        columns = cast("Any", RackPlacement).__table__.c
+        result = await db.execute(
+            select(RackPlacement)
+            .where(
+                columns.workline_code == workline_code,
+                columns.position_code == position_code,
+                columns.ended_at.is_(None),
+            )
+            .order_by(columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def count_active_by_workline_position(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> int:
+        """统计工作线停靠位当前 active placement 数量。"""
+
+        columns = cast("Any", RackPlacement).__table__.c
+        result = await db.execute(
+            select(func.count())
+            .select_from(RackPlacement)
+            .where(
                 columns.workline_code == workline_code,
                 columns.position_code == position_code,
                 columns.ended_at.is_(None),
             )
         )
-        return result.scalar_one_or_none()
+        return int(result.scalar_one())
 
 
 class RackBinMountRepository(BaseRepository[RackBinMount]):

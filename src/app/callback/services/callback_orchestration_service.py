@@ -37,6 +37,18 @@ from src.utils.timezone import timezone
 from src.workline_runtime.utils import JsonDict, ensure_dict
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
+_RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
+    {
+        "WMS_RACK_TASK_RESULT",
+        "RCS_RACK_TASK_RESULT",
+        "WMS_RACK_TASK_PROGRESS",
+        "RCS_RACK_TASK_PROGRESS",
+    }
+)
+
+
+def _skip_workline_processing_enqueue() -> None:
+    """lifecycle-only 回调已同步标记为 processed，这里只关闭即时 batch 触发。"""
 
 
 def _current_timestamp_ms() -> int:
@@ -518,8 +530,10 @@ class CallbackOrchestrationService:
         resolved_trace_id = trace.trace_id or trace.request_id or f"trace_{uuid.uuid4().hex}"
         trace = trace.with_trace_id(resolved_trace_id)
 
+        lifecycle_only = callback_type in _RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES
+        created_inbox: object | None = None
         try:
-            _ = await inbox_service.create_external_http_inbox(
+            created_inbox = await inbox_service.create_external_http_inbox(
                 db=db,
                 callback_type=callback_type,
                 payload=payload,
@@ -546,8 +560,16 @@ class CallbackOrchestrationService:
                 payload_json=payload,
                 trace_id=trace.trace_id,
             )
+            if lifecycle_only:
+                inbox_id = getattr(created_inbox, "id", None)
+                if not isinstance(inbox_id, int):
+                    raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
+                _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+        await self._commit_and_enqueue_workline_processing(
+            db,
+            enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
+        )
 
         return ExternalCallbackOutcome(
             trace_id=trace.trace_id or "",
@@ -556,9 +578,9 @@ class CallbackOrchestrationService:
 
     def _resolve_rack_task_service(self) -> Any:
         if self._rack_task_service is None:
-            from src.app.workline.services import workline_rack_task_service
+            from src.app.workline.services import workline_rack_task_lifecycle_service
 
-            self._rack_task_service = workline_rack_task_service
+            self._rack_task_service = workline_rack_task_lifecycle_service
         return self._rack_task_service
 
 

@@ -94,6 +94,25 @@ class MockSessionRepository:
                 return session
         return None
 
+    async def get_open_session_by_waiting_rack_operation_key(
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        operation_key: str,
+    ) -> object | None:
+        self.find_calls.append(("waiting_rack_operation_key", workline_id, operation_key))
+        for session in self.sessions.values():
+            s = session if isinstance(session, dict) else session.__dict__
+            context = s.get("context_json") if isinstance(s.get("context_json"), dict) else {}
+            if (
+                s.get("workline_id") == workline_id
+                and context.get("waiting_rack_operation_key") == operation_key
+                and s.get("status") in ["NEW", "RUNNING", "WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"]
+            ):
+                return session
+        return None
+
     async def create(self, db: object, data: dict) -> object:
         session_id = self.next_id
         self.next_id += 1
@@ -556,7 +575,7 @@ class TestSessionResolver:
         )
         mock_session_repo.sessions[300] = smt_session
         mock_session_repo.sessions[301] = fullbox_session
-        dispatch_key = "external:rack_exchange:release-001:FULL_BOX_EXCHANGE"
+        dispatch_key = "external:rack_exchange:release-001:RACK_OPERATION"
         resolver.outbox_repo.outboxes[dispatch_key] = SimpleNamespace(
             id=77,
             session_id=301,
@@ -567,7 +586,7 @@ class TestSessionResolver:
             kind=InboxKind.EXTERNAL_HTTP,
             trace_id="trace-shared-001",
             payload_json={
-                "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+                "callback_type": "WMS_RACK_TASK_RESULT",
                 "dispatch_key": dispatch_key,
             },
         )
@@ -585,25 +604,28 @@ class TestSessionResolver:
         assert resolver.outbox_repo.find_calls == [("dispatch_key", dispatch_key)]
 
     @pytest.mark.asyncio
-    async def test_resolve_external_http_uses_rack_task_material_session_when_outbox_has_no_session(
+    async def test_external_http_callback_resolves_session_by_rack_operation_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """rack task outbox 不绑定 session 时，应通过 material_session_id 恢复物料 session。"""
+        """rack task 回调应按 operation_key 找回等待中的物料 session。"""
         material_session = SimpleNamespace(
             id=300,
             session_code="SESSION_SMT_300",
             workline_id=45,
             plugin_key="smt_classifier",
             business_key="SMT_REEL_001",
-            status=SessionStatus.RUNNING,
-            context_json={"waiting_rack_task_id": 901},
+            status=SessionStatus.WAITING_EXTERNAL,
+            context_json={
+                "waiting_rack_operation_key": "rack-op:trace-001",
+                "rack_operation": {"operation_key": "rack-op:trace-001", "status": "PENDING"},
+            },
             trace_id="trace-shared-001",
         )
         mock_session_repo.sessions[300] = material_session
-        dispatch_key = "external:smt_classifier:trace-001:RACK_SUPPLY"
+        dispatch_key = "external:smt_classifier:trace-001:RACK_OPERATION"
         resolver.outbox_repo.outboxes[dispatch_key] = SimpleNamespace(
             id=77,
             session_id=None,
@@ -614,7 +636,8 @@ class TestSessionResolver:
             id=901,
             dispatch_key=dispatch_key,
             workline_id=45,
-            material_session_id=300,
+            material_session_id=999,
+            operation_key="rack-op:trace-001",
         )
         inbox = make_inbox(
             kind=InboxKind.EXTERNAL_HTTP,
@@ -636,6 +659,63 @@ class TestSessionResolver:
         assert inbox.session_id == 300
         assert inbox.workline_id == 45
         assert resolver.rack_task_repo.find_calls == [("dispatch_key", dispatch_key)]
+        assert ("waiting_rack_operation_key", 45, "rack-op:trace-001") in mock_session_repo.find_calls
+
+    @pytest.mark.asyncio
+    async def test_external_http_callback_does_not_resume_session_until_all_operation_tasks_succeeded(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """第一条 sibling task 成功回调只能归属 session，不能提前恢复等待态。"""
+        material_session = SimpleNamespace(
+            id=300,
+            session_code="SESSION_SMT_300",
+            workline_id=45,
+            plugin_key="smt_classifier",
+            business_key="SMT_REEL_001",
+            status=SessionStatus.WAITING_EXTERNAL,
+            current_wait_type="RACK_OPERATION",
+            waiting_since=timezone.now_for_db(),
+            deadline_at=timezone.now_for_db() + timedelta(minutes=5),
+            current_wait_timeout_seconds=300,
+            context_json={
+                "waiting_rack_operation_key": "rack-op:trace-001",
+                "rack_operation": {"operation_key": "rack-op:trace-001", "status": "PENDING"},
+            },
+            trace_id="trace-shared-001",
+        )
+        mock_session_repo.sessions[300] = material_session
+        dispatch_key = "external:smt_classifier:trace-001:RACK_MOVE_OUT"
+        resolver.rack_task_repo.tasks[dispatch_key] = SimpleNamespace(
+            id=901,
+            dispatch_key=dispatch_key,
+            workline_id=45,
+            operation_key="rack-op:trace-001",
+            task_status="SUCCEEDED",
+        )
+        inbox = make_inbox(
+            kind=InboxKind.EXTERNAL_HTTP,
+            trace_id="trace-shared-001",
+            payload_json={
+                "callback_type": "WMS_RACK_TASK_RESULT",
+                "dispatch_key": dispatch_key,
+                "status": "SUCCEEDED",
+            },
+        )
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=None,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.id == 300
+        assert session.status == SessionStatus.WAITING_EXTERNAL
+        assert session.current_wait_type == "RACK_OPERATION"
+        assert session.context_json["waiting_rack_operation_key"] == "rack-op:trace-001"
 
     @pytest.mark.asyncio
     async def test_resolve_manual_hold_by_session_id(

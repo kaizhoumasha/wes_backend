@@ -101,7 +101,7 @@ def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
             return True
         if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
             return True
-        if intent.kind == RuntimeIntentKind.RACK_TASK_REQUEST:
+        if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
             return True
         if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
             return True
@@ -838,7 +838,7 @@ def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
 
 
 def _wait_session_status(wait_type: str) -> str:
-    if wait_type == "EXTERNAL_HTTP":
+    if wait_type in {"EXTERNAL_HTTP", "RACK_OPERATION"}:
         return "WAITING_EXTERNAL"
     return "WAITING_DEVICE_RESULT"
 
@@ -2187,12 +2187,9 @@ def _resolve_effect_source_device(inbox: Any, session: Any, devices_by_role: dic
         device_code = _optional_str(getattr(normalized_input, "device_code", None))
     if device_code is None:
         session_context = payload_dict(getattr(session, "context_json", None))
-        rack_supply = payload_dict(session_context.get("rack_supply"))
-        rack_exchange = payload_dict(session_context.get("rack_exchange"))
-        device_code = (
-            _optional_str(rack_supply.get("resume_source_device_code"))
-            or _optional_str(rack_exchange.get("resume_source_device_code"))
-            or _optional_str(session_context.get("resume_source_device_code"))
+        rack_operation = payload_dict(session_context.get("rack_operation"))
+        device_code = _optional_str(rack_operation.get("resume_source_device_code")) or _optional_str(
+            session_context.get("resume_source_device_code")
         )
     if device_code is None:
         return None
