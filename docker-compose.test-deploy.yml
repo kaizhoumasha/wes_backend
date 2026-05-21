@@ -131,6 +131,7 @@ services:
     volumes:
       - ./docker_data/postgres_${ENV:-test}:/var/lib/postgresql/data
       - ${POSTGRES_CONFIG_FILE:-./postgresql/postgresql.conf}:/etc/postgresql/postgresql.conf:ro
+      - ./postgresql/base.conf:/etc/postgresql/base.conf:ro
       - ${BACKUP_DIR:-./backups}:/backups
     command: ${POSTGRES_COMMAND:-postgres}
     healthcheck:
@@ -150,6 +151,7 @@ services:
     volumes:
       - ./docker_data/redis_${ENV:-test}:/data
       - ${REDIS_CONFIG_FILE:-./redis/redis.conf}:/usr/local/etc/redis/redis.conf:ro
+      - ./redis/base.conf:/usr/local/etc/redis/base.conf:ro
     command: ${REDIS_COMMAND:-redis-server /usr/local/etc/redis/redis.conf} --requirepass ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
