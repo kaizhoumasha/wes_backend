@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,6 +138,38 @@ class WorklineRackTaskRepository(BaseRepository[WorklineRackTask]):
         """兼容旧调用：查询物料 session 当前未闭环的货架任务。"""
 
         return await self.list_active_by_material_session(db, material_session_id=material_session_id)
+
+    async def cancel_active_by_material_session(
+        self,
+        db: AsyncSession,
+        *,
+        material_session_id: int,
+        reason: str,
+    ) -> int:
+        """取消指定物料 session 当前未闭环的货架任务，释放位置 claim。"""
+
+        columns = cast("Any", WorklineRackTask).__table__.c
+        result = await db.execute(
+            select(WorklineRackTask)
+            .where(
+                columns.material_session_id == material_session_id,
+                columns.task_status.in_(_ACTIVE_STATUSES),
+            )
+            .with_for_update()
+        )
+        tasks = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for task in tasks:
+            task.task_status = WorklineRackTaskStatus.CANCELLED.value
+            task.error_code = reason
+            task.error_message = reason
+            task.completed_at = now
+            task.result_json = {
+                **(task.result_json or {}),
+                "status": WorklineRackTaskStatus.CANCELLED.value,
+                "reason": reason,
+            }
+        return len(tasks)
 
 
 _ACTIVE_STATUSES = (

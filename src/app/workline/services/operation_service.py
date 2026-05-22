@@ -38,6 +38,10 @@ from src.app.workline.repositories.outbox_repository import WorklineOutboxReposi
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
 from src.app.workline.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
+from src.app.workline.services.rack_task_service import (
+    WorklineRackTaskLifecycleService,
+    workline_rack_task_lifecycle_service,
+)
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_workline_plugin_definition
@@ -127,6 +131,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         device_repo: DeviceRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         runtime_hold_repo: RuntimeHoldRepository | None = None,
+        rack_task_lifecycle_service: WorklineRackTaskLifecycleService | None = None,
     ) -> None:
         super().__init__(inbox_repo or inbox_repository, enable_cache=False)
         self.inbox_repo = inbox_repo or inbox_repository
@@ -136,6 +141,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         self.device_repo = device_repo or device_repository
         self.command_repo = command_repo or device_command_repository
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
+        self.rack_task_lifecycle_service = rack_task_lifecycle_service or workline_rack_task_lifecycle_service
 
     def _enqueue_outbox_dispatch(self) -> None:
         from src.celery_app.app import celery_app
@@ -190,7 +196,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         is_current_action = True
         command_status: str | None = None
         command: Any | None = None
-        if _enum_value(outbox.dispatch_type) == DispatchType.DEVICE_COMMAND.value:
+        dispatch_type = _enum_value(outbox.dispatch_type)
+        if dispatch_type == DispatchType.DEVICE_COMMAND.value:
             command_code = payload.get("command_code")
             if isinstance(command_code, str) and command_code:
                 command = await self.command_repo.get_by_command_code(db, command_code)
@@ -203,6 +210,8 @@ class WorklineOperationService(BaseService[Any, Any]):
                         status = "ACKED"
                     elif _enum_value(outbox.status) in _ACK_WAIT_OUTBOX_STATUSES:
                         status = OutboxStatus.SENT.value
+        elif dispatch_type == DispatchType.EXTERNAL_HTTP.value:
+            is_current_action = await self._is_current_sandbox_external_outbox(db, outbox)
 
         runtime_hold = await self._find_projection_runtime_hold(db, outbox=outbox, command=command)
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
@@ -399,6 +408,95 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         awaiting_command_id = getattr(session, "awaiting_command_id", None)
         return not isinstance(awaiting_command_id, int) or awaiting_command_id == command_id
+
+    async def _is_current_sandbox_external_outbox(self, db: Any, outbox: Any) -> bool:
+        """判断 EXTERNAL_HTTP outbox 是否仍是当前 session 等待的外部回调。"""
+
+        session_id = getattr(outbox, "session_id", None)
+        if not isinstance(session_id, int):
+            return True
+        if self.session_repo is workline_session_repository and not hasattr(db, "execute"):
+            return True
+
+        session = await self.session_repo.get_by_id(db, session_id)
+        if session is None:
+            return True
+        if _enum_value(getattr(session, "status", None)) != SessionStatus.WAITING_EXTERNAL.value:
+            return False
+
+        current_wait_type = _enum_value(getattr(session, "current_wait_type", None))
+        if current_wait_type not in {"EXTERNAL_HTTP", "RACK_OPERATION"}:
+            return False
+        if current_wait_type != "RACK_OPERATION":
+            return True
+
+        return self._external_outbox_matches_waiting_rack_operation(outbox, session)
+
+    def _external_outbox_matches_waiting_rack_operation(self, outbox: Any, session: Any) -> bool:
+        """判断 rack operation outbox 是否对应当前等待的 operation。"""
+
+        dispatch_key = getattr(outbox, "dispatch_key", None)
+        context_json = getattr(session, "context_json", None)
+        context = context_json if isinstance(context_json, dict) else {}
+        rack_operation = context.get("rack_operation")
+        rack_operation_data = rack_operation if isinstance(rack_operation, dict) else {}
+        waiting_operation_key = context.get("waiting_rack_operation_key")
+
+        dispatch_keys: set[str] = set()
+        for field_name in ("task_dispatch_keys", "required_task_dispatch_keys"):
+            raw_keys = rack_operation_data.get(field_name)
+            if isinstance(raw_keys, list):
+                dispatch_keys.update(key for key in raw_keys if isinstance(key, str) and key)
+        if isinstance(dispatch_key, str) and dispatch_key in dispatch_keys:
+            return True
+
+        raw_payload = getattr(outbox, "payload_json", None)
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        operation_key = payload.get("operation_key")
+        if isinstance(waiting_operation_key, str) and waiting_operation_key:
+            return operation_key == waiting_operation_key
+
+        return not dispatch_keys
+
+    def _resolve_sandbox_external_callback_type(
+        self,
+        *,
+        callback_type: str | None,
+        raw_payload: dict[str, Any],
+        outbox_payload: dict[str, Any],
+        session: Any,
+        current_wait_type: str,
+        dispatch_key: str,
+    ) -> str:
+        resolved = self._first_non_empty_text(
+            callback_type,
+            raw_payload.get("callback_type"),
+            outbox_payload.get("resume_callback_type"),
+        )
+        if resolved is not None:
+            return resolved
+
+        session_context = getattr(session, "context_json", None)
+        rack_operation = session_context.get("rack_operation") if isinstance(session_context, dict) else None
+        if isinstance(rack_operation, dict):
+            resolved = self._first_non_empty_text(rack_operation.get("resume_callback_type"))
+            if resolved is not None:
+                return resolved
+
+        actions = outbox_payload.get("actions")
+        action_type = actions.get("action") if isinstance(actions, dict) else None
+        rack_task_type = _enum_value(outbox_payload.get("task_type") or action_type)
+        if current_wait_type == "RACK_OPERATION" and rack_task_type == "ALLOCATE_AND_MOVE_RACK":
+            return "WMS_RACK_ARRIVED"
+
+        raise ValueError(f"Outbox 缺少外部回调类型: dispatch_key={dispatch_key}")
+
+    @staticmethod
+    def _first_non_empty_text(*values: Any) -> str | None:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     async def replay_inbox(
         self,
@@ -610,10 +708,11 @@ class WorklineOperationService(BaseService[Any, Any]):
         session = await self.session_repo.get_by_id(db, outbox.session_id)
         if session is None:
             raise ValueError(f"会话不存在: {outbox.session_id}")
-        if (
-            session.status != SessionStatus.WAITING_EXTERNAL
-            or _enum_value(getattr(session, "current_wait_type", None)) != "EXTERNAL_HTTP"
-        ):
+        current_wait_type = _enum_value(getattr(session, "current_wait_type", None))
+        if session.status != SessionStatus.WAITING_EXTERNAL or current_wait_type not in {
+            "EXTERNAL_HTTP",
+            "RACK_OPERATION",
+        }:
             raise ValueError(
                 f"当前会话状态不允许模拟外部回调: session_id={session.id}, "
                 f"status={_enum_value(session.status)}, wait_type={getattr(session, 'current_wait_type', None)}"
@@ -622,12 +721,14 @@ class WorklineOperationService(BaseService[Any, Any]):
         raw_outbox_payload = outbox.payload_json
         outbox_payload = cast("dict[str, Any]", raw_outbox_payload) if isinstance(raw_outbox_payload, dict) else {}
         raw_payload = dict(payload or {})
-        resolved_callback_type = (
-            callback_type or outbox_payload.get("resume_callback_type") or raw_payload.get("callback_type")
+        resolved_callback_type = self._resolve_sandbox_external_callback_type(
+            callback_type=callback_type,
+            raw_payload=raw_payload,
+            outbox_payload=outbox_payload,
+            session=session,
+            current_wait_type=current_wait_type,
+            dispatch_key=dispatch_key,
         )
-        if not isinstance(resolved_callback_type, str) or not resolved_callback_type.strip():
-            raise ValueError(f"Outbox 缺少外部回调类型: dispatch_key={dispatch_key}")
-        resolved_callback_type = resolved_callback_type.strip()
 
         if source_system not in {"WMS", "RCS"}:
             raise ValueError(f"外部来源系统不支持: source_system={source_system}")
@@ -669,6 +770,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             trace_id=trace_id,
             payload=inbox_payload,
         )
+        existing_inbox = await self.inbox_repo.get_by_idempotency_key(db, idempotency_key)
         inbox_data = {
             "kind": InboxKind.EXTERNAL_HTTP,
             "idempotency_key": idempotency_key,
@@ -688,6 +790,13 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
         if inbox is None:
             raise RuntimeError(f"创建沙箱外部回调失败: dispatch_key={dispatch_key}")
+
+        if existing_inbox is None:
+            await self.rack_task_lifecycle_service.record_callback_from_external_http(
+                db=db,
+                payload_json=inbox_payload,
+                trace_id=trace_id,
+            )
 
         outbox.status = OutboxStatus.SENT
         if getattr(outbox, "sent_at", None) is None:

@@ -27,6 +27,10 @@ class _Db:
         return self.command
 
 
+def _rack_task_repo_stub(return_value: int = 0) -> SimpleNamespace:
+    return SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=return_value))
+
+
 @pytest.mark.asyncio
 async def test_activate_execution_deadline_after_ack_uses_wait_timeout_seconds() -> None:
     ack_received_at = datetime(2026, 5, 8, 8, 0, 0)
@@ -85,6 +89,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
+    rack_task_repo = _rack_task_repo_stub()
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
     runtime_hold_creation_service = SimpleNamespace(
         create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9901))
@@ -94,6 +99,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
+        rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
     )
@@ -137,6 +143,11 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         session_id=530,
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
+    rack_task_repo.cancel_active_by_material_session.assert_awaited_once_with(
+        db,
+        material_session_id=530,
+        reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+    )
     runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
         db,
         session=session,
@@ -150,6 +161,78 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     record_diagnostic.assert_awaited_once()
     assert record_diagnostic.await_args.kwargs["evidence"]["runtime_hold_id"] == 9901
     db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_timer_timeout_cancels_active_rack_tasks_for_session() -> None:
+    deadline_at = timezone.now_for_db() - timedelta(seconds=10)
+    session = SimpleNamespace(
+        id=546,
+        workline_id=45,
+        trace_id="external:trace-rack-timeout",
+        status=SessionStatus.WAITING_EXTERNAL,
+        current_wait_type="RACK_OPERATION",
+        current_wait_timeout_seconds=1800,
+        waiting_since=deadline_at - timedelta(seconds=1800),
+        deadline_at=deadline_at,
+        awaiting_command_id=None,
+        reconciliation_state=None,
+    )
+    inbox = SimpleNamespace(
+        id=85601,
+        session_id=546,
+        payload_json={
+            "deadline_at": deadline_at.isoformat(),
+            "wait_type": "RACK_OPERATION",
+            "awaiting_command_id": None,
+        },
+    )
+    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
+    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
+    outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
+    rack_task_repo = SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=1))
+    device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
+    runtime_hold_creation_service = SimpleNamespace(
+        create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9905))
+    )
+    db = _Db(command=None)
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repo,
+        workline_repository=workline_repo,
+        outbox_repository=outbox_repo,
+        rack_task_repository=rack_task_repo,
+        device_service=device_service,
+        runtime_hold_creation_service=runtime_hold_creation_service,
+    )
+
+    with (
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.inbox_service.mark_as_processed",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            new=AsyncMock(),
+        ),
+    ):
+        updated = await service.handle_timer_timeout(db, inbox=inbox)
+
+    assert updated is session
+    outbox_repo.cancel_active_by_session.assert_awaited_once_with(
+        db,
+        session_id=546,
+        reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+    )
+    rack_task_repo.cancel_active_by_material_session.assert_awaited_once_with(
+        db,
+        material_session_id=546,
+        reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+    )
 
 
 @pytest.mark.asyncio
@@ -188,6 +271,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
     session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
+    rack_task_repo = _rack_task_repo_stub()
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
     runtime_hold_creation_service = SimpleNamespace(
         create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9902))
@@ -197,6 +281,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
+        rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
     )
@@ -231,6 +316,11 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
     outbox_repo.cancel_active_by_session.assert_awaited_once_with(
         db,
         session_id=545,
+        reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+    )
+    rack_task_repo.cancel_active_by_material_session.assert_awaited_once_with(
+        db,
+        material_session_id=545,
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
     mark_processed.assert_awaited_once_with(db, 85599, auto_commit=False)
@@ -273,6 +363,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
     outbox_repo = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=1))
+    rack_task_repo = _rack_task_repo_stub()
     device_service = SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None))
     runtime_hold_creation_service = SimpleNamespace(
         create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9903))
@@ -282,6 +373,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         session_repository=session_repo,
         workline_repository=workline_repo,
         outbox_repository=outbox_repo,
+        rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
     )
@@ -312,6 +404,11 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     assert session.reconciliation_deadline_at == deadline_at
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     device_service.mark_callback_deadline_expired.assert_not_awaited()
+    rack_task_repo.cancel_active_by_material_session.assert_awaited_once_with(
+        db,
+        material_session_id=546,
+        reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+    )
     mark_processed.assert_awaited_once_with(db, 85600, auto_commit=False)
     runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
         db,

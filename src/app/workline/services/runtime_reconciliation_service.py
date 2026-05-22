@@ -29,6 +29,7 @@ from src.app.workline.models.timeline import (
     WorklineTimeline,
 )
 from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+from src.app.workline.repositories.rack_task_repository import WorklineRackTaskRepository
 from src.app.workline.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
 )
@@ -127,6 +128,7 @@ class WorklineRuntimeReconciliationService:
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
+        rack_task_repository: WorklineRackTaskRepository | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or WorkLineRepository()
@@ -135,6 +137,7 @@ class WorklineRuntimeReconciliationService:
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
         self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
+        self.rack_task_repository = rack_task_repository or WorklineRackTaskRepository()
 
     async def activate_execution_deadline_after_ack(
         self,
@@ -220,6 +223,11 @@ class WorklineRuntimeReconciliationService:
             _ = await self.outbox_repository.cancel_active_by_session(
                 db,
                 session_id=session.id,
+                reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+            )
+            _ = await self.rack_task_repository.cancel_active_by_material_session(
+                db,
+                material_session_id=session.id,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             )
 
