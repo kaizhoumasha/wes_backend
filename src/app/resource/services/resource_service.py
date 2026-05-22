@@ -2,6 +2,7 @@
 
 from src.app.resource.models import (
     Bin,
+    BinCellOccupancy,
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinMaterialMount,
@@ -15,6 +16,7 @@ from src.app.resource.models import (
     ResourceStateEvent,
 )
 from src.app.resource.repositories import (
+    BinCellOccupancyRepository,
     BinContentSnapshotItemRepository,
     BinContentSnapshotRepository,
     BinMaterialMountRepository,
@@ -27,6 +29,7 @@ from src.app.resource.repositories import (
     RackSlotTemplateRepository,
     RackTypeRepository,
     ResourceStateEventRepository,
+    bin_cell_occupancy_repository,
     bin_content_snapshot_item_repository,
     bin_content_snapshot_repository,
     bin_material_mount_repository,
@@ -107,9 +110,16 @@ class RackBinMountService(BaseService[RackBinMount, RackBinMountRepository]):
 
 
 class BinMaterialMountService(BaseService[BinMaterialMount, BinMaterialMountRepository]):
-    """物料料箱格位投影 Service。"""
+    """料盘/PKG 料箱格位明细 Service。"""
 
     def __init__(self, repo: BinMaterialMountRepository = bin_material_mount_repository) -> None:
+        super().__init__(repo)
+
+
+class BinCellOccupancyService(BaseService[BinCellOccupancy, BinCellOccupancyRepository]):
+    """料箱格位聚合占用 Service。"""
+
+    def __init__(self, repo: BinCellOccupancyRepository = bin_cell_occupancy_repository) -> None:
         super().__init__(repo)
 
 
@@ -137,10 +147,12 @@ resource_state_event_service = ResourceStateEventService()
 rack_placement_service = RackPlacementService()
 rack_bin_mount_service = RackBinMountService()
 bin_material_mount_service = BinMaterialMountService()
+bin_cell_occupancy_service = BinCellOccupancyService()
 bin_content_snapshot_service = BinContentSnapshotService()
 bin_content_snapshot_item_service = BinContentSnapshotItemService()
 
 __all__ = [
+    "BinCellOccupancyService",
     "BinContentSnapshotItemService",
     "BinContentSnapshotService",
     "BinMaterialMountService",
@@ -153,6 +165,7 @@ __all__ = [
     "RackSlotTemplateService",
     "RackTypeService",
     "ResourceStateEventService",
+    "bin_cell_occupancy_service",
     "bin_content_snapshot_item_service",
     "bin_content_snapshot_service",
     "bin_material_mount_service",

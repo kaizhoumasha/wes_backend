@@ -1334,6 +1334,69 @@ class TestDispatchByType:
         )
 
     @pytest.mark.asyncio
+    async def test_dispatch_device_command_does_not_reopen_device_when_fast_callback_already_completed(self, mock_db):
+        """设备结果回调快于 ACK 投影时，不允许 dispatcher 把设备覆盖回 RUNNING。"""
+        from src.celery_app.tasks.workline import dispatch_outbox
+
+        outbox = MockOutbox(
+            dispatch_type=DispatchType.DEVICE_COMMAND,
+            target_type=TargetType.DEVICE,
+            target_code="ARM01",
+            payload_json={"command_code": "CMD-FAST-CALLBACK-001", "task_type": "PICK_AND_PUT"},
+        )
+        command = _mock_command_record(id=1001, device_id=7, status=CommandStatus.PENDING)
+
+        async def refresh_command(obj):
+            obj.status = CommandStatus.COMPLETED
+
+        mock_db.refresh = AsyncMock(side_effect=refresh_command)
+        mock_device_repo = MagicMock()
+        mock_device_repo.get_by_device_code_for_update = AsyncMock(
+            return_value=_mock_device_record(
+                id=7,
+                callback_path=None,
+                capabilities_json={"supports_command_types": ["PICK_AND_PUT"]},
+                maintenance_mode=False,
+                device_code="ARM01",
+                device_status=DeviceStatus.IDLE,
+                current_command_id=None,
+            )
+        )
+        mock_command_repo = MagicMock()
+        mock_command_repo.get_by_command_code = AsyncMock(return_value=command)
+        mock_device_service = SimpleNamespace(mark_command_dispatched=AsyncMock())
+        runtime_service = SimpleNamespace(activate_execution_deadline_after_ack=AsyncMock())
+
+        with (
+            patch(
+                "src.app.device.repositories.device_repository.device_repository",
+                mock_device_repo,
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
+            patch(
+                "src.app.device.services.device_service",
+                mock_device_service,
+            ),
+            patch(
+                "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
+                runtime_service,
+            ),
+            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("httpx.AsyncClient") as mock_client,
+        ):
+            mock_response = MagicMock(status_code=200)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+
+        assert result is True
+        mock_db.refresh.assert_awaited_once_with(command)
+        mock_device_service.mark_command_dispatched.assert_not_awaited()
+        runtime_service.activate_execution_deadline_after_ack.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_dispatch_blocks_next_same_device_command_until_current_finishes(self, mock_db):
         """同一设备上一条硬件任务完成回调前，后续 outbox 不能进入设备侧。"""
         from src.celery_app.tasks.workline import dispatch_outbox

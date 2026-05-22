@@ -61,21 +61,65 @@ def _ctx(orch_result: OrchestratorResult, *, session: Any | None = None, db: Any
 
 
 class RecordingResourceProjectionService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "PROJECTED") -> None:
         self.calls: list[dict[str, Any]] = []
+        self.status = status
 
     async def record_resource_fact(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(status="PROJECTED")
+        return SimpleNamespace(status=self.status)
 
 
 class RecordingBinCellReservationService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "CLAIMED") -> None:
         self.calls: list[dict[str, Any]] = []
+        self.status = status
 
     async def apply_runtime_reservation(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(status="CLAIMED")
+        return SimpleNamespace(status=self.status)
+
+
+class RecordingHandlingOperationService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def request_bin_operation(
+        self,
+        db: Any,
+        *,
+        operation_type: str,
+        operation_key: str,
+        moves: list[dict[str, Any]],
+        trace_id: str,
+        workline_id: int | None = None,
+        workline_code: str | None = None,
+        material_session_id: int | None = None,
+        carrier_type: str = "CTU",
+        carrier_code: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "db": db,
+                "operation_type": operation_type,
+                "operation_key": operation_key,
+                "moves": moves,
+                "trace_id": trace_id,
+                "workline_id": workline_id,
+                "workline_code": workline_code,
+                "material_session_id": material_session_id,
+                "carrier_type": carrier_type,
+                "carrier_code": carrier_code,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return SimpleNamespace(
+            id=701,
+            operation_key=operation_key,
+            operation_type=operation_type,
+            operation_status="REQUESTED",
+        )
 
 
 @pytest.mark.asyncio
@@ -173,6 +217,36 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload={"rack_code": "RACK-001", "workline_code": "WL-001", "position_code": "SINGLE_LAYER_A"},
+                idempotency_key="RACK_ARRIVED:conflict",
+            ),
+            RuntimeIntent.update_context({"rack_operation": {"status": "ARRIVED"}}),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resource_reservation_intent_is_applied_before_command(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="CONV01", device_role="CONVEYOR")
     target = SimpleNamespace(id=2, device_code="OUT01", device_role="OUTPUT_ARM", upstream_device_id=1)
@@ -219,6 +293,155 @@ async def test_resource_reservation_intent_is_applied_before_command(monkeypatch
     assert reservation_service.calls[0]["operation"] == "CLAIM_BIN_CELL"
     assert reservation_service.calls[0]["session"] is session
     assert created_payloads[0]["device_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reconciling_resource_reservation_stops_following_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    reservation_service = RecordingBinCellReservationService(status="RECONCILING")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_reservation(
+                operation="CONSUME_BIN_CELL",
+                payload={"bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="CONSUME_BIN_CELL:123:BIN-001:4",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert reservation_service.calls[0]["operation"] == "CONSUME_BIN_CELL"
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_consume_bin_cell_owner_mismatch_creates_hold_and_runtime_does_not_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.workline.models.bin_cell_reservation import BinCellReservationStatus, WorklineBinCellReservation
+    from src.app.workline.models.safety import WorkLineRuntimeStatus
+    from src.app.workline.services.bin_cell_reservation_service import WorklineBinCellReservationService
+    from src.app.workline.services.runtime_hold_creation_service import RuntimeHoldCreationService
+
+    class ReservationRepo:
+        def __init__(self) -> None:
+            self.consumed: list[WorklineBinCellReservation] = []
+
+        async def get_active_by_bin_cell(
+            self,
+            _db: object,
+            *,
+            bin_code: str,
+            bin_cell_index: str,
+        ) -> WorklineBinCellReservation:
+            assert bin_code == "BIN-001"
+            assert bin_cell_index == "4"
+            return WorklineBinCellReservation(
+                reservation_key="reserve:old",
+                workline_id=1001,
+                workline_code="SMT_SORTER_01",
+                session_id=2001,
+                trace_id="trace-old",
+                pkg_code="PKG-OLD",
+                bin_code="BIN-001",
+                bin_cell_code="BIN-001-4",
+                bin_cell_index="4",
+                reservation_status=BinCellReservationStatus.PLANNED,
+                reserved_at=datetime(2026, 1, 1, 0, 0, 0),
+            )
+
+        async def mark_consumed(
+            self,
+            _db: object,
+            reservation: WorklineBinCellReservation,
+            *,
+            consumed_at: datetime,
+        ) -> WorklineBinCellReservation:
+            reservation.consumed_at = consumed_at
+            self.consumed.append(reservation)
+            return reservation
+
+    class MaterialMountRepo:
+        async def get_active_by_bin_cell(self, _db: object, *, bin_code: str, bin_cell_index: str) -> object | None:
+            return None
+
+    class RuntimeHoldRepo:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+
+        async def create_open_hold(self, _db: object, **data: Any) -> SimpleNamespace:
+            self.created.append(data)
+            return SimpleNamespace(id=9901, **data)
+
+    class WorkLineRepo:
+        def __init__(self, workline: SimpleNamespace) -> None:
+            self.workline = workline
+
+        async def get_for_update(self, _db: object, workline_id: int) -> SimpleNamespace:
+            assert workline_id == 1001
+            return self.workline
+
+    session = _session(id=2002, context_json={"pkg_id": "PKG-001"})
+    workline = SimpleNamespace(
+        id=1001,
+        line_code="SMT_SORTER_01",
+        plugin_key="demo_plugin",
+        contract_version="1.0",
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    ctx["workline"] = workline
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+    reservation_repo = ReservationRepo()
+    hold_repo = RuntimeHoldRepo()
+    runtime_hold_creator = RuntimeHoldCreationService(
+        repository=hold_repo,
+        workline_repository=WorkLineRepo(workline),
+    )
+    reservation_service = WorklineBinCellReservationService(
+        reservation_repository=reservation_repo,
+        material_mount_repository=MaterialMountRepo(),
+        runtime_hold_creator=runtime_hold_creator,
+    )
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_reservation(
+                operation="CONSUME_BIN_CELL",
+                payload={"bin_code": "BIN-001", "bin_cell_index": "4"},
+                idempotency_key="CONSUME_BIN_CELL:2002:CMD-OUTPUT-001:BIN-001:4",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert hold_repo.created[0]["source_reason"] == "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_reason == "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+    assert reservation_repo.consumed == []
+    assert session.context_json == {"pkg_id": "PKG-001"}
+    assert session.status == "WAITING_DEVICE_RESULT"
+    assert getattr(ctx["orch_result"], "complete", False) is False
+    record_ng_flow.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -371,52 +594,536 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
 
 
 @pytest.mark.asyncio
-async def test_external_request_intent_records_full_box_exchange_task(
+async def test_rack_operation_request_creates_operation_tasks_and_waits_by_operation_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
-    task_calls: list[dict[str, Any]] = []
+    operation_calls: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["workline"].line_code = "WL-SMT-01"
 
-    class RecordingFullBoxExchangeTaskService:
-        async def record_requested_from_external_request(self, **kwargs: Any) -> None:
-            task_calls.append(kwargs)
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append({"db": db, **kwargs})
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:1:MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code="RACK-OLD",
+                    source_position_code="SINGLE_LAYER_A",
+                    target_position_code=None,
+                ),
+                SimpleNamespace(
+                    id=902,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                ),
+            ]
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
         timelines.append(kwargs)
 
     monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
 
-    await RuntimeIntentEffectApplier(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService()).apply(
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
         ctx,
         [
-            RuntimeIntent.external_request(
-                dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-                target_code="http://wms-rcs/api/full-box-exchange",
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
                 payload={
-                    "exchange_request_code": "external:smt:release-001:FULL_BIN_EXCHANGE",
-                    "rack_release_id": "release-001",
-                    "exchange_area_code": "SMT-EXCHANGE",
-                    "requested_bins": [{"bin_code": "BIN-001", "rack_slot_code": "A01"}],
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "MOVE_RACK",
+                            "rack_code": "RACK-OLD",
+                            "rack_kind": "SINGLE_LAYER",
+                            "source_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_EMPTY_RACK_AREA",
+                        },
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        },
+                    ],
+                    "trace_id": "trace-from-payload",
                 },
                 timeout_seconds=1800,
-                source_system="WMS_RCS",
             )
         ],
     )
 
-    outbox = db.add.call_args.args[0]
-    assert len(task_calls) == 1
-    assert task_calls[0]["db"] is db
-    assert task_calls[0]["session"] is session
-    assert task_calls[0]["outbox"] is outbox
-    assert task_calls[0]["dispatch_key"] == "external:smt:release-001:FULL_BIN_EXCHANGE"
-    assert task_calls[0]["target_code"] == "http://wms-rcs/api/full-box-exchange"
-    assert task_calls[0]["payload_json"]["rack_release_id"] == "release-001"
-    assert task_calls[0]["trace_id"] == "trace-runtime"
-    assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
+    assert db.add.call_count == 0
+    assert len(operation_calls) == 1
+    assert operation_calls[0]["db"] is db
+    assert operation_calls[0]["session"] is session
+    assert operation_calls[0]["workline"] is ctx["workline"]
+    assert operation_calls[0]["operation_key"] == "rack-operation:trace-runtime"
+    assert operation_calls[0]["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert operation_calls[0]["target_code"] == "http://wms-rcs/api/rack-operation"
+    assert operation_calls[0]["task_specs"][0]["task_type"] == "MOVE_RACK"
+    assert operation_calls[0]["task_specs"][1]["target_position_code"] == "SINGLE_LAYER_A"
+    assert operation_calls[0]["trace_id"] == "trace-from-payload"
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RACK_OPERATION"
+    assert session.awaiting_command_id is None
+    assert session.current_wait_timeout_seconds == 1800
+    assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
+    assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["status"] == "PENDING"
+    assert session.context_json["rack_operation"]["task_sequences"] == [1, 2]
+    assert session.context_json["rack_operation"]["released_rack_codes"] == ["RACK-OLD"]
+    assert [timeline["action_type"].value for timeline in timelines] == ["WAIT_STARTED"]
+    assert timelines[0]["payload"]["wait_token"] == "rack-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_stores_operation_wait_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_calls: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(
+        status="RUNNING",
+        current_wait_type=None,
+        awaiting_command_id=None,
+        context_json={"rack_operation": {"status": "OLD"}},
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append({"db": db, **kwargs})
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                )
+            ]
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        }
+                    ],
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert operation_calls[0]["trace_id"] == "trace-runtime"
+    assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
+    assert session.context_json["rack_operation"]["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_preserves_operation_metadata_written_by_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SimpleNamespace(add=MagicMock())
+    operation_key = "rack-operation:trace-runtime"
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="MOVE_RACK",
+                    dispatch_key=f"rack-operation:{kwargs['operation_key']}:1:MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code="RACK-OLD",
+                    source_position_code="SINGLE_LAYER_A",
+                    target_position_code=None,
+                ),
+                SimpleNamespace(
+                    id=902,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key=f"rack-operation:{kwargs['operation_key']}:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                ),
+            ]
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.update_context(
+                {
+                    "rack_operation": {
+                        "operation_key": operation_key,
+                        "status": "REQUESTED",
+                        "pkg_id": "PKG-001",
+                    },
+                    "waiting_rack_operation_key": operation_key,
+                }
+            ),
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key=operation_key,
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "MOVE_RACK",
+                            "rack_code": "RACK-OLD",
+                            "rack_kind": "SINGLE_LAYER",
+                            "source_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_EMPTY_RACK_AREA",
+                        },
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        },
+                    ],
+                },
+                timeout_seconds=1800,
+            ),
+        ],
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["status"] == "PENDING"
+    assert rack_operation["pkg_id"] == "PKG-001"
+    assert rack_operation["task_sequences"] == [1, 2]
+    assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
+
+
+@pytest.mark.asyncio
+async def test_bin_operation_request_calls_handling_service_and_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    service = RecordingHandlingOperationService()
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(handling_operation_service=service).apply(
+        ctx,
+        [
+            RuntimeIntent.bin_operation_request(
+                operation_type="SORTER_FEED_BIN",
+                operation_key="bin-operation:trace-runtime",
+                moves=[
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "BIN-001",
+                        "source_type": "RACK_SLOT",
+                        "source_code": "SINGLE_LAYER_A:01",
+                        "target_type": "SORTER_STATION",
+                        "target_code": "SORTER-01",
+                    }
+                ],
+                carrier_type="CTU",
+                carrier_code="CTU-01",
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert len(service.calls) == 1
+    assert service.calls[0]["db"] is db
+    assert service.calls[0]["workline_id"] == 1
+    assert service.calls[0]["workline_code"] is None
+    assert service.calls[0]["material_session_id"] == session.id
+    assert service.calls[0]["operation_key"] == "bin-operation:trace-runtime"
+    assert service.calls[0]["operation_type"] == "SORTER_FEED_BIN"
+    assert service.calls[0]["moves"][0]["bin_code"] == "BIN-001"
+    assert service.calls[0]["carrier_type"] == "CTU"
+    assert service.calls[0]["carrier_code"] == "CTU-01"
+    assert service.calls[0]["trace_id"] == "trace-runtime"
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "HANDLING_OPERATION"
+    assert session.awaiting_command_id is None
+    assert session.current_wait_timeout_seconds == 1800
+    assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
+    assert session.context_json["waiting_handling_operation_key"] == "bin-operation:trace-runtime"
+    assert session.context_json["handling_operation"]["operation_key"] == "bin-operation:trace-runtime"
+    assert session.context_json["handling_operation"]["operation_type"] == "SORTER_FEED_BIN"
+    assert session.context_json["handling_operation"]["status"] == "PENDING"
+    assert session.context_json["handling_operation"]["move_sequences"] == [1]
+    assert timelines[0]["payload"]["wait_type"] == "HANDLING_OPERATION"
+    assert timelines[0]["payload"]["wait_token"] == "bin-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    service = RecordingHandlingOperationService()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier(handling_operation_service=service).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_bin_exchange_request(
+                operation_type="SINGLE_LAYER_FULL_BIN_EXCHANGE",
+                operation_key="rack-bin-exchange:release-001",
+                moves=[
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "BIN-FULL",
+                        "source_type": "RACK_SLOT",
+                        "source_code": "SINGLE_LAYER_A:01",
+                        "target_type": "BUFFER",
+                        "target_code": "FULL_BIN_BUFFER",
+                    },
+                    {
+                        "sequence_no": 2,
+                        "placeholder_key": "EMPTY_BIN_FOR:SINGLE_LAYER_A:01",
+                        "source_type": "BUFFER",
+                        "source_code": "EMPTY_BIN_BUFFER",
+                        "target_type": "RACK_SLOT",
+                        "target_code": "SINGLE_LAYER_A:01",
+                    },
+                ],
+                rack_code="RACK-SINGLE-01",
+                carrier_type="CTU",
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert service.calls[0]["operation_key"] == "rack-bin-exchange:release-001"
+    assert service.calls[0]["operation_type"] == "SINGLE_LAYER_FULL_BIN_EXCHANGE"
+    assert service.calls[0]["moves"][1]["placeholder_key"] == "EMPTY_BIN_FOR:SINGLE_LAYER_A:01"
+    assert session.current_wait_type == "HANDLING_OPERATION"
+    assert session.context_json["handling_operation"]["rack_code"] == "RACK-SINGLE-01"
+    assert session.context_json["handling_operation"]["move_sequences"] == [1, 2]
+
+
+def test_rack_operation_wait_released_rack_codes_include_only_move_out_tasks() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
+        ctx,
+        operation_key="rack-operation:move-in",
+        operation_type="RACK_TRANSPORT",
+        tasks=[
+            SimpleNamespace(
+                sequence_no=1,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:1:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND-1",
+                source_position_code="SOURCE-A",
+                target_position_code="WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=2,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:2:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND-2",
+                source_position_code="SOURCE-B",
+                target_position_code="WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=3,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:3:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-OLD",
+                source_position_code="WORK-POSITION",
+                target_position_code=None,
+            ),
+            SimpleNamespace(
+                sequence_no=4,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:4:MOVE_RACK",
+                actions_json={"required": False},
+                rack_code="RACK-OPTIONAL",
+                source_position_code="WORK-POSITION",
+                target_position_code=None,
+            ),
+        ],
+        timeout_seconds=1800,
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
+
+
+def test_rack_operation_wait_infers_target_position_from_returned_tasks() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
+        ctx,
+        operation_key="rack-operation:custom-target",
+        operation_type="RACK_TRANSPORT",
+        tasks=[
+            SimpleNamespace(
+                sequence_no=1,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:custom-target:1:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND",
+                source_position_code="BUFFER-A",
+                target_position_code="CUSTOM-WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=2,
+                task_type="ALLOCATE_AND_MOVE_RACK",
+                dispatch_key="rack-operation:custom-target:2:ALLOCATE_AND_MOVE_RACK",
+                actions_json={"required": True},
+                rack_code=None,
+                source_position_code=None,
+                target_position_code="CUSTOM-WORK-POSITION",
+            ),
+        ],
+        timeout_seconds=1800,
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["target_position_code"] == "CUSTOM-WORK-POSITION"
+    assert rack_operation["work_position_code"] == "CUSTOM-WORK-POSITION"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("intent_kwargs", "message"),
+    [
+        (
+            {
+                "operation_type": "ANY_PLUGIN_OPERATION",
+                "payload": {"trace_id": "trace-runtime"},
+            },
+            "RACK_OPERATION_REQUEST intent requires payload.rack_tasks",
+        ),
+    ],
+)
+async def test_rack_operation_request_rejects_invalid_operation_contract(
+    intent_kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    with pytest.raises(ValueError, match=message):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.rack_operation_request(
+                    operation_key="rack-operation:trace-runtime",
+                    target_code="http://wms-rcs/api/rack-operation",
+                    timeout_seconds=1800,
+                    **intent_kwargs,
+                )
+            ],
+        )
+
+    assert session.context_json == {}
+    assert session.status == "RUNNING"
+    assert ctx["db"].add.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_requires_trace_id() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, trace_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    ctx["trace"] = SimpleNamespace(trace_id=None)
+    ctx["trace_id"] = None
+
+    with pytest.raises(ValueError, match="RACK_OPERATION_REQUEST intent requires trace_id"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.rack_operation_request(
+                    operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                    operation_key="rack-operation:trace-runtime",
+                    target_code="http://wms-rcs/api/rack-operation",
+                    payload={
+                        "rack_tasks": [
+                            {
+                                "sequence_no": 2,
+                                "task_type": "ALLOCATE_AND_MOVE_RACK",
+                                "rack_kind": "SINGLE_LAYER",
+                                "target_position_code": "SINGLE_LAYER_A",
+                                "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                            }
+                        ],
+                    },
+                    timeout_seconds=1800,
+                )
+            ],
+        )
+
+    assert session.context_json == {}
+    assert session.status == "RUNNING"
+    assert ctx["db"].add.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -692,6 +1399,31 @@ def test_result_requires_outbox_dispatch_for_external_request() -> None:
     )
 
     assert workline_effects._result_requires_outbox_dispatch(result) is True
+
+
+def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
+    result = OrchestratorResult(
+        success=True,
+        intents=[
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="http://wms-rcs/api/rack-operation",
+                payload={
+                    "work_position_code": "SINGLE_LAYER_A",
+                    "new_rack_kind": "SINGLE_LAYER",
+                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert workline_effects._result_requires_outbox_dispatch(result) is True
+
+
+def test_wait_session_status_maps_rack_operation_to_external_wait() -> None:
+    assert workline_effects._wait_session_status("RACK_OPERATION") == "WAITING_EXTERNAL"
 
 
 @pytest.mark.asyncio

@@ -1,21 +1,17 @@
 """SMT 货架/料箱调度领域服务兼容导出。"""
 
 from src.app.resource.services.smt_rack_bin_scheduling_service import (
-    SmtFullBoxExchangeRequest,
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
     SmtRackBinSchedulingService,
-    SmtRackReleaseEvent,
-    SmtRackSupplyRequest,
+    SmtRackOperationRequest,
     smt_rack_bin_scheduling_service,
 )
 
 __all__ = [
-    "SmtFullBoxExchangeRequest",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
-    "SmtRackReleaseEvent",
-    "SmtRackSupplyRequest",
+    "SmtRackOperationRequest",
     "smt_rack_bin_scheduling_service",
 ]

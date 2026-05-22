@@ -180,6 +180,7 @@ def create_wms_external_payload(**overrides: object) -> JsonDict:
         "callback_type": "WMS_RACK_ARRIVED",
         "trace_id": "trace-wms-001",
         "dispatch_key": "external:smt_classifier:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
+        "status": "SUCCEEDED",
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
         "source_version": "1",
@@ -188,6 +189,27 @@ def create_wms_external_payload(**overrides: object) -> JsonDict:
         "timestamp": "2026-05-16T08:00:01Z",
         "signature": "test-signature",
         "active_bin_rack": {"rack_id": "RACK-001", "cells": []},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def create_full_box_exchange_external_payload(**overrides: object) -> JsonDict:
+    payload: JsonDict = {
+        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "trace_id": "trace-full-box-001",
+        "dispatch_key": "handling:full-box:release-001:move:1",
+        "exchange_request_code": "handling:full-box:release-001:move:1",
+        "rack_release_id": "rack-release-001",
+        "wms_rcs_task_id": "RCS-TASK-FULL-001",
+        "source_system": "WMS",
+        "source_event_id": "wms-full-box-event-001",
+        "source_version": "1",
+        "occurred_at": "2026-05-22T08:00:00Z",
+        "request_id": "REQ-FULL-BOX-001",
+        "timestamp": "2026-05-22T08:00:01Z",
+        "signature": "test-signature",
+        "exchange_status": "BUSINESS_COMPLETED",
     }
     payload.update(overrides)
     return payload
@@ -237,34 +259,34 @@ class TestCallbackEnqueueFallback:
         db_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_external_records_full_box_exchange_callback(self) -> None:
+    async def test_process_external_records_rack_task_callback(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         calls: list[dict[str, Any]] = []
 
         class FakeInboxService:
+            async def mark_as_processed(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321)
+
             async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
                 return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
 
-        class RecordingFullBoxExchangeTaskService:
+        class RecordingRackTaskService:
             async def record_callback_from_external_http(self, **kwargs: Any) -> None:
                 calls.append(kwargs)
 
-        service = CallbackOrchestrationService(full_box_exchange_task_service=RecordingFullBoxExchangeTaskService())
+        service = CallbackOrchestrationService(rack_task_service=RecordingRackTaskService())
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
-            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-            exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
-            rack_release_id="release-001",
-            wms_rcs_task_id="wms-task-001",
-            exchange_status="PHYSICAL_COMPLETED",
-            post_exchange_relations={"rack_code": "RACK-002"},
+            callback_type="WMS_RACK_TASK_RESULT",
+            dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+            status="SUCCEEDED",
         )
 
         outcome = await service.process_external(
             db,  # type: ignore[arg-type]
-            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+            callback_type="WMS_RACK_TASK_RESULT",
             payload=payload,
             request_id="req-wms-physical",
             trace_id="trace-wms-001",
@@ -275,8 +297,183 @@ class TestCallbackEnqueueFallback:
         assert outcome.trace_id == "trace-wms-001"
         assert len(calls) == 1
         assert calls[0]["db"] is db
-        assert calls[0]["payload_json"]["exchange_status"] == "PHYSICAL_COMPLETED"
+        assert calls[0]["payload_json"]["status"] == "SUCCEEDED"
         assert calls[0]["trace_id"] == "trace-wms-001"
+
+    @pytest.mark.asyncio
+    async def test_process_external_records_handling_operation_callback(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        calls: list[dict[str, Any]] = []
+
+        class FakeInboxService:
+            async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
+
+            async def mark_as_processed(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321)
+
+        class RecordingRackTaskService:
+            async def record_callback_from_external_http(self, **_kwargs: Any) -> None:
+                return None
+
+        class RecordingHandlingOperationService:
+            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
+                calls.append(kwargs)
+
+        service = CallbackOrchestrationService(
+            rack_task_service=RecordingRackTaskService(),
+            handling_operation_service=RecordingHandlingOperationService(),
+        )
+        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        db = SimpleNamespace()
+        payload = create_wms_external_payload(
+            callback_type="CTU_BIN_MOVE_COMPLETED",
+            dispatch_key="handling:bin-operation:trace-001:move:1",
+            status="SUCCEEDED",
+        )
+
+        outcome = await service.process_external(
+            db,  # type: ignore[arg-type]
+            callback_type="CTU_BIN_MOVE_COMPLETED",
+            payload=payload,
+            request_id="req-ctu-bin-completed",
+            trace_id="trace-bin-001",
+            inbox_service=FakeInboxService(),  # type: ignore[arg-type]
+            enqueue_processing=lambda: None,
+        )
+
+        assert outcome.trace_id == "trace-bin-001"
+        assert len(calls) == 1
+        assert calls[0]["db"] is db
+        assert calls[0]["payload_json"]["dispatch_key"] == "handling:bin-operation:trace-001:move:1"
+        assert calls[0]["trace_id"] == "trace-bin-001"
+
+    @pytest.mark.asyncio
+    async def test_process_external_routes_full_box_exchange_result_to_handling_lifecycle(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        calls: list[dict[str, Any]] = []
+
+        class FakeInboxService:
+            async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
+
+            async def mark_as_processed(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321)
+
+        class RecordingHandlingOperationService:
+            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
+                calls.append(kwargs)
+
+        service = CallbackOrchestrationService(
+            rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
+            handling_operation_service=RecordingHandlingOperationService(),
+        )
+        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        db = SimpleNamespace()
+        payload = create_full_box_exchange_external_payload(dispatch_key="external:smt_full_box_exchange:release-001")
+
+        outcome = await service.process_external(
+            db,  # type: ignore[arg-type]
+            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+            payload=payload,
+            request_id="REQ-FULL-BOX-001",
+            trace_id="trace-full-box-001",
+            inbox_service=FakeInboxService(),  # type: ignore[arg-type]
+            enqueue_processing=lambda: None,
+        )
+
+        assert outcome.trace_id == "trace-full-box-001"
+        assert len(calls) == 1
+        assert calls[0]["db"] is db
+        assert calls[0]["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_process_external_duplicate_does_not_record_handling_callback(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        duplicate_error = ValueError("已存在（幂等键重复）")
+        duplicate_error.existing_inbox = SimpleNamespace(id=99, trace_id="trace-bin-001")  # type: ignore[attr-defined]
+        handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+
+        class FakeInboxService:
+            async def create_external_http_inbox(self, **_kwargs: Any) -> SimpleNamespace:
+                raise duplicate_error
+
+        service = CallbackOrchestrationService(
+            rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
+            handling_operation_service=handling_operation_service,
+        )
+        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+
+        outcome = await service.process_external(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            callback_type="CTU_BIN_MOVE_COMPLETED",
+            payload=create_wms_external_payload(
+                callback_type="CTU_BIN_MOVE_COMPLETED",
+                dispatch_key="handling:bin-operation:trace-001:move:1",
+            ),
+            request_id="req-duplicate-ctu",
+            trace_id="trace-bin-001",
+            inbox_service=FakeInboxService(),  # type: ignore[arg-type]
+            enqueue_processing=lambda: None,
+        )
+
+        assert outcome.is_duplicate is True
+        handling_operation_service.record_callback_from_external_http.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_process_external_lifecycle_only_rack_callback_does_not_enqueue_default_processor(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        class FakeInboxService:
+            def __init__(self) -> None:
+                self.mark_processed_calls: list[tuple[Any, int, bool]] = []
+
+            async def create_external_http_inbox(self, **kwargs: Any) -> SimpleNamespace:
+                return SimpleNamespace(id=321, trace_id=kwargs["trace_id"])
+
+            async def mark_as_processed(
+                self,
+                db: Any,
+                inbox_id: int,
+                *,
+                auto_commit: bool = True,
+            ) -> SimpleNamespace:
+                self.mark_processed_calls.append((db, inbox_id, auto_commit))
+                return SimpleNamespace(id=inbox_id)
+
+        class RecordingRackTaskService:
+            async def record_callback_from_external_http(self, **_kwargs: Any) -> None:
+                return None
+
+        service = CallbackOrchestrationService(rack_task_service=RecordingRackTaskService())
+        service._enqueue_workline_processing = MagicMock()  # type: ignore[method-assign]
+        inbox_service = FakeInboxService()
+        db = SimpleNamespace(commit=AsyncMock())
+        payload = create_wms_external_payload(
+            callback_type="WMS_RACK_TASK_RESULT",
+            dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+            status="SUCCEEDED",
+        )
+
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type="WMS_RACK_TASK_RESULT",
+                payload=payload,
+                request_id="req-wms-lifecycle-only",
+                trace_id="trace-wms-lifecycle-only",
+                inbox_service=inbox_service,  # type: ignore[arg-type]
+            )
+
+        db.commit.assert_awaited_once()
+        assert inbox_service.mark_processed_calls == [(db, 321, False)]
+        service._enqueue_workline_processing.assert_not_called()
 
 
 class TestCallbackResultAPI:
@@ -1442,10 +1639,158 @@ class TestCallbackExternalAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_callback_external_accepts_rack_task_callback_without_trace_id(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-generated-001")),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
+                new=AsyncMock(),
+            ) as mock_mark_processed,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-no-trace"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            payload = create_wms_external_payload(
+                callback_type="WMS_RACK_TASK_RESULT",
+                dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+                status="SUCCEEDED",
+            )
+            payload.pop("trace_id")
+            response = await callback_external(
+                request=build_request(body=payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        assert _response_data(response)["trace_id"] == "req-wms-no-trace"
+        create_kwargs = _await_kwargs(mock_create_inbox)
+        assert create_kwargs["trace_id"] == "req-wms-no-trace"
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        mock_mark_processed.assert_awaited_once_with(db_session, 321, auto_commit=False)
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["trace_id"] == "req-wms-no-trace"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_non_rack_wms_callback_without_trace_id(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-non-rack-no-trace"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(callback_type="WMS_INVENTORY_STATUS", trace_id=""),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        assert "trace_id is required" in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_accepts_wms_rack_arrived_without_status(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-wms-rack-success")),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
+                new=AsyncMock(),
+            ) as mock_mark_processed,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-arrived"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            payload = create_wms_external_payload(
+                callback_type="WMS_RACK_ARRIVED",
+                dispatch_key="rack-operation:op-001:2:ALLOCATE_AND_MOVE_RACK",
+            )
+            payload.pop("status")
+            response = await callback_external(
+                request=build_request(body=payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        mock_create_inbox.assert_awaited_once()
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        mock_mark_processed.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        mock_enqueue.assert_called_once()
+        mock_audit.assert_awaited_once()
+
     @pytest.mark.parametrize(
         "missing_field",
         [
             "dispatch_key",
+            "status",
             "source_system",
             "source_event_id",
             "source_version",
@@ -1455,13 +1800,13 @@ class TestCallbackExternalAPI:
             "signature",
         ],
     )
-    async def test_callback_external_rejects_wms_rcs_execution_missing_required_envelope_field(
+    async def test_callback_external_rejects_wms_rcs_task_result_missing_required_envelope_field(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
         missing_field: str,
     ) -> None:
-        payload = create_wms_external_payload()
+        payload = create_wms_external_payload(callback_type="WMS_RACK_TASK_RESULT")
         payload.pop(missing_field)
         with (
             patch(
@@ -1494,12 +1839,31 @@ class TestCallbackExternalAPI:
         assert missing_field in str(log_kwargs["error_message"])
         mock_audit.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_callback_external_rejects_full_box_physical_completed_without_post_exchange_relations(
+    @pytest.mark.parametrize(
+        "missing_field",
+        [
+            "dispatch_key",
+            "exchange_request_code",
+            "rack_release_id",
+            "wms_rcs_task_id",
+            "source_system",
+            "source_event_id",
+            "source_version",
+            "occurred_at",
+            "request_id",
+            "timestamp",
+            "signature",
+            "exchange_status",
+        ],
+    )
+    async def test_callback_external_rejects_full_box_exchange_missing_required_envelope_field(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
+        missing_field: str,
     ) -> None:
+        payload = create_full_box_exchange_external_payload()
+        payload.pop(missing_field)
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
@@ -1508,111 +1872,242 @@ class TestCallbackExternalAPI:
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
-            ),
+            ) as mock_log_callback,
             patch(
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
-            ),
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-physical"),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-full-box-missing-field"),
         ):
             from src.app.callback.v1.callback import callback_external
 
             response = await callback_external(
-                request=build_request(
-                    body=create_wms_external_payload(
-                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
-                        rack_release_id="release-001",
-                        wms_rcs_task_id="wms-task-001",
-                        exchange_status="PHYSICAL_COMPLETED",
-                    ),
-                    path="/api/v1/callback/external",
-                ),
+                request=build_request(body=payload, path="/api/v1/callback/external"),
                 db=db_session,
             )
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
         mock_create_inbox.assert_not_awaited()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        assert missing_field in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_external_rejects_full_box_lowercase_physical_completed_without_relations(
+    async def test_callback_external_accepts_full_box_exchange_business_completed(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
+        handling_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
+                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-full-box-001")),
             ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_handling_operation_service",
+                return_value=handling_service,
+            ),
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
-            ),
+            ) as mock_log_callback,
             patch(
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
-            ),
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-physical-lowercase"),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="REQ-FULL-BOX-001"),
         ):
             from src.app.callback.v1.callback import callback_external
 
             response = await callback_external(
                 request=build_request(
-                    body=create_wms_external_payload(
-                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
-                        rack_release_id="release-001",
-                        wms_rcs_task_id="wms-task-001",
-                        exchange_status="physical_completed",
-                    ),
+                    body=create_full_box_exchange_external_payload(),
                     path="/api/v1/callback/external",
                 ),
                 db=db_session,
             )
 
-        assert response["code"] == "2004"
-        assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        mock_create_inbox.assert_awaited_once()
+        handling_service.record_callback_from_external_http.assert_awaited_once()
+        callback_kwargs = handling_service.record_callback_from_external_http.await_args.kwargs
+        assert callback_kwargs["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        mock_enqueue.assert_called_once()
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_external_rejects_full_box_wms_confirmed_without_confirmation(
+    async def test_callback_external_accepts_generic_rack_task_success(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
+                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-wms-rack-success")),
             ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
+                new=AsyncMock(),
+            ) as mock_mark_processed,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
-            ),
+            ) as mock_log_callback,
             patch(
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
-            ),
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-confirmed"),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-success"),
         ):
             from src.app.callback.v1.callback import callback_external
 
             response = await callback_external(
                 request=build_request(
                     body=create_wms_external_payload(
-                        callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-                        exchange_request_code="external:smt:release-001:FULL_BIN_EXCHANGE",
-                        rack_release_id="release-001",
-                        wms_rcs_task_id="wms-task-001",
-                        exchange_status="WMS_CONFIRMED",
+                        callback_type="WMS_RACK_TASK_RESULT",
+                        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+                        status="SUCCEEDED",
                     ),
                     path="/api/v1/callback/external",
                 ),
                 db=db_session,
             )
 
-        assert response["code"] == "2004"
-        assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        mock_create_inbox.assert_awaited_once()
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        mock_mark_processed.assert_awaited_once_with(db_session, 321, auto_commit=False)
+        callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
+        assert callback_kwargs["payload_json"]["dispatch_key"] == "external:smt:release-001:RACK_OPERATION:1"
+        assert callback_kwargs["payload_json"]["status"] == "SUCCEEDED"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        mock_enqueue.assert_not_called()
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_accepts_generic_rack_task_failure(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(return_value=SimpleNamespace(id=322, trace_id="trace-wms-rack-failed")),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
+                new=AsyncMock(),
+            ) as mock_mark_processed,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-failed"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(
+                        callback_type="RCS_RACK_TASK_RESULT",
+                        dispatch_key="external:smt:release-001:RACK_OPERATION:2",
+                        task_status="FAILED",
+                        status=None,
+                        reason_code="RCS_RACK_OPERATION_FAILED",
+                        reason_message="外部系统拒绝",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        mock_mark_processed.assert_awaited_once_with(db_session, 322, auto_commit=False)
+        callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
+        assert callback_kwargs["payload_json"]["task_status"] == "FAILED"
+        assert callback_kwargs["payload_json"]["reason_code"] == "RCS_RACK_OPERATION_FAILED"
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        mock_enqueue.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_duplicate_does_not_record_rack_task_again(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        duplicate_error = ValueError("外部 HTTP 回调已存在（幂等键重复）")
+        duplicate_error.existing_inbox = SimpleNamespace(id=99, trace_id="trace-wms-001")  # type: ignore[attr-defined]
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(side_effect=duplicate_error),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-duplicate"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_wms_external_payload(
+                        callback_type="WMS_RACK_TASK_RESULT",
+                        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+                        status="SUCCEEDED",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "duplicate"
+        mock_create_inbox.assert_awaited_once()
+        rack_task_service.record_callback_from_external_http.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        mock_enqueue.assert_not_called()
+        mock_audit.assert_not_awaited()

@@ -40,6 +40,27 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
         )
         return result.scalar_one_or_none()
 
+    async def list_active_by_bin_codes(
+        self,
+        db: AsyncSession,
+        bin_codes: list[str],
+    ) -> list[WorklineBinCellReservation]:
+        """批量查询料箱当前 active 预占。"""
+
+        if not bin_codes:
+            return []
+
+        columns = cast("Any", WorklineBinCellReservation).__table__.c
+        result = await db.execute(
+            select(WorklineBinCellReservation)
+            .where(
+                columns.bin_code.in_(bin_codes),
+                columns.reservation_status == BinCellReservationStatus.PLANNED.value,
+            )
+            .order_by(columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
     async def mark_consumed(
         self,
         db: AsyncSession,

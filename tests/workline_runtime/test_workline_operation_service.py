@@ -133,7 +133,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
 
     outbox = SimpleNamespace(
         id=28,
-        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
         dispatch_type=DispatchType.EXTERNAL_HTTP,
         status=OutboxStatus.NEW,
         sent_at=None,
@@ -179,7 +179,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
 
     inbox = await service.submit_sandbox_external_callback(
         object(),
-        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
         payload=callback_payload,
         source_event_id="wms-event-001",
         request_id="rack-request-001",
@@ -199,7 +199,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
     assert created_payload["message_type"] == "EXTERNAL_HTTP"
     assert created_payload["callback_type"] == "WMS_RACK_ARRIVED"
     assert created_payload["trace_id"] == "trace-001"
-    assert created_payload["dispatch_key"] == "external:smt_classifier:trace-001:RACK_SUPPLY"
+    assert created_payload["dispatch_key"] == "external:smt_classifier:trace-001:RACK_OPERATION"
     assert created_payload["source_system"] == "WMS"
     assert created_payload["source_event_id"] == "wms-event-001"
     assert created_payload["source_version"] == "1"
@@ -247,7 +247,7 @@ async def test_sandbox_external_callback_requires_waiting_external_session() -> 
 
     outbox = SimpleNamespace(
         id=28,
-        dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
         dispatch_type=DispatchType.EXTERNAL_HTTP,
         status=OutboxStatus.SENT,
         session_id=530,
@@ -271,7 +271,7 @@ async def test_sandbox_external_callback_requires_waiting_external_session() -> 
     with pytest.raises(ValueError, match="当前会话状态不允许模拟外部回调"):
         await service.submit_sandbox_external_callback(
             object(),
-            dispatch_key="external:smt_classifier:trace-001:RACK_SUPPLY",
+            dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
             auto_commit=False,
         )
 

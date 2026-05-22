@@ -116,6 +116,11 @@ WORKLINE_SPECS = [
     },
 ]
 
+SMT_CLASSIFIER_E2E_CONFIG = {
+    "wms_rcs_rack_supply_url": "http://host.docker.internal:8010/api/rack-exchange",
+    "smt_full_box_release_device_code": "SMT-FULL-BOX-EVENT",
+}
+
 
 def _disable_audit_hooks(repo) -> None:
     """禁用 Repository 的审计日志 Hook"""
@@ -164,11 +169,9 @@ async def seed_worklines(db: AsyncSession) -> None:
             "line_type": LineType.AUTO,
             "zone_name": spec["zone_name"],
             "plugin_key": "smt_classifier",
-            "config": {},
+            "config": dict(SMT_CLASSIFIER_E2E_CONFIG),
             "description": spec["description"],
             "is_active": True,
-            "capacity": 1000,
-            "sort_order": spec["sort_order"],
         }
 
         if workline is None:

@@ -85,7 +85,12 @@ from src.workline_runtime.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.workline_runtime.services import BinAllocator, WorklineRuntimeServices, build_workline_runtime_services
+from src.workline_runtime.services import (
+    ActiveRackSnapshotProvider,
+    BinAllocator,
+    WorklineRuntimeServices,
+    build_workline_runtime_services,
+)
 from src.workline_runtime.session_resolver import SessionResolver, session_resolver
 from src.workline_runtime.topology import TopologyDeviceSnapshot, WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
@@ -94,6 +99,7 @@ __version__ = "1.0.0"
 
 __all__ = [
     "SANDBOX_ALLOWED_ENVS",
+    "ActiveRackSnapshotProvider",
     "AtomicWriter",
     "BinAllocator",
     "BlockScope",

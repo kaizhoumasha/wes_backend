@@ -6,7 +6,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from src.app.workline.models.runtime_hold import RuntimeHold, RuntimeHoldType
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
+from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -46,8 +49,11 @@ def _dt_key(value: Any) -> str | None:
 class RuntimeHoldCreationService:
     """创建/复用 RuntimeHold，不负责 release。"""
 
-    def __init__(self, *, repository: RuntimeHoldRepository | None = None) -> None:
+    def __init__(
+        self, *, repository: RuntimeHoldRepository | None = None, workline_repository: Any | None = None
+    ) -> None:
         self.repository = repository or runtime_hold_repository
+        self.workline_repository = workline_repository or default_workline_repository
 
     async def create_for_callback_deadline_expired(
         self,
@@ -175,7 +181,7 @@ class RuntimeHoldCreationService:
     ) -> RuntimeHold:
         """资源投影冲突时幂等创建 RuntimeHold。"""
 
-        return await self.repository.create_open_hold(
+        hold = await self.repository.create_open_hold(
             db,
             hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
             workline_id=workline_id,
@@ -192,6 +198,21 @@ class RuntimeHoldCreationService:
                 "reason": source_reason,
             },
         )
+        await self._project_workline_resource_reconciling(db, workline_id=workline_id, source_reason=source_reason)
+        return hold
+
+    async def _project_workline_resource_reconciling(self, db: Any, *, workline_id: int, source_reason: str) -> None:
+        """资源冲突 hold 生效时，同步冻结 WorkLine 安全状态投影。"""
+
+        workline = await self.workline_repository.get_for_update(db, workline_id)
+        if (
+            workline is None
+            or _enum_value(getattr(workline, "runtime_status", None)) == WorkLineRuntimeStatus.ESTOPPED.value
+        ):
+            return
+        workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
+        workline.stopped_at = getattr(workline, "stopped_at", None) or timezone.now_for_db()
+        workline.stopped_reason = source_reason
 
 
 runtime_hold_creation_service = RuntimeHoldCreationService()

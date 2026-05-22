@@ -285,9 +285,6 @@ def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
         rack_release_bin_snapshots=[
             _resource_evidence_dict(item) for item in getattr(result, "rack_release_bin_snapshots", [])
         ],
-        full_box_exchange_tasks=[
-            _resource_evidence_dict(item) for item in getattr(result, "full_box_exchange_tasks", [])
-        ],
         wms_writeback_evidence=[
             _resource_evidence_dict(item) for item in getattr(result, "wms_writeback_evidence", [])
         ],

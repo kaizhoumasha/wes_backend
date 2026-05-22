@@ -15,6 +15,16 @@ class RecordingRuntimeHoldRepository:
         return SimpleNamespace(id=8101, **data)
 
 
+class RecordingWorkLineRepository:
+    def __init__(self, workline: SimpleNamespace | None) -> None:
+        self.workline = workline
+        self.locked_ids: list[int] = []
+
+    async def get_for_update(self, _db: object, workline_id: int) -> SimpleNamespace | None:
+        self.locked_ids.append(workline_id)
+        return self.workline
+
+
 @pytest.mark.asyncio
 async def test_create_for_resource_reconciliation_records_runtime_hold_evidence() -> None:
     """资源冲突应幂等创建 RuntimeHold，并保留冲突证据快照。"""
@@ -23,7 +33,7 @@ async def test_create_for_resource_reconciliation_records_runtime_hold_evidence(
     from src.app.workline.services.runtime_hold_creation_service import RuntimeHoldCreationService
 
     repository = RecordingRuntimeHoldRepository()
-    service = RuntimeHoldCreationService(repository=repository)
+    service = RuntimeHoldCreationService(repository=repository, workline_repository=RecordingWorkLineRepository(None))
 
     hold = await service.create_for_resource_reconciliation(
         object(),
@@ -49,3 +59,41 @@ async def test_create_for_resource_reconciliation_records_runtime_hold_evidence(
         "resource-reconciliation:RACK_PLACEMENT_CONFLICT:wms-event-002"
     )
     assert repository.created[0]["evidence_snapshot_json"]["rack_code"] == "RACK-001"
+
+
+@pytest.mark.asyncio
+async def test_create_for_resource_reconciliation_projects_workline_reconciling_and_blocks_accepting_work() -> None:
+    """资源冲突 hold 必须同步冻结 WorkLine，否则后续安全门禁仍会接受新任务。"""
+
+    from src.app.workline.models.safety import WorkLineRuntimeStatus
+    from src.app.workline.services.runtime_hold_creation_service import RuntimeHoldCreationService
+    from src.app.workline.services.safety_service import WorkLineSafetyBlocked, WorkLineSafetyService
+
+    repository = RecordingRuntimeHoldRepository()
+    workline = SimpleNamespace(
+        id=1001,
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+    )
+    workline_repository = RecordingWorkLineRepository(workline)
+    service = RuntimeHoldCreationService(repository=repository, workline_repository=workline_repository)
+
+    _ = await service.create_for_resource_reconciliation(
+        object(),
+        workline_id=1001,
+        session_id=2001,
+        trace_id="trace-001",
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        source_reason="BIN_CELL_RESERVATION_CONFLICT",
+        source_event_id="reserve-event-001",
+        evidence={"bin_code": "BIN-001", "bin_cell_index": "4"},
+    )
+
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_at is not None
+    assert workline.stopped_reason == "BIN_CELL_RESERVATION_CONFLICT"
+    safety_service = WorkLineSafetyService(workline_repository=workline_repository)
+    with pytest.raises(WorkLineSafetyBlocked, match="WORKLINE_RECONCILING"):
+        await safety_service.assert_accepting_work(object(), workline_id=1001)

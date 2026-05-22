@@ -43,6 +43,63 @@ class PluginNext:
             source_system=source_system,
         )
 
+    def rack_operation_request(
+        self,
+        *,
+        operation_type: str,
+        operation_key: str,
+        target_code: str,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.rack_operation_request(
+            operation_type=operation_type,
+            operation_key=operation_key,
+            target_code=target_code,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def bin_operation_request(
+        self,
+        *,
+        operation_type: str,
+        operation_key: str,
+        moves: list[dict[str, Any]],
+        carrier_type: str = "CTU",
+        carrier_code: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.bin_operation_request(
+            operation_type=operation_type,
+            operation_key=operation_key,
+            moves=moves,
+            carrier_type=carrier_type,
+            carrier_code=carrier_code,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def rack_bin_exchange_request(
+        self,
+        *,
+        operation_type: str,
+        operation_key: str,
+        moves: list[dict[str, Any]],
+        rack_code: str | None = None,
+        carrier_type: str = "CTU",
+        carrier_code: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> RuntimeIntent:
+        return RuntimeIntent.rack_bin_exchange_request(
+            operation_type=operation_type,
+            operation_key=operation_key,
+            moves=moves,
+            rack_code=rack_code,
+            carrier_type=carrier_type,
+            carrier_code=carrier_code,
+            timeout_seconds=timeout_seconds,
+        )
+
     def device_event(
         self,
         *,

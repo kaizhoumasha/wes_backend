@@ -4,6 +4,10 @@ from fastapi import APIRouter
 
 from src.app.resource.models import (
     Bin,
+    BinCellOccupancy,
+    BinCellOccupancyCreate,
+    BinCellOccupancyResponse,
+    BinCellOccupancyUpdate,
     BinContentSnapshot,
     BinContentSnapshotCreate,
     BinContentSnapshotItem,
@@ -53,6 +57,7 @@ from src.app.resource.models import (
     ResourceStateEventUpdate,
 )
 from src.app.resource.services import (
+    bin_cell_occupancy_service,
     bin_content_snapshot_item_service,
     bin_content_snapshot_service,
     bin_material_mount_service,
@@ -208,6 +213,20 @@ bin_material_mount_api = BaseAPI(
     gen_delete=False,
 )
 
+bin_cell_occupancy_api = BaseAPI(
+    module_name="resource",
+    model=BinCellOccupancy,
+    service=bin_cell_occupancy_service,
+    create_schema=BinCellOccupancyCreate,
+    update_schema=BinCellOccupancyUpdate,
+    response_schema=BinCellOccupancyResponse,
+    prefix="/bin-cell-occupancies",
+    tags=["资源模型-料箱格位聚合占用"],
+    gen_create=False,
+    gen_update=False,
+    gen_delete=False,
+)
+
 bin_content_snapshot_api = BaseAPI(
     module_name="resource",
     model=BinContentSnapshot,
@@ -247,6 +266,7 @@ router.include_router(resource_state_event_api.router)
 router.include_router(rack_placement_api.router)
 router.include_router(rack_bin_mount_api.router)
 router.include_router(bin_material_mount_api.router)
+router.include_router(bin_cell_occupancy_api.router)
 router.include_router(bin_content_snapshot_api.router)
 router.include_router(bin_content_snapshot_item_api.router)
 

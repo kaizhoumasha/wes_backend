@@ -32,11 +32,19 @@ from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
 )
+from src.app.handling.models import (  # noqa: F401
+    HandlingMove,
+    HandlingOperation,
+    HandlingStep,
+    SystemOutbox,
+)
 from src.app.resource.models import (  # noqa: F401
     Bin,
+    BinCellOccupancy,
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinMaterialMount,
+    BinPlacement,
     BinSlotTemplate,
     BinType,
     Rack,
