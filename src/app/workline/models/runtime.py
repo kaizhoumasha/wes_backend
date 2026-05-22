@@ -28,6 +28,9 @@ class RuntimeTraceListItem(BaseModel):
     session_code: str
     trace_id: str | None = None
     request_id: str | None = None
+    last_inbox_id: int | None = None
+    event_type: str | None = None
+    event_payload: dict[str, Any] | None = None
     business_key: str | None = None
     barcode: str | None = None
     workline_id: int

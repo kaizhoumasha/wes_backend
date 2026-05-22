@@ -43,7 +43,11 @@ def _drop_index_if_exists(index_name: str) -> None:
 def upgrade() -> None:
     """Upgrade schema."""
     _drop_constraint_if_exists("workline_rack_positions", "worklinerackpositionrole")
+    _drop_constraint_if_exists("workline_rack_positions", "ck_workline_rack_positions_worklinerackpositionrole")
     _drop_constraint_if_exists("workline_rack_positions", "ck_workline_rack_positions_capacity_one")
+    _drop_constraint_if_exists(
+        "workline_rack_positions", "ck_workline_rack_positions_ck_workline_rack_positions_c_65eb"
+    )
     op.execute(
         sa.text(
             """

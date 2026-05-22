@@ -62,6 +62,20 @@ class TestSmtClassifierPluginEvents:
         assert result[1].payload_json == {"pkg_id": "SVYU00125TP4LCR02_2"}
 
     @pytest.mark.asyncio
+    async def test_scan_completed_uses_device_code_when_location_missing(self, plugin, mock_context):
+        """沙箱/设备事件可用顶层 device_code 作为默认扫描位置。"""
+        payload = _scan_payload()
+        payload["device_code"] = "ARM03"
+        del payload["data"]["location"]
+
+        result = await plugin.on_device_event(mock_context, _make_inbox(payload))
+
+        assert [intent.kind for intent in result] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+        assert result[0].context_patch["device_code"] == "ARM03"
+        assert result[0].context_patch["location"] == "ARM03"
+        _assert_command(result[1], action="MEASUREMENT_REEL", device_role="INPUT_ARM")
+
+    @pytest.mark.asyncio
     async def test_scan_completed_persists_six_in_one_context(self, plugin, mock_context):
         """扫码 OK 后保存完整 6 合 1 上下文，供后续料箱调度使用。"""
 

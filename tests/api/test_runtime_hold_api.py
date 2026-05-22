@@ -130,10 +130,28 @@ async def _return_to_ng_request(db_session, hold: RuntimeHold) -> ResolveRuntime
 
 class TestRuntimeHoldRoutePermissions:
     async def test_runtime_hold_routes_require_expected_permissions(self) -> None:
+        assert _permission_names("/runtime-holds", "GET") == ["biz:workline:view-runtime-hold"]
         assert _permission_names("/runtime-holds/{hold_id}", "GET") == ["biz:workline:view-runtime-hold"]
         assert _permission_names("/runtime-holds/{hold_id}/resolve", "POST") == ["biz:workline:resolve-runtime-hold"]
         assert _permission_names("/runtime-holds/ng-reasons", "GET") == ["biz:workline:view-runtime-hold"]
         assert _permission_names("/ng-return-items", "GET") == ["biz:workline:list-ng-return-item"]
+
+
+async def test_list_runtime_holds_includes_session_level_timeout_hold(db_session) -> None:
+    workline = await _create_workline(db_session, code="WL-API-HOLD-LIST")
+    session = await _create_session(db_session, workline, code="S-API-HOLD-LIST")
+    hold = await _create_hold(db_session, workline, session, key="api:hold-list")
+
+    response = await runtime_hold_api.list_runtime_holds(
+        db_session,
+        workline_id=cast("int", workline.id),
+        session_id=cast("int", session.id),
+        status="OPEN",
+    )
+
+    items = response["data"]
+    assert [item.id for item in items] == [hold.id]
+    assert items[0].source_reason == "CALLBACK_DEADLINE_EXPIRED"
 
 
 async def test_get_runtime_hold_detail_is_read_only(db_session) -> None:
@@ -170,6 +188,39 @@ async def test_resolve_runtime_hold_continue(db_session) -> None:
     await db_session.refresh(hold)
     assert response["data"]["status"] == RuntimeHoldStatus.RESOLVED.value
     assert hold.status == RuntimeHoldStatus.RESOLVED
+
+
+async def test_resolve_runtime_hold_rejects_safety_estop_hold(db_session) -> None:
+    workline = await _create_workline(db_session, code="WL-API-SAFETY")
+    workline.runtime_status = WorkLineRuntimeStatus.ESTOPPED
+    hold = RuntimeHold(
+        hold_type=RuntimeHoldType.SAFETY_ESTOP,
+        workline_id=cast("int", workline.id),
+        plugin_key="smt_classifier",
+        contract_version="1.0",
+        source_kind="SAFETY_ESTOP",
+        source_reason="ESTOP_PRESSED",
+        source_idempotency_key="api:safety-estop",
+        evidence_snapshot_json={"event_type": "ESTOP_PRESSED"},
+    )
+    db_session.add(hold)
+    await db_session.flush()
+    request = await _continue_request(db_session, hold)
+
+    response = await runtime_hold_api.resolve_runtime_hold(
+        cast("int", hold.id),
+        request,
+        db_session,
+        current_user_id=42,
+    )
+
+    await db_session.refresh(hold)
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 400
+    body = _json_response_body(response)
+    assert body["code"] == "RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP"
+    assert "clear-estop" in body["message"]
+    assert hold.status == RuntimeHoldStatus.OPEN
 
 
 async def test_resolve_runtime_hold_return_to_ng(db_session) -> None:

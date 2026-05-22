@@ -925,7 +925,7 @@ class SmtClassifierPlugin(WorklinePlugin):
                 suggested_action="检查扫码设备 data 字段",
             )
 
-        location = event.data.location
+        location = non_empty_str(event.data.location) or event.device_code
         barcode_decision = barcode_decision_service.evaluate(event.data)
         pkg_id = barcode_decision.six_in_one.PkgID or ""
 

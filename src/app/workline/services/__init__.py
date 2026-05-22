@@ -28,6 +28,7 @@ from .runtime_reconciliation_service import (
     workline_runtime_reconciliation_service,
 )
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
+from .sandbox_cleanup_service import SandboxCleanupService, sandbox_cleanup_service
 from .timeline_sequence_service import add_timeline_with_sequence, allocate_timeline_seq_no
 from .trace_query_service import TraceQueryResult, TraceQueryService, trace_query_service
 from .workline_service import WorkLineService, workline_service
@@ -40,6 +41,7 @@ __all__ = [
     "RuntimeHoldQueryService",
     "RuntimeHoldReleaseService",
     "RuntimeQueryService",
+    "SandboxCleanupService",
     "TraceQueryResult",
     "TraceQueryService",
     "WorkLineSafetyBlocked",
@@ -64,6 +66,7 @@ __all__ = [
     "runtime_hold_query_service",
     "runtime_hold_release_service",
     "runtime_query_service",
+    "sandbox_cleanup_service",
     "trace_query_service",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",

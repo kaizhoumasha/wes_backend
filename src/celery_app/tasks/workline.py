@@ -383,6 +383,25 @@ def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     return event_types or _ENTRY_DEVICE_EVENT_TYPES
 
 
+def _is_payload_invalid_entry_replay(
+    *,
+    payload: dict[str, Any],
+    session: Any,
+) -> bool:
+    """允许 payload 校验失败后的人工 replay 重新进入插件处理。"""
+
+    replay_of_event_id = payload.get("replay_of_event_id")
+    if not isinstance(replay_of_event_id, str) or not replay_of_event_id:
+        return False
+    if _session_status_value(session) != "MANUAL_HOLD":
+        return False
+    if _string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
+        return False
+    if getattr(session, "awaiting_command_id", None) is not None:
+        return False
+    return not bool(_string_value(getattr(session, "current_wait_type", None)))
+
+
 def _is_duplicate_entry_event_for_session(
     *,
     inbox: Any,
@@ -402,6 +421,9 @@ def _is_duplicate_entry_event_for_session(
     if _kind_value(inbox) != "DEVICE_EVENT":
         return False
     if _canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
+        return False
+
+    if _is_payload_invalid_entry_replay(payload=payload, session=session):
         return False
 
     status = _session_status_value(session)
@@ -884,6 +906,59 @@ _DEVICE_COMMAND_RESERVED_FIELDS = {
     "params",
     "timestamp",
 }
+_DEVICE_COMMAND_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "authorization",
+        "credential",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+    }
+)
+_REDACTED_LOG_VALUE = "***REDACTED***"
+
+
+def _redact_device_command_payload(value: Any) -> Any:
+    """脱敏设备指令日志中的凭据类字段，保留业务参数用于供应商核对。"""
+
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_lower = key_text.lower()
+            if any(part in key_lower for part in _DEVICE_COMMAND_SENSITIVE_KEY_PARTS):
+                redacted[key_text] = _REDACTED_LOG_VALUE
+            else:
+                redacted[key_text] = _redact_device_command_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_device_command_payload(item) for item in value]
+    return value
+
+
+def _build_device_command_log_envelope(
+    outbox: Any,
+    payload: dict[str, Any],
+    *,
+    endpoint: str | None = None,
+) -> dict[str, Any]:
+    """构造设备指令日志包络，便于硬件供应商按同一份 JSON 核对。"""
+
+    envelope: dict[str, Any] = {
+        "outbox_id": _resolve_entity_id(outbox),
+        "session_id": _optional_int(getattr(outbox, "session_id", None)),
+        "dispatch_key": _string_value(getattr(outbox, "dispatch_key", None)),
+        "target_type": _enum_value(getattr(outbox, "target_type", None)),
+        "target_code": _string_value(getattr(outbox, "target_code", None)),
+        "payload": _redact_device_command_payload(payload),
+    }
+    if endpoint:
+        envelope["endpoint"] = endpoint
+    return envelope
 
 
 def _normalize_vendor_command_payload(
@@ -3528,6 +3603,8 @@ class OutboxDispatcher:
             reserved = await OutboxDispatcher._reserve_sandbox_device_command(db, outbox)
             if not reserved:
                 return False
+            payload = payload_dict(getattr(outbox, "payload_json", None))
+            logger.info(f"沙箱设备指令参数: {_build_device_command_log_envelope(outbox, payload)}")
         logger.info(
             "Outbox 沙箱派发完成，等待调试人员手工回调 "
             f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
@@ -3631,7 +3708,7 @@ class OutboxDispatcher:
             scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
-            logger.info(f"发送设备指令到 {url}: {payload.get('command_code')}")
+            logger.info(f"发送设备指令参数: {_build_device_command_log_envelope(outbox, payload, endpoint=url)}")
             timeout = 10.0
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload)

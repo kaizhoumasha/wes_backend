@@ -148,6 +148,11 @@ class BusinessErrorCode(ResponseCode):
         "Runtime Hold 已解除",
         409,
     )
+    RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP = (
+        "RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP",
+        "SAFETY_ESTOP Runtime Hold 需通过 clear-estop 解除",
+        400,
+    )
     RUNTIME_HOLD_REASON_UNMAPPED = (
         "RUNTIME_HOLD_REASON_UNMAPPED",
         "Runtime Hold NG 原因未映射",

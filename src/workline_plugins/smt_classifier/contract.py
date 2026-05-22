@@ -327,7 +327,7 @@ def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
 class ScanEventData(SixInOne, BaseModel):
     """扫码事件 data 字段 - 包含六合一码 + 扫描位置。"""
 
-    location: str = Field(description="扫描位置，如 STATION_INPUT1")
+    location: str | None = Field(default=None, description="扫描位置，如 STATION_INPUT1；缺省时使用顶层 device_code")
 
     @model_validator(mode="before")
     @classmethod

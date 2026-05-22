@@ -60,11 +60,11 @@
 
 ### Workline 货架操作域
 
-新增或重构后的货架操作服务负责把业务意图转换成可追踪、可幂等、可回调的货架任务。
+新增或重构后的货架操作服务只提供基础能力：接收上层已经拆好的低级货架 task 描述，并创建可追踪、可幂等、可回调的货架任务。
 
 建议服务边界：
 
-- `WorklineRackOperationService`：负责货架操作编排、容量校验、任务创建、外部派发意图生成。
+- `WorklineRackOperationService`：负责容量校验、任务创建、外部派发意图生成；不判断业务场景，不决定是否换架。
 - `WorklineRackTaskLifecycleService`：负责任务生命周期记录，只处理 requested、dispatched、in_progress、succeeded、failed、timeout、cancelled 等状态变化。
 
 命名重点：
@@ -73,16 +73,17 @@
 - `Task` 表达一次对外部系统的派发请求和生命周期记录。
 - 第一阶段不新增 `workline_rack_operations` 表，operation 信息直接扩展在 `workline_rack_tasks` 中。
 
-### SMT 业务协调层
+### 插件业务层
 
-SMT 业务协调服务承载业务策略：
+业务策略由插件自主处理。以 SMT 粗分机插件为例，插件承载以下决策：
 
 - 粗分机 session 分配料格失败时，是否需要补架。
 - 当前工作位货架是否需要移出。
 - 旧货架目标角色是什么，例如满箱交换区、分拣机排队位、分拣机 station。
 - 新货架需要什么货架类型和目标位置。
+- 将业务决策拆成低级 `rack_tasks`，例如 `MOVE_RACK`、`ALLOCATE_AND_MOVE_RACK`。
 
-粗分机插件应保持薄边界：发现 session 需要补架后调用业务协调服务，不直接构造 WMS/RCS 细节。
+插件不直接调用 WMS/RCS，也不直接写货架 task 表；插件只输出 runtime intent，runtime effect 调用货架操作域落库。
 
 ## 低级货架操作
 
@@ -93,11 +94,11 @@ SMT 业务协调服务承载业务策略：
 - `TURN_RACK_SIDE`：请求外部系统对指定货架执行换面。
 - `MOVE_RACK_TO_POSITION_BY_POLICY`：由业务协调层给出目标角色，操作服务解析为具体可用位置。
 
-这里的 policy 只表示上层传入的目标角色、货架类型和容量约束，不包含“满箱交换优先还是分拣机排队优先”这类业务优先级。业务优先级仍由 SMT 业务协调层决定。
+这里的 policy 只表示上层传入的目标角色、货架类型和容量约束，不包含“满箱交换优先还是分拣机排队优先”这类业务优先级。业务优先级仍由插件决定。
 
 这些动作不直接等同于 operation。一个 operation 可以包含多个 `workline_rack_tasks`，多个 task 使用同一个 `operation_key` 关联；一个 task 记录一次外部派发请求和对应生命周期。
 
-例如粗分机场景中，“移出当前货架 + 请求新货架补入”应拆成两个 task：`MOVE_RACK` 和 `ALLOCATE_AND_MOVE_RACK`，两者共享同一个 `operation_key`。它们应在同一个事务内创建，并可以一并进入外部派发流程；系统不等待移出成功回调后才创建或下发补入任务。只有当 WES 必须在中间状态做新的业务决策时，才让后续 task 依赖前一个 task 的终态。
+例如粗分机场景中，插件应将“移出当前货架 + 请求新货架补入”拆成两个 task：`MOVE_RACK` 和 `ALLOCATE_AND_MOVE_RACK`，两者共享同一个 `operation_key`。货架操作服务只校验并创建这些 task。它们应在同一个事务内创建，并可以一并进入外部派发流程；系统不等待移出成功回调后才创建或下发补入任务。只有当 WES 必须在中间状态做新的业务决策时，才让后续 task 依赖前一个 task 的终态。
 
 ## 数据模型设计
 

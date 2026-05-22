@@ -114,7 +114,10 @@ desktop.ini
 # 项目特定
 migrations/versions/*.pyc
 locustfiles/
-nginx/
+nginx/*
+!nginx/nginx.conf
+!nginx/conf.d/
+!nginx/conf.d/default.conf
 redis/
 postgresql/
 

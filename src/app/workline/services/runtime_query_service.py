@@ -13,7 +13,14 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
-from src.app.workline.models import WorkLine, WorklineInbox, WorklineOutbox, WorklineSession, WorklineTimeline
+from src.app.workline.models import (
+    InboxKind,
+    WorkLine,
+    WorklineInbox,
+    WorklineOutbox,
+    WorklineSession,
+    WorklineTimeline,
+)
 from src.app.workline.models.outbox import OutboxStatus
 from src.app.workline.models.runtime import (
     RuntimeBlockingReason,
@@ -150,6 +157,10 @@ def _recent_failure_or_timeout_clause(columns: Any, now: Any, recent_since: Any)
 
 def _payload_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _event_type_from_payload(payload: dict[str, Any]) -> str | None:
+    return _first_payload_str(payload, ("canonical_event_type", "event_type"))
 
 
 def _first_payload_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
@@ -803,6 +814,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         ]
         awaiting_command_by_id = await self._load_command_map_by_ids(db, awaiting_command_ids)
         latest_inbox_by_session = await self._load_latest_inbox_by_session(db, session_ids)
+        latest_event_inbox_by_session = await self._load_latest_event_inbox_by_session(db, session_ids)
         latest_timeline_by_session = await self._load_latest_timeline_by_session(db, session_ids)
 
         device_ids = {
@@ -826,6 +838,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             )
             command = awaiting_command or latest_command
             inbox = latest_inbox_by_session.get(session.id)
+            event_inbox = latest_event_inbox_by_session.get(session.id)
             timeline = latest_timeline_by_session.get(session.id)
             workline = workline_map.get(session.workline_id)
             device = _resolve_trace_device(command, inbox, device_map)
@@ -838,6 +851,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                     command,
                     timeline,
                     now,
+                    inbox=event_inbox,
                     latest_device=latest_device,
                     action_source=_trace_action_source(awaiting_command, latest_command, timeline),
                 )
@@ -881,6 +895,25 @@ class RuntimeQueryService(BaseService[Any, Any]):
             partition_by=columns.session_id,
             order_by=(columns.received_at.desc(), columns.id.desc()),
             filters=[columns.session_id.in_(session_ids)],
+        )
+        result = await db.execute(
+            select(WorklineInbox).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
+        )
+        mapping: dict[int, WorklineInbox] = {}
+        for item in result.scalars().all():
+            if item.session_id is not None and item.session_id not in mapping:
+                mapping[item.session_id] = item
+        return mapping
+
+    async def _load_latest_event_inbox_by_session(self, db: Any, session_ids: list[int]) -> dict[int, WorklineInbox]:
+        if not session_ids:
+            return {}
+        columns = cast("Any", WorklineInbox).__table__.c
+        latest_ids = _latest_rows_subquery(
+            columns=columns,
+            partition_by=columns.session_id,
+            order_by=(columns.received_at.desc(), columns.id.desc()),
+            filters=[columns.session_id.in_(session_ids), columns.kind == InboxKind.DEVICE_EVENT],
         )
         result = await db.execute(
             select(WorklineInbox).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
@@ -1123,14 +1156,19 @@ class RuntimeQueryService(BaseService[Any, Any]):
         timeline: WorklineTimeline | None,
         now: Any,
         *,
+        inbox: WorklineInbox | None = None,
         latest_device: Device | None,
         action_source: str,
     ) -> RuntimeTraceListItem:
+        event_payload = _payload_dict(getattr(inbox, "payload_json", None))
         return RuntimeTraceListItem(
             session_id=_require_int_id(session.id, "session.id"),
             session_code=session.session_code,
             trace_id=session.trace_id,
             request_id=session.last_request_id,
+            last_inbox_id=getattr(session, "last_inbox_id", None),
+            event_type=_event_type_from_payload(event_payload),
+            event_payload=event_payload or None,
             business_key=session.business_key,
             barcode=session.barcode or _session_initial_payload_display_identity(session),
             workline_id=session.workline_id,

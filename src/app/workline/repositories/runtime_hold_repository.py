@@ -126,6 +126,32 @@ class RuntimeHoldRepository(BaseRepository[RuntimeHold]):
         result = await db.execute(query)
         return {int(device_id): int(count) for device_id, count in result.all() if device_id is not None}
 
+    async def list_holds(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None = None,
+        session_id: int | None = None,
+        status: str | None = None,
+        active_only: bool = True,
+        limit: int = 100,
+    ) -> list[RuntimeHold]:
+        """查询 RuntimeHold 列表，包含没有 source_device_id 的 session/workline 级 Hold。"""
+
+        columns = cast("Any", RuntimeHold).__table__.c
+        query = select(RuntimeHold)
+        if workline_id is not None:
+            query = query.where(columns.workline_id == workline_id)
+        if session_id is not None:
+            query = query.where(columns.session_id == session_id)
+        if status is not None:
+            query = query.where(columns.status == status)
+        elif active_only:
+            query = query.where(columns.status.in_(_ACTIVE_BLOCKING_STATUSES), columns.blocking.is_(True))
+
+        result = await db.execute(query.order_by(columns.created_at.desc(), columns.id.desc()).limit(limit))
+        return list(result.scalars().all())
+
     async def list_active_by_device_ids(
         self,
         db: AsyncSession,

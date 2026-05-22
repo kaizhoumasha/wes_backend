@@ -12,6 +12,11 @@ from .rack_position_repository import WorklineRackPositionRepository, workline_r
 from .rack_task_repository import WorklineRackTaskRepository, workline_rack_task_repository
 from .runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
+from .sandbox_cleanup_repository import (
+    SandboxCleanupRepository,
+    SandboxCleanupSelection,
+    sandbox_cleanup_repository,
+)
 from .session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -20,6 +25,8 @@ from .workline_repository import WorkLineRepository, workline_repository
 
 __all__ = [
     "RuntimeHoldRepository",
+    "SandboxCleanupRepository",
+    "SandboxCleanupSelection",
     "WorkLineRepository",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
@@ -33,6 +40,7 @@ __all__ = [
     "inbox_repository",
     "outbox_repository",
     "runtime_hold_repository",
+    "sandbox_cleanup_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",
