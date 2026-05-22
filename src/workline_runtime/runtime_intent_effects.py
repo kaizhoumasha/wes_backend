@@ -149,11 +149,63 @@ def _non_empty_text(value: Any) -> str | None:
     return text or None
 
 
-def _required_payload_text(payload_json: Mapping[str, Any], field_name: str) -> str:
-    value = _non_empty_text(payload_json.get(field_name))
-    if value is None:
-        raise ValueError(f"RACK_OPERATION_REQUEST intent requires payload.{field_name}")
-    return value
+def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_specs = payload_json.get("rack_tasks") or payload_json.get("task_specs")
+    if not isinstance(raw_specs, list) or not raw_specs:
+        raise ValueError("RACK_OPERATION_REQUEST intent requires payload.rack_tasks")
+
+    specs: list[dict[str, Any]] = []
+    for index, raw_spec in enumerate(raw_specs, start=1):
+        if not isinstance(raw_spec, Mapping):
+            raise TypeError(f"RACK_OPERATION_REQUEST payload.rack_tasks[{index}] must be a mapping")
+        specs.append(dict(cast("Mapping[str, Any]", raw_spec)))
+    return specs
+
+
+def _rack_task_sequence_no(task: Any) -> int | None:
+    value = getattr(task, "sequence_no", None)
+    return int(value) if value is not None else None
+
+
+def _rack_task_type(task: Any) -> str | None:
+    value = getattr(task, "task_type", None)
+    raw_value = getattr(value, "value", value)
+    return str(raw_value) if raw_value is not None else None
+
+
+def _rack_task_dispatch_key(task: Any) -> str | None:
+    return _non_empty_text(getattr(task, "dispatch_key", None))
+
+
+def _rack_task_rack_code(task: Any) -> str | None:
+    return _non_empty_text(getattr(task, "rack_code", None))
+
+
+def _rack_task_required(task: Any) -> bool:
+    actions_json = getattr(task, "actions_json", None)
+    if isinstance(actions_json, Mapping) and "required" in actions_json:
+        return bool(actions_json["required"])
+    return True
+
+
+def _rack_task_is_releasing_source(task: Any) -> bool:
+    return (
+        _rack_task_required(task)
+        and _rack_task_type(task) == "MOVE_RACK"
+        and _non_empty_text(getattr(task, "source_position_code", None)) is not None
+        and _non_empty_text(getattr(task, "target_position_code", None)) is None
+    )
+
+
+def _rack_operation_target_position_code(tasks: list[Any]) -> str | None:
+    target_position_codes = {
+        target_position_code
+        for task in tasks
+        if (target_position_code := _non_empty_text(getattr(task, "target_position_code", None))) is not None
+    }
+    if len(target_position_codes) != 1:
+        return None
+    return next(iter(target_position_codes))
 
 
 def _result_status_value(result: Any) -> str | None:
@@ -485,7 +537,6 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.app.workline.services.rack_operation_service import WorklineRackOperationType
         from src.celery_app.tasks import workline as workline_effects
 
         payload_json = dict(intent.payload_json)
@@ -494,9 +545,6 @@ class RuntimeIntentEffectApplier:
         target_code = str(intent.target_code)
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
-
-        if operation_type != WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value:
-            raise ValueError(f"unsupported rack operation request type: {operation_type}")
 
         service = self._rack_operation_service
         if service is None:
@@ -508,23 +556,24 @@ class RuntimeIntentEffectApplier:
         trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))
         if trace_id is None:
             raise ValueError("RACK_OPERATION_REQUEST intent requires trace_id")
-        tasks = await service.request_replace_classifier_work_rack(
+        task_specs = _required_rack_task_specs(payload_json)
+        tasks = await service.request_operation_tasks(
             ctx_map["db"],
             operation_key=operation_key,
+            operation_type=operation_type,
             workline=ctx_map["workline"],
             session=session,
-            work_position_code=_required_payload_text(payload_json, "work_position_code"),
-            new_rack_kind=_required_payload_text(payload_json, "new_rack_kind"),
-            move_out_target_position_role=_required_payload_text(payload_json, "move_out_target_position_role"),
-            supply_target_code=target_code,
+            target_code=target_code,
             trace_id=trace_id,
+            task_specs=task_specs,
+            timeout_seconds=timeout_seconds,
         )
 
         self._mark_session_waiting_for_rack_operation(
             ctx,
             operation_key=operation_key,
             operation_type=operation_type,
-            task_count=len(tasks),
+            tasks=list(tasks),
             timeout_seconds=timeout_seconds,
         )
 
@@ -553,21 +602,38 @@ class RuntimeIntentEffectApplier:
         *,
         operation_key: str,
         operation_type: str,
-        task_count: int,
+        tasks: list[Any],
         timeout_seconds: int,
     ) -> None:
         session = ctx["session"]
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_operation = context_json.get("rack_operation")
         rack_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
+        required_tasks = [task for task in tasks if _rack_task_required(task)]
+        task_dispatch_keys = [_rack_task_dispatch_key(task) for task in tasks]
+        required_task_dispatch_keys = [_rack_task_dispatch_key(task) for task in required_tasks]
+        released_rack_codes = [
+            rack_code
+            for task in tasks
+            if _rack_task_is_releasing_source(task) and (rack_code := _rack_task_rack_code(task)) is not None
+        ]
+        target_position_code = _rack_operation_target_position_code(tasks)
         rack_operation.update(
             {
                 "operation_key": operation_key,
                 "operation_type": operation_type,
                 "status": "PENDING",
-                "task_count": task_count,
+                "task_count": len(tasks),
+                "required_task_count": len(required_tasks),
+                "task_sequences": [_rack_task_sequence_no(task) for task in tasks],
+                "task_dispatch_keys": task_dispatch_keys,
+                "required_task_dispatch_keys": required_task_dispatch_keys,
+                "released_rack_codes": released_rack_codes,
             }
         )
+        if target_position_code is not None:
+            rack_operation["target_position_code"] = target_position_code
+            rack_operation["work_position_code"] = target_position_code
         context_json["waiting_rack_operation_key"] = operation_key
         context_json["rack_operation"] = rack_operation
         session.context_json = context_json

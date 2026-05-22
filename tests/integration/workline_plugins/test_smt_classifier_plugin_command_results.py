@@ -1027,6 +1027,95 @@ class TestSmtClassifierPluginCommandResults:
         assert result[1].payload_json["target_code"] == "http://wms-rcs/api/rack-operation"
 
     @pytest.mark.asyncio
+    async def test_conveyor_success_preserves_mapping_decision_task_specs(self, plugin, mock_context):
+        """上游已提供 task_specs 时，SMT 插件不再生成默认 rack_tasks 覆盖调用方声明。"""
+
+        task_specs = [
+            {
+                "sequence_no": 1,
+                "task_type": "MOVE_RACK",
+                "rack_code": "RACK-CUSTOM",
+                "rack_kind": "SINGLE_LAYER",
+                "source_position_code": "SINGLE_LAYER_A",
+                "target_position_role": "SMT_EMPTY_RACK_AREA",
+            }
+        ]
+
+        class BinAllocator:
+            def plan_allocation(self, barcode: str, *, context: dict) -> dict:
+                assert barcode == "CALLBACK-PKG-SPECS"
+                return {
+                    "kind": "RACK_OPERATION_REQUIRED",
+                    "rack_operation_request": {
+                        "operation_key": "external:smt_classifier:trace-specs:RACK_OPERATION",
+                        "target_code": "http://wms-rcs/api/rack-operation",
+                        "payload": {
+                            "request_type": "SMT_RACK_OPERATION",
+                            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                            "operation_key": "external:smt_classifier:trace-specs:RACK_OPERATION",
+                            "actions": ["MOVE_RACK"],
+                            "pkg_id": barcode,
+                            "task_specs": task_specs,
+                        },
+                        "timeout_seconds": 1800,
+                        "source_system": "WMS_RCS",
+                    },
+                    "reason_code": "FULL_RACK",
+                }
+
+        mock_context.services = WorklineRuntimeServices(bin_allocator=BinAllocator())
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": "CALLBACK-PKG-SPECS"})),
+        )
+
+        assert result[1].payload_json["task_specs"] == task_specs
+        assert "rack_tasks" not in result[1].payload_json
+
+    @pytest.mark.asyncio
+    async def test_conveyor_success_uses_current_rack_kind_for_generated_move_out(self, plugin, mock_context):
+        """生成默认 rack_tasks 时，MOVE_RACK 使用当前源货架 kind，而不是待补入货架 kind。"""
+
+        class BinAllocator:
+            def plan_allocation(self, barcode: str, *, context: dict) -> dict:
+                assert barcode == "CALLBACK-PKG-KIND"
+                return {
+                    "kind": "RACK_OPERATION_REQUIRED",
+                    "rack_operation_request": {
+                        "operation_key": "external:smt_classifier:trace-kind:RACK_OPERATION",
+                        "target_code": "http://wms-rcs/api/rack-operation",
+                        "payload": {
+                            "request_type": "SMT_RACK_OPERATION",
+                            "operation_key": "external:smt_classifier:trace-kind:RACK_OPERATION",
+                            "pkg_id": barcode,
+                            "current_rack_snapshot": {
+                                "rack_code": "RACK-FIVE",
+                                "rack_kind": "FIVE_LAYER",
+                            },
+                            "new_rack_kind": "SINGLE_LAYER",
+                        },
+                        "timeout_seconds": 1800,
+                        "source_system": "WMS_RCS",
+                    },
+                    "reason_code": "FULL_RACK",
+                }
+
+        mock_context.services = WorklineRuntimeServices(bin_allocator=BinAllocator())
+
+        result = await plugin.on_command_result(
+            mock_context,
+            _make_inbox(_command_payload("MOVE_FORWARD", "SUCCESS", data={"pkg_id": "CALLBACK-PKG-KIND"})),
+        )
+
+        rack_tasks = result[1].payload_json["rack_tasks"]
+        assert rack_tasks[0]["task_type"] == "MOVE_RACK"
+        assert rack_tasks[0]["rack_code"] == "RACK-FIVE"
+        assert rack_tasks[0]["rack_kind"] == "FIVE_LAYER"
+        assert rack_tasks[1]["task_type"] == "ALLOCATE_AND_MOVE_RACK"
+        assert rack_tasks[1]["rack_kind"] == "SINGLE_LAYER"
+
+    @pytest.mark.asyncio
     async def test_conveyor_success_blocks_operation_request_without_reason_code(self, plugin, mock_context):
         """rack operation 请求缺少原因码时阻断，避免发出不完整外部契约。"""
 

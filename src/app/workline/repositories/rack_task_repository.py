@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus
+from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
@@ -105,6 +105,30 @@ class WorklineRackTaskRepository(BaseRepository[WorklineRackTask]):
         )
         return list(result.scalars().all())
 
+    async def list_move_rack_source_claims(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        source_position_code: str,
+        rack_code: str,
+    ) -> list[WorklineRackTask]:
+        """查询源位置 + 货架当前仍占用 claim 的 MOVE_RACK 任务。"""
+
+        columns = cast("Any", WorklineRackTask).__table__.c
+        result = await db.execute(
+            select(WorklineRackTask)
+            .where(
+                columns.workline_code == workline_code,
+                columns.source_position_code == source_position_code,
+                columns.rack_code == rack_code,
+                columns.task_type == WorklineRackTaskType.MOVE_RACK,
+                columns.task_status.in_(_SOURCE_RACK_CLAIM_STATUSES),
+            )
+            .order_by(columns.operation_key.asc(), columns.sequence_no.asc())
+        )
+        return list(result.scalars().all())
+
     async def list_open_by_material_session_id(
         self,
         db: AsyncSession,
@@ -116,6 +140,12 @@ class WorklineRackTaskRepository(BaseRepository[WorklineRackTask]):
 
 
 _ACTIVE_STATUSES = (
+    WorklineRackTaskStatus.PLANNED,
+    WorklineRackTaskStatus.REQUESTED,
+    WorklineRackTaskStatus.IN_PROGRESS,
+    WorklineRackTaskStatus.RECONCILING,
+)
+_SOURCE_RACK_CLAIM_STATUSES = (
     WorklineRackTaskStatus.PLANNED,
     WorklineRackTaskStatus.REQUESTED,
     WorklineRackTaskStatus.IN_PROGRESS,

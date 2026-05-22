@@ -91,6 +91,7 @@ _RACK_OPERATION_PRE_PROJECTION_STATUSES = frozenset({"RECONCILING"})
 DEFAULT_CLASSIFIER_WORK_POSITION_CODE = "SINGLE_LAYER_A"
 DEFAULT_CLASSIFIER_NEW_RACK_KIND = "SINGLE_LAYER"
 DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE = "SMT_EMPTY_RACK_AREA"
+DEFAULT_CLASSIFIER_WORK_POSITION_ROLE = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
 
 
 def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
@@ -358,6 +359,8 @@ def _rack_operation_payload(
         or non_empty_str(payload.get("target_position_role"))
         or DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE
     )
+    if "rack_tasks" not in payload and "task_specs" not in payload:
+        payload["rack_tasks"] = _rack_operation_task_specs(payload)
     payload["target_code"] = request.target_code
     resolved_reason_code = non_empty_str(payload.get("reason_code")) or reason_code
     if resolved_reason_code is not None:
@@ -366,6 +369,46 @@ def _rack_operation_payload(
     if trace_id is not None:
         payload["trace_id"] = trace_id
     return payload
+
+
+def _rack_operation_task_specs(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    work_position_code = non_empty_str(payload.get("work_position_code")) or DEFAULT_CLASSIFIER_WORK_POSITION_CODE
+    new_rack_kind = non_empty_str(payload.get("new_rack_kind")) or DEFAULT_CLASSIFIER_NEW_RACK_KIND
+    move_out_target_position_role = (
+        non_empty_str(payload.get("move_out_target_position_role")) or DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE
+    )
+    active_rack = payload.get("current_rack_snapshot")
+    active_rack_map = active_rack if isinstance(active_rack, Mapping) else {}
+    active_rack_code = (
+        non_empty_str(payload.get("single_layer_rack_code"))
+        or non_empty_str(payload.get("single_layer_rack_id"))
+        or non_empty_str(active_rack_map.get("rack_code"))
+        or non_empty_str(active_rack_map.get("rack_id"))
+    )
+    active_rack_kind = non_empty_str(active_rack_map.get("rack_kind"))
+
+    specs: list[dict[str, Any]] = []
+    if active_rack_code is not None:
+        move_out_spec = {
+            "sequence_no": 1,
+            "task_type": "MOVE_RACK",
+            "rack_code": active_rack_code,
+            "source_position_code": work_position_code,
+            "target_position_role": move_out_target_position_role,
+        }
+        if active_rack_kind is not None:
+            move_out_spec["rack_kind"] = active_rack_kind
+        specs.append(move_out_spec)
+    specs.append(
+        {
+            "sequence_no": 2,
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "rack_kind": new_rack_kind,
+            "target_position_code": work_position_code,
+            "target_position_role": DEFAULT_CLASSIFIER_WORK_POSITION_ROLE,
+        }
+    )
+    return specs
 
 
 def _is_rack_operation_request(request: SmtRackOperationRequest) -> bool:

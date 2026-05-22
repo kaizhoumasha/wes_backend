@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import timedelta
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +16,6 @@ from src.app.resource.repositories.resource_repository import (
 )
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.rack_task import WorklineRackTaskStatus, WorklineRackTaskType
-from src.app.workline.models.session import SessionStatus
 from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository, outbox_repository
 from src.app.workline.repositories.rack_task_repository import (
     WorklineRackTaskRepository,
@@ -31,22 +29,12 @@ from src.app.workline.services.rack_task_service import (
     WorklineRackTaskLifecycleService,
     workline_rack_task_lifecycle_service,
 )
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
 DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS = 300
-
-
-class WorklineRackOperationType(str, Enum):
-    """货架业务操作类型。"""
-
-    REPLACE_CLASSIFIER_WORK_RACK = "REPLACE_CLASSIFIER_WORK_RACK"
-    MOVE_RACK_TO_POSITION = "MOVE_RACK_TO_POSITION"
-    ALLOCATE_RACK_TO_POSITION = "ALLOCATE_RACK_TO_POSITION"
-    TURN_RACK_SIDE = "TURN_RACK_SIDE"
 
 
 class WorklineRackOperationStatus(str, Enum):
@@ -98,78 +86,49 @@ class WorklineRackOperationService:
         self.rack_position_service = rack_position_service
         self.rack_placement_repository = rack_placement_repository
 
-    async def request_replace_classifier_work_rack(
+    async def request_operation_tasks(
         self,
         db: AsyncSession,
         *,
         operation_key: str,
+        operation_type: str,
         workline: Any,
-        session: Any,
-        work_position_code: str,
-        new_rack_kind: RackKind | str,
-        move_out_target_position_role: str,
-        supply_target_code: str,
+        session: Any | None,
+        target_code: str,
         trace_id: str,
+        task_specs: Sequence[Mapping[str, Any] | WorklineRackTaskSpec],
+        timeout_seconds: int = DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS,
     ) -> list[Any]:
-        """请求“粗分机当前工作位换新空箱货架”操作。"""
+        """按插件给出的低级货架 task 描述创建可追踪的 operation 任务。"""
 
         operation_key = _required_text(operation_key, "operation_key")
+        operation_type = _required_text(operation_type, "operation_type")
         workline_code = _required_text(getattr(workline, "line_code", None), "workline.line_code")
-        work_position_code = _required_text(work_position_code, "work_position_code")
-        move_out_target_position_role = _required_text(
-            move_out_target_position_role,
-            "move_out_target_position_role",
-        )
-        supply_target_code = _required_text(supply_target_code, "supply_target_code")
+        target_code = _required_text(target_code, "target_code")
         trace_id = _required_text(trace_id, "trace_id")
-        rack_kind = _rack_kind(new_rack_kind)
+        specs = self._normalize_task_specs(
+            operation_key=operation_key,
+            operation_type=operation_type,
+            workline_code=workline_code,
+            target_code=target_code,
+            trace_id=trace_id,
+            task_specs=task_specs,
+        )
 
         existing_tasks = await self.rack_task_repository.list_by_operation_key(db, operation_key=operation_key)
         if existing_tasks:
             _ensure_existing_operation_request_consistent(
                 existing_tasks,
                 operation_key=operation_key,
-                operation_type=WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value,
-                work_position_code=work_position_code,
-                new_rack_kind=rack_kind.value,
-                move_out_target_position_role=move_out_target_position_role,
-                supply_target_code=supply_target_code,
+                operation_type=operation_type,
+                specs=specs,
             )
             return list(existing_tasks)
 
-        active_placements = await self.rack_placement_repository.list_active_by_workline_position(
-            db,
-            workline_code=workline_code,
-            position_code=work_position_code,
-        )
-        if len(active_placements) > 1:
-            raise ValueError(
-                f"classifier work position has multiple active racks: {workline_code}/{work_position_code}"
-            )
-
-        _position, capacity = await self.rack_position_service.require_position_capacity_for_update(
-            db,
-            workline_code=workline_code,
-            position_code=work_position_code,
-            rack_kind=rack_kind,
-        )
-        specs = self._replace_classifier_specs(
-            operation_key=operation_key,
-            workline_code=workline_code,
-            work_position_code=work_position_code,
-            new_rack_kind=rack_kind,
-            move_out_target_position_role=move_out_target_position_role,
-            supply_target_code=supply_target_code,
-            trace_id=trace_id,
-            active_rack=active_placements[0] if active_placements else None,
-        )
-
-        await self._ensure_capacity_for_supply(
+        await self._ensure_capacity_for_task_specs(
             db,
             operation_key=operation_key,
             workline_code=workline_code,
-            target_position_code=work_position_code,
-            capacity=capacity,
             specs=specs,
         )
 
@@ -187,14 +146,14 @@ class WorklineRackOperationService:
                 workline=workline,
                 outbox=outbox,
                 operation_key=operation_key,
-                operation_type=WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value,
+                operation_type=operation_type,
                 sequence_no=spec.sequence_no,
                 task_type=spec.task_type,
                 task_key=spec.dispatch_key,
                 dispatch_key=spec.dispatch_key,
                 target_code=spec.target_code,
                 request_json=spec.request_json,
-                timeout_seconds=DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS,
+                timeout_seconds=timeout_seconds,
                 source_system="WMS_RCS",
                 trace_id=trace_id,
                 rack_kind=spec.rack_kind,
@@ -206,20 +165,13 @@ class WorklineRackOperationService:
             )
             created_tasks.append(task)
 
-        self._mark_session_waiting_for_operation(
-            session,
-            operation_key=operation_key,
-            operation_type=WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value,
-            task_specs=specs,
-        )
-        db.add(session)
         return created_tasks
 
     async def _get_or_create_outbox(
         self,
         db: AsyncSession,
         *,
-        session: Any,
+        session: Any | None,
         workline: Any,
         spec: WorklineRackTaskSpec,
     ) -> WorklineOutbox:
@@ -287,86 +239,84 @@ class WorklineRackOperationService:
             return WorklineRackOperationStatus.RECONCILING.value
         return WorklineRackOperationStatus.SUCCEEDED.value
 
-    def _replace_classifier_specs(
-        self,
-        *,
-        operation_key: str,
-        workline_code: str,
-        work_position_code: str,
-        new_rack_kind: RackKind,
-        move_out_target_position_role: str,
-        supply_target_code: str,
-        trace_id: str,
-        active_rack: Any | None,
-    ) -> list[WorklineRackTaskSpec]:
-        specs: list[WorklineRackTaskSpec] = []
-        operation_type = WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value
-        if active_rack is not None:
-            specs.append(
-                self._task_spec(
-                    operation_key=operation_key,
-                    operation_type=operation_type,
-                    sequence_no=1,
-                    task_type=WorklineRackTaskType.MOVE_RACK.value,
-                    workline_code=workline_code,
-                    rack_code=_optional_str(getattr(active_rack, "rack_code", None)),
-                    rack_kind=_optional_str(getattr(active_rack, "rack_kind", None)),
-                    source_position_code=work_position_code,
-                    target_position_code=None,
-                    target_position_role=move_out_target_position_role,
-                    target_code=supply_target_code,
-                    trace_id=trace_id,
-                )
-            )
-        specs.append(
-            self._task_spec(
-                operation_key=operation_key,
-                operation_type=operation_type,
-                sequence_no=2,
-                task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
-                workline_code=workline_code,
-                rack_code=None,
-                rack_kind=new_rack_kind.value,
-                source_position_code=None,
-                target_position_code=work_position_code,
-                target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-                target_code=supply_target_code,
-                trace_id=trace_id,
-            )
-        )
-        return specs
-
-    def _task_spec(
+    def _normalize_task_specs(
         self,
         *,
         operation_key: str,
         operation_type: str,
-        sequence_no: int,
-        task_type: str,
         workline_code: str,
-        rack_code: str | None,
-        rack_kind: str | None,
-        source_position_code: str | None,
-        target_position_code: str | None,
-        target_position_role: str | None,
+        trace_id: str,
+        target_code: str,
+        task_specs: Sequence[Mapping[str, Any] | WorklineRackTaskSpec],
+    ) -> list[WorklineRackTaskSpec]:
+        specs = [
+            self._normalize_task_spec(
+                operation_key=operation_key,
+                operation_type=operation_type,
+                workline_code=workline_code,
+                target_code=target_code,
+                trace_id=trace_id,
+                task_spec=task_spec,
+            )
+            for task_spec in task_specs
+        ]
+        if not specs:
+            raise ValueError("rack operation task_specs is required")
+        for spec in specs:
+            _ensure_task_spec_contract(spec)
+        sequence_numbers = [spec.sequence_no for spec in specs]
+        if len(set(sequence_numbers)) != len(sequence_numbers):
+            raise ValueError("rack operation task_specs sequence_no must be unique")
+        return sorted(specs, key=lambda spec: spec.sequence_no)
+
+    def _normalize_task_spec(
+        self,
+        *,
+        operation_key: str,
+        operation_type: str,
+        workline_code: str,
         target_code: str,
         trace_id: str,
+        task_spec: Mapping[str, Any] | WorklineRackTaskSpec,
     ) -> WorklineRackTaskSpec:
+        if isinstance(task_spec, WorklineRackTaskSpec):
+            task_spec = asdict(task_spec)
+
+        sequence_no = _required_int(task_spec.get("sequence_no"), "task_specs[].sequence_no")
+        if sequence_no <= 0:
+            raise ValueError("rack operation task_specs sequence_no must be greater than 0")
+        task_type = _rack_task_type(task_spec.get("task_type"))
+        rack_code = _optional_str(task_spec.get("rack_code"))
+        rack_kind = _optional_str(task_spec.get("rack_kind"))
+        source_position_code = _optional_str(task_spec.get("source_position_code"))
+        target_position_code = _optional_str(task_spec.get("target_position_code"))
+        target_position_role = _optional_str(task_spec.get("target_position_role"))
+        spec_target_code = _optional_str(task_spec.get("target_code")) or target_code
+
+        raw_actions = task_spec.get("actions_json")
+        actions_json = dict(raw_actions) if isinstance(raw_actions, Mapping) else {}
+        required = bool(task_spec.get("required", actions_json.get("required", True)))
+        actions_json.setdefault("action", task_type)
+        actions_json["required"] = required
+
         dispatch_key = f"rack-operation:{operation_key}:{sequence_no}:{task_type}"
-        request_json = {
-            "operation_key": operation_key,
-            "operation_type": operation_type,
-            "sequence_no": sequence_no,
-            "task_type": task_type,
-            "workline_code": workline_code,
-            "rack_code": rack_code,
-            "rack_kind": rack_kind,
-            "source_position_code": source_position_code,
-            "target_position_code": target_position_code,
-            "target_position_role": target_position_role,
-            "trace_id": trace_id,
-        }
-        actions_json = {"action": task_type, "required": True}
+        raw_request = task_spec.get("request_json")
+        request_json = dict(raw_request) if isinstance(raw_request, Mapping) else {}
+        request_json.update(
+            {
+                "operation_key": operation_key,
+                "operation_type": operation_type,
+                "sequence_no": sequence_no,
+                "task_type": task_type,
+                "workline_code": workline_code,
+                "rack_code": rack_code,
+                "rack_kind": rack_kind,
+                "source_position_code": source_position_code,
+                "target_position_code": target_position_code,
+                "target_position_role": target_position_role,
+                "trace_id": trace_id,
+            }
+        )
         return WorklineRackTaskSpec(
             sequence_no=sequence_no,
             task_type=task_type,
@@ -375,14 +325,143 @@ class WorklineRackOperationService:
             source_position_code=source_position_code,
             target_position_code=target_position_code,
             target_position_role=target_position_role,
-            dispatch_key=dispatch_key,
-            target_code=target_code,
+            dispatch_key=_optional_str(task_spec.get("dispatch_key")) or dispatch_key,
+            target_code=spec_target_code,
             request_json=request_json,
             actions_json=actions_json,
-            required=True,
+            required=required,
         )
 
-    async def _ensure_capacity_for_supply(
+    async def _ensure_capacity_for_task_specs(
+        self,
+        db: AsyncSession,
+        *,
+        operation_key: str,
+        workline_code: str,
+        specs: list[WorklineRackTaskSpec],
+    ) -> None:
+        await self._ensure_move_rack_sources_for_task_specs(
+            db,
+            operation_key=operation_key,
+            workline_code=workline_code,
+            specs=specs,
+        )
+        for target_position_code in sorted(_reserved_target_position_codes(specs)):
+            target_specs = _target_occupying_specs(specs, target_position_code=target_position_code)
+            capacity = await self._require_target_position_capacity_for_specs(
+                db,
+                workline_code=workline_code,
+                target_position_code=target_position_code,
+                target_specs=target_specs,
+            )
+            await self._ensure_capacity_for_target_position(
+                db,
+                operation_key=operation_key,
+                workline_code=workline_code,
+                target_position_code=target_position_code,
+                capacity=capacity,
+                incoming_target_count=len(target_specs),
+                specs=specs,
+            )
+
+    async def _ensure_move_rack_sources_for_task_specs(
+        self,
+        db: AsyncSession,
+        *,
+        operation_key: str,
+        workline_code: str,
+        specs: list[WorklineRackTaskSpec],
+    ) -> None:
+        move_specs_by_source: dict[str, list[WorklineRackTaskSpec]] = {}
+        source_rack_keys: set[tuple[str, str]] = set()
+        for spec in specs:
+            if spec.task_type != WorklineRackTaskType.MOVE_RACK.value:
+                continue
+            rack_code = _optional_str(spec.rack_code)
+            source_position_code = _optional_str(spec.source_position_code)
+            if rack_code is None or source_position_code is None:
+                raise ValueError("rack operation MOVE_RACK requires rack_code and source_position_code")
+            source_rack_key = (source_position_code, rack_code)
+            if source_rack_key in source_rack_keys:
+                raise ValueError(
+                    "rack operation MOVE_RACK source rack duplicated: "
+                    f"{workline_code}/{source_position_code} rack_code={rack_code}"
+                )
+            source_rack_keys.add(source_rack_key)
+            move_specs_by_source.setdefault(source_position_code, []).append(spec)
+
+        for source_position_code, source_specs in move_specs_by_source.items():
+            active_source_racks_by_code = await self._active_racks_by_code_at_position(
+                db,
+                workline_code=workline_code,
+                position_code=source_position_code,
+            )
+            for spec in source_specs:
+                rack_code = _optional_str(spec.rack_code)
+                active_source_rack = active_source_racks_by_code.get(rack_code)
+                if active_source_rack is None:
+                    raise ValueError(
+                        "rack operation MOVE_RACK source rack mismatch: "
+                        f"{workline_code}/{source_position_code} rack_code={rack_code}"
+                    )
+                actual_rack_kind = _rack_kind_value(getattr(active_source_rack, "rack_kind", None))
+                spec_rack_kind = _rack_kind_value(spec.rack_kind)
+                if spec_rack_kind is not None and actual_rack_kind != spec_rack_kind:
+                    raise ValueError(
+                        "rack operation MOVE_RACK source rack_kind mismatch: "
+                        f"{workline_code}/{source_position_code} rack_code={rack_code} "
+                        f"expected={actual_rack_kind} requested={spec_rack_kind}"
+                    )
+                active_claims = await self.rack_task_repository.list_move_rack_source_claims(
+                    db,
+                    workline_code=workline_code,
+                    source_position_code=source_position_code,
+                    rack_code=rack_code,
+                )
+                conflicting_claims = [
+                    task for task in active_claims if getattr(task, "operation_key", None) != operation_key
+                ]
+                if conflicting_claims:
+                    claimed_operation_key = getattr(conflicting_claims[0], "operation_key", None)
+                    raise ValueError(
+                        "rack operation MOVE_RACK source rack already claimed: "
+                        f"{workline_code}/{source_position_code} rack_code={rack_code} "
+                        f"operation_key={claimed_operation_key}"
+                    )
+
+    async def _require_target_position_capacity_for_specs(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        target_position_code: str,
+        target_specs: list[WorklineRackTaskSpec],
+    ) -> int:
+        capacity: int | None = None
+        validated_rack_kinds: set[RackKind] = set()
+        for spec in target_specs:
+            if spec.rack_kind is None:
+                raise ValueError(
+                    f"rack operation target position requires rack_kind: {workline_code}/{target_position_code}"
+                )
+            rack_kind = _rack_kind(spec.rack_kind)
+            if rack_kind in validated_rack_kinds:
+                continue
+            validated_rack_kinds.add(rack_kind)
+            _position, position_capacity = await self.rack_position_service.require_position_capacity_for_update(
+                db,
+                workline_code=workline_code,
+                position_code=target_position_code,
+                rack_kind=rack_kind,
+            )
+            capacity = position_capacity if capacity is None else capacity
+        if capacity is None:
+            raise ValueError(
+                f"rack operation target position has no inbound tasks: {workline_code}/{target_position_code}"
+            )
+        return capacity
+
+    async def _ensure_capacity_for_target_position(
         self,
         db: AsyncSession,
         *,
@@ -390,6 +469,7 @@ class WorklineRackOperationService:
         workline_code: str,
         target_position_code: str,
         capacity: int,
+        incoming_target_count: int,
         specs: list[WorklineRackTaskSpec],
     ) -> None:
         active_count = await self.rack_placement_repository.count_active_by_workline_position(
@@ -400,6 +480,7 @@ class WorklineRackOperationService:
         same_operation_release_count = await self._same_operation_release_count(
             db,
             operation_key=operation_key,
+            workline_code=workline_code,
             source_position_code=target_position_code,
             specs=specs,
         )
@@ -412,13 +493,14 @@ class WorklineRackOperationService:
         available_capacity_for_operation = (
             capacity - active_count - other_operation_active_target_task_count + same_operation_release_count
         )
-        if available_capacity_for_operation <= 0:
+        if incoming_target_count > available_capacity_for_operation:
             raise ValueError(
                 "rack operation target position capacity unavailable: "
                 f"{workline_code}/{target_position_code} "
                 f"capacity={capacity} active={active_count} "
                 f"other_operation_target_tasks={other_operation_active_target_task_count} "
-                f"same_operation_release={same_operation_release_count}"
+                f"same_operation_release={same_operation_release_count} "
+                f"incoming_target_tasks={incoming_target_count}"
             )
 
     async def _same_operation_release_count(
@@ -426,19 +508,27 @@ class WorklineRackOperationService:
         db: AsyncSession,
         *,
         operation_key: str,
+        workline_code: str,
         source_position_code: str,
         specs: list[WorklineRackTaskSpec],
     ) -> int:
-        current_specs_count = sum(
-            1
+        active_source_rack_codes = await self._active_rack_codes_at_position(
+            db,
+            workline_code=workline_code,
+            position_code=source_position_code,
+        )
+        release_rack_codes = {
+            rack_code
             for spec in specs
             if spec.required
             and spec.task_type == WorklineRackTaskType.MOVE_RACK.value
             and spec.source_position_code == source_position_code
-        )
+            for rack_code in [_optional_str(spec.rack_code)]
+            if rack_code in active_source_rack_codes
+        }
         existing_tasks = await self.rack_task_repository.list_by_operation_key(db, operation_key=operation_key)
-        existing_count = sum(
-            1
+        release_rack_codes.update(
+            rack_code
             for task in existing_tasks
             if _task_required(task)
             and _task_type(task) == WorklineRackTaskType.MOVE_RACK.value
@@ -450,8 +540,43 @@ class WorklineRackOperationService:
                 WorklineRackTaskStatus.IN_PROGRESS.value,
                 WorklineRackTaskStatus.SUCCEEDED.value,
             }
+            for rack_code in [_optional_str(getattr(task, "rack_code", None))]
+            if rack_code in active_source_rack_codes
         )
-        return current_specs_count + existing_count
+        return len(release_rack_codes)
+
+    async def _active_rack_codes_at_position(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> set[str]:
+        return set(
+            await self._active_racks_by_code_at_position(
+                db,
+                workline_code=workline_code,
+                position_code=position_code,
+            )
+        )
+
+    async def _active_racks_by_code_at_position(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> dict[str, Any]:
+        return {
+            rack_code: placement
+            for placement in await self.rack_placement_repository.list_active_by_workline_position(
+                db,
+                workline_code=workline_code,
+                position_code=position_code,
+            )
+            for rack_code in [_optional_str(getattr(placement, "rack_code", None))]
+            if rack_code is not None
+        }
 
     async def _other_operation_active_target_task_count(
         self,
@@ -470,7 +595,6 @@ class WorklineRackOperationService:
             1
             for task in active_target_tasks
             if getattr(task, "operation_key", None) != operation_key
-            and _task_required(task)
             and _task_occupies_target_position(task, target_position_code=target_position_code)
         )
 
@@ -482,28 +606,36 @@ class WorklineRackOperationService:
             for rack_code in [_optional_str(getattr(task, "rack_code", None))]
             if rack_code is not None
         }
+        target_tasks_by_position: dict[tuple[str, str], list[Any]] = {}
 
         for task in tasks:
-            if _task_type(task) == WorklineRackTaskType.MOVE_RACK.value:
-                if await self._move_out_rack_still_at_source(db, task):
+            task_type = _task_type(task)
+            if task_type == WorklineRackTaskType.MOVE_RACK.value and await self._move_out_rack_still_at_source(
+                db, task
+            ):
+                return False
+
+            target_position_code = _optional_str(getattr(task, "target_position_code", None))
+            if target_position_code is None:
+                if task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value:
                     return False
                 continue
 
-            target_position_code = _optional_str(getattr(task, "target_position_code", None))
-            if _task_type(task) != WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value and target_position_code is None:
-                continue
-            if target_position_code is None:
-                return False
             workline_code = _optional_str(getattr(task, "workline_code", None))
             if workline_code is None:
                 return False
+            target_tasks_by_position.setdefault((workline_code, target_position_code), []).append(task)
+
+        for (workline_code, target_position_code), target_tasks in target_tasks_by_position.items():
             placements = await self.rack_placement_repository.list_active_by_workline_position(
                 db,
                 workline_code=workline_code,
                 position_code=target_position_code,
             )
-            if not _target_projection_matches_supply(task, placements, move_out_rack_codes=move_out_rack_codes):
-                return False
+            available_placements = list(placements)
+            for task in target_tasks:
+                if not _consume_target_projection(task, available_placements, move_out_rack_codes=move_out_rack_codes):
+                    return False
         return True
 
     async def _move_out_rack_still_at_source(self, db: AsyncSession, task: Any) -> bool:
@@ -519,206 +651,122 @@ class WorklineRackOperationService:
         )
         return any(_optional_str(getattr(placement, "rack_code", None)) == rack_code for placement in placements)
 
-    def _mark_session_waiting_for_operation(
-        self,
-        session: Any,
-        *,
-        operation_key: str,
-        operation_type: str,
-        task_specs: list[WorklineRackTaskSpec],
-    ) -> None:
-        now = timezone.now_for_db()
-        context_json = dict(getattr(session, "context_json", None) or {})
-        existing_operation = context_json.get("rack_operation")
-        rack_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
-        task_dispatch_keys = [spec.dispatch_key for spec in task_specs]
-        required_task_dispatch_keys = [spec.dispatch_key for spec in task_specs if spec.required]
-        released_rack_codes = [
-            rack_code
-            for spec in task_specs
-            if spec.task_type == WorklineRackTaskType.MOVE_RACK.value
-            and (rack_code := _optional_str(spec.rack_code)) is not None
-        ]
-        rack_operation.update(
-            {
-                "operation_key": operation_key,
-                "operation_type": operation_type,
-                "status": WorklineRackOperationStatus.PENDING.value,
-                "task_count": len(task_specs),
-                "required_task_count": sum(1 for spec in task_specs if spec.required),
-                "task_sequences": [spec.sequence_no for spec in task_specs],
-                "task_dispatch_keys": task_dispatch_keys,
-                "required_task_dispatch_keys": required_task_dispatch_keys,
-                "released_rack_codes": released_rack_codes,
-            }
-        )
-        context_json["waiting_rack_operation_key"] = operation_key
-        context_json["rack_operation"] = rack_operation
-        session.context_json = context_json
-        session.status = SessionStatus.WAITING_EXTERNAL
-        session.current_wait_type = "RACK_OPERATION"
-        session.waiting_since = now
-        session.current_wait_timeout_seconds = DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS
-        session.deadline_at = now + timedelta(seconds=DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS)
-        session.awaiting_command_id = None
-        session.ended_at = None
-        session.failure_domain = None
-        session.failure_code = None
-        session.failure_message = None
-
-
-def _ensure_existing_operation_shape(
-    tasks: list[Any],
-    specs: list[WorklineRackTaskSpec],
-    *,
-    operation_type: str,
-) -> None:
-    required_tasks = sorted((task for task in tasks if _task_required(task)), key=lambda task: task.sequence_no)
-    required_specs = sorted((spec for spec in specs if spec.required), key=lambda spec: spec.sequence_no)
-    if len(required_tasks) != len(required_specs):
-        raise ValueError("existing rack operation task count differs from request")
-
-    for task, spec in zip(required_tasks, required_specs, strict=True):
-        if getattr(task, "operation_type", None) != WorklineRackOperationType.REPLACE_CLASSIFIER_WORK_RACK.value:
-            raise ValueError("existing rack operation type differs from request")
-        if getattr(task, "operation_type", None) != operation_type:
-            raise ValueError("existing rack operation type differs from request")
-        if getattr(task, "sequence_no", None) != spec.sequence_no:
-            raise ValueError("existing rack operation sequence_no differs from request")
-        if _task_type(task) != spec.task_type:
-            raise ValueError("existing rack operation required task type differs from request")
-        if _task_required(task) != spec.required:
-            raise ValueError("existing rack operation required flag differs from request")
-        if (
-            getattr(task, "source_position_code", None) != spec.source_position_code
-            or getattr(task, "target_position_code", None) != spec.target_position_code
-            or getattr(task, "target_position_role", None) != spec.target_position_role
-        ):
-            raise ValueError("existing rack operation source/target position differs from request")
-        if getattr(task, "rack_kind", None) != spec.rack_kind:
-            raise ValueError("existing rack operation new_rack_kind differs from request")
-
-    supply_specs = [
-        spec for spec in required_specs if spec.task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value
-    ]
-    if len(supply_specs) != 1 or supply_specs[0].sequence_no != 2:
-        raise ValueError("existing rack operation required task type differs from request")
-
 
 def _ensure_existing_operation_request_consistent(
     tasks: list[Any],
     *,
     operation_key: str,
     operation_type: str,
-    work_position_code: str,
-    new_rack_kind: str,
-    move_out_target_position_role: str,
-    supply_target_code: str,
+    specs: list[WorklineRackTaskSpec],
 ) -> None:
-    required_tasks = sorted((task for task in tasks if _task_required(task)), key=lambda task: task.sequence_no)
-    task_types = tuple(_task_type(task) for task in required_tasks)
-    if task_types not in {
-        (WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,),
-        (WorklineRackTaskType.MOVE_RACK.value, WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value),
-    }:
-        raise ValueError("existing rack operation required task type differs from request")
+    sorted_tasks = sorted(tasks, key=lambda task: task.sequence_no)
+    sorted_specs = sorted(specs, key=lambda spec: spec.sequence_no)
+    if len(sorted_tasks) != len(sorted_specs):
+        raise ValueError("existing rack operation task count differs from request")
 
-    for task in required_tasks:
-        sequence_no = getattr(task, "sequence_no", None)
-        task_type = _task_type(task)
-        expected_key = f"rack-operation:{operation_key}:{sequence_no}:{task_type}"
+    for task, spec in zip(sorted_tasks, sorted_specs, strict=True):
         if getattr(task, "operation_key", None) != operation_key:
             raise ValueError("existing rack operation key differs from request")
         if getattr(task, "operation_type", None) != operation_type:
             raise ValueError("existing rack operation type differs from request")
-        if getattr(task, "dispatch_key", None) != expected_key:
-            raise ValueError("existing rack operation dispatch_key differs from request")
-        if getattr(task, "task_key", None) != expected_key:
-            raise ValueError("existing rack operation task_key differs from request")
-        if getattr(task, "target_code", None) != supply_target_code:
-            raise ValueError("existing rack operation target_code differs from request")
-        _ensure_task_request_json_matches(task, operation_key=operation_key, operation_type=operation_type)
-
-    supply_tasks = [
-        task for task in required_tasks if _task_type(task) == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value
-    ]
-    if len(supply_tasks) != 1:
-        raise ValueError("existing rack operation required task type differs from request")
-    supply_task = supply_tasks[0]
-    if getattr(supply_task, "sequence_no", None) != 2:
-        raise ValueError("existing rack operation sequence_no differs from request")
-    if (
-        getattr(supply_task, "source_position_code", None) is not None
-        or getattr(supply_task, "target_position_code", None) != work_position_code
-        or getattr(supply_task, "target_position_role", None) != "SMT_CLASSIFIER_SINGLE_RACK_WORK"
-    ):
-        raise ValueError("existing rack operation source/target position differs from request")
-    if getattr(supply_task, "rack_kind", None) != new_rack_kind:
-        raise ValueError("existing rack operation new_rack_kind differs from request")
-
-    move_tasks = [task for task in required_tasks if _task_type(task) == WorklineRackTaskType.MOVE_RACK.value]
-    if move_tasks:
-        move_task = move_tasks[0]
-        request_rack_code = _request_json_value(move_task, "rack_code")
-        if request_rack_code is not None and getattr(move_task, "rack_code", None) != request_rack_code:
-            raise ValueError("existing rack operation move-out rack_code differs from request")
         if (
-            getattr(move_task, "source_position_code", None) != work_position_code
-            or getattr(move_task, "target_position_code", None) is not None
-            or getattr(move_task, "target_position_role", None) != move_out_target_position_role
+            getattr(task, "sequence_no", None) != spec.sequence_no
+            or _task_type(task) != spec.task_type
+            or getattr(task, "dispatch_key", None) != spec.dispatch_key
+            or getattr(task, "task_key", None) != spec.dispatch_key
+            or getattr(task, "target_code", None) != spec.target_code
         ):
-            raise ValueError("existing rack operation source/target position differs from request")
+            raise ValueError("existing rack operation task identity differs from request")
+        if _task_required(task) != spec.required:
+            raise ValueError("existing rack operation required flag differs from request")
+        _ensure_task_request_json_matches(task, spec)
+        _ensure_task_actions_json_matches(task, spec)
 
 
-def _request_json_value(task: Any, key: str) -> Any:
-    request_json = getattr(task, "request_json", None)
-    if not isinstance(request_json, dict):
-        return None
-    return request_json.get(key)
+def _ensure_task_spec_contract(spec: WorklineRackTaskSpec) -> None:
+    if (
+        spec.task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value
+        and _optional_str(spec.target_position_code) is None
+    ):
+        raise ValueError("rack operation ALLOCATE_AND_MOVE_RACK requires target_position_code")
+    if (
+        spec.task_type == WorklineRackTaskType.MOVE_RACK.value
+        and _optional_str(spec.target_position_code) is None
+        and _optional_str(spec.target_position_role) is None
+    ):
+        raise ValueError("rack operation MOVE_RACK requires target_position_code or target_position_role")
 
 
-def _ensure_task_request_json_matches(task: Any, *, operation_key: str, operation_type: str) -> None:
+def _ensure_task_request_json_matches(task: Any, spec: WorklineRackTaskSpec) -> None:
     request_json = getattr(task, "request_json", None)
     if not isinstance(request_json, dict):
         raise TypeError("existing rack operation request_json missing")
 
     expected = {
-        "operation_key": operation_key,
-        "operation_type": operation_type,
-        "sequence_no": getattr(task, "sequence_no", None),
-        "task_type": _task_type(task),
-        "source_position_code": getattr(task, "source_position_code", None),
-        "target_position_code": getattr(task, "target_position_code", None),
-        "target_position_role": getattr(task, "target_position_role", None),
-        "rack_kind": getattr(task, "rack_kind", None),
+        "operation_key": spec.request_json.get("operation_key"),
+        "operation_type": spec.request_json.get("operation_type"),
+        "sequence_no": spec.sequence_no,
+        "task_type": spec.task_type,
+        "rack_code": spec.rack_code,
+        "rack_kind": spec.rack_kind,
+        "source_position_code": spec.source_position_code,
+        "target_position_code": spec.target_position_code,
+        "target_position_role": spec.target_position_role,
     }
-    if _task_type(task) == WorklineRackTaskType.MOVE_RACK.value:
-        expected["rack_code"] = getattr(task, "rack_code", None)
 
     for key, value in expected.items():
         if request_json.get(key) != value:
             raise ValueError(f"existing rack operation request_json {key} differs from request")
+    if _request_json_for_idempotency(request_json) != _request_json_for_idempotency(spec.request_json):
+        raise ValueError("existing rack operation request_json differs from request")
 
 
-def _target_projection_matches_supply(
+def _ensure_task_actions_json_matches(task: Any, spec: WorklineRackTaskSpec) -> None:
+    actions_json = getattr(task, "actions_json", None)
+    if not isinstance(actions_json, dict):
+        raise TypeError("existing rack operation actions_json missing")
+    if actions_json != spec.actions_json:
+        raise ValueError("existing rack operation actions_json differs from request")
+
+
+def _request_json_for_idempotency(payload: Mapping[str, Any]) -> dict[str, Any]:
+    lifecycle_keys = {"timeout_seconds", "trace_id"}
+    return {key: value for key, value in payload.items() if key not in lifecycle_keys}
+
+
+def _consume_target_projection(
     task: Any,
     placements: list[Any],
     *,
     move_out_rack_codes: set[str],
 ) -> bool:
-    task_rack_kind = _optional_str(getattr(task, "rack_kind", None))
-    if task_rack_kind is None:
-        return False
-    task_rack_code = _optional_str(getattr(task, "rack_code", None))
-    for placement in placements:
-        placement_rack_code = _optional_str(getattr(placement, "rack_code", None))
-        if placement_rack_code in move_out_rack_codes:
-            continue
-        if _optional_str(getattr(placement, "rack_kind", None)) != task_rack_kind:
-            continue
-        if task_rack_code is None or placement_rack_code == task_rack_code:
+    for index, placement in enumerate(placements):
+        if _target_projection_matches_task(task, placement, move_out_rack_codes=move_out_rack_codes):
+            placements.pop(index)
             return True
     return False
+
+
+def _target_projection_matches_task(
+    task: Any,
+    placement: Any,
+    *,
+    move_out_rack_codes: set[str],
+) -> bool:
+    task_type = _task_type(task)
+    task_rack_kind = _optional_str(getattr(task, "rack_kind", None))
+    task_rack_code = _optional_str(getattr(task, "rack_code", None))
+    if task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value and task_rack_kind is None:
+        return False
+    if task_type == WorklineRackTaskType.MOVE_RACK.value and task_rack_code is None:
+        return False
+
+    placement_rack_code = _optional_str(getattr(placement, "rack_code", None))
+    if task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value and placement_rack_code in move_out_rack_codes:
+        return False
+    if task_rack_code is not None and placement_rack_code != task_rack_code:
+        return False
+    return task_rack_kind is None or _optional_str(getattr(placement, "rack_kind", None)) == task_rack_kind
 
 
 def _outbox_payload(spec: WorklineRackTaskSpec) -> dict[str, Any]:
@@ -750,10 +798,36 @@ def _ensure_existing_outbox_shape(
             raise ValueError(f"existing rack operation outbox payload {key} differs from request")
 
 
+def _reserved_target_position_codes(specs: list[WorklineRackTaskSpec]) -> set[str]:
+    return {
+        target_position_code
+        for spec in specs
+        for target_position_code in [_optional_str(spec.target_position_code)]
+        if target_position_code is not None
+        and _spec_occupies_target_position(spec, target_position_code=target_position_code)
+    }
+
+
+def _target_occupying_specs(
+    specs: list[WorklineRackTaskSpec],
+    *,
+    target_position_code: str,
+) -> list[WorklineRackTaskSpec]:
+    return [spec for spec in specs if _spec_occupies_target_position(spec, target_position_code=target_position_code)]
+
+
+def _spec_occupies_target_position(spec: WorklineRackTaskSpec, *, target_position_code: str) -> bool:
+    if spec.target_position_code != target_position_code:
+        return False
+    if spec.task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value:
+        return True
+    return spec.task_type == WorklineRackTaskType.MOVE_RACK.value
+
+
 def _task_occupies_target_position(task: Any, *, target_position_code: str) -> bool:
     task_type = _task_type(task)
     if task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value:
-        return True
+        return getattr(task, "target_position_code", None) == target_position_code
     return (
         task_type == WorklineRackTaskType.MOVE_RACK.value
         and getattr(task, "target_position_code", None) == target_position_code
@@ -785,6 +859,20 @@ def _rack_kind(value: RackKind | str) -> RackKind:
         return RackKind(str(raw_value))
     except ValueError as exc:
         raise ValueError(f"unsupported rack_kind: {raw_value}") from exc
+
+
+def _rack_kind_value(value: Any) -> str | None:
+    if _optional_str(value) is None:
+        return None
+    return _rack_kind(value).value
+
+
+def _rack_task_type(value: Any) -> str:
+    raw_value = _enum_value(value)
+    try:
+        return WorklineRackTaskType(str(raw_value)).value
+    except ValueError as exc:
+        raise ValueError(f"unsupported rack task_type: {raw_value}") from exc
 
 
 def _required_text(value: Any, field_name: str) -> str:
@@ -821,7 +909,6 @@ __all__ = [
     "DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS",
     "WorklineRackOperationService",
     "WorklineRackOperationStatus",
-    "WorklineRackOperationType",
     "WorklineRackTaskSpec",
     "workline_rack_operation_service",
 ]

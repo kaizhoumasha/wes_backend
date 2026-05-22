@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, Column, Index, Text
+from sqlalchemy import JSON, Column, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -99,6 +99,27 @@ class WorklineRackTask(WorklineRackTaskBase, DataTableMixin, table=True):
         Index("ux_workline_rack_tasks_key", "task_key", unique=True),
         Index("ux_workline_rack_tasks_dispatch_key", "dispatch_key", unique=True),
         Index("ux_workline_rack_tasks_operation_sequence", "operation_key", "sequence_no", unique=True),
+        Index(
+            "ux_workline_rack_tasks_move_source_claim",
+            "workline_code",
+            "source_position_code",
+            "rack_code",
+            unique=True,
+            postgresql_where=text(
+                "task_type = 'MOVE_RACK' "
+                "AND task_status IN ('PLANNED', 'REQUESTED', 'IN_PROGRESS', 'RECONCILING') "
+                "AND workline_code IS NOT NULL "
+                "AND source_position_code IS NOT NULL "
+                "AND rack_code IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "task_type = 'MOVE_RACK' "
+                "AND task_status IN ('PLANNED', 'REQUESTED', 'IN_PROGRESS', 'RECONCILING') "
+                "AND workline_code IS NOT NULL "
+                "AND source_position_code IS NOT NULL "
+                "AND rack_code IS NOT NULL"
+            ),
+        ),
         Index("ix_workline_rack_tasks_operation_status", "operation_key", "task_status"),
         Index("ix_workline_rack_tasks_session_operation", "material_session_id", "operation_key"),
         Index("ix_workline_rack_tasks_target_status", "workline_code", "target_position_code", "task_status"),

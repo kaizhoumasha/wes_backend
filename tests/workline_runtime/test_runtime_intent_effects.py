@@ -563,11 +563,29 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     ctx["workline"].line_code = "WL-SMT-01"
 
     class RecordingRackOperationService:
-        async def request_replace_classifier_work_rack(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
             operation_calls.append({"db": db, **kwargs})
             return [
-                SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1),
-                SimpleNamespace(id=902, operation_key=kwargs["operation_key"], sequence_no=2),
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:1:MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code="RACK-OLD",
+                    source_position_code="SINGLE_LAYER_A",
+                    target_position_code=None,
+                ),
+                SimpleNamespace(
+                    id=902,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                ),
             ]
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
@@ -586,6 +604,23 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
                     "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "MOVE_RACK",
+                            "rack_code": "RACK-OLD",
+                            "rack_kind": "SINGLE_LAYER",
+                            "source_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_EMPTY_RACK_AREA",
+                        },
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        },
+                    ],
                     "trace_id": "trace-from-payload",
                 },
                 timeout_seconds=1800,
@@ -599,10 +634,10 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     assert operation_calls[0]["session"] is session
     assert operation_calls[0]["workline"] is ctx["workline"]
     assert operation_calls[0]["operation_key"] == "rack-operation:trace-runtime"
-    assert operation_calls[0]["work_position_code"] == "SINGLE_LAYER_A"
-    assert operation_calls[0]["new_rack_kind"] == "SINGLE_LAYER"
-    assert operation_calls[0]["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
-    assert operation_calls[0]["supply_target_code"] == "http://wms-rcs/api/rack-operation"
+    assert operation_calls[0]["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert operation_calls[0]["target_code"] == "http://wms-rcs/api/rack-operation"
+    assert operation_calls[0]["task_specs"][0]["task_type"] == "MOVE_RACK"
+    assert operation_calls[0]["task_specs"][1]["target_position_code"] == "SINGLE_LAYER_A"
     assert operation_calls[0]["trace_id"] == "trace-from-payload"
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "RACK_OPERATION"
@@ -612,6 +647,8 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
     assert session.context_json["rack_operation"]["operation_key"] == "rack-operation:trace-runtime"
     assert session.context_json["rack_operation"]["status"] == "PENDING"
+    assert session.context_json["rack_operation"]["task_sequences"] == [1, 2]
+    assert session.context_json["rack_operation"]["released_rack_codes"] == ["RACK-OLD"]
     assert [timeline["action_type"].value for timeline in timelines] == ["WAIT_STARTED"]
     assert timelines[0]["payload"]["wait_token"] == "rack-operation:trace-runtime"
 
@@ -631,9 +668,19 @@ async def test_rack_operation_request_stores_operation_wait_fields(
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     class RecordingRackOperationService:
-        async def request_replace_classifier_work_rack(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
             operation_calls.append({"db": db, **kwargs})
-            return [SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1)]
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                )
+            ]
 
     async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
         return None
@@ -651,6 +698,15 @@ async def test_rack_operation_request_stores_operation_wait_fields(
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
                     "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        }
+                    ],
                 },
                 timeout_seconds=1800,
             )
@@ -672,25 +728,28 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     class RecordingRackOperationService:
-        async def request_replace_classifier_work_rack(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
-            context_json = dict(getattr(kwargs["session"], "context_json", None) or {})
-            rack_operation = dict(context_json.get("rack_operation") or {})
-            rack_operation.update(
-                {
-                    "operation_key": kwargs["operation_key"],
-                    "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-                    "status": "PENDING",
-                    "task_count": 2,
-                    "task_sequences": [1, 2],
-                    "released_rack_codes": ["RACK-OLD"],
-                }
-            )
-            context_json["waiting_rack_operation_key"] = kwargs["operation_key"]
-            context_json["rack_operation"] = rack_operation
-            kwargs["session"].context_json = context_json
+        async def request_operation_tasks(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
             return [
-                SimpleNamespace(id=901, operation_key=kwargs["operation_key"], sequence_no=1),
-                SimpleNamespace(id=902, operation_key=kwargs["operation_key"], sequence_no=2),
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="MOVE_RACK",
+                    dispatch_key=f"rack-operation:{kwargs['operation_key']}:1:MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code="RACK-OLD",
+                    source_position_code="SINGLE_LAYER_A",
+                    target_position_code=None,
+                ),
+                SimpleNamespace(
+                    id=902,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=2,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key=f"rack-operation:{kwargs['operation_key']}:2:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                ),
             ]
 
     async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
@@ -719,6 +778,23 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
                     "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "MOVE_RACK",
+                            "rack_code": "RACK-OLD",
+                            "rack_kind": "SINGLE_LAYER",
+                            "source_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_EMPTY_RACK_AREA",
+                        },
+                        {
+                            "sequence_no": 2,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        },
+                    ],
                 },
                 timeout_seconds=1800,
             ),
@@ -732,54 +808,105 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
     assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
 
 
+def test_rack_operation_wait_released_rack_codes_include_only_move_out_tasks() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
+        ctx,
+        operation_key="rack-operation:move-in",
+        operation_type="RACK_TRANSPORT",
+        tasks=[
+            SimpleNamespace(
+                sequence_no=1,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:1:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND-1",
+                source_position_code="SOURCE-A",
+                target_position_code="WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=2,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:2:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND-2",
+                source_position_code="SOURCE-B",
+                target_position_code="WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=3,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:3:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-OLD",
+                source_position_code="WORK-POSITION",
+                target_position_code=None,
+            ),
+            SimpleNamespace(
+                sequence_no=4,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:move-in:4:MOVE_RACK",
+                actions_json={"required": False},
+                rack_code="RACK-OPTIONAL",
+                source_position_code="WORK-POSITION",
+                target_position_code=None,
+            ),
+        ],
+        timeout_seconds=1800,
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
+
+
+def test_rack_operation_wait_infers_target_position_from_returned_tasks() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+
+    RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
+        ctx,
+        operation_key="rack-operation:custom-target",
+        operation_type="RACK_TRANSPORT",
+        tasks=[
+            SimpleNamespace(
+                sequence_no=1,
+                task_type="MOVE_RACK",
+                dispatch_key="rack-operation:custom-target:1:MOVE_RACK",
+                actions_json={"required": True},
+                rack_code="RACK-INBOUND",
+                source_position_code="BUFFER-A",
+                target_position_code="CUSTOM-WORK-POSITION",
+            ),
+            SimpleNamespace(
+                sequence_no=2,
+                task_type="ALLOCATE_AND_MOVE_RACK",
+                dispatch_key="rack-operation:custom-target:2:ALLOCATE_AND_MOVE_RACK",
+                actions_json={"required": True},
+                rack_code=None,
+                source_position_code=None,
+                target_position_code="CUSTOM-WORK-POSITION",
+            ),
+        ],
+        timeout_seconds=1800,
+    )
+
+    rack_operation = session.context_json["rack_operation"]
+    assert rack_operation["target_position_code"] == "CUSTOM-WORK-POSITION"
+    assert rack_operation["work_position_code"] == "CUSTOM-WORK-POSITION"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("intent_kwargs", "message"),
     [
         (
             {
-                "operation_type": "TURN_RACK_SIDE",
-                "payload": {
-                    "work_position_code": "SINGLE_LAYER_A",
-                    "new_rack_kind": "SINGLE_LAYER",
-                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
-                    "trace_id": "trace-runtime",
-                },
+                "operation_type": "ANY_PLUGIN_OPERATION",
+                "payload": {"trace_id": "trace-runtime"},
             },
-            "unsupported rack operation request type: TURN_RACK_SIDE",
-        ),
-        (
-            {
-                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-                "payload": {
-                    "new_rack_kind": "SINGLE_LAYER",
-                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
-                    "trace_id": "trace-runtime",
-                },
-            },
-            "RACK_OPERATION_REQUEST intent requires payload.work_position_code",
-        ),
-        (
-            {
-                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-                "payload": {
-                    "work_position_code": "SINGLE_LAYER_A",
-                    "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
-                    "trace_id": "trace-runtime",
-                },
-            },
-            "RACK_OPERATION_REQUEST intent requires payload.new_rack_kind",
-        ),
-        (
-            {
-                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-                "payload": {
-                    "work_position_code": "SINGLE_LAYER_A",
-                    "new_rack_kind": "SINGLE_LAYER",
-                    "trace_id": "trace-runtime",
-                },
-            },
-            "RACK_OPERATION_REQUEST intent requires payload.move_out_target_position_role",
+            "RACK_OPERATION_REQUEST intent requires payload.rack_tasks",
         ),
     ],
 )
@@ -824,9 +951,15 @@ async def test_rack_operation_request_requires_trace_id() -> None:
                     operation_key="rack-operation:trace-runtime",
                     target_code="http://wms-rcs/api/rack-operation",
                     payload={
-                        "work_position_code": "SINGLE_LAYER_A",
-                        "new_rack_kind": "SINGLE_LAYER",
-                        "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+                        "rack_tasks": [
+                            {
+                                "sequence_no": 2,
+                                "task_type": "ALLOCATE_AND_MOVE_RACK",
+                                "rack_kind": "SINGLE_LAYER",
+                                "target_position_code": "SINGLE_LAYER_A",
+                                "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                            }
+                        ],
                     },
                     timeout_seconds=1800,
                 )

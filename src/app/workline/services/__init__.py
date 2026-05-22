@@ -14,7 +14,6 @@ from .operation_service import WorklineOperationService, workline_operation_serv
 from .rack_operation_service import (
     WorklineRackOperationService,
     WorklineRackOperationStatus,
-    WorklineRackOperationType,
     WorklineRackTaskSpec,
     workline_rack_operation_service,
 )
@@ -53,7 +52,6 @@ __all__ = [
     "WorklineOperationService",
     "WorklineRackOperationService",
     "WorklineRackOperationStatus",
-    "WorklineRackOperationType",
     "WorklineRackPositionService",
     "WorklineRackTaskLifecycleService",
     "WorklineRackTaskSpec",
