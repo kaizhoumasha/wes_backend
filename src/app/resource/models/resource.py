@@ -93,6 +93,8 @@ class ResourceStateEventType(str, Enum):
 
     RACK_ARRIVED = "RACK_ARRIVED"
     RACK_DEPARTED = "RACK_DEPARTED"
+    BIN_ARRIVED = "BIN_ARRIVED"
+    BIN_DEPARTED = "BIN_DEPARTED"
     BIN_MOUNTED = "BIN_MOUNTED"
     BIN_UNMOUNTED = "BIN_UNMOUNTED"
     MATERIAL_MOUNTED = "MATERIAL_MOUNTED"
@@ -116,6 +118,15 @@ class RackBinMountStatus(str, Enum):
     MOUNTED = "MOUNTED"
     UNMOUNTED = "UNMOUNTED"
     EXCHANGING = "EXCHANGING"
+    UNKNOWN = "UNKNOWN"
+
+
+class BinPlacementStatus(str, Enum):
+    """料箱位置投影状态。"""
+
+    ARRIVED = "ARRIVED"
+    IN_TRANSIT = "IN_TRANSIT"
+    DEPARTED = "DEPARTED"
     UNKNOWN = "UNKNOWN"
 
 
@@ -477,6 +488,55 @@ class RackBinMount(RackBinMountBase, DataTableMixin, table=True):
     )
 
 
+class BinPlacementBase(BaseMixin):
+    """料箱处于非货架位置的当前投影基础字段。"""
+
+    bin_code: str | None = Field(default=None, max_length=80, index=True, description="料箱编码")
+    placeholder_key: str | None = Field(default=None, max_length=120, index=True, description="未扫码占位键")
+    position_type: str = Field(min_length=1, max_length=80, index=True, description="位置类型")
+    position_code: str = Field(min_length=1, max_length=120, index=True, description="位置编码")
+    workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
+    workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
+    placement_status: BinPlacementStatus = Field(
+        default=BinPlacementStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(BinPlacementStatus, native_enum=False, create_constraint=True, length=50)),
+        description="料箱位置投影状态",
+    )
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    started_at: datetime = Field(description="进入该位置的时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="离开该位置的时间")
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展证据")
+
+
+class BinPlacement(BinPlacementBase, DataTableMixin, table=True):
+    """料箱处于非货架位置的当前投影与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_placements"]] = "resource_bin_placements"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_bin_placements_active_bin",
+            "bin_code",
+            unique=True,
+            postgresql_where="bin_code IS NOT NULL AND ended_at IS NULL",
+        ),
+        Index(
+            "ux_resource_bin_placements_active_placeholder",
+            "placeholder_key",
+            unique=True,
+            postgresql_where="placeholder_key IS NOT NULL AND ended_at IS NULL",
+        ),
+        Index("ix_resource_bin_placements_position_active", "position_type", "position_code", "ended_at"),
+    )
+
+
 class BinMaterialMountBase(BaseMixin):
     """料盘/PKG 料箱格位明细基础字段。"""
 
@@ -790,6 +850,20 @@ class RackBinMountResponse(RackBinMountBase):
     id: int
 
 
+class BinPlacementCreate(ModelFactory(BinPlacementBase).for_create()):
+    """料箱位置投影创建 Schema。"""
+
+
+class BinPlacementUpdate(ModelFactory(BinPlacementBase).for_update()):
+    """料箱位置投影更新 Schema。"""
+
+
+class BinPlacementResponse(BinPlacementBase):
+    """料箱位置投响应 Schema。"""
+
+    id: int
+
+
 class BinMaterialMountCreate(ModelFactory(BinMaterialMountBase).for_create()):
     """物料料箱格位投影创建 Schema。"""
 
@@ -873,6 +947,12 @@ __all__ = [
     "BinMaterialMountResponse",
     "BinMaterialMountStatus",
     "BinMaterialMountUpdate",
+    "BinPlacement",
+    "BinPlacementBase",
+    "BinPlacementCreate",
+    "BinPlacementResponse",
+    "BinPlacementStatus",
+    "BinPlacementUpdate",
     "BinResponse",
     "BinSlotSize",
     "BinSlotTemplate",

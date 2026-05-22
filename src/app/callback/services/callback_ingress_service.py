@@ -65,6 +65,20 @@ _WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS = (
     "timestamp",
     "signature",
 )
+_WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES = frozenset(
+    {
+        "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "RCS_FULL_BOX_EXCHANGE_RESULT",
+    }
+)
+_WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS = (
+    "dispatch_key",
+    "exchange_request_code",
+    "rack_release_id",
+    "wms_rcs_task_id",
+    *_WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS,
+    "exchange_status",
+)
 _WMS_RCS_RACK_CALLBACK_TYPES = frozenset(
     {
         "WMS_RACK_TASK_RESULT",
@@ -295,13 +309,17 @@ def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_typ
         return
 
     _ = _require_payload_value(payload, "dispatch_key")
+    if callback_type in _WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES:
+        for field_name in _WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS:
+            _ = _require_payload_value(payload, field_name)
+        _validate_wms_rcs_source_system(payload)
+        return
+
     if callback_type in _WMS_RCS_RACK_CALLBACK_TYPES:
         for field_name in _WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS:
             _ = _require_payload_value(payload, field_name)
 
-        source_system = resolve_first_str(payload, ("source_system",))
-        if source_system not in {"WMS", "RCS"}:
-            raise ValueError("source_system must be WMS or RCS")
+        _validate_wms_rcs_source_system(payload)
 
         if callback_type in _WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES and not resolve_first_str(
             payload, _WMS_RCS_EXECUTION_STATUS_ALIASES
@@ -313,6 +331,12 @@ def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_typ
         raise ValueError("status is required")
     source_system = resolve_first_str(payload, ("source_system",))
     if source_system is not None and source_system not in {"WMS", "RCS"}:
+        raise ValueError("source_system must be WMS or RCS")
+
+
+def _validate_wms_rcs_source_system(payload: JsonDict) -> None:
+    source_system = resolve_first_str(payload, ("source_system",))
+    if source_system not in {"WMS", "RCS"}:
         raise ValueError("source_system must be WMS or RCS")
 
 

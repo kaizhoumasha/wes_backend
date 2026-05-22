@@ -113,6 +113,25 @@ class MockSessionRepository:
                 return session
         return None
 
+    async def get_open_session_by_waiting_handling_operation_key(
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        operation_key: str,
+    ) -> object | None:
+        self.find_calls.append(("waiting_handling_operation_key", workline_id, operation_key))
+        for session in self.sessions.values():
+            s = session if isinstance(session, dict) else session.__dict__
+            context = s.get("context_json") if isinstance(s.get("context_json"), dict) else {}
+            if (
+                s.get("workline_id") == workline_id
+                and context.get("waiting_handling_operation_key") == operation_key
+                and s.get("status") in ["NEW", "RUNNING", "WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"]
+            ):
+                return session
+        return None
+
     async def create(self, db: object, data: dict) -> object:
         session_id = self.next_id
         self.next_id += 1
@@ -156,6 +175,26 @@ class MockRackTaskRepository:
     async def get_by_dispatch_key(self, db: object, dispatch_key: str) -> object | None:
         self.find_calls.append(("dispatch_key", dispatch_key))
         return self.tasks.get(dispatch_key)
+
+
+class MockHandlingStepRepository:
+    def __init__(self) -> None:
+        self.steps: dict[str, object] = {}
+        self.find_calls: list[tuple[str, str]] = []
+
+    async def get_by_dispatch_key(self, db: object, dispatch_key: str) -> object | None:
+        self.find_calls.append(("dispatch_key", dispatch_key))
+        return self.steps.get(dispatch_key)
+
+
+class MockHandlingOperationRepository:
+    def __init__(self) -> None:
+        self.operations: dict[str, object] = {}
+        self.find_calls: list[tuple[str, str]] = []
+
+    async def get_by_operation_key(self, db: object, operation_key: str) -> object | None:
+        self.find_calls.append(("operation_key", operation_key))
+        return self.operations.get(operation_key)
 
 
 def make_inbox(
@@ -222,6 +261,8 @@ class TestSessionResolver:
         resolver.command_repo = MockCommandRepository()
         resolver.outbox_repo = MockOutboxRepository()
         resolver.rack_task_repo = MockRackTaskRepository()
+        resolver.handling_step_repo = MockHandlingStepRepository()
+        resolver.handling_operation_repo = MockHandlingOperationRepository()
         return resolver
 
     @pytest.mark.asyncio
@@ -716,6 +757,66 @@ class TestSessionResolver:
         assert session.status == SessionStatus.WAITING_EXTERNAL
         assert session.current_wait_type == "RACK_OPERATION"
         assert session.context_json["waiting_rack_operation_key"] == "rack-op:trace-001"
+
+    @pytest.mark.asyncio
+    async def test_external_http_callback_resolves_handling_operation_session(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        material_session = SimpleNamespace(
+            id=301,
+            session_code="SESSION_SMT_301",
+            workline_id=45,
+            plugin_key="smt_classifier",
+            business_key="SMT_REEL_001",
+            status=SessionStatus.WAITING_EXTERNAL,
+            current_wait_type="HANDLING_OPERATION",
+            waiting_since=timezone.now_for_db(),
+            deadline_at=timezone.now_for_db() + timedelta(minutes=5),
+            current_wait_timeout_seconds=300,
+            context_json={
+                "waiting_handling_operation_key": "bin-operation:trace-001",
+                "handling_operation": {"operation_key": "bin-operation:trace-001", "status": "PENDING"},
+            },
+            trace_id="trace-bin-001",
+        )
+        mock_session_repo.sessions[301] = material_session
+        dispatch_key = "handling:bin-operation:trace-001:move:1"
+        resolver.handling_step_repo.steps[dispatch_key] = SimpleNamespace(
+            id=701,
+            dispatch_key=dispatch_key,
+            operation_key="bin-operation:trace-001",
+        )
+        resolver.handling_operation_repo.operations["bin-operation:trace-001"] = SimpleNamespace(
+            id=700,
+            operation_key="bin-operation:trace-001",
+            workline_id=45,
+        )
+        inbox = make_inbox(
+            kind=InboxKind.EXTERNAL_HTTP,
+            trace_id="trace-bin-001",
+            payload_json={
+                "callback_type": "CTU_BIN_MOVE_COMPLETED",
+                "dispatch_key": dispatch_key,
+                "status": "SUCCEEDED",
+            },
+        )
+
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=None,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert session.id == 301
+        assert inbox.session_id == 301
+        assert inbox.workline_id == 45
+        assert resolver.handling_step_repo.find_calls == [("dispatch_key", dispatch_key)]
+        assert resolver.handling_operation_repo.find_calls == [("operation_key", "bin-operation:trace-001")]
+        assert ("waiting_handling_operation_key", 45, "bin-operation:trace-001") in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_manual_hold_by_session_id(

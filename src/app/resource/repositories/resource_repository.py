@@ -11,6 +11,7 @@ from src.app.resource.models import (
     BinContentSnapshot,
     BinContentSnapshotItem,
     BinMaterialMount,
+    BinPlacement,
     BinSlotTemplate,
     BinType,
     Rack,
@@ -280,6 +281,83 @@ class RackBinMountRepository(BaseRepository[RackBinMount]):
         return list(result.scalars().all())
 
 
+class BinPlacementRepository(BaseRepository[BinPlacement]):
+    """料箱非货架位置投影 Repository。"""
+
+    def __init__(self) -> None:
+        super().__init__(BinPlacement)
+
+    async def get_active_by_bin_code(
+        self,
+        db: AsyncSession,
+        bin_code: str,
+        *,
+        for_update: bool = False,
+    ) -> BinPlacement | None:
+        columns = cast("Any", BinPlacement).__table__.c
+        statement = select(BinPlacement).where(
+            columns.bin_code == bin_code,
+            columns.ended_at.is_(None),
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_active_by_placeholder_key(
+        self,
+        db: AsyncSession,
+        placeholder_key: str,
+        *,
+        for_update: bool = False,
+    ) -> BinPlacement | None:
+        columns = cast("Any", BinPlacement).__table__.c
+        statement = select(BinPlacement).where(
+            columns.placeholder_key == placeholder_key,
+            columns.ended_at.is_(None),
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def close_active_by_bin_code(
+        self,
+        db: AsyncSession,
+        bin_code: str,
+        *,
+        ended_at: Any,
+        source_event_id: str,
+    ) -> int:
+        active = await self.get_active_by_bin_code(db, bin_code, for_update=True)
+        if active is None:
+            return 0
+        active.ended_at = ended_at
+        active.placement_status = "DEPARTED"
+        active.metadata_json = {**(active.metadata_json or {}), "departed_source_event_id": source_event_id}
+        db.add(active)
+        await db.flush()
+        return 1
+
+    async def close_active_by_placeholder_key(
+        self,
+        db: AsyncSession,
+        placeholder_key: str,
+        *,
+        ended_at: Any,
+        source_event_id: str,
+    ) -> int:
+        active = await self.get_active_by_placeholder_key(db, placeholder_key, for_update=True)
+        if active is None:
+            return 0
+        active.ended_at = ended_at
+        active.placement_status = "DEPARTED"
+        active.metadata_json = {**(active.metadata_json or {}), "departed_source_event_id": source_event_id}
+        db.add(active)
+        await db.flush()
+        return 1
+
+
 class BinMaterialMountRepository(BaseRepository[BinMaterialMount]):
     """料盘/PKG 料箱格位明细 Repository。"""
 
@@ -468,6 +546,7 @@ bin_repository = BinRepository()
 resource_state_event_repository = ResourceStateEventRepository()
 rack_placement_repository = RackPlacementRepository()
 rack_bin_mount_repository = RackBinMountRepository()
+bin_placement_repository = BinPlacementRepository()
 bin_material_mount_repository = BinMaterialMountRepository()
 bin_cell_occupancy_repository = BinCellOccupancyRepository()
 bin_content_snapshot_repository = BinContentSnapshotRepository()
@@ -478,6 +557,7 @@ __all__ = [
     "BinContentSnapshotItemRepository",
     "BinContentSnapshotRepository",
     "BinMaterialMountRepository",
+    "BinPlacementRepository",
     "BinRepository",
     "BinSlotTemplateRepository",
     "BinTypeRepository",
@@ -491,6 +571,7 @@ __all__ = [
     "bin_content_snapshot_item_repository",
     "bin_content_snapshot_repository",
     "bin_material_mount_repository",
+    "bin_placement_repository",
     "bin_repository",
     "bin_slot_template_repository",
     "bin_type_repository",

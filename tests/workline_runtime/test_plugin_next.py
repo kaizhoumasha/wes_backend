@@ -171,6 +171,71 @@ def test_plugin_next_rack_operation_request_builds_runtime_intent():
     assert intent.payload_json["new_rack_kind"] == "SINGLE_LAYER"
 
 
+def test_plugin_next_bin_operation_request_builds_transport_free_runtime_intent():
+    intent = PluginNext().bin_operation_request(
+        operation_type="SORTER_FEED_BIN",
+        operation_key="bin-operation:trace-001",
+        moves=[
+            {
+                "sequence_no": 1,
+                "bin_code": "BIN-001",
+                "source_type": "RACK_SLOT",
+                "source_code": "SINGLE_LAYER_A:01",
+                "target_type": "SORTER_STATION",
+                "target_code": "SORTER-01",
+            }
+        ],
+        carrier_type="CTU",
+        carrier_code="CTU-01",
+        timeout_seconds=1800,
+    )
+
+    assert intent.kind == RuntimeIntentKind.BIN_OPERATION_REQUEST
+    assert intent.action == "SORTER_FEED_BIN"
+    assert intent.idempotency_key == "bin-operation:trace-001"
+    assert intent.dispatch_key is None
+    assert intent.target_code is None
+    assert intent.payload_json["carrier_type"] == "CTU"
+    assert intent.payload_json["carrier_code"] == "CTU-01"
+    assert intent.payload_json["moves"][0]["target_code"] == "SORTER-01"
+
+
+def test_plugin_next_rack_bin_exchange_request_builds_transport_free_runtime_intent():
+    intent = PluginNext().rack_bin_exchange_request(
+        operation_type="SINGLE_LAYER_FULL_BIN_EXCHANGE",
+        operation_key="rack-bin-exchange:release-001",
+        moves=[
+            {
+                "sequence_no": 1,
+                "bin_code": "BIN-FULL",
+                "source_type": "RACK_SLOT",
+                "source_code": "SINGLE_LAYER_A:01",
+                "target_type": "BUFFER",
+                "target_code": "FULL_BIN_BUFFER",
+            },
+            {
+                "sequence_no": 2,
+                "placeholder_key": "EMPTY_BIN_FOR:SINGLE_LAYER_A:01",
+                "source_type": "BUFFER",
+                "source_code": "EMPTY_BIN_BUFFER",
+                "target_type": "RACK_SLOT",
+                "target_code": "SINGLE_LAYER_A:01",
+            },
+        ],
+        rack_code="RACK-SINGLE-01",
+        timeout_seconds=1800,
+    )
+
+    assert intent.kind == RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST
+    assert intent.action == "SINGLE_LAYER_FULL_BIN_EXCHANGE"
+    assert intent.idempotency_key == "rack-bin-exchange:release-001"
+    assert intent.dispatch_key is None
+    assert intent.target_code is None
+    assert intent.payload_json["carrier_type"] == "CTU"
+    assert intent.payload_json["rack_code"] == "RACK-SINGLE-01"
+    assert intent.payload_json["moves"][1]["placeholder_key"] == "EMPTY_BIN_FOR:SINGLE_LAYER_A:01"
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

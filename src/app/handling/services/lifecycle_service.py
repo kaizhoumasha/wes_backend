@@ -1,0 +1,479 @@
+"""系统级 Handling operation 生命周期服务。"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
+
+from src.app.handling.models import HandlingMoveStatus, HandlingOperationStatus, HandlingStepStatus
+from src.app.handling.repositories import (
+    HandlingMoveRepository,
+    HandlingOperationRepository,
+    HandlingStepRepository,
+    handling_move_repository,
+    handling_operation_repository,
+    handling_step_repository,
+)
+from src.app.workline.models.session import SessionStatus
+from src.app.workline.repositories.session_repository import (
+    WorklineSessionRepository,
+    workline_session_repository,
+)
+from src.core.logger import logger
+from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+_FULL_BOX_EXCHANGE_CALLBACK_TYPES = {"WMS_FULL_BOX_EXCHANGE_RESULT", "RCS_FULL_BOX_EXCHANGE_RESULT"}
+_POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
+_PROGRESS_STATUSES = {
+    "ACCEPTED",
+    "QUEUED",
+    "IN_PROGRESS",
+    "PHYSICAL_COMPLETED",
+    "RESOURCE_PROJECTED",
+    "WMS_CONFIRMED",
+}
+_SUCCESS_STATUSES = {"SUCCEEDED", "SUCCESS", "COMPLETED", "BUSINESS_COMPLETED"}
+_FAILED_STATUSES = {"FAILED", "FAILED_CTU", "WMS_REJECTED", "REJECTED", "ERROR", "UNKNOWN"}
+_CANCELLED_STATUSES = {"CANCELLED", "CANCELED"}
+_TIMEOUT_STATUSES = {"TIMEOUT", "TIMED_OUT"}
+_RECONCILING_STATUSES = {"RECONCILING", "RESOURCE_UNCONFIRMED", "PROJECTION_UNCONFIRMED"}
+
+
+class HandlingOperationLifecycleService:
+    """维护 Handling step/operation 状态，并同步等待中的工作线 session。"""
+
+    def __init__(
+        self,
+        *,
+        operation_repository: HandlingOperationRepository = handling_operation_repository,
+        move_repository: HandlingMoveRepository = handling_move_repository,
+        step_repository: HandlingStepRepository = handling_step_repository,
+        session_repository: WorklineSessionRepository = workline_session_repository,
+    ) -> None:
+        self.operation_repository = operation_repository
+        self.move_repository = move_repository
+        self.step_repository = step_repository
+        self.session_repository = session_repository
+
+    async def record_callback_from_external_http(
+        self,
+        db: AsyncSession,
+        *,
+        payload_json: dict[str, Any],
+        trace_id: str | None = None,
+        **_: Any,
+    ) -> Any | None:
+        """按 WMS/RCS 回调证据更新 handling step。"""
+
+        dispatch_key = (
+            _optional_str(payload_json.get("dispatch_key"))
+            or _optional_str(payload_json.get("exchange_request_code"))
+            or _optional_str(payload_json.get("request_code"))
+        )
+        if dispatch_key is None:
+            return None
+
+        step = await self.step_repository.get_by_dispatch_key(db, dispatch_key)
+        if step is None:
+            return None
+
+        status, error_code, error_message = _callback_step_status(payload_json)
+        if _source_version_is_stale(getattr(step, "callback_json", None), payload_json):
+            logger.warning(
+                "Ignoring stale handling step callback: "
+                f"dispatch_key={dispatch_key}, current_version={_callback_source_version(getattr(step, 'callback_json', None))}, "
+                f"incoming_version={_callback_source_version(payload_json)}"
+            )
+            return step
+
+        if _is_terminal_step_status(getattr(step, "step_status", None)) and not _allows_terminal_override(
+            getattr(step, "step_status", None),
+            status,
+        ):
+            logger.warning(
+                "Ignoring late handling step callback for terminal step: "
+                f"dispatch_key={dispatch_key}, current_status={_step_status_value(getattr(step, 'step_status', None))}, "
+                f"incoming_status={status.value}"
+            )
+            return step
+
+        now = timezone.now_for_db()
+        step.step_status = status
+        step.callback_json = dict(payload_json)
+        step.result_json = _step_result_json(status=status, error_code=error_code, error_message=error_message)
+        if trace_id is not None and not _optional_str(getattr(step, "trace_id", None)):
+            step.trace_id = trace_id
+        if status == HandlingStepStatus.IN_PROGRESS and getattr(step, "started_at", None) is None:
+            step.started_at = now
+        if status in {
+            HandlingStepStatus.SUCCEEDED,
+            HandlingStepStatus.FAILED,
+            HandlingStepStatus.TIMEOUT,
+            HandlingStepStatus.CANCELLED,
+            HandlingStepStatus.RECONCILING,
+        }:
+            step.completed_at = now
+        step.error_code = error_code
+        step.error_message = error_message
+        db.add(step)
+        await self._sync_move_for_step(db, step=step, step_status=status)
+        await self._sync_operation_and_session(
+            db,
+            step=step,
+            payload_json=payload_json,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        return step
+
+    async def _sync_move_for_step(self, db: AsyncSession, *, step: Any, step_status: HandlingStepStatus) -> None:
+        move_id = _optional_int(getattr(step, "move_id", None))
+        if move_id is None:
+            return
+        move = await self.move_repository.get_by_id(db, move_id)
+        if move is None:
+            return
+        move.move_status = _move_status_for_step(step_status)
+        db.add(move)
+
+    async def derive_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
+        operation = await self.operation_repository.get_by_operation_key(db, operation_key)
+        operation_id = getattr(operation, "id", None)
+        if not isinstance(operation_id, int):
+            return HandlingOperationStatus.REQUESTED.value
+        steps = await self.step_repository.list_by_operation_id(db, operation_id)
+        return _derive_operation_status(steps).value
+
+    async def _sync_operation_and_session(
+        self,
+        db: AsyncSession,
+        *,
+        step: Any,
+        payload_json: Mapping[str, Any],
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        operation_key = _optional_str(getattr(step, "operation_key", None))
+        if operation_key is None:
+            return
+
+        operation = await self.operation_repository.get_by_operation_key(db, operation_key)
+        if operation is None:
+            return
+
+        workline_id = _optional_int(getattr(operation, "workline_id", None))
+        session = None
+        if workline_id is not None:
+            session = await self.session_repository.get_open_session_by_waiting_handling_operation_key(
+                db,
+                workline_id=workline_id,
+                operation_key=operation_key,
+            )
+        business_error = _business_context_error(session, payload_json)
+        if business_error is not None:
+            step.step_status = HandlingStepStatus.RECONCILING
+            step.error_code = business_error[0]
+            step.error_message = business_error[1]
+            step.result_json = _step_result_json(
+                status=HandlingStepStatus.RECONCILING,
+                error_code=business_error[0],
+                error_message=business_error[1],
+            )
+            db.add(step)
+            await self._sync_move_for_step(db, step=step, step_status=HandlingStepStatus.RECONCILING)
+            error_code, error_message = business_error
+
+        operation_id = getattr(operation, "id", None)
+        steps = (
+            await self.step_repository.list_by_operation_id(db, operation_id) if isinstance(operation_id, int) else []
+        )
+        operation_status = _derive_operation_status(steps)
+        operation.operation_status = operation_status
+        operation.error_code = error_code
+        operation.error_message = error_message
+        if operation_status in {
+            HandlingOperationStatus.SUCCEEDED,
+            HandlingOperationStatus.FAILED,
+            HandlingOperationStatus.TIMEOUT,
+            HandlingOperationStatus.CANCELLED,
+            HandlingOperationStatus.RECONCILING,
+        }:
+            operation.completed_at = timezone.now_for_db()
+        db.add(operation)
+
+        if session is None:
+            return
+
+        _apply_operation_status_to_session(
+            session,
+            operation_key=operation_key,
+            operation_status=operation_status.value,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        db.add(session)
+
+
+def _derive_operation_status(steps: list[Any]) -> HandlingOperationStatus:
+    if not steps:
+        return HandlingOperationStatus.REQUESTED
+    statuses = {_step_status_value(getattr(step, "step_status", None)) for step in steps}
+    if any(status in {HandlingStepStatus.FAILED.value} for status in statuses):
+        return HandlingOperationStatus.FAILED
+    if any(status in {HandlingStepStatus.TIMEOUT.value} for status in statuses):
+        return HandlingOperationStatus.TIMEOUT
+    if any(status in {HandlingStepStatus.CANCELLED.value} for status in statuses):
+        return HandlingOperationStatus.CANCELLED
+    if any(status in {HandlingStepStatus.RECONCILING.value} for status in statuses):
+        return HandlingOperationStatus.RECONCILING
+    if all(status == HandlingStepStatus.SUCCEEDED.value for status in statuses):
+        return HandlingOperationStatus.SUCCEEDED
+    if any(status == HandlingStepStatus.IN_PROGRESS.value for status in statuses):
+        return HandlingOperationStatus.IN_PROGRESS
+    return HandlingOperationStatus.REQUESTED
+
+
+def _move_status_for_step(step_status: HandlingStepStatus) -> HandlingMoveStatus:
+    try:
+        return HandlingMoveStatus(step_status.value)
+    except ValueError:
+        if step_status == HandlingStepStatus.READY:
+            return HandlingMoveStatus.PLANNED
+        return HandlingMoveStatus.REQUESTED
+
+
+def _allows_terminal_override(current_status: Any, incoming_status: HandlingStepStatus) -> bool:
+    """允许可对账状态被后续可信终态推进。"""
+
+    return _step_status_value(current_status) == HandlingStepStatus.RECONCILING.value and incoming_status in {
+        HandlingStepStatus.SUCCEEDED,
+        HandlingStepStatus.FAILED,
+        HandlingStepStatus.TIMEOUT,
+        HandlingStepStatus.CANCELLED,
+    }
+
+
+def _source_version_is_stale(existing_callback_json: Any, incoming_payload_json: Mapping[str, Any]) -> bool:
+    existing_version = _callback_source_version(existing_callback_json)
+    incoming_version = _callback_source_version(incoming_payload_json)
+    if existing_version is None or incoming_version is None:
+        return False
+    return _version_sort_key(incoming_version) <= _version_sort_key(existing_version)
+
+
+def _callback_source_version(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    return _optional_str(value.get("source_version"))
+
+
+def _version_sort_key(value: str) -> tuple[int, int | str]:
+    try:
+        return (0, int(value))
+    except ValueError:
+        return (1, value)
+
+
+def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]) -> tuple[str, str] | None:
+    if session is None:
+        return None
+    callback_type = _optional_str(payload_json.get("callback_type"))
+    if callback_type not in _FULL_BOX_EXCHANGE_CALLBACK_TYPES:
+        return None
+    incoming_rack_release_id = _optional_str(payload_json.get("rack_release_id"))
+    if incoming_rack_release_id is None:
+        return None
+
+    context_json = dict(getattr(session, "context_json", None) or {})
+    handling_operation = context_json.get("handling_operation")
+    expected_rack_release_id = None
+    if isinstance(handling_operation, Mapping):
+        expected_rack_release_id = _optional_str(handling_operation.get("rack_release_id"))
+    expected_rack_release_id = expected_rack_release_id or _optional_str(context_json.get("rack_release_id"))
+    if expected_rack_release_id is not None and incoming_rack_release_id != expected_rack_release_id:
+        return (
+            "RACK_RELEASE_ID_MISMATCH",
+            f"满箱交换回调 rack_release_id={incoming_rack_release_id} 与等待上下文 {expected_rack_release_id} 不一致",
+        )
+    return None
+
+
+def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStepStatus, str | None, str | None]:
+    callback_type = _optional_str(payload_json.get("callback_type"))
+    raw_status = _optional_str(
+        payload_json.get("exchange_status")
+        or payload_json.get("task_status")
+        or payload_json.get("status")
+        or payload_json.get("result")
+        or payload_json.get("external_status")
+    )
+    status = raw_status.upper() if raw_status is not None else None
+
+    if (
+        callback_type in _FULL_BOX_EXCHANGE_CALLBACK_TYPES
+        and status in _POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES
+        and not _has_post_exchange_relations(payload_json)
+    ):
+        return (
+            HandlingStepStatus.RECONCILING,
+            "POST_EXCHANGE_RELATIONS_MISSING",
+            "满箱交换物理完成回调缺少 post_exchange_relations，已进入资源对账",
+        )
+
+    if callback_type in {"CTU_BIN_MOVE_COMPLETED", "WMS_BIN_MOVE_COMPLETED", "RCS_BIN_MOVE_COMPLETED"}:
+        return HandlingStepStatus.SUCCEEDED, None, None
+    if callback_type in {"CTU_BIN_MOVE_FAILED", "WMS_BIN_MOVE_FAILED", "RCS_BIN_MOVE_FAILED"}:
+        return HandlingStepStatus.FAILED, _raw_error_code(payload_json), _raw_error_message(payload_json)
+    if callback_type in {"CTU_BIN_MOVE_PROGRESS", "WMS_BIN_MOVE_PROGRESS", "RCS_BIN_MOVE_PROGRESS"}:
+        return HandlingStepStatus.IN_PROGRESS, None, None
+
+    return _resolve_step_status(status), _raw_error_code(payload_json), _raw_error_message(payload_json)
+
+
+def _resolve_step_status(status: str | None) -> HandlingStepStatus:
+    if status in _SUCCESS_STATUSES:
+        return HandlingStepStatus.SUCCEEDED
+    if status in _PROGRESS_STATUSES:
+        return HandlingStepStatus.IN_PROGRESS
+    if status in _RECONCILING_STATUSES:
+        return HandlingStepStatus.RECONCILING
+    if status in _TIMEOUT_STATUSES:
+        return HandlingStepStatus.TIMEOUT
+    if status in _CANCELLED_STATUSES:
+        return HandlingStepStatus.CANCELLED
+    if status in _FAILED_STATUSES or (status is not None and status.startswith(("FAILED", "REJECTED"))):
+        return HandlingStepStatus.FAILED
+    return HandlingStepStatus.IN_PROGRESS
+
+
+def _apply_operation_status_to_session(
+    session: Any,
+    *,
+    operation_key: str,
+    operation_status: str,
+    error_code: str | None,
+    error_message: str | None,
+) -> None:
+    context_json = dict(getattr(session, "context_json", None) or {})
+    existing_operation = context_json.get("handling_operation")
+    handling_operation = dict(existing_operation) if isinstance(existing_operation, dict) else {}
+    handling_operation["operation_key"] = operation_key
+    handling_operation["status"] = operation_status
+    if error_code is not None:
+        handling_operation["reason_code"] = error_code
+    else:
+        handling_operation.pop("reason_code", None)
+    if error_message is not None:
+        handling_operation["message"] = error_message
+    else:
+        handling_operation.pop("message", None)
+    context_json["handling_operation"] = handling_operation
+
+    if operation_status == HandlingOperationStatus.SUCCEEDED.value:
+        context_json["waiting_handling_operation_key"] = None
+        session.status = SessionStatus.RUNNING.value
+        session.current_wait_type = None
+        session.waiting_since = None
+        session.deadline_at = None
+        session.current_wait_timeout_seconds = None
+        session.awaiting_command_id = None
+        session.failure_domain = None
+        session.failure_code = None
+        session.failure_message = None
+        session.ended_at = None
+    elif operation_status in {
+        HandlingOperationStatus.PLANNED.value,
+        HandlingOperationStatus.REQUESTED.value,
+        HandlingOperationStatus.IN_PROGRESS.value,
+    }:
+        context_json["waiting_handling_operation_key"] = operation_key
+    else:
+        context_json["waiting_handling_operation_key"] = operation_key
+        session.status = SessionStatus.MANUAL_HOLD.value
+        session.current_wait_type = None
+        session.waiting_since = None
+        session.deadline_at = None
+        session.current_wait_timeout_seconds = None
+        session.awaiting_command_id = None
+        session.failure_domain = "EXTERNAL"
+        session.failure_code = error_code or f"HANDLING_OPERATION_{operation_status}"
+        session.failure_message = error_message or f"Handling operation {operation_key} derived {operation_status}"
+
+    session.context_json = context_json
+
+
+def _step_result_json(
+    *,
+    status: HandlingStepStatus,
+    error_code: str | None,
+    error_message: str | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"step_status": status.value}
+    if error_code is not None:
+        result["external_error_code"] = error_code
+    if error_message is not None:
+        result["external_error_message"] = error_message
+    return result
+
+
+def _is_terminal_step_status(value: Any) -> bool:
+    return _step_status_value(value) in {
+        HandlingStepStatus.SUCCEEDED.value,
+        HandlingStepStatus.FAILED.value,
+        HandlingStepStatus.TIMEOUT.value,
+        HandlingStepStatus.CANCELLED.value,
+        HandlingStepStatus.RECONCILING.value,
+    }
+
+
+def _step_status_value(value: Any) -> str | None:
+    raw = getattr(value, "value", value)
+    return raw if isinstance(raw, str) else None
+
+
+def _raw_error_code(payload_json: Mapping[str, Any]) -> str | None:
+    return (
+        _optional_str(payload_json.get("reason_code"))
+        or _optional_str(payload_json.get("error_code"))
+        or _optional_str(payload_json.get("code"))
+    )
+
+
+def _raw_error_message(payload_json: Mapping[str, Any]) -> str | None:
+    return (
+        _optional_str(payload_json.get("reason_message"))
+        or _optional_str(payload_json.get("error_message"))
+        or _optional_str(payload_json.get("message"))
+    )
+
+
+def _has_post_exchange_relations(payload_json: Mapping[str, Any]) -> bool:
+    relations = payload_json.get("post_exchange_relations")
+    if isinstance(relations, Mapping):
+        return bool(relations)
+    if isinstance(relations, list):
+        return bool(relations)
+    return False
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+handling_operation_lifecycle_service = HandlingOperationLifecycleService()
+
+
+__all__ = ["HandlingOperationLifecycleService", "handling_operation_lifecycle_service"]
