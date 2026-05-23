@@ -22,6 +22,8 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
     RuntimeIntentKind.RACK_OPERATION_REQUEST,
+    RuntimeIntentKind.BIN_OPERATION_REQUEST,
+    RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
     RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.RESOURCE_FACT,
     RuntimeIntentKind.RESOURCE_RESERVATION,
@@ -51,6 +53,8 @@ def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
         RuntimeIntentKind.COMMAND,
         RuntimeIntentKind.EXTERNAL_REQUEST,
         RuntimeIntentKind.RACK_OPERATION_REQUEST,
+        RuntimeIntentKind.BIN_OPERATION_REQUEST,
+        RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
     } or (intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None)
 
 
@@ -149,6 +153,12 @@ def _non_empty_text(value: Any) -> str | None:
     return text or None
 
 
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
 def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw_specs = payload_json.get("rack_tasks") or payload_json.get("task_specs")
     if not isinstance(raw_specs, list) or not raw_specs:
@@ -158,6 +168,19 @@ def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str,
     for index, raw_spec in enumerate(raw_specs, start=1):
         if not isinstance(raw_spec, Mapping):
             raise TypeError(f"RACK_OPERATION_REQUEST payload.rack_tasks[{index}] must be a mapping")
+        specs.append(dict(cast("Mapping[str, Any]", raw_spec)))
+    return specs
+
+
+def _required_handling_move_specs(payload_json: Mapping[str, Any], kind: RuntimeIntentKind) -> list[dict[str, Any]]:
+    raw_specs = payload_json.get("moves")
+    if not isinstance(raw_specs, list) or not raw_specs:
+        raise ValueError(f"{kind.value} intent requires payload.moves")
+
+    specs: list[dict[str, Any]] = []
+    for index, raw_spec in enumerate(raw_specs, start=1):
+        if not isinstance(raw_spec, Mapping):
+            raise TypeError(f"{kind.value} payload.moves[{index}] must be a mapping")
         specs.append(dict(cast("Mapping[str, Any]", raw_spec)))
     return specs
 
@@ -243,11 +266,13 @@ class RuntimeIntentEffectApplier:
         self,
         *,
         rack_operation_service: Any | None = None,
+        handling_operation_service: Any | None = None,
         inbox_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
     ) -> None:
         self._rack_operation_service = rack_operation_service
+        self._handling_operation_service = handling_operation_service
         self._inbox_service = inbox_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
@@ -282,6 +307,10 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
                 await self._apply_rack_operation_request(ctx, intent)
+                continue
+
+            if intent.kind in {RuntimeIntentKind.BIN_OPERATION_REQUEST, RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST}:
+                await self._apply_handling_operation_request(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
@@ -640,6 +669,114 @@ class RuntimeIntentEffectApplier:
         ctx["session_ctx"] = dict(context_json)
         session.status = "WAITING_EXTERNAL"
         session.current_wait_type = "RACK_OPERATION"
+        session.waiting_since = ctx["now"]
+        session.awaiting_command_id = None
+        session.current_wait_timeout_seconds = timeout_seconds
+        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
+        session.ended_at = None
+
+    async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from src.app.workline.models.timeline import (
+            TimelineActionType,
+            TimelineActorType,
+            TimelineStage,
+            TimelineStatus,
+        )
+        from src.celery_app.tasks import workline as workline_effects
+
+        payload_json = dict(intent.payload_json)
+        operation_type = str(intent.action)
+        operation_key = str(intent.idempotency_key)
+        timeout_seconds = int(intent.timeout_seconds or 0)
+        session = ctx["session"]
+
+        service = self._handling_operation_service
+        if service is None:
+            from src.app.handling.services import handling_operation_service
+
+            service = handling_operation_service
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))
+        if trace_id is None:
+            raise ValueError(f"{intent.kind.value} intent requires trace_id")
+        moves = _required_handling_move_specs(payload_json, intent.kind)
+
+        _ = await service.request_bin_operation(
+            ctx_map["db"],
+            operation_key=operation_key,
+            operation_type=operation_type,
+            workline_id=_optional_int(getattr(ctx_map["workline"], "id", None)),
+            workline_code=_non_empty_text(
+                getattr(ctx_map["workline"], "line_code", None) or getattr(ctx_map["workline"], "workline_code", None)
+            ),
+            material_session_id=_optional_int(getattr(session, "id", None)),
+            trace_id=trace_id,
+            moves=moves,
+            carrier_type=str(payload_json["carrier_type"]),
+            carrier_code=_non_empty_text(payload_json.get("carrier_code")),
+            timeout_seconds=timeout_seconds,
+        )
+
+        self._mark_session_waiting_for_handling_operation(
+            ctx,
+            operation_key=operation_key,
+            operation_type=operation_type,
+            moves=moves,
+            rack_code=_non_empty_text(payload_json.get("rack_code")),
+            timeout_seconds=timeout_seconds,
+        )
+
+        workline_effects._clear_session_failure(session)
+        await workline_effects._emit_timeline(
+            ctx,
+            stage=TimelineStage.WAITING,
+            action_type=TimelineActionType.WAIT_STARTED,
+            payload=workline_effects._wait_timeline_payload(
+                ctx,
+                wait_type="HANDLING_OPERATION",
+                wait_token=operation_key,
+                deadline_seconds=timeout_seconds,
+            ),
+            from_status=ctx["current_status"],
+            to_status=session.status,
+            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
+            actor_code="WMS_RCS",
+            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
+            status=TimelineStatus.PENDING,
+        )
+
+    def _mark_session_waiting_for_handling_operation(
+        self,
+        ctx: Any,
+        *,
+        operation_key: str,
+        operation_type: str,
+        moves: list[dict[str, Any]],
+        rack_code: str | None,
+        timeout_seconds: int,
+    ) -> None:
+        session = ctx["session"]
+        context_json = dict(getattr(session, "context_json", None) or {})
+        existing_operation = context_json.get("handling_operation")
+        handling_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
+        handling_operation.update(
+            {
+                "operation_key": operation_key,
+                "operation_type": operation_type,
+                "status": "PENDING",
+                "move_count": len(moves),
+                "move_sequences": [move.get("sequence_no") for move in moves],
+            }
+        )
+        if rack_code is not None:
+            handling_operation["rack_code"] = rack_code
+        context_json["waiting_handling_operation_key"] = operation_key
+        context_json["handling_operation"] = handling_operation
+        session.context_json = context_json
+        ctx["session_ctx"] = dict(context_json)
+        session.status = "WAITING_EXTERNAL"
+        session.current_wait_type = "HANDLING_OPERATION"
         session.waiting_since = ctx["now"]
         session.awaiting_command_id = None
         session.current_wait_timeout_seconds = timeout_seconds

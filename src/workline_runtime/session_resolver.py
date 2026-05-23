@@ -272,6 +272,8 @@ class SessionResolver:
         command_repo: DeviceCommandRepository | None = None,
         outbox_repo: WorklineOutboxRepository | None = None,
         rack_task_repo: WorklineRackTaskRepository | None = None,
+        handling_step_repo: Any | None = None,
+        handling_operation_repo: Any | None = None,
     ) -> None:
         """初始化 SessionResolver
 
@@ -282,6 +284,14 @@ class SessionResolver:
         self.command_repo = command_repo or DeviceCommandRepository()
         self.outbox_repo = outbox_repo or outbox_repository
         self.rack_task_repo = rack_task_repo or workline_rack_task_repository
+        if handling_step_repo is None or handling_operation_repo is None:
+            from src.app.handling.repositories import handling_operation_repository, handling_step_repository
+
+            self.handling_step_repo = handling_step_repo or handling_step_repository
+            self.handling_operation_repo = handling_operation_repo or handling_operation_repository
+        else:
+            self.handling_step_repo = handling_step_repo
+            self.handling_operation_repo = handling_operation_repo
 
     async def resolve_or_create(
         self,
@@ -482,6 +492,14 @@ class SessionResolver:
             if session_by_rack_operation is not None:
                 return session_by_rack_operation
 
+            session_by_handling_operation = await self._resolve_handling_operation_material_session(
+                db,
+                inbox,
+                dispatch_key,
+            )
+            if session_by_handling_operation is not None:
+                return session_by_handling_operation
+
             outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
             session_id = getattr(outbox, "session_id", None) if outbox is not None else None
             if isinstance(session_id, int):
@@ -549,6 +567,52 @@ class SessionResolver:
         if session is None:
             logger.warning(
                 "Rack task callback fallback to trace/outbox because no open session is waiting for operation: "
+                f"dispatch_key={dispatch_key}, workline_id={workline_id}, operation_key={operation_key}"
+            )
+            return None
+
+        inbox.session_id = session.id
+        inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
+        return session
+
+    async def _resolve_handling_operation_material_session(
+        self,
+        db: AsyncSession,
+        inbox: "WorklineInbox",
+        dispatch_key: str,
+    ) -> WorklineSession | None:
+        """通过 handling step operation_key 找回被挂起的物料 session。"""
+
+        step = await self.handling_step_repo.get_by_dispatch_key(db, dispatch_key)
+        if step is None:
+            return None
+
+        operation_key = non_empty_str(getattr(step, "operation_key", None))
+        if operation_key is None:
+            logger.warning(
+                "Handling callback fallback to trace/outbox because operation_key is missing: "
+                f"dispatch_key={dispatch_key}"
+            )
+            return None
+
+        operation = await self.handling_operation_repo.get_by_operation_key(db, operation_key)
+        workline_id = getattr(operation, "workline_id", None) if operation is not None else None
+        if not isinstance(workline_id, int):
+            logger.warning(
+                "Handling callback fallback to trace/outbox because workline_id is missing: "
+                f"dispatch_key={dispatch_key}, operation_key={operation_key}"
+            )
+            return None
+
+        inbox.workline_id = workline_id
+        session = await self.session_repo.get_open_session_by_waiting_handling_operation_key(
+            db,
+            workline_id=workline_id,
+            operation_key=operation_key,
+        )
+        if session is None:
+            logger.warning(
+                "Handling callback fallback to trace/outbox because no open session is waiting for operation: "
                 f"dispatch_key={dispatch_key}, workline_id={workline_id}, operation_key={operation_key}"
             )
             return None

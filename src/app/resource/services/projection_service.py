@@ -5,9 +5,12 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError
+
 from src.app.resource.models import (
     BinCellOccupancyStatus,
     BinMaterialMountStatus,
+    BinPlacementStatus,
     RackBinMountStatus,
     RackKind,
     RackPlacement,
@@ -20,11 +23,13 @@ from src.app.resource.models import (
 from src.app.resource.repositories import (
     BinCellOccupancyRepository,
     BinMaterialMountRepository,
+    BinPlacementRepository,
     RackBinMountRepository,
     RackPlacementRepository,
     ResourceStateEventRepository,
     bin_cell_occupancy_repository,
     bin_material_mount_repository,
+    bin_placement_repository,
     rack_bin_mount_repository,
     rack_placement_repository,
     resource_state_event_repository,
@@ -67,6 +72,38 @@ def _as_rack_kind(value: Any) -> RackKind:
 
 def _db_time(value: Any) -> Any:
     return timezone.to_db_datetime(value) or timezone.now_for_db()
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _bin_placement_position_mismatch(active_placement: Any, *, position_type: Any, position_code: Any) -> bool:
+    expected_type = _optional_text(position_type)
+    expected_code = _optional_text(position_code)
+    if expected_type is not None and _optional_text(getattr(active_placement, "position_type", None)) != expected_type:
+        return True
+    return (
+        expected_code is not None and _optional_text(getattr(active_placement, "position_code", None)) != expected_code
+    )
+
+
+def _source_version_is_older(incoming_version: Any, active_version: Any) -> bool:
+    incoming_text = _optional_text(incoming_version)
+    active_text = _optional_text(active_version)
+    if incoming_text is None or active_text is None:
+        return False
+    return _source_version_sort_key(incoming_text) < _source_version_sort_key(active_text)
+
+
+def _source_version_sort_key(value: str) -> tuple[int, int | str]:
+    try:
+        return (0, int(value))
+    except ValueError:
+        return (1, value)
 
 
 def _normalized_text_list(values: Any) -> list[str]:
@@ -116,6 +153,7 @@ class ResourceProjectionService:
         state_event_repo: ResourceStateEventRepository = resource_state_event_repository,
         rack_placement_repo: RackPlacementRepository = rack_placement_repository,
         rack_bin_mount_repo: RackBinMountRepository = rack_bin_mount_repository,
+        bin_placement_repo: BinPlacementRepository = bin_placement_repository,
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
         bin_cell_occupancy_repo: BinCellOccupancyRepository = bin_cell_occupancy_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
@@ -125,6 +163,7 @@ class ResourceProjectionService:
         self.state_event_repo = state_event_repo
         self.rack_placement_repo = rack_placement_repo
         self.rack_bin_mount_repo = rack_bin_mount_repo
+        self.bin_placement_repo = bin_placement_repo
         self.bin_material_mount_repo = bin_material_mount_repo
         self.bin_cell_occupancy_repo = bin_cell_occupancy_repo
         self.rack_position_service = rack_position_service
@@ -695,6 +734,322 @@ class ResourceProjectionService:
         _ = await self.snapshot_service.record_material_mounted_snapshot(db, **snapshot_kwargs)
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
+    async def record_bin_arrived_at_position(
+        self,
+        db: AsyncSession,
+        *,
+        position_type: str,
+        position_code: str,
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        workline_id: int | None = None,
+        workline_code: str | None = None,
+        source_version: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        workline_session_id: int | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
+    ) -> ResourceProjectionResult:
+        """记录料箱到达非货架位置事实，并创建 active BinPlacement。"""
+
+        existing_event = await self._get_duplicate_event(db, idempotency_key=idempotency_key)
+        if existing_event is not None:
+            return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+        if bin_code is None and placeholder_key is None:
+            raise ValueError("BIN_ARRIVED requires bin_code or placeholder_key")
+
+        occurred_at_for_db = _db_time(occurred_at)
+        resource_code = bin_code or placeholder_key or "UNKNOWN"
+        event = await self.state_event_repo.create(
+            db,
+            {
+                "event_code": self._event_code(
+                    event_type=ResourceStateEventType.BIN_ARRIVED,
+                    source_system=source_system,
+                    source_event_id=source_event_id,
+                    resource_code=resource_code,
+                ),
+                "idempotency_key": idempotency_key,
+                "event_type": ResourceStateEventType.BIN_ARRIVED.value,
+                "resource_type": ResourceType.BIN.value,
+                "resource_code": resource_code,
+                "source_system": source_system,
+                "source_event_id": source_event_id,
+                "source_version": source_version,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "workline_id": workline_id,
+                "workline_code": workline_code,
+                "position_code": position_code,
+                "payload_json": {
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                    "position_type": position_type,
+                    "position_code": position_code,
+                },
+                "occurred_at": occurred_at_for_db,
+                "received_at": timezone.now_for_db(),
+            },
+        )
+
+        if (
+            bin_code is not None
+            and (active_by_bin := await self.bin_placement_repo.get_active_by_bin_code(db, bin_code, for_update=True))
+            is not None
+        ):
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=active_by_bin,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                message="料箱已有 active 位置投影",
+            )
+        active_by_placeholder = None
+        if placeholder_key is not None:
+            active_by_placeholder = await self.bin_placement_repo.get_active_by_placeholder_key(
+                db,
+                placeholder_key,
+                for_update=True,
+            )
+        if active_by_placeholder is not None:
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=active_by_placeholder,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                message="占位键已有 active 位置投影",
+            )
+
+        placement_data = {
+            "bin_code": bin_code,
+            "placeholder_key": placeholder_key,
+            "position_type": position_type,
+            "position_code": position_code,
+            "workline_id": workline_id,
+            "workline_code": workline_code,
+            "placement_status": BinPlacementStatus.ARRIVED.value,
+            "source_system": source_system,
+            "source_event_id": source_event_id,
+            "source_version": source_version,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "started_at": occurred_at_for_db,
+            "ended_at": None,
+            "metadata_json": {},
+        }
+        try:
+            _ = await self._create_bin_placement_with_integrity_guard(db, placement_data)
+        except IntegrityError as exc:
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=None,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+                evidence={"integrity_error": str(getattr(exc, "orig", exc))},
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
+                message="料箱 active 位置投影发生并发唯一冲突",
+            )
+        return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
+    async def record_bin_departed_from_position(
+        self,
+        db: AsyncSession,
+        *,
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        position_type: str | None = None,
+        position_code: str | None = None,
+        source_version: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        workline_id: int | None = None,
+        workline_session_id: int | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
+    ) -> ResourceProjectionResult:
+        """记录料箱离开非货架位置事实，并关闭 active BinPlacement。"""
+
+        existing_event = await self._get_duplicate_event(db, idempotency_key=idempotency_key)
+        if existing_event is not None:
+            return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+        if bin_code is None and placeholder_key is None:
+            raise ValueError("BIN_DEPARTED requires bin_code or placeholder_key")
+
+        occurred_at_for_db = _db_time(occurred_at)
+        resource_code = bin_code or placeholder_key or "UNKNOWN"
+        event = await self.state_event_repo.create(
+            db,
+            {
+                "event_code": self._event_code(
+                    event_type=ResourceStateEventType.BIN_DEPARTED,
+                    source_system=source_system,
+                    source_event_id=source_event_id,
+                    resource_code=resource_code,
+                ),
+                "idempotency_key": idempotency_key,
+                "event_type": ResourceStateEventType.BIN_DEPARTED.value,
+                "resource_type": ResourceType.BIN.value,
+                "resource_code": resource_code,
+                "source_system": source_system,
+                "source_event_id": source_event_id,
+                "source_version": source_version,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "payload_json": {
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                    "position_type": position_type,
+                    "position_code": position_code,
+                },
+                "occurred_at": occurred_at_for_db,
+                "received_at": timezone.now_for_db(),
+            },
+        )
+
+        active_placement = None
+        if bin_code is not None:
+            active_placement = await self.bin_placement_repo.get_active_by_bin_code(db, bin_code, for_update=True)
+        if active_placement is None and placeholder_key is not None:
+            active_placement = await self.bin_placement_repo.get_active_by_placeholder_key(
+                db,
+                placeholder_key,
+                for_update=True,
+            )
+        if active_placement is None:
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_ACTIVE_PLACEMENT_MISSING",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=None,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_ACTIVE_PLACEMENT_MISSING",
+                message="料箱离开事件没有找到 active 位置投影",
+            )
+
+        if _bin_placement_position_mismatch(active_placement, position_type=position_type, position_code=position_code):
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_PLACEMENT_POSITION_MISMATCH",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=active_placement,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_PLACEMENT_POSITION_MISMATCH",
+                message="料箱离开事件位置与 active 投影不一致",
+            )
+        if _source_version_is_older(source_version, getattr(active_placement, "source_version", None)):
+            runtime_hold = await self._create_bin_placement_reconciliation_hold(
+                db,
+                reason_code="BIN_PLACEMENT_SOURCE_VERSION_STALE",
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                incoming={"position_type": position_type, "position_code": position_code},
+                active_placement=active_placement,
+                source_event_id=source_event_id,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+                evidence={"incoming_source_version": source_version},
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code="BIN_PLACEMENT_SOURCE_VERSION_STALE",
+                message="料箱离开事件来源版本早于 active 投影版本",
+            )
+
+        if bin_code is not None and getattr(active_placement, "bin_code", None) == bin_code:
+            _ = await self.bin_placement_repo.close_active_by_bin_code(
+                db,
+                bin_code,
+                ended_at=occurred_at_for_db,
+                source_event_id=source_event_id,
+            )
+        elif placeholder_key is not None:
+            _ = await self.bin_placement_repo.close_active_by_placeholder_key(
+                db,
+                placeholder_key,
+                ended_at=occurred_at_for_db,
+                source_event_id=source_event_id,
+            )
+        return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
     async def record_resource_fact(
         self,
         *,
@@ -731,6 +1086,49 @@ class ResourceProjectionService:
                 source_task_id=payload_json.get("source_task_id"),
                 external_location_code=payload_json.get("external_location_code"),
                 released_rack_codes=payload_json.get("released_rack_codes"),
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=getattr(session, "id", None),
+                plugin_key=getattr(workline, "plugin_key", None),
+                contract_version=getattr(workline, "contract_version", None),
+            )
+
+        if fact_type == ResourceStateEventType.BIN_ARRIVED.value:
+            return await self.record_bin_arrived_at_position(
+                db,
+                bin_code=payload_json.get("bin_code"),
+                placeholder_key=payload_json.get("placeholder_key"),
+                position_type=str(payload_json["position_type"]),
+                position_code=str(payload_json["position_code"]),
+                workline_id=workline_id,
+                workline_code=workline_code,
+                source_system=source_system,
+                source_event_id=source_event_id,
+                idempotency_key=idempotency_key
+                or f"BIN_ARRIVED:{source_event_id}:{payload_json.get('bin_code') or payload_json.get('placeholder_key')}",
+                occurred_at=occurred_at,
+                source_version=payload_json.get("source_version"),
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_session_id=getattr(session, "id", None),
+                plugin_key=getattr(workline, "plugin_key", None),
+                contract_version=getattr(workline, "contract_version", None),
+            )
+
+        if fact_type == ResourceStateEventType.BIN_DEPARTED.value:
+            return await self.record_bin_departed_from_position(
+                db,
+                bin_code=payload_json.get("bin_code"),
+                placeholder_key=payload_json.get("placeholder_key"),
+                position_type=payload_json.get("position_type"),
+                position_code=payload_json.get("position_code"),
+                source_system=source_system,
+                source_event_id=source_event_id,
+                idempotency_key=idempotency_key
+                or f"BIN_DEPARTED:{source_event_id}:{payload_json.get('bin_code') or payload_json.get('placeholder_key')}",
+                occurred_at=occurred_at,
+                source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
                 session_id=session_id,
                 workline_id=workline_id,
@@ -1018,6 +1416,69 @@ class ResourceProjectionService:
     def _current_cell_stack_position(self, occupancy: Any) -> int:
         reel_count = int(getattr(occupancy, "reel_count", 0) or 0)
         return max(reel_count, 1)
+
+    async def _create_bin_placement_with_integrity_guard(
+        self,
+        db: AsyncSession,
+        placement_data: dict[str, Any],
+    ) -> Any:
+        begin_nested = getattr(db, "begin_nested", None)
+        if callable(begin_nested):
+            # 唯一索引竞争必须回滚到 savepoint，避免污染外层事实写入事务。
+            async with begin_nested():
+                return await self.bin_placement_repo.create(db, placement_data)
+        return await self.bin_placement_repo.create(db, placement_data)
+
+    async def _create_bin_placement_reconciliation_hold(
+        self,
+        db: AsyncSession,
+        *,
+        reason_code: str,
+        bin_code: str | None,
+        placeholder_key: str | None,
+        incoming: dict[str, Any],
+        active_placement: Any | None,
+        source_event_id: str,
+        trace_id: str | None,
+        session_id: int | None,
+        workline_id: int | None,
+        plugin_key: str | None,
+        contract_version: str | None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Any | None:
+        if workline_id is None:
+            return None
+
+        hold_evidence = {
+            "resource_type": ResourceType.BIN.value,
+            "bin_code": bin_code,
+            "placeholder_key": placeholder_key,
+            "incoming_position_type": incoming.get("position_type"),
+            "incoming_position_code": incoming.get("position_code"),
+        }
+        if active_placement is not None:
+            hold_evidence.update(
+                {
+                    "active_bin_code": getattr(active_placement, "bin_code", None),
+                    "active_placeholder_key": getattr(active_placement, "placeholder_key", None),
+                    "active_position_type": getattr(active_placement, "position_type", None),
+                    "active_position_code": getattr(active_placement, "position_code", None),
+                    "active_source_event_id": getattr(active_placement, "source_event_id", None),
+                    "active_source_version": getattr(active_placement, "source_version", None),
+                }
+            )
+        hold_evidence.update(evidence or {})
+        return await self.runtime_hold_creator.create_for_resource_reconciliation(
+            db,
+            workline_id=workline_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_reason=reason_code,
+            source_event_id=source_event_id,
+            evidence=hold_evidence,
+        )
 
     async def _create_placement_conflict_hold(
         self,

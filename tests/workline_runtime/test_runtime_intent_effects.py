@@ -80,6 +80,48 @@ class RecordingBinCellReservationService:
         return SimpleNamespace(status=self.status)
 
 
+class RecordingHandlingOperationService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def request_bin_operation(
+        self,
+        db: Any,
+        *,
+        operation_type: str,
+        operation_key: str,
+        moves: list[dict[str, Any]],
+        trace_id: str,
+        workline_id: int | None = None,
+        workline_code: str | None = None,
+        material_session_id: int | None = None,
+        carrier_type: str = "CTU",
+        carrier_code: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "db": db,
+                "operation_type": operation_type,
+                "operation_key": operation_key,
+                "moves": moves,
+                "trace_id": trace_id,
+                "workline_id": workline_id,
+                "workline_code": workline_code,
+                "material_session_id": material_session_id,
+                "carrier_type": carrier_type,
+                "carrier_code": carrier_code,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return SimpleNamespace(
+            id=701,
+            operation_key=operation_key,
+            operation_type=operation_type,
+            operation_status="REQUESTED",
+        )
+
+
 @pytest.mark.asyncio
 async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
@@ -806,6 +848,119 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
     assert rack_operation["pkg_id"] == "PKG-001"
     assert rack_operation["task_sequences"] == [1, 2]
     assert rack_operation["released_rack_codes"] == ["RACK-OLD"]
+
+
+@pytest.mark.asyncio
+async def test_bin_operation_request_calls_handling_service_and_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    service = RecordingHandlingOperationService()
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(handling_operation_service=service).apply(
+        ctx,
+        [
+            RuntimeIntent.bin_operation_request(
+                operation_type="SORTER_FEED_BIN",
+                operation_key="bin-operation:trace-runtime",
+                moves=[
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "BIN-001",
+                        "source_type": "RACK_SLOT",
+                        "source_code": "SINGLE_LAYER_A:01",
+                        "target_type": "SORTER_STATION",
+                        "target_code": "SORTER-01",
+                    }
+                ],
+                carrier_type="CTU",
+                carrier_code="CTU-01",
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert len(service.calls) == 1
+    assert service.calls[0]["db"] is db
+    assert service.calls[0]["workline_id"] == 1
+    assert service.calls[0]["workline_code"] is None
+    assert service.calls[0]["material_session_id"] == session.id
+    assert service.calls[0]["operation_key"] == "bin-operation:trace-runtime"
+    assert service.calls[0]["operation_type"] == "SORTER_FEED_BIN"
+    assert service.calls[0]["moves"][0]["bin_code"] == "BIN-001"
+    assert service.calls[0]["carrier_type"] == "CTU"
+    assert service.calls[0]["carrier_code"] == "CTU-01"
+    assert service.calls[0]["trace_id"] == "trace-runtime"
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "HANDLING_OPERATION"
+    assert session.awaiting_command_id is None
+    assert session.current_wait_timeout_seconds == 1800
+    assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
+    assert session.context_json["waiting_handling_operation_key"] == "bin-operation:trace-runtime"
+    assert session.context_json["handling_operation"]["operation_key"] == "bin-operation:trace-runtime"
+    assert session.context_json["handling_operation"]["operation_type"] == "SORTER_FEED_BIN"
+    assert session.context_json["handling_operation"]["status"] == "PENDING"
+    assert session.context_json["handling_operation"]["move_sequences"] == [1]
+    assert timelines[0]["payload"]["wait_type"] == "HANDLING_OPERATION"
+    assert timelines[0]["payload"]["wait_token"] == "bin-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    service = RecordingHandlingOperationService()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier(handling_operation_service=service).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_bin_exchange_request(
+                operation_type="SINGLE_LAYER_FULL_BIN_EXCHANGE",
+                operation_key="rack-bin-exchange:release-001",
+                moves=[
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "BIN-FULL",
+                        "source_type": "RACK_SLOT",
+                        "source_code": "SINGLE_LAYER_A:01",
+                        "target_type": "BUFFER",
+                        "target_code": "FULL_BIN_BUFFER",
+                    },
+                    {
+                        "sequence_no": 2,
+                        "placeholder_key": "EMPTY_BIN_FOR:SINGLE_LAYER_A:01",
+                        "source_type": "BUFFER",
+                        "source_code": "EMPTY_BIN_BUFFER",
+                        "target_type": "RACK_SLOT",
+                        "target_code": "SINGLE_LAYER_A:01",
+                    },
+                ],
+                rack_code="RACK-SINGLE-01",
+                carrier_type="CTU",
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert service.calls[0]["operation_key"] == "rack-bin-exchange:release-001"
+    assert service.calls[0]["operation_type"] == "SINGLE_LAYER_FULL_BIN_EXCHANGE"
+    assert service.calls[0]["moves"][1]["placeholder_key"] == "EMPTY_BIN_FOR:SINGLE_LAYER_A:01"
+    assert session.current_wait_type == "HANDLING_OPERATION"
+    assert session.context_json["handling_operation"]["rack_code"] == "RACK-SINGLE-01"
+    assert session.context_json["handling_operation"]["move_sequences"] == [1, 2]
 
 
 def test_rack_operation_wait_released_rack_codes_include_only_move_out_tasks() -> None:
