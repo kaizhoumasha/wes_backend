@@ -1,5 +1,7 @@
 # SMT Classifier Hardware Gap Analysis
 
+> Legacy notes: 本文是 SMT classifier 真实硬件协议差距的历史分析；当前 Runtime 状态源和事实源口径以 `workline_material_flow_runtime.md` 为准。
+
 **最后更新**: 2026-03-28
 
 本文档分析当前仓库中的 `smt_classifier` 运行时实现，与真实硬件协议文档 [SMT粗分机接口调用说明书20260321-v1.md](/Users/kaizhou/SynologyDrive/works/wes_backend/docs/hardware/SMT粗分机接口调用说明书20260321-v1.md) 之间的偏差。

@@ -18,8 +18,8 @@ WES 作业线运行时模块
 
 设计原则：
 - DRY: 横切能力统一实现，不散落到插件中
-- KISS: 使用 Python 类和显式状态机，避免复杂 DSL
-- SOLID: 分层职责清晰，插件不直接操作基础设施
+- KISS: 使用 Python 类和 Runtime-owned Session lifecycle，避免复杂 DSL
+- SOLID: 分层职责清晰，插件只返回 RuntimeIntent，不直接操作基础设施
 - YAGNI: 仅实现当前业务明确需要的能力
 """
 

@@ -1,5 +1,7 @@
 # P9 WES 作业线插件化编排与全链路追踪设计方案
 
+> **当前开发入口（2026-05-23）**: Workline Runtime 的当前权威口径以 `workline_material_flow_runtime.md` 为准。本文保留历史架构设计、分阶段演进和 legacy/deprecated 背景说明；涉及 Material Flow Runtime、插件状态机、`PluginResult`、`state_machine_class` 等内容时，不作为当前实现入口。
+
 > **文档版本**: 3.2
 > **更新日期**: 2026-03-24
 > **实施状态**: Phase 1 已完成 (100%) ✅, Phase 2 进行中 (30%) 🔄
@@ -1140,7 +1142,7 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 删除目标：
 
 * 新插件不得新增 per-plugin state machines，不得新增 `state_machine_class`。
-* 旧插件状态机迁移为 `RuntimeIntent` + MaterialRun + RuntimeEvent。
+* 旧插件状态机迁移为 `RuntimeIntent` + `WorklineSession` + `WorklineTimeline` / `DeviceCommand` / `WorklineOutbox` / `RuntimeHold` / resource facts。
 * `transitions` 仅属于 legacy/deprecated implementation，不再作为目标架构依赖。
 * 原 `WorklineStateMachine`、`validate_state_machine()`、插件内迁移触发器和状态图全部进入 deletion target。
 

@@ -1,5 +1,7 @@
 # SMT Classifier Runtime Data Flow
 
+> Legacy notes: 本文是 SMT classifier 早期运行链路分析，保留用于历史追溯和测试理解；当前 Material Flow Runtime 权威入口是 `workline_material_flow_runtime.md`。
+
 **最后更新**: 2026-03-30
 
 本文档说明 `smt_classifier` 插件与 `tests/mock/smt_classifier` 模拟设备在当前仓库中的完整运行链路，重点覆盖：

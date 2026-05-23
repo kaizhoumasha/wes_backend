@@ -1,5 +1,7 @@
 # SMT Classifier Bin Allocation And AGV Design
 
+> Legacy notes: 本文是 SMT classifier Bin/AGV 目标态设计草案；当前 Runtime 状态源和事实源口径以 `workline_material_flow_runtime.md` 为准。
+
 **最后更新**: 2026-03-29
 
 本文档定义 `smt_classifier` 在 OK 主链路尾段引入“库位分配 + AGV 补货架”后的目标运行时设计。
