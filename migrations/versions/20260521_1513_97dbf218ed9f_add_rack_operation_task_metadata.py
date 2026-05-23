@@ -91,7 +91,9 @@ def upgrade() -> None:
     )
 
     _drop_constraint_if_exists("workline_rack_tasks", "worklineracktasktype")
+    _drop_constraint_if_exists("workline_rack_tasks", "ck_workline_rack_tasks_worklineracktasktype")
     _drop_constraint_if_exists("workline_rack_tasks", "worklineracktaskstatus")
+    _drop_constraint_if_exists("workline_rack_tasks", "ck_workline_rack_tasks_worklineracktaskstatus")
     op.add_column(
         "workline_rack_tasks",
         sa.Column("operation_key", sa.String(length=240), nullable=True, comment="货架操作幂等键"),
@@ -263,7 +265,9 @@ def downgrade() -> None:
         _drop_index_if_exists(f"ix_wes_biz_workline_rack_tasks_{column_name}")
 
     _drop_constraint_if_exists("workline_rack_tasks", "worklineracktasktype")
+    _drop_constraint_if_exists("workline_rack_tasks", "ck_workline_rack_tasks_worklineracktasktype")
     _drop_constraint_if_exists("workline_rack_tasks", "worklineracktaskstatus")
+    _drop_constraint_if_exists("workline_rack_tasks", "ck_workline_rack_tasks_worklineracktaskstatus")
     op.add_column(
         "workline_rack_tasks",
         sa.Column("position_code", sa.String(length=100), nullable=True, comment="目标位置编码"),

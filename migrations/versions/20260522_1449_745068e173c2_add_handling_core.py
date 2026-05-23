@@ -177,6 +177,7 @@ SYSTEM_OUTBOX_TARGET_TYPE = sa.Enum(
 def upgrade() -> None:
     """Upgrade schema."""
     _drop_constraint_if_exists("resource_state_events", "resourcestateeventtype")
+    _drop_constraint_if_exists("resource_state_events", "ck_resource_state_events_resourcestateeventtype")
     op.create_check_constraint(
         "resourcestateeventtype",
         "resource_state_events",
@@ -448,6 +449,7 @@ def downgrade() -> None:
     op.drop_table("handling_operations", schema=SCHEMA)
     op.drop_table("resource_bin_placements", schema=SCHEMA)
     _drop_constraint_if_exists("resource_state_events", "resourcestateeventtype")
+    _drop_constraint_if_exists("resource_state_events", "ck_resource_state_events_resourcestateeventtype")
     op.create_check_constraint(
         "resourcestateeventtype",
         "resource_state_events",
