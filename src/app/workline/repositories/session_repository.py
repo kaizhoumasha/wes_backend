@@ -58,6 +58,54 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         result = await db.execute(query)
         return list(result.scalars().all())
 
+    async def list_latest_by_workline_id(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        limit: int = 50,
+    ) -> list[WorklineSession]:
+        """查询作业线最近会话。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        result = await db.execute(
+            select(WorklineSession).where(columns.workline_id == workline_id).order_by(columns.id.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_latest_active_rack_template_session(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        rack_code: str,
+    ) -> WorklineSession | None:
+        """查询可作为当前 active rack 结构模板的最新会话。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        active_rack = columns.context_json["active_bin_rack"]
+        template_source_statuses = (
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+            SessionStatus.COMPLETED,
+        )
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(template_source_statuses),
+                or_(
+                    active_rack["rack_code"].as_string() == rack_code,
+                    active_rack["rack_id"].as_string() == rack_code,
+                ),
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def get_open_session_by_business_key(
         self,
         db: AsyncSession,
@@ -173,6 +221,66 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 columns.awaiting_command_id == command_id,
                 columns.status.in_(open_statuses),
             )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_open_session_by_waiting_rack_operation_key(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        operation_key: str,
+    ) -> WorklineSession | None:
+        """按等待中的 rack operation_key 查询未结束物料 session。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        waiting_operation_key = columns.context_json["waiting_rack_operation_key"]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+                waiting_operation_key.as_string() == operation_key,
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_open_session_by_waiting_handling_operation_key(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        operation_key: str,
+    ) -> WorklineSession | None:
+        """按等待中的 system handling operation_key 查询未结束物料 session。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        waiting_operation_key = columns.context_json["waiting_handling_operation_key"]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+                waiting_operation_key.as_string() == operation_key,
+            )
+            .order_by(columns.id.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

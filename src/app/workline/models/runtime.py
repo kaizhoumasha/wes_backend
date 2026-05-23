@@ -28,6 +28,9 @@ class RuntimeTraceListItem(BaseModel):
     session_code: str
     trace_id: str | None = None
     request_id: str | None = None
+    last_inbox_id: int | None = None
+    event_type: str | None = None
+    event_payload: dict[str, Any] | None = None
     business_key: str | None = None
     barcode: str | None = None
     workline_id: int
@@ -292,7 +295,6 @@ class TraceResourceEvidenceResponse(BaseModel):
     resource_state_events: list[dict[str, Any]] = Field(default_factory=list)
     rack_releases: list[dict[str, Any]] = Field(default_factory=list)
     rack_release_bin_snapshots: list[dict[str, Any]] = Field(default_factory=list)
-    full_box_exchange_tasks: list[dict[str, Any]] = Field(default_factory=list)
     wms_writeback_evidence: list[dict[str, Any]] = Field(default_factory=list)
     rack_bin_mounts: list[dict[str, Any]] = Field(default_factory=list)
     runtime_holds: list[dict[str, Any]] = Field(default_factory=list)

@@ -9,7 +9,6 @@ from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
 from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin
-from src.workline_plugins.smt_full_box_exchange import SmtFullBoxExchangePlugin
 
 
 def make_workline() -> WorkLine:
@@ -71,11 +70,7 @@ def test_workline_service_lists_plugin_options_from_registry() -> None:
     assert smt_option.label == "smt_classifier"
     assert smt_option.default_contract_version == "1.0"
     assert smt_option.contract_versions == ["1.0"]
-
-    full_box_exchange_option = next(option for option in options if option.plugin_key == "smt_full_box_exchange")
-    assert full_box_exchange_option.label == "smt_full_box_exchange"
-    assert full_box_exchange_option.default_contract_version == "1.0"
-    assert full_box_exchange_option.contract_versions == ["1.0"]
+    assert {option.plugin_key for option in options} == {"smt_classifier"}
 
 
 def test_workline_run_mode_defaults_to_auto() -> None:
@@ -203,8 +198,8 @@ async def test_workline_service_rejects_plugin_when_required_device_role_missing
 
 
 @pytest.mark.asyncio
-async def test_workline_service_rejects_full_box_exchange_without_release_source_device(db_session) -> None:
-    """满箱交换插件缺少货架释放事件源时，应拒绝绑定。"""
+async def test_workline_service_rejects_removed_full_box_exchange_plugin(db_session) -> None:
+    """旧满箱交换插件已被货架任务模型替代，应拒绝继续绑定。"""
 
     workline = make_workline()
     db_session.add(workline)
@@ -227,54 +222,13 @@ async def test_workline_service_rejects_full_box_exchange_without_release_source
             "src.app.sys.services.audit_service.audit_log_service.create_operation_log",
             AsyncMock(return_value=None),
         ),
-        pytest.raises(BadRequestException, match="角色 RACK_RELEASE_SOURCE 至少 1 个设备"),
+        pytest.raises(BadRequestException, match="不支持的工作线插件"),
     ):
         _ = await service.update(
             db_session,
             workline.id,  # type: ignore[arg-type]
             {"plugin_key": "smt_full_box_exchange", "version": workline.version},
         )
-
-
-@pytest.mark.asyncio
-async def test_workline_service_accepts_full_box_exchange_virtual_release_source_device(db_session) -> None:
-    """满箱交换插件应允许以虚拟事件源承接粗分机货架释放事件。"""
-
-    workline = make_workline()
-    db_session.add(workline)
-    await db_session.commit()
-    await db_session.refresh(workline)
-
-    db_session.add(
-        make_device(
-            work_line_id=workline.id,  # type: ignore[arg-type]
-            device_code="SMT_FULL_EXCHANGE_TRIGGER_01",
-            device_name="SMT满箱交换触发源#1",
-            device_role="RACK_RELEASE_SOURCE",
-            capabilities_json={
-                "virtual": True,
-                "capabilities": ["SINGLE_LAYER_RACK_RELEASED"],
-                "supports_event_types": ["SINGLE_LAYER_RACK_RELEASED"],
-            },
-        )
-    )
-    await db_session.commit()
-
-    service = WorkLineService()
-    with patch(
-        "src.app.sys.services.audit_service.audit_log_service.create_operation_log",
-        AsyncMock(return_value=None),
-    ):
-        result = await service.update(
-            db_session,
-            workline.id,  # type: ignore[arg-type]
-            {"plugin_key": "smt_full_box_exchange", "version": workline.version},
-        )
-
-    assert result is not None
-    assert result.plugin_key == "smt_full_box_exchange"
-    assert result.plugin_class is SmtFullBoxExchangePlugin
-    assert result.contract_version == "1.0"
 
 
 @pytest.mark.asyncio

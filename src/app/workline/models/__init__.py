@@ -44,6 +44,15 @@ from .rack_position import (
     WorklineRackPositionRole,
     WorklineRackPositionUpdate,
 )
+from .rack_task import (
+    WorklineRackTask,
+    WorklineRackTaskBase,
+    WorklineRackTaskCreate,
+    WorklineRackTaskResponse,
+    WorklineRackTaskStatus,
+    WorklineRackTaskType,
+    WorklineRackTaskUpdate,
+)
 from .runtime import (
     DiagnosticCardResponse,
     RuntimeDeviceDetailResponse,
@@ -203,6 +212,13 @@ __all__ = [
     "WorklineRackPositionResponse",
     "WorklineRackPositionRole",
     "WorklineRackPositionUpdate",
+    "WorklineRackTask",
+    "WorklineRackTaskBase",
+    "WorklineRackTaskCreate",
+    "WorklineRackTaskResponse",
+    "WorklineRackTaskStatus",
+    "WorklineRackTaskType",
+    "WorklineRackTaskUpdate",
     "WorklineSafetyIncident",
     "WorklineSafetyIncidentStatus",
     "WorklineSession",

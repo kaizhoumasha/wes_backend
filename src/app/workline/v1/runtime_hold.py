@@ -14,6 +14,7 @@ from src.app.workline.models.runtime_hold_api import (
     ResolveRuntimeHoldRequest,
     ResolveRuntimeHoldResponse,
     RuntimeHoldDetailResponse,
+    RuntimeHoldSummary,
 )
 from src.app.workline.services.runtime_hold_query_service import runtime_hold_query_service
 from src.app.workline.services.runtime_hold_release_service import RuntimeHoldReleaseError, runtime_hold_release_service
@@ -31,6 +32,9 @@ _RUNTIME_HOLD_ERROR_CODES = {
     "RUNTIME_HOLD_VERSION_CONFLICT": BusinessErrorCode.RUNTIME_HOLD_VERSION_CONFLICT,
     "RUNTIME_HOLD_EVIDENCE_CHANGED": BusinessErrorCode.RUNTIME_HOLD_EVIDENCE_CHANGED,
     "RUNTIME_HOLD_ALREADY_RESOLVED": BusinessErrorCode.RUNTIME_HOLD_ALREADY_RESOLVED,
+    "RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP": (
+        BusinessErrorCode.RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP
+    ),
     "RUNTIME_HOLD_REASON_UNMAPPED": BusinessErrorCode.RUNTIME_HOLD_REASON_UNMAPPED,
     "RUNTIME_HOLD_HANDOFF_LOCATION_UNMAPPED": BusinessErrorCode.RUNTIME_HOLD_HANDOFF_LOCATION_UNMAPPED,
     "RUNTIME_HOLD_MATERIAL_CONFLICT": BusinessErrorCode.RUNTIME_HOLD_MATERIAL_CONFLICT,
@@ -83,6 +87,32 @@ async def get_runtime_hold_ng_reasons(
         "ResponseSchemaModel[list[NgReasonOption]]",
         response_builder.success(data=runtime_hold_query_service.list_ng_reasons(plugin_key=plugin_key)),
     )
+
+
+@router.get(
+    "/runtime-holds",
+    summary="[biz:workline:view-runtime-hold] 查询 Runtime Hold 列表",
+    response_model=ResponseSchemaModel[list[RuntimeHoldSummary]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:view-runtime-hold"))],
+)
+async def list_runtime_holds(
+    db: AsyncSessionDep,
+    workline_id: int | None = None,
+    session_id: int | None = None,
+    status: str | None = None,
+    active_only: bool = True,
+    limit: int = 100,
+) -> ResponseSchemaModel[list[RuntimeHoldSummary]]:
+    items = await runtime_hold_query_service.list_holds(
+        db,
+        workline_id=workline_id,
+        session_id=session_id,
+        status=status,
+        active_only=active_only,
+        limit=limit,
+    )
+    return cast("ResponseSchemaModel[list[RuntimeHoldSummary]]", response_builder.success(data=items))
 
 
 @router.get(
@@ -166,6 +196,7 @@ __all__ = [
     "get_runtime_hold_detail",
     "get_runtime_hold_ng_reasons",
     "list_ng_return_items",
+    "list_runtime_holds",
     "resolve_runtime_hold",
     "router",
 ]

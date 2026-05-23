@@ -62,6 +62,13 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _runtime_continue_result_payload(request: ResolveRuntimeHoldRequest, command: DeviceCommand) -> dict[str, Any]:
+    payload = _as_dict(request.result_payload)
+    if payload:
+        return payload
+    return _as_dict(command.params)
+
+
 class RuntimeHoldReleaseError(ValueError):
     """Runtime Hold release domain error."""
 
@@ -129,6 +136,8 @@ class RuntimeHoldReleaseService:
         hold_id: int,
         request: ResolveRuntimeHoldRequest,
         operator_id: int,
+        *,
+        allow_safety_estop: bool = False,
     ) -> dict[str, Any]:
         """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。"""
 
@@ -142,6 +151,11 @@ class RuntimeHoldReleaseService:
             )
         if not hold.is_active_blocking:
             raise ValueError(f"RuntimeHold 当前状态不允许解除: {hold_id}, status={_enum_value(hold.status)}")
+        if hold.hold_type == RuntimeHoldType.SAFETY_ESTOP and not allow_safety_estop:
+            raise RuntimeHoldReleaseError(
+                "RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP",
+                "SAFETY_ESTOP RuntimeHold must be resolved via clear-estop API",
+            )
 
         workline = await self.workline_repo.get_for_update(db, hold.workline_id)
         if workline is None:
@@ -668,10 +682,11 @@ class RuntimeHoldReleaseService:
         command = await self.command_repo.get_by_id(db, hold.source_command_id)
         if command is None:
             return None
+        result_payload = _runtime_continue_result_payload(request, command)
         if request.resolution == SessionStatus.COMPLETED.value:
             command.status = CommandStatus.COMPLETED
             command.result = CommandResult.SUCCESS
-            command.result_data = request.result_payload or {}
+            command.result_data = result_payload
             command.error_detail = None
         elif request.resolution == SessionStatus.FAILED.value:
             command.status = CommandStatus.FAILED
@@ -711,6 +726,7 @@ class RuntimeHoldReleaseService:
             raise ValueError(f"设备不存在: {command.device_id}")
 
         command_type = _enum_value(command.task_type)
+        result_payload = _runtime_continue_result_payload(request, command)
         payload = {
             "command_code": command.command_code,
             "device_code": device.device_code,
@@ -718,7 +734,7 @@ class RuntimeHoldReleaseService:
             "task_type": command_type,
             "result": CommandResult.SUCCESS.value,
             "runtime_hold_release": True,
-            "data": request.result_payload or {},
+            "data": result_payload,
         }
         inbox = await self.inbox_repo.create(
             db,

@@ -230,6 +230,74 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     }
 
 
+async def test_continue_for_command_backed_hold_uses_command_params_when_result_payload_is_empty(
+    db_session,
+) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-PARAMS")
+    device = Device(
+        device_code="PIPELINE-HOLD-CONTINUE-PARAMS",
+        device_name="Pipeline",
+        work_line_id=workline.id,
+        device_role="CONVEYOR",
+        role_index=1,
+    )
+    db_session.add(device)
+    await db_session.flush()
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-CONTINUE-PARAMS",
+        context={"pkg_id": "PKG-001"},
+    )
+    session.reconciliation_state = RuntimeReconciliationState.PENDING
+    session.reconciliation_reason = "COMMAND_ACK_EXHAUSTED"
+    command = DeviceCommand(
+        command_code="CMD-HOLD-CONTINUE-PARAMS",
+        device_id=cast("int", device.id),
+        workline_id=cast("int", workline.id),
+        session_id=session.session_code,
+        session_id_int=cast("int", session.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        task_type="MOVE_FORWARD",
+        params={"pkg_id": "PKG-001"},
+        status=CommandStatus.FAILED,
+        trace_id="trace-hold-continue-params",
+    )
+    db_session.add(command)
+    await db_session.flush()
+    hold = await _create_hold(
+        db_session,
+        workline,
+        session=session,
+        key="hold:continue-params",
+    )
+    hold.source_reason = "COMMAND_ACK_EXHAUSTED"
+    hold.source_command_id = cast("int", command.id)
+    hold.source_device_id = cast("int", device.id)
+    hold.trace_id = command.trace_id
+
+    result = await service.resolve_hold(db_session, cast("int", hold.id), _continue_request(service, hold), 42)
+
+    await db_session.refresh(command)
+    assert command.status == CommandStatus.COMPLETED
+    assert command.result == CommandResult.SUCCESS
+    assert command.result_data == {"pkg_id": "PKG-001"}
+
+    inbox = await db_session.get(WorklineInbox, result["created_inbox_id"])
+    assert inbox is not None
+    assert inbox.payload_json == {
+        "command_code": command.command_code,
+        "device_code": device.device_code,
+        "command_type": "MOVE_FORWARD",
+        "task_type": "MOVE_FORWARD",
+        "result": "SUCCESS",
+        "runtime_hold_release": True,
+        "data": {"pkg_id": "PKG-001"},
+    }
+
+
 async def test_return_to_ng_requires_handoff_evidence_and_does_not_release_workline(db_session) -> None:
     service = RuntimeHoldReleaseService()
     workline = await _create_workline(db_session, code="WL-HOLD-NO-HANDOFF")
@@ -475,6 +543,24 @@ async def test_resolving_one_hold_keeps_workline_not_ready_when_another_blocking
     assert result["remaining_active_blocking_holds"] == 1
     assert second.status == RuntimeHoldStatus.OPEN
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+
+
+async def test_safety_estop_hold_requires_clear_estop_entrypoint(db_session) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-SAFETY")
+    workline.runtime_status = WorkLineRuntimeStatus.ESTOPPED
+    hold = await _create_hold(
+        db_session,
+        workline,
+        key="hold:safety-estop",
+        hold_type=RuntimeHoldType.SAFETY_ESTOP,
+    )
+    hold.source_kind = "SAFETY_ESTOP"
+    hold.source_reason = "ESTOP_PRESSED"
+    await db_session.flush()
+
+    with pytest.raises(RuntimeHoldReleaseError, match="clear-estop"):
+        await service.resolve_hold(db_session, cast("int", hold.id), _continue_request(service, hold), 42)
 
 
 async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -> None:

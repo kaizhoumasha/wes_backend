@@ -121,7 +121,6 @@ class TestWorklineTraceApi:
             resource_state_events=[],
             rack_releases=[],
             rack_release_bin_snapshots=[],
-            full_box_exchange_tasks=[],
             wms_writeback_evidence=[],
             rack_bin_mounts=[],
         )
@@ -341,6 +340,7 @@ class TestRuntimeQueryService:
             last_request_id=None,
             business_key="stable-key-11",
             barcode=None,
+            last_inbox_id=370,
             context_json={
                 "initial_payload": {
                     "data": {
@@ -373,6 +373,55 @@ class TestRuntimeQueryService:
 
         assert item.business_key == "stable-key-11"
         assert item.barcode == "SVYU00125TP4LCR02_9"
+        assert item.last_inbox_id == 370
+
+    def test_build_trace_list_item_exposes_event_payload_from_latest_inbox(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        event_payload = {
+            "event_type": "SCAN_COMPLETED",
+            "device_code": "ARM03",
+            "data": {
+                "PkgID": "SVYU00125TP4LCR02_9",
+                "HHPN": "620100L00-011-G",
+            },
+        }
+        session = SimpleNamespace(
+            id=11,
+            session_code="S11",
+            trace_id="trace-11",
+            last_request_id=None,
+            business_key="stable-key-11",
+            barcode=None,
+            last_inbox_id=370,
+            context_json={},
+            workline_id=5,
+            status="RUNNING",
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=None,
+            last_ingress_at=None,
+            deadline_at=None,
+        )
+        inbox = SimpleNamespace(id=370, payload_json=event_payload)
+
+        item = service._build_trace_list_item(
+            session,
+            None,
+            None,
+            None,
+            None,
+            now,
+            inbox=inbox,
+            latest_device=None,
+            action_source="NONE",
+        )
+
+        assert item.event_type == "SCAN_COMPLETED"
+        assert item.event_payload == event_payload
 
     @pytest.mark.asyncio
     async def test_get_overview_uses_failure_count_query_instead_of_recent_list_length(self) -> None:
@@ -1047,3 +1096,71 @@ class TestRuntimeQueryService:
         executed_query = db.execute.await_args.args[0]
         assert "row_number" in str(executed_query).lower()
         assert result == {11: latest_command}
+
+    @pytest.mark.asyncio
+    async def test_build_trace_list_items_uses_device_event_inbox_for_event_payload(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        session = SimpleNamespace(
+            id=31,
+            session_code="S31",
+            trace_id="trace-31",
+            last_request_id=None,
+            business_key="stable-key-31",
+            barcode=None,
+            last_inbox_id=802,
+            context_json={},
+            workline_id=5,
+            status="RUNNING",
+            awaiting_command_id=None,
+            current_wait_type=None,
+            failure_domain=None,
+            failure_code=None,
+            started_at=now,
+            last_ingress_at=now,
+            waiting_since=None,
+            ended_at=None,
+            created_at=now,
+            deadline_at=None,
+        )
+        device_event_inbox = SimpleNamespace(
+            id=801,
+            device_id=None,
+            payload_json={
+                "event_type": "SCAN_COMPLETED",
+                "device_code": "ARM03",
+                "data": {"PkgID": "EVENT-PKG-31"},
+            },
+        )
+        command_result_inbox = SimpleNamespace(
+            id=802,
+            device_id=None,
+            payload_json={
+                "event_type": "COMMAND_RESULT",
+                "data": {"PkgID": "RESULT-PKG-31"},
+            },
+        )
+
+        with (
+            patch.object(service, "_load_workline_map", new=AsyncMock(return_value={})),
+            patch.object(service, "_load_latest_command_by_session", new=AsyncMock(return_value={})),
+            patch.object(service, "_load_command_map_by_ids", new=AsyncMock(return_value={})),
+            patch.object(
+                service,
+                "_load_latest_inbox_by_session",
+                new=AsyncMock(return_value={31: command_result_inbox}),
+            ),
+            patch.object(
+                service,
+                "_load_latest_event_inbox_by_session",
+                new=AsyncMock(return_value={31: device_event_inbox}),
+            ),
+            patch.object(service, "_load_latest_timeline_by_session", new=AsyncMock(return_value={})),
+            patch.object(service, "_load_device_map", new=AsyncMock(return_value={})),
+        ):
+            result = await service._build_trace_list_items(AsyncMock(), [session])
+
+        assert result[0].event_type == "SCAN_COMPLETED"
+        assert result[0].event_payload == device_event_inbox.payload_json

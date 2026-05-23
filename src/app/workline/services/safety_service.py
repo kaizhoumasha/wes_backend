@@ -345,7 +345,11 @@ class WorkLineSafetyService:
             latest_evidence_hash=self.runtime_hold_release_service.build_latest_evidence_hash(hold),
         )
         await self.runtime_hold_release_service.resolve_hold(
-            db, cast("int", hold.id), release_request, operator_id or 0
+            db,
+            cast("int", hold.id),
+            release_request,
+            operator_id or 0,
+            allow_safety_estop=True,
         )
         await db.flush()
         return incident

@@ -298,7 +298,7 @@ def build_output_to_bin_params(
 ) -> dict[str, Any]:
     """构造出料到料箱命令业务参数。"""
 
-    return {
+    payload = {
         "barcode": pkg_id,
         "reel_diameter": reel_diameter,
         "target_type": "BIN",
@@ -312,6 +312,9 @@ def build_output_to_bin_params(
         "bin_cell_location": bin_location["bin_cell_location"],
         "bin_cell_index": bin_location["bin_cell_index"],
     }
+    if bin_location.get("expected_stack_height") is not None:
+        payload["expected_stack_height"] = bin_location["expected_stack_height"]
+    return payload
 
 
 def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
@@ -324,7 +327,7 @@ def build_default_bin_allocation(pkg_id: str) -> dict[str, str]:
 class ScanEventData(SixInOne, BaseModel):
     """扫码事件 data 字段 - 包含六合一码 + 扫描位置。"""
 
-    location: str = Field(description="扫描位置，如 STATION_INPUT1")
+    location: str | None = Field(default=None, description="扫描位置，如 STATION_INPUT1；缺省时使用顶层 device_code")
 
     @model_validator(mode="before")
     @classmethod

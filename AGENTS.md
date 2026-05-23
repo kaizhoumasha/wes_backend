@@ -177,16 +177,26 @@ Use `uv` locally.
 - `uv run ruff format . && uv run ruff check .`: match the formatter and linter used in CI.
 - `uv run bandit -r src/`: run the same security scan used by Jenkins.
 
-## Worktree Workflow
-Each git worktree must keep its own local runtime state. Do not reuse another worktree's `.venv`, `.env`, `.pytest_cache`, or other local temp files.
+## 分支与 Worktree 流程
+默认使用普通 Git Flow 分支。日常单任务开发从 `develop` 切 `feature/*`、`fix/*`、`chore/*` 等分支即可，不默认使用 worktree。
 
-- Create a new worktree with `git worktree add ../wes_backend-<branch> -b <branch> develop`
-- Enter the worktree and run `./scripts/init-env.sh dev`
-- Run `uv sync --dev` inside that worktree to create or refresh its own `.venv`
-- Run `./scripts/install-git-hooks.sh` inside that worktree if you want the tracked `pre-commit` quality gate active there
-- Use `uv run ...` for all project commands instead of relying on a previously activated shell
-- If `pyproject.toml`, `uv.lock`, or environment profile files change after switching branches, rerun `./scripts/init-env.sh dev` and `uv sync --dev`
-- When a worktree is no longer needed, remove it with `git worktree remove <path>` and then `git worktree prune`
+基础分支统一使用 `develop`。创建功能/修复分支前先更新 `develop`，PR 默认以 `develop` 为 base；除发布、回滚、生产补丁等特殊流程外，不从 `main` 直接拉日常开发分支。
+
+仅在确实需要并行隔离时使用 git worktree：长线重构、保留当前现场处理紧急修复、AI agent 执行大计划、PR review 期间继续其他工作，或需要并行运行两套本地环境。
+
+使用 worktree 时，每个 worktree 必须维护自己的本地运行状态。不要复用其它 worktree 的 `.venv`、`.env`、`.pytest_cache` 或其它本地临时文件。
+
+- 主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_backend`
+- Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
+- 新建 worktree 必须放在上述根目录下，不要放进主仓库内部，也不要散落在 `/Users/kaizhou/SynologyDrive/works` 顶层。
+- Worktree 目录名使用 branch slug：把分支名里的 `/` 替换成 `-`，例如 `feature/handling-core` → `feature-handling-core`。
+- 创建示例：`mkdir -p ../worktrees/wes_backend && git worktree add ../worktrees/wes_backend/<branch-slug> -b <branch> develop`
+- 进入 worktree 后先运行 `./scripts/init-env.sh dev`。
+- 在该 worktree 内运行 `uv sync --dev`，创建或刷新自己的 `.venv`。
+- 如需启用提交门禁，在该 worktree 内运行 `./scripts/install-git-hooks.sh`。
+- 所有项目命令使用 `uv run ...`，不要依赖其它 shell 中已激活的环境。
+- 如果切换分支后 `pyproject.toml`、`uv.lock` 或环境 profile 文件发生变化，重新运行 `./scripts/init-env.sh dev` 和 `uv sync --dev`。
+- worktree 不再需要时，使用 `git worktree remove <path>` 删除，然后执行 `git worktree prune`。
 
 ## Coding Style & Naming Conventions
 Target Python 3.13. Ruff enforces formatting, imports, and lint rules: spaces, double quotes, and a 120-character line limit. Keep the existing layering: `v1/` for routes, `services/` for business logic, `repositories/` for data access, and `models/` for schemas. Use `snake_case` for files, functions, and variables, and `PascalCase` for classes.
@@ -234,7 +244,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (20665 symbols, 34175 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (21803 symbols, 35517 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -88,12 +88,12 @@ def test_build_resolves_source_device_from_inbox_device_code():
     assert ctx.source_device_role == "INPUT_ARM"
 
 
-def test_build_resolves_external_http_source_device_from_session_rack_exchange_resume_code():
+def test_build_resolves_external_http_source_device_from_session_rack_operation_resume_code():
     session = SimpleNamespace(
         id=38,
         run_mode="SIMULATION",
         context_json={
-            "rack_exchange": {
+            "rack_operation": {
                 "status": "REQUESTED",
                 "resume_source_device_code": "PIPELINE02",
                 "resume_source_device_role": "STALE_ROLE",
@@ -156,7 +156,7 @@ def test_build_resolves_external_http_source_device_from_session_rack_exchange_r
         kind="EXTERNAL_HTTP",
         payload_json={
             "callback_type": "WMS_RACK_ARRIVED",
-            "dispatch_key": "external:smt_classifier:trace-smt-full:RACK_EXCHANGE_AND_SUPPLY",
+            "dispatch_key": "external:smt_classifier:trace-smt-full:RACK_OPERATION",
             "active_bin_rack": {"rack_id": "RACK-NEXT-01", "cells": []},
         },
         trace_id="trace-smt-full",
@@ -180,12 +180,12 @@ def test_build_resolves_external_http_source_device_from_session_rack_exchange_r
     assert ctx.source_device_role == "CONVEYOR"
 
 
-def test_build_resolves_external_http_source_device_from_session_rack_supply_resume_code():
+def test_build_resolves_external_http_source_device_from_session_rack_operation_resume_code_in_auto_mode():
     session = SimpleNamespace(
         id=39,
         run_mode="AUTO",
         context_json={
-            "rack_supply": {
+            "rack_operation": {
                 "status": "REQUESTED",
                 "resume_source_device_code": "PIPELINE01",
                 "resume_source_device_role": "CONVEYOR",
@@ -248,7 +248,7 @@ def test_build_resolves_external_http_source_device_from_session_rack_supply_res
         kind="EXTERNAL_HTTP",
         payload_json={
             "callback_type": "WMS_RACK_ARRIVED",
-            "dispatch_key": "external:smt_classifier:trace-smt-supply:RACK_SUPPLY",
+            "dispatch_key": "external:smt_classifier:trace-smt-supply:RACK_OPERATION",
             "active_bin_rack": {"rack_id": "RACK-NEXT-02", "cells": []},
         },
         trace_id="trace-smt-supply",

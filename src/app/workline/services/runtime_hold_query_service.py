@@ -94,6 +94,28 @@ class RuntimeHoldQueryService:
             blockers=blockers,
         )
 
+    async def list_holds(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None = None,
+        session_id: int | None = None,
+        status: str | None = None,
+        active_only: bool = True,
+        limit: int = 100,
+    ) -> list[RuntimeHoldSummary]:
+        """读取 RuntimeHold 列表；包含 session/workline 级 Hold。"""
+
+        holds = await self.repository.list_holds(
+            db,
+            workline_id=workline_id,
+            session_id=session_id,
+            status=status,
+            active_only=active_only,
+            limit=limit,
+        )
+        return [self._summary(hold) for hold in holds]
+
     def list_ng_reasons(self, *, plugin_key: str | None = None) -> list[NgReasonOption]:
         """返回插件 NG reasons + 系统 fallback。"""
 

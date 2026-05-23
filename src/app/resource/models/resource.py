@@ -93,6 +93,8 @@ class ResourceStateEventType(str, Enum):
 
     RACK_ARRIVED = "RACK_ARRIVED"
     RACK_DEPARTED = "RACK_DEPARTED"
+    BIN_ARRIVED = "BIN_ARRIVED"
+    BIN_DEPARTED = "BIN_DEPARTED"
     BIN_MOUNTED = "BIN_MOUNTED"
     BIN_UNMOUNTED = "BIN_UNMOUNTED"
     MATERIAL_MOUNTED = "MATERIAL_MOUNTED"
@@ -119,12 +121,30 @@ class RackBinMountStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class BinPlacementStatus(str, Enum):
+    """料箱位置投影状态。"""
+
+    ARRIVED = "ARRIVED"
+    IN_TRANSIT = "IN_TRANSIT"
+    DEPARTED = "DEPARTED"
+    UNKNOWN = "UNKNOWN"
+
+
 class BinMaterialMountStatus(str, Enum):
     """物料料箱格位投影状态。"""
 
     OCCUPIED = "OCCUPIED"
     REMOVED = "REMOVED"
     LOCKED = "LOCKED"
+    UNKNOWN = "UNKNOWN"
+
+
+class BinCellOccupancyStatus(str, Enum):
+    """料箱格位聚合占用状态。"""
+
+    OCCUPIED = "OCCUPIED"
+    FULL = "FULL"
+    REMOVED = "REMOVED"
     UNKNOWN = "UNKNOWN"
 
 
@@ -414,11 +434,10 @@ class RackPlacement(RackPlacementBase, DataTableMixin, table=True):
             postgresql_where="ended_at IS NULL",
         ),
         Index(
-            "ux_resource_rack_placements_active_workline_position",
+            "ix_resource_rack_placements_workline_position_active",
             "workline_code",
             "position_code",
-            unique=True,
-            postgresql_where="ended_at IS NULL AND workline_code IS NOT NULL AND position_code IS NOT NULL",
+            "ended_at",
         ),
         Index("ix_resource_rack_placements_location_active", "location_code", "ended_at"),
     )
@@ -469,9 +488,60 @@ class RackBinMount(RackBinMountBase, DataTableMixin, table=True):
     )
 
 
-class BinMaterialMountBase(BaseMixin):
-    """物料料箱格位投影基础字段。"""
+class BinPlacementBase(BaseMixin):
+    """料箱处于非货架位置的当前投影基础字段。"""
 
+    bin_code: str | None = Field(default=None, max_length=80, index=True, description="料箱编码")
+    placeholder_key: str | None = Field(default=None, max_length=120, index=True, description="未扫码占位键")
+    position_type: str = Field(min_length=1, max_length=80, index=True, description="位置类型")
+    position_code: str = Field(min_length=1, max_length=120, index=True, description="位置编码")
+    workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
+    workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
+    placement_status: BinPlacementStatus = Field(
+        default=BinPlacementStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(BinPlacementStatus, native_enum=False, create_constraint=True, length=50)),
+        description="料箱位置投影状态",
+    )
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    started_at: datetime = Field(description="进入该位置的时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="离开该位置的时间")
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展证据")
+
+
+class BinPlacement(BinPlacementBase, DataTableMixin, table=True):
+    """料箱处于非货架位置的当前投影与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_placements"]] = "resource_bin_placements"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index(
+            "ux_resource_bin_placements_active_bin",
+            "bin_code",
+            unique=True,
+            postgresql_where="bin_code IS NOT NULL AND ended_at IS NULL",
+        ),
+        Index(
+            "ux_resource_bin_placements_active_placeholder",
+            "placeholder_key",
+            unique=True,
+            postgresql_where="placeholder_key IS NOT NULL AND ended_at IS NULL",
+        ),
+        Index("ix_resource_bin_placements_position_active", "position_type", "position_code", "ended_at"),
+    )
+
+
+class BinMaterialMountBase(BaseMixin):
+    """料盘/PKG 料箱格位明细基础字段。"""
+
+    bin_cell_occupancy_id: int | None = Field(default=None, index=True, description="关联料箱格位聚合占用 ID")
+    cell_stack_position: int = Field(default=1, ge=1, index=True, description="同一料格内入格顺序，1 为最早入格")
     bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
     bin_cell_code: str | None = Field(default=None, max_length=80, index=True, description="料箱内部格位编码")
     bin_cell_index: str = Field(min_length=1, max_length=20, index=True, description="料箱内部格位序号")
@@ -508,19 +578,63 @@ class BinMaterialMountBase(BaseMixin):
     ended_at: datetime | None = Field(default=None, index=True, description="离开料箱格位时间")
 
 
-class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
-    """物料/PKG/料盘占用哪个料箱内部格位的当前投影与历史。"""
+class BinCellOccupancyBase(BaseMixin):
+    """料箱格位当前聚合占用基础字段。"""
 
-    __tablename__: ClassVar[Literal["resource_bin_material_mounts"]] = "resource_bin_material_mounts"
+    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
+    bin_cell_code: str | None = Field(default=None, max_length=80, index=True, description="料箱内部格位编码")
+    bin_cell_index: str = Field(min_length=1, max_length=20, index=True, description="料箱内部格位序号")
+    material_identity_key: str = Field(min_length=1, max_length=300, index=True, description="物料属性身份键")
+    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
+    lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
+    date_code: str | None = Field(default=None, max_length=80, description="Date Code")
+    reel_count: int = Field(default=0, ge=0, description="当前格位内 active 料盘数量")
+    used_depth_mm: float = Field(default=0.0, ge=0, description="当前格位已使用深度")
+    capacity_depth_mm: float | None = Field(default=None, ge=0, description="当前格位可用总深度")
+    remaining_depth_mm: float | None = Field(default=None, ge=0, description="当前格位剩余深度")
+    occupancy_status: BinCellOccupancyStatus = Field(
+        default=BinCellOccupancyStatus.UNKNOWN,
+        sa_type=cast("Any", SQLAEnum(BinCellOccupancyStatus, native_enum=False, create_constraint=True, length=50)),
+        description="格位聚合占用状态",
+    )
+    source_system: ResourceSourceSystem = Field(
+        sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
+        description="来源系统",
+    )
+    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="最近来源事件 ID")
+    source_version: str | None = Field(default=None, max_length=100, description="来源版本")
+    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    session_id: str | None = Field(default=None, max_length=100, index=True, description="最近 WorkLine Session")
+    started_at: datetime = Field(description="首次占用确认时间")
+    ended_at: datetime | None = Field(default=None, index=True, description="格位占用结束时间")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False), description="扩展属性"
+    )
+
+
+class BinCellOccupancy(BinCellOccupancyBase, DataTableMixin, table=True):
+    """料箱格位当前聚合占用。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_cell_occupancies"]] = "resource_bin_cell_occupancies"
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index(
-            "ux_resource_bin_material_mounts_active_cell",
+            "ux_resource_bin_cell_occupancies_active_cell",
             "bin_code",
             "bin_cell_index",
             unique=True,
             postgresql_where="ended_at IS NULL",
         ),
+        Index("ix_resource_bin_cell_occupancies_identity_active", "material_identity_key", "ended_at"),
+    )
+
+
+class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
+    """物料/PKG/料盘占用哪个料箱内部格位的明细与历史。"""
+
+    __tablename__: ClassVar[Literal["resource_bin_material_mounts"]] = "resource_bin_material_mounts"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
         Index(
             "ux_resource_bin_material_mounts_active_pkg",
             "pkg_code",
@@ -533,13 +647,22 @@ class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
             unique=True,
             postgresql_where="ended_at IS NULL AND wms_inventory_id IS NOT NULL",
         ),
-        Index(
-            "ux_resource_bin_material_mounts_active_material_identity",
-            "material_identity_key",
-            unique=True,
-            postgresql_where="ended_at IS NULL",
-        ),
         Index("ix_resource_bin_material_mounts_identity_active", "material_identity_key", "ended_at"),
+        Index("ix_resource_bin_material_mounts_occupancy_active", "bin_cell_occupancy_id", "ended_at"),
+        Index(
+            "ux_resource_bin_material_mounts_active_stack_position",
+            "bin_cell_occupancy_id",
+            "cell_stack_position",
+            unique=True,
+            postgresql_where="ended_at IS NULL AND bin_cell_occupancy_id IS NOT NULL",
+        ),
+        Index(
+            "ix_resource_bin_material_mounts_cell_stack_active",
+            "bin_code",
+            "bin_cell_index",
+            "cell_stack_position",
+            "ended_at",
+        ),
     )
 
 
@@ -727,6 +850,20 @@ class RackBinMountResponse(RackBinMountBase):
     id: int
 
 
+class BinPlacementCreate(ModelFactory(BinPlacementBase).for_create()):
+    """料箱位置投影创建 Schema。"""
+
+
+class BinPlacementUpdate(ModelFactory(BinPlacementBase).for_update()):
+    """料箱位置投影更新 Schema。"""
+
+
+class BinPlacementResponse(BinPlacementBase):
+    """料箱位置投响应 Schema。"""
+
+    id: int
+
+
 class BinMaterialMountCreate(ModelFactory(BinMaterialMountBase).for_create()):
     """物料料箱格位投影创建 Schema。"""
 
@@ -737,6 +874,20 @@ class BinMaterialMountUpdate(ModelFactory(BinMaterialMountBase).for_update()):
 
 class BinMaterialMountResponse(BinMaterialMountBase):
     """物料料箱格位投影响应 Schema。"""
+
+    id: int
+
+
+class BinCellOccupancyCreate(ModelFactory(BinCellOccupancyBase).for_create()):
+    """料箱格位聚合占用创建 Schema。"""
+
+
+class BinCellOccupancyUpdate(ModelFactory(BinCellOccupancyBase).for_update()):
+    """料箱格位聚合占用更新 Schema。"""
+
+
+class BinCellOccupancyResponse(BinCellOccupancyBase):
+    """料箱格位聚合占用响应 Schema。"""
 
     id: int
 
@@ -772,6 +923,12 @@ class BinContentSnapshotItemResponse(BinContentSnapshotItemBase):
 __all__ = [
     "Bin",
     "BinBase",
+    "BinCellOccupancy",
+    "BinCellOccupancyBase",
+    "BinCellOccupancyCreate",
+    "BinCellOccupancyResponse",
+    "BinCellOccupancyStatus",
+    "BinCellOccupancyUpdate",
     "BinContentSnapshot",
     "BinContentSnapshotBase",
     "BinContentSnapshotCreate",
@@ -790,6 +947,12 @@ __all__ = [
     "BinMaterialMountResponse",
     "BinMaterialMountStatus",
     "BinMaterialMountUpdate",
+    "BinPlacement",
+    "BinPlacementBase",
+    "BinPlacementCreate",
+    "BinPlacementResponse",
+    "BinPlacementStatus",
+    "BinPlacementUpdate",
     "BinResponse",
     "BinSlotSize",
     "BinSlotTemplate",

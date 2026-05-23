@@ -26,6 +26,7 @@ celery_app = Celery(
     include=[
         "src.celery_app.tasks.core",  # 核心任务
         "src.celery_app.tasks.workline",  # 作业线编排任务
+        "src.celery_app.tasks.handling",  # 系统级 Handling 任务
     ],
 )
 

@@ -65,6 +65,8 @@ def test_second_stage_resource_fact_and_projection_tables_are_registered() -> No
     """第二阶段资源事实账本与当前投影表必须进入 SQLModel metadata。"""
 
     from src.app.resource.models import (
+        BinCellOccupancy,
+        BinCellOccupancyStatus,
         BinMaterialMount,
         RackBinMount,
         RackPlacement,
@@ -76,6 +78,7 @@ def test_second_stage_resource_fact_and_projection_tables_are_registered() -> No
         "wes_biz.resource_state_events",
         "wes_biz.resource_rack_placements",
         "wes_biz.resource_rack_bin_mounts",
+        "wes_biz.resource_bin_cell_occupancies",
         "wes_biz.resource_bin_material_mounts",
     }
 
@@ -84,6 +87,9 @@ def test_second_stage_resource_fact_and_projection_tables_are_registered() -> No
     assert ResourceStateEvent.__table__.c.source_event_id.nullable is False
     assert RackPlacement.__table__.c.ended_at.nullable is True
     assert RackBinMount.__table__.c.bin_code.nullable is False
+    assert BinCellOccupancyStatus.OCCUPIED.value == "OCCUPIED"
+    assert BinCellOccupancy.__table__.c.reel_count.nullable is False
+    assert BinMaterialMount.__table__.c.cell_stack_position.nullable is False
     assert BinMaterialMount.__table__.c.material_identity_key.nullable is False
 
 
@@ -128,6 +134,7 @@ def test_resource_table_models_do_not_use_enterprise_or_soft_delete_mixins() -> 
 
     from src.app.resource.models import (
         Bin,
+        BinCellOccupancy,
         BinContentSnapshot,
         BinContentSnapshotItem,
         BinMaterialMount,
@@ -151,6 +158,7 @@ def test_resource_table_models_do_not_use_enterprise_or_soft_delete_mixins() -> 
         ResourceStateEvent,
         RackPlacement,
         RackBinMount,
+        BinCellOccupancy,
         BinMaterialMount,
         BinContentSnapshot,
         BinContentSnapshotItem,
@@ -162,6 +170,8 @@ def test_resource_schemas_do_not_expose_optimistic_version() -> None:
     """资源域 Schema 不应暴露乐观锁 version。"""
 
     from src.app.resource.models import (
+        BinCellOccupancyResponse,
+        BinCellOccupancyUpdate,
         BinContentSnapshotCreate,
         BinContentSnapshotItemResponse,
         BinContentSnapshotItemUpdate,
@@ -220,6 +230,8 @@ def test_resource_schemas_do_not_expose_optimistic_version() -> None:
         RackPlacementResponse,
         RackBinMountUpdate,
         RackBinMountResponse,
+        BinCellOccupancyUpdate,
+        BinCellOccupancyResponse,
         BinMaterialMountUpdate,
         BinMaterialMountResponse,
         BinContentSnapshotCreate,
@@ -248,6 +260,7 @@ def test_resource_v1_router_exposes_readonly_routes() -> None:
         "/v1/resource/state-events",
         "/v1/resource/rack-placements",
         "/v1/resource/rack-bin-mounts",
+        "/v1/resource/bin-cell-occupancies",
         "/v1/resource/bin-material-mounts",
         "/v1/resource/bin-content-snapshots",
         "/v1/resource/bin-content-snapshot-items",

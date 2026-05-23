@@ -101,6 +101,8 @@ def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
             return True
         if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
             return True
+        if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
+            return True
         if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
             return True
     return False
@@ -134,16 +136,6 @@ class DeviceHeartbeatScanResult(TypedDict):
 
     scanned: int
     marked_offline: int
-
-
-class SmtFullBoxExchangeCandidateScanResult(TypedDict):
-    """SMT 满箱交换候选扫描结果"""
-
-    scanned: int
-    inbox_created: int
-    already_linked: int
-    skipped: int
-    errors: int
 
 
 class DispatchResult(TypedDict):
@@ -187,7 +179,6 @@ class _InboxDiagnosticSnapshot:
 # 常量已提取到 src.celery_app.constants
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
-_DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE = "SMT_FULL_EXCHANGE_TRIGGER_01"
 _ENTRY_DEVICE_EVENT_TYPES = frozenset({"SCAN_COMPLETED"})
 _TERMINAL_SESSION_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 _BUSY_SESSION_STATUSES = frozenset({"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"})
@@ -392,6 +383,25 @@ def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     return event_types or _ENTRY_DEVICE_EVENT_TYPES
 
 
+def _is_payload_invalid_entry_replay(
+    *,
+    payload: dict[str, Any],
+    session: Any,
+) -> bool:
+    """允许 payload 校验失败后的人工 replay 重新进入插件处理。"""
+
+    replay_of_event_id = payload.get("replay_of_event_id")
+    if not isinstance(replay_of_event_id, str) or not replay_of_event_id:
+        return False
+    if _session_status_value(session) != "MANUAL_HOLD":
+        return False
+    if _string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
+        return False
+    if getattr(session, "awaiting_command_id", None) is not None:
+        return False
+    return not bool(_string_value(getattr(session, "current_wait_type", None)))
+
+
 def _is_duplicate_entry_event_for_session(
     *,
     inbox: Any,
@@ -411,6 +421,9 @@ def _is_duplicate_entry_event_for_session(
     if _kind_value(inbox) != "DEVICE_EVENT":
         return False
     if _canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
+        return False
+
+    if _is_payload_invalid_entry_replay(payload=payload, session=session):
         return False
 
     status = _session_status_value(session)
@@ -847,7 +860,7 @@ def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
 
 
 def _wait_session_status(wait_type: str) -> str:
-    if wait_type == "EXTERNAL_HTTP":
+    if wait_type in {"EXTERNAL_HTTP", "RACK_OPERATION"}:
         return "WAITING_EXTERNAL"
     return "WAITING_DEVICE_RESULT"
 
@@ -893,6 +906,59 @@ _DEVICE_COMMAND_RESERVED_FIELDS = {
     "params",
     "timestamp",
 }
+_DEVICE_COMMAND_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "authorization",
+        "credential",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+    }
+)
+_REDACTED_LOG_VALUE = "***REDACTED***"
+
+
+def _redact_device_command_payload(value: Any) -> Any:
+    """脱敏设备指令日志中的凭据类字段，保留业务参数用于供应商核对。"""
+
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_lower = key_text.lower()
+            if any(part in key_lower for part in _DEVICE_COMMAND_SENSITIVE_KEY_PARTS):
+                redacted[key_text] = _REDACTED_LOG_VALUE
+            else:
+                redacted[key_text] = _redact_device_command_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_device_command_payload(item) for item in value]
+    return value
+
+
+def _build_device_command_log_envelope(
+    outbox: Any,
+    payload: dict[str, Any],
+    *,
+    endpoint: str | None = None,
+) -> dict[str, Any]:
+    """构造设备指令日志包络，便于硬件供应商按同一份 JSON 核对。"""
+
+    envelope: dict[str, Any] = {
+        "outbox_id": _resolve_entity_id(outbox),
+        "session_id": _optional_int(getattr(outbox, "session_id", None)),
+        "dispatch_key": _string_value(getattr(outbox, "dispatch_key", None)),
+        "target_type": _enum_value(getattr(outbox, "target_type", None)),
+        "target_code": _string_value(getattr(outbox, "target_code", None)),
+        "payload": _redact_device_command_payload(payload),
+    }
+    if endpoint:
+        envelope["endpoint"] = endpoint
+    return envelope
 
 
 def _normalize_vendor_command_payload(
@@ -2196,12 +2262,9 @@ def _resolve_effect_source_device(inbox: Any, session: Any, devices_by_role: dic
         device_code = _optional_str(getattr(normalized_input, "device_code", None))
     if device_code is None:
         session_context = payload_dict(getattr(session, "context_json", None))
-        rack_supply = payload_dict(session_context.get("rack_supply"))
-        rack_exchange = payload_dict(session_context.get("rack_exchange"))
-        device_code = (
-            _optional_str(rack_supply.get("resume_source_device_code"))
-            or _optional_str(rack_exchange.get("resume_source_device_code"))
-            or _optional_str(session_context.get("resume_source_device_code"))
+        rack_operation = payload_dict(session_context.get("rack_operation"))
+        device_code = _optional_str(rack_operation.get("resume_source_device_code")) or _optional_str(
+            session_context.get("resume_source_device_code")
         )
     if device_code is None:
         return None
@@ -2303,7 +2366,7 @@ async def _load_related_entities(
         "device": device,
         "command": command,
         "devices_by_role": devices_by_role,
-        "services": build_workline_runtime_services(),
+        "services": build_workline_runtime_services(db=db, workline=workline),
         "safety_checked": safety_checked,
     }
 
@@ -3014,28 +3077,6 @@ class DeviceHeartbeatScanner:
         }
 
 
-class SmtFullBoxExchangeCandidateScanner:
-    """SMT 满箱交换候选释放补偿扫描器。"""
-
-    @staticmethod
-    async def _scan(
-        db: Any,
-        *,
-        source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
-        limit: int = 50,
-    ) -> SmtFullBoxExchangeCandidateScanResult:
-        from src.app.workline.services.smt_full_box_exchange_candidate_service import (
-            smt_full_box_exchange_candidate_service,
-        )
-
-        return await smt_full_box_exchange_candidate_service.scan_candidates(
-            db,
-            source_device_code=source_device_code,
-            limit=limit,
-            auto_commit=True,
-        )
-
-
 @celery_app.task(
     name="src.celery_app.tasks.workline.process_inbox_batch",
     base=WorklineTask,
@@ -3205,45 +3246,6 @@ def scan_device_heartbeats_batch(
         return result
     except Exception as e:
         logger.error(f"设备心跳扫描失败: {e}")
-        countdown = 60 * (2**self.request.retries)
-        raise self.retry(exc=e, countdown=countdown) from None
-
-
-@celery_app.task(
-    name="src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
-    base=WorklineTask,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,
-)
-def scan_smt_full_box_exchange_candidates_batch(
-    self: WorklineTask,
-    source_device_code: str = _DEFAULT_SMT_FULL_BOX_EXCHANGE_TRIGGER_DEVICE_CODE,
-    limit: int = 50,
-) -> SmtFullBoxExchangeCandidateScanResult:
-    """扫描 SMT 单层货架释放候选，派生满箱交换插件入口 Inbox。"""
-
-    logger.info(f"开始扫描 SMT 满箱交换候选释放, source_device_code={source_device_code}, limit={limit}")
-
-    async def _scan() -> SmtFullBoxExchangeCandidateScanResult:
-        async with self.db as db:
-            return await SmtFullBoxExchangeCandidateScanner._scan(
-                db,
-                source_device_code=source_device_code,
-                limit=limit,
-            )
-
-    try:
-        result = _run_async(_scan())
-        _ensure_non_empty_retry_result(
-            "scan_smt_full_box_exchange_candidates_batch",
-            result,
-            int(getattr(self.request, "retries", 0) or 0),
-        )
-        logger.info(f"SMT 满箱交换候选释放扫描完成: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"SMT 满箱交换候选释放扫描失败: {e}")
         countdown = 60 * (2**self.request.retries)
         raise self.retry(exc=e, countdown=countdown) from None
 
@@ -3601,6 +3603,8 @@ class OutboxDispatcher:
             reserved = await OutboxDispatcher._reserve_sandbox_device_command(db, outbox)
             if not reserved:
                 return False
+            payload = payload_dict(getattr(outbox, "payload_json", None))
+            logger.info(f"沙箱设备指令参数: {_build_device_command_log_envelope(outbox, payload)}")
         logger.info(
             "Outbox 沙箱派发完成，等待调试人员手工回调 "
             f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
@@ -3704,7 +3708,7 @@ class OutboxDispatcher:
             scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
-            logger.info(f"发送设备指令到 {url}: {payload.get('command_code')}")
+            logger.info(f"发送设备指令参数: {_build_device_command_log_envelope(outbox, payload, endpoint=url)}")
             timeout = 10.0
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, json=payload)
@@ -3716,23 +3720,38 @@ class OutboxDispatcher:
 
                     device_id = _resolve_entity_id(device)
                     if command is not None and device_id is not None and command_id is not None:
-                        ack_received_at = timezone.now_for_db()
-                        command.status = CommandStatus.ACK_RECEIVED
-                        command.sent_at = command.sent_at or ack_received_at
-                        command.ack_received_at = ack_received_at
-                        command.ack_code = response.status_code
-                        command.ack_message = "HTTP 200"
-                        _ = await device_service.mark_command_dispatched(
-                            db,
-                            device_id=device_id,
-                            command_id=command_id,
-                            auto_commit=False,
-                        )
-                        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
-                            db,
-                            command_id=command_id,
-                            ack_received_at=ack_received_at,
-                        )
+                        # Mock/设备可能在 HTTP 200 返回前已经完成并回调；刷新后若已是终态，
+                        # 不能再把设备占用投影覆盖回 RUNNING。
+                        await db.refresh(command)
+                        terminal_statuses = {
+                            CommandStatus.COMPLETED.value,
+                            CommandStatus.FAILED.value,
+                            CommandStatus.TIMEOUT.value,
+                            CommandStatus.CANCELLED.value,
+                        }
+                        if _enum_value(getattr(command, "status", None)) in terminal_statuses:
+                            logger.info(
+                                "设备指令 ACK 返回前已收到完成回调，跳过 ACK/RUNNING 投影: "
+                                f"device_code={outbox.target_code}, command_code={command_code}"
+                            )
+                        else:
+                            ack_received_at = timezone.now_for_db()
+                            command.status = CommandStatus.ACK_RECEIVED
+                            command.sent_at = command.sent_at or ack_received_at
+                            command.ack_received_at = ack_received_at
+                            command.ack_code = response.status_code
+                            command.ack_message = "HTTP 200"
+                            _ = await device_service.mark_command_dispatched(
+                                db,
+                                device_id=device_id,
+                                command_id=command_id,
+                                auto_commit=False,
+                            )
+                            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+                                db,
+                                command_id=command_id,
+                                ack_received_at=ack_received_at,
+                            )
                     else:
                         logger.warning(
                             "设备指令已 ACK，但 WES 侧设备运行态未更新: "

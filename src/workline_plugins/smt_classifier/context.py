@@ -21,7 +21,6 @@ class SmtClassifierContext(BaseModel):
     reel_thickness: str | float | None = None
     bin_location: dict[str, Any] | None = None
     active_bin_rack: dict[str, Any] | None = None
-    rack_exchange: dict[str, Any] | None = None
     ng_reason: str | None = None
     pick_place_reason: str | None = None
     scan_ng_reason_code: str | None = None

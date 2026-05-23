@@ -30,6 +30,11 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
+    # SystemOutbox 消息派发 - 系统级 Handling 低级操作（兜底）
+    "dispatch-system-outbox-batch": {
+        "task": "src.celery_app.tasks.handling.dispatch_system_outbox_batch",
+        "schedule": 10.0,
+    },
     # 超时 Session 扫描任务
     "scan-timeouts-batch": {
         "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
@@ -39,11 +44,6 @@ beat_schedule: dict[str, dict[str, str | float]] = {
     "scan-device-heartbeats-batch": {
         "task": "src.celery_app.tasks.workline.scan_device_heartbeats_batch",
         "schedule": 300.0,  # 每 5 分钟扫描一次
-    },
-    # SMT 满箱交换候选释放扫描 - 从资源释放事实补偿派生插件入口 Inbox
-    "scan-smt-full-box-exchange-candidates-batch": {
-        "task": "src.celery_app.tasks.workline.scan_smt_full_box_exchange_candidates_batch",
-        "schedule": 60.0,  # 每分钟扫描一次，避免频繁重复读取释放事实
     },
 }
 
@@ -56,6 +56,8 @@ task_routes = {
     "src.celery_app.tasks.core.*": {"queue": "default"},
     # 作业线编排任务 -> celery 队列
     "src.celery_app.tasks.workline.*": {"queue": "celery"},
+    # 系统级 Handling 任务 -> celery 队列
+    "src.celery_app.tasks.handling.*": {"queue": "celery"},
     # 可扩展：添加新的任务路由
     # "src.celery_app.tasks.inventory.*": {"queue": "inventory"},
     # "src.celery_app.tasks.reporting.*": {"queue": "reporting"},

@@ -37,10 +37,45 @@ from src.utils.timezone import timezone
 from src.workline_runtime.utils import JsonDict, ensure_dict
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
+_RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
+    {
+        "WMS_RACK_TASK_RESULT",
+        "RCS_RACK_TASK_RESULT",
+        "WMS_RACK_TASK_PROGRESS",
+        "RCS_RACK_TASK_PROGRESS",
+    }
+)
+_HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
+    {
+        "CTU_BIN_MOVE_PROGRESS",
+        "CTU_BIN_TASK_PROGRESS",
+        "WMS_BIN_MOVE_PROGRESS",
+        "RCS_BIN_MOVE_PROGRESS",
+    }
+)
+_HANDLING_CALLBACK_TYPES = frozenset(
+    {
+        "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "RCS_FULL_BOX_EXCHANGE_RESULT",
+    }
+)
+
+
+def _skip_workline_processing_enqueue() -> None:
+    """lifecycle-only 回调已同步标记为 processed，这里只关闭即时 batch 触发。"""
 
 
 def _current_timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
+
+
+def _is_handling_callback(callback_type: str, payload: JsonDict) -> bool:
+    dispatch_key = payload.get("dispatch_key") or payload.get("exchange_request_code")
+    if isinstance(dispatch_key, str) and dispatch_key.startswith("handling:"):
+        return True
+    if callback_type in _HANDLING_CALLBACK_TYPES:
+        return True
+    return callback_type.startswith(("CTU_BIN_", "WMS_BIN_", "RCS_BIN_"))
 
 
 @dataclass(frozen=True)
@@ -64,8 +99,14 @@ class ExternalCallbackOutcome:
 class CallbackOrchestrationService:
     """处理 callback 的业务编排。"""
 
-    def __init__(self, *, full_box_exchange_task_service: Any | None = None) -> None:
-        self._full_box_exchange_task_service = full_box_exchange_task_service
+    def __init__(
+        self,
+        *,
+        rack_task_service: Any | None = None,
+        handling_operation_service: Any | None = None,
+    ) -> None:
+        self._rack_task_service = rack_task_service
+        self._handling_operation_service = handling_operation_service
 
     def _is_duplicate_inbox_error(self, error: ValueError) -> bool:
         return _DUPLICATE_ERROR_MARKER in str(error)
@@ -518,8 +559,13 @@ class CallbackOrchestrationService:
         resolved_trace_id = trace.trace_id or trace.request_id or f"trace_{uuid.uuid4().hex}"
         trace = trace.with_trace_id(resolved_trace_id)
 
+        lifecycle_only = (
+            callback_type in _RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES
+            or callback_type in _HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES
+        )
+        created_inbox: object | None = None
         try:
-            _ = await inbox_service.create_external_http_inbox(
+            created_inbox = await inbox_service.create_external_http_inbox(
                 db=db,
                 callback_type=callback_type,
                 payload=payload,
@@ -541,25 +587,46 @@ class CallbackOrchestrationService:
                 trace = trace.with_inbox(duplicate_inbox)
 
         if not is_duplicate:
-            await self._resolve_full_box_exchange_task_service().record_callback_from_external_http(
+            await self._resolve_rack_task_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
                 trace_id=trace.trace_id,
             )
+            if _is_handling_callback(callback_type, payload):
+                await self._resolve_handling_operation_service().record_callback_from_external_http(
+                    db=db,
+                    payload_json=payload,
+                    trace_id=trace.trace_id,
+                )
+            if lifecycle_only:
+                inbox_id = getattr(created_inbox, "id", None)
+                if not isinstance(inbox_id, int):
+                    raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
+                _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+        await self._commit_and_enqueue_workline_processing(
+            db,
+            enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
+        )
 
         return ExternalCallbackOutcome(
             trace_id=trace.trace_id or "",
             is_duplicate=is_duplicate,
         )
 
-    def _resolve_full_box_exchange_task_service(self) -> Any:
-        if self._full_box_exchange_task_service is None:
-            from src.app.workline.services import workline_full_box_exchange_task_service
+    def _resolve_rack_task_service(self) -> Any:
+        if self._rack_task_service is None:
+            from src.app.workline.services import workline_rack_task_lifecycle_service
 
-            self._full_box_exchange_task_service = workline_full_box_exchange_task_service
-        return self._full_box_exchange_task_service
+            self._rack_task_service = workline_rack_task_lifecycle_service
+        return self._rack_task_service
+
+    def _resolve_handling_operation_service(self) -> Any:
+        if self._handling_operation_service is None:
+            from src.app.handling.services import handling_operation_lifecycle_service
+
+            self._handling_operation_service = handling_operation_lifecycle_service
+        return self._handling_operation_service
 
 
 callback_orchestration_service = CallbackOrchestrationService()

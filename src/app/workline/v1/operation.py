@@ -12,6 +12,8 @@ from src.app.workline.models.operation import (
     ReplayInboxRequest,
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
+    SandboxCleanupRequest,
+    SandboxCleanupResponse,
     SandboxEventRequest,
     SandboxExternalCallbackRequest,
     SandboxResultRequest,
@@ -21,7 +23,12 @@ from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runt
     ClearWorkLineEstopRequest,
     SimulateWorkLineEstopRequest,
 )
-from src.app.workline.services import WorkLineSafetyBlocked, workline_operation_service, workline_safety_service
+from src.app.workline.services import (
+    WorkLineSafetyBlocked,
+    sandbox_cleanup_service,
+    workline_operation_service,
+    workline_safety_service,
+)
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
@@ -142,6 +149,34 @@ async def get_sandbox_completed(
         db, limit=limit, workline_id=workline_id, device_id=device_id
     )
     return cast("ResponseSchemaModel[list[dict[str, Any]]]", response_builder.success(data=items))
+
+
+@router.post(
+    "/sandbox/worklines/{workline_id}/cleanup",
+    summary="[biz:workline:cleanup-sandbox] 清理工作线沙箱运行时数据",
+    response_model=ResponseSchemaModel[SandboxCleanupResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:cleanup-sandbox"))],
+)
+async def cleanup_sandbox_workline(
+    workline_id: int,
+    payload: SandboxCleanupRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[SandboxCleanupResponse]:
+    try:
+        if payload.dry_run:
+            result = await sandbox_cleanup_service.preview_cleanup(db, workline_id=workline_id)
+        else:
+            result = await sandbox_cleanup_service.cleanup_workline(
+                db,
+                workline_id=workline_id,
+                confirmation=payload.confirmation,
+            )
+            await db.commit()
+            await publish_deferred_sse_events(db)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[SandboxCleanupResponse]", _operation_error_response(exc))
+    return cast("ResponseSchemaModel[SandboxCleanupResponse]", response_builder.success(data=result))
 
 
 @router.post(

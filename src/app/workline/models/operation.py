@@ -20,6 +20,24 @@ class SandboxEventRequest(BaseModel):
     timestamp: datetime | None = Field(default=None, description="事件时间戳（默认当前时间）")
 
 
+class SandboxCleanupRequest(BaseModel):
+    """沙箱工作线清理请求。"""
+
+    dry_run: bool = Field(default=True, description="true 仅返回影响范围；false 执行清理")
+    confirmation: str | None = Field(default=None, max_length=200, description="执行清理时必须等于工作线编码")
+
+
+class SandboxCleanupResponse(BaseModel):
+    """沙箱工作线清理响应。"""
+
+    workline_id: int = Field(description="工作线 ID")
+    dry_run: bool = Field(description="是否仅预览影响范围")
+    deleted: bool = Field(description="是否已执行删除")
+    counts: dict[str, int] = Field(default_factory=dict, description="影响数据计数")
+    affected_session_ids: list[int] = Field(default_factory=list, description="受影响 Session ID")
+    message: str = Field(description="清理结果消息")
+
+
 class SandboxAckRequest(BaseModel):
     """沙箱 Command ACK 模拟请求。"""
 
@@ -111,6 +129,8 @@ __all__ = [
     "ReplayInboxRequest",
     "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
+    "SandboxCleanupRequest",
+    "SandboxCleanupResponse",
     "SandboxEventRequest",
     "SandboxEventTemplate",
     "SandboxExternalCallbackRequest",

@@ -57,12 +57,6 @@ WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
         plugin_class_name="SmtClassifierPlugin",
         contract_module=None,
     ),
-    "smt_full_box_exchange": WorklinePluginDefinition(
-        plugin_key="smt_full_box_exchange",
-        plugin_module="src.workline_plugins.smt_full_box_exchange",
-        plugin_class_name="SmtFullBoxExchangePlugin",
-        contract_module="src.workline_plugins.smt_full_box_exchange.contract",
-    ),
 }
 
 

@@ -37,6 +37,26 @@ class WorklineRackPositionRepository(BaseRepository[WorklineRackPosition]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_workline_position_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> WorklineRackPosition | None:
+        """按工作线和停靠位查询配置，并对目标行加行级锁。"""
+
+        columns = cast("Any", WorklineRackPosition).__table__.c
+        result = await db.execute(
+            select(WorklineRackPosition)
+            .where(
+                columns.workline_code == workline_code,
+                columns.position_code == position_code,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
 
 workline_rack_position_repository = WorklineRackPositionRepository()
 

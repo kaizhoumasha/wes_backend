@@ -17,6 +17,10 @@ from tests.mock.smt_classifier import agv_mock, allocation_mock, arm_mock, pipel
 from tests.mock.smt_classifier.run_all import MOCK_SERVICES
 
 
+def _rack_action(action: str) -> dict[str, object]:
+    return {"action": action, "required": True}
+
+
 def test_run_all_modules_are_importable() -> None:
     for service in MOCK_SERVICES:
         module = importlib.import_module(service["module"])
@@ -39,6 +43,17 @@ def test_run_all_uses_shared_ports_for_dual_worklines() -> None:
     assert topology[8005] == ("PIPELINE01", "PIPELINE02")
     assert topology[8006] == ("ARM01", "ARM03")
     assert topology[8007] == ("ARM02", "ARM04")
+
+
+def test_rack_exchange_request_accepts_task_action_object() -> None:
+    request = rack_exchange_mock.RackExchangeRequest(
+        dispatch_key="rack-operation:op-001:2:ALLOCATE_AND_MOVE_RACK",
+        actions={"action": "ALLOCATE_AND_MOVE_RACK", "required": True},
+    )
+
+    assert len(request.actions) == 1
+    assert request.actions[0].action == "ALLOCATE_AND_MOVE_RACK"
+    assert request.actions[0].required is True
 
 
 def test_pipeline_module_importable_with_pipeline_device_code() -> None:
@@ -743,7 +758,7 @@ async def test_agv_mock_callbacks_external_endpoint(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_rack_supply_mock_accepts_smt_rack_supply_request(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_rack_operation_mock_accepts_smt_rack_operation_request(monkeypatch: pytest.MonkeyPatch) -> None:
     simulator = rack_exchange_mock.RackExchangeSimulator(mode="success")
     captured: dict[str, object] = {}
 
@@ -759,22 +774,22 @@ async def test_rack_supply_mock_accepts_smt_rack_supply_request(monkeypatch: pyt
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_OPERATION",
         trace_id="trace-rack-mock",
-        actions=["SUPPLY_EMPTY_RACK"],
+        actions=[_rack_action("SUPPLY_EMPTY_RACK")],
     )
 
-    assert request.request_type == "SMT_RACK_SUPPLY"
+    assert request.request_type == "SMT_RACK_OPERATION"
 
     record = await simulator.execute_request(request)
 
-    assert record.request_type == "SMT_RACK_SUPPLY"
+    assert record.request_type == "SMT_RACK_OPERATION"
     assert record.callback_type == "WMS_RACK_ARRIVED"
     assert record.result == "SUCCESS"
     callback_payload = captured["payload"]
     assert isinstance(callback_payload, dict)
     assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
-    assert callback_payload["dispatch_key"] == "external:smt_classifier:trace-rack-mock:RACK_SUPPLY"
+    assert callback_payload["dispatch_key"] == "external:smt_classifier:trace-rack-mock:RACK_OPERATION"
 
 
 @pytest.mark.asyncio
@@ -803,9 +818,9 @@ async def test_rack_exchange_mock_defaults_to_mixed_single_layer_rack(monkeypatc
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        dispatch_key="external:smt_classifier:trace-mixed-rack:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-mixed-rack:RACK_OPERATION",
         trace_id="trace-mixed-rack",
-        actions=["SUPPLY_EMPTY_RACK"],
+        actions=[_rack_action("SUPPLY_EMPTY_RACK")],
     )
 
     await simulator.execute_request(request)
@@ -856,9 +871,9 @@ async def test_rack_exchange_mock_uses_large_three_cell_profile(monkeypatch: pyt
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        dispatch_key="external:smt_classifier:trace-large-cell:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-large-cell:RACK_OPERATION",
         trace_id="trace-large-cell",
-        actions=["SUPPLY_EMPTY_RACK"],
+        actions=[_rack_action("SUPPLY_EMPTY_RACK")],
     )
 
     await simulator.execute_request(request)
@@ -892,9 +907,9 @@ async def test_rack_exchange_mock_uses_seven_inch_six_cell_profile(monkeypatch: 
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        dispatch_key="external:smt_classifier:trace-seven-inch:RACK_SUPPLY",
+        dispatch_key="external:smt_classifier:trace-seven-inch:RACK_OPERATION",
         trace_id="trace-seven-inch",
-        actions=["SUPPLY_EMPTY_RACK"],
+        actions=[_rack_action("SUPPLY_EMPTY_RACK")],
     )
 
     await simulator.execute_request(request)
@@ -927,8 +942,8 @@ async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
-        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_EXCHANGE_AND_SUPPLY",
+        request_type="SMT_RACK_OPERATION",
+        dispatch_key="external:smt_classifier:trace-rack-mock:RACK_OPERATION",
         trace_id="trace-rack-mock",
         material={
             "PkgID": "PKG-RACK-MOCK-001",
@@ -937,7 +952,7 @@ async def test_rack_exchange_mock_callbacks_wms_rack_arrived(monkeypatch: pytest
             "DateCode": "122625",
             "LotCode": "8904936031",
         },
-        actions=["EXCHANGE_RACK", "SUPPLY_EMPTY_BIN"],
+        actions=[_rack_action("MOVE_OUT_ACTIVE_RACK"), _rack_action("SUPPLY_EMPTY_RACK")],
         resume_callback_type="WMS_RACK_ARRIVED",
     )
 
@@ -979,11 +994,11 @@ async def test_rack_exchange_mock_progress_mode_keeps_waiting(monkeypatch: pytes
     monkeypatch.setattr(rack_exchange_mock, "EXECUTION_TIME", 0)
 
     request = rack_exchange_mock.RackExchangeRequest(
-        request_type="SMT_RACK_EXCHANGE_AND_SUPPLY",
-        dispatch_key="external:smt_classifier:trace-rack-progress:RACK_EXCHANGE_AND_SUPPLY",
+        request_type="SMT_RACK_OPERATION",
+        dispatch_key="external:smt_classifier:trace-rack-progress:RACK_OPERATION",
         trace_id="trace-rack-progress",
         material={"PkgID": "PKG-RACK-MOCK-002"},
-        actions=["EXCHANGE_RACK"],
+        actions=[_rack_action("MOVE_OUT_ACTIVE_RACK")],
         resume_callback_type="WMS_RACK_ARRIVED",
     )
 

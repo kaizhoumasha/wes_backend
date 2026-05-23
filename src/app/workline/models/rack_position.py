@@ -18,8 +18,11 @@ from src.database.schema_conf import SchemaType
 class WorklineRackPositionRole(str, Enum):
     """工作线停靠位角色。"""
 
-    SOURCE_STORAGE = "SOURCE_STORAGE"
-    OUTPUT_BUFFER = "OUTPUT_BUFFER"
+    SMT_CLASSIFIER_SINGLE_RACK_WORK = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
+    SMT_RACK_EXCHANGE_AREA = "SMT_RACK_EXCHANGE_AREA"
+    SMT_SORTER_QUEUE = "SMT_SORTER_QUEUE"
+    SMT_SORTER_STATION = "SMT_SORTER_STATION"
+    SMT_EMPTY_RACK_AREA = "SMT_EMPTY_RACK_AREA"
 
 
 class WorklineRackPositionBase(BaseMixin):
@@ -40,7 +43,7 @@ class WorklineRackPositionBase(BaseMixin):
         sa_type=cast("Any", SQLAEnum(RackKind, native_enum=False, create_constraint=True, length=50)),
         description="允许货架类型",
     )
-    capacity: int = Field(default=1, ge=1, description="容量；Phase A 固定为 1")
+    capacity: int = Field(default=1, ge=1, description="该 workline 位置可同时容纳的 rack 数量")
     logic_location_code: str | None = Field(default=None, max_length=120, index=True, description="WES 逻辑位置")
     external_location_code: str | None = Field(default=None, max_length=120, index=True, description="外部地码证据")
     device_role: str | None = Field(default=None, max_length=100, index=True, description="关联设备角色")
@@ -56,7 +59,7 @@ class WorklineRackPosition(WorklineRackPositionBase, DataTableMixin, table=True)
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_workline_rack_positions_line_position", "workline_code", "position_code", unique=True),
-        CheckConstraint("capacity = 1", name="ck_workline_rack_positions_capacity_one"),
+        CheckConstraint("capacity > 0", name="ck_workline_rack_positions_capacity_positive"),
     )
 
 
