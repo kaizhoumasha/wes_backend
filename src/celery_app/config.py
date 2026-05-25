@@ -24,16 +24,11 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.workline.process_inbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
-    # Outbox 消息派发 - 将命令下发给设备（兜底）
+    # SystemOutbox 消息派发 - 统一处理面向外部硬件系统的副作用（兜底）
     # 正常流程由编排完成后即时 send_task 触发，Beat 仅处理遗漏/重试
     "dispatch-outbox-batch": {
-        "task": "src.celery_app.tasks.workline.dispatch_outbox_batch",
+        "task": "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
-    },
-    # SystemOutbox 消息派发 - 系统级 Handling 低级操作（兜底）
-    "dispatch-system-outbox-batch": {
-        "task": "src.celery_app.tasks.handling.dispatch_system_outbox_batch",
-        "schedule": 10.0,
     },
     # 超时 Session 扫描任务
     "scan-timeouts-batch": {
@@ -58,6 +53,8 @@ task_routes = {
     "src.celery_app.tasks.workline.*": {"queue": "celery"},
     # 系统级 Handling 任务 -> celery 队列
     "src.celery_app.tasks.handling.*": {"queue": "celery"},
+    # 系统级任务 -> celery 队列
+    "src.celery_app.tasks.sys.*": {"queue": "celery"},
     # 可扩展：添加新的任务路由
     # "src.celery_app.tasks.inventory.*": {"queue": "inventory"},
     # "src.celery_app.tasks.reporting.*": {"queue": "reporting"},

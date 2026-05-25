@@ -946,7 +946,7 @@ class TestSmtClassifierPluginCommandResults:
         assert result[0].context_patch["rack_operation"] == {
             "status": "REQUESTED",
             "operation_key": "external:smt_classifier:trace-001:RACK_OPERATION",
-            "target_code": "http://wms-rcs/api/rack-operation",
+            "target_code": "WMS_RCS_RACK_OPERATION",
             "source_system": "WMS_RCS",
             "reason_code": "NO_ACTIVE_RACK",
             "requested_actions": ["ALLOCATE_AND_MOVE_RACK"],
@@ -961,14 +961,14 @@ class TestSmtClassifierPluginCommandResults:
         assert "full_box_exchange" not in result[0].context_patch
         assert "rack_exchange" not in result[0].context_patch
         assert result[1].dispatch_key is None
-        assert result[1].target_code == "http://wms-rcs/api/rack-operation"
+        assert result[1].target_code == "WMS_RCS_RACK_OPERATION"
         assert result[1].payload_json["request_type"] == "SMT_RACK_OPERATION"
         assert result[1].payload_json["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
         assert result[1].payload_json["reason_code"] == "NO_ACTIVE_RACK"
         assert result[1].payload_json["work_position_code"] == "SINGLE_LAYER_B"
         assert result[1].payload_json["new_rack_kind"] == "SINGLE_LAYER"
         assert result[1].payload_json["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
-        assert result[1].payload_json["target_code"] == "http://wms-rcs/api/rack-operation"
+        assert result[1].payload_json["target_code"] == "WMS_RCS_RACK_OPERATION"
         assert result[1].action == "REPLACE_CLASSIFIER_WORK_RACK"
         assert result[1].idempotency_key == "external:smt_classifier:trace-001:RACK_OPERATION"
         assert result[1].timeout_seconds == 1800
@@ -1019,12 +1019,12 @@ class TestSmtClassifierPluginCommandResults:
         assert "full_box_exchange" not in result[0].context_patch
         assert result[1].action == "REPLACE_CLASSIFIER_WORK_RACK"
         assert result[1].idempotency_key == "external:smt_classifier:trace-005:RACK_OPERATION"
-        assert result[1].target_code == "http://wms-rcs/api/rack-operation"
+        assert result[1].target_code == "WMS_RCS_RACK_OPERATION"
         assert result[1].payload_json["reason_code"] == "NO_ACTIVE_RACK"
         assert result[1].payload_json["work_position_code"] == "SINGLE_LAYER_A"
         assert result[1].payload_json["new_rack_kind"] == "SINGLE_LAYER"
         assert result[1].payload_json["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
-        assert result[1].payload_json["target_code"] == "http://wms-rcs/api/rack-operation"
+        assert result[1].payload_json["target_code"] == "WMS_RCS_RACK_OPERATION"
 
     @pytest.mark.asyncio
     async def test_conveyor_success_preserves_mapping_decision_task_specs(self, plugin, mock_context):

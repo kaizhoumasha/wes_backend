@@ -1,7 +1,7 @@
 <!-- /autoplan final-review restore point: /tmp/feature-plugin-refactoring-autoplan-final-restore-20260424-210946.md -->
 <!-- /autoplan restore point: /tmp/feature-plugin-refactoring-autoplan-restore-20260424-204247.md -->
 
-> Legacy notes: 本文记录 2026-04 阶段的旧插件状态机重构设想，已被 `RuntimeIntent` + Runtime 拓扑/Session 所有权方案取代；不要作为当前插件开发指南使用。
+> Legacy notes: 本文记录 2026-04 阶段的旧插件状态机重构设想，已被 `RuntimeIntent` + Runtime 拓扑/Session 所有权方案取代；不要作为当前插件开发指南使用。当前开发入口是 `workline_material_flow_runtime.md`。
 
 # WORKLINE 插件下一阶段重构计划
 

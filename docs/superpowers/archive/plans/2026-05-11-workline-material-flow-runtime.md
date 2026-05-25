@@ -1,3 +1,9 @@
+# 已归档：禁止继续执行
+
+本文是 2026-05-11 的早期 Material Flow Runtime 原型计划，已被当前收尾收敛口径取代。后续开发不得继续按本文新增 `MaterialRun` 表、`RuntimeEvent` 持久化表、`MaterialFlowEngine` 或独立 metrics/alerts/projections 原型模块。
+
+当前权威入口：`docs/business/workline_material_flow_runtime.md`。
+
 # Workline Material Flow Runtime Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

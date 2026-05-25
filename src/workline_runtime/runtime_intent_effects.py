@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from src.workline_runtime.material_target_resolver import resolve_destination_device
 from src.workline_runtime.runtime_intent import (
@@ -32,10 +33,19 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.CONTINUE_NEXT,
 }
 _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK}
+_DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
     return [device for devices in devices_by_role.values() for device in devices]
+
+
+def _normalize_rack_operation_target_code(value: Any) -> str:
+    target_code = str(value or "")
+    parsed = urlparse(target_code)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return _DEFAULT_RACK_OPERATION_TARGET_CODE
+    return target_code
 
 
 def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
@@ -571,7 +581,7 @@ class RuntimeIntentEffectApplier:
         payload_json = dict(intent.payload_json)
         operation_type = str(intent.action)
         operation_key = str(intent.idempotency_key)
-        target_code = str(intent.target_code)
+        target_code = _normalize_rack_operation_target_code(intent.target_code)
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
 

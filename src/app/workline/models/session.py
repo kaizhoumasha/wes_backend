@@ -335,18 +335,18 @@ class WorklineSession(
     """
     作业线会话数据库表模型
 
-    跟踪一次完整业务链路的执行过程，管理会话状态和上下文。
+    跟踪一次完整业务链路的执行过程，承载 Runtime-owned Session lifecycle 和上下文。
 
     字段说明:
     - session_code: 会话唯一标识
     - workline_id: 关联的作业线
     - plugin_key: 执行的插件标识
-    - status: 会话状态（由插件状态机管理）
-    - context_json: 插件自定义上下文
+    - status: 会话状态（由 Runtime 根据 RuntimeIntent 和外部事实推进）
+    - context_json: Runtime 与插件共享的业务上下文快照
     - awaiting_command_id: 当前等待的设备指令
     - last_inbox_id: 追溯辅助字段
 
-    状态机:
+    Runtime lifecycle:
         NEW → RUNNING → WAITING_* → COMPLETED
                ↓         ↓
              FAILED   CANCELLED

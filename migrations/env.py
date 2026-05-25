@@ -36,8 +36,8 @@ from src.app.handling.models import (  # noqa: F401
     HandlingMove,
     HandlingOperation,
     HandlingStep,
-    SystemOutbox,
 )
+from src.app.rack.models import RackOperation, RackTask  # noqa: F401
 from src.app.resource.models import (  # noqa: F401
     Bin,
     BinCellOccupancy,
@@ -54,6 +54,7 @@ from src.app.resource.models import (  # noqa: F401
     RackType,
     ResourceStateEvent,
 )
+from src.app.sys.models import SystemOutbox  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 
 # 导入所有 workline 模型

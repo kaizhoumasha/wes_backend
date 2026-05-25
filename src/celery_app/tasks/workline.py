@@ -90,7 +90,7 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
 
 def _enqueue_outbox_dispatch() -> None:
     cast("Any", celery_app).send_task(
-        "src.celery_app.tasks.workline.dispatch_outbox_batch",
+        "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
         kwargs={"limit": 50},
     )
 
@@ -3816,68 +3816,11 @@ class OutboxDispatcher:
     default_retry_delay=10,
 )
 def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult:
-    """批量派发 Outbox 消息 (Celery 任务入口)
+    """兼容旧任务名，实际转发到系统级 SystemOutbox Engine。"""
 
-    从数据库获取 status='PENDING' 的 Outbox 消息，根据 dispatch_type 执行派发：
-    - DEVICE_COMMAND：调用设备 HTTP API
-    - EXTERNAL_HTTP：调用外部系统 HTTP API
-    - INTERNAL_SIGNAL：触发内部 Celery 任务
+    from src.celery_app.tasks.sys import dispatch_system_outbox_batch
 
-    处理流程（详见 OutboxDispatcher）：
-    1. 批量获取待派发消息（limit 限制）
-    2. 遍历每个消息：
-       a. 标记为 DISPATCHING（并发控制）
-       b. 根据 dispatch_type 调用对应派发方法
-       c. 成功：标记为 SENT
-       d. 失败：标记为 FAILED（超过最大重试次数）
-    3. 提交数据库事务
-
-    执行模式：
-    - bind=True：任务方法接收 self（WorklineTask 实例）
-    - max_retries=3：失败后自动重试最多 3 次
-    - default_retry_delay=10：重试间隔 10 秒
-
-    调用链：
-        dispatch_outbox_batch() → OutboxDispatcher._dispatch()
-
-    Args:
-        self: Celery 任务实例（bind=True）
-        limit: 批处理数量，默认 50
-
-    Returns:
-        派发结果统计 {
-            "dispatched": 派发总数,
-            "success": 成功数,
-            "failed": 失败数,
-            "skipped": 跳过数
-        }
-
-    触发方式：
-        celery beat 定时调度（默认每 5 秒）
-        手动调用：dispatch_outbox_batch.delay(limit=50)
-
-    派发类型详解：
-        - DEVICE_COMMAND: 向设备下发指令（HTTP POST /api/v1/device/command）
-        - EXTERNAL_HTTP: 调用外部系统 API（HTTP POST dispatch_key）
-        - INTERNAL_SIGNAL: 触发内部任务（celery.send_task）
-    """
-    logger.debug(f"开始派发 Outbox 消息, limit={limit}")
-
-    async def _dispatch() -> DispatchResult:
-        async with self.db as db:
-            return await OutboxDispatcher._dispatch(db, limit=limit)
-
-    try:
-        result = _run_async(_dispatch())
-        if result.get("dispatched", 0) > 0:
-            logger.info(f"Outbox 派发完成: {result}")
-        else:
-            logger.debug(f"Outbox 派发完成: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Outbox 派发失败: {e}")
-        countdown = 10 * (2**self.request.retries)
-        raise self.retry(exc=e, countdown=countdown) from None
+    return dispatch_system_outbox_batch(limit=limit)
 
 
 class _DispatchOutboxCompat:

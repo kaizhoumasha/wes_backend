@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.app.resource.models import RackKind
+from src.app.sys.models import OperationCompletionPolicy
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
 from src.app.workline.models.session import SessionStatus
@@ -205,10 +206,53 @@ class FakeRackTaskLifecycleService:
                 }
             },
         )
-        task.workline_code = kwargs["workline"].line_code
-        task.material_session_id = kwargs["session"].id
+        task.workline_code = getattr(kwargs["workline"], "line_code", None)
+        task.material_session_id = getattr(kwargs["session"], "id", None)
         self.repository.tasks.append(task)
         return task
+
+
+class FakeRackOperationRepository:
+    def __init__(self, *, completion_policy: OperationCompletionPolicy) -> None:
+        self.operation = SimpleNamespace(
+            id=1,
+            operation_key="op-001",
+            completion_policy=completion_policy,
+        )
+
+    async def get_by_operation_key(self, _db: Any, operation_key: str) -> SimpleNamespace | None:
+        if operation_key == self.operation.operation_key:
+            return self.operation
+        return None
+
+    async def create(self, _db: Any, data: dict[str, Any]) -> SimpleNamespace:
+        self.operation = SimpleNamespace(id=1, **data)
+        return self.operation
+
+    async def mark_status(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.operation.operation_status = kwargs["operation_status"]
+        return self.operation
+
+
+class DuplicateOnceRackOperationRepository(FakeRackOperationRepository):
+    def __init__(self) -> None:
+        super().__init__(completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION)
+        self.operation.operation_key = "op-concurrent"
+        self.operation.operation_type = RACK_TRANSPORT_OPERATION_TYPE
+        self.get_calls = 0
+        self.create_calls = 0
+
+    async def get_by_operation_key(self, _db: Any, operation_key: str) -> SimpleNamespace | None:
+        self.get_calls += 1
+        if self.get_calls == 1:
+            return None
+        if operation_key == self.operation.operation_key:
+            return self.operation
+        return None
+
+    async def create(self, _db: Any, data: dict[str, Any]) -> SimpleNamespace:
+        self.create_calls += 1
+        raise IntegrityError("INSERT INTO rack_operations", {}, Exception("duplicate operation_key"))
 
 
 class FakeOutboxRepository:
@@ -298,6 +342,7 @@ def _service(
     placements_by_position: dict[str, list[SimpleNamespace]] | None = None,
     task_repository: FakeRackTaskRepository | None = None,
     outbox_repository: FakeOutboxRepository | None = None,
+    rack_operation_repository: Any | None = None,
 ) -> tuple[
     WorklineRackOperationService,
     FakeRackTaskRepository,
@@ -314,6 +359,7 @@ def _service(
     )
     return (
         WorklineRackOperationService(
+            rack_operation_repository=rack_operation_repository,
             rack_task_repository=task_repository,
             rack_task_lifecycle_service=lifecycle_service,
             outbox_repository=outbox_repository,
@@ -357,7 +403,7 @@ def test_move_rack_source_claim_is_database_unique() -> None:
         (
             table_index
             for table_index in WorklineRackTask.__table__.indexes
-            if table_index.name == "ux_workline_rack_tasks_move_source_claim"
+            if table_index.name == "ux_rack_tasks_move_source_claim"
         ),
         None,
     )
@@ -487,6 +533,32 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
     assert session.awaiting_command_id == 99
     assert session.ended_at == "ended"
     assert session.failure_domain == "PLUGIN"
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_reloads_operation_after_concurrent_unique_conflict() -> None:
+    operation_repository = DuplicateOnceRackOperationRepository()
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[_active_rack()],
+        capacity=1,
+        rack_operation_repository=operation_repository,
+    )
+
+    tasks = await service.request_operation_tasks(
+        FakeDb(),
+        operation_key="op-concurrent",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=_session(),
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-concurrent",
+        task_specs=_classifier_replacement_task_specs(),
+    )
+
+    assert len(tasks) == 2
+    assert operation_repository.create_calls == 1
+    assert operation_repository.get_calls >= 2
+    assert [call["operation_id"] for call in lifecycle.calls] == [operation_repository.operation.id] * 2
 
 
 @pytest.mark.asyncio
@@ -1812,6 +1884,60 @@ async def test_derive_operation_status_requires_resource_projection_confirmation
         await service.derive_operation_status(FakeDb(), operation_key="op-projection")
         == WorklineRackOperationStatus.SUCCEEDED.value
     )
+
+
+@pytest.mark.asyncio
+async def test_derive_operation_status_callback_trusted_skips_resource_projection_confirmation() -> None:
+    task_repository = FakeRackTaskRepository()
+    task_repository.add_existing(
+        operation_key="op-callback-trusted",
+        sequence_no=1,
+        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        target_position_code="CLASSIFIER-WORK",
+    )
+    operation_repository = FakeRackOperationRepository(
+        completion_policy=OperationCompletionPolicy.CALLBACK_TRUSTED,
+    )
+    operation_repository.operation.operation_key = "op-callback-trusted"
+    service, _repo, _lifecycle, _placements = _service(
+        task_repository=task_repository,
+        rack_operation_repository=operation_repository,
+    )
+
+    assert (
+        await service.derive_operation_status(FakeDb(), operation_key="op-callback-trusted")
+        == WorklineRackOperationStatus.SUCCEEDED.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_system_rack_operation_without_workline_defaults_to_callback_trusted_completion_policy() -> None:
+    operation_repository = FakeRackOperationRepository(
+        completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
+    )
+    service, _repo, _lifecycle, _placements = _service(rack_operation_repository=operation_repository)
+
+    await service.request_operation_tasks(
+        FakeDb(),
+        operation_key="system-rack-rebalance-001",
+        operation_type="GLOBAL_RACK_REBALANCE",
+        workline=None,
+        session=None,
+        target_code="WMS_RCS_RACK_OPERATION",
+        trace_id="trace-system-rack",
+        task_specs=[
+            {
+                "sequence_no": 1,
+                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "rack_code": "RACK-A",
+                "source_position_code": "AREA-A-01",
+                "target_position_code": "AREA-B-01",
+            }
+        ],
+    )
+
+    assert operation_repository.operation.completion_policy == OperationCompletionPolicy.CALLBACK_TRUSTED
 
 
 @pytest.mark.asyncio

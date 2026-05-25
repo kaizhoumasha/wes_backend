@@ -10,6 +10,7 @@ from sqlalchemy import JSON, Column, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.sys.models import OperationCompletionPolicy
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -18,9 +19,7 @@ from src.database.schema_conf import SchemaType
 class HandlingObjectType(str, Enum):
     """Handling 操作对象类型。"""
 
-    RACK = "RACK"
     BIN = "BIN"
-    COMPOSITE = "COMPOSITE"
 
 
 class HandlingOperationStatus(str, Enum):
@@ -89,6 +88,12 @@ class HandlingOperationBase(BaseMixin):
         index=True,
         sa_type=cast("Any", SQLAEnum(HandlingOperationStatus, native_enum=False, create_constraint=True, length=50)),
         description="operation 状态",
+    )
+    completion_policy: OperationCompletionPolicy = Field(
+        default=OperationCompletionPolicy.CALLBACK_TRUSTED,
+        index=True,
+        sa_type=cast("Any", SQLAEnum(OperationCompletionPolicy, native_enum=False, create_constraint=True, length=50)),
+        description="完成确认策略",
     )
     workline_id: int | None = Field(
         default=None,

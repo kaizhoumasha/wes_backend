@@ -1,9 +1,11 @@
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
@@ -423,6 +425,37 @@ async def test_get_pending_messages_returns_only_earliest_active_device_outbox(d
 
     result_after_first_sent = await WorklineOutboxRepository().get_pending_messages(db_session, limit=10)
     assert [item.dispatch_key for item in result_after_first_sent] == ["device-command:second-ready"]
+
+
+@pytest.mark.asyncio
+async def test_workline_outbox_repository_scans_only_workline_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, Any] = {}
+
+    async def capture_get_pending_messages(
+        self: SystemOutboxRepository,
+        db: Any,
+        *,
+        limit: int = 50,
+        operation_domains: tuple[str, ...] | None = None,
+        exclude_operation_domains: tuple[str, ...] | None = None,
+    ) -> list[Any]:
+        calls["self"] = self
+        calls["db"] = db
+        calls["limit"] = limit
+        calls["operation_domains"] = operation_domains
+        calls["exclude_operation_domains"] = exclude_operation_domains
+        return []
+
+    monkeypatch.setattr(SystemOutboxRepository, "get_pending_messages", capture_get_pending_messages)
+    db = object()
+
+    result = await WorklineOutboxRepository().get_pending_messages(db, limit=7)
+
+    assert result == []
+    assert calls["db"] is db
+    assert calls["limit"] == 7
+    assert calls["operation_domains"] == ("WORKLINE",)
+    assert calls["exclude_operation_domains"] is None
 
 
 @pytest.mark.asyncio

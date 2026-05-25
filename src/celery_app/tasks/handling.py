@@ -68,23 +68,11 @@ class HandlingTask(Task):
     default_retry_delay=10,
 )
 def dispatch_system_outbox_batch(self: HandlingTask, limit: int = 50) -> dict[str, int]:
-    """批量派发 SystemOutbox 消息。"""
+    """兼容旧任务名，实际转发到系统级 outbox task。"""
 
-    async def _dispatch() -> dict[str, int]:
-        from src.app.handling.services import system_outbox_dispatcher
+    from src.celery_app.tasks.sys import dispatch_system_outbox_batch as dispatch_sys_outbox_batch
 
-        async with self.db as db:
-            return await system_outbox_dispatcher.dispatch(db, limit=limit)
-
-    try:
-        result = _run_async(_dispatch())
-        if result.get("dispatched", 0) > 0:
-            logger.info(f"SystemOutbox 派发完成: {result}")
-        return result
-    except Exception as exc:
-        logger.error(f"SystemOutbox 派发失败: {exc}")
-        countdown = 10 * (2**self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown) from None
+    return dispatch_sys_outbox_batch(limit=limit)
 
 
 __all__ = ["HandlingTask", "dispatch_system_outbox_batch"]

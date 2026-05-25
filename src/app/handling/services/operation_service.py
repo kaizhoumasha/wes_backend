@@ -11,9 +11,6 @@ from src.app.handling.models import (
     HandlingOperationStatus,
     HandlingStepKind,
     HandlingStepStatus,
-    SystemOutboxDispatchType,
-    SystemOutboxStatus,
-    SystemOutboxTargetType,
 )
 from src.app.handling.repositories import (
     HandlingMoveRepository,
@@ -26,6 +23,11 @@ from src.app.handling.repositories import (
     system_outbox_repository,
 )
 from src.app.handling.services.gateway import WmsRcsHandlingGateway, wms_rcs_handling_gateway
+from src.app.sys.models import (
+    SystemOutboxDispatchType,
+    SystemOutboxStatus,
+    SystemOutboxTargetType,
+)
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -156,9 +158,10 @@ class HandlingOperationService:
             outbox = await self.outbox_repository.create(
                 db,
                 {
-                    "operation_id": operation.id,
                     "session_id": material_session_id,
                     "workline_id": workline_id,
+                    "operation_domain": "HANDLING",
+                    "operation_key": operation_key,
                     "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP.value,
                     "dispatch_key": _required_text(envelope.get("dispatch_key"), "dispatch_key"),
                     "target_type": SystemOutboxTargetType.HTTP_ENDPOINT.value,

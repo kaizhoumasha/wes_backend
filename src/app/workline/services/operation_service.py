@@ -147,7 +147,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         from src.celery_app.app import celery_app
 
         cast("Any", celery_app).send_task(
-            "src.celery_app.tasks.workline.dispatch_outbox_batch",
+            "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
             kwargs={"limit": 50},
         )
 
