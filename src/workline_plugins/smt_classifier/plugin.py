@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, cast
+from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
@@ -92,6 +93,7 @@ DEFAULT_CLASSIFIER_WORK_POSITION_CODE = "SINGLE_LAYER_A"
 DEFAULT_CLASSIFIER_NEW_RACK_KIND = "SINGLE_LAYER"
 DEFAULT_CLASSIFIER_MOVE_OUT_TARGET_POSITION_ROLE = "SMT_EMPTY_RACK_AREA"
 DEFAULT_CLASSIFIER_WORK_POSITION_ROLE = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
+DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 
 
 def _build_scan_ng_context(*, barcode: str, barcodes: list[str], location: str, device_code: str) -> dict[str, Any]:
@@ -191,9 +193,10 @@ def _normalize_rack_operation_request_fields(
     if not isinstance(payload, Mapping):
         raise TypeError(f"{field_name}.payload must be a mapping")
 
+    target_code = _normalize_rack_operation_target_code(request.get("target_code"))
     return (
         str(request.get("operation_key") or ""),
-        str(request.get("target_code") or ""),
+        target_code,
         dict(cast("Mapping[str, Any]", payload)),
         int(request.get("timeout_seconds") or 1800),
         str(request.get("source_system") or "WMS_RCS"),
@@ -202,7 +205,16 @@ def _normalize_rack_operation_request_fields(
 
 def _normalize_rack_operation_request(value: Any) -> SmtRackOperationRequest:
     if isinstance(value, SmtRackOperationRequest):
-        return value
+        target_code = _normalize_rack_operation_target_code(value.target_code)
+        if target_code == value.target_code:
+            return value
+        return SmtRackOperationRequest(
+            operation_key=value.operation_key,
+            target_code=target_code,
+            payload=dict(value.payload),
+            timeout_seconds=value.timeout_seconds,
+            source_system=value.source_system,
+        )
     operation_key, target_code, payload, timeout_seconds, source_system = _normalize_rack_operation_request_fields(
         value,
         field_name="rack_operation_request",
@@ -217,6 +229,14 @@ def _normalize_rack_operation_request(value: Any) -> SmtRackOperationRequest:
     )
 
 
+def _normalize_rack_operation_target_code(value: Any) -> str:
+    target_code = str(value or "")
+    parsed = urlparse(target_code)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return DEFAULT_RACK_OPERATION_TARGET_CODE
+    return target_code
+
+
 def _normalize_scheduling_decision_kind(
     value: Any, default: SmtRackBinSchedulingDecisionKind
 ) -> SmtRackBinSchedulingDecisionKind:
@@ -228,7 +248,18 @@ def _normalize_scheduling_decision_kind(
 
 def _normalize_bin_scheduling_decision(value: Any) -> SmtRackBinSchedulingDecision:
     if isinstance(value, SmtRackBinSchedulingDecision):
-        return value
+        if value.rack_operation_request is None:
+            return value
+        normalized_request = _normalize_rack_operation_request(value.rack_operation_request)
+        if normalized_request == value.rack_operation_request:
+            return value
+        return SmtRackBinSchedulingDecision(
+            kind=value.kind,
+            bin_location=value.bin_location,
+            rack_operation_request=normalized_request,
+            reason_code=value.reason_code,
+            message=value.message,
+        )
     if not isinstance(value, Mapping):
         raise TypeError("bin scheduling result must be a mapping or SmtRackBinSchedulingDecision")
 

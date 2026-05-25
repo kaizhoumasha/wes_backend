@@ -34,7 +34,7 @@ class WorklineDiagnosticBase(BaseMixin):
 
     session_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.workline_sessions.id")
     inbox_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.workline_inbox.id")
-    outbox_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.workline_outbox.id")
+    outbox_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.system_outbox.id")
     command_code: str | None = Field(default=None, max_length=200, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
     workline_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.work_lines.id")

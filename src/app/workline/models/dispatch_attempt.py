@@ -27,7 +27,7 @@ class DispatchAttemptStatus(str, Enum):
 class WorklineDispatchAttemptBase(BaseMixin):
     """派发尝试基础字段。"""
 
-    outbox_id: int = Field(index=True, foreign_key="wes_biz.workline_outbox.id", description="Outbox ID")
+    outbox_id: int = Field(index=True, foreign_key="wes_biz.system_outbox.id", description="Outbox ID")
     dispatch_key: str = Field(max_length=200, index=True, description="派发键")
     attempt_no: int = Field(index=True, description="同一 outbox 的尝试序号")
     lease_token: str = Field(max_length=240, unique=True, index=True, description="派发租约 token")

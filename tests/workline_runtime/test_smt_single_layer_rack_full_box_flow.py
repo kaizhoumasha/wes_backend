@@ -17,7 +17,7 @@ from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
 WORKLINE_CODE = "WL-CONVEYOR-01"
 RACK_ID = "RACK-SL-DEV-001"
-RACK_OPERATION_TARGET = "http://127.0.0.1:8009/api/v1/device/command"
+RACK_OPERATION_TARGET = "WMS_RCS_RACK_OPERATION"
 CELL_CAPACITY = 5
 MATERIAL_CODES = [f"MAT-SMT-{index:03d}" for index in range(1, 11)]
 
@@ -143,7 +143,7 @@ def _base_context(plan: ReelPlan, *, active_rack: dict[str, Any] | None, trace_i
         "reel_diameter": plan.reel_diameter,
         "reel_thickness": 1.0,
         "active_bin_rack": active_rack,
-        "wms_rcs_rack_operation_url": RACK_OPERATION_TARGET,
+        "wms_rcs_rack_operation_url": "http://127.0.0.1:8009/api/v1/device/command",
     }
 
 

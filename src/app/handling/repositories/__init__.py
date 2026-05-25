@@ -1,5 +1,7 @@
 """Handling Repository 导出。"""
 
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
+
 from .operation_repository import (
     HandlingMoveRepository,
     HandlingOperationRepository,
@@ -8,7 +10,6 @@ from .operation_repository import (
     handling_operation_repository,
     handling_step_repository,
 )
-from .outbox_repository import SystemOutboxRepository, system_outbox_repository
 
 __all__ = [
     "HandlingMoveRepository",

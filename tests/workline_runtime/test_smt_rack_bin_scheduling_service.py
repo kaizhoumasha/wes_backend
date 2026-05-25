@@ -536,7 +536,7 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
     assert payload["work_position_code"] == "SINGLE_LAYER_A"
     assert payload["new_rack_kind"] == "SINGLE_LAYER"
     assert payload["move_out_target_position_role"] == "SMT_EMPTY_RACK_AREA"
-    assert payload["target_code"] == "http://wms-rcs/api/rack-operation"
+    assert payload["target_code"] == "WMS_RCS_RACK_OPERATION"
     assert payload["reason_code"] == "NO_COMPATIBLE_OR_EMPTY_CELL"
     assert len(payload["active_rack_bin_snapshots"]) == 4
 
@@ -553,8 +553,8 @@ def test_plan_allocation_accepts_legacy_rack_supply_target_alias() -> None:
 
     assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.rack_operation_request is not None
-    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-exchange"
-    assert decision.rack_operation_request.payload["target_code"] == "http://wms-rcs/api/rack-exchange"
+    assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
+    assert decision.rack_operation_request.payload["target_code"] == "WMS_RCS_RACK_OPERATION"
 
 
 def test_plan_allocation_missing_active_rack_requires_rack_operation_with_reason() -> None:
@@ -597,7 +597,7 @@ def test_plan_allocation_without_active_rack_requests_operation_allocate_only() 
     assert decision.bin_location is None
     assert decision.rack_operation_request is not None
     assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-supply-001:RACK_OPERATION"
-    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-operation"
+    assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
     payload = decision.rack_operation_request.payload
     assert payload["request_type"] == "SMT_RACK_OPERATION"
     assert payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
@@ -929,7 +929,7 @@ def test_plan_allocation_rack_operation_uses_external_operation_key_and_target_c
     assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.rack_operation_request is not None
     assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-001:RACK_OPERATION"
-    assert decision.rack_operation_request.target_code == "http://wms-rcs/api/rack-operation"
+    assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
 
 
 def test_runtime_services_injects_default_smt_rack_bin_scheduler() -> None:

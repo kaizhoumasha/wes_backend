@@ -8,10 +8,10 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.app.resource.models import RackKind
+from src.app.sys.models import OperationCompletionPolicy
 from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
 from src.app.workline.models.session import SessionStatus
-from src.app.workline.services.rack_gateway import WmsRcsRackGateway
 from src.app.workline.services.rack_operation_service import (
     WorklineRackOperationService,
     WorklineRackOperationStatus,
@@ -163,9 +163,20 @@ class FakeRackTaskRepository:
         if "task_key" not in provided_keys:
             values["task_key"] = deterministic_key
         if "actions_json" not in provided_keys:
-            values["actions_json"] = _expected_rack_task_envelope(values)["actions_json"]
+            values["actions_json"] = {"action": values["task_type"].value, "required": True}
         if "request_json" not in provided_keys:
-            values["request_json"] = _expected_rack_task_envelope(values)["request_json"]
+            values["request_json"] = {
+                "operation_key": values["operation_key"],
+                "operation_type": values["operation_type"],
+                "sequence_no": values["sequence_no"],
+                "task_type": values["task_type"].value,
+                "workline_code": values["workline_code"],
+                "source_position_code": values["source_position_code"],
+                "target_position_code": values["target_position_code"],
+                "target_position_role": values["target_position_role"],
+                "rack_kind": values["rack_kind"],
+                "rack_code": values["rack_code"],
+            }
         task = SimpleNamespace(**values)
         self.tasks.append(task)
         return task
@@ -195,10 +206,53 @@ class FakeRackTaskLifecycleService:
                 }
             },
         )
-        task.workline_code = kwargs["workline"].line_code
-        task.material_session_id = kwargs["session"].id
+        task.workline_code = getattr(kwargs["workline"], "line_code", None)
+        task.material_session_id = getattr(kwargs["session"], "id", None)
         self.repository.tasks.append(task)
         return task
+
+
+class FakeRackOperationRepository:
+    def __init__(self, *, completion_policy: OperationCompletionPolicy) -> None:
+        self.operation = SimpleNamespace(
+            id=1,
+            operation_key="op-001",
+            completion_policy=completion_policy,
+        )
+
+    async def get_by_operation_key(self, _db: Any, operation_key: str) -> SimpleNamespace | None:
+        if operation_key == self.operation.operation_key:
+            return self.operation
+        return None
+
+    async def create(self, _db: Any, data: dict[str, Any]) -> SimpleNamespace:
+        self.operation = SimpleNamespace(id=1, **data)
+        return self.operation
+
+    async def mark_status(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.operation.operation_status = kwargs["operation_status"]
+        return self.operation
+
+
+class DuplicateOnceRackOperationRepository(FakeRackOperationRepository):
+    def __init__(self) -> None:
+        super().__init__(completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION)
+        self.operation.operation_key = "op-concurrent"
+        self.operation.operation_type = RACK_TRANSPORT_OPERATION_TYPE
+        self.get_calls = 0
+        self.create_calls = 0
+
+    async def get_by_operation_key(self, _db: Any, operation_key: str) -> SimpleNamespace | None:
+        self.get_calls += 1
+        if self.get_calls == 1:
+            return None
+        if operation_key == self.operation.operation_key:
+            return self.operation
+        return None
+
+    async def create(self, _db: Any, data: dict[str, Any]) -> SimpleNamespace:
+        self.create_calls += 1
+        raise IntegrityError("INSERT INTO rack_operations", {}, Exception("duplicate operation_key"))
 
 
 class FakeOutboxRepository:
@@ -288,6 +342,7 @@ def _service(
     placements_by_position: dict[str, list[SimpleNamespace]] | None = None,
     task_repository: FakeRackTaskRepository | None = None,
     outbox_repository: FakeOutboxRepository | None = None,
+    rack_operation_repository: Any | None = None,
 ) -> tuple[
     WorklineRackOperationService,
     FakeRackTaskRepository,
@@ -304,6 +359,7 @@ def _service(
     )
     return (
         WorklineRackOperationService(
+            rack_operation_repository=rack_operation_repository,
             rack_task_repository=task_repository,
             rack_task_lifecycle_service=lifecycle_service,
             outbox_repository=outbox_repository,
@@ -342,32 +398,12 @@ def _active_rack(
     return SimpleNamespace(rack_code=rack_code, rack_kind=rack_kind)
 
 
-def _expected_rack_task_envelope(values: dict[str, Any]) -> dict[str, Any]:
-    return WmsRcsRackGateway().build_rack_task_envelope(
-        operation_key=values["operation_key"],
-        operation_type=values["operation_type"],
-        workline_code=values["workline_code"],
-        trace_id=values.get("trace_id", "trace-existing"),
-        target_code=values["target_code"],
-        spec=SimpleNamespace(
-            sequence_no=values["sequence_no"],
-            task_type=values["task_type"].value,
-            rack_code=values["rack_code"],
-            rack_kind=values["rack_kind"],
-            source_position_code=values["source_position_code"],
-            target_position_code=values["target_position_code"],
-            target_position_role=values["target_position_role"],
-            required=values.get("required", True),
-        ),
-    )
-
-
 def test_move_rack_source_claim_is_database_unique() -> None:
     index = next(
         (
             table_index
             for table_index in WorklineRackTask.__table__.indexes
-            if table_index.name == "ux_workline_rack_tasks_move_source_claim"
+            if table_index.name == "ux_rack_tasks_move_source_claim"
         ),
         None,
     )
@@ -500,7 +536,33 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
 
 
 @pytest.mark.asyncio
-async def test_request_operation_tasks_normalizes_dataclass_task_specs_through_gateway() -> None:
+async def test_request_operation_tasks_reloads_operation_after_concurrent_unique_conflict() -> None:
+    operation_repository = DuplicateOnceRackOperationRepository()
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[_active_rack()],
+        capacity=1,
+        rack_operation_repository=operation_repository,
+    )
+
+    tasks = await service.request_operation_tasks(
+        FakeDb(),
+        operation_key="op-concurrent",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=_session(),
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-concurrent",
+        task_specs=_classifier_replacement_task_specs(),
+    )
+
+    assert len(tasks) == 2
+    assert operation_repository.create_calls == 1
+    assert operation_repository.get_calls >= 2
+    assert [call["operation_id"] for call in lifecycle.calls] == [operation_repository.operation.id] * 2
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_dispatch() -> None:
     service, _repo, lifecycle, _placements = _service(
         placements_by_position={
             "SOURCE-POSITION": [
@@ -532,6 +594,10 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_through_g
                 source_position_code="SOURCE-POSITION",
                 target_position_code="TARGET-POSITION",
                 target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
+                dispatch_key="caller-dispatch-key",
+                target_code="CALLER-TARGET",
+                request_json={"caller_field": "kept"},
+                actions_json={},
                 required=False,
             )
         ],
@@ -539,11 +605,11 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_through_g
 
     assert [task.sequence_no for task in tasks] == [1]
     call = lifecycle.calls[0]
-    assert call["dispatch_key"] == "rack-operation:op-dataclass-spec:1:MOVE_RACK"
-    assert call["target_code"] == RACK_OPERATION_TARGET_CODE
+    assert call["dispatch_key"] == "caller-dispatch-key"
+    assert call["target_code"] == "CALLER-TARGET"
     assert call["actions_json"]["action"] == WorklineRackTaskType.MOVE_RACK.value
     assert call["actions_json"]["required"] is False
-    assert call["request_json"]["callback_type"] == "WMS_RACK_MOVED"
+    assert call["request_json"]["caller_field"] == "kept"
     assert call["request_json"]["operation_key"] == "op-dataclass-spec"
     assert call["request_json"]["operation_type"] == RACK_TRANSPORT_OPERATION_TYPE
     assert call["request_json"]["workline_code"] == "WL-SMT-01"
@@ -1435,7 +1501,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
 
 
 @pytest.mark.asyncio
-async def test_request_operation_rejects_plugin_owned_request_json() -> None:
+async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="op-request-json-drift",
@@ -1466,7 +1532,7 @@ async def test_request_operation_rejects_plugin_owned_request_json() -> None:
         task_repository=task_repository,
     )
 
-    with pytest.raises(ValueError, match="插件不得传入货架外部派发字段: request_json"):
+    with pytest.raises(ValueError, match="request_json differs from request"):
         await service.request_operation_tasks(
             FakeDb(),
             operation_key="op-request-json-drift",
@@ -1489,7 +1555,7 @@ async def test_request_operation_rejects_plugin_owned_request_json() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_operation_rejects_plugin_owned_actions_json() -> None:
+async def test_repeated_operation_rejects_actions_json_payload_drift() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="op-actions-json-drift",
@@ -1512,7 +1578,7 @@ async def test_request_operation_rejects_plugin_owned_actions_json() -> None:
         task_repository=task_repository,
     )
 
-    with pytest.raises(ValueError, match="插件不得传入货架外部派发字段: actions_json"):
+    with pytest.raises(ValueError, match="actions_json differs from request"):
         await service.request_operation_tasks(
             FakeDb(),
             operation_key="op-actions-json-drift",
@@ -1547,21 +1613,16 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
         target_code="WMS-RACK",
         request_json={
-            **_expected_rack_task_envelope(
-                {
-                    "operation_key": "op-timeout-evidence",
-                    "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
-                    "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-                    "workline_code": "WL-SMT-01",
-                    "rack_code": None,
-                    "rack_kind": RackKind.SINGLE_LAYER.value,
-                    "source_position_code": None,
-                    "target_position_code": "CLASSIFIER-WORK",
-                    "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
-                    "target_code": "WMS-RACK",
-                }
-            )["request_json"],
+            "operation_key": "op-timeout-evidence",
+            "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+            "sequence_no": 2,
+            "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+            "workline_code": "WL-SMT-01",
+            "source_position_code": None,
+            "target_position_code": "CLASSIFIER-WORK",
+            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+            "rack_kind": RackKind.SINGLE_LAYER.value,
+            "rack_code": None,
             "timeout_seconds": 300,
         },
     )
@@ -1606,8 +1667,6 @@ async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
                 "target_position_code": "CLASSIFIER-WORK",
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-existing-outbox",
-                "request_id": "rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
-                "callback_type": "WMS_RACK_ARRIVED",
                 "dispatch_key": "rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
                 "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
@@ -1658,8 +1717,6 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
                 "target_position_code": "CLASSIFIER-WORK",
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-outbox-race",
-                "request_id": dispatch_key,
-                "callback_type": "WMS_RACK_ARRIVED",
                 "dispatch_key": dispatch_key,
                 "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
@@ -1714,8 +1771,6 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
                 "target_position_code": "CLASSIFIER-WORK",
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-old",
-                "request_id": dispatch_key,
-                "callback_type": "WMS_RACK_ARRIVED",
                 "dispatch_key": dispatch_key,
                 "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
@@ -1829,6 +1884,60 @@ async def test_derive_operation_status_requires_resource_projection_confirmation
         await service.derive_operation_status(FakeDb(), operation_key="op-projection")
         == WorklineRackOperationStatus.SUCCEEDED.value
     )
+
+
+@pytest.mark.asyncio
+async def test_derive_operation_status_callback_trusted_skips_resource_projection_confirmation() -> None:
+    task_repository = FakeRackTaskRepository()
+    task_repository.add_existing(
+        operation_key="op-callback-trusted",
+        sequence_no=1,
+        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        target_position_code="CLASSIFIER-WORK",
+    )
+    operation_repository = FakeRackOperationRepository(
+        completion_policy=OperationCompletionPolicy.CALLBACK_TRUSTED,
+    )
+    operation_repository.operation.operation_key = "op-callback-trusted"
+    service, _repo, _lifecycle, _placements = _service(
+        task_repository=task_repository,
+        rack_operation_repository=operation_repository,
+    )
+
+    assert (
+        await service.derive_operation_status(FakeDb(), operation_key="op-callback-trusted")
+        == WorklineRackOperationStatus.SUCCEEDED.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_system_rack_operation_without_workline_defaults_to_callback_trusted_completion_policy() -> None:
+    operation_repository = FakeRackOperationRepository(
+        completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
+    )
+    service, _repo, _lifecycle, _placements = _service(rack_operation_repository=operation_repository)
+
+    await service.request_operation_tasks(
+        FakeDb(),
+        operation_key="system-rack-rebalance-001",
+        operation_type="GLOBAL_RACK_REBALANCE",
+        workline=None,
+        session=None,
+        target_code="WMS_RCS_RACK_OPERATION",
+        trace_id="trace-system-rack",
+        task_specs=[
+            {
+                "sequence_no": 1,
+                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "rack_code": "RACK-A",
+                "source_position_code": "AREA-A-01",
+                "target_position_code": "AREA-B-01",
+            }
+        ],
+    )
+
+    assert operation_repository.operation.completion_policy == OperationCompletionPolicy.CALLBACK_TRUSTED
 
 
 @pytest.mark.asyncio
