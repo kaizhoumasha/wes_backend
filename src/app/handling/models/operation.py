@@ -18,9 +18,7 @@ from src.database.schema_conf import SchemaType
 class HandlingObjectType(str, Enum):
     """Handling 操作对象类型。"""
 
-    RACK = "RACK"
     BIN = "BIN"
-    COMPOSITE = "COMPOSITE"
 
 
 class HandlingOperationStatus(str, Enum):

@@ -21,6 +21,7 @@ from src.app.workline.repositories.rack_task_repository import (
     WorklineRackTaskRepository,
     workline_rack_task_repository,
 )
+from src.app.workline.services.rack_gateway import WmsRcsRackGateway, wms_rcs_rack_gateway
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
@@ -57,11 +58,21 @@ class WorklineRackTaskSpec:
     source_position_code: str | None
     target_position_code: str | None
     target_position_role: str | None
-    dispatch_key: str
-    target_code: str
-    request_json: dict[str, Any]
-    actions_json: dict[str, Any]
     required: bool
+
+
+_FORBIDDEN_CALLER_TASK_FIELDS = {
+    "dispatch_key",
+    "target_code",
+    "request_json",
+    "actions_json",
+    "payload_json",
+    "callback_type",
+    "http_headers",
+    "url",
+    "auth",
+    "retry",
+}
 
 
 class WorklineRackOperationService:
@@ -79,12 +90,14 @@ class WorklineRackOperationService:
         outbox_repository: WorklineOutboxRepository = outbox_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
         rack_placement_repository: RackPlacementRepository = rack_placement_repository,
+        gateway: WmsRcsRackGateway = wms_rcs_rack_gateway,
     ) -> None:
         self.rack_task_repository = rack_task_repository
         self.rack_task_lifecycle_service = rack_task_lifecycle_service
         self.outbox_repository = outbox_repository
         self.rack_position_service = rack_position_service
         self.rack_placement_repository = rack_placement_repository
+        self.gateway = gateway
 
     async def request_operation_tasks(
         self,
@@ -94,7 +107,7 @@ class WorklineRackOperationService:
         operation_type: str,
         workline: Any,
         session: Any | None,
-        target_code: str,
+        target_code: str | None,
         trace_id: str,
         task_specs: Sequence[Mapping[str, Any] | WorklineRackTaskSpec],
         timeout_seconds: int = DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS,
@@ -104,14 +117,9 @@ class WorklineRackOperationService:
         operation_key = _required_text(operation_key, "operation_key")
         operation_type = _required_text(operation_type, "operation_type")
         workline_code = _required_text(getattr(workline, "line_code", None), "workline.line_code")
-        target_code = _required_text(target_code, "target_code")
+        target_code = _optional_str(target_code)
         trace_id = _required_text(trace_id, "trace_id")
         specs = self._normalize_task_specs(
-            operation_key=operation_key,
-            operation_type=operation_type,
-            workline_code=workline_code,
-            target_code=target_code,
-            trace_id=trace_id,
             task_specs=task_specs,
         )
 
@@ -121,7 +129,11 @@ class WorklineRackOperationService:
                 existing_tasks,
                 operation_key=operation_key,
                 operation_type=operation_type,
+                workline_code=workline_code,
+                target_code=target_code,
+                trace_id=trace_id,
                 specs=specs,
+                gateway=self.gateway,
             )
             return list(existing_tasks)
 
@@ -134,11 +146,19 @@ class WorklineRackOperationService:
 
         created_tasks: list[Any] = []
         for spec in specs:
+            envelope = self.gateway.build_rack_task_envelope(
+                operation_key=operation_key,
+                operation_type=operation_type,
+                workline_code=workline_code,
+                trace_id=trace_id,
+                target_code=target_code,
+                spec=spec,
+            )
             outbox = await self._get_or_create_outbox(
                 db,
                 session=session,
                 workline=workline,
-                spec=spec,
+                envelope=envelope,
             )
             task = await self.rack_task_lifecycle_service.record_requested_task(
                 db,
@@ -149,10 +169,10 @@ class WorklineRackOperationService:
                 operation_type=operation_type,
                 sequence_no=spec.sequence_no,
                 task_type=spec.task_type,
-                task_key=spec.dispatch_key,
-                dispatch_key=spec.dispatch_key,
-                target_code=spec.target_code,
-                request_json=spec.request_json,
+                task_key=envelope["dispatch_key"],
+                dispatch_key=envelope["dispatch_key"],
+                target_code=envelope["target_code"],
+                request_json=envelope["request_json"],
                 timeout_seconds=timeout_seconds,
                 source_system="WMS_RCS",
                 trace_id=trace_id,
@@ -161,7 +181,7 @@ class WorklineRackOperationService:
                 source_position_code=spec.source_position_code,
                 target_position_code=spec.target_position_code,
                 target_position_role=spec.target_position_role,
-                actions_json=spec.actions_json,
+                actions_json=envelope["actions_json"],
             )
             created_tasks.append(task)
 
@@ -173,21 +193,23 @@ class WorklineRackOperationService:
         *,
         session: Any | None,
         workline: Any,
-        spec: WorklineRackTaskSpec,
+        envelope: Mapping[str, Any],
     ) -> WorklineOutbox:
-        payload_json = _outbox_payload(spec)
-        existing = await self.outbox_repository.get_by_dispatch_key(db, spec.dispatch_key)
+        payload_json = _mapping(envelope.get("payload_json"), "payload_json")
+        dispatch_key = _required_text(envelope.get("dispatch_key"), "dispatch_key")
+        target_code = _required_text(envelope.get("target_code"), "target_code")
+        existing = await self.outbox_repository.get_by_dispatch_key(db, dispatch_key)
         if existing is not None:
-            _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
+            _ensure_existing_outbox_shape(existing, target_code=target_code, payload_json=payload_json)
             return existing
 
         outbox = WorklineOutbox(
             session_id=_optional_int(getattr(session, "id", None)),
             workline_id=_required_int(getattr(workline, "id", None), "workline.id"),
             dispatch_type=DispatchType.EXTERNAL_HTTP,
-            dispatch_key=spec.dispatch_key,
+            dispatch_key=dispatch_key,
             target_type=TargetType.HTTP_ENDPOINT,
-            target_code=spec.target_code,
+            target_code=target_code,
             payload_json=payload_json,
             status=OutboxStatus.NEW,
         )
@@ -196,10 +218,10 @@ class WorklineRackOperationService:
                 db.add(outbox)
                 await db.flush()
         except IntegrityError:
-            existing = await self.outbox_repository.get_by_dispatch_key(db, spec.dispatch_key)
+            existing = await self.outbox_repository.get_by_dispatch_key(db, dispatch_key)
             if existing is None:
                 raise
-            _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
+            _ensure_existing_outbox_shape(existing, target_code=target_code, payload_json=payload_json)
             return existing
         return outbox
 
@@ -242,20 +264,10 @@ class WorklineRackOperationService:
     def _normalize_task_specs(
         self,
         *,
-        operation_key: str,
-        operation_type: str,
-        workline_code: str,
-        trace_id: str,
-        target_code: str,
         task_specs: Sequence[Mapping[str, Any] | WorklineRackTaskSpec],
     ) -> list[WorklineRackTaskSpec]:
         specs = [
             self._normalize_task_spec(
-                operation_key=operation_key,
-                operation_type=operation_type,
-                workline_code=workline_code,
-                target_code=target_code,
-                trace_id=trace_id,
                 task_spec=task_spec,
             )
             for task_spec in task_specs
@@ -272,15 +284,11 @@ class WorklineRackOperationService:
     def _normalize_task_spec(
         self,
         *,
-        operation_key: str,
-        operation_type: str,
-        workline_code: str,
-        target_code: str,
-        trace_id: str,
         task_spec: Mapping[str, Any] | WorklineRackTaskSpec,
     ) -> WorklineRackTaskSpec:
         if isinstance(task_spec, WorklineRackTaskSpec):
             task_spec = asdict(task_spec)
+        _reject_external_task_fields(task_spec)
 
         sequence_no = _required_int(task_spec.get("sequence_no"), "task_specs[].sequence_no")
         if sequence_no <= 0:
@@ -291,32 +299,7 @@ class WorklineRackOperationService:
         source_position_code = _optional_str(task_spec.get("source_position_code"))
         target_position_code = _optional_str(task_spec.get("target_position_code"))
         target_position_role = _optional_str(task_spec.get("target_position_role"))
-        spec_target_code = _optional_str(task_spec.get("target_code")) or target_code
-
-        raw_actions = task_spec.get("actions_json")
-        actions_json = dict(raw_actions) if isinstance(raw_actions, Mapping) else {}
-        required = bool(task_spec.get("required", actions_json.get("required", True)))
-        actions_json.setdefault("action", task_type)
-        actions_json["required"] = required
-
-        dispatch_key = f"rack-operation:{operation_key}:{sequence_no}:{task_type}"
-        raw_request = task_spec.get("request_json")
-        request_json = dict(raw_request) if isinstance(raw_request, Mapping) else {}
-        request_json.update(
-            {
-                "operation_key": operation_key,
-                "operation_type": operation_type,
-                "sequence_no": sequence_no,
-                "task_type": task_type,
-                "workline_code": workline_code,
-                "rack_code": rack_code,
-                "rack_kind": rack_kind,
-                "source_position_code": source_position_code,
-                "target_position_code": target_position_code,
-                "target_position_role": target_position_role,
-                "trace_id": trace_id,
-            }
-        )
+        required = bool(task_spec.get("required", True))
         return WorklineRackTaskSpec(
             sequence_no=sequence_no,
             task_type=task_type,
@@ -325,10 +308,6 @@ class WorklineRackOperationService:
             source_position_code=source_position_code,
             target_position_code=target_position_code,
             target_position_role=target_position_role,
-            dispatch_key=_optional_str(task_spec.get("dispatch_key")) or dispatch_key,
-            target_code=spec_target_code,
-            request_json=request_json,
-            actions_json=actions_json,
             required=required,
         )
 
@@ -657,7 +636,11 @@ def _ensure_existing_operation_request_consistent(
     *,
     operation_key: str,
     operation_type: str,
+    workline_code: str,
+    target_code: str | None,
+    trace_id: str,
     specs: list[WorklineRackTaskSpec],
+    gateway: WmsRcsRackGateway,
 ) -> None:
     sorted_tasks = sorted(tasks, key=lambda task: task.sequence_no)
     sorted_specs = sorted(specs, key=lambda spec: spec.sequence_no)
@@ -669,18 +652,26 @@ def _ensure_existing_operation_request_consistent(
             raise ValueError("existing rack operation key differs from request")
         if getattr(task, "operation_type", None) != operation_type:
             raise ValueError("existing rack operation type differs from request")
+        envelope = gateway.build_rack_task_envelope(
+            operation_key=operation_key,
+            operation_type=operation_type,
+            workline_code=workline_code,
+            trace_id=trace_id,
+            target_code=target_code,
+            spec=spec,
+        )
         if (
             getattr(task, "sequence_no", None) != spec.sequence_no
             or _task_type(task) != spec.task_type
-            or getattr(task, "dispatch_key", None) != spec.dispatch_key
-            or getattr(task, "task_key", None) != spec.dispatch_key
-            or getattr(task, "target_code", None) != spec.target_code
+            or getattr(task, "dispatch_key", None) != envelope["dispatch_key"]
+            or getattr(task, "task_key", None) != envelope["dispatch_key"]
+            or getattr(task, "target_code", None) != envelope["target_code"]
         ):
             raise ValueError("existing rack operation task identity differs from request")
         if _task_required(task) != spec.required:
             raise ValueError("existing rack operation required flag differs from request")
-        _ensure_task_request_json_matches(task, spec)
-        _ensure_task_actions_json_matches(task, spec)
+        _ensure_task_request_json_matches(task, spec, expected_request_json=envelope["request_json"])
+        _ensure_task_actions_json_matches(task, expected_actions_json=envelope["actions_json"])
 
 
 def _ensure_task_spec_contract(spec: WorklineRackTaskSpec) -> None:
@@ -697,14 +688,19 @@ def _ensure_task_spec_contract(spec: WorklineRackTaskSpec) -> None:
         raise ValueError("rack operation MOVE_RACK requires target_position_code or target_position_role")
 
 
-def _ensure_task_request_json_matches(task: Any, spec: WorklineRackTaskSpec) -> None:
+def _ensure_task_request_json_matches(
+    task: Any,
+    spec: WorklineRackTaskSpec,
+    *,
+    expected_request_json: Mapping[str, Any],
+) -> None:
     request_json = getattr(task, "request_json", None)
     if not isinstance(request_json, dict):
         raise TypeError("existing rack operation request_json missing")
 
     expected = {
-        "operation_key": spec.request_json.get("operation_key"),
-        "operation_type": spec.request_json.get("operation_type"),
+        "operation_key": expected_request_json.get("operation_key"),
+        "operation_type": expected_request_json.get("operation_type"),
         "sequence_no": spec.sequence_no,
         "task_type": spec.task_type,
         "rack_code": spec.rack_code,
@@ -717,21 +713,33 @@ def _ensure_task_request_json_matches(task: Any, spec: WorklineRackTaskSpec) -> 
     for key, value in expected.items():
         if request_json.get(key) != value:
             raise ValueError(f"existing rack operation request_json {key} differs from request")
-    if _request_json_for_idempotency(request_json) != _request_json_for_idempotency(spec.request_json):
+    if _request_json_for_idempotency(request_json) != _request_json_for_idempotency(expected_request_json):
         raise ValueError("existing rack operation request_json differs from request")
 
 
-def _ensure_task_actions_json_matches(task: Any, spec: WorklineRackTaskSpec) -> None:
+def _ensure_task_actions_json_matches(task: Any, *, expected_actions_json: Mapping[str, Any]) -> None:
     actions_json = getattr(task, "actions_json", None)
     if not isinstance(actions_json, dict):
         raise TypeError("existing rack operation actions_json missing")
-    if actions_json != spec.actions_json:
+    if actions_json != dict(expected_actions_json):
         raise ValueError("existing rack operation actions_json differs from request")
 
 
 def _request_json_for_idempotency(payload: Mapping[str, Any]) -> dict[str, Any]:
     lifecycle_keys = {"timeout_seconds", "trace_id"}
     return {key: value for key, value in payload.items() if key not in lifecycle_keys}
+
+
+def _reject_external_task_fields(task_spec: Mapping[str, Any]) -> None:
+    leaked = _FORBIDDEN_CALLER_TASK_FIELDS.intersection(task_spec)
+    if leaked:
+        raise ValueError(f"插件不得传入货架外部派发字段: {', '.join(sorted(leaked))}")
+
+
+def _mapping(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    return dict(value)
 
 
 def _consume_target_projection(
@@ -769,25 +777,17 @@ def _target_projection_matches_task(
     return task_rack_kind is None or _optional_str(getattr(placement, "rack_kind", None)) == task_rack_kind
 
 
-def _outbox_payload(spec: WorklineRackTaskSpec) -> dict[str, Any]:
-    return {
-        **spec.request_json,
-        "dispatch_key": spec.dispatch_key,
-        "actions": spec.actions_json,
-    }
-
-
 def _ensure_existing_outbox_shape(
     outbox: WorklineOutbox,
     *,
-    spec: WorklineRackTaskSpec,
+    target_code: str,
     payload_json: dict[str, Any],
 ) -> None:
     if outbox.dispatch_type != DispatchType.EXTERNAL_HTTP:
         raise ValueError("existing rack operation outbox dispatch_type differs from request")
     if outbox.target_type != TargetType.HTTP_ENDPOINT:
         raise ValueError("existing rack operation outbox target_type differs from request")
-    if outbox.target_code != spec.target_code:
+    if outbox.target_code != target_code:
         raise ValueError("existing rack operation outbox target_code differs from request")
 
     existing_payload = outbox.payload_json if isinstance(outbox.payload_json, dict) else {}

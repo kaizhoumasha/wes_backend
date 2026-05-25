@@ -11,6 +11,7 @@ from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_d
 from .inbox_service import WorklineInboxService, inbox_service
 from .ng_return_item_service import NgReturnItemService, ng_return_item_service
 from .operation_service import WorklineOperationService, workline_operation_service
+from .rack_gateway import WmsRcsRackGateway, wms_rcs_rack_gateway
 from .rack_operation_service import (
     WorklineRackOperationService,
     WorklineRackOperationStatus,
@@ -44,6 +45,7 @@ __all__ = [
     "SandboxCleanupService",
     "TraceQueryResult",
     "TraceQueryService",
+    "WmsRcsRackGateway",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",
     "WorkLineService",
@@ -68,6 +70,7 @@ __all__ = [
     "runtime_query_service",
     "sandbox_cleanup_service",
     "trace_query_service",
+    "wms_rcs_rack_gateway",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
     "workline_dispatch_attempt_service",
