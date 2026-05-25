@@ -80,13 +80,15 @@ def test_smt_full_box_exchange_candidate_scan_task_is_removed() -> None:
 
 
 def test_system_outbox_dispatch_task_is_registered() -> None:
-    from src.celery_app.tasks import handling as handling_tasks
+    from src.celery_app.app import celery_app
+    from src.celery_app.tasks import sys as sys_tasks
 
-    assert hasattr(handling_tasks, "dispatch_system_outbox_batch")
-    assert config.beat_schedule["dispatch-system-outbox-batch"]["task"] == (
-        "src.celery_app.tasks.handling.dispatch_system_outbox_batch"
+    assert hasattr(sys_tasks, "dispatch_system_outbox_batch")
+    assert config.beat_schedule["dispatch-outbox-batch"]["task"] == (
+        "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
     )
-    assert config.task_routes["src.celery_app.tasks.handling.*"]["queue"] == "celery"
+    assert config.task_routes["src.celery_app.tasks.sys.*"]["queue"] == "celery"
+    assert "src.celery_app.tasks.sys" in celery_app.conf.include
 
 
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:

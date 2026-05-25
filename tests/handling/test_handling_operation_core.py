@@ -121,7 +121,7 @@ def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(monkeypatch: pyt
     envelope = WmsRcsHandlingGateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
     payload = envelope["payload_json"]
 
-    assert envelope["target_code"] == "http://wms-rcs/api/wes/transport-request"
+    assert envelope["target_code"] == "WMS_RCS_FULL_BOX_EXCHANGE"
     assert envelope["dispatch_key"] == "handling:full-box:release-001:move:1"
     assert payload["request_id"] == envelope["dispatch_key"]
     assert payload["dispatch_key"] == envelope["dispatch_key"]

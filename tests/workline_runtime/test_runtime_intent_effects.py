@@ -677,7 +677,7 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     assert operation_calls[0]["workline"] is ctx["workline"]
     assert operation_calls[0]["operation_key"] == "rack-operation:trace-runtime"
     assert operation_calls[0]["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
-    assert operation_calls[0]["target_code"] == "http://wms-rcs/api/rack-operation"
+    assert operation_calls[0]["target_code"] == "WMS_RCS_RACK_OPERATION"
     assert operation_calls[0]["task_specs"][0]["task_type"] == "MOVE_RACK"
     assert operation_calls[0]["task_specs"][1]["target_position_code"] == "SINGLE_LAYER_A"
     assert operation_calls[0]["trace_id"] == "trace-from-payload"

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
-_DEFAULT_WMS_RCS_BIN_OPERATION_URL = "http://wms-rcs/api/wes/transport-request"
 _FULL_BOX_EXCHANGE_OPERATION_MARKERS = ("FULL_BOX_EXCHANGE", "FULL_BIN_EXCHANGE", "RACK_BIN_EXCHANGE")
 
 
@@ -63,14 +61,7 @@ class WmsRcsHandlingGateway:
 
 
 def _target_code(operation_type: str) -> str:
-    env_names = ["WMS_RCS_BIN_OPERATION_URL", "WMS_RCS_TRANSPORT_REQUEST_URL", "WMS_RCS_TARGET_CODE"]
-    if _is_full_box_exchange(operation_type):
-        env_names.insert(0, "WMS_RCS_FULL_BOX_EXCHANGE_URL")
-    for env_name in env_names:
-        value = os.getenv(env_name)
-        if value and value.strip():
-            return value.strip()
-    return _DEFAULT_WMS_RCS_BIN_OPERATION_URL
+    return "WMS_RCS_FULL_BOX_EXCHANGE" if _is_full_box_exchange(operation_type) else "WMS_RCS_BIN_OPERATION"
 
 
 def _request_type(operation_type: str) -> str:

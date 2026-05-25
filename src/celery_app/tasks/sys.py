@@ -1,4 +1,4 @@
-"""Handling 系统级任务。"""
+"""系统级异步任务。"""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def _lazy_init_db() -> None:
         _run_async(db_module.init_db())
 
 
-class HandlingTask(Task):
-    """Handling 任务基类 - 提供数据库会话管理。"""
+class SystemTask(Task):
+    """系统级任务基类 - 提供数据库会话管理。"""
 
     def __init__(self) -> None:
         super().__init__()
@@ -54,25 +54,37 @@ class HandlingTask(Task):
             try:
                 loop.run_until_complete(self._db.close())
             except Exception as exc:
-                logger.warning(f"清理 HandlingTask DB 会话失败: {exc}")
+                logger.warning(f"清理 SystemTask DB 会话失败: {exc}")
             finally:
                 loop.close()
                 self._db = None
 
 
 @celery_app.task(
-    name="src.celery_app.tasks.handling.dispatch_system_outbox_batch",
-    base=HandlingTask,
+    name="src.celery_app.tasks.sys.dispatch_system_outbox_batch",
+    base=SystemTask,
     bind=True,
     max_retries=3,
     default_retry_delay=10,
 )
-def dispatch_system_outbox_batch(self: HandlingTask, limit: int = 50) -> dict[str, int]:
-    """兼容旧任务名，实际转发到系统级 outbox task。"""
+def dispatch_system_outbox_batch(self: SystemTask, limit: int = 50) -> dict[str, int]:
+    """批量派发 SystemOutbox 消息。"""
 
-    from src.celery_app.tasks.sys import dispatch_system_outbox_batch as dispatch_sys_outbox_batch
+    async def _dispatch() -> dict[str, int]:
+        from src.app.sys.services import system_outbox_engine
 
-    return dispatch_sys_outbox_batch(limit=limit)
+        async with self.db as db:
+            return await system_outbox_engine.dispatch(db, limit=limit)
+
+    try:
+        result = _run_async(_dispatch())
+        if result.get("dispatched", 0) > 0:
+            logger.info(f"SystemOutbox 派发完成: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"SystemOutbox 派发失败: {exc}")
+        countdown = 10 * (2**self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown) from None
 
 
-__all__ = ["HandlingTask", "dispatch_system_outbox_batch"]
+__all__ = ["SystemTask", "dispatch_system_outbox_batch"]

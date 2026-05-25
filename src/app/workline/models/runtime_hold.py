@@ -131,7 +131,7 @@ class RuntimeHold(
     source_outbox_id: int | None = Field(
         default=None,
         index=True,
-        foreign_key="wes_biz.workline_outbox.id",
+        foreign_key="wes_biz.system_outbox.id",
         description="来源 Outbox ID",
     )
     source_command_id: int | None = Field(
