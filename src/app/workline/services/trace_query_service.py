@@ -5,7 +5,7 @@
 - workline_inbox
 - workline_sessions
 - device_commands
-- workline_outbox
+- system_outbox
 - workline_timelines
 - workline_diagnostics
 
@@ -33,9 +33,9 @@ from src.app.resource.models import (
     RackBinMount,
     ResourceStateEvent,
 )
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
 from src.app.workline.models.runtime_hold import RuntimeHold
 from src.app.workline.models.timeline import WorklineTimeline
@@ -95,7 +95,7 @@ class TraceQueryResult:
     session: WorklineSession | None = None
     sessions: list[WorklineSession] = field(default_factory=list)
     commands: list[DeviceCommand] = field(default_factory=list)
-    outboxes: list[WorklineOutbox] = field(default_factory=list)
+    outboxes: list[SystemOutbox] = field(default_factory=list)
     dispatch_attempts: list[WorklineDispatchAttempt] = field(default_factory=list)
     timelines: list[WorklineTimeline] = field(default_factory=list)
     diagnostics: list[DiagnosticContext] = field(default_factory=list)
@@ -237,7 +237,7 @@ class TraceQueryService(BaseService[Any, Any]):
         session: WorklineSession | None = None
         sessions: list[WorklineSession] = []
         commands: list[DeviceCommand] = []
-        outboxes: list[WorklineOutbox] = []
+        outboxes: list[SystemOutbox] = []
         dispatch_attempts: list[WorklineDispatchAttempt] = []
         inboxes: list[WorklineInbox] = []
         timelines: list[WorklineTimeline] = []
@@ -362,9 +362,9 @@ class TraceQueryService(BaseService[Any, Any]):
         result = await self.by_trace_id(db, trace_id)
         return self._build_blocking_point(result, trace_id=trace_id)
 
-    async def _get_outbox_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> WorklineOutbox | None:
-        columns = cast("Any", WorklineOutbox).__table__.c
-        result = await db.execute(select(WorklineOutbox).where(columns.dispatch_key == dispatch_key))
+    async def _get_outbox_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
 
     async def _load_resource_state_events_for_exchange(
@@ -468,18 +468,18 @@ class TraceQueryService(BaseService[Any, Any]):
         self,
         db: AsyncSession,
         session: WorklineSession,
-        existing: list[WorklineOutbox],
-    ) -> list[WorklineOutbox]:
-        columns = cast("Any", WorklineOutbox).__table__.c
+        existing: list[SystemOutbox],
+    ) -> list[SystemOutbox]:
+        columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
-            select(WorklineOutbox).where(columns.session_id == session.id).order_by(columns.created_at.asc())
+            select(SystemOutbox).where(columns.session_id == session.id).order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
     async def _load_dispatch_attempts_for_outboxes(
         self,
         db: AsyncSession,
-        outboxes: list[WorklineOutbox],
+        outboxes: list[SystemOutbox],
     ) -> list[WorklineDispatchAttempt]:
         outbox_ids = [getattr(outbox, "id", None) for outbox in outboxes if getattr(outbox, "id", None) is not None]
         if not outbox_ids:
@@ -612,7 +612,7 @@ class TraceQueryService(BaseService[Any, Any]):
             for command in commands
         ]
 
-    def _diagnostic_for_outboxes(self, trace: TraceContext, outboxes: list[WorklineOutbox]) -> list[DiagnosticContext]:
+    def _diagnostic_for_outboxes(self, trace: TraceContext, outboxes: list[SystemOutbox]) -> list[DiagnosticContext]:
         return [
             build_diagnostic_context(
                 trace=trace.with_outbox(outbox),

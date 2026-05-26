@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
-from src.app.workline.models.outbox import OutboxStatus
+from src.app.rack.repositories import RackTaskRepository
+from src.app.sys.models import SystemOutboxStatus
+from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus
@@ -28,8 +30,6 @@ from src.app.workline.models.timeline import (
     TimelineStatus,
     WorklineTimeline,
 )
-from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
-from src.app.workline.repositories.rack_task_repository import WorklineRackTaskRepository
 from src.app.workline.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
 )
@@ -55,8 +55,8 @@ from src.utils.timezone import timezone
 from src.workline_runtime.diagnostics import ErrorCode, build_diagnostic_context, build_diagnostic_event
 
 if TYPE_CHECKING:
+    from src.app.sys.models import SystemOutbox
     from src.app.workline.models.inbox import WorklineInbox
-    from src.app.workline.models.outbox import WorklineOutbox
 
 
 from src.app.workline.services.runtime_hold_query_service import (
@@ -123,21 +123,21 @@ class WorklineRuntimeReconciliationService:
         *,
         session_repository: WorklineSessionRepository | None = None,
         workline_repository: WorkLineRepository | None = None,
-        outbox_repository: WorklineOutboxRepository | None = None,
+        system_outbox_repository: SystemOutboxRepository | None = None,
         device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
-        rack_task_repository: WorklineRackTaskRepository | None = None,
+        rack_task_repository: RackTaskRepository | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or WorkLineRepository()
-        self.outbox_repository = outbox_repository or WorklineOutboxRepository()
+        self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
         self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
-        self.rack_task_repository = rack_task_repository or WorklineRackTaskRepository()
+        self.rack_task_repository = rack_task_repository or RackTaskRepository()
 
     async def activate_execution_deadline_after_ack(
         self,
@@ -220,7 +220,7 @@ class WorklineRuntimeReconciliationService:
             _ = await self.device_service.mark_callback_deadline_expired(db, device_id=device_id, auto_commit=False)
 
         if session.id is not None:
-            _ = await self.outbox_repository.cancel_active_by_session(
+            _ = await self.system_outbox_repository.cancel_active_by_session(
                 db,
                 session_id=session.id,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
@@ -282,7 +282,7 @@ class WorklineRuntimeReconciliationService:
         self,
         db: Any,
         *,
-        outbox: WorklineOutbox,
+        outbox: SystemOutbox,
         command: DeviceCommand | None,
         error_message: str = "OUTBOX_DISPATCH_FAILED",
     ) -> WorklineSession | None:
@@ -297,7 +297,7 @@ class WorklineRuntimeReconciliationService:
             return None
         now = timezone.now_for_db()
         hold_source_reason = self._dispatch_ack_hold_source_reason(error_message)
-        outbox.status = OutboxStatus.FAILED
+        outbox.status = SystemOutboxStatus.FAILED
         outbox.last_error = error_message
         outbox.next_retry_at = None
         outbox.finished_at = now
@@ -412,9 +412,9 @@ class WorklineRuntimeReconciliationService:
         self,
         db: Any,
         *,
-        outbox: WorklineOutbox,
+        outbox: SystemOutbox,
         reason: str,
-    ) -> WorklineOutbox | None:
+    ) -> SystemOutbox | None:
         """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 BLOCKED_RESOURCE。"""
 
         owner = await self.session_repository.get_pending_reconciliation_owner_for_workline(db, outbox.workline_id)
@@ -435,7 +435,7 @@ class WorklineRuntimeReconciliationService:
         )
         runtime_hold_id = _resolve_id(runtime_hold)
         if runtime_hold_id is not None:
-            return await self.outbox_repository.block_by_runtime_hold(
+            return await self.system_outbox_repository.block_by_runtime_hold(
                 db,
                 outbox_id,
                 runtime_hold_id=runtime_hold_id,
@@ -444,7 +444,7 @@ class WorklineRuntimeReconciliationService:
                 blocked_device_id=getattr(owner, "reconciliation_device_id", None),
                 blocked_workline_id=outbox.workline_id,
             )
-        return await self.outbox_repository.mark_as_blocked_by_workline_state(
+        return await self.system_outbox_repository.mark_as_blocked_by_workline_state(
             db,
             outbox_id,
             owner_session_id=owner_id,
@@ -645,7 +645,7 @@ class WorklineRuntimeReconciliationService:
         from_status: str | None = None,
         to_status: str | None = None,
         inbox: WorklineInbox | None = None,
-        outbox: WorklineOutbox | None = None,
+        outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
@@ -683,7 +683,7 @@ class WorklineRuntimeReconciliationService:
         error_code: ErrorCode,
         message: str,
         inbox: WorklineInbox | None = None,
-        outbox: WorklineOutbox | None = None,
+        outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> None:

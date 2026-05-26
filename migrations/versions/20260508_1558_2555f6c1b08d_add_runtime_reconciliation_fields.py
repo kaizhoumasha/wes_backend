@@ -217,57 +217,6 @@ def upgrade() -> None:
         schema="wes_biz",
     )
 
-    op.add_column(
-        "workline_outbox",
-        sa.Column("blocked_by_reconciliation_session_id", sa.Integer(), nullable=True),
-        schema="wes_biz",
-    )
-    op.add_column(
-        "workline_outbox",
-        sa.Column("blocked_device_id", sa.Integer(), nullable=True),
-        schema="wes_biz",
-    )
-    op.add_column(
-        "workline_outbox",
-        sa.Column("blocked_workline_id", sa.Integer(), nullable=True),
-        schema="wes_biz",
-    )
-    op.add_column(
-        "workline_outbox",
-        sa.Column("blocked_reason", sa.String(length=100), nullable=True),
-        schema="wes_biz",
-    )
-    op.create_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_by_reconciliation_session_id"),
-        "workline_outbox",
-        ["blocked_by_reconciliation_session_id"],
-        unique=False,
-        schema="wes_biz",
-    )
-    op.create_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_device_id"),
-        "workline_outbox",
-        ["blocked_device_id"],
-        unique=False,
-        schema="wes_biz",
-    )
-    op.create_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_workline_id"),
-        "workline_outbox",
-        ["blocked_workline_id"],
-        unique=False,
-        schema="wes_biz",
-    )
-
-    _drop_enum_check_constraint("workline_outbox", "outboxstatus")
-    op.execute("UPDATE wes_biz.workline_outbox SET status = 'SENT' WHERE status = 'ACKED'")
-    op.create_check_constraint(
-        "outboxstatus",
-        "workline_outbox",
-        "status IN ('NEW', 'DISPATCHING', 'SENT', 'BLOCKED_RESOURCE', 'FAILED', 'CANCELLED')",
-        schema="wes_biz",
-    )
-
     _drop_enum_check_constraint("work_lines", "worklineruntimestatus")
     op.create_check_constraint(
         "worklineruntimestatus",
@@ -288,35 +237,6 @@ def downgrade() -> None:
         "runtime_status IN ('READY', 'ESTOPPED')",
         schema="wes_biz",
     )
-
-    _drop_enum_check_constraint("workline_outbox", "outboxstatus")
-    op.execute("UPDATE wes_biz.workline_outbox SET status = 'NEW' WHERE status = 'BLOCKED_RESOURCE'")
-    op.create_check_constraint(
-        "outboxstatus",
-        "workline_outbox",
-        "status IN ('NEW', 'DISPATCHING', 'SENT', 'ACKED', 'FAILED', 'CANCELLED')",
-        schema="wes_biz",
-    )
-
-    op.drop_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_workline_id"),
-        table_name="workline_outbox",
-        schema="wes_biz",
-    )
-    op.drop_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_device_id"),
-        table_name="workline_outbox",
-        schema="wes_biz",
-    )
-    op.drop_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_by_reconciliation_session_id"),
-        table_name="workline_outbox",
-        schema="wes_biz",
-    )
-    op.drop_column("workline_outbox", "blocked_reason", schema="wes_biz")
-    op.drop_column("workline_outbox", "blocked_workline_id", schema="wes_biz")
-    op.drop_column("workline_outbox", "blocked_device_id", schema="wes_biz")
-    op.drop_column("workline_outbox", "blocked_by_reconciliation_session_id", schema="wes_biz")
 
     op.drop_index(
         op.f("ix_wes_biz_workline_sessions_reconciliation_resolved_at"),

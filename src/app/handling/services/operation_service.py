@@ -16,11 +16,9 @@ from src.app.handling.repositories import (
     HandlingMoveRepository,
     HandlingOperationRepository,
     HandlingStepRepository,
-    SystemOutboxRepository,
     handling_move_repository,
     handling_operation_repository,
     handling_step_repository,
-    system_outbox_repository,
 )
 from src.app.handling.services.gateway import WmsRcsHandlingGateway, wms_rcs_handling_gateway
 from src.app.sys.models import (
@@ -28,6 +26,7 @@ from src.app.sys.models import (
     SystemOutboxStatus,
     SystemOutboxTargetType,
 )
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:

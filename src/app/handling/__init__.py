@@ -9,10 +9,6 @@ from .models import (
     HandlingStep,
     HandlingStepKind,
     HandlingStepStatus,
-    SystemOutbox,
-    SystemOutboxDispatchType,
-    SystemOutboxStatus,
-    SystemOutboxTargetType,
 )
 
 __all__ = [
@@ -24,8 +20,4 @@ __all__ = [
     "HandlingStep",
     "HandlingStepKind",
     "HandlingStepStatus",
-    "SystemOutbox",
-    "SystemOutboxDispatchType",
-    "SystemOutboxStatus",
-    "SystemOutboxTargetType",
 ]

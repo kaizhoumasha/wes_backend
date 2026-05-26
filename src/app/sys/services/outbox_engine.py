@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from inspect import isawaitable
 from typing import Any, TypedDict
 
 from src.app.sys.models import SystemOutboxDispatchType
@@ -13,6 +14,7 @@ from src.core.logger import logger
 ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
 WORKLINE_OPERATION_DOMAIN = "WORKLINE"
+ALLOWED_INTERNAL_SIGNALS = frozenset({"core", "handling", "sys", "workline"})
 
 
 class DispatchResult(TypedDict):
@@ -53,7 +55,13 @@ class SystemOutboxEngine:
 
     async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:
         result: DispatchResult = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-        workline_result = await self.workline_domain_dispatcher(db, limit)
+
+        if limit <= 0:
+            return result
+
+        # 为了跨域公平调度，先给 Workline 分配最多一半的额度，避免单一域积压饿死其他域
+        workline_limit = max(1, limit // 2)
+        workline_result = await self.workline_domain_dispatcher(db, workline_limit)
         _merge_dispatch_result(result, workline_result)
 
         remaining_limit = max(limit - result["dispatched"], 0)
@@ -99,6 +107,13 @@ class SystemOutboxEngine:
                 result["failed"] += 1
             result["dispatched"] += 1
 
+        # 如果还有剩余额度，且 Workline 之前已经跑满了分配给它的额度，
+        # 则再次派发 Workline 避免吞吐量浪费。
+        final_remaining_limit = max(limit - result["dispatched"], 0)
+        if final_remaining_limit > 0 and workline_result["dispatched"] >= workline_limit:
+            extra_workline_result = await self.workline_domain_dispatcher(db, final_remaining_limit)
+            _merge_dispatch_result(result, extra_workline_result)
+
         await _commit_if_supported(db)
         return result
 
@@ -123,11 +138,16 @@ class SystemOutboxEngine:
         return await self.external_http_sender(endpoint.url, payload)
 
     async def dispatch_internal_signal(self, outbox: Any) -> bool:
+        target_code = getattr(outbox, "target_code", None)
+        if not isinstance(target_code, str) or target_code not in ALLOWED_INTERNAL_SIGNALS:
+            logger.error(f"SystemOutbox 内部信号派发失败: 未知的目标服务 {target_code}")
+            return False
+
         try:
             from src.celery_app.app import celery_app
 
             celery_app.send_task(
-                f"src.celery_app.tasks.{outbox.target_code}.process_signal",
+                f"src.celery_app.tasks.{target_code}.process_signal",
                 kwargs={"payload": _payload_dict(getattr(outbox, "payload_json", None))},
             )
             return True
@@ -163,7 +183,9 @@ async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:
 async def _commit_if_supported(db: Any) -> None:
     commit = getattr(db, "commit", None)
     if callable(commit):
-        await commit()
+        result = commit()
+        if isawaitable(result):
+            await result
 
 
 def _payload_dict(value: Any) -> dict[str, Any]:

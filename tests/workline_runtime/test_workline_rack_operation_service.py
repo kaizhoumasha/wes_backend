@@ -7,16 +7,21 @@ import httpx
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from src.app.resource.models import RackKind
-from src.app.sys.models import OperationCompletionPolicy
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
-from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
-from src.app.workline.models.session import SessionStatus
-from src.app.workline.services.rack_operation_service import (
-    WorklineRackOperationService,
-    WorklineRackOperationStatus,
-    WorklineRackTaskSpec,
+from src.app.rack.models import RackOperationBase, RackOperationStatus, RackTask, RackTaskStatus, RackTaskType
+from src.app.rack.services import (
+    RackOperationService,
+    RackTaskSpec,
 )
+from src.app.rack.services.gateway import WmsRcsRackGateway
+from src.app.resource.models import RackKind
+from src.app.sys.models import (
+    OperationCompletionPolicy,
+    SystemOutbox,
+    SystemOutboxDispatchType,
+    SystemOutboxStatus,
+    SystemOutboxTargetType,
+)
+from src.app.workline.models.session import SessionStatus
 from src.celery_app.app import celery_app
 
 RACK_TRANSPORT_OPERATION_TYPE = "RACK_TRANSPORT"
@@ -40,7 +45,7 @@ class FakeDb:
         self.flush_count += 1
         if self.fail_next_flush_with_integrity:
             self.fail_next_flush_with_integrity = False
-            raise IntegrityError("INSERT INTO workline_outbox", {}, Exception("duplicate dispatch_key"))
+            raise IntegrityError("INSERT INTO system_outbox", {}, Exception("duplicate dispatch_key"))
         for index, item in enumerate(self.added, start=1):
             if getattr(item, "id", None) is None:
                 item.id = index
@@ -87,14 +92,14 @@ class FakeRackTaskRepository:
         target_position_code: str,
     ) -> list[SimpleNamespace]:
         active_statuses = {
-            WorklineRackTaskStatus.PLANNED,
-            WorklineRackTaskStatus.REQUESTED,
-            WorklineRackTaskStatus.IN_PROGRESS,
-            WorklineRackTaskStatus.RECONCILING,
-            WorklineRackTaskStatus.PLANNED.value,
-            WorklineRackTaskStatus.REQUESTED.value,
-            WorklineRackTaskStatus.IN_PROGRESS.value,
-            WorklineRackTaskStatus.RECONCILING.value,
+            RackTaskStatus.PLANNED,
+            RackTaskStatus.REQUESTED,
+            RackTaskStatus.IN_PROGRESS,
+            RackTaskStatus.RECONCILING,
+            RackTaskStatus.PLANNED.value,
+            RackTaskStatus.REQUESTED.value,
+            RackTaskStatus.IN_PROGRESS.value,
+            RackTaskStatus.RECONCILING.value,
         }
         return [
             task
@@ -113,16 +118,16 @@ class FakeRackTaskRepository:
         rack_code: str,
     ) -> list[SimpleNamespace]:
         active_statuses = {
-            WorklineRackTaskStatus.PLANNED,
-            WorklineRackTaskStatus.REQUESTED,
-            WorklineRackTaskStatus.IN_PROGRESS,
-            WorklineRackTaskStatus.RECONCILING,
-            WorklineRackTaskStatus.PLANNED.value,
-            WorklineRackTaskStatus.REQUESTED.value,
-            WorklineRackTaskStatus.IN_PROGRESS.value,
-            WorklineRackTaskStatus.RECONCILING.value,
+            RackTaskStatus.PLANNED,
+            RackTaskStatus.REQUESTED,
+            RackTaskStatus.IN_PROGRESS,
+            RackTaskStatus.RECONCILING,
+            RackTaskStatus.PLANNED.value,
+            RackTaskStatus.REQUESTED.value,
+            RackTaskStatus.IN_PROGRESS.value,
+            RackTaskStatus.RECONCILING.value,
         }
-        move_rack_types = {WorklineRackTaskType.MOVE_RACK, WorklineRackTaskType.MOVE_RACK.value}
+        move_rack_types = {RackTaskType.MOVE_RACK, RackTaskType.MOVE_RACK.value}
         return [
             task
             for task in self.tasks
@@ -142,8 +147,8 @@ class FakeRackTaskRepository:
             "operation_key": "op-001",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
             "sequence_no": len(self.tasks) + 1,
-            "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-            "task_status": WorklineRackTaskStatus.REQUESTED,
+            "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK,
+            "task_status": RackTaskStatus.REQUESTED,
             "workline_code": "WL-SMT-01",
             "rack_code": None,
             "rack_kind": RackKind.SINGLE_LAYER.value,
@@ -191,7 +196,7 @@ class FakeRackTaskLifecycleService:
         self.calls.append(kwargs)
         task = SimpleNamespace(
             id=len(self.repository.tasks) + 1,
-            task_status=WorklineRackTaskStatus.REQUESTED,
+            task_status=RackTaskStatus.REQUESTED,
             **{
                 key: value
                 for key, value in kwargs.items()
@@ -213,15 +218,25 @@ class FakeRackTaskLifecycleService:
 
 
 class FakeRackOperationRepository:
-    def __init__(self, *, completion_policy: OperationCompletionPolicy) -> None:
-        self.operation = SimpleNamespace(
-            id=1,
-            operation_key="op-001",
-            completion_policy=completion_policy,
+    def __init__(
+        self,
+        *,
+        completion_policy: OperationCompletionPolicy = OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
+        existing: bool = True,
+    ) -> None:
+        self.operation = (
+            SimpleNamespace(
+                id=1,
+                operation_key="op-001",
+                operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+                completion_policy=completion_policy,
+            )
+            if existing
+            else None
         )
 
     async def get_by_operation_key(self, _db: Any, operation_key: str) -> SimpleNamespace | None:
-        if operation_key == self.operation.operation_key:
+        if self.operation is not None and operation_key == self.operation.operation_key:
             return self.operation
         return None
 
@@ -231,6 +246,10 @@ class FakeRackOperationRepository:
 
     async def mark_status(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
         self.operation.operation_status = kwargs["operation_status"]
+        self.operation.result_json = {
+            **getattr(self.operation, "result_json", {}),
+            **kwargs.get("result_json_patch", {}),
+        }
         return self.operation
 
 
@@ -257,18 +276,18 @@ class DuplicateOnceRackOperationRepository(FakeRackOperationRepository):
 
 class FakeOutboxRepository:
     def __init__(self) -> None:
-        self.by_dispatch_key: dict[str, WorklineOutbox] = {}
+        self.by_dispatch_key: dict[str, SystemOutbox] = {}
         self.calls: list[str] = []
         self.return_none_once_for: set[str] = set()
 
-    async def get_by_dispatch_key(self, _db: Any, dispatch_key: str) -> WorklineOutbox | None:
+    async def get_by_dispatch_key(self, _db: Any, dispatch_key: str) -> SystemOutbox | None:
         self.calls.append(dispatch_key)
         if dispatch_key in self.return_none_once_for:
             self.return_none_once_for.remove(dispatch_key)
             return None
         return self.by_dispatch_key.get(dispatch_key)
 
-    def add_existing(self, outbox: WorklineOutbox) -> WorklineOutbox:
+    def add_existing(self, outbox: SystemOutbox) -> SystemOutbox:
         self.by_dispatch_key[outbox.dispatch_key] = outbox
         return outbox
 
@@ -341,16 +360,17 @@ def _service(
     allowed_rack_kind: RackKind = RackKind.SINGLE_LAYER,
     placements_by_position: dict[str, list[SimpleNamespace]] | None = None,
     task_repository: FakeRackTaskRepository | None = None,
-    outbox_repository: FakeOutboxRepository | None = None,
+    system_outbox_repository: FakeOutboxRepository | None = None,
     rack_operation_repository: Any | None = None,
 ) -> tuple[
-    WorklineRackOperationService,
+    RackOperationService,
     FakeRackTaskRepository,
     FakeRackTaskLifecycleService,
     FakeRackPlacementRepository,
 ]:
     task_repository = task_repository or FakeRackTaskRepository()
-    outbox_repository = outbox_repository or FakeOutboxRepository()
+    system_outbox_repository = system_outbox_repository or FakeOutboxRepository()
+    rack_operation_repository = rack_operation_repository or FakeRackOperationRepository(existing=False)
     lifecycle_service = FakeRackTaskLifecycleService(task_repository)
     placement_repository = FakeRackPlacementRepository(
         active_placements=active_placements,
@@ -358,11 +378,11 @@ def _service(
         placements_by_position=placements_by_position,
     )
     return (
-        WorklineRackOperationService(
+        RackOperationService(
             rack_operation_repository=rack_operation_repository,
             rack_task_repository=task_repository,
             rack_task_lifecycle_service=lifecycle_service,
-            outbox_repository=outbox_repository,
+            outbox_repository=system_outbox_repository,
             rack_position_service=FakeRackPositionService(capacity=capacity, allowed_rack_kind=allowed_rack_kind),
             rack_placement_repository=placement_repository,
         ),
@@ -398,11 +418,45 @@ def _active_rack(
     return SimpleNamespace(rack_code=rack_code, rack_kind=rack_kind)
 
 
+def test_rack_gateway_uses_supported_lifecycle_callback_types_for_rack_tasks() -> None:
+    gateway = WmsRcsRackGateway()
+
+    callback_types = {
+        task_type: gateway.build_task_envelope(
+            operation_key=f"op-{task_type}",
+            operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+            sequence_no=1,
+            task_type=task_type,
+            workline_code="WL-SMT-01",
+            workline_id=45,
+            material_session_id=300,
+            trace_id=f"trace-{task_type}",
+            target_code=RACK_OPERATION_TARGET_CODE,
+            rack_code="RACK-001",
+            rack_kind=RackKind.SINGLE_LAYER.value,
+            source_position_code="SOURCE-POSITION",
+            target_position_code="TARGET-POSITION",
+            target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
+        ).payload_json["callback_type"]
+        for task_type in (
+            RackTaskType.MOVE_RACK.value,
+            RackTaskType.TURN_RACK_SIDE.value,
+            RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        )
+    }
+
+    assert callback_types == {
+        RackTaskType.MOVE_RACK.value: "WMS_RACK_TASK_RESULT",
+        RackTaskType.TURN_RACK_SIDE.value: "WMS_RACK_TASK_RESULT",
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value: "WMS_RACK_ARRIVED",
+    }
+
+
 def test_move_rack_source_claim_is_database_unique() -> None:
     index = next(
         (
             table_index
-            for table_index in WorklineRackTask.__table__.indexes
+            for table_index in RackTask.__table__.indexes
             if table_index.name == "ux_rack_tasks_move_source_claim"
         ),
         None,
@@ -435,7 +489,7 @@ def _classifier_replacement_task_specs(
         specs.append(
             {
                 "sequence_no": 1,
-                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "task_type": RackTaskType.MOVE_RACK.value,
                 "rack_code": rack_code,
                 "rack_kind": rack_kind,
                 "source_position_code": work_position_code,
@@ -445,7 +499,7 @@ def _classifier_replacement_task_specs(
     specs.append(
         {
             "sequence_no": 2,
-            "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+            "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "rack_kind": rack_kind,
             "target_position_code": work_position_code,
             "target_position_role": supply_target_position_role,
@@ -455,7 +509,7 @@ def _classifier_replacement_task_specs(
 
 
 async def _request_classifier_replacement(
-    service: WorklineRackOperationService,
+    service: RackOperationService,
     db: Any,
     *,
     operation_key: str,
@@ -501,7 +555,7 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
         task_specs=[
             {
                 "sequence_no": 1,
-                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "task_type": RackTaskType.MOVE_RACK.value,
                 "rack_code": "RACK-OLD",
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "source_position_code": "CLASSIFIER-WORK",
@@ -509,7 +563,7 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
             },
             {
                 "sequence_no": 2,
-                "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "target_position_code": "CLASSIFIER-WORK",
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
@@ -519,8 +573,8 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
 
     assert [task.sequence_no for task in tasks] == [1, 2]
     assert [task.task_type for task in tasks] == [
-        WorklineRackTaskType.MOVE_RACK.value,
-        WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        RackTaskType.MOVE_RACK.value,
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
     ]
     assert [call["operation_type"] for call in lifecycle.calls] == ["RACK_TRANSPORT", "RACK_TRANSPORT"]
     assert [call["dispatch_key"] for call in lifecycle.calls] == [
@@ -586,9 +640,9 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
         target_code=RACK_OPERATION_TARGET_CODE,
         trace_id="trace-dataclass-spec",
         task_specs=[
-            WorklineRackTaskSpec(
+            RackTaskSpec(
                 sequence_no=1,
-                task_type=WorklineRackTaskType.MOVE_RACK.value,
+                task_type=RackTaskType.MOVE_RACK.value,
                 rack_code="RACK-OPTIONAL",
                 rack_kind=RackKind.SINGLE_LAYER.value,
                 source_position_code="SOURCE-POSITION",
@@ -607,9 +661,10 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
     call = lifecycle.calls[0]
     assert call["dispatch_key"] == "caller-dispatch-key"
     assert call["target_code"] == "CALLER-TARGET"
-    assert call["actions_json"]["action"] == WorklineRackTaskType.MOVE_RACK.value
+    assert call["actions_json"]["action"] == RackTaskType.MOVE_RACK.value
     assert call["actions_json"]["required"] is False
     assert call["request_json"]["caller_field"] == "kept"
+    assert call["request_json"]["callback_type"] == "WMS_RACK_TASK_RESULT"
     assert call["request_json"]["operation_key"] == "op-dataclass-spec"
     assert call["request_json"]["operation_type"] == RACK_TRANSPORT_OPERATION_TYPE
     assert call["request_json"]["workline_code"] == "WL-SMT-01"
@@ -632,8 +687,8 @@ async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_sa
 
     assert [task.sequence_no for task in tasks] == [1, 2]
     assert [task.task_type for task in tasks] == [
-        WorklineRackTaskType.MOVE_RACK.value,
-        WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        RackTaskType.MOVE_RACK.value,
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
     ]
     assert {task.operation_key for task in tasks} == {"op-001"}
     assert tasks[0].rack_code == "RACK-OLD"
@@ -645,9 +700,9 @@ async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_sa
         "rack-operation:op-001:1:MOVE_RACK",
         "rack-operation:op-001:2:ALLOCATE_AND_MOVE_RACK",
     ]
-    assert [item.status for item in db.added if isinstance(item, WorklineOutbox)] == [
-        OutboxStatus.NEW,
-        OutboxStatus.NEW,
+    assert [item.status for item in db.added if isinstance(item, SystemOutbox)] == [
+        SystemOutboxStatus.NEW,
+        SystemOutboxStatus.NEW,
     ]
     assert session.status == SessionStatus.RUNNING
     assert session.context_json == {"kept": "value"}
@@ -668,7 +723,7 @@ async def test_request_operation_tasks_without_move_out_creates_only_supply_task
 
     assert len(tasks) == 1
     assert tasks[0].sequence_no == 2
-    assert tasks[0].task_type == WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value
+    assert tasks[0].task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value
     assert tasks[0].target_position_code == "CLASSIFIER-WORK"
 
 
@@ -689,7 +744,7 @@ async def test_allocate_and_move_rack_requires_target_position_code_before_dispa
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
                 }
@@ -697,7 +752,7 @@ async def test_allocate_and_move_rack_requires_target_position_code_before_dispa
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -717,7 +772,7 @@ async def test_move_rack_requires_destination_before_dispatch() -> None:
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-OLD",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": CLASSIFIER_WORK_POSITION_CODE,
@@ -726,7 +781,7 @@ async def test_move_rack_requires_destination_before_dispatch() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -741,8 +796,8 @@ async def test_same_operation_move_out_releases_capacity_for_supply() -> None:
     )
 
     assert [task.task_type for task in tasks] == [
-        WorklineRackTaskType.MOVE_RACK.value,
-        WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        RackTaskType.MOVE_RACK.value,
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
     ]
 
 
@@ -763,7 +818,7 @@ async def test_same_operation_move_out_must_match_active_source_rack_to_release_
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -786,7 +841,7 @@ async def test_non_required_supply_still_requires_target_capacity() -> None:
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -796,7 +851,7 @@ async def test_non_required_supply_still_requires_target_capacity() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -822,7 +877,7 @@ async def test_non_required_move_rack_to_target_still_requires_target_capacity()
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-INCOMING",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "OTHER-POSITION",
@@ -834,7 +889,7 @@ async def test_non_required_move_rack_to_target_still_requires_target_capacity()
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -860,7 +915,7 @@ async def test_move_rack_source_must_match_resource_projection_before_dispatch()
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-STALE",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "SOURCE-POSITION",
@@ -871,7 +926,7 @@ async def test_move_rack_source_must_match_resource_projection_before_dispatch()
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -898,7 +953,7 @@ async def test_move_rack_source_rack_kind_must_match_resource_projection_before_
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-FIVE",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "SOURCE-POSITION",
@@ -909,7 +964,7 @@ async def test_move_rack_source_rack_kind_must_match_resource_projection_before_
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -934,7 +989,7 @@ async def test_move_rack_source_rack_must_be_unique_within_request() -> None:
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-DUP",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "SOURCE-POSITION",
@@ -942,7 +997,7 @@ async def test_move_rack_source_rack_must_be_unique_within_request() -> None:
                 },
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-DUP",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "SOURCE-POSITION",
@@ -952,7 +1007,7 @@ async def test_move_rack_source_rack_must_be_unique_within_request() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -960,8 +1015,8 @@ async def test_move_rack_source_rack_must_not_have_active_claim() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         rack_code="RACK-CLAIMED",
         source_position_code="SOURCE-POSITION",
         target_position_code=None,
@@ -987,7 +1042,7 @@ async def test_move_rack_source_rack_must_not_have_active_claim() -> None:
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-CLAIMED",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": "SOURCE-POSITION",
@@ -997,7 +1052,7 @@ async def test_move_rack_source_rack_must_not_have_active_claim() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1005,8 +1060,8 @@ async def test_historical_succeeded_move_rack_does_not_keep_source_rack_claimed(
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code="RACK-RECONCILING",
         source_position_code="SOURCE-POSITION",
         target_position_code=None,
@@ -1031,7 +1086,7 @@ async def test_historical_succeeded_move_rack_does_not_keep_source_rack_claimed(
         task_specs=[
             {
                 "sequence_no": 1,
-                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "task_type": RackTaskType.MOVE_RACK.value,
                 "rack_code": "RACK-RECONCILING",
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "source_position_code": "SOURCE-POSITION",
@@ -1065,14 +1120,14 @@ async def test_every_inbound_task_requires_rack_kind() -> None:
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
                 },
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
                 },
@@ -1080,7 +1135,7 @@ async def test_every_inbound_task_requires_rack_kind() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1104,14 +1159,14 @@ async def test_every_inbound_task_rack_kind_must_be_allowed_by_position() -> Non
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
                 },
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.FIVE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -1120,7 +1175,7 @@ async def test_every_inbound_task_rack_kind_must_be_allowed_by_position() -> Non
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1143,7 +1198,7 @@ async def test_non_required_same_operation_move_out_does_not_release_required_ca
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-OLD",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": CLASSIFIER_WORK_POSITION_CODE,
@@ -1152,7 +1207,7 @@ async def test_non_required_same_operation_move_out_does_not_release_required_ca
                 },
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -1161,7 +1216,7 @@ async def test_non_required_same_operation_move_out_does_not_release_required_ca
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1169,8 +1224,8 @@ async def test_other_operation_move_out_does_not_release_capacity() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         source_position_code="CLASSIFIER-WORK",
         target_position_code=None,
     )
@@ -1196,8 +1251,8 @@ async def test_other_operation_active_supply_occupies_target_capacity() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
@@ -1222,7 +1277,7 @@ async def test_other_operation_active_supply_occupies_target_capacity() -> None:
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1230,8 +1285,8 @@ async def test_other_operation_active_move_rack_to_target_occupies_capacity() ->
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         source_position_code="OTHER-POSITION",
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
@@ -1257,7 +1312,7 @@ async def test_other_operation_active_move_rack_to_target_occupies_capacity() ->
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1265,8 +1320,8 @@ async def test_other_operation_non_required_move_rack_to_target_occupies_capacit
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="other-op",
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         source_position_code="OTHER-POSITION",
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
@@ -1292,7 +1347,7 @@ async def test_other_operation_non_required_move_rack_to_target_occupies_capacit
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1301,7 +1356,7 @@ async def test_repeated_replace_operation_returns_existing_tasks_without_recheck
     existing_move = task_repository.add_existing(
         operation_key="op-repeat",
         sequence_no=1,
-        task_type=WorklineRackTaskType.MOVE_RACK,
+        task_type=RackTaskType.MOVE_RACK,
         rack_code="RACK-OLD",
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code="CLASSIFIER-WORK",
@@ -1311,7 +1366,7 @@ async def test_repeated_replace_operation_returns_existing_tasks_without_recheck
     existing_supply = task_repository.add_existing(
         operation_key="op-repeat",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_code=None,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
@@ -1344,7 +1399,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
     task_repository.add_existing(
         operation_key="op-repeat-missing-optional",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1370,7 +1425,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
             task_specs=[
                 {
                     "sequence_no": 1,
-                    "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                    "task_type": RackTaskType.MOVE_RACK.value,
                     "rack_code": "RACK-OLD",
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "source_position_code": CLASSIFIER_WORK_POSITION_CODE,
@@ -1379,7 +1434,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
                 },
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -1388,7 +1443,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
         )
 
     assert lifecycle.calls == []
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
@@ -1397,7 +1452,7 @@ async def test_repeated_replace_operation_rejects_single_supply_with_wrong_seque
     task_repository.add_existing(
         operation_key="op-shape-supply-sequence",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1426,7 +1481,7 @@ async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None
     task_repository.add_existing(
         operation_key="op-shape-target-code",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1456,7 +1511,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
     task_repository.add_existing(
         operation_key="op-shape-move-rack",
         sequence_no=1,
-        task_type=WorklineRackTaskType.MOVE_RACK,
+        task_type=RackTaskType.MOVE_RACK,
         rack_code="RACK-PERSISTED",
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code="CLASSIFIER-WORK",
@@ -1467,7 +1522,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
             "operation_key": "op-shape-move-rack",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
             "sequence_no": 1,
-            "task_type": WorklineRackTaskType.MOVE_RACK.value,
+            "task_type": RackTaskType.MOVE_RACK.value,
             "source_position_code": "CLASSIFIER-WORK",
             "target_position_code": None,
             "target_position_role": "SMT_EMPTY_RACK_AREA",
@@ -1478,7 +1533,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
     task_repository.add_existing(
         operation_key="op-shape-move-rack",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1506,7 +1561,7 @@ async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
     task_repository.add_existing(
         operation_key="op-request-json-drift",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1516,7 +1571,7 @@ async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
             "operation_key": "op-request-json-drift",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
             "sequence_no": 2,
-            "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+            "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "workline_code": "WL-SMT-01",
             "source_position_code": None,
             "target_position_code": "CLASSIFIER-WORK",
@@ -1544,7 +1599,7 @@ async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
             task_specs=[
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -1560,14 +1615,14 @@ async def test_repeated_operation_rejects_actions_json_payload_drift() -> None:
     task_repository.add_existing(
         operation_key="op-actions-json-drift",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
         target_code="WMS-RACK",
         actions_json={
-            "action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+            "action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "required": True,
             "route_profile": "OLD",
         },
@@ -1590,7 +1645,7 @@ async def test_repeated_operation_rejects_actions_json_payload_drift() -> None:
             task_specs=[
                 {
                     "sequence_no": 2,
-                    "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                     "rack_kind": RackKind.SINGLE_LAYER.value,
                     "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
                     "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
@@ -1606,7 +1661,7 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
     task_repository.add_existing(
         operation_key="op-timeout-evidence",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
@@ -1616,7 +1671,7 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
             "operation_key": "op-timeout-evidence",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
             "sequence_no": 2,
-            "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+            "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "workline_code": "WL-SMT-01",
             "source_position_code": None,
             "target_position_code": "CLASSIFIER-WORK",
@@ -1646,21 +1701,21 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
 
 @pytest.mark.asyncio
 async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
-    outbox_repository = FakeOutboxRepository()
-    existing_outbox = outbox_repository.add_existing(
-        WorklineOutbox(
+    system_outbox_repository = FakeOutboxRepository()
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
             id=88,
             session_id=300,
             workline_id=45,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key="rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
-            target_type=TargetType.HTTP_ENDPOINT,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS-RACK",
             payload_json={
                 "operation_key": "op-existing-outbox",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
                 "sequence_no": 2,
-                "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                 "workline_code": "WL-SMT-01",
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "source_position_code": None,
@@ -1668,15 +1723,15 @@ async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-existing-outbox",
                 "dispatch_key": "rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
-                "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+                "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
-            status=OutboxStatus.NEW,
+            status=SystemOutboxStatus.NEW,
         )
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
         active_count=0,
-        outbox_repository=outbox_repository,
+        system_outbox_repository=system_outbox_repository,
     )
     db = FakeDb()
 
@@ -1690,27 +1745,27 @@ async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
 
     assert len(tasks) == 1
     assert lifecycle.calls[0]["outbox"] is existing_outbox
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
 async def test_request_reuses_existing_outbox_after_integrity_error_on_concurrent_insert() -> None:
-    outbox_repository = FakeOutboxRepository()
+    system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-outbox-race:2:ALLOCATE_AND_MOVE_RACK"
-    existing_outbox = outbox_repository.add_existing(
-        WorklineOutbox(
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
             id=89,
             session_id=300,
             workline_id=45,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
-            target_type=TargetType.HTTP_ENDPOINT,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS-RACK",
             payload_json={
                 "operation_key": "op-outbox-race",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
                 "sequence_no": 2,
-                "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                 "workline_code": "WL-SMT-01",
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "source_position_code": None,
@@ -1718,16 +1773,16 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-outbox-race",
                 "dispatch_key": dispatch_key,
-                "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+                "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
-            status=OutboxStatus.NEW,
+            status=SystemOutboxStatus.NEW,
         )
     )
-    outbox_repository.return_none_once_for.add(dispatch_key)
+    system_outbox_repository.return_none_once_for.add(dispatch_key)
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
         active_count=0,
-        outbox_repository=outbox_repository,
+        system_outbox_repository=system_outbox_repository,
     )
     db = FakeDb()
     db.fail_next_flush_with_integrity = True
@@ -1742,29 +1797,29 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
 
     assert len(tasks) == 1
     assert lifecycle.calls[0]["outbox"] is existing_outbox
-    assert outbox_repository.calls == [dispatch_key, dispatch_key]
+    assert system_outbox_repository.calls == [dispatch_key, dispatch_key]
     assert db.nested_rollback_count == 1
-    assert [item for item in db.added if isinstance(item, WorklineOutbox)] == []
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
 
 @pytest.mark.asyncio
 async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> None:
-    outbox_repository = FakeOutboxRepository()
+    system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-existing-outbox-trace:2:ALLOCATE_AND_MOVE_RACK"
-    existing_outbox = outbox_repository.add_existing(
-        WorklineOutbox(
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
             id=90,
             session_id=300,
             workline_id=45,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
-            target_type=TargetType.HTTP_ENDPOINT,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS-RACK",
             payload_json={
                 "operation_key": "op-existing-outbox-trace",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
                 "sequence_no": 2,
-                "task_type": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
                 "workline_code": "WL-SMT-01",
                 "rack_kind": RackKind.SINGLE_LAYER.value,
                 "source_position_code": None,
@@ -1772,15 +1827,15 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
                 "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
                 "trace_id": "trace-old",
                 "dispatch_key": dispatch_key,
-                "actions": {"action": WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+                "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
             },
-            status=OutboxStatus.NEW,
+            status=SystemOutboxStatus.NEW,
         )
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
         active_count=0,
-        outbox_repository=outbox_repository,
+        system_outbox_repository=system_outbox_repository,
     )
 
     tasks = await _request_classifier_replacement(
@@ -1818,10 +1873,10 @@ async def test_operation_request_does_not_dispatch_http_inside_db_transaction(mo
         trace_id="trace-no-dispatch",
     )
 
-    outboxes = [item for item in db.added if isinstance(item, WorklineOutbox)]
+    outboxes = [item for item in db.added if isinstance(item, SystemOutbox)]
     assert [(outbox.dispatch_type, outbox.target_type, outbox.status) for outbox in outboxes] == [
-        (DispatchType.EXTERNAL_HTTP, TargetType.HTTP_ENDPOINT, OutboxStatus.NEW),
-        (DispatchType.EXTERNAL_HTTP, TargetType.HTTP_ENDPOINT, OutboxStatus.NEW),
+        (SystemOutboxDispatchType.EXTERNAL_HTTP, SystemOutboxTargetType.HTTP_ENDPOINT, SystemOutboxStatus.NEW),
+        (SystemOutboxDispatchType.EXTERNAL_HTTP, SystemOutboxTargetType.HTTP_ENDPOINT, SystemOutboxStatus.NEW),
     ]
 
 
@@ -1831,8 +1886,8 @@ async def test_derive_operation_status_requires_all_required_tasks_succeeded() -
     task_repository.add_existing(
         operation_key="op-status",
         sequence_no=1,
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code="RACK-OLD",
         source_position_code="CLASSIFIER-WORK",
         target_position_code=None,
@@ -1840,24 +1895,23 @@ async def test_derive_operation_status_requires_all_required_tasks_succeeded() -
     task_repository.add_existing(
         operation_key="op-status",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         target_position_code="CLASSIFIER-WORK",
     )
     service, _repo, _lifecycle, placements = _service(task_repository=task_repository)
 
     assert (
-        await service.derive_operation_status(FakeDb(), operation_key="op-status")
-        == WorklineRackOperationStatus.PENDING.value
+        await service.derive_operation_status(FakeDb(), operation_key="op-status") == RackOperationStatus.PENDING.value
     )
 
-    task_repository.tasks[1].task_status = WorklineRackTaskStatus.SUCCEEDED
+    task_repository.tasks[1].task_status = RackTaskStatus.SUCCEEDED
     placements.placements_by_position["CLASSIFIER-WORK"] = [_active_rack("RACK-NEW")]
     placements.placements_by_position["CLASSIFIER-WORK-SOURCE"] = []
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-status")
-        == WorklineRackOperationStatus.SUCCEEDED.value
+        == RackOperationStatus.SUCCEEDED.value
     )
 
 
@@ -1867,22 +1921,22 @@ async def test_derive_operation_status_requires_resource_projection_confirmation
     task_repository.add_existing(
         operation_key="op-projection",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         target_position_code="CLASSIFIER-WORK",
     )
     service, _repo, _lifecycle, placements = _service(task_repository=task_repository)
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-projection")
-        == WorklineRackOperationStatus.RECONCILING.value
+        == RackOperationStatus.RECONCILING.value
     )
 
     placements.placements_by_position["CLASSIFIER-WORK"] = [_active_rack("RACK-NEW")]
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-projection")
-        == WorklineRackOperationStatus.SUCCEEDED.value
+        == RackOperationStatus.SUCCEEDED.value
     )
 
 
@@ -1892,8 +1946,8 @@ async def test_derive_operation_status_callback_trusted_skips_resource_projectio
     task_repository.add_existing(
         operation_key="op-callback-trusted",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         target_position_code="CLASSIFIER-WORK",
     )
     operation_repository = FakeRackOperationRepository(
@@ -1907,12 +1961,12 @@ async def test_derive_operation_status_callback_trusted_skips_resource_projectio
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-callback-trusted")
-        == WorklineRackOperationStatus.SUCCEEDED.value
+        == RackOperationStatus.SUCCEEDED.value
     )
 
 
 @pytest.mark.asyncio
-async def test_system_rack_operation_without_workline_defaults_to_callback_trusted_completion_policy() -> None:
+async def test_system_rack_operation_without_workline_defaults_to_resource_projection_completion_policy() -> None:
     operation_repository = FakeRackOperationRepository(
         completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
     )
@@ -1929,7 +1983,7 @@ async def test_system_rack_operation_without_workline_defaults_to_callback_trust
         task_specs=[
             {
                 "sequence_no": 1,
-                "task_type": WorklineRackTaskType.MOVE_RACK.value,
+                "task_type": RackTaskType.MOVE_RACK.value,
                 "rack_code": "RACK-A",
                 "source_position_code": "AREA-A-01",
                 "target_position_code": "AREA-B-01",
@@ -1937,7 +1991,48 @@ async def test_system_rack_operation_without_workline_defaults_to_callback_trust
         ],
     )
 
-    assert operation_repository.operation.completion_policy == OperationCompletionPolicy.CALLBACK_TRUSTED
+    assert operation_repository.operation.completion_policy == OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
+
+
+def test_rack_operation_model_defaults_to_resource_projection_completion_policy() -> None:
+    operation = RackOperationBase(operation_key="rack-op-default", operation_type="GLOBAL_RACK_REBALANCE")
+
+    assert operation.completion_policy == OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_derive_operation_status_callback_plus_reconciliation_succeeds_without_projection_confirmation() -> None:
+    task_repository = FakeRackTaskRepository()
+    task_repository.add_existing(
+        operation_key="op-callback-plus-reconciliation",
+        sequence_no=1,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
+        rack_kind=RackKind.SINGLE_LAYER.value,
+        target_position_code="CLASSIFIER-WORK",
+    )
+    operation_repository = FakeRackOperationRepository(
+        completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
+    )
+    operation_repository.operation.operation_key = "op-callback-plus-reconciliation"
+    service, _repo, _lifecycle, _placements = _service(
+        task_repository=task_repository,
+        rack_operation_repository=operation_repository,
+        placements_by_position={"CLASSIFIER-WORK": []},
+    )
+
+    assert (
+        await service.derive_operation_status(FakeDb(), operation_key="op-callback-plus-reconciliation")
+        == RackOperationStatus.SUCCEEDED.value
+    )
+
+    persisted_status = await service._persist_operation_status(
+        FakeDb(),
+        operation_key="op-callback-plus-reconciliation",
+    )
+
+    assert persisted_status == RackOperationStatus.SUCCEEDED.value
+    assert operation_repository.operation.result_json["reconciliation_expected"] is True
 
 
 @pytest.mark.asyncio
@@ -1946,8 +2041,8 @@ async def test_derive_operation_status_reconciles_when_projection_rack_kind_mism
     task_repository.add_existing(
         operation_key="op-projection-kind",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_kind=RackKind.SINGLE_LAYER.value,
         target_position_code="CLASSIFIER-WORK",
     )
@@ -1958,7 +2053,7 @@ async def test_derive_operation_status_reconciles_when_projection_rack_kind_mism
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-projection-kind")
-        == WorklineRackOperationStatus.RECONCILING.value
+        == RackOperationStatus.RECONCILING.value
     )
 
 
@@ -1968,8 +2063,8 @@ async def test_derive_operation_status_consumes_projection_per_inbound_task() ->
     task_repository.add_existing(
         operation_key="op-projection-count",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code=None,
         rack_kind=RackKind.SINGLE_LAYER.value,
         target_position_code="CLASSIFIER-WORK",
@@ -1977,8 +2072,8 @@ async def test_derive_operation_status_consumes_projection_per_inbound_task() ->
     task_repository.add_existing(
         operation_key="op-projection-count",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code=None,
         rack_kind=RackKind.SINGLE_LAYER.value,
         target_position_code="CLASSIFIER-WORK",
@@ -1990,7 +2085,7 @@ async def test_derive_operation_status_consumes_projection_per_inbound_task() ->
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-projection-count")
-        == WorklineRackOperationStatus.RECONCILING.value
+        == RackOperationStatus.RECONCILING.value
     )
 
     placements.placements_by_position["CLASSIFIER-WORK"] = [
@@ -2000,7 +2095,7 @@ async def test_derive_operation_status_consumes_projection_per_inbound_task() ->
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-projection-count")
-        == WorklineRackOperationStatus.SUCCEEDED.value
+        == RackOperationStatus.SUCCEEDED.value
     )
 
 
@@ -2010,8 +2105,8 @@ async def test_derive_operation_status_requires_move_rack_target_projection_conf
     task_repository.add_existing(
         operation_key="op-move-target",
         sequence_no=1,
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code="RACK-MOVED",
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code="SOURCE-POSITION",
@@ -2027,14 +2122,14 @@ async def test_derive_operation_status_requires_move_rack_target_projection_conf
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-move-target")
-        == WorklineRackOperationStatus.RECONCILING.value
+        == RackOperationStatus.RECONCILING.value
     )
 
     placements.placements_by_position["TARGET-POSITION"] = [_active_rack("RACK-MOVED")]
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-move-target")
-        == WorklineRackOperationStatus.SUCCEEDED.value
+        == RackOperationStatus.SUCCEEDED.value
     )
 
 
@@ -2044,8 +2139,8 @@ async def test_derive_operation_status_reconciles_when_move_out_rack_still_at_so
     task_repository.add_existing(
         operation_key="op-source-not-cleared",
         sequence_no=1,
-        task_type=WorklineRackTaskType.MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code="RACK-OLD",
         rack_kind=RackKind.SINGLE_LAYER.value,
         source_position_code="CLASSIFIER-WORK",
@@ -2054,8 +2149,8 @@ async def test_derive_operation_status_reconciles_when_move_out_rack_still_at_so
     task_repository.add_existing(
         operation_key="op-source-not-cleared",
         sequence_no=2,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
         rack_code=None,
         rack_kind=RackKind.SINGLE_LAYER.value,
         target_position_code="CLASSIFIER-WORK",
@@ -2067,5 +2162,5 @@ async def test_derive_operation_status_reconciles_when_move_out_rack_still_at_so
 
     assert (
         await service.derive_operation_status(FakeDb(), operation_key="op-source-not-cleared")
-        == WorklineRackOperationStatus.RECONCILING.value
+        == RackOperationStatus.RECONCILING.value
     )

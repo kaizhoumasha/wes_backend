@@ -1,15 +1,5 @@
 """Handling 模型导出。"""
 
-from src.app.sys.models import (
-    SystemOutbox,
-    SystemOutboxBase,
-    SystemOutboxCreate,
-    SystemOutboxDispatchType,
-    SystemOutboxStatus,
-    SystemOutboxTargetType,
-    SystemOutboxUpdate,
-)
-
 from .operation import (
     HandlingMove,
     HandlingMoveBase,
@@ -52,11 +42,4 @@ __all__ = [
     "HandlingStepResponse",
     "HandlingStepStatus",
     "HandlingStepUpdate",
-    "SystemOutbox",
-    "SystemOutboxBase",
-    "SystemOutboxCreate",
-    "SystemOutboxDispatchType",
-    "SystemOutboxStatus",
-    "SystemOutboxTargetType",
-    "SystemOutboxUpdate",
 ]

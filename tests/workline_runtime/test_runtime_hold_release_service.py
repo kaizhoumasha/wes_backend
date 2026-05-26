@@ -4,9 +4,9 @@ import pytest
 from sqlalchemy import select
 
 from src.app.device.models import CommandResult, CommandStatus, Device, DeviceCommand
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.models.inbox import InboxKind, WorklineInbox
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -568,14 +568,14 @@ async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -
     workline = await _create_workline(db_session, code="WL-HOLD-OUTBOX")
     session = await _create_session(db_session, workline, code="S-HOLD-OUTBOX")
     hold = await _create_hold(db_session, workline, session=session, key="hold:outbox")
-    outbox = WorklineOutbox(
+    outbox = SystemOutbox(
         session_id=cast("int", session.id),
         workline_id=cast("int", workline.id),
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="device-command:HOLD-OUTBOX",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code="ARM01",
-        status=OutboxStatus.BLOCKED_RESOURCE,
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
         blocked_by_runtime_hold_id=cast("int", hold.id),
         blocked_by_reconciliation_session_id=cast("int", session.id),
         blocked_workline_id=cast("int", workline.id),
@@ -591,7 +591,7 @@ async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -
     await db_session.refresh(outbox)
     assert result["released_outbox_count"] == 1
     assert workline.runtime_status == WorkLineRuntimeStatus.READY
-    assert outbox.status == OutboxStatus.NEW
+    assert outbox.status == SystemOutboxStatus.NEW
     assert outbox.blocked_by_runtime_hold_id is None
     assert outbox.blocked_by_reconciliation_session_id is None
     assert outbox.blocked_workline_id is None

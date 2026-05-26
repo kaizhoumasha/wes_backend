@@ -79,13 +79,13 @@ def build_workline_runtime_services(*, db: Any | None = None, workline: Any | No
     active_rack_snapshot_provider = None
     rack_operation_status_provider = None
     if db is not None and workline is not None:
+        from src.app.rack.services import rack_operation_service
         from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
-        from src.app.workline.services import workline_rack_operation_service
 
         active_rack_snapshot_provider = smt_active_rack_snapshot_service.bind(db=db, workline=workline)
         rack_operation_status_provider = BoundRackOperationStatusProvider(
             db=db,
-            service=workline_rack_operation_service,
+            service=rack_operation_service,
         )
 
     return WorklineRuntimeServices(

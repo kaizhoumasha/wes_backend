@@ -1,6 +1,6 @@
 from sqlalchemy import Index, UniqueConstraint
 
-from src.app.workline.models.outbox import WorklineOutbox
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -108,7 +108,7 @@ def test_ng_return_item_defaults_and_idempotency_constraint() -> None:
 
 
 def test_outbox_can_reference_runtime_hold_blocker() -> None:
-    assert "blocked_by_runtime_hold_id" in WorklineOutbox.model_fields
-    field = WorklineOutbox.model_fields["blocked_by_runtime_hold_id"]
+    assert "blocked_by_runtime_hold_id" in SystemOutbox.model_fields
+    field = SystemOutbox.model_fields["blocked_by_runtime_hold_id"]
     assert field.default is None
-    assert WorklineOutbox.__table__.c.blocked_by_runtime_hold_id.nullable is True
+    assert SystemOutbox.__table__.c.blocked_by_runtime_hold_id.nullable is True

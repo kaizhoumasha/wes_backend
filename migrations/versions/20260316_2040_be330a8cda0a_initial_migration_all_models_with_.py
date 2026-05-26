@@ -1,7 +1,7 @@
 """Initial migration - all models with VARCHAR + CHECK constraints
 
 Revision ID: be330a8cda0a
-Revises: 
+Revises:
 Create Date: 2026-03-16 20:40:53.406692+08:00
 
 """

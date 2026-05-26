@@ -35,6 +35,7 @@ class RackOperationRepository(BaseRepository[RackOperation]):
         operation_status: str,
         error_code: str | None = None,
         error_message: str | None = None,
+        result_json_patch: dict[str, Any] | None = None,
     ) -> RackOperation | None:
         """更新 operation 派生状态。"""
 
@@ -46,6 +47,7 @@ class RackOperationRepository(BaseRepository[RackOperation]):
         operation.result_json = {
             **(operation.result_json or {}),
             "operation_status": operation_status,
+            **(result_json_patch or {}),
         }
         operation.error_code = error_code
         operation.error_message = error_message

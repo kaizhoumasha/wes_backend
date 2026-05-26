@@ -156,7 +156,7 @@ async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_go
 
     async def dispatch_workline(_db: Any, limit: int = 50) -> dict[str, int]:
         assert _db is db
-        assert limit == 10
+        assert limit == 5
         return {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
 
     with patch("src.celery_app.tasks.workline.OutboxDispatcher._dispatch", new=dispatch_workline):

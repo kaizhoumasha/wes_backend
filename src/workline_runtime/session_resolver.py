@@ -21,10 +21,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
+from src.app.rack.repositories import RackTaskRepository, rack_task_repository
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
-from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository, outbox_repository
-from src.app.workline.repositories.rack_task_repository import WorklineRackTaskRepository, workline_rack_task_repository
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -270,8 +270,8 @@ class SessionResolver:
         self,
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
-        outbox_repo: WorklineOutboxRepository | None = None,
-        rack_task_repo: WorklineRackTaskRepository | None = None,
+        outbox_repo: SystemOutboxRepository | None = None,
+        rack_task_repo: RackTaskRepository | None = None,
         handling_step_repo: Any | None = None,
         handling_operation_repo: Any | None = None,
     ) -> None:
@@ -282,8 +282,8 @@ class SessionResolver:
         """
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or DeviceCommandRepository()
-        self.outbox_repo = outbox_repo or outbox_repository
-        self.rack_task_repo = rack_task_repo or workline_rack_task_repository
+        self.outbox_repo = outbox_repo or system_outbox_repository
+        self.rack_task_repo = rack_task_repo or rack_task_repository
         if handling_step_repo is None or handling_operation_repo is None:
             from src.app.handling.repositories import handling_operation_repository, handling_step_repository
 

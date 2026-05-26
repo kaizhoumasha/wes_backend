@@ -27,8 +27,8 @@ from src.app.device.models.command import CommandCallbackResult, CommandResult, 
 from src.app.device.models.device import Device, DeviceProtocol, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_service import device_service as runtime_device_service
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models.inbox import InboxKind, WorklineInbox
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.models.timeline import TimelineActionType, TimelineStage, WorklineTimeline
 from src.app.workline.models.workline import LineType, WorkLine
@@ -68,13 +68,13 @@ async def _load_inboxes_by_trace(db_session: AsyncSession, trace_id: str) -> lis
     )
 
 
-async def _load_outboxes_by_trace(db_session: AsyncSession, trace_id: str) -> list[WorklineOutbox]:
+async def _load_outboxes_by_trace(db_session: AsyncSession, trace_id: str) -> list[SystemOutbox]:
     return list(
         (
             await db_session.execute(
-                select(WorklineOutbox).where(
-                    _sa_col(WorklineOutbox.dispatch_key) == "device-command:CMD-SMOKE-001",
-                    _sa_col(WorklineOutbox.workline_id)
+                select(SystemOutbox).where(
+                    _sa_col(SystemOutbox.dispatch_key) == "device-command:CMD-SMOKE-001",
+                    _sa_col(SystemOutbox.workline_id)
                     == select(_sa_col(WorklineSession.workline_id))
                     .where(_sa_col(WorklineSession.trace_id) == trace_id)
                     .scalar_subquery(),
@@ -157,15 +157,15 @@ async def _seed_trace_graph(db_session: AsyncSession) -> SmokeFixture:
     device.device_status = DeviceStatus.RUNNING
     device.current_command_id = command.id
 
-    outbox = WorklineOutbox(
+    outbox = SystemOutbox(
         session_id=session_id,
         workline_id=workline_id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key=f"device-command:{command.command_code}",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=device.device_code,
         payload_json={"command_code": command.command_code, "device_code": device.device_code},
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
     )
     db_session.add(outbox)
     await db_session.commit()
@@ -231,7 +231,7 @@ class TestTraceTransactionSmoke:
 
         outbox_rows = await _load_outboxes_by_trace(db_session, session_trace_id)
         assert len(outbox_rows) == 1
-        assert outbox_rows[0].status == OutboxStatus.SENT
+        assert outbox_rows[0].status == SystemOutboxStatus.SENT
         assert outbox_rows[0].finished_at is None
 
         timeline_rows = await _load_timelines_by_trace(db_session, session_trace_id)
@@ -296,7 +296,7 @@ class TestTraceTransactionSmoke:
 
         outbox_rows = await _load_outboxes_by_trace(db_session, session_trace_id)
         assert len(outbox_rows) == 1
-        assert outbox_rows[0].status == OutboxStatus.SENT
+        assert outbox_rows[0].status == SystemOutboxStatus.SENT
         assert outbox_rows[0].finished_at is None
 
         timeline_rows = await _load_timelines_by_trace(db_session, session_trace_id)

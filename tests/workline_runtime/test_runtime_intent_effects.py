@@ -570,7 +570,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
         [
             RuntimeIntent.external_request(
                 dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-                target_code="http://wms-rcs/api/full-box-exchange",
+                target_code="WMS_RCS_FULL_BOX_EXCHANGE",
                 payload={"rack_release_id": "release-001"},
                 timeout_seconds=1800,
                 source_system="WMS_RCS",
@@ -582,7 +582,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
     assert outbox.dispatch_type == "EXTERNAL_HTTP"
     assert outbox.target_type == "HTTP_ENDPOINT"
     assert outbox.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
-    assert outbox.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert outbox.target_code == "WMS_RCS_FULL_BOX_EXCHANGE"
     assert outbox.payload_json == {"rack_release_id": "release-001"}
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "EXTERNAL_HTTP"
@@ -641,7 +641,7 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
             RuntimeIntent.rack_operation_request(
                 operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                 operation_key="rack-operation:trace-runtime",
-                target_code="http://wms-rcs/api/rack-operation",
+                target_code="WMS_RCS_RACK_OPERATION",
                 payload={
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
@@ -735,7 +735,7 @@ async def test_rack_operation_request_stores_operation_wait_fields(
             RuntimeIntent.rack_operation_request(
                 operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                 operation_key="rack-operation:trace-runtime",
-                target_code="http://wms-rcs/api/rack-operation",
+                target_code="WMS_RCS_RACK_OPERATION",
                 payload={
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
@@ -815,7 +815,7 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
             RuntimeIntent.rack_operation_request(
                 operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                 operation_key=operation_key,
-                target_code="http://wms-rcs/api/rack-operation",
+                target_code="WMS_RCS_RACK_OPERATION",
                 payload={
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",
@@ -1078,7 +1078,7 @@ async def test_rack_operation_request_rejects_invalid_operation_contract(
             [
                 RuntimeIntent.rack_operation_request(
                     operation_key="rack-operation:trace-runtime",
-                    target_code="http://wms-rcs/api/rack-operation",
+                    target_code="WMS_RCS_RACK_OPERATION",
                     timeout_seconds=1800,
                     **intent_kwargs,
                 )
@@ -1104,7 +1104,7 @@ async def test_rack_operation_request_requires_trace_id() -> None:
                 RuntimeIntent.rack_operation_request(
                     operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                     operation_key="rack-operation:trace-runtime",
-                    target_code="http://wms-rcs/api/rack-operation",
+                    target_code="WMS_RCS_RACK_OPERATION",
                     payload={
                         "rack_tasks": [
                             {
@@ -1372,7 +1372,7 @@ async def test_external_request_before_terminal_intent_is_rejected_before_side_e
             [
                 RuntimeIntent.external_request(
                     dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-                    target_code="http://wms-rcs/api/full-box-exchange",
+                    target_code="WMS_RCS_FULL_BOX_EXCHANGE",
                     payload={"rack_release_id": "release-001"},
                     timeout_seconds=1800,
                 ),
@@ -1391,7 +1391,7 @@ def test_result_requires_outbox_dispatch_for_external_request() -> None:
         intents=[
             RuntimeIntent.external_request(
                 dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-                target_code="http://wms-rcs/api/full-box-exchange",
+                target_code="WMS_RCS_FULL_BOX_EXCHANGE",
                 payload={"rack_release_id": "release-001"},
                 timeout_seconds=1800,
             )
@@ -1408,7 +1408,7 @@ def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
             RuntimeIntent.rack_operation_request(
                 operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                 operation_key="rack-operation:trace-runtime",
-                target_code="http://wms-rcs/api/rack-operation",
+                target_code="WMS_RCS_RACK_OPERATION",
                 payload={
                     "work_position_code": "SINGLE_LAYER_A",
                     "new_rack_kind": "SINGLE_LAYER",

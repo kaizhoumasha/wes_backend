@@ -13,6 +13,7 @@ from src.app.device.models.command import CommandResult, CommandStatus, DeviceCo
 from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
+from src.app.sys.repositories import system_outbox_repository
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
@@ -31,7 +32,6 @@ from src.app.workline.models.session import (
 )
 from src.app.workline.repositories import (
     inbox_repository,
-    outbox_repository,
     workline_repository,
     workline_session_repository,
 )
@@ -45,10 +45,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.device.repositories import DeviceCommandRepository
+    from src.app.sys.repositories import SystemOutboxRepository
     from src.app.workline.models.inbox import WorklineInbox
     from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
     from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
-    from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
     from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
     from src.app.workline.repositories.workline_repository import WorkLineRepository
@@ -97,7 +97,7 @@ class RuntimeHoldReleaseService:
         runtime_hold_repo: RuntimeHoldRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
-        outbox_repo: WorklineOutboxRepository | None = None,
+        outbox_repo: SystemOutboxRepository | None = None,
         inbox_repo: WorklineInboxRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
@@ -105,7 +105,7 @@ class RuntimeHoldReleaseService:
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
         self.workline_repo = workline_repo or workline_repository
         self.session_repo = session_repo or workline_session_repository
-        self.outbox_repo = outbox_repo or outbox_repository
+        self.outbox_repo = outbox_repo or system_outbox_repository
         self.inbox_repo = inbox_repo or inbox_repository
         self.command_repo = command_repo or device_command_repository
         self.device_service = device_service or DeviceService()

@@ -63,7 +63,7 @@ def upgrade() -> None:
             causation_id VARCHAR(200),
             session_id BIGINT REFERENCES wes_biz.workline_sessions(id),
             inbox_id BIGINT REFERENCES wes_biz.workline_inbox(id),
-            outbox_id BIGINT REFERENCES wes_biz.workline_outbox(id),
+            outbox_id BIGINT,
             command_code VARCHAR(200),
             device_code VARCHAR(100),
             workline_id BIGINT REFERENCES wes_biz.work_lines(id),
@@ -91,7 +91,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS wes_biz.workline_dispatch_attempts (
             id BIGSERIAL PRIMARY KEY,
-            outbox_id BIGINT NOT NULL REFERENCES wes_biz.workline_outbox(id),
+            outbox_id BIGINT NOT NULL,
             dispatch_key VARCHAR(200) NOT NULL,
             attempt_no INTEGER NOT NULL,
             lease_token VARCHAR(240) NOT NULL UNIQUE,
@@ -133,10 +133,6 @@ def upgrade() -> None:
         WHERE idempotency_key IS NOT NULL
     """)
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_workline_outbox_dispatch_key
-        ON wes_biz.workline_outbox (dispatch_key)
-    """)
-    op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_workline_timelines_session_seq_no
         ON wes_biz.workline_timelines (session_id, seq_no)
     """)
@@ -146,7 +142,6 @@ def downgrade() -> None:
     """Downgrade schema."""
 
     op.execute("DROP INDEX IF EXISTS wes_biz.uq_workline_timelines_session_seq_no")
-    op.execute("DROP INDEX IF EXISTS wes_biz.uq_workline_outbox_dispatch_key")
     op.execute("DROP INDEX IF EXISTS wes_biz.uq_workline_inbox_idempotency_key")
     op.execute("DROP TABLE IF EXISTS wes_biz.workline_dispatch_attempts")
     op.execute("DROP TABLE IF EXISTS wes_biz.workline_diagnostics")

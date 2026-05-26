@@ -79,7 +79,9 @@ def _resource_state_event_type_check(include_bin_placement_events: bool) -> str:
 
 
 HANDLING_OBJECT_TYPE = sa.Enum(
+    "RACK",
     "BIN",
+    "COMPOSITE",
     name="handlingobjecttype",
     native_enum=False,
     create_constraint=True,

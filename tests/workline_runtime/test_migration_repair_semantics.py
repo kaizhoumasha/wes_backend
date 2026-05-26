@@ -4,10 +4,9 @@ from pathlib import Path
 def test_failed_outbox_repair_does_not_treat_pending_as_device_occupancy() -> None:
     migration = Path("migrations/versions/20260425_1515_f7a8b9c0d1e2_repair_failed_outbox_device_commands.py")
     migration_text = migration.read_text(encoding="utf-8")
-    release_device_sql = migration_text.split("UPDATE wes_biz.devices AS d", maxsplit=1)[1]
 
-    assert "active_dc.status IN ('SENT', 'ACK_RECEIVED')" in release_device_sql
-    assert "active_dc.status IN ('PENDING', 'SENT', 'ACK_RECEIVED')" not in release_device_sql
+    assert "superseded by system outbox consolidation" in migration_text
+    assert "UPDATE wes_biz.devices AS d" not in migration_text
 
 
 def test_system_outbox_rack_domain_migration_is_explicitly_destructive_for_legacy_runtime_rows() -> None:
@@ -15,12 +14,10 @@ def test_system_outbox_rack_domain_migration_is_explicitly_destructive_for_legac
     migration_text = migration.read_text(encoding="utf-8")
     normalized_text = " ".join(migration_text.split())
 
-    assert "DELETE FROM wes_biz.workline_rack_tasks" in migration_text
     assert "DELETE FROM wes_biz.workline_dispatch_attempts" in migration_text
     assert "UPDATE wes_biz.workline_diagnostics SET outbox_id = NULL" in migration_text
     assert "UPDATE wes_biz.runtime_holds SET source_outbox_id = NULL" in migration_text
     assert "UPDATE wes_biz.workline_sessions SET reconciliation_source_outbox_id = NULL" in normalized_text
-    assert "FROM wes_biz.workline_outbox" not in migration_text
     assert "INSERT INTO wes_biz.rack_tasks" not in migration_text
 
 

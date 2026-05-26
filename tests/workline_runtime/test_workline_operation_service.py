@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.workline.models.inbox import InboxKind, SourceSystem
-from src.app.workline.models.outbox import DispatchType, OutboxStatus
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
 
@@ -134,8 +134,8 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
     outbox = SimpleNamespace(
         id=28,
         dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
-        dispatch_type=DispatchType.EXTERNAL_HTTP,
-        status=OutboxStatus.NEW,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=SystemOutboxStatus.NEW,
         sent_at=None,
         next_retry_at="retry-later",
         last_error="previous dispatch wait",
@@ -210,7 +210,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
     assert created_payload["sandbox_mode"] is True
     assert created_payload["active_bin_rack"] == callback_payload["active_bin_rack"]
     assert "message_type" not in callback_payload
-    assert outbox.status == OutboxStatus.SENT
+    assert outbox.status == SystemOutboxStatus.SENT
     assert outbox.sent_at is not None
     assert outbox.next_retry_at is None
     assert outbox.last_error is None
@@ -229,8 +229,8 @@ async def test_sandbox_external_callback_accepts_rack_operation_wait() -> None:
     outbox = SimpleNamespace(
         id=282,
         dispatch_key="rack-operation:external:smt_classifier:trace-001:RACK_OPERATION:2:ALLOCATE_AND_MOVE_RACK",
-        dispatch_type=DispatchType.EXTERNAL_HTTP,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=SystemOutboxStatus.SENT,
         sent_at=None,
         next_retry_at=None,
         last_error=None,
@@ -283,8 +283,8 @@ async def test_sandbox_external_callback_rejects_device_outbox() -> None:
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -310,8 +310,8 @@ async def test_sandbox_external_callback_requires_waiting_external_session() -> 
     outbox = SimpleNamespace(
         id=28,
         dispatch_key="external:smt_classifier:trace-001:RACK_OPERATION",
-        dispatch_type=DispatchType.EXTERNAL_HTTP,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=SystemOutboxStatus.SENT,
         session_id=530,
         workline_id=45,
         payload_json={"resume_callback_type": "WMS_RACK_ARRIVED", "trace_id": "trace-001"},
@@ -345,8 +345,8 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
         sent_at=None,
         next_retry_at=None,
         last_error=None,
@@ -384,8 +384,8 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
         sent_at=None,
         next_retry_at=None,
         last_error=None,
@@ -426,8 +426,8 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
         sent_at=None,
         next_retry_at=None,
         last_error=None,
@@ -466,7 +466,7 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
         )
 
     assert returned is outbox
-    assert outbox.status == OutboxStatus.SENT
+    assert outbox.status == SystemOutboxStatus.SENT
     assert outbox.sent_at is command.ack_received_at
     assert outbox.next_retry_at is None
     assert outbox.last_error is None
@@ -485,8 +485,8 @@ async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.NEW,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.NEW,
         sent_at=None,
         next_retry_at="retry-later",
         last_error="previous dispatch wait",
@@ -523,7 +523,7 @@ async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
             auto_commit=False,
         )
 
-    assert outbox.status == OutboxStatus.SENT
+    assert outbox.status == SystemOutboxStatus.SENT
     assert outbox.sent_at is command.ack_received_at
     assert outbox.next_retry_at is None
     assert outbox.last_error is None
@@ -541,8 +541,8 @@ async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() ->
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
-        status=OutboxStatus.SENT,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -590,10 +590,10 @@ async def test_sandbox_pending_projects_ack_received_command_as_acked() -> None:
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="ARM01",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -610,7 +610,7 @@ async def test_sandbox_pending_projects_ack_received_command_as_acked() -> None:
 
     assert len(result) == 1
     assert result[0].status == "ACKED"
-    assert outbox.status == OutboxStatus.SENT
+    assert outbox.status == SystemOutboxStatus.SENT
     outbox_repo.get_sandbox_pending_messages.assert_awaited_once_with(
         db,
         limit=50,
@@ -627,10 +627,10 @@ async def test_sandbox_pending_projects_waiting_device_command_as_sent_for_ack()
     outbox = SimpleNamespace(
         id=34,
         dispatch_key="device-command:CMD-001",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="ARM01",
-        status=OutboxStatus.NEW,
+        status=SystemOutboxStatus.NEW,
         session_id=530,
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
@@ -644,7 +644,7 @@ async def test_sandbox_pending_projects_waiting_device_command_as_sent_for_ack()
     result = await service.get_sandbox_pending(object(), workline_id=45)
 
     assert result[0].status == "SENT"
-    assert outbox.status == OutboxStatus.NEW
+    assert outbox.status == SystemOutboxStatus.NEW
 
 
 @pytest.mark.asyncio
@@ -655,10 +655,10 @@ async def test_sandbox_pending_keeps_history_but_only_current_command_actionable
     old_acked = SimpleNamespace(
         id=856,
         dispatch_key="device-command:CMD-OLD-ACKED",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="ARM03",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         session_id=550,
         workline_id=45,
         payload_json={"command_code": "CMD-OLD-ACKED"},
@@ -667,10 +667,10 @@ async def test_sandbox_pending_keeps_history_but_only_current_command_actionable
     old_completed = SimpleNamespace(
         id=857,
         dispatch_key="device-command:CMD-OLD-COMPLETED",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="PIPELINE02",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         session_id=550,
         workline_id=45,
         payload_json={"command_code": "CMD-OLD-COMPLETED"},
@@ -679,10 +679,10 @@ async def test_sandbox_pending_keeps_history_but_only_current_command_actionable
     current = SimpleNamespace(
         id=860,
         dispatch_key="device-command:CMD-CURRENT",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="ARM04",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         session_id=550,
         workline_id=45,
         payload_json={"command_code": "CMD-CURRENT"},
@@ -734,10 +734,10 @@ async def test_sandbox_pending_marks_completed_external_http_as_history_when_ses
     outbox = SimpleNamespace(
         id=282,
         dispatch_key="rack-operation:external:smt_classifier:trace-001:RACK_OPERATION:2:ALLOCATE_AND_MOVE_RACK",
-        dispatch_type=DispatchType.EXTERNAL_HTTP,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type="HTTP_ENDPOINT",
         target_code="http://host.docker.internal:8010/api/rack-exchange",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         session_id=550,
         workline_id=45,
         payload_json={
@@ -773,10 +773,10 @@ async def test_sandbox_failed_projection_exposes_hold_entry_without_action_butto
     outbox = SimpleNamespace(
         id=901,
         dispatch_key="device-command:CMD-FAILED-HOLD",
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type="DEVICE",
         target_code="ARM03",
-        status=OutboxStatus.FAILED,
+        status=SystemOutboxStatus.FAILED,
         session_id=770,
         workline_id=45,
         payload_json={"command_code": "CMD-FAILED-HOLD"},

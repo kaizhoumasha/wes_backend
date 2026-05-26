@@ -60,7 +60,7 @@ class RackOperationBase(BaseMixin):
         description="货架操作状态",
     )
     completion_policy: OperationCompletionPolicy = Field(
-        default=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
+        default=OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED,
         index=True,
         sa_type=cast("Any", SQLAEnum(OperationCompletionPolicy, native_enum=False, create_constraint=True, length=50)),
         description="完成确认策略",

@@ -323,11 +323,20 @@ class RackOperationService:
     async def _persist_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
         """在同一事务中回写 RackOperation 派生状态。"""
 
+        operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
+        completion_policy = _operation_completion_policy(operation)
         operation_status = await self.derive_operation_status(db, operation_key=operation_key)
+        result_json_patch = {}
+        if (
+            completion_policy == OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+            and operation_status == RackOperationStatus.SUCCEEDED.value
+        ):
+            result_json_patch["reconciliation_expected"] = True
         await self.rack_operation_repository.mark_status(
             db,
             operation_key=operation_key,
             operation_status=operation_status,
+            result_json_patch=result_json_patch,
         )
         return operation_status
 
@@ -500,6 +509,8 @@ class RackOperationService:
             )
             for spec in source_specs:
                 rack_code = _optional_str(spec.rack_code)
+                if rack_code is None:
+                    raise ValueError("rack operation MOVE_RACK requires rack_code")
                 active_source_rack = active_source_racks_by_code.get(rack_code)
                 if active_source_rack is None:
                     raise ValueError(
@@ -858,7 +869,7 @@ def _operation_completion_policy(operation: Any | None) -> OperationCompletionPo
     try:
         return OperationCompletionPolicy(_enum_value(raw_policy))
     except ValueError:
-        return OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+        return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
 
 def _request_completion_policy(
@@ -869,16 +880,11 @@ def _request_completion_policy(
 ) -> OperationCompletionPolicy:
     if completion_policy is not None:
         return OperationCompletionPolicy(_enum_value(completion_policy))
-    if workline_id is None and workline_code is None:
-        return OperationCompletionPolicy.CALLBACK_TRUSTED
-    return OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+    return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
 
 def _requires_resource_projection_confirmation(completion_policy: OperationCompletionPolicy) -> bool:
-    return completion_policy in {
-        OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
-        OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED,
-    }
+    return completion_policy == OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
 
 def _target_projection_matches_task(

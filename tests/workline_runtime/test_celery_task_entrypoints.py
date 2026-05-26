@@ -91,6 +91,28 @@ def test_system_outbox_dispatch_task_is_registered() -> None:
     assert "src.celery_app.tasks.sys" in celery_app.conf.include
 
 
+def test_legacy_outbox_dispatch_task_names_are_removed() -> None:
+    from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+    from src.celery_app.app import celery_app
+
+    sent_tasks: list[str] = []
+
+    def fake_send_task(name: str, **_kwargs: Any) -> None:
+        sent_tasks.append(name)
+
+    original_send_task = cast("Any", celery_app).send_task
+    cast("Any", celery_app).send_task = fake_send_task
+    try:
+        CallbackOrchestrationService()._enqueue_outbox_dispatch()
+    finally:
+        cast("Any", celery_app).send_task = original_send_task
+
+    assert sent_tasks == ["src.celery_app.tasks.sys.dispatch_system_outbox_batch"]
+    assert not hasattr(workline_tasks, "dispatch_outbox_batch")
+    assert "src.celery_app.tasks.workline.dispatch_outbox_batch" not in celery_app.tasks
+    assert "src.celery_app.tasks.handling.dispatch_system_outbox_batch" not in celery_app.tasks
+
+
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:
     conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE02", "device_role": "CONVEYOR"})())
     session = cast(

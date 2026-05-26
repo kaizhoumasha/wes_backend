@@ -139,37 +139,6 @@ def upgrade() -> None:
     op.create_index(op.f("ix_wes_biz_workline_inbox_source_system"), "workline_inbox", ["source_system"], unique=False, schema="wes_biz")
     op.create_index(op.f("ix_wes_biz_workline_inbox_status"), "workline_inbox", ["status"], unique=False, schema="wes_biz")
     op.create_index(op.f("ix_wes_biz_workline_inbox_workline_id"), "workline_inbox", ["workline_id"], unique=False, schema="wes_biz")
-    op.create_table("workline_outbox",
-    sa.Column("created_at", sa.DateTime(), nullable=False),
-    sa.Column("updated_at", sa.DateTime(), nullable=True, comment="更新时间 (UTC)"),
-    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False, comment="主键 ID"),
-    sa.Column("session_id", sa.Integer(), nullable=True),
-    sa.Column("workline_id", sa.Integer(), nullable=False),
-    sa.Column("dispatch_key", sa.String(length=200), nullable=False),
-    sa.Column("target_code", sa.String(length=100), nullable=False),
-    sa.Column("payload_json", sa.JSON(), nullable=True),
-    sa.Column("attempt_count", sa.Integer(), nullable=False),
-    sa.Column("next_retry_at", sa.DateTime(), nullable=True),
-    sa.Column("last_error", sa.Text(), nullable=True),
-    sa.Column("sent_at", sa.DateTime(), nullable=True),
-    sa.Column("finished_at", sa.DateTime(), nullable=True),
-    sa.ForeignKeyConstraint(["session_id"], ["wes_biz.workline_sessions.id"], ),
-    sa.ForeignKeyConstraint(["workline_id"], ["wes_biz.work_lines.id"], ),
-    sa.PrimaryKeyConstraint("id"),
-    sa.Column("dispatch_type", sa.Enum("DEVICE_COMMAND", "EXTERNAL_HTTP", "INTERNAL_SIGNAL", name="dispatchtype", schema="wes_biz", native_enum=False, create_constraint=True, length=50), nullable=False),
-    sa.Column("target_type", sa.Enum("DEVICE", "HTTP_ENDPOINT", "INTERNAL_SERVICE", name="targettype", schema="wes_biz", native_enum=False, create_constraint=True, length=50), nullable=False),
-    sa.Column("status", sa.Enum("NEW", "DISPATCHING", "SENT", "ACKED", "FAILED", "CANCELLED", name="outboxstatus", schema="wes_biz", native_enum=False, create_constraint=True, length=50), nullable=False),
-    schema="wes_biz"
-    )
-    op.create_index(op.f("ix_wes_biz_workline_outbox_created_at"), "workline_outbox", ["created_at"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_dispatch_key"), "workline_outbox", ["dispatch_key"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_dispatch_type"), "workline_outbox", ["dispatch_type"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_id"), "workline_outbox", ["id"], unique=True, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_next_retry_at"), "workline_outbox", ["next_retry_at"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_session_id"), "workline_outbox", ["session_id"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_status"), "workline_outbox", ["status"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_target_type"), "workline_outbox", ["target_type"], unique=False, schema="wes_biz")
-    op.create_index(op.f("ix_wes_biz_workline_outbox_workline_id"), "workline_outbox", ["workline_id"], unique=False, schema="wes_biz")
     op.create_table("workline_timelines",
     sa.Column("created_at", sa.DateTime(), nullable=False, comment="创建时间 (UTC)"),
     sa.Column("updated_at", sa.DateTime(), nullable=True, comment="更新时间 (UTC)"),
@@ -225,16 +194,6 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_wes_biz_workline_timelines_correlation_id"), table_name="workline_timelines", schema="wes_biz")
     op.drop_index(op.f("ix_wes_biz_workline_timelines_action_type"), table_name="workline_timelines", schema="wes_biz")
     op.drop_table("workline_timelines", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_workline_id"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_target_type"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_status"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_session_id"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_next_retry_at"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_id"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_dispatch_type"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_dispatch_key"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_index(op.f("ix_wes_biz_workline_outbox_created_at"), table_name="workline_outbox", schema="wes_biz")
-    op.drop_table("workline_outbox", schema="wes_biz")
     op.drop_index(op.f("ix_wes_biz_workline_inbox_workline_id"), table_name="workline_inbox", schema="wes_biz")
     op.drop_index(op.f("ix_wes_biz_workline_inbox_status"), table_name="workline_inbox", schema="wes_biz")
     op.drop_index(op.f("ix_wes_biz_workline_inbox_source_system"), table_name="workline_inbox", schema="wes_biz")

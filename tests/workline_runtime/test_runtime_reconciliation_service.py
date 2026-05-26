@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.app.device.models.command import CommandStatus
-from src.app.workline.models.outbox import OutboxStatus
+from src.app.sys.models import SystemOutboxStatus
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import (
@@ -98,7 +98,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
+        system_outbox_repository=outbox_repo,
         rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
@@ -200,7 +200,7 @@ async def test_timer_timeout_cancels_active_rack_tasks_for_session() -> None:
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
+        system_outbox_repository=outbox_repo,
         rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
@@ -280,7 +280,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
+        system_outbox_repository=outbox_repo,
         rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
@@ -372,7 +372,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
-        outbox_repository=outbox_repo,
+        system_outbox_repository=outbox_repo,
         rack_task_repository=rack_task_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
@@ -436,7 +436,7 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
         session_id=553,
         workline_id=45,
         target_code="CONVEYOR01",
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
         last_error=None,
         next_retry_at=timezone.now_for_db() + timedelta(seconds=30),
         finished_at=None,
@@ -491,7 +491,7 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
         )
 
     assert updated is session
-    assert outbox.status == OutboxStatus.FAILED
+    assert outbox.status == SystemOutboxStatus.FAILED
     assert outbox.last_error == "COMMAND_ACK_TIMEOUT"
     assert outbox.next_retry_at is None
     assert outbox.finished_at is not None
@@ -549,7 +549,7 @@ async def test_dispatch_ack_exhausted_preserves_outbox_dispatch_failed_source_re
         id=863,
         session_id=554,
         workline_id=45,
-        status=OutboxStatus.NEW,
+        status=SystemOutboxStatus.NEW,
         last_error=None,
         next_retry_at=timezone.now_for_db() + timedelta(seconds=30),
         finished_at=None,
@@ -622,7 +622,7 @@ async def test_park_outbox_for_reconciliation_uses_runtime_hold_owner() -> None:
     service = WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         runtime_hold_repository=runtime_hold_repo,
-        outbox_repository=outbox_repo,
+        system_outbox_repository=outbox_repo,
     )
 
     updated = await service.park_outbox_for_reconciliation(

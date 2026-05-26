@@ -5,6 +5,7 @@ Revises: a7c4d5e6f7a8
 Create Date: 2026-04-18 00:30:30.000283+08:00
 
 """
+
 from collections.abc import Sequence
 from typing import Union
 
@@ -21,7 +22,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # `workline_timelines` / `workline_inbox` / `workline_outbox` 当前实际 schema
+    # `workline_timelines` / `workline_inbox` 当前实际 schema
     # 已不存在本轮要清理的列，因此 migration 仅处理真实残留的三张表。
     op.drop_column("callback_logs", "deleted_by", schema="wes_biz")
     op.drop_column("callback_logs", "is_deleted", schema="wes_biz")

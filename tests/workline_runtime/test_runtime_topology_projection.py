@@ -2,7 +2,7 @@ import pytest
 
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.models.command import CommandStatus
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
 from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
@@ -78,13 +78,13 @@ async def test_workline_detail_projects_open_blocked_and_hold_counts_by_device(d
             _command(device=arm03, workline=workline, command_code="CMD-BLOCKED", status=CommandStatus.PENDING),
         ]
     )
-    blocked_outbox = WorklineOutbox(
+    blocked_outbox = SystemOutbox(
         workline_id=workline.id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="device-command:CMD-BLOCKED",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=arm03.device_code,
-        status=OutboxStatus.BLOCKED_RESOURCE,
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
         blocked_device_id=arm03.id,
         blocked_workline_id=workline.id,
         blocked_reason="DEVICE_BUSY",

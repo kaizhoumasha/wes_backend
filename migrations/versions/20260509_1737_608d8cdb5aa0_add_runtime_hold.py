@@ -121,7 +121,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["source_command_id"], ["wes_biz.device_commands.id"]),
         sa.ForeignKeyConstraint(["source_device_id"], ["wes_biz.devices.id"]),
         sa.ForeignKeyConstraint(["source_inbox_id"], ["wes_biz.workline_inbox.id"]),
-        sa.ForeignKeyConstraint(["source_outbox_id"], ["wes_biz.workline_outbox.id"]),
         sa.ForeignKeyConstraint(["workline_id"], ["wes_biz.work_lines.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("source_idempotency_key", name="uq_runtime_holds_source_idempotency_key"),
@@ -346,42 +345,9 @@ def upgrade() -> None:
         op.f("ix_wes_biz_ng_return_items_confirmed_at"), "ng_return_items", ["confirmed_at"], schema="wes_biz"
     )
 
-    op.add_column(
-        "workline_outbox",
-        sa.Column("blocked_by_runtime_hold_id", sa.BigInteger(), nullable=True),
-        schema="wes_biz",
-    )
-    op.create_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_by_runtime_hold_id"),
-        "workline_outbox",
-        ["blocked_by_runtime_hold_id"],
-        schema="wes_biz",
-    )
-    op.create_foreign_key(
-        "fk_workline_outbox_blocked_by_runtime_hold_id",
-        "workline_outbox",
-        "runtime_holds",
-        ["blocked_by_runtime_hold_id"],
-        ["id"],
-        source_schema="wes_biz",
-        referent_schema="wes_biz",
-    )
-
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint(
-        "fk_workline_outbox_blocked_by_runtime_hold_id",
-        "workline_outbox",
-        schema="wes_biz",
-        type_="foreignkey",
-    )
-    op.drop_index(
-        op.f("ix_wes_biz_workline_outbox_blocked_by_runtime_hold_id"),
-        table_name="workline_outbox",
-        schema="wes_biz",
-    )
-    op.drop_column("workline_outbox", "blocked_by_runtime_hold_id", schema="wes_biz")
 
     op.drop_index(op.f("ix_wes_biz_ng_return_items_confirmed_at"), table_name="ng_return_items", schema="wes_biz")
     op.drop_index(op.f("ix_wes_biz_ng_return_items_status"), table_name="ng_return_items", schema="wes_biz")

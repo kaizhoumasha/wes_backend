@@ -1193,12 +1193,12 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     """Outbox 已永久失败时，进入通信 ACK runtime reconciliation。"""
 
     from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.workline.models.outbox import DispatchType, OutboxStatus
+    from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
     from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
-    if getattr(failed_outbox, "status", None) != OutboxStatus.FAILED:
+    if getattr(failed_outbox, "status", None) != SystemOutboxStatus.FAILED:
         return
-    if getattr(outbox, "dispatch_type", None) != DispatchType.DEVICE_COMMAND:
+    if getattr(outbox, "dispatch_type", None) != SystemOutboxDispatchType.DEVICE_COMMAND:
         return
 
     payload = payload_dict(getattr(outbox, "payload_json", None))
@@ -1880,15 +1880,15 @@ def _build_external_http_outbox_model(
     给定同一条 decision，开发者可以清楚看到最终会落成怎样的 outbox 记录。
     """
 
-    from src.app.workline.models.outbox import DispatchType, TargetType, WorklineOutbox
+    from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 
     session = ctx["session"]
-    return WorklineOutbox(
+    return SystemOutbox(
         session_id=session.id,
         workline_id=session.workline_id,
-        dispatch_type=DispatchType.EXTERNAL_HTTP,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
-        target_type=TargetType.HTTP_ENDPOINT,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code=target_code,
         payload_json=payload_json,
     )
@@ -1903,15 +1903,15 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
     - 二者的映射规则是稳定且可测试的
     """
 
-    from src.app.workline.models.outbox import DispatchType, TargetType, WorklineOutbox
+    from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 
     session = ctx["session"]
-    return WorklineOutbox(
+    return SystemOutbox(
         session_id=session.id,
         workline_id=session.workline_id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key=f"device-command:{command.command_code}",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=device_code,
         payload_json=_build_outbox_payload(command, device_code=device_code),
     )
@@ -1937,9 +1937,9 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     session.failure_message = failure.message
     session_id = _resolve_entity_id(session)
     if should_cancel_pending_outboxes and session_id is not None:
-        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+        from src.app.sys.repositories import SystemOutboxRepository
 
-        _ = await WorklineOutboxRepository().cancel_active_by_session(
+        _ = await SystemOutboxRepository().cancel_active_by_session(
             ctx["db"],
             session_id=session_id,
             reason=failure.code,
@@ -2961,7 +2961,7 @@ class TimeoutScanner:
 
         from src.app.device.repositories.command_repository import DeviceCommandRepository
         from src.app.device.repositories.device_repository import device_repository
-        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+        from src.app.sys.repositories import SystemOutboxRepository
 
         # 获取 ACK 后执行等待超时 Session
         session_repo = WorklineSessionRepository()
@@ -3009,7 +3009,7 @@ class TimeoutScanner:
 
         # 获取 ACK 前通信等待超时 Command：设备已经接收出站指令派发，但一直没有 ACK。
         command_repo = DeviceCommandRepository()
-        outbox_repo = WorklineOutboxRepository()
+        outbox_repo = SystemOutboxRepository()
         ack_timeout_commands = await command_repo.get_ack_timed_out_commands(db, limit=limit)
         result["scanned"] += len(ack_timeout_commands)
 
@@ -3266,8 +3266,8 @@ class OutboxDispatcher:
         Returns:
             派发结果统计
         """
-        from src.app.workline.repositories.outbox_repository import (
-            WorklineOutboxRepository,
+        from src.app.sys.repositories import (
+            SystemOutboxRepository,
         )
         from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked, workline_safety_service
@@ -3280,10 +3280,10 @@ class OutboxDispatcher:
         }
 
         # 获取待派发消息
-        outbox_repo = WorklineOutboxRepository()
+        outbox_repo = SystemOutboxRepository()
         _ = await _repair_orphaned_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
         _ = await _repair_self_blocked_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
-        messages = await outbox_repo.get_pending_messages(db, limit=limit)
+        messages = await outbox_repo.get_pending_messages(db, limit=limit, operation_domains=("WORKLINE",))
 
         for outbox in messages:
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
@@ -3565,15 +3565,15 @@ class OutboxDispatcher:
         Returns:
             是否成功
         """
-        from src.app.workline.models.outbox import DispatchType
+        from src.app.sys.models import SystemOutboxDispatchType
 
         if await OutboxDispatcher._should_dispatch_to_sandbox(db, outbox):
             return await OutboxDispatcher._dispatch_sandbox(db, outbox)
-        if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
+        if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
             return await OutboxDispatcher._dispatch_device_command(db, outbox)
-        if outbox.dispatch_type == DispatchType.EXTERNAL_HTTP:
+        if outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
             return await OutboxDispatcher._dispatch_external_http(outbox)
-        if outbox.dispatch_type == DispatchType.INTERNAL_SIGNAL:
+        if outbox.dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL:
             return await OutboxDispatcher._dispatch_internal_signal(outbox)
         logger.warning(f"未知的派发类型: {outbox.dispatch_type}")
         return False
@@ -3582,9 +3582,12 @@ class OutboxDispatcher:
     async def _should_dispatch_to_sandbox(db: Any, outbox: Any) -> bool:
         """判断 Outbox 是否应进入沙箱派发出口。"""
 
-        from src.app.workline.models.outbox import DispatchType
+        from src.app.sys.models import SystemOutboxDispatchType
 
-        if outbox.dispatch_type not in {DispatchType.DEVICE_COMMAND, DispatchType.EXTERNAL_HTTP}:
+        if outbox.dispatch_type not in {
+            SystemOutboxDispatchType.DEVICE_COMMAND,
+            SystemOutboxDispatchType.EXTERNAL_HTTP,
+        }:
             return False
         run_mode = await _resolve_outbox_run_mode(db, outbox)
         return is_simulation_run_mode(run_mode)
@@ -3597,9 +3600,9 @@ class OutboxDispatcher:
         对设备命令，SENT 已代表硬件侧待完成任务，必须同步占用设备运行态，避免沙箱假并发。
         """
 
-        from src.app.workline.models.outbox import DispatchType
+        from src.app.sys.models import SystemOutboxDispatchType
 
-        if outbox.dispatch_type == DispatchType.DEVICE_COMMAND:
+        if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
             reserved = await OutboxDispatcher._reserve_sandbox_device_command(db, outbox)
             if not reserved:
                 return False
@@ -3778,59 +3781,17 @@ class OutboxDispatcher:
     @staticmethod
     async def _dispatch_external_http(outbox: Any) -> bool:
         """派发外部 HTTP 调用"""
-        import httpx
+        from src.app.sys.services.outbox_engine import system_outbox_engine
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    outbox.target_code,
-                    json=outbox.payload_json,
-                )
-                return response.status_code == 200
-        except Exception as e:
-            logger.error(f"外部 HTTP 派发失败: {e}")
-            return False
+        return await system_outbox_engine.dispatch_external_http(outbox)
 
     @staticmethod
     async def _dispatch_internal_signal(outbox: Any) -> bool:
         """派发内部信号"""
-        try:
-            from src.celery_app.app import celery_app
+        from src.app.sys.services.outbox_engine import system_outbox_engine
 
-            # 发送到目标服务的任务队列
-            celery_app.send_task(
-                f"src.celery_app.tasks.{outbox.target_code}.process_signal",
-                kwargs={"payload": outbox.payload_json},
-            )
-            return True
-        except Exception as e:
-            logger.error(f"内部信号派发失败: {e}")
-            return False
+        return await system_outbox_engine.dispatch_internal_signal(outbox)
 
-
-@celery_app.task(
-    name="src.celery_app.tasks.workline.dispatch_outbox_batch",
-    base=WorklineTask,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=10,
-)
-def dispatch_outbox_batch(self: WorklineTask, limit: int = 50) -> DispatchResult:
-    """兼容旧任务名，实际转发到系统级 SystemOutbox Engine。"""
-
-    from src.celery_app.tasks.sys import dispatch_system_outbox_batch
-
-    return dispatch_system_outbox_batch(limit=limit)
-
-
-class _DispatchOutboxCompat:
-    """历史测试兼容入口，复用新的 OutboxDispatcher 实现。"""
-
-    _dispatch = staticmethod(OutboxDispatcher._dispatch)
-    _dispatch_single = staticmethod(OutboxDispatcher._dispatch_single)
-
-
-dispatch_outbox = _DispatchOutboxCompat()
 
 # 历史测试/脚本兼容入口
 process_inbox_messages = ProcessInboxMessages
@@ -3847,10 +3808,9 @@ __all__ = [
     "_load_related_entities",
     # Celery 任务入口（公共 API）
     "device_heartbeat_scanner",
-    "dispatch_outbox",
-    "dispatch_outbox_batch",
     "process_inbox_batch",
     "process_inbox_messages",
+    "process_signal",
     "scan_device_heartbeats_batch",
     "scan_timeouts",
     "scan_timeouts_batch",
@@ -3859,3 +3819,14 @@ __all__ = [
     # "ProcessInboxMessages",
     # "TimeoutScanner",
 ]
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.workline.process_signal",
+    base=WorklineTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+)
+def process_signal(self: WorklineTask, payload: dict[str, Any]) -> None:
+    logger.info(f"workline process_signal 接收到 payload: {payload}")

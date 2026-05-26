@@ -89,12 +89,8 @@ def _rack_task_type(value: str) -> str:
 
 
 def _callback_type(task_type: str) -> str:
-    if task_type == RackTaskType.MOVE_RACK.value:
-        return "WMS_RACK_MOVED"
     if task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value:
         return "WMS_RACK_ARRIVED"
-    if task_type == RackTaskType.TURN_RACK_SIDE.value:
-        return "WMS_RACK_TURNED"
     return "WMS_RACK_TASK_RESULT"
 
 

@@ -9,10 +9,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.device.services.device_service import DeviceService
+from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident, WorklineSafetyIncidentStatus
-from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
 from src.app.workline.repositories.session_repository import WorklineSessionRepository
@@ -126,7 +126,7 @@ class WorkLineSafetyService:
         workline_repository: WorkLineRepository | None = None,
         incident_repository: WorklineSafetyIncidentRepository | None = None,
         session_repository: WorklineSessionRepository | None = None,
-        outbox_repository: WorklineOutboxRepository | None = None,
+        system_outbox_repository: SystemOutboxRepository | None = None,
         command_repository: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
@@ -138,7 +138,7 @@ class WorkLineSafetyService:
         self.workline_repository = workline_repository or WorkLineRepository()
         self.incident_repository = incident_repository or WorklineSafetyIncidentRepository()
         self.session_repository = session_repository or WorklineSessionRepository()
-        self.outbox_repository = outbox_repository or WorklineOutboxRepository()
+        self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
         self.command_repository = command_repository or DeviceCommandRepository()
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
@@ -208,7 +208,7 @@ class WorkLineSafetyService:
                 workline_id,
                 incident_id=cast("int", incident.id),
             )
-            outbox_count = await self.outbox_repository.cancel_active_by_workline(
+            outbox_count = await self.system_outbox_repository.cancel_active_by_workline(
                 db,
                 workline_id,
                 incident_id=cast("int", incident.id),

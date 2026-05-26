@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.app.workline.models.rack_task import WorklineRackTaskStatus
-from src.app.workline.services.rack_task_service import WorklineRackTaskLifecycleService
+from src.app.rack.models import RackTaskStatus
+from src.app.rack.services import RackTaskLifecycleService
 
 
 class FakeRackTaskRepository:
@@ -79,7 +79,7 @@ class FakeRackOperationService:
 @pytest.mark.asyncio
 async def test_record_requested_task_creates_low_level_task_idempotently() -> None:
     repo = FakeRackTaskRepository()
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     db = SimpleNamespace()
     session = SimpleNamespace(id=300, workline_id=45)
     workline = SimpleNamespace(id=45, line_code="WL-SMT-01")
@@ -126,7 +126,7 @@ async def test_record_requested_task_creates_low_level_task_idempotently() -> No
 
     assert first is second
     assert len(repo.created) == 1
-    assert first.task_status == WorklineRackTaskStatus.REQUESTED.value
+    assert first.task_status == RackTaskStatus.REQUESTED.value
     assert first.operation_key == "rack-op:trace-001"
     assert first.operation_type == "SMT_EMPTY_RACK_REPLENISHMENT"
     assert first.sequence_no == 1
@@ -148,7 +148,7 @@ async def test_record_requested_task_rejects_same_task_key_with_different_operat
         task_type="ALLOCATE_AND_MOVE_RACK",
     )
     repo.add_existing(existing)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     with pytest.raises(ValueError, match="task_key 已绑定不同 rack task"):
         await service.record_requested_task(
@@ -182,7 +182,7 @@ async def test_record_requested_task_rejects_same_task_key_with_different_operat
 )
 async def test_record_requested_task_rejects_invalid_operation_metadata(kwargs: dict[str, Any]) -> None:
     repo = FakeRackTaskRepository()
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     request_kwargs: dict[str, Any] = {
         "operation_key": "rack-op:trace-001",
         "operation_type": "SMT_EMPTY_RACK_REPLENISHMENT",
@@ -218,7 +218,7 @@ async def test_record_requested_task_rejects_same_operation_sequence_with_differ
             task_type="MOVE_RACK",
         )
     )
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     with pytest.raises(ValueError, match="operation sequence"):
         await service.record_requested_task(
@@ -250,7 +250,7 @@ async def test_record_requested_task_rejects_same_task_key_with_different_operat
             task_type="ALLOCATE_AND_MOVE_RACK",
         )
     )
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     with pytest.raises(ValueError, match="task_key 已绑定不同 rack task"):
         await service.record_requested_task(
@@ -282,7 +282,7 @@ async def test_record_requested_task_rejects_same_task_key_with_different_task_t
             task_type="ALLOCATE_AND_MOVE_RACK",
         )
     )
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     with pytest.raises(ValueError, match="task_key 已绑定不同 rack task"):
         await service.record_requested_task(
@@ -314,7 +314,7 @@ async def test_record_requested_task_rejects_dispatch_key_bound_to_other_task() 
             task_type="MOVE_RACK",
         )
     )
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     with pytest.raises(ValueError, match="dispatch_key 已绑定不同 rack task"):
         await service.record_requested_task(
@@ -343,7 +343,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
         operation_key="rack-op:trace-001",
         sequence_no=1,
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -353,7 +353,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
         error_message=None,
     )
     repo.add_existing(task)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     db = SimpleNamespace(add=MagicMock())
 
     updated = await service.record_callback_from_external_http(
@@ -368,7 +368,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
     )
 
     assert updated is task
-    assert task.task_status == WorklineRackTaskStatus.SUCCEEDED
+    assert task.task_status == RackTaskStatus.SUCCEEDED
     assert task.callback_json["active_bin_rack"]["rack_code"] == "RACK-001"
     assert task.result_json == {"task_status": "SUCCEEDED"}
     assert task.trace_id == "trace-001"
@@ -391,7 +391,7 @@ async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_erro
         sequence_no=1,
         task_type="ALLOCATE_AND_MOVE_RACK",
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -401,7 +401,7 @@ async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_erro
         error_message=None,
     )
     repo.add_existing(task)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     db = SimpleNamespace(add=MagicMock())
 
     await service.record_callback_from_external_http(
@@ -415,7 +415,7 @@ async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_erro
         trace_id="trace-001",
     )
 
-    assert task.task_status == WorklineRackTaskStatus.FAILED
+    assert task.task_status == RackTaskStatus.FAILED
     assert task.error_code == "RCS_RACK_OPERATION_FAILED"
     assert task.result_json["external_error_code"] == "RCS_RACK_OPERATION_FAILED"
     assert task.completed_at is not None
@@ -425,22 +425,22 @@ async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_erro
 @pytest.mark.parametrize(
     ("payload_status", "expected_status"),
     [
-        ("BUSINESS_COMPLETED", WorklineRackTaskStatus.SUCCEEDED),
-        ("PHYSICAL_COMPLETED", WorklineRackTaskStatus.IN_PROGRESS),
-        ("FAILED", WorklineRackTaskStatus.FAILED),
-        ("WMS_REJECTED", WorklineRackTaskStatus.FAILED),
-        ("FAILED_AGV", WorklineRackTaskStatus.FAILED),
-        ("FAILED_CTU", WorklineRackTaskStatus.FAILED),
-        ("REJECTED_EXCHANGE_AREA_FULL", WorklineRackTaskStatus.FAILED),
-        ("REJECTED_EMPTY_BIN_UNAVAILABLE", WorklineRackTaskStatus.FAILED),
-        ("FAILED_VENDOR_SPECIFIC", WorklineRackTaskStatus.FAILED),
-        ("TIMEOUT", WorklineRackTaskStatus.TIMEOUT),
-        ("RESOURCE_PROJECTION_UNCONFIRMED", WorklineRackTaskStatus.RECONCILING),
+        ("BUSINESS_COMPLETED", RackTaskStatus.SUCCEEDED),
+        ("PHYSICAL_COMPLETED", RackTaskStatus.IN_PROGRESS),
+        ("FAILED", RackTaskStatus.FAILED),
+        ("WMS_REJECTED", RackTaskStatus.FAILED),
+        ("FAILED_AGV", RackTaskStatus.FAILED),
+        ("FAILED_CTU", RackTaskStatus.FAILED),
+        ("REJECTED_EXCHANGE_AREA_FULL", RackTaskStatus.FAILED),
+        ("REJECTED_EMPTY_BIN_UNAVAILABLE", RackTaskStatus.FAILED),
+        ("FAILED_VENDOR_SPECIFIC", RackTaskStatus.FAILED),
+        ("TIMEOUT", RackTaskStatus.TIMEOUT),
+        ("RESOURCE_PROJECTION_UNCONFIRMED", RackTaskStatus.RECONCILING),
     ],
 )
 async def test_record_callback_maps_external_status_to_canonical_task_status(
     payload_status: str,
-    expected_status: WorklineRackTaskStatus,
+    expected_status: RackTaskStatus,
 ) -> None:
     repo = FakeRackTaskRepository()
     dispatch_key = f"dispatch:trace-001:{payload_status.lower()}"
@@ -452,7 +452,7 @@ async def test_record_callback_maps_external_status_to_canonical_task_status(
         sequence_no=1,
         task_type="ALLOCATE_AND_MOVE_RACK",
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -462,7 +462,7 @@ async def test_record_callback_maps_external_status_to_canonical_task_status(
         error_message=None,
     )
     repo.add_existing(task)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
 
     await service.record_callback_from_external_http(
         SimpleNamespace(add=MagicMock()),
@@ -484,7 +484,7 @@ async def test_record_callback_does_not_regress_terminal_task_status() -> None:
         sequence_no=1,
         task_type="ALLOCATE_AND_MOVE_RACK",
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.SUCCEEDED,
+        task_status=RackTaskStatus.SUCCEEDED,
         callback_json={"status": "SUCCEEDED"},
         result_json={"task_status": "SUCCEEDED"},
         trace_id="trace-original",
@@ -494,7 +494,7 @@ async def test_record_callback_does_not_regress_terminal_task_status() -> None:
         error_message=None,
     )
     repo.add_existing(task)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     db = SimpleNamespace(add=MagicMock())
 
     updated = await service.record_callback_from_external_http(
@@ -508,7 +508,7 @@ async def test_record_callback_does_not_regress_terminal_task_status() -> None:
     )
 
     assert updated is task
-    assert task.task_status == WorklineRackTaskStatus.SUCCEEDED
+    assert task.task_status == RackTaskStatus.SUCCEEDED
     assert task.callback_json == {"status": "SUCCEEDED"}
     assert task.result_json == {"task_status": "SUCCEEDED"}
     assert task.trace_id == "trace-original"
@@ -524,7 +524,7 @@ async def test_record_callback_keeps_operation_incomplete_when_sibling_pending()
         operation_key="rack-op:trace-001",
         sequence_no=1,
         dispatch_key="dispatch:trace-001:move-out:1",
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -539,7 +539,7 @@ async def test_record_callback_keeps_operation_incomplete_when_sibling_pending()
         operation_key="rack-op:trace-001",
         sequence_no=2,
         dispatch_key="dispatch:trace-001:allocate-empty:2",
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -550,7 +550,7 @@ async def test_record_callback_keeps_operation_incomplete_when_sibling_pending()
     )
     repo.add_existing(completed)
     repo.add_existing(pending)
-    service = WorklineRackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo)
     db = SimpleNamespace(add=MagicMock())
 
     await service.record_callback_from_external_http(
@@ -562,8 +562,8 @@ async def test_record_callback_keeps_operation_incomplete_when_sibling_pending()
         trace_id="trace-001",
     )
 
-    assert completed.task_status == WorklineRackTaskStatus.SUCCEEDED
-    assert pending.task_status == WorklineRackTaskStatus.REQUESTED
+    assert completed.task_status == RackTaskStatus.SUCCEEDED
+    assert pending.task_status == RackTaskStatus.REQUESTED
     assert completed.result_json == {"task_status": "SUCCEEDED"}
     assert "operation_status" not in completed.result_json
 
@@ -582,7 +582,7 @@ async def test_record_callback_resumes_session_only_when_operation_succeeded() -
         task_type="ALLOCATE_AND_MOVE_RACK",
         workline_id=45,
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -610,7 +610,7 @@ async def test_record_callback_resumes_session_only_when_operation_succeeded() -
     )
     session_repo.by_operation[(45, "rack-op:trace-001")] = session
     operation_service = FakeRackOperationService("SUCCEEDED")
-    service = WorklineRackTaskLifecycleService(
+    service = RackTaskLifecycleService(
         rack_task_repository=repo,
         session_repository=session_repo,  # type: ignore[arg-type]
         rack_operation_service=operation_service,
@@ -653,7 +653,7 @@ async def test_record_callback_defers_arrived_operation_sync_until_resource_proj
         task_type="ALLOCATE_AND_MOVE_RACK",
         workline_id=45,
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -681,7 +681,7 @@ async def test_record_callback_defers_arrived_operation_sync_until_resource_proj
     )
     session_repo.by_operation[(45, "rack-op:trace-001")] = session
     operation_service = FakeRackOperationService("RECONCILING")
-    service = WorklineRackTaskLifecycleService(
+    service = RackTaskLifecycleService(
         rack_task_repository=repo,
         session_repository=session_repo,  # type: ignore[arg-type]
         rack_operation_service=operation_service,
@@ -698,7 +698,7 @@ async def test_record_callback_defers_arrived_operation_sync_until_resource_proj
         trace_id="trace-001",
     )
 
-    assert task.task_status == WorklineRackTaskStatus.SUCCEEDED
+    assert task.task_status == RackTaskStatus.SUCCEEDED
     assert task.result_json == {"task_status": "SUCCEEDED"}
     assert operation_service.calls == []
     assert session.status == "WAITING_EXTERNAL"
@@ -721,7 +721,7 @@ async def test_record_callback_holds_session_when_operation_failed() -> None:
         task_type="ALLOCATE_AND_MOVE_RACK",
         workline_id=45,
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -748,7 +748,7 @@ async def test_record_callback_holds_session_when_operation_failed() -> None:
         },
     )
     session_repo.by_operation[(45, "rack-op:trace-001")] = session
-    service = WorklineRackTaskLifecycleService(
+    service = RackTaskLifecycleService(
         rack_task_repository=repo,
         session_repository=session_repo,  # type: ignore[arg-type]
         rack_operation_service=FakeRackOperationService("FAILED"),
@@ -793,7 +793,7 @@ async def test_record_callback_preserves_failure_reason_when_later_sibling_succe
         task_type="ALLOCATE_AND_MOVE_RACK",
         workline_id=45,
         dispatch_key=dispatch_key,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
         trace_id=None,
@@ -825,7 +825,7 @@ async def test_record_callback_preserves_failure_reason_when_later_sibling_succe
         },
     )
     session_repo.by_operation[(45, "rack-op:trace-001")] = session
-    service = WorklineRackTaskLifecycleService(
+    service = RackTaskLifecycleService(
         rack_task_repository=repo,
         session_repository=session_repo,  # type: ignore[arg-type]
         rack_operation_service=FakeRackOperationService("FAILED"),

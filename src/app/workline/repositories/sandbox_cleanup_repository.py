@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import delete, or_, select, update
 
 from src.app.device.models import Device, DeviceCommand, DeviceStatus
+from src.app.rack.models import RackTask
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models import WorkLine, WorkLineRunMode
 from src.app.workline.models.bin_cell_reservation import WorklineBinCellReservation
 from src.app.workline.models.diagnostic import WorklineDiagnostic
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.outbox import WorklineOutbox
-from src.app.workline.models.rack_task import WorklineRackTask
 from src.app.workline.models.runtime_hold import NgReturnItem, RuntimeHold
 from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident
 from src.app.workline.models.session import RunMode, WorklineSession
@@ -132,11 +132,11 @@ class SandboxCleanupRepository:
         await self._delete_by_ids(db, WorklineDiagnostic, selection.diagnostics)
         await self._delete_by_ids(db, WorklineDispatchAttempt, selection.dispatch_attempts)
         await self._delete_by_ids(db, WorklineBinCellReservation, selection.bin_cell_reservations)
-        await self._delete_by_ids(db, WorklineRackTask, selection.rack_tasks)
+        await self._delete_by_ids(db, RackTask, selection.rack_tasks)
         await self._delete_by_ids(db, NgReturnItem, selection.ng_return_items)
         await self._delete_by_ids(db, WorklineSafetyIncident, selection.safety_incidents)
         await self._delete_by_ids(db, RuntimeHold, selection.runtime_holds)
-        await self._delete_by_ids(db, WorklineOutbox, selection.outboxes)
+        await self._delete_by_ids(db, SystemOutbox, selection.outboxes)
         await self._delete_by_ids(db, WorklineInbox, selection.inboxes)
         await self._delete_by_ids(db, DeviceCommand, selection.commands)
         await self._delete_by_ids(db, WorklineSession, selection.sessions)
@@ -154,17 +154,17 @@ class SandboxCleanupRepository:
         workline_id: int,
         selection: SandboxCleanupSelection,
     ) -> None:
-        outbox_columns = cast("Any", WorklineOutbox).__table__.c
+        outbox_columns = cast("Any", SystemOutbox).__table__.c
         for hold_ids in self._chunks(selection.runtime_holds):
             # 解除所有指向待删 RuntimeHold 的 FK；这些行不一定属于本次删除集合，但必须先断开指针。
             await db.execute(
-                update(WorklineOutbox)
+                update(SystemOutbox)
                 .where(outbox_columns.blocked_by_runtime_hold_id.in_(hold_ids))
                 .values(blocked_by_runtime_hold_id=None)
             )
         for outbox_ids in self._chunks(selection.outboxes):
             await db.execute(
-                update(WorklineOutbox).where(outbox_columns.id.in_(outbox_ids)).values(blocked_by_runtime_hold_id=None)
+                update(SystemOutbox).where(outbox_columns.id.in_(outbox_ids)).values(blocked_by_runtime_hold_id=None)
             )
 
         hold_columns = cast("Any", RuntimeHold).__table__.c
@@ -255,7 +255,7 @@ class SandboxCleanupRepository:
         )
 
     def _sandbox_outbox_ids_stmt(self, workline_id: int) -> Any:
-        columns = cast("Any", WorklineOutbox).__table__.c
+        columns = cast("Any", SystemOutbox).__table__.c
         session_ids = self._sandbox_session_ids_stmt(workline_id)
         return (
             select(columns.id)
@@ -317,7 +317,7 @@ class SandboxCleanupRepository:
         )
 
     def _sandbox_rack_task_ids_stmt(self, workline_id: int) -> Any:
-        columns = cast("Any", WorklineRackTask).__table__.c
+        columns = cast("Any", RackTask).__table__.c
         session_ids = self._sandbox_session_ids_stmt(workline_id)
         outbox_ids = self._sandbox_outbox_ids_stmt(workline_id)
         return (

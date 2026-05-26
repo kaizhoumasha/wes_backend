@@ -20,6 +20,8 @@ class HandlingObjectType(str, Enum):
     """Handling 操作对象类型。"""
 
     BIN = "BIN"
+    RACK = "RACK"
+    COMPOSITE = "COMPOSITE"
 
 
 class HandlingOperationStatus(str, Enum):

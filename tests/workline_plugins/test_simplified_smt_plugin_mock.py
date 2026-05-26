@@ -181,7 +181,7 @@ def get_outbox_commands(since_session_id: int) -> list[str]:
 
     query = f"""
         SELECT payload_json->>'task_type' as task_type
-        FROM wes_biz.workline_outbox
+        FROM wes_biz.system_outbox
         WHERE session_id > {since_session_id}
         AND session_id <= {max_session_id}
         ORDER BY id;

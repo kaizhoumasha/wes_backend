@@ -102,7 +102,7 @@ class OutboxStatus(str, Enum):
     """
     发件箱状态枚举
 
-    定义 WorklineOutbox 的派发状态（架构 8.8 节）。
+    定义 SystemOutbox 的派发状态（架构 8.8 节）。
 
     状态迁移保证副作用的可靠派发。
 

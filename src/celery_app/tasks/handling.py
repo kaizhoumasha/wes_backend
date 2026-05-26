@@ -60,19 +60,15 @@ class HandlingTask(Task):
                 self._db = None
 
 
+__all__ = ["HandlingTask", "process_signal"]
+
+
 @celery_app.task(
-    name="src.celery_app.tasks.handling.dispatch_system_outbox_batch",
+    name="src.celery_app.tasks.handling.process_signal",
     base=HandlingTask,
     bind=True,
     max_retries=3,
     default_retry_delay=10,
 )
-def dispatch_system_outbox_batch(self: HandlingTask, limit: int = 50) -> dict[str, int]:
-    """兼容旧任务名，实际转发到系统级 outbox task。"""
-
-    from src.celery_app.tasks.sys import dispatch_system_outbox_batch as dispatch_sys_outbox_batch
-
-    return dispatch_sys_outbox_batch(limit=limit)
-
-
-__all__ = ["HandlingTask", "dispatch_system_outbox_batch"]
+def process_signal(self: HandlingTask, payload: dict[str, Any]) -> None:
+    logger.info(f"handling process_signal 接收到 payload: {payload}")

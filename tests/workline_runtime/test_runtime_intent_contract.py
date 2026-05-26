@@ -46,7 +46,7 @@ def test_continue_next_uses_topology_destination() -> None:
 def test_external_request_intent_carries_http_dispatch_contract() -> None:
     intent = RuntimeIntent.external_request(
         dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-        target_code="http://wms-rcs/api/full-box-exchange",
+        target_code="WMS_RCS_FULL_BOX_EXCHANGE",
         payload={"rack_release_id": "release-001"},
         timeout_seconds=1800,
         source_system="WMS_RCS",
@@ -54,7 +54,7 @@ def test_external_request_intent_carries_http_dispatch_contract() -> None:
 
     assert intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST
     assert intent.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
-    assert intent.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert intent.target_code == "WMS_RCS_FULL_BOX_EXCHANGE"
     assert intent.payload_json == {"rack_release_id": "release-001"}
     assert intent.timeout_seconds == 1800
     assert intent.source_system == "WMS_RCS"
@@ -64,7 +64,7 @@ def test_external_request_requires_dispatch_key_target_payload_and_timeout() -> 
     with pytest.raises(ValueError, match="EXTERNAL_REQUEST intent requires dispatch_key"):
         RuntimeIntent.external_request(
             dispatch_key="",
-            target_code="http://wms-rcs/api/full-box-exchange",
+            target_code="WMS_RCS_FULL_BOX_EXCHANGE",
             payload={"rack_release_id": "release-001"},
             timeout_seconds=1800,
         )
@@ -80,7 +80,7 @@ def test_external_request_requires_dispatch_key_target_payload_and_timeout() -> 
     with pytest.raises(ValueError, match="EXTERNAL_REQUEST intent requires payload"):
         RuntimeIntent.external_request(
             dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-            target_code="http://wms-rcs/api/full-box-exchange",
+            target_code="WMS_RCS_FULL_BOX_EXCHANGE",
             payload={},
             timeout_seconds=1800,
         )
@@ -88,7 +88,7 @@ def test_external_request_requires_dispatch_key_target_payload_and_timeout() -> 
     with pytest.raises(ValueError, match="EXTERNAL_REQUEST intent requires timeout_seconds"):
         RuntimeIntent.external_request(
             dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-            target_code="http://wms-rcs/api/full-box-exchange",
+            target_code="WMS_RCS_FULL_BOX_EXCHANGE",
             payload={"rack_release_id": "release-001"},
             timeout_seconds=None,
         )

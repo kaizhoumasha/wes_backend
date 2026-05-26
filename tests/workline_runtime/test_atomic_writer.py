@@ -61,7 +61,7 @@ class MockTimeline:
 
 
 class MockOutbox:
-    """模拟 WorklineOutbox"""
+    """模拟 SystemOutbox"""
 
     def __init__(
         self,

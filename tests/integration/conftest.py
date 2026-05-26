@@ -19,8 +19,8 @@ from sqlalchemy.pool import NullPool
 # 预加载外键目标模型，避免 SQLModel 在 flush 时出现 NoReferencedTableError。
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.outbox import WorklineOutbox
 from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.models.workline import WorkLine
@@ -281,11 +281,11 @@ async def test_prefix(
             )
         )
         await cleanup_session.execute(
-            delete(WorklineOutbox).where(  # type: ignore[arg-type]
+            delete(SystemOutbox).where(  # type: ignore[arg-type]
                 or_(
-                    WorklineOutbox.dispatch_key.like(f"{prefix}%"),
-                    WorklineOutbox.workline_id.in_(prefixed_worklines),
-                    WorklineOutbox.session_id.in_(
+                    SystemOutbox.dispatch_key.like(f"{prefix}%"),
+                    SystemOutbox.workline_id.in_(prefixed_worklines),
+                    SystemOutbox.session_id.in_(
                         select(WorklineSession.id).where(
                             or_(
                                 WorklineSession.trace_id.like(f"{prefix}%"),

@@ -146,7 +146,7 @@ class CallbackOrchestrationService:
 
         try:
             cast("Any", celery_app).send_task(
-                "src.celery_app.tasks.workline.dispatch_outbox_batch",
+                "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
                 kwargs={"limit": 50},
             )
         except Exception as exc:
@@ -304,9 +304,9 @@ class CallbackOrchestrationService:
         if device_status != "IDLE" or getattr(updated_device, "current_command_id", None) is not None:
             return 0
 
-        from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository
+        from src.app.sys.repositories import SystemOutboxRepository
 
-        return await WorklineOutboxRepository().release_blocked_by_device(db, device_id=device_id)
+        return await SystemOutboxRepository().release_blocked_by_device(db, device_id=device_id)
 
     async def process_result(
         self,
@@ -616,9 +616,9 @@ class CallbackOrchestrationService:
 
     def _resolve_rack_task_service(self) -> Any:
         if self._rack_task_service is None:
-            from src.app.workline.services import workline_rack_task_lifecycle_service
+            from src.app.rack.services import rack_task_lifecycle_service
 
-            self._rack_task_service = workline_rack_task_lifecycle_service
+            self._rack_task_service = rack_task_lifecycle_service
         return self._rack_task_service
 
     def _resolve_handling_operation_service(self) -> Any:

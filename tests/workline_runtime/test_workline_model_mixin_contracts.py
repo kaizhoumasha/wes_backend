@@ -13,6 +13,7 @@ def _table_columns(model: type[Any]) -> set[str]:
 def test_workline_table_models_follow_strict_mixin_categories() -> None:
     """WorkLine 表模型必须按主数据、运行时状态机、恢复生命周期分层选择 Mixin。"""
 
+    from src.app.sys.models import SystemOutbox
     from src.app.workline.models import (
         NgReturnItem,
         RuntimeHold,
@@ -20,7 +21,6 @@ def test_workline_table_models_follow_strict_mixin_categories() -> None:
         WorklineDiagnostic,
         WorklineDispatchAttempt,
         WorklineInbox,
-        WorklineOutbox,
         WorklineSafetyIncident,
         WorklineSession,
         WorklineTimeline,
@@ -28,7 +28,7 @@ def test_workline_table_models_follow_strict_mixin_categories() -> None:
 
     runtime_state_models = (
         WorklineInbox,
-        WorklineOutbox,
+        SystemOutbox,
         WorklineSession,
         WorklineTimeline,
         WorklineDispatchAttempt,
@@ -54,13 +54,13 @@ def test_workline_table_models_follow_strict_mixin_categories() -> None:
 def test_outbox_base_does_not_redeclare_mixin_timestamps() -> None:
     """Base 字段层不应重新声明 DataTableMixin 已提供的时间戳字段。"""
 
-    from src.app.workline.models import WorklineOutbox, WorklineOutboxBase, WorklineOutboxCreate
+    from src.app.sys.models import SystemOutbox, SystemOutboxBase, SystemOutboxCreate
 
-    base_annotations = WorklineOutboxBase.__annotations__
+    base_annotations = SystemOutboxBase.__annotations__
 
     assert "created_at" not in base_annotations
     assert "updated_at" not in base_annotations
-    assert "created_at" in _table_columns(WorklineOutbox)
-    assert "updated_at" in _table_columns(WorklineOutbox)
-    assert "created_at" not in WorklineOutboxCreate.model_fields
-    assert "updated_at" not in WorklineOutboxCreate.model_fields
+    assert "created_at" in _table_columns(SystemOutbox)
+    assert "updated_at" in _table_columns(SystemOutbox)
+    assert "created_at" not in SystemOutboxCreate.model_fields
+    assert "updated_at" not in SystemOutboxCreate.model_fields

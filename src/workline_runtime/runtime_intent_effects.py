@@ -587,9 +587,9 @@ class RuntimeIntentEffectApplier:
 
         service = self._rack_operation_service
         if service is None:
-            from src.app.workline.services import workline_rack_operation_service
+            from src.app.rack.services import rack_operation_service
 
-            service = workline_rack_operation_service
+            service = rack_operation_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
         trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))

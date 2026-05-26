@@ -181,7 +181,7 @@ class TestTimeoutScanner:
                 return_value=command_repo,
             ),
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=outbox_repo,
             ),
             patch(

@@ -65,7 +65,6 @@ def _drop_index_if_exists(index_name: str) -> None:
 def _discard_legacy_workline_runtime_rows() -> None:
     """丢弃旧 Workline 运行态引用，避免半迁移旧 outbox/rack task 数据。"""
 
-    op.execute(sa.text("DELETE FROM wes_biz.workline_rack_tasks"))
     op.execute(sa.text("DELETE FROM wes_biz.workline_dispatch_attempts"))
     op.execute(sa.text("UPDATE wes_biz.workline_diagnostics SET outbox_id = NULL WHERE outbox_id IS NOT NULL"))
     op.execute(sa.text("UPDATE wes_biz.runtime_holds SET source_outbox_id = NULL WHERE source_outbox_id IS NOT NULL"))
@@ -86,46 +85,9 @@ def upgrade() -> None:
     _discard_legacy_workline_runtime_rows()
 
     op.add_column(
-        "handling_operations",
-        sa.Column(
-            "completion_policy",
-            sa.Enum(
-                "CALLBACK_TRUSTED",
-                "RESOURCE_PROJECTION_REQUIRED",
-                "CALLBACK_PLUS_RECONCILIATION",
-                name="operationcompletionpolicy",
-                native_enum=False,
-                create_constraint=True,
-                length=50,
-            ),
-            nullable=False,
-            server_default="CALLBACK_TRUSTED",
-            comment="完成确认策略",
-        ),
-        schema=SCHEMA,
-    )
-    op.create_index(
-        op.f("ix_wes_biz_handling_operations_completion_policy"),
-        "handling_operations",
-        ["completion_policy"],
-        schema=SCHEMA,
-    )
-
-    _drop_index_if_exists("ix_system_outbox_operation_status")
-    _drop_constraint_if_exists("system_outbox", "system_outbox_operation_id_fkey")
-    op.add_column(
         "system_outbox",
         sa.Column("device_id", sa.BigInteger(), nullable=True, comment="可选关联 Device.id"),
         schema=SCHEMA,
-    )
-    op.create_foreign_key(
-        "fk_system_outbox_device_id",
-        "system_outbox",
-        "devices",
-        ["device_id"],
-        ["id"],
-        source_schema=SCHEMA,
-        referent_schema=SCHEMA,
     )
     op.add_column(
         "system_outbox",
@@ -150,7 +112,21 @@ def upgrade() -> None:
     op.add_column("system_outbox", sa.Column("blocked_device_id", sa.BigInteger(), nullable=True), schema=SCHEMA)
     op.add_column("system_outbox", sa.Column("blocked_workline_id", sa.BigInteger(), nullable=True), schema=SCHEMA)
     op.add_column("system_outbox", sa.Column("blocked_reason", sa.String(length=100), nullable=True), schema=SCHEMA)
+
+    _drop_constraint_if_exists("system_outbox", "system_outbox_operation_id_fkey")
+    _drop_index_if_exists("ix_system_outbox_status_retry")
+    _drop_index_if_exists("ix_system_outbox_operation_status")
     op.drop_column("system_outbox", "operation_id", schema=SCHEMA)
+
+    op.create_foreign_key(
+        "fk_system_outbox_device_id",
+        "system_outbox",
+        "devices",
+        ["device_id"],
+        ["id"],
+        source_schema=SCHEMA,
+        referent_schema=SCHEMA,
+    )
     op.create_foreign_key(
         "fk_system_outbox_blocked_by_runtime_hold_id",
         "system_outbox",
@@ -161,6 +137,7 @@ def upgrade() -> None:
         referent_schema=SCHEMA,
         use_alter=True,
     )
+
     for column_name in (
         "device_id",
         "operation_domain",
@@ -195,6 +172,32 @@ def upgrade() -> None:
         "system_outbox",
         ["dispatch_type", "device_id", "target_code", "status", "created_at"],
         postgresql_where=sa.text("dispatch_type = 'DEVICE_COMMAND'"),
+        schema=SCHEMA,
+    )
+
+    op.add_column(
+        "handling_operations",
+        sa.Column(
+            "completion_policy",
+            sa.Enum(
+                "CALLBACK_TRUSTED",
+                "RESOURCE_PROJECTION_REQUIRED",
+                "CALLBACK_PLUS_RECONCILIATION",
+                name="operationcompletionpolicy",
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+            nullable=False,
+            server_default="CALLBACK_TRUSTED",
+            comment="完成确认策略",
+        ),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        op.f("ix_wes_biz_handling_operations_completion_policy"),
+        "handling_operations",
+        ["completion_policy"],
         schema=SCHEMA,
     )
 
@@ -233,7 +236,7 @@ def upgrade() -> None:
                 length=50,
             ),
             nullable=False,
-            server_default="CALLBACK_PLUS_RECONCILIATION",
+            server_default="RESOURCE_PROJECTION_REQUIRED",
             comment="完成确认策略",
         ),
         sa.Column("workline_id", sa.BigInteger(), nullable=True, comment="可选关联 WorkLine.id"),
@@ -387,30 +390,62 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
 
-    op.drop_table("rack_tasks", schema=SCHEMA)
-    op.drop_table("rack_operations", schema=SCHEMA)
-    for index_name in (
-        "ix_system_outbox_device_fifo",
-        "ix_system_outbox_retention",
-        "ix_system_outbox_blocked_release",
-        "ix_system_outbox_context_status",
-        "ix_system_outbox_domain_operation",
-        "ix_system_outbox_status_retry_created",
+    for table_name, column_name in (
+        ("workline_diagnostics", "outbox_id"),
+        ("workline_dispatch_attempts", "outbox_id"),
+        ("runtime_holds", "source_outbox_id"),
     ):
-        _drop_index_if_exists(index_name)
-    _drop_constraint_if_exists("system_outbox", "fk_system_outbox_blocked_by_runtime_hold_id")
-    _drop_constraint_if_exists("system_outbox", "fk_system_outbox_device_id")
+        _drop_constraint_if_exists(table_name, f"fk_{table_name}_{column_name}_system_outbox")
+
+    op.drop_constraint("fk_system_outbox_device_id", "system_outbox", schema=SCHEMA)
+    op.drop_constraint("fk_system_outbox_blocked_by_runtime_hold_id", "system_outbox", schema=SCHEMA)
+
+    _drop_index_if_exists("ix_system_outbox_device_fifo")
+    _drop_index_if_exists("ix_system_outbox_retention")
+    _drop_index_if_exists("ix_system_outbox_blocked_release")
+    _drop_index_if_exists("ix_system_outbox_context_status")
+    _drop_index_if_exists("ix_system_outbox_domain_operation")
+    _drop_index_if_exists("ix_system_outbox_status_retry_created")
     for column_name in (
-        "blocked_reason",
-        "blocked_workline_id",
-        "blocked_device_id",
-        "blocked_by_runtime_hold_id",
-        "blocked_by_reconciliation_session_id",
-        "operation_key",
-        "operation_domain",
         "device_id",
+        "operation_domain",
+        "operation_key",
+        "blocked_by_reconciliation_session_id",
+        "blocked_by_runtime_hold_id",
+        "blocked_device_id",
+        "blocked_workline_id",
     ):
-        op.drop_column("system_outbox", column_name, schema=SCHEMA)
+        _drop_index_if_exists(f"ix_wes_biz_system_outbox_{column_name}")
+
+    op.drop_column("system_outbox", "blocked_reason", schema=SCHEMA)
+    op.drop_column("system_outbox", "blocked_workline_id", schema=SCHEMA)
+    op.drop_column("system_outbox", "blocked_device_id", schema=SCHEMA)
+    op.drop_column("system_outbox", "blocked_by_runtime_hold_id", schema=SCHEMA)
+    op.drop_column("system_outbox", "blocked_by_reconciliation_session_id", schema=SCHEMA)
+    op.drop_column("system_outbox", "operation_key", schema=SCHEMA)
+    op.drop_column("system_outbox", "operation_domain", schema=SCHEMA)
+    op.drop_column("system_outbox", "device_id", schema=SCHEMA)
+
+    op.add_column(
+        "system_outbox",
+        sa.Column("operation_id", sa.BigInteger(), nullable=True, comment="关联 HandlingOperation.id"),
+        schema=SCHEMA,
+    )
+    op.create_index("ix_system_outbox_operation_status", "system_outbox", ["operation_id", "status"], schema=SCHEMA)
+    op.create_index("ix_system_outbox_status_retry", "system_outbox", ["status", "next_retry_at"], schema=SCHEMA)
+    op.create_foreign_key(
+        "system_outbox_operation_id_fkey",
+        "system_outbox",
+        "handling_operations",
+        ["operation_id"],
+        ["id"],
+        source_schema=SCHEMA,
+        referent_schema=SCHEMA,
+    )
+
+    op.drop_table("rack_tasks", schema=SCHEMA)
+
+    op.drop_table("rack_operations", schema=SCHEMA)
     op.drop_index(
         op.f("ix_wes_biz_handling_operations_completion_policy"), table_name="handling_operations", schema=SCHEMA
     )

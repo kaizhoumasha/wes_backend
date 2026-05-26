@@ -7,8 +7,8 @@ import pytest
 
 from src.app.device.models import Device, DeviceStatus
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
 from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncidentStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.safety_service import (
@@ -43,14 +43,14 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     db_session.add_all([device, session])
     await db_session.flush()
 
-    outbox = WorklineOutbox(
+    outbox = SystemOutbox(
         session_id=cast("int", session.id),
         workline_id=cast("int", workline.id),
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="device-command:ESTOP-1",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=device.device_code,
-        status=OutboxStatus.SENT,
+        status=SystemOutboxStatus.SENT,
     )
     command = DeviceCommand(
         device_id=cast("int", device.id),
@@ -87,7 +87,7 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     assert workline.active_safety_incident_id == incident.id
     assert session.status == SessionStatus.FAILED
     assert session.failure_code == "WORKLINE_ESTOPPED"
-    assert outbox.status == OutboxStatus.CANCELLED
+    assert outbox.status == SystemOutboxStatus.CANCELLED
     assert outbox.last_error == "CANCELLED_BY_ESTOP"
     assert command.status == CommandStatus.CANCELLED
     assert command.error_detail["error_code"] == "CANCELLED_BY_ESTOP"  # type: ignore[reportOptionalMemberAccess]
@@ -105,7 +105,7 @@ async def test_handle_estop_preserves_freeze_when_drain_fails(db_session) -> Non
     db_session.add(workline)
     await db_session.flush()
 
-    service = WorkLineSafetyService(outbox_repository=_FailingOutboxRepository())  # type: ignore[arg-type]
+    service = WorkLineSafetyService(system_outbox_repository=_FailingOutboxRepository())  # type: ignore[arg-type]
 
     incident = await service.handle_estop(
         db_session,

@@ -6,14 +6,14 @@ import pytest
 from sqlalchemy import select
 
 from src.app.device.models import CommandStatus, Device, DeviceCommand, DeviceStatus
+from src.app.rack.models import RackTask, RackTaskStatus, RackTaskType
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode, WorkLineRuntimeStatus
 from src.app.workline.models.bin_cell_reservation import WorklineBinCellReservation
 from src.app.workline.models.diagnostic import DiagnosticStatus, WorklineDiagnostic
 from src.app.workline.models.dispatch_attempt import DispatchAttemptStatus, WorklineDispatchAttempt
 from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.workline.models.operation import SandboxCleanupRequest, SandboxCleanupResponse
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType, WorklineOutbox
-from src.app.workline.models.rack_task import WorklineRackTask, WorklineRackTaskStatus, WorklineRackTaskType
 from src.app.workline.models.runtime_hold import NgReturnItem, RuntimeHold, RuntimeHoldStatus, RuntimeHoldType
 from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
@@ -111,25 +111,25 @@ async def _create_executable_cleanup_graph(db_session):
         event_id="device:event:cleanup-exec",
         payload_json={},
     )
-    sandbox_outbox = WorklineOutbox(
+    sandbox_outbox = SystemOutbox(
         session_id=sandbox_session.id,
         workline_id=simulation_workline.id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="sandbox-cleanup-exec-outbox",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=sandbox_device.device_code,
         payload_json={"sandbox_mode": True},
-        status=OutboxStatus.BLOCKED_RESOURCE,
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
     )
-    auto_outbox = WorklineOutbox(
+    auto_outbox = SystemOutbox(
         session_id=auto_session.id,
         workline_id=auto_workline.id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="auto-cleanup-exec-outbox",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code=auto_device.device_code,
         payload_json={},
-        status=OutboxStatus.NEW,
+        status=SystemOutboxStatus.NEW,
     )
     db_session.add_all([sandbox_inbox, auto_inbox, sandbox_outbox, auto_outbox])
     await db_session.flush()
@@ -280,13 +280,13 @@ async def _create_executable_cleanup_graph(db_session):
         target_code=sandbox_outbox.target_code,
         started_at=timezone.now_for_db(),
     )
-    sandbox_rack_task = WorklineRackTask(
+    sandbox_rack_task = RackTask(
         task_key="sandbox-cleanup-exec-rack-task",
         operation_key="sandbox-cleanup-exec-rack-op",
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         workline_id=simulation_workline.id,
         workline_code=simulation_workline.line_code,
         material_session_id=sandbox_session.id,
@@ -335,11 +335,11 @@ async def _create_executable_cleanup_graph(db_session):
         "sandbox_ids": {
             WorklineSession: sandbox_session.id,
             WorklineInbox: sandbox_inbox.id,
-            WorklineOutbox: sandbox_outbox.id,
+            SystemOutbox: sandbox_outbox.id,
             DeviceCommand: sandbox_command.id,
             RuntimeHold: sandbox_hold.id,
             NgReturnItem: sandbox_ng_item.id,
-            WorklineRackTask: sandbox_rack_task.id,
+            RackTask: sandbox_rack_task.id,
             WorklineBinCellReservation: sandbox_reservation.id,
             WorklineTimeline: sandbox_timeline.id,
             WorklineDiagnostic: sandbox_diagnostic.id,
@@ -352,7 +352,7 @@ async def _create_executable_cleanup_graph(db_session):
         "auto_ids": {
             WorklineSession: auto_session.id,
             WorklineInbox: auto_inbox.id,
-            WorklineOutbox: auto_outbox.id,
+            SystemOutbox: auto_outbox.id,
             DeviceCommand: auto_command.id,
             RuntimeHold: auto_hold.id,
             WorklineSafetyIncident: auto_safety_incident.id,
@@ -470,25 +470,25 @@ async def test_preview_cleanup_counts_only_simulation_workline_sandbox_data(db_s
         event_id="device:event:cleanup",
         payload_json={},
     )
-    sandbox_outbox = WorklineOutbox(
+    sandbox_outbox = SystemOutbox(
         session_id=sandbox_session.id,
         workline_id=simulation_workline.id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="sandbox-cleanup-outbox",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code="SANDBOX-DEVICE",
         payload_json={"sandbox_mode": True},
-        status=OutboxStatus.NEW,
+        status=SystemOutboxStatus.NEW,
     )
-    auto_outbox = WorklineOutbox(
+    auto_outbox = SystemOutbox(
         session_id=auto_session.id,
         workline_id=auto_workline.id,
-        dispatch_type=DispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         dispatch_key="auto-cleanup-outbox",
-        target_type=TargetType.DEVICE,
+        target_type=SystemOutboxTargetType.DEVICE,
         target_code="AUTO-DEVICE",
         payload_json={},
-        status=OutboxStatus.NEW,
+        status=SystemOutboxStatus.NEW,
     )
     sandbox_command = DeviceCommand(
         command_code="CMD-SANDBOX-CLEANUP",
@@ -536,24 +536,24 @@ async def test_preview_cleanup_counts_only_simulation_workline_sandbox_data(db_s
         source_reason="AUTO_CLEANUP",
         source_idempotency_key="auto-cleanup-hold",
     )
-    sandbox_rack_task = WorklineRackTask(
+    sandbox_rack_task = RackTask(
         task_key="sandbox-cleanup-rack-task",
         operation_key="sandbox-cleanup-rack-op",
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         workline_id=simulation_workline.id,
         workline_code=simulation_workline.line_code,
         material_session_id=sandbox_session.id,
     )
-    auto_rack_task = WorklineRackTask(
+    auto_rack_task = RackTask(
         task_key="auto-cleanup-rack-task",
         operation_key="auto-cleanup-rack-op",
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         workline_id=auto_workline.id,
         workline_code=auto_workline.line_code,
         material_session_id=auto_session.id,
@@ -654,13 +654,13 @@ async def test_preview_cleanup_counts_only_simulation_workline_sandbox_data(db_s
         target_code=sandbox_outbox.target_code,
         started_at=timezone.now_for_db(),
     )
-    sandbox_rack_task_by_outbox = WorklineRackTask(
+    sandbox_rack_task_by_outbox = RackTask(
         task_key="sandbox-cleanup-rack-task-outbox",
         operation_key="sandbox-cleanup-rack-op-outbox",
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
         sequence_no=1,
-        task_type=WorklineRackTaskType.ALLOCATE_AND_MOVE_RACK,
-        task_status=WorklineRackTaskStatus.REQUESTED,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.REQUESTED,
         workline_id=simulation_workline.id,
         workline_code=simulation_workline.line_code,
         material_session_id=None,
@@ -776,7 +776,7 @@ async def test_cleanup_workline_deletes_sandbox_runtime_graph_and_resets_runtime
 
     for model, item_id in graph["auto_ids"].items():
         assert await db_session.get(model, item_id) is not None
-    auto_outbox = await db_session.get(WorklineOutbox, graph["auto_ids"][WorklineOutbox])
+    auto_outbox = await db_session.get(SystemOutbox, graph["auto_ids"][SystemOutbox])
     assert auto_outbox.blocked_by_runtime_hold_id is None
     auto_hold = await db_session.get(RuntimeHold, graph["auto_ids"][RuntimeHold])
     assert auto_hold.reopened_from_hold_id is None
@@ -820,7 +820,7 @@ async def test_cleanup_workline_rejects_wrong_confirmation_without_deleting_data
     assert await db_session.get(RuntimeHold, graph["reopened_hold_id"]) is not None
     assert await db_session.get(WorklineInbox, graph["command_linked_inbox_id"]) is not None
     assert await db_session.get(WorklineSafetyIncident, graph["source_ref_safety_incident_id"]) is not None
-    auto_outbox = await db_session.get(WorklineOutbox, graph["auto_ids"][WorklineOutbox])
+    auto_outbox = await db_session.get(SystemOutbox, graph["auto_ids"][SystemOutbox])
     assert auto_outbox.blocked_by_runtime_hold_id == graph["sandbox_ids"][RuntimeHold]
     auto_hold = await db_session.get(RuntimeHold, graph["auto_ids"][RuntimeHold])
     assert auto_hold.reopened_from_hold_id == graph["sandbox_ids"][RuntimeHold]

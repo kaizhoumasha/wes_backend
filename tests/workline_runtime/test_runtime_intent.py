@@ -41,9 +41,21 @@ def test_block_intent_requires_reason_and_scope():
     assert intent.suggested_action == "人工复核条码"
 
 
-def test_invalid_command_requires_action():
-    with pytest.raises(ValueError, match="action"):
-        RuntimeIntent.command(device_role="WEIGH_SCALE", action="", payload={})
+def test_invalid_command_requires_action() -> None:
+    with pytest.raises(ValueError, match="COMMAND intent requires action"):
+        RuntimeIntent.command(action="")
+
+
+def test_external_request_rejects_raw_url() -> None:
+    with pytest.raises(ValueError, match="must be a registered endpoint code"):
+        RuntimeIntent.external_request(
+            dispatch_key="k", target_code="https://example.com/api", payload={"a": 1}, timeout_seconds=30
+        )
+
+    with pytest.raises(ValueError, match="must be a registered endpoint code"):
+        RuntimeIntent.external_request(
+            dispatch_key="k", target_code="http://example.com/api", payload={"a": 1}, timeout_seconds=30
+        )
 
 
 def test_resource_fact_intent_describes_append_only_resource_fact():

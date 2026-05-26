@@ -14,6 +14,8 @@ from src.database import db as db_module
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
+    from src.app.sys.services.outbox_engine import DispatchResult
+
 
 def _run_async(coro: Awaitable[Any]) -> Any:
     try:
@@ -67,10 +69,10 @@ class SystemTask(Task):
     max_retries=3,
     default_retry_delay=10,
 )
-def dispatch_system_outbox_batch(self: SystemTask, limit: int = 50) -> dict[str, int]:
+def dispatch_system_outbox_batch(self: SystemTask, limit: int = 50) -> DispatchResult:
     """批量派发 SystemOutbox 消息。"""
 
-    async def _dispatch() -> dict[str, int]:
+    async def _dispatch() -> DispatchResult:
         from src.app.sys.services import system_outbox_engine
 
         async with self.db as db:
@@ -87,4 +89,15 @@ def dispatch_system_outbox_batch(self: SystemTask, limit: int = 50) -> dict[str,
         raise self.retry(exc=exc, countdown=countdown) from None
 
 
-__all__ = ["SystemTask", "dispatch_system_outbox_batch"]
+__all__ = ["SystemTask", "dispatch_system_outbox_batch", "process_signal"]
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.sys.process_signal",
+    base=SystemTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+)
+def process_signal(self: SystemTask, payload: dict[str, Any]) -> None:
+    logger.info(f"sys process_signal 接收到 payload: {payload}")

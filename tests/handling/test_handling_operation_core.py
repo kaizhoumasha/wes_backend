@@ -13,10 +13,12 @@ from src.app.handling.models import (
     HandlingStep,
     HandlingStepKind,
     HandlingStepStatus,
+)
+from src.app.handling.services import HandlingOperationService, WmsRcsHandlingGateway
+from src.app.sys.models import (
     SystemOutbox,
     SystemOutboxDispatchType,
 )
-from src.app.handling.services import HandlingOperationService, WmsRcsHandlingGateway
 
 
 class FakeOperationRepository:

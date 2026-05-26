@@ -96,7 +96,7 @@ def test_plugin_next_continue_next_builds_runtime_intent_with_default_destinatio
 def test_plugin_next_external_request_builds_runtime_intent():
     intent = PluginNext().external_request(
         dispatch_key="external:smt:release-001:FULL_BIN_EXCHANGE",
-        target_code="http://wms-rcs/api/full-box-exchange",
+        target_code="WMS_RCS_FULL_BOX_EXCHANGE",
         payload={"rack_release_id": "release-001"},
         timeout_seconds=1800,
         source_system="WMS_RCS",
@@ -104,7 +104,7 @@ def test_plugin_next_external_request_builds_runtime_intent():
 
     assert intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST
     assert intent.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
-    assert intent.target_code == "http://wms-rcs/api/full-box-exchange"
+    assert intent.target_code == "WMS_RCS_FULL_BOX_EXCHANGE"
     assert intent.payload_json == {"rack_release_id": "release-001"}
     assert intent.timeout_seconds == 1800
     assert intent.source_system == "WMS_RCS"
@@ -153,7 +153,7 @@ def test_plugin_next_rack_operation_request_builds_runtime_intent():
     intent = PluginNext().rack_operation_request(
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
         operation_key="rack-operation:trace-001",
-        target_code="http://wms-rcs/api/rack-operation",
+        target_code="WMS_RCS_RACK_OPERATION",
         payload={
             "work_position_code": "SINGLE_LAYER_A",
             "new_rack_kind": "SINGLE_LAYER",
@@ -166,7 +166,7 @@ def test_plugin_next_rack_operation_request_builds_runtime_intent():
     assert intent.action == "REPLACE_CLASSIFIER_WORK_RACK"
     assert intent.idempotency_key == "rack-operation:trace-001"
     assert intent.dispatch_key is None
-    assert intent.target_code == "http://wms-rcs/api/rack-operation"
+    assert intent.target_code == "WMS_RCS_RACK_OPERATION"
     assert intent.payload_json["work_position_code"] == "SINGLE_LAYER_A"
     assert intent.payload_json["new_rack_kind"] == "SINGLE_LAYER"
 

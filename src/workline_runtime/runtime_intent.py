@@ -357,6 +357,8 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("EXTERNAL_REQUEST intent requires dispatch_key")
             if not self.target_code:
                 raise ValueError("EXTERNAL_REQUEST intent requires target_code")
+            if self.target_code.startswith("http://") or self.target_code.startswith("https://"):
+                raise ValueError("EXTERNAL_REQUEST target_code must be a registered endpoint code, not a raw URL")
             if not self.payload_json:
                 raise ValueError("EXTERNAL_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:

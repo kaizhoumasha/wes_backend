@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.models.command import CommandResult, CommandStatus
 from src.app.device.repositories import (
@@ -14,6 +14,8 @@ from src.app.device.repositories import (
     device_command_repository,
     device_repository,
 )
+from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.operation import (
     ResolveRuntimeReconciliationRequest,
@@ -21,31 +23,28 @@ from src.app.workline.models.operation import (
     SandboxResultTemplate,
     SandboxTemplatesResponse,
 )
-from src.app.workline.models.outbox import DispatchType, OutboxStatus
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.session import RuntimeReconciliationResolution, SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
 from src.app.workline.repositories import (
     inbox_repository,
-    outbox_repository,
     runtime_hold_repository,
     workline_repository,
     workline_session_repository,
 )
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
-from src.app.workline.repositories.outbox_repository import WorklineOutboxRepository  # noqa: TC001
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
 from src.app.workline.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
-from src.app.workline.services.rack_task_service import (
-    WorklineRackTaskLifecycleService,
-    workline_rack_task_lifecycle_service,
-)
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.trace_context import TraceContext
+
+if TYPE_CHECKING:
+    from src.app.rack.services import RackTaskLifecycleService
+
 
 _OPEN_SESSION_STATUSES = {
     SessionStatus.NEW,
@@ -58,9 +57,9 @@ _OPEN_SESSION_STATUSES = {
 _RESULT_WAIT_SESSION_STATUS = SessionStatus.WAITING_DEVICE_RESULT
 
 _ACK_WAIT_OUTBOX_STATUSES = {
-    OutboxStatus.NEW.value,
-    OutboxStatus.DISPATCHING.value,
-    OutboxStatus.SENT.value,
+    SystemOutboxStatus.NEW.value,
+    SystemOutboxStatus.DISPATCHING.value,
+    SystemOutboxStatus.SENT.value,
 }
 
 _TERMINAL_COMMAND_STATUSES = {
@@ -126,22 +125,30 @@ class WorklineOperationService(BaseService[Any, Any]):
         *,
         inbox_repo: WorklineInboxRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
-        outbox_repo: WorklineOutboxRepository | None = None,
+        outbox_repo: SystemOutboxRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
         device_repo: DeviceRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         runtime_hold_repo: RuntimeHoldRepository | None = None,
-        rack_task_lifecycle_service: WorklineRackTaskLifecycleService | None = None,
+        rack_task_lifecycle_service: RackTaskLifecycleService | None = None,
     ) -> None:
         super().__init__(inbox_repo or inbox_repository, enable_cache=False)
         self.inbox_repo = inbox_repo or inbox_repository
         self.session_repo = session_repo or workline_session_repository
-        self.outbox_repo = outbox_repo or outbox_repository
+        self.outbox_repo = outbox_repo or system_outbox_repository
         self.workline_repo = workline_repo or workline_repository
         self.device_repo = device_repo or device_repository
         self.command_repo = command_repo or device_command_repository
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
-        self.rack_task_lifecycle_service = rack_task_lifecycle_service or workline_rack_task_lifecycle_service
+        self._rack_task_lifecycle_service = rack_task_lifecycle_service
+
+    @property
+    def rack_task_lifecycle_service(self) -> Any:
+        if self._rack_task_lifecycle_service is not None:
+            return self._rack_task_lifecycle_service
+        from src.app.rack.services import rack_task_lifecycle_service as default_rack_task_lifecycle_service
+
+        return default_rack_task_lifecycle_service
 
     def _enqueue_outbox_dispatch(self) -> None:
         from src.celery_app.app import celery_app
@@ -197,7 +204,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         command_status: str | None = None
         command: Any | None = None
         dispatch_type = _enum_value(outbox.dispatch_type)
-        if dispatch_type == DispatchType.DEVICE_COMMAND.value:
+        if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
             command_code = payload.get("command_code")
             if isinstance(command_code, str) and command_code:
                 command = await self.command_repo.get_by_command_code(db, command_code)
@@ -209,16 +216,17 @@ class WorklineOperationService(BaseService[Any, Any]):
                     elif command_status == CommandStatus.ACK_RECEIVED.value:
                         status = "ACKED"
                     elif _enum_value(outbox.status) in _ACK_WAIT_OUTBOX_STATUSES:
-                        status = OutboxStatus.SENT.value
-        elif dispatch_type == DispatchType.EXTERNAL_HTTP.value:
+                        status = SystemOutboxStatus.SENT.value
+        elif dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             is_current_action = await self._is_current_sandbox_external_outbox(db, outbox)
 
         runtime_hold = await self._find_projection_runtime_hold(db, outbox=outbox, command=command)
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
         is_actionable = (
             is_current_action
-            and _enum_value(outbox.status) not in {OutboxStatus.BLOCKED_RESOURCE.value, OutboxStatus.FAILED.value}
-            and status in {OutboxStatus.SENT.value, "ACKED"}
+            and _enum_value(outbox.status)
+            not in {SystemOutboxStatus.BLOCKED_RESOURCE.value, SystemOutboxStatus.FAILED.value}
+            and status in {SystemOutboxStatus.SENT.value, "ACKED"}
         )
         failure_summary = self._build_projection_failure_summary(outbox=outbox, command=command, hold=runtime_hold)
 
@@ -277,9 +285,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         outbox_status = _enum_value(outbox.status)
         command_status = _enum_value(command.status) if command is not None else None
         failure_outbox_statuses = {
-            OutboxStatus.BLOCKED_RESOURCE.value,
-            OutboxStatus.FAILED.value,
-            OutboxStatus.CANCELLED.value,
+            SystemOutboxStatus.BLOCKED_RESOURCE.value,
+            SystemOutboxStatus.FAILED.value,
+            SystemOutboxStatus.CANCELLED.value,
         }
         if outbox_status not in failure_outbox_statuses and command_status not in _TERMINAL_COMMAND_STATUSES:
             return None
@@ -691,12 +699,14 @@ class WorklineOperationService(BaseService[Any, Any]):
         if outbox is None:
             raise ValueError(f"Outbox 不存在: {dispatch_key}")
 
+        if outbox.workline_id is None:
+            raise ValueError(f"Outbox 未关联工作线: dispatch_key={dispatch_key}")
         workline = await self.workline_repo.get_by_id(db, outbox.workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {outbox.workline_id}")
         self._require_simulation_workline(workline)
 
-        if _enum_value(outbox.dispatch_type) != DispatchType.EXTERNAL_HTTP.value:
+        if _enum_value(outbox.dispatch_type) != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             raise ValueError(f"仅允许 EXTERNAL_HTTP Outbox 模拟外部回调: dispatch_key={dispatch_key}")
         if _enum_value(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
             raise ValueError(
@@ -798,7 +808,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 trace_id=trace_id,
             )
 
-        outbox.status = OutboxStatus.SENT
+        outbox.status = SystemOutboxStatus.SENT
         if getattr(outbox, "sent_at", None) is None:
             outbox.sent_at = callback_received_at
         if hasattr(outbox, "next_retry_at"):
@@ -827,6 +837,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         if outbox is None:
             raise ValueError(f"Outbox 不存在: {dispatch_key}")
 
+        if outbox.workline_id is None:
+            raise ValueError(f"Outbox 未关联工作线: dispatch_key={dispatch_key}")
         workline = await self.workline_repo.get_by_id(db, outbox.workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {outbox.workline_id}")
@@ -848,7 +860,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
 
         ack_received_at = timezone.now_for_db()
-        outbox.status = OutboxStatus.SENT
+        outbox.status = SystemOutboxStatus.SENT
         if outbox.sent_at is None:
             outbox.sent_at = ack_received_at
         outbox.next_retry_at = None
@@ -1074,7 +1086,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         return session
 
     async def _validate_ack_target(self, db: Any, outbox: Any) -> None:
-        if _enum_value(outbox.dispatch_type) != DispatchType.DEVICE_COMMAND.value:
+        if _enum_value(outbox.dispatch_type) != SystemOutboxDispatchType.DEVICE_COMMAND.value:
             raise ValueError(f"仅允许 ACK 设备指令 Outbox: dispatch_key={outbox.dispatch_key}")
         if _enum_value(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
             raise ValueError(

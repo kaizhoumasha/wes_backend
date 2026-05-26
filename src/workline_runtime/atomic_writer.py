@@ -51,7 +51,7 @@ class AtomicWriter:
         db: AsyncSession,
         session: Any,  # WorklineSession
         timelines: list[Any],  # list[WorklineTimeline]
-        outboxes: list[Any] | None,  # list[WorklineOutbox] | None
+        outboxes: list[Any] | None,  # list[SystemOutbox] | None
         inbox: Any,  # WorklineInbox
     ) -> None:
         """
@@ -67,7 +67,7 @@ class AtomicWriter:
             db: 数据库会话
             session: WorklineSession 实例
             timelines: WorklineTimeline 实例列表
-            outboxes: WorklineOutbox 实例列表或 None
+            outboxes: SystemOutbox 实例列表或 None
             inbox: WorklineInbox 实例
 
         Raises:

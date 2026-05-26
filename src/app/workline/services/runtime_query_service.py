@@ -13,15 +13,14 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
+from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import (
     InboxKind,
     WorkLine,
     WorklineInbox,
-    WorklineOutbox,
     WorklineSession,
     WorklineTimeline,
 )
-from src.app.workline.models.outbox import OutboxStatus
 from src.app.workline.models.runtime import (
     RuntimeBlockingReason,
     RuntimeDeviceDetailResponse,
@@ -310,7 +309,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         waiting_sessions = await self._count_waiting_sessions(db, exclude_workline_ids=sim_workline_ids)
         failed_sessions = await self._count_failed_or_timed_out_sessions(db, exclude_workline_ids=sim_workline_ids)
         inbox_backlog = await self._count_by_status(db, WorklineInbox, _INBOX_BACKLOG_STATUSES)
-        outbox_backlog = await self._count_by_status(db, WorklineOutbox, _OUTBOX_BACKLOG_STATUSES)
+        outbox_backlog = await self._count_by_status(db, SystemOutbox, _OUTBOX_BACKLOG_STATUSES)
         abnormal_devices = device_health.abnormal
 
         hot_worklines = sorted(
@@ -725,10 +724,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return _BlockedOutboxProjection(count_by_device_id={}, command_codes_by_device_id={})
 
         by_id, by_code = _build_device_identity_maps(devices)
-        columns = cast("Any", WorklineOutbox).__table__.c
+        columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
-            select(WorklineOutbox).where(
-                columns.status == OutboxStatus.BLOCKED_RESOURCE,
+            select(SystemOutbox).where(
+                columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
                 or_(
                     columns.blocked_device_id.in_(device_ids),
                     columns.target_code.in_([item.device_code for item in devices]),

@@ -1,7 +1,7 @@
 """
 OutboxDispatcher 单元测试
 
-测试 Celery 任务派发 WorklineOutbox 的流程：
+测试 Celery 任务派发 SystemOutbox 的流程：
 - 获取待派发消息
 - 根据类型派发（设备指令/外部HTTP/内部信号）
 - 更新派发状态
@@ -18,7 +18,7 @@ import pytest
 
 from src.app.device.models.command import CommandStatus
 from src.app.device.models.device import DeviceStatus
-from src.app.workline.models.outbox import DispatchType, OutboxStatus, TargetType
+from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 
 
 def _mock_device_record(**overrides: object) -> SimpleNamespace:
@@ -40,15 +40,15 @@ def _mock_command_record(**overrides: object) -> SimpleNamespace:
 
 
 class MockOutbox:
-    """模拟 WorklineOutbox"""
+    """模拟 SystemOutbox"""
 
     def __init__(
         self,
         outbox_id: int = 1,
-        dispatch_type: DispatchType = DispatchType.DEVICE_COMMAND,
-        target_type: TargetType = TargetType.DEVICE,
+        dispatch_type: SystemOutboxDispatchType = SystemOutboxDispatchType.DEVICE_COMMAND,
+        target_type: SystemOutboxTargetType = SystemOutboxTargetType.DEVICE,
         target_code: str = "DEVICE_001",
-        status: OutboxStatus = OutboxStatus.NEW,
+        status: SystemOutboxStatus = SystemOutboxStatus.NEW,
         session_id: int | None = None,
         workline_id: int | None = None,
         payload_json: dict | None = None,
@@ -76,6 +76,31 @@ class MockOutbox:
 
 class TestOutboxDispatcher:
     """OutboxDispatcher 任务测试"""
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_only_loads_workline_domain_outbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Workline 历史 dispatcher 只能处理 WORKLINE 域，避免抢占 Rack/Handling 消息。"""
+
+        instances: list[object] = []
+
+        class FakeSystemOutboxRepository:
+            def __init__(self) -> None:
+                self.pending_filters: list[dict[str, object]] = []
+                instances.append(self)
+
+            async def get_pending_messages(self, _db: object, limit: int = 50, **filters: object) -> list[object]:
+                self.pending_filters.append({"limit": limit, **filters})
+                return []
+
+        import src.app.sys.repositories as sys_repositories
+        from src.celery_app.tasks.workline import OutboxDispatcher
+
+        monkeypatch.setattr(sys_repositories, "SystemOutboxRepository", FakeSystemOutboxRepository)
+
+        result = await OutboxDispatcher._dispatch(SimpleNamespace(commit=AsyncMock()), limit=7)
+
+        assert result == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+        assert instances[0].pending_filters == [{"limit": 7, "operation_domains": ("WORKLINE",)}]
 
     @pytest.fixture
     def mock_db(self):
@@ -109,13 +134,13 @@ class TestOutboxDispatcher:
     @pytest.mark.asyncio
     async def test_dispatch_no_pending_messages(self, mock_db, mock_outbox_repo):
         """测试无待派发消息时正常退出"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         with patch(
-            "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+            "src.app.sys.repositories.SystemOutboxRepository",
             return_value=mock_outbox_repo,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 0
         assert result["success"] == 0
@@ -130,12 +155,12 @@ class TestOutboxDispatcher:
         mock_device_repo,
     ):
         """测试派发单个设备指令"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=1,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="SCANNER_001",
             payload_json={"command": "SCAN"},
         )
@@ -143,7 +168,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -156,7 +181,7 @@ class TestOutboxDispatcher:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 1
@@ -168,13 +193,13 @@ class TestOutboxDispatcher:
     async def test_dispatch_blocks_estopped_workline_before_side_effect(self, mock_db, mock_outbox_repo):
         """WorkLine 已急停时，outbox 派发应在真实副作用前被阻断。"""
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=1,
             workline_id=7,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="SCANNER_001",
             payload_json={"command": "SCAN"},
         )
@@ -185,7 +210,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
@@ -194,7 +219,7 @@ class TestOutboxDispatcher:
                 "src.celery_app.tasks.workline.OutboxDispatcher._dispatch_single", new=AsyncMock()
             ) as dispatch_single,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -209,13 +234,13 @@ class TestOutboxDispatcher:
     async def test_dispatch_parks_outbox_when_workline_reconciling(self, mock_db, mock_outbox_repo):
         """WorkLine 对账中时，待派发 outbox 进入 BLOCKED_RESOURCE，不走普通失败重试。"""
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=2,
             workline_id=7,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-BLOCKED-001"},
         )
@@ -227,7 +252,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
@@ -240,7 +265,7 @@ class TestOutboxDispatcher:
                 "src.celery_app.tasks.workline.OutboxDispatcher._dispatch_single", new=AsyncMock()
             ) as dispatch_single,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -264,14 +289,14 @@ class TestOutboxDispatcher:
     ):
         """设备忙导致的残留 DISPATCHING 应在设备空闲时自动回到 NEW 队列。"""
         from src.app.workline.models.dispatch_attempt import DispatchAttemptStatus
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=864,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM03",
-            status=OutboxStatus.DISPATCHING,
+            status=SystemOutboxStatus.DISPATCHING,
             workline_id=45,
             payload_json={"command_code": "CMD-20260509-MEASUREMENT_REEL-4478E8D3"},
         )
@@ -304,7 +329,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -314,7 +339,7 @@ class TestOutboxDispatcher:
             patch("src.app.device.repositories.device_repository.device_repository", device_repo),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 0
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once_with(
@@ -339,14 +364,14 @@ class TestOutboxDispatcher:
         mock_outbox_repo,
     ):
         """已派发命令占用同一设备时，DEVICE_BUSY 自阻塞应自动恢复为 SENT。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=864,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM03",
-            status=OutboxStatus.BLOCKED_RESOURCE,
+            status=SystemOutboxStatus.BLOCKED_RESOURCE,
             session_id=555,
             workline_id=45,
             payload_json={"command_code": "CMD-20260509-MEASUREMENT_REEL-4478E8D3"},
@@ -371,7 +396,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -380,7 +405,7 @@ class TestOutboxDispatcher:
             ),
             patch("src.app.device.repositories.device_repository.device_repository", device_repo),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 0
         mock_outbox_repo.mark_blocked_device_busy_as_sent.assert_awaited_once_with(mock_db, 864)
@@ -389,13 +414,13 @@ class TestOutboxDispatcher:
     @pytest.mark.asyncio
     async def test_dispatch_releases_claim_transaction_before_side_effect(self, mock_db, mock_outbox_repo):
         """Outbox 领取、账本和最终 guard 都应在物理副作用前短事务提交。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=1,
             workline_id=7,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            target_type=TargetType.HTTP_ENDPOINT,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="https://example.invalid/device",
             payload_json={"command": "SYNC"},
         )
@@ -410,7 +435,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
@@ -419,7 +444,7 @@ class TestOutboxDispatcher:
                 new=AsyncMock(side_effect=fake_dispatch_single),
             ),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["success"] == 1
         assert safety_service.assert_accepting_work.await_count == 3
@@ -427,13 +452,13 @@ class TestOutboxDispatcher:
     @pytest.mark.asyncio
     async def test_dispatch_success_is_fenced_when_outbox_changes_during_side_effect(self, mock_db, mock_outbox_repo):
         """物理派发返回后若 timeout 已接管 outbox，不应把安全终态改回 SENT。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=4,
             workline_id=7,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_003",
             payload_json={"command_code": "CMD-FENCED-001"},
         )
@@ -453,7 +478,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
@@ -466,7 +491,7 @@ class TestOutboxDispatcher:
                 new=AsyncMock(side_effect=fake_dispatch_single),
             ),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -482,13 +507,13 @@ class TestOutboxDispatcher:
     async def test_dispatch_final_guard_blocks_reconciling_workline_before_side_effect(self, mock_db, mock_outbox_repo):
         """派发尝试创建后、真实副作用前必须再次锁定 WorkLine 并阻断 RECONCILING。"""
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=3,
             workline_id=7,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_002",
             payload_json={"command_code": "CMD-RACE-001"},
         )
@@ -506,7 +531,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
@@ -523,7 +548,7 @@ class TestOutboxDispatcher:
                 "src.celery_app.tasks.workline.OutboxDispatcher._dispatch_single", new=AsyncMock()
             ) as dispatch_single,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -543,12 +568,12 @@ class TestOutboxDispatcher:
         mock_device_repo,
     ):
         """测试批量派发多条消息"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outboxes = [
             MockOutbox(
                 outbox_id=i,
-                dispatch_type=DispatchType.DEVICE_COMMAND,
+                dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
                 target_code=f"DEVICE_{i}",
             )
             for i in range(1, 4)
@@ -557,7 +582,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -570,7 +595,7 @@ class TestOutboxDispatcher:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 3
         assert result["success"] == 3
@@ -586,11 +611,11 @@ class TestOutboxDispatcher:
         mock_device_repo,
     ):
         """测试派发失败时的重试机制"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=1,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
             target_code="DEVICE_001",
             attempt_count=0,
         )
@@ -606,7 +631,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -619,7 +644,7 @@ class TestOutboxDispatcher:
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()) as record_diagnostic,
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         # 应该记录失败并设置重试
         assert result["dispatched"] == 1
@@ -636,11 +661,11 @@ class TestOutboxDispatcher:
         mock_outbox_repo,
     ):
         """Outbox 永久失败后进入通信 ACK 对账隔离。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=21,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
             target_code="ARM01",
             session_id=530,
             attempt_count=2,
@@ -651,7 +676,7 @@ class TestOutboxDispatcher:
         async def mock_mark_failed(_db, _outbox_id, error, _max_retries):
             outbox.attempt_count += 1
             outbox.last_error = error
-            outbox.status = OutboxStatus.FAILED
+            outbox.status = SystemOutboxStatus.FAILED
             return outbox
 
         mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
@@ -674,7 +699,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -694,7 +719,7 @@ class TestOutboxDispatcher:
         ):
             mock_response = MagicMock(status_code=400, text="Unsupported command")
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["failed"] == 1
         runtime_service.handle_dispatch_ack_exhausted.assert_awaited_once()
@@ -710,11 +735,11 @@ class TestOutboxDispatcher:
         mock_outbox_repo,
     ):
         """通信 ACK 耗尽进入对账，不在派发层自动释放设备占用。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=22,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
             target_code="ARM01",
             session_id=530,
             attempt_count=2,
@@ -725,7 +750,7 @@ class TestOutboxDispatcher:
         async def mock_mark_failed(_db, _outbox_id, error, _max_retries):
             outbox.attempt_count += 1
             outbox.last_error = error
-            outbox.status = OutboxStatus.FAILED
+            outbox.status = SystemOutboxStatus.FAILED
             return outbox
 
         mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
@@ -753,7 +778,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -773,7 +798,7 @@ class TestOutboxDispatcher:
             patch("httpx.AsyncClient") as mock_client,
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["failed"] == 1
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
@@ -788,12 +813,12 @@ class TestOutboxDispatcher:
         mock_device_repo,
     ):
         """测试达到最大重试次数后标记为失败"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         # 已重试 3 次（达到上限）
         outbox = MockOutbox(
             outbox_id=1,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
             target_code="DEVICE_001",
             attempt_count=3,
         )
@@ -804,14 +829,14 @@ class TestOutboxDispatcher:
             outbox.attempt_count += 1
             outbox.last_error = error
             if outbox.attempt_count >= max_retries:
-                outbox.status = OutboxStatus.FAILED
+                outbox.status = SystemOutboxStatus.FAILED
             return outbox
 
         mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -824,22 +849,22 @@ class TestOutboxDispatcher:
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
         # 达到最大重试次数，状态应为 FAILED
-        assert outbox.status == OutboxStatus.FAILED
+        assert outbox.status == SystemOutboxStatus.FAILED
 
     @pytest.mark.asyncio
     async def test_dispatch_logs_diagnostic_with_outbox_trace_fields(self, mock_db, mock_outbox_repo):
         """测试 Outbox 派发失败时会输出稳定 trace 字段，便于 replay/debug。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=7,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            target_type=TargetType.HTTP_ENDPOINT,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="https://api.example.com/callback",
             dispatch_key="external-http:TRACE-007",
             payload_json={"event": "completed"},
@@ -848,14 +873,14 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.celery_app.tasks.workline.OutboxDispatcher._dispatch_single", new=AsyncMock(return_value=False)),
             patch("src.celery_app.tasks.workline._log_diagnostic") as mock_log_diagnostic,
             patch("src.celery_app.tasks.workline.workline_diagnostic_service.record_event", new=AsyncMock()),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
@@ -865,19 +890,19 @@ class TestOutboxDispatcher:
         assert kwargs["extra"] == {
             "outbox_id": 7,
             "dispatch_key": "external-http:TRACE-007",
-            "dispatch_type": DispatchType.EXTERNAL_HTTP.value,
+            "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP.value,
             "target_code": "https://api.example.com/callback",
         }
 
     @pytest.mark.asyncio
     async def test_dispatch_logs_warning_with_outbox_trace_suffix(self, mock_db, mock_outbox_repo):
         """测试 Outbox 派发失败 warning 日志也带稳定 trace 字段。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=8,
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            target_type=TargetType.HTTP_ENDPOINT,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="https://api.example.com/notify",
             dispatch_key="external-http:TRACE-008",
             payload_json={"event": "failed"},
@@ -886,7 +911,7 @@ class TestOutboxDispatcher:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch("src.celery_app.tasks.workline.OutboxDispatcher._dispatch_single", new=AsyncMock(return_value=False)),
@@ -894,7 +919,7 @@ class TestOutboxDispatcher:
             patch("src.celery_app.tasks.workline.workline_diagnostic_service.record_event", new=AsyncMock()),
             patch("src.celery_app.tasks.workline.logger.warning") as mock_warning,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
@@ -906,17 +931,17 @@ class TestOutboxDispatcher:
 
     def test_outbox_model_created_at_uses_db_clock(self):
         """测试 Outbox 创建时间使用统一的 UTC-naive DB 时间工具。"""
-        from src.app.workline.models.outbox import DispatchType, TargetType, WorklineOutbox
+        from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 
         fixed_now = datetime(2026, 4, 17, 1, 57, 12)
 
         with patch("src.core.mixins.timestamp.TimestampMixin._get_now", return_value=fixed_now):
-            outbox = WorklineOutbox(
+            outbox = SystemOutbox(
                 session_id=417,
                 workline_id=45,
-                dispatch_type=DispatchType.DEVICE_COMMAND,
+                dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
                 dispatch_key="device-command:CMD-TEST-001",
-                target_type=TargetType.DEVICE,
+                target_type=SystemOutboxTargetType.DEVICE,
                 target_code="ARM03",
                 payload_json={"command_code": "CMD-TEST-001"},
             )
@@ -1071,12 +1096,12 @@ class TestOutboxDispatcher:
     @pytest.mark.asyncio
     async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
         """测试跳过正在派发中的消息（并发安全）"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         # DISPATCHING 状态的消息应被跳过
         outbox = MockOutbox(
             outbox_id=1,
-            status=OutboxStatus.DISPATCHING,
+            status=SystemOutboxStatus.DISPATCHING,
         )
         mock_outbox_repo.get_pending_messages.return_value = [outbox]
 
@@ -1084,10 +1109,10 @@ class TestOutboxDispatcher:
         mock_outbox_repo.mark_as_dispatching = AsyncMock(return_value=None)
 
         with patch(
-            "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+            "src.app.sys.repositories.SystemOutboxRepository",
             return_value=mock_outbox_repo,
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         # 应该跳过这条消息
         assert result["dispatched"] == 0
@@ -1185,11 +1210,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command(self, mock_db):
         """测试设备指令派发"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"action": "MOVE", "position": {"x": 100, "y": 200}},
         )
@@ -1208,7 +1233,7 @@ class TestDispatchByType:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "ROBOT_001")
@@ -1216,11 +1241,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_locks_device_row_before_http(self, mock_db):
         """真实设备派发前必须锁定设备行，避免多 worker 并发下发同一设备命令。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM01",
             payload_json={"command_code": "CMD-LOCK-001", "task_type": "PICK_AND_PUT"},
         )
@@ -1263,7 +1288,7 @@ class TestDispatchByType:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_device_repo.get_by_device_code_for_update.assert_awaited_once_with(mock_db, "ARM01")
@@ -1273,11 +1298,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_marks_device_running_after_ack(self, mock_db):
         """设备 ACK 成功后，WES 侧设备状态必须进入 RUNNING。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM01",
             payload_json={"command_code": "CMD-RUN-001", "task_type": "PICK_AND_PUT"},
         )
@@ -1323,7 +1348,7 @@ class TestDispatchByType:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_device_service.mark_command_dispatched.assert_awaited_once_with(
@@ -1336,11 +1361,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_does_not_reopen_device_when_fast_callback_already_completed(self, mock_db):
         """设备结果回调快于 ACK 投影时，不允许 dispatcher 把设备覆盖回 RUNNING。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM01",
             payload_json={"command_code": "CMD-FAST-CALLBACK-001", "task_type": "PICK_AND_PUT"},
         )
@@ -1389,7 +1414,7 @@ class TestDispatchByType:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_db.refresh.assert_awaited_once_with(command)
@@ -1399,22 +1424,22 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_blocks_next_same_device_command_until_current_finishes(self, mock_db):
         """同一设备上一条硬件任务完成回调前，后续 outbox 不能进入设备侧。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         mock_outbox_repo = MagicMock()
         mock_outbox_repo.get_pending_messages = AsyncMock()
         mock_outbox_repo.mark_as_sent = AsyncMock(return_value=MagicMock())
         first_outbox = MockOutbox(
             outbox_id=31,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM01",
             payload_json={"command_code": "CMD-QUEUE-001", "task_type": "PICK_AND_PUT"},
         )
         second_outbox = MockOutbox(
             outbox_id=32,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM01",
             payload_json={"command_code": "CMD-QUEUE-002", "task_type": "PICK_AND_PUT"},
         )
@@ -1423,7 +1448,7 @@ class TestDispatchByType:
 
         async def mock_mark_blocked(_db, outbox_id, *, blocked_device_id, blocked_workline_id, reason, last_error):
             blocked_outbox = second_outbox if outbox_id == 32 else first_outbox
-            blocked_outbox.status = OutboxStatus.BLOCKED_RESOURCE
+            blocked_outbox.status = SystemOutboxStatus.BLOCKED_RESOURCE
             blocked_outbox.blocked_device_id = blocked_device_id
             blocked_outbox.blocked_workline_id = blocked_workline_id
             blocked_outbox.blocked_reason = reason
@@ -1460,7 +1485,7 @@ class TestDispatchByType:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -1484,13 +1509,13 @@ class TestDispatchByType:
         ):
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 2
         assert result["success"] == 1
         assert result["failed"] == 0
         assert result["skipped"] == 1
-        assert second_outbox.status == OutboxStatus.BLOCKED_RESOURCE
+        assert second_outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
         assert second_outbox.blocked_device_id == 7
         assert second_outbox.blocked_reason == "DEVICE_BUSY"
         assert second_outbox.last_error is not None
@@ -1507,8 +1532,8 @@ class TestDispatchByType:
 
         payload = {"command_code": "CMD-SIM-001", "task_type": "PICK_AND_PUT", "params": {"pkg_id": "PKG001"}}
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json=dict(payload),
         )
@@ -1567,21 +1592,21 @@ class TestDispatchByType:
     async def test_sandbox_dispatch_blocks_next_same_device_command_until_result(self, mock_db):
         """沙箱待回传命令也必须占用设备，避免同设备假并发。"""
         from src.app.workline.models.session import RunMode
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         mock_outbox_repo = MagicMock()
         first_outbox = MockOutbox(
             outbox_id=31,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM03",
             payload_json={"command_code": "CMD-SANDBOX-001", "task_type": "MEASUREMENT_REEL"},
         )
         first_outbox.session = SimpleNamespace(run_mode=RunMode.SIMULATION)
         second_outbox = MockOutbox(
             outbox_id=32,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM03",
             payload_json={"command_code": "CMD-SANDBOX-002", "task_type": "MEASUREMENT_REEL"},
         )
@@ -1592,7 +1617,7 @@ class TestDispatchByType:
 
         async def mock_mark_blocked(_db, outbox_id, *, blocked_device_id, blocked_workline_id, reason, last_error):
             blocked_outbox = second_outbox if outbox_id == 32 else first_outbox
-            blocked_outbox.status = OutboxStatus.BLOCKED_RESOURCE
+            blocked_outbox.status = SystemOutboxStatus.BLOCKED_RESOURCE
             blocked_outbox.blocked_device_id = blocked_device_id
             blocked_outbox.blocked_workline_id = blocked_workline_id
             blocked_outbox.blocked_reason = reason
@@ -1631,7 +1656,7 @@ class TestDispatchByType:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -1648,13 +1673,13 @@ class TestDispatchByType:
             ),
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 2
         assert result["success"] == 1
         assert result["failed"] == 0
         assert result["skipped"] == 1
-        assert second_outbox.status == OutboxStatus.BLOCKED_RESOURCE
+        assert second_outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
         assert second_outbox.blocked_device_id == 7
         assert second_outbox.blocked_reason == "DEVICE_BUSY"
         assert second_outbox.last_error is not None
@@ -1666,12 +1691,12 @@ class TestDispatchByType:
     async def test_sandbox_dispatch_treats_same_running_command_as_already_sent(self, mock_db):
         """同一沙箱命令已占用设备运行态时，重复派发应幂等收敛为 SENT。"""
         from src.app.workline.models.session import RunMode
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=864,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ARM03",
             session_id=555,
             workline_id=45,
@@ -1710,7 +1735,7 @@ class TestDispatchByType:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -1728,7 +1753,7 @@ class TestDispatchByType:
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 1
@@ -1747,8 +1772,8 @@ class TestDispatchByType:
         from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            target_type=TargetType.HTTP_ENDPOINT,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="https://example.test/callback",
             payload_json={"event": "ready", "data": {"pkg_id": "PKG001"}},
         )
@@ -1767,11 +1792,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_logs_response_body_on_http_error(self, mock_db):
         """测试设备派发失败时会记录响应体，便于排查 4xx/5xx。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-422-001"},
         )
@@ -1794,7 +1819,7 @@ class TestDispatchByType:
             )
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is False
         mock_warning.assert_called_with(
@@ -1804,11 +1829,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_uses_device_callback_path(self, mock_db):
         """callback_path 配置后，派发 URL 必须优先走设备自定义路径。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-CB-001", "task_type": "PICK_AND_PUT"},
         )
@@ -1854,7 +1879,7 @@ class TestDispatchByType:
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_client.return_value.__aenter__.return_value.post.assert_awaited_once_with(
@@ -1865,11 +1890,11 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_falls_back_to_default_path(self, mock_db):
         """未配置 callback_path 时，仍回退默认设备命令路径。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-CB-002", "task_type": "PICK_AND_PUT"},
         )
@@ -1915,7 +1940,7 @@ class TestDispatchByType:
             mock_response = MagicMock(status_code=200)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_client.return_value.__aenter__.return_value.post.assert_awaited_once_with(
@@ -1926,12 +1951,12 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_rejects_maintenance_mode(self, mock_db):
         """maintenance_mode 打开时，运行时必须拒绝设备派发。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=11,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-MAINT-001", "task_type": "PICK_AND_PUT"},
         )
@@ -1957,7 +1982,7 @@ class TestDispatchByType:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -1966,7 +1991,7 @@ class TestDispatchByType:
             ),
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -1978,12 +2003,12 @@ class TestDispatchByType:
     @pytest.mark.asyncio
     async def test_dispatch_device_command_rejects_unsupported_command_type(self, mock_db):
         """supports_command_types 必须在设备派发前被运行时消费。"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
             outbox_id=12,
-            dispatch_type=DispatchType.DEVICE_COMMAND,
-            target_type=TargetType.DEVICE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
             target_code="ROBOT_001",
             payload_json={"command_code": "CMD-UNSUPPORTED-001", "task_type": "PICK_AND_PUT"},
         )
@@ -2009,7 +2034,7 @@ class TestDispatchByType:
 
         with (
             patch(
-                "src.app.workline.repositories.outbox_repository.WorklineOutboxRepository",
+                "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
             patch(
@@ -2018,7 +2043,7 @@ class TestDispatchByType:
             ),
             patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
         ):
-            result = await dispatch_outbox._dispatch(mock_db)
+            result = await OutboxDispatcher._dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -2028,41 +2053,74 @@ class TestDispatchByType:
         assert mark_failed_args[2] == "设备 ROBOT_001 不支持 command_type=PICK_AND_PUT，拒绝命令派发"
 
     @pytest.mark.asyncio
-    async def test_dispatch_external_http(self, mock_db):
-        """测试外部 HTTP 调用派发"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+    async def test_dispatch_external_http_delegates_to_engine(self, mock_db):
+        """测试外部 HTTP 调用派发复用引擎"""
+        from src.app.sys.services.outbox_engine import system_outbox_engine
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.EXTERNAL_HTTP,
-            target_type=TargetType.HTTP_ENDPOINT,
-            target_code="https://api.example.com/callback",
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="TEST_ENDPOINT",
             payload_json={"event": "completed", "data": {"id": 123}},
         )
 
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+        with patch.object(
+            system_outbox_engine, "dispatch_external_http", AsyncMock(return_value=True)
+        ) as mock_dispatch:
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
+        mock_dispatch.assert_awaited_once_with(outbox)
 
     @pytest.mark.asyncio
-    async def test_dispatch_internal_signal(self, mock_db):
-        """测试内部信号派发"""
-        from src.celery_app.tasks.workline import dispatch_outbox
+    async def test_dispatch_external_http_rejects_raw_url(self, mock_db):
+        """测试裸 URL 被注册表拦截拒绝"""
+        from src.celery_app.tasks.workline import OutboxDispatcher
 
         outbox = MockOutbox(
-            dispatch_type=DispatchType.INTERNAL_SIGNAL,
-            target_type=TargetType.INTERNAL_SERVICE,
-            target_code="notification_service",
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="https://api.example.com/callback",
+            payload_json={"event": "completed"},
+        )
+
+        # 即使引擎没有抛出异常，未注册的 endpoint_code 会被 Engine 解析失败返回 False
+        result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_dispatch_internal_signal_valid(self, mock_db):
+        """测试受控的内部信号派发"""
+        from src.celery_app.tasks.workline import OutboxDispatcher
+
+        outbox = MockOutbox(
+            dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+            target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+            target_code="workline",
             payload_json={"type": "alert", "message": "Task completed"},
         )
 
-        # 内部信号派发到 Celery 任务队列
         with patch("src.celery_app.app.celery_app.send_task") as mock_send:
-            result = await dispatch_outbox._dispatch_single(mock_db, outbox)
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
 
         assert result is True
         mock_send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_internal_signal_rejects_unknown(self, mock_db):
+        """测试未知的内部服务被拦截"""
+        from src.celery_app.tasks.workline import OutboxDispatcher
+
+        outbox = MockOutbox(
+            dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+            target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+            target_code="unknown_hacker_service",
+            payload_json={},
+        )
+
+        with patch("src.celery_app.app.celery_app.send_task") as mock_send:
+            result = await OutboxDispatcher._dispatch_single(mock_db, outbox)
+
+        assert result is False
+        mock_send.assert_not_called()
