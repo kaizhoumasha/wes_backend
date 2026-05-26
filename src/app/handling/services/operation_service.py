@@ -20,6 +20,7 @@ from src.app.handling.repositories import (
     handling_operation_repository,
     handling_step_repository,
 )
+from src.app.handling.services.completion_policy import resolve_request_completion_policy
 from src.app.handling.services.gateway import WmsRcsHandlingGateway, wms_rcs_handling_gateway
 from src.app.sys.models import (
     SystemOutboxDispatchType,
@@ -114,6 +115,7 @@ class HandlingOperationService:
                 "operation_type": operation_type,
                 "object_type": HandlingObjectType.BIN.value,
                 "operation_status": HandlingOperationStatus.REQUESTED.value,
+                "completion_policy": resolve_request_completion_policy(operation_type),
                 "workline_id": workline_id,
                 "workline_code": _optional_text(workline_code),
                 "material_session_id": material_session_id,

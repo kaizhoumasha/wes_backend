@@ -14,6 +14,7 @@ from src.app.handling.models import (
     HandlingStepKind,
     HandlingStepStatus,
 )
+from src.app.handling.repositories import HandlingOperationRepository
 from src.app.handling.services import HandlingOperationService, WmsRcsHandlingGateway
 from src.app.sys.models import (
     OperationCompletionPolicy,
@@ -97,11 +98,22 @@ def test_handling_models_are_system_level_contracts() -> None:
     assert "dispatch_type" in SystemOutbox.model_fields
 
 
-def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "operation_type",
+    [
+        "FULL_BOX_EXCHANGE_BIN_MOVE",
+        "SINGLE_LAYER_FULL_BIN_EXCHANGE",
+        "RACK_BIN_EXCHANGE",
+    ],
+)
+def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_type: str,
+) -> None:
     monkeypatch.setenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request")
     operation = SimpleNamespace(
         operation_key="full-box:release-001",
-        operation_type="FULL_BOX_EXCHANGE_BIN_MOVE",
+        operation_type=operation_type,
         trace_id="trace-full-box-001",
         workline_code="SMT_SORTER_01",
         material_session_id=81,
@@ -181,6 +193,8 @@ async def test_request_bin_operation_uses_internal_move_specs_and_creates_steps(
     assert operation.operation_key == "bin-op:trace-001"
     assert operation.object_type == HandlingObjectType.BIN.value
     assert operation.operation_status == HandlingOperationStatus.REQUESTED.value
+    assert operation.completion_policy == OperationCompletionPolicy.CALLBACK_TRUSTED
+    assert operation_repo.created[0]["completion_policy"] == OperationCompletionPolicy.CALLBACK_TRUSTED
     assert operation_repo.created[0]["workline_code"] == "SMT_SORTER_01"
     assert move_repo.created[0]["placeholder_key"] == "feed-batch-001:slot-01"
     assert move_repo.created[0]["candidate_authorized_bin_ids"] == ["BIN-001", "BIN-002"]
@@ -192,6 +206,82 @@ async def test_request_bin_operation_uses_internal_move_specs_and_creates_steps(
     assert outbox_repo.created[0]["dispatch_type"] == SystemOutboxDispatchType.EXTERNAL_HTTP.value
     assert outbox_repo.created[0]["dispatch_key"] == "handling:bin-op:trace-001:move:1"
     assert outbox_repo.created[0]["target_code"] == "WMS_RCS_BIN_OPERATION"
+
+
+@pytest.mark.asyncio
+async def test_request_bin_operation_sets_full_box_exchange_completion_policy() -> None:
+    operation_repo = FakeOperationRepository()
+    service = HandlingOperationService(
+        operation_repository=operation_repo,
+        move_repository=FakeMoveRepository(),
+        step_repository=FakeStepRepository(),
+        outbox_repository=FakeOutboxRepository(),
+        gateway=FakeGateway(),
+    )
+
+    operation = await service.request_bin_operation(
+        SimpleNamespace(),
+        operation_type="SINGLE_LAYER_FULL_BOX_EXCHANGE",
+        operation_key="full-box:trace-001",
+        moves=[
+            {
+                "source_type": "RACK_SLOT",
+                "source_code": "FIVE_LAYER_A1",
+                "target_type": "SORTER_HANDOFF",
+                "target_code": "SORTER_01_INFEED",
+            }
+        ],
+        trace_id="trace-full-box-001",
+    )
+
+    assert operation.completion_policy == OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+    assert operation_repo.created[0]["completion_policy"] == OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+
+
+@pytest.mark.asyncio
+async def test_full_box_completion_policy_is_queryable_from_repository(db_session: Any) -> None:
+    service = HandlingOperationService(gateway=FakeGateway())
+
+    normal_operation = await service.request_bin_operation(
+        db_session,
+        operation_type="SORTER_FEED_BIN",
+        operation_key="query:normal-bin-op",
+        moves=[
+            {
+                "source_type": "BUFFER",
+                "source_code": "BUF-01",
+                "target_type": "SORTER_HANDOFF",
+                "target_code": "SORTER_01_INFEED",
+            }
+        ],
+        trace_id="trace-query-normal",
+    )
+    full_box_operation = await service.request_bin_operation(
+        db_session,
+        operation_type="FULL_BOX_EXCHANGE",
+        operation_key="query:full-box-op",
+        moves=[
+            {
+                "source_type": "RACK_SLOT",
+                "source_code": "RACK-001:A1",
+                "target_type": "BUFFER",
+                "target_code": "BUF-01",
+            }
+        ],
+        trace_id="trace-query-full-box",
+    )
+
+    total, items = await HandlingOperationRepository().get_list(
+        db_session,
+        limit=10,
+        where_clauses_raw=[
+            HandlingOperation.completion_policy == OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
+        ],
+    )
+
+    assert total == 1
+    assert [item.operation_key for item in items] == [full_box_operation.operation_key]
+    assert normal_operation.operation_key not in {item.operation_key for item in items}
 
 
 @pytest.mark.asyncio

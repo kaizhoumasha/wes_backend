@@ -928,7 +928,7 @@ async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
         ctx,
         [
             RuntimeIntent.rack_bin_exchange_request(
-                operation_type="SINGLE_LAYER_FULL_BIN_EXCHANGE",
+                operation_type="SINGLE_LAYER_FULL_BOX_EXCHANGE",
                 operation_key="rack-bin-exchange:release-001",
                 moves=[
                     {
@@ -956,7 +956,7 @@ async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
     )
 
     assert service.calls[0]["operation_key"] == "rack-bin-exchange:release-001"
-    assert service.calls[0]["operation_type"] == "SINGLE_LAYER_FULL_BIN_EXCHANGE"
+    assert service.calls[0]["operation_type"] == "SINGLE_LAYER_FULL_BOX_EXCHANGE"
     assert service.calls[0]["moves"][1]["placeholder_key"] == "EMPTY_BIN_FOR:SINGLE_LAYER_A:01"
     assert session.current_wait_type == "HANDLING_OPERATION"
     assert session.context_json["handling_operation"]["rack_code"] == "RACK-SINGLE-01"

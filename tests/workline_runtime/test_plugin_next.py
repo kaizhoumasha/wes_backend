@@ -202,7 +202,7 @@ def test_plugin_next_bin_operation_request_builds_transport_free_runtime_intent(
 
 def test_plugin_next_rack_bin_exchange_request_builds_transport_free_runtime_intent():
     intent = PluginNext().rack_bin_exchange_request(
-        operation_type="SINGLE_LAYER_FULL_BIN_EXCHANGE",
+        operation_type="SINGLE_LAYER_FULL_BOX_EXCHANGE",
         operation_key="rack-bin-exchange:release-001",
         moves=[
             {
@@ -227,7 +227,7 @@ def test_plugin_next_rack_bin_exchange_request_builds_transport_free_runtime_int
     )
 
     assert intent.kind == RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST
-    assert intent.action == "SINGLE_LAYER_FULL_BIN_EXCHANGE"
+    assert intent.action == "SINGLE_LAYER_FULL_BOX_EXCHANGE"
     assert intent.idempotency_key == "rack-bin-exchange:release-001"
     assert intent.dispatch_key is None
     assert intent.target_code is None

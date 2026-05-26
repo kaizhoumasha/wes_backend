@@ -59,3 +59,39 @@ def test_system_outbox_rack_domain_migration_does_not_rewrite_system_outbox_shap
     assert 'op.add_column(\n        "system_outbox"' not in upgrade_body
     assert 'op.drop_column("system_outbox", "operation_id"' not in upgrade_body
     assert "ix_system_outbox_operation_status" not in upgrade_body
+
+
+def test_completion_policy_migration_repairs_forward_schema_for_old_handling_core() -> None:
+    migration = Path("migrations/versions/20260526_1544_c5d469c98d89_set_handling_full_box_completion_policy.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+
+    assert "_ensure_handling_completion_policy_column()" in upgrade_body
+    assert "_ensure_system_outbox_forward_contract()" in upgrade_body
+    assert upgrade_body.index("_ensure_handling_completion_policy_column()") < upgrade_body.index(
+        "UPDATE wes_biz.handling_operations"
+    )
+    for column_name in (
+        "device_id",
+        "operation_domain",
+        "operation_key",
+        "blocked_by_reconciliation_session_id",
+        "blocked_by_runtime_hold_id",
+        "blocked_device_id",
+        "blocked_workline_id",
+        "blocked_reason",
+    ):
+        assert f'"{column_name}"' in migration_text
+    assert "UPDATE wes_biz.system_outbox AS outbox" in migration_text
+    assert "FROM wes_biz.handling_operations AS operation" in migration_text
+    assert "outbox.operation_id = operation.id" in migration_text
+    assert "operation_domain = 'HANDLING'" in migration_text
+    assert "operation_key = operation.operation_key" in migration_text
+    assert migration_text.index("UPDATE wes_biz.system_outbox AS outbox") < migration_text.index(
+        '_drop_column_if_exists("system_outbox", "operation_id")'
+    )
+    assert '_drop_column_if_exists("system_outbox", "operation_id")' in migration_text
+    for marker in ("FULL_BOX_EXCHANGE", "FULL_BIN_EXCHANGE", "RACK_BIN_EXCHANGE"):
+        assert f"LIKE '%{marker}%'" in migration_text

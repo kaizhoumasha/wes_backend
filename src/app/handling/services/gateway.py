@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_FULL_BOX_EXCHANGE_OPERATION_MARKERS = ("FULL_BOX_EXCHANGE", "FULL_BIN_EXCHANGE", "RACK_BIN_EXCHANGE")
+from src.app.handling.services.completion_policy import is_full_box_exchange_operation_type
 
 
 class WmsRcsHandlingGateway:
@@ -61,20 +61,21 @@ class WmsRcsHandlingGateway:
 
 
 def _target_code(operation_type: str) -> str:
-    return "WMS_RCS_FULL_BOX_EXCHANGE" if _is_full_box_exchange(operation_type) else "WMS_RCS_BIN_OPERATION"
+    return (
+        "WMS_RCS_FULL_BOX_EXCHANGE" if is_full_box_exchange_operation_type(operation_type) else "WMS_RCS_BIN_OPERATION"
+    )
 
 
 def _request_type(operation_type: str) -> str:
-    return "FULL_BIN_EXCHANGE" if _is_full_box_exchange(operation_type) else "BIN_MOVE"
+    return "FULL_BIN_EXCHANGE" if is_full_box_exchange_operation_type(operation_type) else "BIN_MOVE"
 
 
 def _callback_type(operation_type: str) -> str:
-    return "WMS_FULL_BOX_EXCHANGE_RESULT" if _is_full_box_exchange(operation_type) else "WMS_TRANSPORT_COMPLETED"
-
-
-def _is_full_box_exchange(operation_type: str) -> bool:
-    normalized = operation_type.upper()
-    return any(marker in normalized for marker in _FULL_BOX_EXCHANGE_OPERATION_MARKERS)
+    return (
+        "WMS_FULL_BOX_EXCHANGE_RESULT"
+        if is_full_box_exchange_operation_type(operation_type)
+        else "WMS_TRANSPORT_COMPLETED"
+    )
 
 
 def _metadata_dict(move: Any) -> dict[str, Any]:
