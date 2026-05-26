@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from src.app.sys.models import OperationCompletionPolicy
 
-_FULL_BOX_EXCHANGE_OPERATION_MARKERS = ("FULL_BOX_EXCHANGE", "FULL_BIN_EXCHANGE", "RACK_BIN_EXCHANGE")
+_FULL_BOX_EXCHANGE_OPERATION_MARKER = "FULL_BOX_EXCHANGE"
 
 
 def is_full_box_exchange_operation_type(operation_type: str) -> bool:
     """判断 Handling operation_type 是否表示满箱/架箱交换。"""
 
     normalized = operation_type.upper()
-    return any(marker in normalized for marker in _FULL_BOX_EXCHANGE_OPERATION_MARKERS)
+    return _FULL_BOX_EXCHANGE_OPERATION_MARKER in normalized
 
 
 def resolve_request_completion_policy(operation_type: str) -> OperationCompletionPolicy:

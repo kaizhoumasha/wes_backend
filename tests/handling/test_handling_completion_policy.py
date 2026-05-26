@@ -10,10 +10,7 @@ from src.app.sys.models import OperationCompletionPolicy
     "operation_type",
     [
         "FULL_BOX_EXCHANGE",
-        "FULL_BIN_EXCHANGE",
-        "RACK_BIN_EXCHANGE",
         "SINGLE_LAYER_FULL_BOX_EXCHANGE",
-        "SINGLE_LAYER_FULL_BIN_EXCHANGE",
     ],
 )
 def test_full_box_exchange_operation_types_require_callback_plus_reconciliation(operation_type: str) -> None:
@@ -25,6 +22,9 @@ def test_full_box_exchange_operation_types_require_callback_plus_reconciliation(
     "operation_type",
     [
         "SORTER_FEED_BIN",
+        "FULL_BIN_EXCHANGE",
+        "RACK_BIN_EXCHANGE",
+        "SINGLE_LAYER_FULL_BIN_EXCHANGE",
     ],
 )
 def test_non_full_box_operation_types_use_callback_trusted(operation_type: str) -> None:

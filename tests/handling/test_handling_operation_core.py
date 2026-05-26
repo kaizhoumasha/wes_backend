@@ -102,8 +102,7 @@ def test_handling_models_are_system_level_contracts() -> None:
     "operation_type",
     [
         "FULL_BOX_EXCHANGE_BIN_MOVE",
-        "SINGLE_LAYER_FULL_BIN_EXCHANGE",
-        "RACK_BIN_EXCHANGE",
+        "SINGLE_LAYER_FULL_BOX_EXCHANGE",
     ],
 )
 def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
