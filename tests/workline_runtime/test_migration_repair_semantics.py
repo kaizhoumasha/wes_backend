@@ -31,3 +31,31 @@ def test_system_outbox_rack_domain_migration_does_not_use_bind_parameters_inside
     assert "DO $$" not in drop_constraint_helper
     assert ".bindparams(" in drop_constraint_helper
     assert "op.drop_constraint" in drop_constraint_helper
+
+
+def test_handling_core_migration_creates_final_system_outbox_contract_directly() -> None:
+    migration = Path("migrations/versions/20260522_1449_745068e173c2_add_handling_core.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    system_outbox_block = migration_text.split('op.create_table(\n        "system_outbox"', maxsplit=1)[1].split(
+        'op.create_table(\n        "handling_operation_steps"', maxsplit=1
+    )[0]
+
+    assert '"operation_id"' not in system_outbox_block
+    assert '"operation_domain"' in system_outbox_block
+    assert '"operation_key"' in system_outbox_block
+    assert '"device_id"' in system_outbox_block
+    assert '"blocked_by_runtime_hold_id"' in system_outbox_block
+    assert "ix_system_outbox_domain_operation" in system_outbox_block
+    assert "ix_system_outbox_operation_status" not in system_outbox_block
+
+
+def test_system_outbox_rack_domain_migration_does_not_rewrite_system_outbox_shape() -> None:
+    migration = Path("migrations/versions/20260525_1239_3cf0dc588be9_system_outbox_and_rack_operation_domain.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+
+    assert 'op.add_column(\n        "system_outbox"' not in upgrade_body
+    assert 'op.drop_column("system_outbox", "operation_id"' not in upgrade_body
+    assert "ix_system_outbox_operation_status" not in upgrade_body

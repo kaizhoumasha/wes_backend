@@ -172,6 +172,15 @@ SYSTEM_OUTBOX_TARGET_TYPE = sa.Enum(
     create_constraint=True,
     length=50,
 )
+OPERATION_COMPLETION_POLICY = sa.Enum(
+    "CALLBACK_TRUSTED",
+    "RESOURCE_PROJECTION_REQUIRED",
+    "CALLBACK_PLUS_RECONCILIATION",
+    name="operationcompletionpolicy",
+    native_enum=False,
+    create_constraint=True,
+    length=50,
+)
 
 
 def upgrade() -> None:
@@ -274,6 +283,13 @@ def upgrade() -> None:
             server_default="PLANNED",
             comment="operation 状态",
         ),
+        sa.Column(
+            "completion_policy",
+            OPERATION_COMPLETION_POLICY,
+            nullable=False,
+            server_default="CALLBACK_TRUSTED",
+            comment="完成确认策略",
+        ),
         sa.Column("workline_id", sa.BigInteger(), nullable=True, comment="可选发起/关联 WorkLine.id"),
         sa.Column("workline_code", sa.String(length=50), nullable=True, comment="可选工作线编码"),
         sa.Column("material_session_id", sa.BigInteger(), nullable=True, comment="可选关联 WorklineSession.id"),
@@ -299,6 +315,12 @@ def upgrade() -> None:
         "ix_handling_operations_workline_status",
         "handling_operations",
         ["workline_id", "operation_status"],
+        schema=SCHEMA,
+    )
+    op.create_index(
+        op.f("ix_wes_biz_handling_operations_completion_policy"),
+        "handling_operations",
+        ["completion_policy"],
         schema=SCHEMA,
     )
 
@@ -365,9 +387,13 @@ def upgrade() -> None:
     op.create_table(
         "system_outbox",
         *_data_columns(),
-        sa.Column("operation_id", sa.BigInteger(), nullable=True, comment="关联 HandlingOperation.id"),
         sa.Column("session_id", sa.BigInteger(), nullable=True, comment="可选关联 WorklineSession.id"),
         sa.Column("workline_id", sa.BigInteger(), nullable=True, comment="可选关联 WorkLine.id"),
+        sa.Column("device_id", sa.BigInteger(), nullable=True, comment="可选关联 Device.id"),
+        sa.Column(
+            "operation_domain", sa.String(length=50), nullable=False, server_default="WORKLINE", comment="操作域"
+        ),
+        sa.Column("operation_key", sa.String(length=240), nullable=True, comment="操作幂等键"),
         sa.Column("dispatch_type", SYSTEM_OUTBOX_DISPATCH_TYPE, nullable=False, comment="派发类型"),
         sa.Column("dispatch_key", sa.String(length=240), nullable=False, comment="派发幂等键"),
         sa.Column("target_type", SYSTEM_OUTBOX_TARGET_TYPE, nullable=False, comment="目标类型"),
@@ -380,15 +406,60 @@ def upgrade() -> None:
         sa.Column("sent_at", sa.DateTime(), nullable=True, comment="发送时间"),
         sa.Column("finished_at", sa.DateTime(), nullable=True, comment="结束时间"),
         sa.Column("trace_id", sa.String(length=100), nullable=True, comment="Trace ID"),
-        sa.ForeignKeyConstraint(["operation_id"], [f"{SCHEMA}.handling_operations.id"]),
+        sa.Column("blocked_by_reconciliation_session_id", sa.BigInteger(), nullable=True),
+        sa.Column("blocked_by_runtime_hold_id", sa.BigInteger(), nullable=True),
+        sa.Column("blocked_device_id", sa.BigInteger(), nullable=True),
+        sa.Column("blocked_workline_id", sa.BigInteger(), nullable=True),
+        sa.Column("blocked_reason", sa.String(length=100), nullable=True),
         sa.ForeignKeyConstraint(["session_id"], [f"{SCHEMA}.workline_sessions.id"]),
         sa.ForeignKeyConstraint(["workline_id"], [f"{SCHEMA}.work_lines.id"]),
+        sa.ForeignKeyConstraint(["device_id"], [f"{SCHEMA}.devices.id"], name="fk_system_outbox_device_id"),
+        sa.ForeignKeyConstraint(
+            ["blocked_by_runtime_hold_id"],
+            [f"{SCHEMA}.runtime_holds.id"],
+            name="fk_system_outbox_blocked_by_runtime_hold_id",
+            use_alter=True,
+        ),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,
     )
     op.create_index("ux_system_outbox_dispatch_key", "system_outbox", ["dispatch_key"], unique=True, schema=SCHEMA)
-    op.create_index("ix_system_outbox_status_retry", "system_outbox", ["status", "next_retry_at"], schema=SCHEMA)
-    op.create_index("ix_system_outbox_operation_status", "system_outbox", ["operation_id", "status"], schema=SCHEMA)
+    for column_name in (
+        "device_id",
+        "operation_domain",
+        "operation_key",
+        "blocked_by_reconciliation_session_id",
+        "blocked_by_runtime_hold_id",
+        "blocked_device_id",
+        "blocked_workline_id",
+    ):
+        op.create_index(op.f(f"ix_wes_biz_system_outbox_{column_name}"), "system_outbox", [column_name], schema=SCHEMA)
+    op.create_index(
+        "ix_system_outbox_status_retry_created",
+        "system_outbox",
+        ["status", "next_retry_at", "created_at"],
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_system_outbox_domain_operation", "system_outbox", ["operation_domain", "operation_key"], schema=SCHEMA
+    )
+    op.create_index(
+        "ix_system_outbox_context_status", "system_outbox", ["workline_id", "session_id", "status"], schema=SCHEMA
+    )
+    op.create_index(
+        "ix_system_outbox_blocked_release",
+        "system_outbox",
+        ["blocked_reason", "blocked_device_id", "blocked_workline_id"],
+        schema=SCHEMA,
+    )
+    op.create_index("ix_system_outbox_retention", "system_outbox", ["status", "finished_at"], schema=SCHEMA)
+    op.create_index(
+        "ix_system_outbox_device_fifo",
+        "system_outbox",
+        ["dispatch_type", "device_id", "target_code", "status", "created_at"],
+        postgresql_where=sa.text("dispatch_type = 'DEVICE_COMMAND'"),
+        schema=SCHEMA,
+    )
 
     op.create_table(
         "handling_operation_steps",

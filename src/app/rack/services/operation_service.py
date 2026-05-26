@@ -15,6 +15,12 @@ from src.app.rack.repositories.operation_repository import (
     rack_operation_repository,
     rack_task_repository,
 )
+from src.app.rack.services.completion_policy import (
+    derive_required_task_status,
+    requires_resource_projection_confirmation,
+    resolve_operation_completion_policy,
+    resolve_request_completion_policy,
+)
 from src.app.rack.services.gateway import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsRcsRackGateway,
@@ -137,11 +143,7 @@ class RackOperationService:
             material_session_id=material_session_id,
             trace_id=trace_id,
             task_specs=specs,
-            completion_policy=_request_completion_policy(
-                completion_policy,
-                workline_id=workline_id,
-                workline_code=workline_code,
-            ),
+            completion_policy=resolve_request_completion_policy(completion_policy),
         )
         existing_tasks = await self.rack_task_repository.list_by_operation_key(db, operation_key=operation_key)
         if existing_tasks:
@@ -289,32 +291,17 @@ class RackOperationService:
 
         operation_key = _required_text(operation_key, "operation_key")
         operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
-        completion_policy = _operation_completion_policy(operation)
+        completion_policy = resolve_operation_completion_policy(operation)
         tasks = await self.rack_task_repository.list_by_operation_key(
             db,
             operation_key=operation_key,
         )
         required_tasks = [task for task in tasks if _task_required(task)]
-        if not required_tasks:
-            return RackOperationStatus.PENDING.value
+        derived_status = derive_required_task_status(required_tasks)
+        if derived_status is not None:
+            return derived_status.value
 
-        statuses = {_task_status(task) for task in required_tasks}
-        if statuses & {
-            RackTaskStatus.FAILED.value,
-            RackTaskStatus.TIMEOUT.value,
-            RackTaskStatus.CANCELLED.value,
-        }:
-            return RackOperationStatus.FAILED.value
-        if RackTaskStatus.RECONCILING.value in statuses:
-            return RackOperationStatus.RECONCILING.value
-        if statuses & {
-            RackTaskStatus.PLANNED.value,
-            RackTaskStatus.REQUESTED.value,
-            RackTaskStatus.IN_PROGRESS.value,
-        }:
-            return RackOperationStatus.PENDING.value
-
-        if _requires_resource_projection_confirmation(
+        if requires_resource_projection_confirmation(
             completion_policy
         ) and not await self._resource_projection_confirms_success(db, required_tasks):
             return RackOperationStatus.RECONCILING.value
@@ -324,7 +311,7 @@ class RackOperationService:
         """在同一事务中回写 RackOperation 派生状态。"""
 
         operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
-        completion_policy = _operation_completion_policy(operation)
+        completion_policy = resolve_operation_completion_policy(operation)
         operation_status = await self.derive_operation_status(db, operation_key=operation_key)
         result_json_patch = {}
         if (
@@ -862,29 +849,6 @@ def _consume_target_projection(
             placements.pop(index)
             return True
     return False
-
-
-def _operation_completion_policy(operation: Any | None) -> OperationCompletionPolicy:
-    raw_policy = getattr(operation, "completion_policy", None)
-    try:
-        return OperationCompletionPolicy(_enum_value(raw_policy))
-    except ValueError:
-        return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
-
-
-def _request_completion_policy(
-    completion_policy: OperationCompletionPolicy | str | None,
-    *,
-    workline_id: int | None,
-    workline_code: str | None,
-) -> OperationCompletionPolicy:
-    if completion_policy is not None:
-        return OperationCompletionPolicy(_enum_value(completion_policy))
-    return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
-
-
-def _requires_resource_projection_confirmation(completion_policy: OperationCompletionPolicy) -> bool:
-    return completion_policy == OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
 
 def _target_projection_matches_task(
