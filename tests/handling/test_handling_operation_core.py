@@ -16,6 +16,7 @@ from src.app.handling.models import (
 )
 from src.app.handling.services import HandlingOperationService, WmsRcsHandlingGateway
 from src.app.sys.models import (
+    OperationCompletionPolicy,
     SystemOutbox,
     SystemOutboxDispatchType,
 )
@@ -89,6 +90,7 @@ def test_handling_models_are_system_level_contracts() -> None:
     assert "workline_id" in HandlingOperation.model_fields
     assert "material_session_id" in HandlingOperation.model_fields
     assert "operation_key" in HandlingOperation.model_fields
+    assert HandlingOperation.model_fields["completion_policy"].default == OperationCompletionPolicy.CALLBACK_TRUSTED
     assert "object_type" in HandlingMove.model_fields
     assert "dispatch_key" in HandlingStep.model_fields
     assert "trace_id" in HandlingStep.model_fields
