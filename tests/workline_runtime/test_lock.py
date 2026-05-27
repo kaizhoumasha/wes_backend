@@ -279,12 +279,12 @@ class TestOrchestratorPgFallbackProvider:
     @pytest.mark.asyncio
     async def test_build_orchestrator_lock_provider_uses_xact_lock_without_unlock(self):
         """Redis 缺席时，worker provider 应使用事务级 advisory lock，且不再手动 unlock。"""
-        from src.celery_app.tasks.workline import _build_orchestrator_lock_provider
+        from src.app.workline.services.inbox_batch_processor import _build_orchestrator_lock_provider
 
         mock_db = AsyncMock()
         mock_db.execute = AsyncMock()
 
-        with patch("src.celery_app.tasks.workline.get_redis", return_value=None):
+        with patch("src.app.workline.services.inbox_batch_processor.get_redis", return_value=None):
             provider = _build_orchestrator_lock_provider(mock_db)
             async with provider("session:provider"):
                 pass

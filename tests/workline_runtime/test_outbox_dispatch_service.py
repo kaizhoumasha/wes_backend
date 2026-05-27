@@ -963,7 +963,7 @@ class TestOutboxDispatchService:
 
     def test_normalize_vendor_command_payload_wraps_business_fields_into_params(self):
         """测试插件业务参数会严格收口到 params 中。"""
-        from src.celery_app.tasks.workline import _normalize_vendor_command_payload
+        from src.app.workline.services.write_back_service import _normalize_vendor_command_payload
 
         payload = _normalize_vendor_command_payload(
             {
@@ -992,7 +992,7 @@ class TestOutboxDispatchService:
 
     def test_normalize_vendor_command_payload_does_not_accept_legacy_command_id(self):
         """测试设备派发归一化不再接受 legacy command_id。"""
-        from src.celery_app.tasks.workline import _normalize_vendor_command_payload
+        from src.app.workline.services.write_back_service import _normalize_vendor_command_payload
 
         payload = _normalize_vendor_command_payload(
             {"command_id": "CMD-LEGACY-001", "task_type": "PICK_AND_PUT"},
@@ -1004,13 +1004,13 @@ class TestOutboxDispatchService:
 
     def test_sync_session_contract_snapshot_prefers_workline_contract_version(self):
         """测试 session snapshot 优先使用 workline.contract_version。"""
-        from src.celery_app.tasks.workline import _sync_session_contract_snapshot
+        from src.app.workline.services.write_back_service import _sync_session_contract_snapshot
 
         session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9")
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version="wl-2.0")
 
         with patch(
-            "src.celery_app.tasks.workline.get_plugin_contract_version",
+            "src.app.workline.services.write_back_service.get_plugin_contract_version",
             return_value="registry-1.0",
         ):
             _sync_session_contract_snapshot(
@@ -1022,13 +1022,13 @@ class TestOutboxDispatchService:
 
     def test_sync_session_contract_snapshot_falls_back_to_registry(self):
         """测试 workline.contract_version 缺失时回退 registry。"""
-        from src.celery_app.tasks.workline import _sync_session_contract_snapshot
+        from src.app.workline.services.write_back_service import _sync_session_contract_snapshot
 
         session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
         workline = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
 
         with patch(
-            "src.celery_app.tasks.workline.get_plugin_contract_version",
+            "src.app.workline.services.write_back_service.get_plugin_contract_version",
             return_value="1.0",
         ):
             _sync_session_contract_snapshot(

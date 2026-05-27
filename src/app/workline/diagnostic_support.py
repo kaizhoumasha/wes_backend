@@ -31,6 +31,8 @@ def _log_diagnostic(
     command: Any | None = None,
     outbox: Any | None = None,
     transition: str | None = None,
+    request_id: str | None = None,
+    trace_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> Any:
     payload = payload_dict(getattr(inbox, "payload_json", None)) if inbox is not None else {}
@@ -40,7 +42,8 @@ def _log_diagnostic(
         inbox=inbox,
         command=command,
         outbox=outbox,
-        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
+        request_id=request_id,
+        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None) or trace_id,
         canonical_event_type=canonical_event_type(payload),
         transition=transition,
     )
@@ -56,6 +59,8 @@ def _log_diagnostic(
             device=device,
             outbox=outbox,
             workline=workline,
+            request_id=request_id,
+            trace_id=trace_id,
             canonical_event_type=trace.canonical_event_type,
             transition=transition,
             extra=extra,

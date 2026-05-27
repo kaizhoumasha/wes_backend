@@ -10,84 +10,29 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import uuid
-from contextlib import asynccontextmanager, suppress
-from datetime import timedelta
-from enum import Enum
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypedDict, cast
-
-if TYPE_CHECKING:
-    from src.workline_runtime.orchestrator import OrchestratorResult
-from celery import Task
-from sqlalchemy import text
-
-# 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
-from src.app.device.models.command import DeviceCommand
-from src.app.device.models.device import Device  # noqa: F401
-from src.app.workline.services.device_command_gateway import (  # noqa: F401
-    _DeviceCommandGovernanceError,
-    _enforce_device_command_governance,
-)
-from src.app.workline.services.safety_service import WorkLineSafetyBlocked  # noqa: F401
-from src.celery_app.app import celery_app
-
-# Backwards compatible exports for things that were moved
-from src.celery_app.constants import (
-    DEFAULT_COMMAND_PRIORITY,
-    DEFAULT_COMMAND_TIMEOUT_MS,
-    DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
-    EXTERNAL_HTTP_DECISION_TYPE,
-    INBOX_PROCESS_TIMEOUT_SECONDS,  # noqa: F401
-)
-from src.core.logger import logger
-from src.database import db as db_module
-from src.database.redis_client import get_redis
-from src.utils.timezone import timezone
-from src.utils.value_normalization import (
-    canonical_event_type,
-    enum_value,
-    resolve_entity_id,
-    string_value,
-)
-from src.workline_plugin_registry import (
-    get_plugin_contract_version,
-)
-from src.workline_runtime.diagnostics import (
-    ErrorDomain,
-    ProblemClass,
-)
-from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagnostic  # noqa: F401
-from src.workline_runtime.lock import RedisDistributedLock
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
-from src.workline_runtime.session_resolver import SessionResolveError  # noqa: F401
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from src.workline_runtime.utils import JsonDict
+from celery import Task
 
+# 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
+from src.app.device.models.command import DeviceCommand
+from src.celery_app.app import celery_app
 
-def _enqueue_outbox_dispatch() -> None:
-    cast("Any", celery_app).send_task(
-        "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
-        kwargs={"limit": 50},
-    )
-
-
-def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
-    for intent in result.intents or []:
-        if intent.kind == RuntimeIntentKind.COMMAND:
-            return True
-        if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
-            return True
-        if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
-            return True
-        if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
-            return True
-    return False
+# Backwards compatible exports for things that were moved
+from src.celery_app.constants import (
+    DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
+)
+from src.core.logger import logger
+from src.database import db as db_module
+from src.utils.value_normalization import (
+    enum_value,
+    resolve_entity_id,
+)
+from src.workline_runtime.diagnostics import ErrorCode
 
 
 # ============================================
@@ -176,747 +121,38 @@ def _run_async(coro: Awaitable[Any]) -> Any:
     return loop.run_until_complete(coro)
 
 
-def _build_orchestrator_lock_provider(db: Any):
-    """为 OrchestratorService 构建生产锁提供者。
-    优先使用 Redis 分布式锁；Redis 不可用时回退到 PostgreSQL advisory lock，
-    但绝不退化为无锁。
-    """
-    redis_client = get_redis()
-    if redis_client is not None:
-        lock = RedisDistributedLock(redis_client=cast("Any", redis_client), key_prefix="workline:orchestrator:")
-
-        def _redis_lock(lock_key: str):
-            return lock.acquire(lock_key, db=db)
-
-        return _redis_lock
-    logger.warning("Redis not available for orchestrator lock, falling back to PostgreSQL advisory xact lock")
-
-    def _resource_id(resource: str) -> int:
-        digest = hashlib.blake2b(resource.encode("utf-8"), digest_size=8).digest()
-        return int.from_bytes(digest, byteorder="big", signed=False) % (2**63)
-
-    @asynccontextmanager
-    async def _pg_lock(lock_key: str):
-        resource_id = _resource_id(lock_key)
-        # 使用事务级 advisory lock，随 commit/rollback 自动释放，
-        # 避免锁内 commit 后再依赖另一连接手动 unlock 造成悬挂锁。
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(:resource_id)"),
-            {"resource_id": resource_id},
-        )
-        yield
-
-    return _pg_lock
-
-
-def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
-    """为 UNKNOWN 等兜底码补充更接近现场语义的问题大类。"""
-    if error_domain in {ErrorDomain.DEVICE, ErrorDomain.NETWORK}:
-        return ProblemClass.HARDWARE
-    return None
-
-
-def _session_context(session: Any) -> dict[str, Any]:
-    raw_context = getattr(session, "context_json", None)
-    if isinstance(raw_context, dict):
-        return dict(cast("JsonDict", raw_context))
-    return {}
-
-
-def _set_session_context(session: Any, context: dict[str, Any]) -> None:
-    session.context_json = context
-
-
-def _resolve_runtime_contract_version(*, workline: Any, plugin_key: str | None) -> str | None:
-    """统一解析运行时 contract_version：优先 workline，缺失时回退 registry。"""
-    workline_contract_version = getattr(workline, "contract_version", None)
-    if isinstance(workline_contract_version, str) and workline_contract_version:
-        return workline_contract_version
-    contract_version = get_plugin_contract_version(plugin_key)
-    return contract_version if isinstance(contract_version, str) and contract_version else None
-
-
-def _sync_session_contract_snapshot(session: Any, *, workline: Any) -> None:
-    plugin_key = getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None)
-    if isinstance(plugin_key, str) and plugin_key:
-        session.plugin_key = plugin_key
-    resolved_contract_version = _resolve_runtime_contract_version(workline=workline, plugin_key=plugin_key)
-    if resolved_contract_version and getattr(session, "contract_version", None) != resolved_contract_version:
-        session.contract_version = resolved_contract_version
-
-
-def _clear_session_wait(session: Any) -> None:
-    session.current_wait_type = None
-    session.waiting_since = None
-    session.deadline_at = None
-    session.current_wait_timeout_seconds = None
-    session.awaiting_command_id = None
-
-
-def _clear_session_failure(session: Any) -> None:
-    session.failure_domain = None
-    session.failure_code = None
-    session.failure_message = None
-
-
-def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
-    """提取写入前的最小 session 快照，用于锁内防止 stale write。"""
-    return (
-        getattr(session, "status", None),
-        getattr(session, "awaiting_command_id", None),
-    )
-
-
-def _wait_session_status(wait_type: str) -> str:
-    if wait_type in {"EXTERNAL_HTTP", "RACK_OPERATION"}:
-        return "WAITING_EXTERNAL"
-    return "WAITING_DEVICE_RESULT"
-
-
-def _device_map_from_roles(devices_by_role: dict[str, list[Any]]) -> dict[int, Any]:
-    device_by_id: dict[int, Any] = {}
-    for devices in devices_by_role.values():
-        for device in devices:
-            device_id = resolve_entity_id(device)
-            if device_id is not None:
-                device_by_id[device_id] = device
-    return device_by_id
-
-
-def _map_command_task_type(action: str) -> str:
-    # DeviceCommand.task_type 已允许插件扩展字符串；这里必须保留插件协议值，
-    # 否则下游 mock/设备和命令结果路由会看到旧的通用任务类型。
-    return action
-
-
-def _utc_timestamp_ms() -> int:
-    return int(timezone.now_utc().timestamp() * 1000)
-
-
-def _normalize_command_task_type(command_task_type: Any) -> str:
-    if isinstance(command_task_type, Enum):
-        return string_value(command_task_type.value)
-    return string_value(command_task_type)
-
-
-def _build_command_code(task_type: str) -> str:
-    date_str = timezone.now_for_db().strftime("%Y%m%d")
-    return f"CMD-{date_str}-{task_type}-{uuid.uuid4().hex[:8].upper()}"
-
-
-_DEVICE_COMMAND_RESERVED_FIELDS = {
-    "device_code",
-    "command_code",
-    "task_type",
-    "command_type",
-    "priority",
-    "timeout",
-    "params",
-    "timestamp",
-}
-
-
-def _normalize_vendor_command_payload(
-    parameters: Any,
-    *,
-    action: str,
-    default_command_code: str,
-) -> JsonDict:
-    """归一化插件产出的设备协议 payload。
-    目标是保留 vendor payload 语义，并强制收口到白皮书定义的包络：
-    - 系统字段保留在顶层
-    - 业务参数统一进入 params
-    """
-    raw_payload = dict(payload_dict(parameters))
-    nested_params = payload_dict(raw_payload.get("params"))
-    business_params = {key: value for key, value in raw_payload.items() if key not in _DEVICE_COMMAND_RESERVED_FIELDS}
-    device_code = string_value(raw_payload.get("device_code"))
-    priority = raw_payload.get("priority")
-    timeout = raw_payload.get("timeout")
-    timestamp = raw_payload.get("timestamp")
-    payload: JsonDict = {
-        "command_code": string_value(raw_payload.get("command_code")) or default_command_code,
-        "task_type": string_value(raw_payload.get("task_type"), action),
-        "command_type": string_value(raw_payload.get("command_type"))
-        or string_value(raw_payload.get("task_type"), action),
-        "priority": priority if isinstance(priority, int) else DEFAULT_COMMAND_PRIORITY,
-        "timeout": timeout if isinstance(timeout, int) else DEFAULT_COMMAND_TIMEOUT_MS,
-        "params": {
-            **business_params,
-            **nested_params,
-        },
-        "timestamp": timestamp if isinstance(timestamp, int) else _utc_timestamp_ms(),
-    }
-    if device_code:
-        payload["device_code"] = device_code
-    return payload
-
-
-def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> dict[str, Any]:
-    resolved_device_code = string_value(device_code)
-    normalized_task_type = _normalize_command_task_type(getattr(command, "task_type", None))
-    command_params = payload_dict(getattr(command, "params", None))
-    payload: dict[str, Any] = {
-        "command_code": command.command_code,
-        "task_type": normalized_task_type,
-        "command_type": normalized_task_type,
-        "priority": command.priority,
-        "timeout": command.timeout_ms,
-        "params": command_params,
-        "timestamp": _utc_timestamp_ms(),
-    }
-    if resolved_device_code:
-        payload["device_code"] = resolved_device_code
-    return payload
-
-
-async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
-
-    return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
-
-
-class EffectApplyContext(TypedDict):
-    """Celery 侧 effect 执行上下文。
-    这里故意保持为轻量字典，而不是引入更重的执行框架：
-    - 便于 Phase 2 逐步拆分 `_apply_orchestrator_effects`
-    - 便于测试按 handler 粒度观察状态变化
-    - 不会过早把当前实现固化成难以演进的抽象层
-    """
-
-    db: Any
-    session: Any
-    workline: Any
-    inbox: Any
-    devices_by_role: dict[str, list[Any]]
-    source_device: Any | None
-    orch_result: OrchestratorResult
-    current_status: str | None
-    trace_id: str | None
-    trace: TraceContext
-    session_ctx: dict[str, Any]
-    now: Any
-    awaiting_command_id: int | None
-    awaiting_command_code: str | None
-    next_timeline_seq_no: int | None
-
-
-async def _emit_timeline(ctx: EffectApplyContext, **kwargs: Any) -> None:
-    """统一 timeline 生成入口。
-    对三方插件开发者而言，最重要的是看清“状态变化发生时会留下什么痕迹”。
-    这里把 timeline 生成集中到一个 helper，后续若要补 diagnostics/timeline 对齐，
-    只需要沿这个入口扩展即可。
-    """
-    from src.workline_runtime.timeline_generator import timeline_generator
-
-    timeline = timeline_generator.generate(
-        session=ctx["session"],
-        **kwargs,
-    )
-    assigned_seq_no = await _add_timeline(
-        ctx["db"],
-        timeline,
-        seq_no=ctx["next_timeline_seq_no"],
-    )
-    if not isinstance(assigned_seq_no, int):
-        timeline_seq_no = getattr(timeline, "seq_no", None)
-        assigned_seq_no = timeline_seq_no if isinstance(timeline_seq_no, int) else None
-    if isinstance(assigned_seq_no, int):
-        ctx["next_timeline_seq_no"] = assigned_seq_no + 1
-
-
-def _build_effect_apply_context(
-    *,
+async def _record_process_inbox_batch_failure_diagnostic(
     db: Any,
-    session: Any,
-    workline: Any,
-    inbox: Any,
-    devices_by_role: dict[str, list[Any]],
-    source_device: Any | None,
-    orch_result: OrchestratorResult,
-) -> EffectApplyContext:
-    trace = TraceContext.from_runtime(
-        session=session,
-        workline=workline,
-        inbox=inbox,
-        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
-    )
-    return {
-        "db": db,
-        "session": session,
-        "workline": workline,
-        "inbox": inbox,
-        "devices_by_role": devices_by_role,
-        "source_device": source_device,
-        "orch_result": orch_result,
-        "current_status": getattr(session, "status", None),
-        "trace_id": trace.trace_id,
-        "trace": trace,
-        "session_ctx": _session_context(session),
-        "now": timezone.now_for_db(),
-        "awaiting_command_id": None,
-        "awaiting_command_code": None,
-        "next_timeline_seq_no": None,
-    }
-
-
-def _apply_context_patch(ctx: EffectApplyContext) -> None:
-    """先应用 context patch，再执行后续 effect。
-    第三方插件开发者只能把业务数据写进 context；runtime-owned
-    字段已在 Orchestrator 阶段被拦截。
-    """
-    orch_result = ctx["orch_result"]
-    session = ctx["session"]
-    workline = ctx["workline"]
-    session_ctx = ctx["session_ctx"]
-    context_patch = getattr(orch_result, "context_patch", None)
-    if context_patch:
-        session_ctx.update(context_patch)
-        _set_session_context(session, session_ctx)
-        _sync_session_contract_snapshot(session, workline=workline)
-        # 同步 barcode 到 session 字段，便于主数据和排障视图直接读取。
-        if "barcode" in context_patch:
-            barcode_value = context_patch["barcode"]
-            if barcode_value:
-                session.barcode = barcode_value
-        return
-    _sync_session_contract_snapshot(session, workline=workline)
-
-
-def _sync_effect_trace_fields(ctx: EffectApplyContext) -> None:
-    """同步 effect 执行后的基础追踪字段。"""
-    session = ctx["session"]
-    trace_id = ctx["trace_id"]
-    if trace_id and getattr(session, "trace_id", None) != trace_id:
-        session.trace_id = trace_id
-    session.last_inbox_id = resolve_entity_id(ctx["inbox"])
-
-
-def _timeline_inbox_id(ctx: EffectApplyContext) -> int | None:
-    """统一提取 timeline 关联的 inbox 主键。"""
-    return resolve_entity_id(ctx["inbox"])
-
-
-def _effect_trace_payload(ctx: EffectApplyContext) -> dict[str, Any]:
-    """构造跨 effect 共用的追踪字段。"""
-    payload = payload_dict(getattr(ctx["inbox"], "payload_json", None))
-    trace = ctx["trace"].with_inbox(ctx["inbox"]) if ctx.get("inbox") is not None else ctx["trace"]
-    return trace.project_timeline_payload(canonical_event_type=canonical_event_type(payload))
-
-
-def _decision_timeline_payload(ctx: EffectApplyContext) -> dict[str, Any]:
-    """构造“插件做出决策”这一类 timeline payload。"""
-    orch_result = ctx["orch_result"]
-    return {
-        **_effect_trace_payload(ctx),
-        "transition": orch_result.transition,
-        "context_patch": orch_result.context_patch or {},
-    }
-
-
-def _business_decision_timeline_payload(ctx: EffectApplyContext, *, decision: Any) -> dict[str, Any]:
-    """构造业务判定 timeline payload。
-    业务 NG 是插件给出的业务结果，不代表系统失败；这里仅沉淀可检索投影。
-    """
-    return {
-        **_effect_trace_payload(ctx),
-        "classification": decision.classification,
-        "reason_code": decision.reason_code,
-        "message": decision.message,
-        "evidence": decision.evidence,
-        "business_key": decision.business_key,
-    }
-
-
-def _external_decision_timeline_payload(
-    ctx: EffectApplyContext,
     *,
-    dispatch_key: str,
-    target_code: str,
-    payload_json: dict[str, Any],
-) -> dict[str, Any]:
-    """构造外部调用准备阶段的 timeline payload。"""
-    return {
-        **_effect_trace_payload(ctx),
-        "dispatch_key": dispatch_key,
-        "target_code": target_code,
-        "payload": payload_json,
-    }
+    exc: Exception,
+    limit: int,
+    retries: int,
+    max_retries: int,
+    task_id: str | None,
+) -> None:
+    """记录无法归属到单条 Inbox 的批处理级失败。"""
+    from src.app.workline.diagnostic_support import _record_diagnostic
 
-
-def _command_timeline_payload(
-    ctx: EffectApplyContext,
-    *,
-    command_code: str,
-    command_type: str,
-    parameters: dict[str, Any],
-    dispatch_key: str,
-) -> dict[str, Any]:
-    """构造命令派发阶段的 timeline payload。"""
-    return {
-        **_effect_trace_payload(ctx),
-        "command_code": command_code,
-        "command_type": command_type,
-        "dispatch_key": dispatch_key,
-        "parameters": parameters,
-    }
-
-
-def _wait_timeline_payload(
-    ctx: EffectApplyContext, *, wait_type: str, wait_token: str, deadline_seconds: int
-) -> dict[str, Any]:
-    """构造等待态开始时的 timeline payload。"""
-    return {
-        **_effect_trace_payload(ctx),
-        "wait_type": wait_type,
-        "wait_token": wait_token,
-        "deadline_seconds": deadline_seconds,
-    }
-
-
-def _failure_timeline_payload(ctx: EffectApplyContext, *, message: str) -> dict[str, Any]:
-    """构造失败态 timeline payload。"""
-    return {
-        **_effect_trace_payload(ctx),
-        "message": message,
-    }
-
-
-async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
-    """记录插件做出的 transition 决策。
-    这条 timeline 只负责“插件决定了什么”，不负责“系统最终进入了什么状态”。
-    终态/等待态 timeline 由后续专门的 transition handlers 写入。
-    """
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
-
-    orch_result = ctx["orch_result"]
-    if not getattr(orch_result, "transition", None):
-        return
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.DECISION,
-        action_type=TimelineActionType.DECISION_MADE,
-        payload=_decision_timeline_payload(ctx),
-        actor_type=TimelineActorType.PLUGIN,
-        actor_code=getattr(ctx["workline"], "plugin_key", None),
-        related_inbox_id=_timeline_inbox_id(ctx),
+    task_name = "src.celery_app.tasks.workline.process_inbox_batch"
+    trace_id = f"celery:{task_name}"
+    await _record_diagnostic(
+        db,
+        inbox=None,
+        error_code=ErrorCode.INBOX_RETRY_EXHAUSTED,
+        message=f"Inbox batch processing exhausted retries: {exc}",
+        request_id=task_id,
+        trace_id=trace_id,
+        extra={
+            "task_name": task_name,
+            "task_id": task_id,
+            "limit": limit,
+            "retries": retries,
+            "max_retries": max_retries,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+        },
     )
-
-
-async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
-    """记录插件业务判定，不改变失败归因。"""
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    for decision in getattr(ctx["orch_result"], "business_decisions", None) or []:
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DECISION,
-            action_type=TimelineActionType.DECISION_MADE,
-            payload=_business_decision_timeline_payload(ctx, decision=decision),
-            actor_type=TimelineActorType.PLUGIN,
-            actor_code=getattr(ctx["workline"], "plugin_key", None),
-            message=decision.message,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            status=TimelineStatus.SUCCESS,
-        )
-
-
-async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
-    """应用 EXTERNAL_HTTP decisions。
-    当前仍保持最小可用实现：只落 Outbox 与对应 timeline，
-    不额外引入 decision handler registry，避免 Phase 2 过度工程化。
-    """
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    db = ctx["db"]
-    for decision in getattr(ctx["orch_result"], "decisions", None) or []:
-        if not isinstance(decision, dict):
-            continue
-        decision_type = string_value(decision.get("decision_type"))
-        if decision_type != EXTERNAL_HTTP_DECISION_TYPE:
-            continue
-        dispatch_key = string_value(decision.get("dispatch_key"))
-        target_code = string_value(decision.get("target_code"))
-        payload_json = payload_dict(decision.get("payload"))
-        source_system = string_value(decision.get("source_system"), "EXTERNAL_SYSTEM")
-        if not dispatch_key:
-            raise ValueError("EXTERNAL_HTTP decision missing dispatch_key")
-        if not target_code:
-            raise ValueError("EXTERNAL_HTTP decision missing target_code")
-        if not payload_json:
-            raise ValueError("EXTERNAL_HTTP decision missing payload")
-        db.add(
-            _build_external_http_outbox_model(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            )
-        )
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
-            payload=_external_decision_timeline_payload(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            ),
-            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code=source_system,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
-
-
-def _build_command_create_payload(
-    ctx: EffectApplyContext,
-    *,
-    command_intent: Any,
-    vendor_payload: dict[str, Any],
-    target_device_id: int,
-    resolved_command_code: str,
-) -> dict[str, Any]:
-    """将 plugin command intent 转成 DeviceCommand 创建载荷。"""
-    vendor_task_type = string_value(vendor_payload.get("task_type"), command_intent.action)
-    priority_value = vendor_payload.get("priority")
-    timeout_value = vendor_payload.get("timeout")
-    business_params = payload_dict(vendor_payload.get("params"))
-    session = ctx["session"]
-    workline = ctx["workline"]
-    return {
-        "command_code": resolved_command_code,
-        "device_id": target_device_id,
-        "task_type": _map_command_task_type(vendor_task_type),
-        "priority": priority_value if isinstance(priority_value, int) else DEFAULT_COMMAND_PRIORITY,
-        "timeout_ms": timeout_value if isinstance(timeout_value, int) else DEFAULT_COMMAND_TIMEOUT_MS,
-        "params": business_params,
-        "trace_id": ctx["trace"].trace_id or ctx["trace_id"],
-        "event_id": ctx["trace"].event_id,
-        "causation_id": ctx["trace"].causation_id,
-        "session_id": str(session.id),
-        "session_id_int": session.id,
-        "workline_id": session.workline_id,
-        "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
-        "contract_version": getattr(session, "contract_version", None),
-    }
-
-
-def _build_external_http_outbox_model(
-    ctx: EffectApplyContext,
-    *,
-    dispatch_key: str,
-    target_code: str,
-    payload_json: dict[str, Any],
-) -> Any:
-    """将 external decision 投影为 Outbox 模型。
-    这是后续 replay/debug 的稳定锚点之一：
-    给定同一条 decision，开发者可以清楚看到最终会落成怎样的 outbox 记录。
-    """
-    from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-
-    session = ctx["session"]
-    return SystemOutbox(
-        session_id=session.id,
-        workline_id=session.workline_id,
-        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-        dispatch_key=dispatch_key,
-        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code=target_code,
-        payload_json=payload_json,
-    )
-
-
-def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device_code: str) -> Any:
-    """将已创建的 DeviceCommand 投影为设备派发 Outbox。
-    这里单独收口的价值不在“少几行代码”，而在于明确：
-    - Command 是业务持久化对象
-    - Outbox 是派发持久化对象
-    - 二者的映射规则是稳定且可测试的
-    """
-    from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-
-    session = ctx["session"]
-    return SystemOutbox(
-        session_id=session.id,
-        workline_id=session.workline_id,
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        dispatch_key=f"device-command:{command.command_code}",
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code=device_code,
-        payload_json=_build_outbox_payload(command, device_code=device_code),
-    )
-
-
-async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    failure = getattr(ctx["orch_result"], "failure", None)
-    if failure is None:
-        return False
-    session = ctx["session"]
-    should_cancel_pending_outboxes = bool(
-        getattr(session, "awaiting_command_id", None) is not None
-        or getattr(session, "current_wait_type", None) == "COMMAND_RESULT"
-    )
-    session.status = "FAILED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
-    session.failure_domain = failure.domain
-    session.failure_code = failure.code
-    session.failure_message = failure.message
-    session_id = resolve_entity_id(session)
-    if should_cancel_pending_outboxes and session_id is not None:
-        from src.app.sys.repositories import SystemOutboxRepository
-
-        _ = await SystemOutboxRepository().cancel_active_by_session(
-            ctx["db"],
-            session_id=session_id,
-            reason=failure.code,
-        )
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.FAIL,
-        action_type=TimelineActionType.SESSION_FAILED,
-        payload=_failure_timeline_payload(ctx, message=failure.message),
-        from_status=ctx["current_status"],
-        to_status="FAILED",
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-        status=TimelineStatus.FAILED,
-        failure_domain=failure.domain,
-        message=failure.message,
-    )
-    return True
-
-
-async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
-
-    if ctx["orch_result"].transition != "manual_cancel":
-        return False
-    session = ctx["session"]
-    session.status = "CANCELLED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.MANUAL,
-        action_type=TimelineActionType.SESSION_CANCELLED,
-        from_status=ctx["current_status"],
-        to_status="CANCELLED",
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-    )
-    return True
-
-
-async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
-    from src.app.workline.services.ng_return_item_service import ng_return_item_service
-
-    if not getattr(ctx["orch_result"], "complete", False):
-        return False
-    session = ctx["session"]
-    _ = await ng_return_item_service.record_completed_ng_flow(
-        ctx["db"],
-        session=session,
-        workline=ctx["workline"],
-        inbox=ctx["inbox"],
-        transition=getattr(ctx["orch_result"], "transition", None),
-        occurred_at=ctx["now"],
-    )
-    session.status = "COMPLETED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.COMPLETE,
-        action_type=TimelineActionType.SESSION_COMPLETED,
-        from_status=ctx["current_status"],
-        to_status="COMPLETED",
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-    )
-    return True
-
-
-async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-
-    wait = getattr(ctx["orch_result"], "wait", None)
-    if wait is None:
-        return False
-    session = ctx["session"]
-    resolved_wait_token = wait.wait_token
-    if wait.wait_type == "COMMAND_RESULT":
-        resolved_wait_token = ctx["awaiting_command_code"] or wait.wait_token
-    session.status = _wait_session_status(wait.wait_type)
-    session.current_wait_type = wait.wait_type
-    session.waiting_since = ctx["now"]
-    session.awaiting_command_id = ctx["awaiting_command_id"]
-    session.current_wait_timeout_seconds = wait.deadline_seconds
-    if wait.wait_type == "COMMAND_RESULT":
-        session.deadline_at = None
-    else:
-        session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
-    session.ended_at = None
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.WAITING,
-        action_type=TimelineActionType.WAIT_STARTED,
-        payload=_wait_timeline_payload(
-            ctx,
-            wait_type=wait.wait_type,
-            wait_token=resolved_wait_token,
-            deadline_seconds=wait.deadline_seconds,
-        ),
-        from_status=ctx["current_status"],
-        to_status=session.status,
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-        related_command_id=ctx["awaiting_command_id"],
-        status=TimelineStatus.PENDING,
-    )
-    return True
-
-
-def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
-    """应用非终态 transition。
-    `manual_hold` / `manual_resume` 不写终态 timeline，
-    只负责把 session 恢复到正确的状态上，保留已有等待上下文。
-    """
-    session = ctx["session"]
-    transition = getattr(ctx["orch_result"], "transition", None)
-    if transition == "manual_hold":
-        session.status = "MANUAL_HOLD"
-        session.ended_at = None
-        return True
-    if transition == "manual_resume":
-        if session.current_wait_type:
-            session.status = _wait_session_status(session.current_wait_type)
-        else:
-            session.status = "RUNNING"
-        session.ended_at = None
-        return True
-    return False
-
-
-def _apply_running_fallback(ctx: EffectApplyContext) -> None:
-    """在存在有效 effect 但没有进入终态/等待态时，保持 session 为 RUNNING。"""
-    orch_result = ctx["orch_result"]
-    session = ctx["session"]
-    if (
-        getattr(orch_result, "transition", None)
-        or getattr(orch_result, "context_patch", None)
-        or getattr(orch_result, "business_decisions", None)
-        or getattr(orch_result, "commands", None)
-        or getattr(orch_result, "decisions", None)
-    ):
-        session.status = "RUNNING"
-    _clear_session_wait(session)
-    session.ended_at = None
+    await db.commit()
 
 
 # ============================================
@@ -1180,7 +416,23 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
         return result
     except Exception as e:
         logger.error(f"Inbox 处理失败: {e}")
-        countdown = 5 * (2**self.request.retries)
+        retries = int(getattr(self.request, "retries", 0) or 0)
+        max_retries = int(getattr(self, "max_retries", 0) or 0)
+        if max_retries and retries >= max_retries:
+            try:
+                _run_async(
+                    _record_process_inbox_batch_failure_diagnostic(
+                        self.db,
+                        exc=e,
+                        limit=limit,
+                        retries=retries,
+                        max_retries=max_retries,
+                        task_id=getattr(self.request, "id", None),
+                    )
+                )
+            except Exception as diagnostic_error:
+                logger.warning(f"Inbox 批处理失败诊断补记失败: {diagnostic_error}")
+        countdown = 5 * (2**retries)
         raise self.retry(exc=e, countdown=countdown) from None
 
 

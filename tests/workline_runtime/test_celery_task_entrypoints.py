@@ -4,10 +4,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from src.app.workline.services.write_back_service import _map_command_task_type
 from src.celery_app import config
 from src.celery_app.tasks import workline as workline_tasks
-from src.celery_app.tasks.workline import _ensure_non_empty_retry_result, _map_command_task_type
+from src.celery_app.tasks.workline import _ensure_non_empty_retry_result
 from src.database import db as db_module
+from src.workline_runtime.diagnostics import ErrorCode
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -220,3 +222,57 @@ def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.Monke
         assert init_called
     finally:
         task.cleanup()
+
+
+def test_process_inbox_batch_records_batch_diagnostic_on_final_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = workline_tasks.process_inbox_batch
+    task.cleanup()
+    recorded: list[dict[str, Any]] = []
+    retry_calls: list[dict[str, Any]] = []
+
+    class RetryScheduled(RuntimeError):
+        pass
+
+    def fake_session_factory() -> _FakeAsyncSession:
+        return _FakeAsyncSession()
+
+    async def failing_process_batch(self: Any, db: Any, limit: int = 10) -> workline_tasks.ProcessResult:
+        _ = self, db, limit
+        raise RuntimeError("batch-db-down")
+
+    async def fake_record_diagnostic(db: Any, **kwargs: Any) -> None:
+        recorded.append({"db": db, **kwargs})
+
+    def fake_retry(*, exc: Exception, countdown: int) -> None:
+        retry_calls.append({"exc": exc, "countdown": countdown})
+        raise RetryScheduled(str(exc))
+
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", fake_session_factory)
+    monkeypatch.setattr(InboxBatchProcessor, "process_batch", failing_process_batch)
+    monkeypatch.setattr("src.app.workline.diagnostic_support._record_diagnostic", fake_record_diagnostic)
+    monkeypatch.setattr(task, "retry", fake_retry)
+    task.request.retries = task.max_retries
+    task.request.id = "task-123"
+
+    try:
+        with pytest.raises(RetryScheduled, match="batch-db-down"):
+            task(limit=7)
+    finally:
+        task.request.retries = 0
+        task.request.id = None
+        task.cleanup()
+
+    assert len(retry_calls) == 1
+    assert isinstance(retry_calls[0]["exc"], RuntimeError)
+    assert retry_calls[0]["countdown"] == 40
+    assert recorded
+    diagnostic = recorded[0]
+    assert diagnostic["inbox"] is None
+    assert diagnostic["error_code"] == ErrorCode.INBOX_RETRY_EXHAUSTED
+    assert diagnostic["message"] == "Inbox batch processing exhausted retries: batch-db-down"
+    assert diagnostic["request_id"] == "task-123"
+    assert diagnostic["trace_id"] == "celery:src.celery_app.tasks.workline.process_inbox_batch"
+    assert diagnostic["extra"]["task_name"] == "src.celery_app.tasks.workline.process_inbox_batch"
+    assert diagnostic["extra"]["limit"] == 7
+    assert diagnostic["extra"]["retries"] == task.max_retries
+    assert diagnostic["extra"]["exception_type"] == "RuntimeError"
