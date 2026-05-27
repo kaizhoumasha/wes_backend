@@ -1,6 +1,9 @@
 """
 作业线编排 Celery 任务
-消费 WorklineInbox 消息，调用 OrchestratorService 进行处理。
+
+本文件提供 Workline 核心流程的 Celery 任务入口。
+核心业务逻辑（如 Inbox 批量处理、Orchestrator 写回、出站下发等）
+已抽离至 `src/app/workline/services/` 目录下。
 设计参考: 设计文档 phase2-orchestrator
 """
 
@@ -24,8 +27,13 @@ from sqlalchemy import text
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device  # noqa: F401
+from src.app.workline.services.device_command_gateway import (  # noqa: F401
+    _DeviceCommandGovernanceError,
+    _enforce_device_command_governance,
+)
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.app.workline.services.inbox_batch_processor import InboxBatchProcessor
+from src.app.workline.services.safety_service import WorkLineSafetyBlocked  # noqa: F401
 from src.celery_app.app import celery_app
 
 # Backwards compatible exports for things that were moved
@@ -35,6 +43,7 @@ from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
     EXTERNAL_HTTP_DECISION_TYPE,
     EXTERNAL_HTTP_INBOX_KIND,
+    INBOX_PROCESS_TIMEOUT_SECONDS,  # noqa: F401
 )
 from src.core.logger import logger
 from src.database import db as db_module
@@ -53,11 +62,13 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_context,
     build_diagnostic_event,
 )
+from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagnostic  # noqa: F401
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.run_mode import normalize_run_mode
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
+from src.workline_runtime.session_resolver import SessionResolveError  # noqa: F401
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import payload_dict
 
