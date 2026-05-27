@@ -24,6 +24,7 @@ from datetime import timedelta
 from typing import Any
 
 from redis.asyncio import Redis
+from sqlalchemy import text
 
 
 def _resolve_ttl_seconds(ttl: timedelta | int | None, *, default_ttl: int) -> int:
@@ -270,10 +271,16 @@ class RedisDistributedLock:
 
         if self.pg_lock_func == "pg_advisory_xact_lock":
             # 事务级锁，随事务结束自动释放
-            await db.execute(f"SELECT pg_advisory_xact_lock({resource_id})")
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(:resource_id)"),
+                {"resource_id": resource_id},
+            )
         else:
             # 兼容极少数显式要求会话级锁的调用方；正常 fallback 应优先事务级锁。
-            await db.execute(f"SELECT pg_advisory_lock({resource_id})")
+            await db.execute(
+                text("SELECT pg_advisory_lock(:resource_id)"),
+                {"resource_id": resource_id},
+            )
 
     async def _pg_lock_release(self, db: Any, resource: str) -> None:
         """
@@ -289,7 +296,10 @@ class RedisDistributedLock:
             # 事务级锁随 commit/rollback 自动释放，禁止再依赖手动 unlock。
             return
 
-        await db.execute(f"SELECT pg_advisory_unlock({resource_id})")
+        await db.execute(
+            text("SELECT pg_advisory_unlock(:resource_id)"),
+            {"resource_id": resource_id},
+        )
 
 
 __all__ = [

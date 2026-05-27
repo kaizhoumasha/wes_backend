@@ -723,7 +723,10 @@ def _build_orchestrator_lock_provider(db: Any):
         resource_id = _resource_id(lock_key)
         # 使用事务级 advisory lock，随 commit/rollback 自动释放，
         # 避免锁内 commit 后再依赖另一连接手动 unlock 造成悬挂锁。
-        await db.execute(text(f"SELECT pg_advisory_xact_lock({resource_id})"))
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:resource_id)"),
+            {"resource_id": resource_id},
+        )
         yield
 
     return _pg_lock

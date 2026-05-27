@@ -207,6 +207,27 @@ class TestRedisDistributedLockDegradation:
         assert "pg_advisory_xact_lock" in statements[0]
 
     @pytest.mark.asyncio
+    async def test_fallback_to_postgres_lock_on_redis_failure_real_db(self, db_session):
+        """测试 Redis 故障时使用真实的 SQLAlchemy session 进行 PostgreSQL 回退。"""
+        import sqlalchemy.exc
+
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(side_effect=ConnectionError("Redis unavailable"))
+
+        lock = RedisDistributedLock(
+            redis_client=mock_redis,
+            key_prefix="workline:",
+            fallback_to_pg=True,
+        )
+
+        # SQLite 没有 pg_advisory_xact_lock 函数，这里会抛出 OperationalError。
+        # 这证明 db.execute 成功接受了 text() 对象并发送给数据库执行，
+        # 从而排除了使用字符串传入导致 SQLAlchemy 2.x ArgumentError 的问题。
+        with pytest.raises(sqlalchemy.exc.OperationalError, match="no such function: pg_advisory_xact_lock"):
+            async with lock.acquire("session:real_db", db=db_session):
+                pass
+
+    @pytest.mark.asyncio
     async def test_no_fallback_when_disabled(self):
         """测试禁用降级时直接抛出异常"""
         mock_redis = AsyncMock()
