@@ -103,6 +103,14 @@ MOCK_SERVICES = [
         "port": 8010,
         "device_code": "WMS_RCS",
     },
+    {
+        "name": "WMS Master Mock",
+        "module": "tests.mock.wms_mock_server",
+        "app_attr": "app",
+        "host": "0.0.0.0",
+        "port": 8011,
+        "device_code": "WMS_MOCK",
+    },
 ]
 
 

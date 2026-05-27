@@ -43,6 +43,7 @@ show_help() {
     echo "  - SMT 流水线 Mock (端口 8005)"
     echo "  - SMT 进料臂 Mock (端口 8006)"
     echo "  - SMT 出料臂 Mock (端口 8007)"
+    echo "  - WMS Mock (端口 8011)"
     echo ""
 }
 
@@ -89,6 +90,7 @@ start_env() {
     echo "  - SMT 流水线: http://localhost:8005"
     echo "  - SMT 进料臂: http://localhost:8006"
     echo "  - SMT 出料臂: http://localhost:8007"
+    echo "  - WMS 系统:   http://localhost:8011"
     echo ""
     echo "健康检查:"
     echo "  - API:        curl http://localhost:8001/health"
@@ -97,6 +99,7 @@ start_env() {
     echo "  - SMT 流水线: curl http://localhost:8005/api/v1/device/status"
     echo "  - SMT 进料臂: curl http://localhost:8006/api/v1/device/status"
     echo "  - SMT 出料臂: curl http://localhost:8007/api/v1/device/status"
+    echo "  - WMS 系统:   curl http://localhost:8011/"
     echo ""
     echo "查看日志: $0 logs"
     echo "停止环境: $0 down"
