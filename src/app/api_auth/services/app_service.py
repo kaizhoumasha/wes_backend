@@ -157,10 +157,22 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
 
     async def reset_secret(self, db: AsyncSession, cache: RedisCache, id: int) -> str:
         """重置应用密钥"""
+        app = await self._load_app_for_cache_invalidation(db, id, include_deleted=False)
+        if not app:
+            raise ValueError(f"应用 {id} 不存在")
+
         app_secret = f"sec_{secrets.token_urlsafe(32)}"
         encrypted_secret = encryption_service.encrypt(app_secret)
 
-        _ = await self.update(db, id, {"app_secret_encrypted": encrypted_secret}, cache)
+        _ = await self.update(
+            db,
+            id,
+            {
+                "app_secret_encrypted": encrypted_secret,
+                "version": app.version,
+            },
+            cache,
+        )
         return app_secret
 
     async def assign_permissions(self, db: AsyncSession, cache: RedisCache, id: int, permission_ids: list[int]) -> None:

@@ -55,6 +55,7 @@ class FakeAPIAppRepository:
         self.items: dict[int, APIApplication] = {}
         self.next_id = 1
         self.assigned_permissions: dict[int, list[int]] = {}
+        self.update_payloads: list[dict[str, Any]] = []
 
     def add_hook(self, *args: Any, **kwargs: Any) -> None:
         return None
@@ -79,6 +80,7 @@ class FakeAPIAppRepository:
         app = self.items.get(id)
         if app is None:
             return None
+        self.update_payloads.append(deepcopy(data))
         for field, value in data.items():
             if field == "version":
                 continue
@@ -306,6 +308,7 @@ async def test_reset_secret_invalidates_app_alias_cache() -> None:
     new_secret = await service.reset_secret(db, cache, app_id)
 
     assert new_secret.startswith("sec_")
+    assert repo.update_payloads[-1]["version"] == app.version
     assert alias_key not in cache.storage
 
     refreshed = await service.get_by_app_id(db, cache, app.app_id)
