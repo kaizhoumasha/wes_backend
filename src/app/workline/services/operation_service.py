@@ -38,6 +38,7 @@ from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRep
 from src.app.workline.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.core.base_service import BaseService
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
@@ -127,6 +128,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         command_repo: DeviceCommandRepository | None = None,
         runtime_hold_repo: RuntimeHoldRepository | None = None,
         rack_task_lifecycle_service: RackTaskLifecycleService | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         super().__init__(inbox_repo or inbox_repository, enable_cache=False)
         self.inbox_repo = inbox_repo or inbox_repository
@@ -137,6 +139,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         self.command_repo = command_repo or device_command_repository
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
         self._rack_task_lifecycle_service = rack_task_lifecycle_service
+        self._queue_gateway = queue_gateway
 
     @property
     def rack_task_lifecycle_service(self) -> Any:
@@ -147,12 +150,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         return default_rack_task_lifecycle_service
 
     def _enqueue_outbox_dispatch(self) -> None:
-        from src.celery_app.app import celery_app
-
-        cast("Any", celery_app).send_task(
-            "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
-            kwargs={"limit": 50},
-        )
+        self._queue_gateway.enqueue_outbox(limit=50)
 
     async def get_sandbox_pending(
         self,

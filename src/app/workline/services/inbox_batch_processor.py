@@ -12,7 +12,7 @@ from sqlalchemy import text
 from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND, INBOX_PROCESS_TIMEOUT_SECONDS
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-from src.celery_app.app import celery_app
+from src.core.task_queue_gateway import task_queue_gateway
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
 from src.utils.value_normalization import (
@@ -96,10 +96,7 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
 
 
 def _enqueue_outbox_dispatch() -> None:
-    cast("Any", celery_app).send_task(
-        "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
-        kwargs={"limit": 50},
-    )
+    task_queue_gateway.enqueue_outbox(limit=50)
 
 
 def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:

@@ -22,6 +22,7 @@ from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.core.security import require_auth
+from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 
 router = APIRouter(tags=["Runtime Hold"])
@@ -51,12 +52,7 @@ def _json_error(code: Any, *, message: str, data: Any = None) -> JSONResponse:
 def _enqueue_workline_processing() -> None:
     """触发 Workline Inbox 异步处理。"""
 
-    from src.celery_app.app import celery_app
-
-    cast("Any", celery_app).send_task(
-        "src.celery_app.tasks.workline.process_inbox_batch",
-        kwargs={"limit": 10},
-    )
+    task_queue_gateway.enqueue_workline_inbox(limit=10)
 
 
 async def _conflict_data(db: AsyncSessionDep, hold_id: int) -> dict[str, Any]:

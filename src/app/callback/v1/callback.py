@@ -12,7 +12,6 @@
 """
 
 import time
-from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, status
 
@@ -24,6 +23,7 @@ from src.app.callback.models import (
 from src.app.callback.services import callback_ingress_service
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
+from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
 
@@ -32,13 +32,9 @@ router = APIRouter()
 
 def _enqueue_workline_processing() -> None:
     """触发 Workline Inbox 异步处理。"""
-    from src.celery_app.app import celery_app
 
     try:
-        cast("Any", celery_app).send_task(
-            "src.celery_app.tasks.workline.process_inbox_batch",
-            kwargs={"limit": 10},
-        )
+        task_queue_gateway.enqueue_workline_inbox(limit=10)
     except Exception as exc:
         logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 

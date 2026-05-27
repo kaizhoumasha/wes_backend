@@ -1,9 +1,26 @@
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
+
+
+class _FakeTaskQueueGateway:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.internal_signals: list[tuple[str, dict[str, Any]]] = []
+
+    def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None:
+        if self.fail:
+            raise RuntimeError("queue down")
+        self.internal_signals.append((target_code, payload))
+
+    def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
+        _ = limit
+
+    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
+        _ = outbox_id, limit
 
 
 @pytest.mark.asyncio
@@ -47,14 +64,12 @@ async def test_dispatch_external_http_sender_failure() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_internal_signal_success() -> None:
     outbox = type("Outbox", (), {"target_code": "workline", "payload_json": {"k": "v"}})()
+    gateway = _FakeTaskQueueGateway()
 
-    with patch("src.celery_app.app.celery_app.send_task") as mock_send_task:
-        result = await dispatch_internal_signal(outbox)
+    result = await dispatch_internal_signal(outbox, gateway)
 
     assert result is True
-    mock_send_task.assert_called_once_with(
-        "src.celery_app.tasks.workline.process_signal", kwargs={"payload": {"k": "v"}}
-    )
+    assert gateway.internal_signals == [("workline", {"k": "v"})]
 
 
 @pytest.mark.asyncio
@@ -69,7 +84,6 @@ async def test_dispatch_internal_signal_invalid_target() -> None:
 async def test_dispatch_internal_signal_celery_error() -> None:
     outbox = type("Outbox", (), {"target_code": "workline"})()
 
-    with patch("src.celery_app.app.celery_app.send_task", side_effect=Exception("celery down")):
-        result = await dispatch_internal_signal(outbox)
+    result = await dispatch_internal_signal(outbox, _FakeTaskQueueGateway(fail=True))
 
     assert result is False

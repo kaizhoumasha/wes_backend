@@ -119,18 +119,22 @@ def test_system_outbox_dispatch_task_is_registered() -> None:
 def test_legacy_outbox_dispatch_task_names_are_removed() -> None:
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.celery_app.app import celery_app
+    from src.core.task_queue_gateway import DISPATCH_SYSTEM_OUTBOX_TASK
 
     sent_tasks: list[str] = []
 
-    def fake_send_task(name: str, **_kwargs: Any) -> None:
-        sent_tasks.append(name)
+    class FakeQueueGateway:
+        def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
+            _ = limit
 
-    original_send_task = cast("Any", celery_app).send_task
-    cast("Any", celery_app).send_task = fake_send_task
-    try:
-        CallbackOrchestrationService()._enqueue_outbox_dispatch()
-    finally:
-        cast("Any", celery_app).send_task = original_send_task
+        def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
+            _ = outbox_id, limit
+            sent_tasks.append(DISPATCH_SYSTEM_OUTBOX_TASK)
+
+        def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None:
+            _ = target_code, payload
+
+    CallbackOrchestrationService(queue_gateway=FakeQueueGateway())._enqueue_outbox_dispatch()
 
     assert sent_tasks == ["src.celery_app.tasks.sys.dispatch_system_outbox_batch"]
     assert not hasattr(workline_tasks, "dispatch_outbox_batch")
