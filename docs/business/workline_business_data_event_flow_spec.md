@@ -47,7 +47,7 @@
 
 所有运行时输入必须回到同一条编排主线：
 
-`Ingress -> WorklineInbox -> Orchestrator -> Session/Timeline/Decision/Outbox -> Dispatcher -> callback 回流`
+`Ingress -> WorklineInbox -> Orchestrator -> Session/Timeline/Decision/Outbox -> OutboxDispatchService -> callback 回流`
 
 禁止存在“部分输入走编排器，另一部分输入直接改业务状态”的双轨语义。
 
@@ -65,7 +65,7 @@
 | `WorklineTimeline` | 业务时间线 | 记录编排推进、决策、等待、终态 |
 | `DeviceCommand` | 单条设备命令记录 | 记录控制流中的一条设备动作 |
 | `WorklineInbox` | 统一编排入口 | 接住所有待编排输入 |
-| `WorklineOutbox` | 统一副作用出口 | 接住所有待派发动作 |
+| `SystemOutbox` | 统一副作用出口 | 接住所有待派发动作 |
 
 ### 3.2 三类 ID 语义
 
@@ -195,9 +195,9 @@
 3. 发设备命令
 4. 拼装审计落库细节
 
-### 5.4 Dispatcher / Outbox
+### 5.4 OutboxDispatchService / Outbox
 
-所有副作用必须经 `WorklineOutbox`：
+所有副作用必须经 `SystemOutbox`：
 
 1. 事务内写 `Outbox`
 2. 事务外派发
@@ -242,7 +242,7 @@
 3. 编排器定位工作线与插件
 4. 插件根据当前上下文与拓扑做决策
 5. 编排器写 `Outbox`
-6. Dispatcher 派发设备命令
+6. OutboxDispatchService 派发设备命令
 7. 设备通过 `callback/result` 回流
 8. 编排器继续推进或落终态
 
@@ -250,7 +250,7 @@
 
 1. 静态主数据先完成配置：`WorkLine / Device / plugin_key / upstream_device_id`
 2. 运行时输入进入 `WorklineInbox`
-3. 编排输出沉淀到 `WorklineSession / WorklineTimeline / WorklineOutbox`
+3. 编排输出沉淀到 `WorklineSession / WorklineTimeline / SystemOutbox`
 4. 控制流证据沉淀到 `DeviceCommand`
 5. 整条业务链通过 `correlation_id` 串联
 

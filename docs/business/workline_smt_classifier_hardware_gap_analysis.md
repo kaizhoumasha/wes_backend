@@ -83,7 +83,7 @@
 
 - `POST /api/v1/device/command`
 
-发送体核心字段来自 `WorklineOutbox.payload_json`：
+发送体核心字段来自 `SystemOutbox.payload_json`：
 
 - `command_code`
 - `task_type`
@@ -630,7 +630,7 @@ Device
   -> Orchestrator
   -> Plugin decision
   -> DeviceCommand(vendor payload)
-  -> WorklineOutbox(vendor payload)
+  -> SystemOutbox(vendor payload)
   -> dispatch as-is
   -> Device
 ```
@@ -691,7 +691,7 @@ plugin 生成的 vendor payload 必须是设备实际收到的 payload。
 
 - `task_type` 存一套内部映射值
 - `params.action` 再藏一套 vendor 值
-- `dispatch_outbox_batch` 出站时再把 vendor 值翻回来
+- `dispatch_system_outbox_batch` 出站时再把 vendor 值翻回来
 
 如确有内部统计需求，应显式新增内部字段，不污染设备协议字段。
 
@@ -741,7 +741,7 @@ plugin 生成的 vendor payload 必须是设备实际收到的 payload。
 | P0-2 | callback 改为 raw JSON 两阶段解析 | callback 入站先按最小包络解析，再按 `device -> workline -> plugin` 做协议校验 | `src/app/callback/v1/callback.py`、`src/app/callback/models/event.py` | 非法枚举、缺字段、错误字段结构都能返回明确 ACK 错误；不再依赖 FastAPI 默认 422 作为主要行为；callback 层不再维护厂商枚举 |
 | P0-3 | Device 绑定 contract | 让设备实例可声明其遵循的 plugin/profile/version | `src/app/device/models/device.py`、相关 migration | `Device` 可明确看出绑定的 `plugin_key / contract_profile / contract_version` |
 | P0-4 | 证据表落 contract 快照 | 为设备、命令、会话补充 contract 快照字段，并保留事件原始报文 | `src/app/device/models/device.py`、`src/app/device/models/command.py`、`src/app/workline/models/session.py`、相关 migration | 任一历史 `Device / DeviceCommand / WorklineSession` 都可追溯其 `plugin_key / contract_profile / contract_version / step_code`，事件原始报文可在 `callback_logs` 复盘 |
-| P0-5 | 移除 Celery 对设备协议的二次改写 | 出站 payload 与 plugin 产出保持一致 | `src/celery_app/tasks/workline.py`、`tests/workline_runtime/test_outbox_dispatcher.py` | 不再依赖 `params.action` 回填设备协议值；派发 payload 为 plugin 直接产物 |
+| P0-5 | 移除 Celery 对设备协议的二次改写 | 出站 payload 与 plugin 产出保持一致 | `src/app/workline/services/outbox_dispatch_service.py`、`tests/workline_runtime/test_outbox_dispatch_service.py` | 不再依赖 `params.action` 回填设备协议值；派发 payload 为 plugin 直接产物 |
 | P0-6 | 把流程推进从位置字符串切到步骤语义 | 下一跳依赖 `upstream_device_id`，分支依赖 `step_code + result` | `src/workline_plugins/smt_classifier/event_handlers.py`、`src/workline_plugins/smt_classifier/plugin.py` | 主流程不再依赖 `_is_pipeline_input_location()` 之类字符串规则作为主判断 |
 
 ### 11.3 P1 整改项

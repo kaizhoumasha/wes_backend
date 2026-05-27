@@ -32,9 +32,9 @@ Step 2 统一编排异步处理（process_inbox_batch）
     3) 基于 workline / upstream_device_id 恢复或创建 WorklineSession
   DECIDE:
     4) 插件根据当前事件和 Session 状态做业务决策
-    5) 解析下游设备，生成 DeviceCommand / WorklineOutbox
+    5) 解析下游设备，生成 DeviceCommand / SystemOutbox
   ACT:
-    6) Dispatcher 下发设备命令
+    6) OutboxDispatchService 下发设备命令
     7) 持久化 Session / Timeline / DeviceCommand / Outbox
 
 Step 3 设备结果回调

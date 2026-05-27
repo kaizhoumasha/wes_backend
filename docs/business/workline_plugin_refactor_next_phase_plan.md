@@ -537,8 +537,8 @@
   -> Effect applier
      -> run_mode adapter: live / sandbox
      -> Session / Timeline / Decision
-     -> DeviceCommand / WorklineOutbox
-  -> Dispatcher
+     -> DeviceCommand / SystemOutbox
+  -> OutboxDispatchService
   -> Device or External System
   -> callback/result or external callback
 ```

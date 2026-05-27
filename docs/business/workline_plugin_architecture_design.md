@@ -127,7 +127,7 @@
   * Callback API 负责接入。
   * Orchestrator 负责流程推进。
   * Plugin 负责业务决策。
-  * Dispatcher 负责发命令和外部请求。
+  * SystemOutboxEngine / OutboxDispatchService 负责发命令和外部请求。
   * Repository 负责持久化。
 * **开放封闭**:
   * 新作业线通过新增插件接入，不修改编排器核心。
@@ -217,7 +217,7 @@
 * `DecisionLog`
 * `ExternalCallLog`
 * `WorklineInbox`
-* `WorklineOutbox`
+* `SystemOutbox`
 
 补充约束：
 
@@ -252,8 +252,8 @@ Timeline、Metrics、日志、落库动作都由编排层统一投影生成。
 
 因此必须采用：
 
-* 事务内写 `WorklineSession`、`WorklineTimeline`、`DecisionLog`、`WorklineOutbox`
-* 事务外由 `Dispatcher` 消费 Outbox
+* 事务内写 `WorklineSession`、`WorklineTimeline`、`DecisionLog`、`SystemOutbox`
+* 事务外由 `SystemOutboxEngine` 调度 Outbox，Workline 域由 `OutboxDispatchService` 派发
 * 派发结果再通过回调或结果事件回到编排器
 
 这样才能避免：
@@ -287,8 +287,8 @@ Timeline、Metrics、日志、落库动作都由编排层统一投影生成。
          - 原子持久化 Session / Timeline / Decision / Outbox
                         |
                         v
-                Celery: outbox_dispatcher
-         - 读取 WorklineOutbox
+                Celery: dispatch_system_outbox_batch
+         - 读取 SystemOutbox
          - 发送设备命令 / 外部 HTTP
          - 更新派发状态
                         |
@@ -415,7 +415,7 @@ class WorklinePlugin(Protocol):
 * `WorklineSession(workline_id, business_key)` 上建立“仅对未终态 Session 生效”的部分唯一索引。
 * `DeviceCommand(command_code)` 唯一。
 * `WorklineInbox(idempotency_key)` 唯一。
-* `WorklineOutbox(dispatch_key)` 唯一。
+* `SystemOutbox(dispatch_key)` 唯一。
 
 ### 6.3 幂等模型
 
@@ -499,7 +499,7 @@ Callback API 的单次事务只做：
 * 追加 `WorklineTimeline`
 * 记录 `DecisionLog`
 * 必要时记录 `ExternalCallLog` 初始行
-* 生成 `WorklineOutbox`
+* 生成 `SystemOutbox`
 * 标记 `WorklineInbox` 已处理
 
 编排层事务**不做**：
@@ -508,7 +508,7 @@ Callback API 的单次事务只做：
 
 #### 6.5.3 派发层事务
 
-Dispatcher 的事务只做：
+派发服务的事务只做：
 
 * 抢占待派发 Outbox
 * 更新派发状态
@@ -632,11 +632,11 @@ Timeout 由专门扫描任务负责产生：
 * AGV 交通管制
 * 车队调度算法
 
-### 7.4 Workline Dispatcher Layer
+### 7.4 Workline Outbox Dispatch Layer
 
 职责：
 
-* 读取 `WorklineOutbox`
+* 读取 `SystemOutbox`
 * 向设备发送命令
 * 向外部系统发送请求
 * 记录发送结果与重试信息
@@ -966,7 +966,7 @@ class Device(DataTableMixin, EnterpriseMixin, table=True):
 * `PROCESSED`
 * `FAILED`
 
-### 8.8 WorklineOutbox ✅ 已实现 (2026-03-17)
+### 8.8 SystemOutbox ✅ 已实现 (2026-03-17)
 
 这是所有副作用的统一派发出口。
 
@@ -1142,7 +1142,7 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 删除目标：
 
 * 新插件不得新增 per-plugin state machines，不得新增 `state_machine_class`。
-* 旧插件状态机迁移为 `RuntimeIntent` + `WorklineSession` + `WorklineTimeline` / `DeviceCommand` / `WorklineOutbox` / `RuntimeHold` / resource facts。
+* 旧插件状态机迁移为 `RuntimeIntent` + `WorklineSession` + `WorklineTimeline` / `DeviceCommand` / `SystemOutbox` / `RuntimeHold` / resource facts。
 * `transitions` 仅属于 legacy/deprecated implementation，不再作为目标架构依赖。
 * 原 `WorklineStateMachine`、`validate_state_machine()`、插件内迁移触发器和状态图全部进入 deletion target。
 
@@ -1224,7 +1224,7 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 
 ### 10.4 派发阶段
 
-1. Dispatcher 抢占 `WorklineOutbox`。
+1. `OutboxDispatchService` 抢占 `SystemOutbox`。
 2. 若是设备命令：
    * 创建或更新 `DeviceCommand`
    * 发送设备 HTTP 指令
@@ -1293,7 +1293,7 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
    * 生成 `CommandIntent(task_type=PUT_TO_BIN, target_role=ROBOT_ARM)`
    * Session 迁移到 `WAITING_DEVICE_RESULT`
    * 写等待信息：`wait_type=COMMAND_RESULT`
-7. Dispatcher 发送机械臂命令，并创建 / 更新 `DeviceCommand`。
+7. `OutboxDispatchService` 发送机械臂命令，并创建 / 更新 `DeviceCommand`。
 8. 机械臂执行完成后回调 `callback/result`，接入层写 `WorklineInbox(COMMAND_RESULT)`。
 9. 编排器恢复同一 Session，插件校验结果成功。
 10. Session 迁移到 `COMPLETED`，记录完成 Timeline。
@@ -1309,12 +1309,12 @@ Material Flow Runtime 根据 `RuntimeIntent` 统一生成：
 4. 编排层原子写入：
    * `DecisionLog`
    * `ExternalCallLog` 初始记录
-   * `WorklineOutbox`
+   * `SystemOutbox`
    * Session 迁移到 `WAITING_EXTERNAL`
    * `current_wait_type=RCS_DISPATCH`
    * `context_json.rcs_request_no=<rcs_request_no>`
    * `deadline_at=<RCS响应超时时间>`
-5. Dispatcher 通过 `scene coordination service` 调用 RCS。
+5. `SystemOutboxEngine` 通过 `scene coordination service` 调用 RCS。
 6. RCS 受理后，可能异步回调“已完成货架搬运”或“调度失败”。
 7. RCS 回调进入 `WorklineInbox(EXTERNAL_CALLBACK)`，并通过外部业务相关 ID 命中原 Session。
 8. 插件收到 RCS 成功结果后，再次调用分箱领域服务重新计算库位。
@@ -1539,16 +1539,16 @@ workline_inbox_queue_depth = Gauge(
 )
 
 # Outbox 派发延迟
-workline_outbox_dispatch_delay = Histogram(
-    'workline_outbox_dispatch_delay_seconds',
+system_outbox_dispatch_delay = Histogram(
+    'system_outbox_dispatch_delay_seconds',
     'Outbox 从创建到派发的延迟',
     ['dispatch_type'],
     buckets=[0.01, 0.05, 0.1, 0.5, 1, 5]
 )
 
 # Outbox 重试次数
-workline_outbox_retry_total = Counter(
-    'workline_outbox_retry_total',
+system_outbox_retry_total = Counter(
+    'system_outbox_retry_total',
     'Outbox 重试总数',
     ['dispatch_type', 'target_type']
 )
@@ -1637,14 +1637,12 @@ workline_failure_total = Counter(
 ### 15.1 新增运行时模块
 
 ```text
-src/app/workline_runtime/
-  models/
-    workline_session.py
-    workline_timeline.py
-    decision_log.py
-    external_call_log.py
-    workline_inbox.py
-    workline_outbox.py
+src/app/
+  sys/models/outbox.py
+  workline/models/
+    session.py
+    timeline.py
+    inbox.py
   repositories/
   services/
     inbox_service.py
@@ -1653,7 +1651,7 @@ src/app/workline_runtime/
     decision_service.py
     outbox_service.py
     orchestrator_service.py
-    dispatcher_service.py
+    outbox_dispatch_service.py
     role_resolver_service.py
     runtime_intent_validator_service.py
     timeout_service.py
@@ -1691,7 +1689,7 @@ src/workline_plugins/
 src/celery_app/tasks/
   workline_ingest.py
   workline_orchestrator.py
-  outbox_dispatcher.py
+  sys.py
   timeout_scanner.py
 ```
 
@@ -1724,7 +1722,7 @@ scripts/
 > | Phase 4: 补齐决策证据 | ❌ 未开始 | 0% | - |
 >
 > **关键成果**：
-> - ✅ 4 个核心表模型已创建：`WorklineSession`, `WorklineTimeline`, `WorklineInbox`, `WorklineOutbox`
+> - ✅ 4 个核心表模型已创建：`WorklineSession`, `WorklineTimeline`, `WorklineInbox`, `SystemOutbox`
 > - ✅ 所有枚举类型使用 VARCHAR + CHECK 约束
 > - ✅ 外键设计避免循环依赖（辅助追溯字段不设外键）
 > - ✅ `Device`、`DeviceCommand`、`WorklineSession` 已承载 contract 快照；事件原始报文保存在 `callback_logs`
@@ -1742,7 +1740,7 @@ scripts/
 >   - ✅ `OrchestratorService` - 核心编排服务（13 测试通过）
 >   - ✅ `InboxConsumer` - Celery Inbox 消费者（9 测试通过）
 >   - ✅ `TimeoutScanner` - 超时扫描器（6 测试通过）
->   - ✅ `OutboxDispatcher` - Outbox 派发器（9 测试通过）
+>   - ✅ `OutboxDispatchService` - Outbox 派发器（9 测试通过）
 >   - ✅ `SessionResolver` - Session 归属解析器（10 测试通过）
 >   - ✅ `PluginContextBuilder` - 插件上下文构建器（11 测试通过）
 >   - ✅ `TimelineGenerator` - 时间线生成器（12 测试通过）
@@ -1856,7 +1854,7 @@ scripts/
   * 创建 TIMEOUT Inbox 消息
   * 单元测试：6 个测试全部通过
 
-* ✅ **OutboxDispatcher** - Outbox 派发器 (`src/celery_app/tasks/workline.py`)
+* ✅ **OutboxDispatchService** - Workline 域 Outbox 派发服务 (`src/app/workline/services/outbox_dispatch_service.py`)，由 `src/celery_app/tasks/sys.py` 的 `dispatch_system_outbox_batch` 调度
   * 支持设备指令派发（DEVICE_COMMAND）
   * 支持外部 HTTP 调用（EXTERNAL_HTTP）
   * 支持内部信号派发（INTERNAL_SIGNAL）
@@ -1905,11 +1903,11 @@ scripts/
 
 **已完成** (2026-03-17)：
 
-* ✅ 新增 `WorklineOutbox` (8.8 节所有字段已实现)
+* ✅ 新增 `SystemOutbox` (8.8 节所有字段已实现)
 
 **待实现**：
 
-* ❌ 新增 `dispatcher_service`
+* ❌ 新增 `outbox_dispatch_service`
 * ❌ 实现第一个插件 `packing_zone`
 * ❌ 将装箱区业务从设备处理器迁移到插件
 
@@ -2034,7 +2032,7 @@ scripts/
 | Phase 0 | 1 周 | 文档冻结、数据模型评审 | 需求不明确 |
 | Phase 1 | 2 周 | WorklineSession/Timeline/Inbox 表结构 | 数据库迁移 |
 | Phase 2 | 3 周 | 编排器核心、Session 归属、并发控制 | 并发测试 |
-| Phase 3 | 3 周 | Outbox/Dispatcher/第一个插件 | 业务迁移 |
+| Phase 3 | 3 周 | Outbox 派发服务/第一个插件 | 业务迁移 |
 | Phase 4 | 2 周 | DecisionLog/ExternalCallLog/归因模型 | 数据量 |
 | Phase 5 | 2 周 | SMT 双模式/调试工具 | 模式切换 |
 
@@ -2118,7 +2116,7 @@ scripts/
 * 新增 `MaterialRun` / `WorklineSession` 作为业务主链路，其状态生命周期由 Material Flow Runtime 管理，插件只返回 `RuntimeIntent`。
 * 新增 `WorklineTimeline` 作为排障主视图。
 * 新增 `WorklineInbox` 作为统一编排入口，解决异步输入可靠消费问题。
-* 新增 `WorklineOutbox` 作为统一副作用出口，解决状态推进与动作派发的一致性问题。
+* 新增 `SystemOutbox` 作为统一副作用出口，解决状态推进与动作派发的一致性问题。
 * 用"作业线插件"替代"按设备类型硬编码业务"，用"设备角色绑定"替代"把业务绑到设备编码"。
 * 用结构化 `failure_domain + failure_code` 提供可检索、可统计、可审计的故障归因能力。
 * 用 `debug_plugin.py` 和插件单元测试模板降低后续开发成本。
