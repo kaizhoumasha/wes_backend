@@ -26,6 +26,7 @@ from src.app.device.models.command import CommandCallbackResult
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
+from src.app.wms_integration.services.callback_normalizer import wms_execution_callback_normalizer
 from src.app.workline.services import inbox_service, workline_diagnostic_service, workline_service  # noqa: F401
 from src.core.logger import logger
 from src.core.response import response_builder
@@ -53,55 +54,6 @@ _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
 )
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
-)
-_WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
-_WMS_RCS_EXECUTION_STATUS_ALIASES = ("task_status", "status", "result", "external_status", "exchange_status")
-_WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS = (
-    "source_system",
-    "source_event_id",
-    "source_version",
-    "occurred_at",
-    "request_id",
-    "timestamp",
-    "signature",
-)
-_WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "RCS_FULL_BOX_EXCHANGE_RESULT",
-    }
-)
-_WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS = (
-    "dispatch_key",
-    "exchange_request_code",
-    "rack_release_id",
-    "wms_rcs_task_id",
-    *_WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS,
-    "exchange_status",
-)
-_WMS_RCS_RACK_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_RACK_TASK_PROGRESS",
-        "RCS_RACK_TASK_PROGRESS",
-        "WMS_RACK_ARRIVED",
-        "RCS_RACK_ARRIVED",
-        "WMS_RACK_EXCHANGE_PROGRESS",
-        "RCS_RACK_EXCHANGE_PROGRESS",
-        "WMS_RACK_EXCHANGE_FAILED",
-        "RCS_RACK_EXCHANGE_FAILED",
-    }
-)
-_WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_RACK_TASK_PROGRESS",
-        "RCS_RACK_TASK_PROGRESS",
-        "WMS_RACK_EXCHANGE_PROGRESS",
-        "RCS_RACK_EXCHANGE_PROGRESS",
-    }
 )
 
 _CALLBACK_AUDIT_TITLES = {
@@ -289,55 +241,13 @@ async def _read_request_json(request: Request) -> JsonDict:
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
-    callback_type = _require_first_str(payload, ("callback_type",), "callback_type")
-    _validate_wms_rcs_execution_callback_payload(payload, callback_type)
-    trace_id = _resolve_optional_str(payload, _TRACE_ID_ALIASES)
-    if trace_id is None and callback_type not in _WMS_RCS_RACK_CALLBACK_TYPES:
-        raise ValueError("trace_id is required")
-
-    return {
-        "callback_type": callback_type,
-        "trace_id": trace_id,
-        "payload": payload,
-    }
+    return wms_execution_callback_normalizer.normalize(payload)
 
 
 def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
     """校验 WMS/RCS 运行时执行回调第零阶段最小包络。"""
 
-    if not callback_type.startswith(_WMS_RCS_EXECUTION_PREFIXES):
-        return
-
-    _ = _require_payload_value(payload, "dispatch_key")
-    if callback_type in _WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES:
-        for field_name in _WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS:
-            _ = _require_payload_value(payload, field_name)
-        _validate_wms_rcs_source_system(payload)
-        return
-
-    if callback_type in _WMS_RCS_RACK_CALLBACK_TYPES:
-        for field_name in _WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS:
-            _ = _require_payload_value(payload, field_name)
-
-        _validate_wms_rcs_source_system(payload)
-
-        if callback_type in _WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES and not resolve_first_str(
-            payload, _WMS_RCS_EXECUTION_STATUS_ALIASES
-        ):
-            raise ValueError("status is required")
-        return
-
-    if not resolve_first_str(payload, _WMS_RCS_EXECUTION_STATUS_ALIASES):
-        raise ValueError("status is required")
-    source_system = resolve_first_str(payload, ("source_system",))
-    if source_system is not None and source_system not in {"WMS", "RCS"}:
-        raise ValueError("source_system must be WMS or RCS")
-
-
-def _validate_wms_rcs_source_system(payload: JsonDict) -> None:
-    source_system = resolve_first_str(payload, ("source_system",))
-    if source_system not in {"WMS", "RCS"}:
-        raise ValueError("source_system must be WMS or RCS")
+    wms_execution_callback_normalizer.validate(payload, callback_type)
 
 
 def _build_contract_fail(message: str) -> CallbackRejectedIngressResponse:
