@@ -97,22 +97,35 @@ async def set_cached_value(
     null_expire: int | None = None,
     serializer: Callable[[Any], Any] | None = None,
     is_hot: bool = False,
+    max_expire: int | None = None,
 ) -> bool:
     """写入缓存值，统一处理空值缓存和结构化序列化。"""
     if value is None:
         if null_expire is None:
             return False
-        return await _cache_set(cache, key, CACHE_NULL_MARKER, expire=null_expire, is_hot=is_hot)
+        return await _cache_set(cache, key, CACHE_NULL_MARKER, expire=null_expire, is_hot=is_hot, max_expire=max_expire)
 
     serialized = serializer(value) if serializer is not None else serialize_for_cache(value)
-    return await _cache_set(cache, key, serialized, expire=expire, is_hot=is_hot)
+    return await _cache_set(cache, key, serialized, expire=expire, is_hot=is_hot, max_expire=max_expire)
 
 
-async def _cache_set(cache: Any, key: str, value: Any, *, expire: int | None, is_hot: bool) -> bool:
+async def _cache_set(
+    cache: Any,
+    key: str,
+    value: Any,
+    *,
+    expire: int | None,
+    is_hot: bool,
+    max_expire: int | None,
+) -> bool:
     """兼容不同 cache.set 签名。"""
-    if "is_hot" in signature(cache.set).parameters:
-        return await cache.set(key, value, expire=expire, is_hot=is_hot)
-    return await cache.set(key, value, expire=expire)
+    cache_set_params = signature(cache.set).parameters
+    kwargs: dict[str, Any] = {"expire": expire}
+    if "is_hot" in cache_set_params:
+        kwargs["is_hot"] = is_hot
+    if max_expire is not None and "max_expire" in cache_set_params:
+        kwargs["max_expire"] = max_expire
+    return await cache.set(key, value, **kwargs)
 
 
 __all__ = [
