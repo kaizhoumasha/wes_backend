@@ -569,32 +569,37 @@ def _snapshot_payload(payload: Any) -> dict[str, Any]:
     return {"payload": payload}
 
 
+def _first_nonempty_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _extract_reason_code(payload: Any, *, default: str) -> str:
     if isinstance(payload, dict):
-        for key in ("reason_code", "error_code", "code"):
-            value = payload.get(key)
-            if isinstance(value, str) and value:
-                return value
+        reason_code = _first_nonempty_str(payload, ("reason_code", "error_code", "code"))
+        if reason_code is not None:
+            return reason_code
         error = payload.get("error")
         if isinstance(error, dict):
-            for key in ("reason_code", "error_code", "code"):
-                value = error.get(key)
-                if isinstance(value, str) and value:
-                    return value
+            reason_code = _first_nonempty_str(error, ("reason_code", "error_code", "code"))
+            if reason_code is not None:
+                return reason_code
     return default
 
 
 def _extract_message(payload: Any, *, default: str) -> str:
     if isinstance(payload, dict):
-        for key in ("message", "msg", "error_description"):
-            value = payload.get(key)
-            if isinstance(value, str) and value:
-                return value
+        message = _first_nonempty_str(payload, ("message", "msg", "error_description"))
+        if message is not None:
+            return message
         error = payload.get("error")
         if isinstance(error, dict):
-            value = error.get("message")
-            if isinstance(value, str) and value:
-                return value
+            message = _first_nonempty_str(error, ("message",))
+            if message is not None:
+                return message
     return default
 
 

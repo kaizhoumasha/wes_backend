@@ -79,14 +79,12 @@ class WmsExecutionCallbackNormalizer:
 
         _ = _require_payload_value(payload, "dispatch_key")
         if callback_type in WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES:
-            for field_name in WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS:
-                _ = _require_payload_value(payload, field_name)
+            _require_payload_fields(payload, WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS)
             _validate_wms_rcs_source_system(payload)
             return
 
         if callback_type in WMS_RCS_RACK_CALLBACK_TYPES:
-            for field_name in WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS:
-                _ = _require_payload_value(payload, field_name)
+            _require_payload_fields(payload, WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS)
 
             _validate_wms_rcs_source_system(payload)
 
@@ -122,6 +120,11 @@ def _require_payload_value(payload: JsonDict, field_name: str) -> object:
     if isinstance(value, str) and not value.strip():
         raise ValueError(f"{field_name} is required")
     return value
+
+
+def _require_payload_fields(payload: JsonDict, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        _ = _require_payload_value(payload, field_name)
 
 
 def _validate_wms_rcs_source_system(payload: JsonDict) -> None:
