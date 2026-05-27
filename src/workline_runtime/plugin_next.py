@@ -153,12 +153,14 @@ class PluginNext:
         reason_code: str,
         message: str,
         suggested_action: str | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> RuntimeIntent:
         return RuntimeIntent.block(
             scope=scope,
             reason_code=reason_code,
             message=message,
             suggested_action=suggested_action,
+            payload=payload,
         )
 
     def update_context(self, patch: dict[str, Any]) -> RuntimeIntent:

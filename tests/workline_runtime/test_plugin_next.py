@@ -30,10 +30,12 @@ def test_plugin_next_block_builds_runtime_intent():
         reason_code="BARCODE_INVALID",
         message="条码无法识别",
         suggested_action="人工复核条码",
+        payload={"evidence_key": "EVD-1234"},
     )
 
     assert intent.kind == RuntimeIntentKind.BLOCK
     assert intent.reason_code == "BARCODE_INVALID"
+    assert intent.payload_json == {"evidence_key": "EVD-1234"}
 
 
 def test_plugin_next_command_defaults_to_next_destination():

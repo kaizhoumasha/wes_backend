@@ -921,17 +921,21 @@ class RuntimeIntentEffectApplier:
         session.failure_code = intent.reason_code
         session.failure_message = intent.message
 
+        timeline_payload: dict[str, Any] = {
+            **workline_effects._effect_trace_payload(ctx),
+            "block_scope": session.failure_domain,
+            "reason_code": intent.reason_code,
+            "message": intent.message,
+            "suggested_action": intent.suggested_action,
+        }
+        if intent.payload_json:
+            timeline_payload["evidence"] = dict(intent.payload_json)
+
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.MANUAL,
             action_type=TimelineActionType.MANUAL_HOLD,
-            payload={
-                **workline_effects._effect_trace_payload(ctx),
-                "block_scope": session.failure_domain,
-                "reason_code": intent.reason_code,
-                "message": intent.message,
-                "suggested_action": intent.suggested_action,
-            },
+            payload=timeline_payload,
             from_status=ctx["current_status"],
             to_status="MANUAL_HOLD",
             actor_type=TimelineActorType.ORCHESTRATOR,
