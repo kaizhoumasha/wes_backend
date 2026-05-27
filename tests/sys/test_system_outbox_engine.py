@@ -152,15 +152,40 @@ async def test_system_outbox_dispatcher_reclaims_stale_dispatching_message() -> 
 async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_governance() -> None:
     repo = FakeSystemOutboxRepository([])
     db = SimpleNamespace(commit=AsyncMock())
-    dispatcher = SystemOutboxDispatcher(outbox_repository=repo)
 
-    async def dispatch_workline(_db: Any, limit: int = 50) -> dict[str, int]:
+    async def fake_workline_dispatcher(_db: Any, limit: int = 50) -> dict[str, int]:
         assert _db is db
         assert limit == 5
         return {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
 
-    with patch("src.celery_app.tasks.workline.OutboxDispatcher._dispatch", new=dispatch_workline):
-        result = await dispatcher.dispatch(db, limit=10)
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        workline_domain_dispatcher=fake_workline_dispatcher,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
     assert repo.mark_dispatching_calls == []
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_delegates_device_command_to_device_gateway() -> None:
+    message = _outbox(id=4, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND)
+    repo = FakeSystemOutboxRepository([message])
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def fake_device_dispatcher(_db: Any, outbox: Any) -> bool:
+        assert _db is db
+        assert outbox is message
+        return True
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=fake_device_dispatcher,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
+
+    assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}

@@ -12,6 +12,8 @@ from src.database import db as db_module
 if TYPE_CHECKING:
     from types import TracebackType
 
+from src.app.workline.services.inbox_batch_processor import InboxBatchProcessor
+
 
 class _FakeAsyncSession:
     async def __aenter__(self) -> _FakeAsyncSession:
@@ -113,6 +115,16 @@ def test_legacy_outbox_dispatch_task_names_are_removed() -> None:
     assert "src.celery_app.tasks.handling.dispatch_system_outbox_batch" not in celery_app.tasks
 
 
+def test_celery_facade_contracts() -> None:
+    from src.celery_app.app import celery_app
+
+    assert hasattr(workline_tasks, "process_inbox_batch")
+    assert "src.celery_app.tasks.workline.process_inbox_batch" in celery_app.tasks
+
+    assert not hasattr(workline_tasks, "ProcessInboxMessages")
+    assert not hasattr(workline_tasks, "OutboxDispatcher")
+
+
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:
     conveyor = cast("Any", type("Device", (), {"device_code": "PIPELINE02", "device_role": "CONVEYOR"})())
     session = cast(
@@ -177,7 +189,9 @@ def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
     monkeypatch.setattr(db_module, "init_db", fake_init_db)
-    monkeypatch.setattr(workline_tasks.ProcessInboxMessages, "_process_batch", staticmethod(fake_process_batch))
+
+    # ProcessInboxMessages is removed, now we should mock the new inbox_batch_processor
+    monkeypatch.setattr(InboxBatchProcessor, "process_batch", fake_process_batch)
 
     try:
         assert task(limit=0) == {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
