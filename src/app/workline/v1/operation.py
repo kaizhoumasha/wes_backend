@@ -34,23 +34,20 @@ from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
+from src.utils.value_normalization import enum_value
 
 router = APIRouter(tags=["工作线诊断操作"])
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value) if value is not None else None
 
 
 def _inbox_response(inbox: Any) -> dict[str, Any]:
     return {
         "id": inbox.id,
-        "kind": _enum_value(inbox.kind),
+        "kind": enum_value(inbox.kind),
         "source_message_id": inbox.source_message_id,
         "trace_id": inbox.trace_id,
         "session_id": inbox.session_id,
         "workline_id": inbox.workline_id,
-        "status": _enum_value(inbox.status),
+        "status": enum_value(inbox.status),
     }
 
 
@@ -62,10 +59,10 @@ def _outbox_response(outbox: Any) -> dict[str, Any]:
         "session_id": outbox.session_id,
         "workline_id": outbox.workline_id,
         "dispatch_key": outbox.dispatch_key,
-        "dispatch_type": _enum_value(outbox.dispatch_type),
-        "target_type": _enum_value(outbox.target_type),
+        "dispatch_type": enum_value(outbox.dispatch_type),
+        "target_type": enum_value(outbox.target_type),
         "target_code": outbox.target_code,
-        "status": _enum_value(outbox.status),
+        "status": enum_value(outbox.status),
         "payload_json": payload,
         "source_device": None,
         "last_error": getattr(outbox, "last_error", None),
@@ -82,7 +79,7 @@ def _safety_incident_response(incident: Any) -> dict[str, Any]:
     return {
         "id": incident.id,
         "workline_id": incident.workline_id,
-        "status": _enum_value(incident.status),
+        "status": enum_value(incident.status),
         "event_type": incident.event_type,
         "reason": incident.reason,
         "drain_status": incident.drain_status,

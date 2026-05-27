@@ -214,7 +214,7 @@ class TestOutboxDispatchService:
                 return_value=mock_outbox_repo,
             ),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch(
                 "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._dispatch_single",
                 new=AsyncMock(),
@@ -261,7 +261,7 @@ class TestOutboxDispatchService:
                 "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
                 runtime_service,
             ),
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch(
                 "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._dispatch_single",
                 new=AsyncMock(),
@@ -545,7 +545,7 @@ class TestOutboxDispatchService:
                 "src.app.workline.services.dispatch_attempt_service.workline_dispatch_attempt_service",
                 attempt_service,
             ),
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch(
                 "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._dispatch_single",
                 new=AsyncMock(),
@@ -644,7 +644,7 @@ class TestOutboxDispatchService:
             patch(
                 "httpx.AsyncClient",
             ) as mock_client,
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
             result = await OutboxDispatchService().dispatch(mock_db)
@@ -717,7 +717,7 @@ class TestOutboxDispatchService:
                 "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
                 runtime_service,
             ),
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch("httpx.AsyncClient") as mock_client,
         ):
             mock_response = MagicMock(status_code=400, text="Unsupported command")
@@ -797,7 +797,7 @@ class TestOutboxDispatchService:
                 runtime_service,
             ),
             patch("src.app.device.services.device_service", mock_device_service),
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch("httpx.AsyncClient") as mock_client,
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
@@ -849,7 +849,7 @@ class TestOutboxDispatchService:
             patch(
                 "httpx.AsyncClient",
             ) as mock_client,
-            patch("src.celery_app.tasks.workline._record_diagnostic", new=AsyncMock()),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
         ):
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
             result = await OutboxDispatchService().dispatch(mock_db)

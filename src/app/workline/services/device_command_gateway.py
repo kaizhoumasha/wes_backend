@@ -6,32 +6,11 @@ from loguru import logger
 from src.app.device.models.capability import parse_device_capabilities
 from src.app.device.models.device import DeviceStatus
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_int, coerce_string_value, enum_value, resolve_entity_id
 from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.utils import payload_dict
 
-
-def _resolve_entity_id(entity: Any) -> int | None:
-    return getattr(entity, "id", None)
-
-
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
-
-
-def _optional_int(v: Any) -> int | None:
-    try:
-        return int(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _string_value(value: Any, default: str = "") -> str:
-    if value is None:
-        return default
-    return str(value)
-
-
-def _enum_value(value: Any) -> Any:
-    return value.value if hasattr(value, "value") else value
 
 
 class _DeviceCommandGovernanceError(RuntimeError):
@@ -110,11 +89,11 @@ def _build_device_command_log_envelope(
     """构造设备指令日志包络，便于硬件供应商按同一份 JSON 核对。"""
 
     envelope: dict[str, Any] = {
-        "outbox_id": _resolve_entity_id(outbox),
-        "session_id": _optional_int(getattr(outbox, "session_id", None)),
-        "dispatch_key": _string_value(getattr(outbox, "dispatch_key", None)),
-        "target_type": _enum_value(getattr(outbox, "target_type", None)),
-        "target_code": _string_value(getattr(outbox, "target_code", None)),
+        "outbox_id": resolve_entity_id(outbox),
+        "session_id": coerce_optional_int(getattr(outbox, "session_id", None)),
+        "dispatch_key": coerce_string_value(getattr(outbox, "dispatch_key", None)),
+        "target_type": enum_value(getattr(outbox, "target_type", None)),
+        "target_code": coerce_string_value(getattr(outbox, "target_code", None)),
         "payload": _redact_device_command_payload(payload),
     }
     if endpoint:
@@ -125,14 +104,14 @@ def _build_device_command_log_envelope(
 def _resolve_command_type_for_governance(payload: dict[str, Any]) -> str | None:
     """为设备治理校验提取稳定 command_type。"""
 
-    command_type = _string_value(payload.get("task_type")) or _string_value(payload.get("command_type"))
+    command_type = coerce_string_value(payload.get("task_type")) or coerce_string_value(payload.get("command_type"))
     return command_type or None
 
 
 def _resolve_device_command_path(device: Any) -> str:
     """优先使用 device.callback_path，未配置时回退默认命令路径。"""
 
-    callback_path = _string_value(getattr(device, "callback_path", None)) or _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH
+    callback_path = coerce_string_value(getattr(device, "callback_path", None)) or _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH
     if not callback_path.startswith("/"):
         callback_path = f"/{callback_path}"
     return callback_path
@@ -153,8 +132,8 @@ def _enforce_device_command_governance(
 ) -> None:
     """消费设备治理字段，拒绝不允许的命令创建/派发。"""
 
-    device_id = _resolve_entity_id(device)
-    device_code = _string_value(getattr(device, "device_code", None), "UNKNOWN_DEVICE")
+    device_id = resolve_entity_id(device)
+    device_code = coerce_string_value(getattr(device, "device_code", None), "UNKNOWN_DEVICE")
     resolved_command_type = command_type or "UNKNOWN"
 
     if bool(getattr(device, "maintenance_mode", False)):
@@ -164,7 +143,7 @@ def _enforce_device_command_governance(
             message=f"设备 {device_code} 处于 maintenance_mode，拒绝{stage_label}: command_type={resolved_command_type}",
         )
 
-    device_status = _enum_value(getattr(device, "device_status", DeviceStatus.IDLE)) or DeviceStatus.IDLE.value
+    device_status = enum_value(getattr(device, "device_status", DeviceStatus.IDLE)) or DeviceStatus.IDLE.value
     if device_status == DeviceStatus.MAINTENANCE.value:
         _raise_device_command_governance_error(
             domain=FailureDomain.MANUAL_INTERVENTION.value,
@@ -245,7 +224,7 @@ async def _release_device_runtime_if_failed_command_was_current(
     device = await device_service.repo.get_by_id(db, device_id)
     if device is None:
         return
-    if _enum_value(getattr(device, "device_status", None)) != DeviceStatus.RUNNING.value:
+    if enum_value(getattr(device, "device_status", None)) != DeviceStatus.RUNNING.value:
         return
     if getattr(device, "current_command_id", None) != command_id:
         return
@@ -279,13 +258,13 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
         return
 
     payload = payload_dict(getattr(outbox, "payload_json", None))
-    command_code = _string_value(payload.get("command_code"))
+    command_code = coerce_string_value(payload.get("command_code"))
     if not command_code:
         return
 
     command_repo = DeviceCommandRepository()
     command = await command_repo.get_by_command_code(db, command_code)
-    command_id = _resolve_entity_id(command)
+    command_id = resolve_entity_id(command)
     if command_id is None:
         return
 
@@ -323,10 +302,10 @@ async def _mark_outbox_blocked_by_workline_state(
 
 
 def _is_same_session_current_command(*, outbox: Any, command: Any | None, device: Any | None) -> bool:
-    command_id = _resolve_entity_id(command)
+    command_id = resolve_entity_id(command)
     if command_id is None or device is None:
         return False
-    command_session_id = _optional_int(getattr(command, "session_id_int", None))
+    command_session_id = coerce_optional_int(getattr(command, "session_id_int", None))
     outbox_session_id = getattr(outbox, "session_id", None)
     return (
         getattr(device, "current_command_id", None) == command_id
@@ -353,14 +332,14 @@ class DeviceCommandGateway:
             return False
 
         payload = payload_dict(getattr(outbox, "payload_json", None))
-        command_code = _string_value(payload.get("command_code"))
+        command_code = coerce_string_value(payload.get("command_code"))
         if not command_code:
             logger.error(f"沙箱设备指令缺少 command_code: outbox_id={getattr(outbox, 'id', None)}")
             return False
 
         command = await DeviceCommandRepository().get_by_command_code(db, command_code)
-        command_id = _resolve_entity_id(command)
-        device_id = _resolve_entity_id(device)
+        command_id = resolve_entity_id(command)
+        device_id = resolve_entity_id(device)
         is_same_reserved_command = _is_same_session_current_command(outbox=outbox, command=command, device=device)
         _enforce_device_command_governance(
             device,
@@ -383,7 +362,7 @@ class DeviceCommandGateway:
         if command is None:
             return False
 
-        if _enum_value(getattr(command, "status", None)) == CommandStatus.PENDING.value:
+        if enum_value(getattr(command, "status", None)) == CommandStatus.PENDING.value:
             command.status = CommandStatus.SENT
             command.sent_at = command.sent_at or timezone.now_for_db()
 
@@ -412,10 +391,10 @@ class DeviceCommandGateway:
             from src.app.device.models.command import CommandStatus
             from src.app.device.repositories.command_repository import DeviceCommandRepository
 
-            command_code = _string_value(payload.get("command_code"))
+            command_code = coerce_string_value(payload.get("command_code"))
             command_repo = DeviceCommandRepository()
             command = await command_repo.get_by_command_code(db, command_code) if command_code else None
-            command_id = _resolve_entity_id(command)
+            command_id = resolve_entity_id(command)
             is_same_reserved_command = _is_same_session_current_command(outbox=outbox, command=command, device=device)
             _enforce_device_command_governance(
                 device,
@@ -444,7 +423,7 @@ class DeviceCommandGateway:
                         workline_runtime_reconciliation_service,
                     )
 
-                    device_id = _resolve_entity_id(device)
+                    device_id = resolve_entity_id(device)
                     if command is not None and device_id is not None and command_id is not None:
                         # Mock/设备可能在 HTTP 200 返回前已经完成并回调；刷新后若已是终态，
                         # 不能再把设备占用投影覆盖回 RUNNING。
@@ -455,7 +434,7 @@ class DeviceCommandGateway:
                             CommandStatus.TIMEOUT.value,
                             CommandStatus.CANCELLED.value,
                         }
-                        if _enum_value(getattr(command, "status", None)) in terminal_statuses:
+                        if enum_value(getattr(command, "status", None)) in terminal_statuses:
                             logger.info(
                                 "设备指令 ACK 返回前已收到完成回调，跳过 ACK/RUNNING 投影: "
                                 f"device_code={outbox.target_code}, command_code={command_code}"

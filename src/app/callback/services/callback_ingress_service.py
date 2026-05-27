@@ -33,6 +33,7 @@ from src.core.logger import logger
 from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.database.dependencies import AsyncSessionDep
+from src.utils.value_normalization import resolve_entity_id
 from src.workline_runtime.diagnostics import (
     ErrorCode,
     build_diagnostic_card,
@@ -159,13 +160,6 @@ def _resolve_callback_causation_id(payload: JsonDict) -> str | None:
 def _resolve_payload_command_code(payload: JsonDict) -> str | None:
     command_code = payload.get("command_code")
     return command_code if isinstance(command_code, str) else None
-
-
-def _resolve_entity_id(entity: object | None) -> int | None:
-    value = getattr(entity, "id", None)
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
 
 
 def _resolve_command_device_id(command: object | None) -> int | None:
@@ -674,7 +668,7 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
     _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
 
     command_device_id = _resolve_command_device_id(existing_command)
-    callback_device_id = _resolve_entity_id(device)
+    callback_device_id = resolve_entity_id(device)
     if command_device_id is None or callback_device_id is None or command_device_id != callback_device_id:
         message = f"结果回调设备与指令归属不匹配: command_code={command_code}, callback_device_code={device_code}"
         await _record_callback_diagnostic(

@@ -19,14 +19,11 @@ from src.app.workline.models.runtime import (
     TraceTimelineItem,
 )
 from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
-
-
-def _enum_str(value: Any) -> str | None:
-    return getattr(value, "value", value) if value is not None else None
+from src.utils.value_normalization import enum_value, optional_enum_str
 
 
 def _status_str(value: Any) -> str:
-    return _enum_str(value) or "UNKNOWN"
+    return optional_enum_str(value) or "UNKNOWN"
 
 
 def _resource_evidence_dict(item: Any) -> dict[str, Any]:
@@ -36,7 +33,7 @@ def _resource_evidence_dict(item: Any) -> dict[str, Any]:
         payload = vars(item)
     else:
         return {}
-    return {key: _enum_str(value) for key, value in payload.items() if not key.startswith("_")}
+    return {key: enum_value(value) for key, value in payload.items() if not key.startswith("_")}
 
 
 def _build_trace_summary(result: Any) -> TraceOverviewSummary:
@@ -49,10 +46,10 @@ def _build_trace_summary(result: Any) -> TraceOverviewSummary:
         outboxes=len(result.outboxes),
         timelines=len(result.timelines),
         diagnostics=len(result.diagnostics),
-        session_status=_enum_str(session.status) if session is not None else None,
+        session_status=optional_enum_str(session.status) if session is not None else None,
         current_wait_type=session.current_wait_type if session is not None else None,
-        latest_timeline_action=_enum_str(latest_timeline.action_type) if latest_timeline else None,
-        latest_timeline_status=_enum_str(latest_timeline.status) if latest_timeline else None,
+        latest_timeline_action=optional_enum_str(latest_timeline.action_type) if latest_timeline else None,
+        latest_timeline_status=optional_enum_str(latest_timeline.status) if latest_timeline else None,
         latest_timeline_message=latest_timeline.message if latest_timeline else None,
     )
 
@@ -61,7 +58,7 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
     if session is None:
         return None
 
-    reconciliation_state = _enum_str(getattr(session, "reconciliation_state", None))
+    reconciliation_state = optional_enum_str(getattr(session, "reconciliation_state", None))
 
     return TraceSessionItem(
         id=session.id,
@@ -81,8 +78,8 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         deadline_at=session.deadline_at,
         awaiting_command_id=session.awaiting_command_id,
         reconciliation_state=reconciliation_state,
-        reconciliation_reason=_enum_str(getattr(session, "reconciliation_reason", None)),
-        reconciliation_source_kind=_enum_str(getattr(session, "reconciliation_source_kind", None)),
+        reconciliation_reason=optional_enum_str(getattr(session, "reconciliation_reason", None)),
+        reconciliation_source_kind=optional_enum_str(getattr(session, "reconciliation_source_kind", None)),
         reconciliation_source_inbox_id=getattr(session, "reconciliation_source_inbox_id", None),
         reconciliation_source_outbox_id=getattr(session, "reconciliation_source_outbox_id", None),
         reconciliation_command_id=getattr(session, "reconciliation_command_id", None),
@@ -92,7 +89,7 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         reconciliation_deadline_at=getattr(session, "reconciliation_deadline_at", None),
         reconciliation_occurred_at=getattr(session, "reconciliation_occurred_at", None),
         reconciliation_late_evidence_received=getattr(session, "reconciliation_late_evidence_received", False),
-        reconciliation_resolution=_enum_str(getattr(session, "reconciliation_resolution", None)),
+        reconciliation_resolution=optional_enum_str(getattr(session, "reconciliation_resolution", None)),
         reconciliation_resolved_at=getattr(session, "reconciliation_resolved_at", None),
         required_operator_action=("RESOLVE_RUNTIME_RECONCILIATION" if reconciliation_state == "PENDING" else None),
         failure_domain=session.failure_domain,
@@ -160,7 +157,7 @@ def _build_command_item(item: Any) -> TraceCommandItem:
         session_id=item.session_id,
         task_type=_status_str(item.task_type),
         status=_status_str(item.status),
-        result=_enum_str(item.result),
+        result=optional_enum_str(item.result),
         retry_count=item.retry_count,
         sent_at=item.sent_at,
         ack_received_at=item.ack_received_at,
@@ -253,8 +250,8 @@ def build_failed_command_evidence(command: Any | None) -> FailedCommandEvidence 
     return FailedCommandEvidence(
         command_id=command.id,
         command_code=command.command_code,
-        status=_enum_str(command.status),
-        result=_enum_str(command.result),
+        status=optional_enum_str(command.status),
+        result=optional_enum_str(command.result),
         error_detail=cast("dict[str, Any] | None", command.error_detail),
         result_data=cast("dict[str, Any] | None", command.result_data),
     )

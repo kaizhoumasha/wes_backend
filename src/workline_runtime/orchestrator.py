@@ -16,10 +16,10 @@ Phase 1 简化:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.core.logger import logger
 from src.workline_runtime.diagnostics import ErrorCode, error_domain_for
 from src.workline_runtime.lock import LockAcquireError
 from src.workline_runtime.null_plugin import null_plugin
@@ -48,8 +48,6 @@ def set_allow_null_plugin(allow: bool) -> None:
     global _ALLOW_NULL_PLUGIN
     _ALLOW_NULL_PLUGIN = allow
 
-
-logger = logging.getLogger(__name__)
 
 # 插件实例缓存:避免每次处理都新建实例
 # key: plugin_class, value: plugin_instance
@@ -281,7 +279,6 @@ class OrchestratorService:
         """
         plugin = self._load_plugin(getattr(workline, "plugin_class", None))
 
-        session_id = self._resolve_session_pk(session)
         trace = TraceContext.from_runtime(
             session=session,
             workline=workline,
@@ -294,7 +291,7 @@ class OrchestratorService:
             devices_by_role=devices_by_role,
             services=services,
             trace_id=trace.trace_id or trace_id,
-            logger=logging.getLogger(f"{__name__}.{session_id or 'unknown'}"),
+            logger=logger,
             inbox=inbox,
             trace=trace,
         )

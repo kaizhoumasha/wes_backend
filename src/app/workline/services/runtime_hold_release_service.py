@@ -37,6 +37,7 @@ from src.app.workline.repositories import (
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.utils.timezone import timezone
+from src.utils.value_normalization import as_dict, enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
@@ -54,19 +55,11 @@ if TYPE_CHECKING:
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
-def _enum_value(value: Any) -> str:
-    return str(getattr(value, "value", value))
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
 def _runtime_continue_result_payload(request: ResolveRuntimeHoldRequest, command: DeviceCommand) -> dict[str, Any]:
-    payload = _as_dict(request.result_payload)
+    payload = as_dict(request.result_payload)
     if payload:
         return payload
-    return _as_dict(command.params)
+    return as_dict(command.params)
 
 
 class RuntimeHoldReleaseError(ValueError):
@@ -150,7 +143,7 @@ class RuntimeHoldReleaseService:
                 f"RuntimeHold 已解除: {hold_id}",
             )
         if not hold.is_active_blocking:
-            raise ValueError(f"RuntimeHold 当前状态不允许解除: {hold_id}, status={_enum_value(hold.status)}")
+            raise ValueError(f"RuntimeHold 当前状态不允许解除: {hold_id}, status={enum_str(hold.status)}")
         if hold.hold_type == RuntimeHoldType.SAFETY_ESTOP and not allow_safety_estop:
             raise RuntimeHoldReleaseError(
                 "RUNTIME_HOLD_SAFETY_ESTOP_REQUIRES_CLEAR_ESTOP",
@@ -260,9 +253,9 @@ class RuntimeHoldReleaseService:
         await db.flush()
         return {
             "hold_id": hold.id,
-            "status": _enum_value(hold.status),
+            "status": enum_str(hold.status),
             "workline_id": hold.workline_id,
-            "workline_runtime_status": _enum_value(workline.runtime_status),
+            "workline_runtime_status": enum_str(workline.runtime_status),
             "remaining_active_blocking_holds": remaining_active_blocking_holds,
             "released_outbox_count": released_outbox_count,
             "ng_return_item_id": getattr(ng_item, "id", None),
@@ -403,7 +396,7 @@ class RuntimeHoldReleaseService:
                 {
                     "existing_ng_return_item_id": existing_item.id,
                     "existing_runtime_hold_id": existing_item.created_from_runtime_hold_id,
-                    "existing_status": _enum_value(existing_item.status),
+                    "existing_status": enum_str(existing_item.status),
                 }
             )
         raise RuntimeHoldReleaseError(
@@ -476,8 +469,8 @@ class RuntimeHoldReleaseService:
         }
 
     def _configured_ng_locations(self, workline: Any) -> dict[str, dict[str, Any]]:
-        config = _as_dict(getattr(workline, "runtime_config_json", None))
-        runtime_hold_config = _as_dict(config.get("runtime_hold"))
+        config = as_dict(getattr(workline, "runtime_config_json", None))
+        runtime_hold_config = as_dict(config.get("runtime_hold"))
         raw_locations = runtime_hold_config.get("ng_locations")
         if raw_locations is None:
             raw_locations = config.get("ng_locations")
@@ -527,7 +520,7 @@ class RuntimeHoldReleaseService:
             material_scan_payload = {"scan": material_scan_payload}
 
         input_value = MaterialIdentityInput(
-            session_context=_as_dict(getattr(session, "context_json", None)),
+            session_context=as_dict(getattr(session, "context_json", None)),
             source_payload=self._material_source_payload(hold),
             command_payload={},
             material_scan_payload=material_scan_payload,
@@ -645,7 +638,7 @@ class RuntimeHoldReleaseService:
         operator_id: int,
         resolved_at: Any,
     ) -> None:
-        context = _as_dict(session.context_json)
+        context = as_dict(session.context_json)
         context["runtime_hold_release"] = {
             "resolution": request.resolution,
             "checks": dict(request.checks),
@@ -692,7 +685,7 @@ class RuntimeHoldReleaseService:
             command.status = CommandStatus.FAILED
             command.result = CommandResult.FAILED
             command.error_detail = {
-                **_as_dict(command.error_detail),
+                **as_dict(command.error_detail),
                 "error_code": "RUNTIME_HOLD_FAILED",
                 "operator_resolution": request.resolution,
             }
@@ -700,7 +693,7 @@ class RuntimeHoldReleaseService:
             command.status = CommandStatus.CANCELLED
             command.result = None
             command.error_detail = {
-                **_as_dict(command.error_detail),
+                **as_dict(command.error_detail),
                 "error_code": "RUNTIME_HOLD_CANCELLED",
                 "operator_resolution": request.resolution,
             }
@@ -725,7 +718,7 @@ class RuntimeHoldReleaseService:
         if device is None:
             raise ValueError(f"设备不存在: {command.device_id}")
 
-        command_type = _enum_value(command.task_type)
+        command_type = enum_str(command.task_type)
         result_payload = _runtime_continue_result_payload(request, command)
         payload = {
             "command_code": command.command_code,
@@ -787,7 +780,7 @@ class RuntimeHoldReleaseService:
         workline.stopped_reason = first_hold.source_reason
 
     def _material_source_payload(self, hold: RuntimeHold) -> dict[str, Any]:
-        evidence = _as_dict(hold.evidence_snapshot_json)
+        evidence = as_dict(hold.evidence_snapshot_json)
         for key in ("inbox_payload", "outbox_payload", "source_payload"):
             nested = evidence.get(key)
             if isinstance(nested, dict):
@@ -795,7 +788,7 @@ class RuntimeHoldReleaseService:
         return evidence
 
     def _late_callback_evidence(self, session: Any | None) -> list[dict[str, Any]]:
-        context = _as_dict(getattr(session, "context_json", None))
+        context = as_dict(getattr(session, "context_json", None))
         evidence = context.get("runtime_reconciliation_late_callback_evidence")
         if not isinstance(evidence, list):
             return []

@@ -19,12 +19,8 @@ from src.app.workline.repositories.dispatch_attempt_repository import (
 )
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import optional_enum_str
 from src.workline_runtime.trace_context import TraceContext
-
-
-def _enum_value(value: Any) -> str | None:
-    raw = getattr(value, "value", value)
-    return raw if isinstance(raw, str) else None
 
 
 async def _flush_if_supported(db: Any) -> None:
@@ -99,7 +95,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
             "attempt_no": attempt_no,
             "lease_token": lease_token,
             "status": DispatchAttemptStatus.DISPATCHING.value,
-            "target_type": _enum_value(getattr(outbox, "target_type", None)),
+            "target_type": optional_enum_str(getattr(outbox, "target_type", None)),
             "target_code": getattr(outbox, "target_code", None),
             "started_at": timezone.now_for_db(),
             "trace_json": trace.project_outbox_trace(outbox=outbox),

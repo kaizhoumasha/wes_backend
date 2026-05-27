@@ -29,6 +29,7 @@ from src.app.sys.models import (
 )
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.utils.timezone import timezone
+from src.utils.value_normalization import optional_int
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -230,11 +231,11 @@ def _validate_existing_operation_matches_request(
     mismatches: list[str] = []
     if _optional_text(getattr(existing, "operation_type", None)) != operation_type:
         mismatches.append("operation_type")
-    if _optional_int(getattr(existing, "workline_id", None)) != workline_id:
+    if optional_int(getattr(existing, "workline_id", None)) != workline_id:
         mismatches.append("workline_id")
     if _optional_text(getattr(existing, "workline_code", None)) != _optional_text(workline_code):
         mismatches.append("workline_code")
-    if _optional_int(getattr(existing, "material_session_id", None)) != material_session_id:
+    if optional_int(getattr(existing, "material_session_id", None)) != material_session_id:
         mismatches.append("material_session_id")
     if _optional_text(getattr(existing, "trace_id", None)) != trace_id:
         mismatches.append("trace_id")
@@ -273,12 +274,6 @@ def _candidate_ids(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise TypeError("candidate_authorized_bin_ids 必须是字符串列表")
     return [_required_text(item, "candidate_authorized_bin_ids[]") for item in value]
-
-
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
 
 
 def _mapping(value: Any, field_name: str) -> dict[str, Any]:

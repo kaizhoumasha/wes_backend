@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 from src.workline_runtime.material_target_resolver import resolve_destination_device
 from src.workline_runtime.runtime_intent import (
     BlockScope,
@@ -161,12 +162,6 @@ def _non_empty_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
 
 
 def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -436,7 +431,7 @@ class RuntimeIntentEffectApplier:
         except ValueError as exc:
             await self._apply_destination_failure(ctx, exc)
             return
-        target_device_id = workline_effects._resolve_required_pk(target_device, "target_device")
+        target_device_id = resolve_required_pk(target_device, "target_device")
         try:
             workline_effects._enforce_device_command_governance(
                 target_device,
@@ -460,9 +455,7 @@ class RuntimeIntentEffectApplier:
             action=str(intent.action),
             default_command_code=generated_command_code,
         )
-        resolved_command_code = workline_effects._string_value(
-            vendor_payload.get("command_code"), generated_command_code
-        )
+        resolved_command_code = string_value(vendor_payload.get("command_code"), generated_command_code)
         command_data = workline_effects._build_command_create_payload(
             ctx,
             command_intent=SimpleNamespace(action=str(intent.action), parameters=dict(intent.payload_json)),
@@ -716,11 +709,11 @@ class RuntimeIntentEffectApplier:
             ctx_map["db"],
             operation_key=operation_key,
             operation_type=operation_type,
-            workline_id=_optional_int(getattr(ctx_map["workline"], "id", None)),
+            workline_id=optional_int(getattr(ctx_map["workline"], "id", None)),
             workline_code=_non_empty_text(
                 getattr(ctx_map["workline"], "line_code", None) or getattr(ctx_map["workline"], "workline_code", None)
             ),
-            material_session_id=_optional_int(getattr(session, "id", None)),
+            material_session_id=optional_int(getattr(session, "id", None)),
             trace_id=trace_id,
             moves=moves,
             carrier_type=str(payload_json["carrier_type"]),

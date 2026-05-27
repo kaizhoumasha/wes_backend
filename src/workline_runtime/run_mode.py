@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any
 
+from src.utils.value_normalization import enum_value
+
 SANDBOX_ALLOWED_ENVS = frozenset({"dev", "test"})
-
-
-def _enum_value(value: Any) -> Any:
-    return value.value if isinstance(value, Enum) else value
 
 
 def normalize_run_mode(value: Any, *, default: str = "AUTO") -> str:
     """将模型枚举/字符串运行模式规范化为大写字符串。"""
 
-    raw_value = _enum_value(value)
+    raw_value = enum_value(value)
     if not isinstance(raw_value, str) or not raw_value:
         return default
     return raw_value.strip().upper() or default

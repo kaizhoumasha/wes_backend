@@ -10,6 +10,7 @@ from src.app.sys.models import SystemOutboxDispatchType
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.core.logger import logger
+from src.utils.value_normalization import enum_value
 
 ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
@@ -122,7 +123,7 @@ class SystemOutboxEngine:
     async def dispatch_single(self, db: Any, outbox: Any) -> bool:
         from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
 
-        dispatch_type = _enum_value(getattr(outbox, "dispatch_type", None))
+        dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
         if dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             return await dispatch_external_http(outbox, self.endpoint_registry, self.external_http_sender)
         if dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL.value:
@@ -167,10 +168,6 @@ async def _commit_if_supported(db: Any) -> None:
 
 def _payload_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
 
 
 def _merge_dispatch_result(target: DispatchResult, source: DispatchResult) -> None:

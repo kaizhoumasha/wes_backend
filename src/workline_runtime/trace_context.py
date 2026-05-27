@@ -11,20 +11,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from enum import Enum
-from typing import Any, cast
+from typing import Any
 
+from src.utils.value_normalization import as_dict, enum_value, optional_int
 from src.workline_runtime.utils import non_empty_str
 
 
 def _resolve_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+    return optional_int(value)
 
 
 def _attr_int(obj: Any, name: str) -> int | None:
@@ -37,10 +31,6 @@ def _attr_str(obj: Any, name: str) -> str | None:
 
 def _resolve_payload_event_type(payload: dict[str, Any]) -> str | None:
     return non_empty_str(payload.get("canonical_event_type")) or non_empty_str(payload.get("event_type"))
-
-
-def _enum_value(value: Any) -> Any:
-    return value.value if isinstance(value, Enum) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +150,7 @@ class TraceContext:
         )
 
     def with_inbox(self, inbox: Any) -> TraceContext:
-        payload = _as_dict(getattr(inbox, "payload_json", None))
+        payload = as_dict(getattr(inbox, "payload_json", None))
         return self._bind(
             request_id=_attr_str(inbox, "source_message_id") or self.request_id,
             trace_id=_attr_str(inbox, "trace_id") or self.trace_id,
@@ -235,10 +225,10 @@ class TraceContext:
     def project_outbox_trace(self, *, outbox: Any | None = None, **extra: Any) -> dict[str, Any]:
         """投影成 outbox dispatch 记录的稳定 trace 字段。"""
 
-        dispatch_type = _enum_value(extra.pop("dispatch_type", None))
+        dispatch_type = enum_value(extra.pop("dispatch_type", None))
         target_code = extra.pop("target_code", None)
         if outbox is not None:
-            dispatch_type = dispatch_type or _enum_value(getattr(outbox, "dispatch_type", None))
+            dispatch_type = dispatch_type or enum_value(getattr(outbox, "dispatch_type", None))
             target_code = target_code or _attr_str(outbox, "target_code")
         payload: dict[str, Any] = {
             "outbox_id": self.outbox_id or _attr_int(outbox, "id"),

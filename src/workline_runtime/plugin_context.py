@@ -6,7 +6,6 @@ PluginContext - 插件上下文
 设计参考: 设计文档 phase2-orchestrator
 """
 
-import logging
 from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
@@ -14,6 +13,14 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.core.logger import logger as default_logger
+from src.utils.value_normalization import (
+    as_dict,
+    dict_attr,
+    optional_int_attr,
+    optional_str,
+    optional_str_attr,
+)
 from src.workline_runtime.diagnostics import DiagnosticContext, build_diagnostic_context
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
@@ -24,24 +31,10 @@ from src.workline_runtime.topology import WorklineTopologyView
 from src.workline_runtime.trace_context import TraceContext
 
 
-def _safe_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _safe_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
-def _safe_dict(value: Any) -> dict[str, Any]:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
-
-
 def _source_device_code_from_session(session: Any | None) -> str | None:
-    context = _safe_dict(getattr(session, "context_json", None))
-    rack_operation = _safe_dict(context.get("rack_operation"))
-    return _safe_str(rack_operation.get("resume_source_device_code")) or _safe_str(
+    context = dict_attr(session, "context_json")
+    rack_operation = as_dict(context.get("rack_operation"))
+    return optional_str(rack_operation.get("resume_source_device_code")) or optional_str(
         context.get("resume_source_device_code")
     )
 
@@ -53,22 +46,22 @@ def _normalize_workline_for_runtime(workline: Any) -> Any:
     line_type = getattr(workline, "line_type", None)
     line_type_value = getattr(line_type, "value", line_type)
     return SimpleNamespace(
-        id=_safe_int(getattr(workline, "id", None)),
-        line_code=_safe_str(getattr(workline, "line_code", None)),
-        line_name=_safe_str(getattr(workline, "line_name", None)),
-        line_type=_safe_str(line_type_value),
-        plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
-        contract_version=_safe_str(getattr(workline, "contract_version", None)),
+        id=optional_int_attr(workline, "id"),
+        line_code=optional_str_attr(workline, "line_code"),
+        line_name=optional_str_attr(workline, "line_name"),
+        line_type=optional_str(line_type_value),
+        plugin_key=optional_str_attr(workline, "plugin_key"),
+        contract_version=optional_str_attr(workline, "contract_version"),
         run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
-        config=_safe_dict(getattr(workline, "config", None)),
-        runtime_config_json=_safe_dict(getattr(workline, "runtime_config_json", None)),
-        diagnostic_profile=_safe_dict(getattr(workline, "diagnostic_profile", None)),
+        config=dict_attr(workline, "config"),
+        runtime_config_json=dict_attr(workline, "runtime_config_json"),
+        diagnostic_profile=dict_attr(workline, "diagnostic_profile"),
     )
 
 
 def _normalize_device_protocol(device: Any) -> str | None:
     protocol_value = getattr(device, "protocol", None)
-    return _safe_str(getattr(protocol_value, "value", protocol_value))
+    return optional_str(getattr(protocol_value, "value", protocol_value))
 
 
 def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
@@ -76,39 +69,39 @@ def _normalize_device_for_runtime(device: Any, workline: Any | None) -> Any:
         return None
 
     return SimpleNamespace(
-        id=_safe_int(getattr(device, "id", None)),
-        device_code=_safe_str(getattr(device, "device_code", None)),
-        device_name=_safe_str(getattr(device, "device_name", None)),
-        device_role=_safe_str(getattr(device, "device_role", None)),
-        role_index=_safe_int(getattr(device, "role_index", None)),
-        upstream_device_id=_safe_int(getattr(device, "upstream_device_id", None)),
-        work_line_id=_safe_int(getattr(device, "work_line_id", None)) or _safe_int(getattr(workline, "id", None)),
+        id=optional_int_attr(device, "id"),
+        device_code=optional_str_attr(device, "device_code"),
+        device_name=optional_str_attr(device, "device_name"),
+        device_role=optional_str_attr(device, "device_role"),
+        role_index=optional_int_attr(device, "role_index"),
+        upstream_device_id=optional_int_attr(device, "upstream_device_id"),
+        work_line_id=optional_int_attr(device, "work_line_id") or optional_int_attr(workline, "id"),
         protocol=_normalize_device_protocol(device),
-        host=_safe_str(getattr(device, "host", None)),
-        port=_safe_int(getattr(device, "port", None)),
-        timeout=_safe_int(getattr(device, "timeout", None)),
-        callback_path=_safe_str(getattr(device, "callback_path", None)),
+        host=optional_str_attr(device, "host"),
+        port=optional_int_attr(device, "port"),
+        timeout=optional_int_attr(device, "timeout"),
+        callback_path=optional_str_attr(device, "callback_path"),
         maintenance_mode=bool(getattr(device, "maintenance_mode", False)),
-        capabilities_json=_safe_dict(getattr(device, "capabilities_json", None)),
-        diagnostic_profile=_safe_dict(getattr(device, "diagnostic_profile", None)),
+        capabilities_json=dict_attr(device, "capabilities_json"),
+        diagnostic_profile=dict_attr(device, "diagnostic_profile"),
     )
 
 
 def _resolve_source_device(
     devices_by_role: dict[str, list[Any]], inbox: Any | None, session: Any | None = None
 ) -> Any | None:
-    payload = _safe_dict(getattr(inbox, "payload_json", None))
-    device_code = _safe_str(payload.get("device_code")) or _safe_str(payload.get("location"))
+    payload = dict_attr(inbox, "payload_json")
+    device_code = optional_str(payload.get("device_code")) or optional_str(payload.get("location"))
     if not device_code:
         normalized_input = getattr(inbox, "normalized_input", None)
-        device_code = _safe_str(getattr(normalized_input, "device_code", None))
+        device_code = optional_str_attr(normalized_input, "device_code")
     if not device_code:
         device_code = _source_device_code_from_session(session)
     if not device_code:
         return None
     for devices in devices_by_role.values():
         for device in devices:
-            if _safe_str(getattr(device, "device_code", None)) == device_code:
+            if optional_str_attr(device, "device_code") == device_code:
                 return device
     return None
 
@@ -152,7 +145,7 @@ class PluginContext(BaseModel):
 
     # 工具
     next: PluginNext = Field(default_factory=PluginNext)
-    logger: logging.Logger
+    logger: Any
     clock: Callable[[], datetime]
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -178,7 +171,7 @@ class PluginContextBuilder:
         devices_by_role: dict[str, list[Any]],
         services: WorklineRuntimeServices,
         trace_id: str = "",
-        logger: logging.Logger | None = None,
+        logger: Any | None = None,
         clock: Callable[[], datetime] | None = None,
         binding_config: dict[str, Any] | None = None,
         inbox: Any | None = None,
@@ -191,7 +184,7 @@ class PluginContextBuilder:
 
         # 使用默认值
         if logger is None:
-            logger = logging.getLogger("workline_runtime")
+            logger = default_logger
 
         if clock is None:
             clock = datetime.now
@@ -221,13 +214,13 @@ class PluginContextBuilder:
         if runtime.workline is not None:
             runtime.workline.run_mode = session_run_mode
         source_device = _resolve_source_device(devices_by_role, inbox, session)
-        source_device_role = _safe_str(getattr(source_device, "device_role", None))
+        source_device_role = optional_str_attr(source_device, "device_role")
         normalized_input = None
         if inbox is not None:
             normalized_input = normalize_inbox_input(
                 inbox,
                 trace_id=resolved_trace.trace_id or trace_id,
-                plugin_key=_safe_str(getattr(workline, "plugin_key", None)),
+                plugin_key=optional_str_attr(workline, "plugin_key"),
             )
         diagnostics = build_diagnostic_context(
             trace=resolved_trace,

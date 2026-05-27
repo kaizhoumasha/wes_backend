@@ -1,8 +1,13 @@
-import logging
 from inspect import isawaitable
 from typing import Any, TypedDict
 
 from src.app.device.models import DeviceStatus
+from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.outbox_dispatch_support import (
+    _outbox_trace_extra,
+    _outbox_trace_log_suffix,
+    _resolve_outbox_run_mode,
+)
 from src.app.workline.services.device_command_gateway import (
     _build_device_command_log_envelope,
     _DeviceCommandGovernanceError,
@@ -11,22 +16,17 @@ from src.app.workline.services.device_command_gateway import (
     _mark_outbox_blocked_by_workline_state,
 )
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-from src.celery_app.tasks.workline import (
-    _enum_value,
-    _outbox_trace_extra,
-    _outbox_trace_log_suffix,
-    _record_diagnostic,
-    _resolve_entity_id,
-    _resolve_outbox_run_mode,
-    _resolve_required_pk,
-    _string_value,
+from src.core.logger import logger
+from src.utils.value_normalization import (
+    enum_value,
+    resolve_entity_id,
+    resolve_required_pk,
+    string_value,
 )
 from src.workline_runtime.diagnostics.codes import ErrorCode
 from src.workline_runtime.run_mode import is_simulation_run_mode
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import payload_dict
-
-logger = logging.getLogger(__name__)
 
 
 class DispatchResult(TypedDict):
@@ -45,7 +45,7 @@ def _count_workline_safety_block_result(result: DispatchResult, block_state: str
 
 
 def _dispatch_failure_diagnostic_code(failed_outbox: Any) -> ErrorCode:
-    if _enum_value(getattr(failed_outbox, "status", None)) == "FAILED":
+    if enum_value(getattr(failed_outbox, "status", None)) == "FAILED":
         return ErrorCode.OUTBOX_DISPATCH_FAILED
     return ErrorCode.OUTBOX_ACK_TIMEOUT
 
@@ -142,13 +142,13 @@ def _latest_dispatch_attempt(attempts: list[Any]) -> Any | None:
 def _is_device_busy_attempt(attempt: Any | None) -> bool:
     if attempt is None:
         return False
-    if _enum_value(getattr(attempt, "status", None)) != "FAILED":
+    if enum_value(getattr(attempt, "status", None)) != "FAILED":
         return False
     response = payload_dict(getattr(attempt, "response_json", None))
-    reason = _string_value(response.get("reason"))
+    reason = string_value(response.get("reason"))
     if reason == "DEVICE_BUSY":
         return True
-    error_message = _string_value(getattr(attempt, "error_message", None))
+    error_message = string_value(getattr(attempt, "error_message", None))
     return "DEVICE_BUSY" in error_message
 
 
@@ -156,13 +156,13 @@ def _is_device_idle_for_requeue(device: Any | None) -> bool:
     if device is None:
         return False
     return (
-        _enum_value(getattr(device, "device_status", None)) == DeviceStatus.IDLE.value
+        enum_value(getattr(device, "device_status", None)) == DeviceStatus.IDLE.value
         and getattr(device, "current_command_id", None) is None
     )
 
 
 def _is_dispatched_command(command: Any | None) -> bool:
-    return _enum_value(getattr(command, "status", None)) in {"SENT", "ACK_RECEIVED"}
+    return enum_value(getattr(command, "status", None)) in {"SENT", "ACK_RECEIVED"}
 
 
 async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
@@ -178,21 +178,21 @@ async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, 
     if not isawaitable(dispatching_messages):
         return 0
     for outbox in await dispatching_messages:
-        outbox_id = _resolve_entity_id(outbox)
+        outbox_id = resolve_entity_id(outbox)
         if outbox_id is None:
             continue
         attempts = await workline_dispatch_attempt_repository.get_by_outbox_id(db, outbox_id)
         latest_attempt = _latest_dispatch_attempt(attempts)
         if not _is_device_busy_attempt(latest_attempt):
             continue
-        target_code = _string_value(getattr(outbox, "target_code", None))
+        target_code = string_value(getattr(outbox, "target_code", None))
         if not target_code:
             continue
         device = await device_repository.get_by_device_code(db, target_code)
-        device_id = _resolve_entity_id(device)
+        device_id = resolve_entity_id(device)
         if device_id is None:
             continue
-        error_message = _string_value(getattr(latest_attempt, "error_message", None), default="DEVICE_BUSY")
+        error_message = string_value(getattr(latest_attempt, "error_message", None), default="DEVICE_BUSY")
         blocked = await outbox_repo.mark_as_blocked_by_device_busy(
             db,
             outbox_id,
@@ -230,15 +230,15 @@ async def _repair_self_blocked_device_busy_dispatches(db: Any, *, outbox_repo: A
     repaired = 0
     command_repo = DeviceCommandRepository()
     for outbox in await blocked_messages:
-        outbox_id = _resolve_entity_id(outbox)
+        outbox_id = resolve_entity_id(outbox)
         if outbox_id is None:
             continue
         payload = payload_dict(getattr(outbox, "payload_json", None))
-        command_code = _string_value(payload.get("command_code"))
+        command_code = string_value(payload.get("command_code"))
         if not command_code:
             continue
         command = await command_repo.get_by_command_code(db, command_code)
-        target_code = _string_value(getattr(outbox, "target_code", None))
+        target_code = string_value(getattr(outbox, "target_code", None))
         if not target_code:
             continue
         device = await device_repository.get_by_device_code(db, target_code)
@@ -287,7 +287,7 @@ class OutboxDispatchService:
             trace = TraceContext.from_runtime(outbox=outbox)
             dispatch_attempt: Any | None = None
             try:
-                outbox_pk = _resolve_required_pk(outbox, "outbox", "id", "outbox_id")
+                outbox_pk = resolve_required_pk(outbox, "outbox", "id", "outbox_id")
                 outbox_workline_id = getattr(outbox, "workline_id", None)
                 if outbox_workline_id is not None:
                     try:
@@ -421,7 +421,7 @@ class OutboxDispatchService:
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 result["dispatched"] += 1
             except _DeviceCommandGovernanceError as e:
-                outbox_pk = _resolve_entity_id(outbox)
+                outbox_pk = resolve_entity_id(outbox)
                 if e.code == "DEVICE_BUSY":
                     logger.info(
                         f"Outbox {outbox_pk_text} 等待目标设备空闲: {e.message} "
@@ -496,7 +496,7 @@ class OutboxDispatchService:
                     except Exception as attempt_error:
                         logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
                 try:
-                    outbox_pk = _resolve_entity_id(outbox)
+                    outbox_pk = resolve_entity_id(outbox)
                     if outbox_pk is not None:
                         failed_outbox = await outbox_repo.mark_as_failed(
                             db,

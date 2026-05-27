@@ -45,6 +45,7 @@ from src.app.workline.repositories.runtime_hold_repository import runtime_hold_r
 from src.app.workline.services.trace_response_builder import build_trace_response, build_trace_timeline_item
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import optional_enum_str
 from src.workline_runtime.business_identity import resolve_payload_display_identity
 from src.workline_runtime.utils import ensure_dict
 
@@ -92,17 +93,13 @@ class _BlockedOutboxProjection:
     command_codes_by_device_id: dict[int, set[str]]
 
 
-def _enum_str(value: Any) -> str | None:
-    return getattr(value, "value", value) if value is not None else None
-
-
 def _status_str(value: Any) -> str:
-    return _enum_str(value) or "UNKNOWN"
+    return optional_enum_str(value) or "UNKNOWN"
 
 
 def _is_maintenance_device(item: Any) -> bool:
     return bool(getattr(item, "maintenance_mode", False)) or (
-        _enum_str(getattr(item, "device_status", None)) == "MAINTENANCE"
+        optional_enum_str(getattr(item, "device_status", None)) == "MAINTENANCE"
     )
 
 
@@ -119,7 +116,7 @@ def _latest_activity_at(sessions: list[WorklineSession]) -> Any:
 
 
 def _is_timed_out(session: WorklineSession, now: Any) -> bool:
-    status = _enum_str(getattr(session, "status", None))
+    status = optional_enum_str(getattr(session, "status", None))
     deadline_at = getattr(session, "deadline_at", None)
     return status in _WAITING_SESSION_STATUSES and deadline_at is not None and deadline_at < now
 
@@ -233,9 +230,9 @@ def _resolve_trace_device(
 
 def _trace_current_action(command: DeviceCommand | None, timeline: WorklineTimeline | None) -> str | None:
     if command is not None:
-        return _enum_str(command.task_type) or command.command_code
+        return optional_enum_str(command.task_type) or command.command_code
     if timeline is not None:
-        return _enum_str(timeline.action_type)
+        return optional_enum_str(timeline.action_type)
     return None
 
 
@@ -956,19 +953,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
         sessions: list[WorklineSession],
     ) -> RuntimeWorklineSummary:
         now = timezone.now_for_db()
-        active_count = sum(1 for item in sessions if (_enum_str(item.status) or "") in _IN_PROGRESS_SESSION_STATUSES)
+        active_count = sum(
+            1 for item in sessions if (optional_enum_str(item.status) or "") in _IN_PROGRESS_SESSION_STATUSES
+        )
         waiting_count = sum(
             1
             for item in sessions
-            if (_enum_str(item.status) or "") in _WAITING_SESSION_STATUSES and not _is_timed_out(item, now)
+            if (optional_enum_str(item.status) or "") in _WAITING_SESSION_STATUSES and not _is_timed_out(item, now)
         )
         failed_count = sum(
             1
             for item in sessions
-            if (_enum_str(item.status) or "") in _FAILURE_SESSION_STATUSES or _is_timed_out(item, now)
+            if (optional_enum_str(item.status) or "") in _FAILURE_SESSION_STATUSES or _is_timed_out(item, now)
         )
-        error_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "ERROR")
-        offline_devices = sum(1 for item in devices if (_enum_str(item.device_status) or "") == "OFFLINE")
+        error_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "ERROR")
+        offline_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "OFFLINE")
         maintenance_devices = sum(1 for item in devices if _is_maintenance_device(item))
 
         return RuntimeWorklineSummary(
@@ -987,8 +986,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             error_device_count=error_devices,
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
-            run_mode=_enum_str(workline.run_mode) or "AUTO",
-            runtime_status=_enum_str(workline.runtime_status) or "READY",
+            run_mode=optional_enum_str(workline.run_mode) or "AUTO",
+            runtime_status=optional_enum_str(workline.runtime_status) or "READY",
             active_safety_incident_id=workline.active_safety_incident_id,
             stopped_at=workline.stopped_at,
             stopped_reason=workline.stopped_reason,
@@ -1113,7 +1112,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             session_id=item.session_id,
             task_type=_status_str(item.task_type),
             status=_status_str(item.status),
-            result=_enum_str(item.result),
+            result=optional_enum_str(item.result),
             retry_count=item.retry_count,
             sent_at=item.sent_at,
             ack_received_at=item.ack_received_at,
@@ -1189,8 +1188,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             current_wait_type=session.current_wait_type,
             failure_domain=session.failure_domain,
             failure_code=session.failure_code,
-            latest_timeline_action=_enum_str(timeline.action_type) if timeline is not None else None,
-            latest_timeline_status=_enum_str(timeline.status) if timeline is not None else None,
+            latest_timeline_action=optional_enum_str(timeline.action_type) if timeline is not None else None,
+            latest_timeline_status=optional_enum_str(timeline.status) if timeline is not None else None,
             latest_timeline_message=timeline.message if timeline is not None else None,
             started_at=session.started_at,
             last_ingress_at=session.last_ingress_at,
@@ -1259,10 +1258,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 node.actions.append(
                     RuntimeTraceDeviceAction(
                         kind="command",
-                        label=_enum_str(cmd.task_type) or cmd.command_code or "COMMAND",
-                        status=_enum_str(cmd.status),
+                        label=optional_enum_str(cmd.task_type) or cmd.command_code or "COMMAND",
+                        status=optional_enum_str(cmd.status),
                         timestamp=cmd.completed_at or cmd.sent_at,
-                        message=f"{cmd.command_code} · {_enum_str(cmd.result) or ''}",
+                        message=f"{cmd.command_code} · {optional_enum_str(cmd.result) or ''}",
                     )
                 )
 
@@ -1272,8 +1271,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 node.actions.append(
                     RuntimeTraceDeviceAction(
                         kind="inbox",
-                        label=f"INBOX {_enum_str(inbox.kind) or ''}",
-                        status=_enum_str(inbox.status),
+                        label=f"INBOX {optional_enum_str(inbox.kind) or ''}",
+                        status=optional_enum_str(inbox.status),
                         timestamp=inbox.processed_at or inbox.received_at,
                         message=inbox.error_message,
                     )
@@ -1293,8 +1292,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
                     blocking_device_id = cmd.device_id
                     blocking_reason = RuntimeBlockingReason(
                         device_id=cmd.device_id,
-                        reason=f"等待设备响应 {_enum_str(cmd.task_type) or cmd.command_code}",
-                        detail=f"command #{cmd.id} · {_enum_str(cmd.status)} · awaiting_command_id={session.awaiting_command_id}",
+                        reason=f"等待设备响应 {optional_enum_str(cmd.task_type) or cmd.command_code}",
+                        detail=f"command #{cmd.id} · {optional_enum_str(cmd.status)} · awaiting_command_id={session.awaiting_command_id}",
                     )
             if blocking_device_id is None and session.failure_domain:
                 blocking_reason = RuntimeBlockingReason(

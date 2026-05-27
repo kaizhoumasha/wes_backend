@@ -52,6 +52,7 @@ from src.app.workline.services.runtime_hold_release_service import (
 from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 from src.core.logger import logger
 from src.utils.timezone import timezone
+from src.utils.value_normalization import as_dict, enum_str
 from src.workline_runtime.diagnostics import ErrorCode, build_diagnostic_context, build_diagnostic_event
 
 if TYPE_CHECKING:
@@ -71,16 +72,8 @@ _LATE_CALLBACK_EVIDENCE_REASONS = {
 }
 
 
-def _enum_value(value: Any) -> str:
-    return str(getattr(value, "value", value))
-
-
 def _dt_key(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
 
 def _resolve_id(value: Any) -> int | None:
@@ -165,7 +158,7 @@ class WorklineRuntimeReconciliationService:
     async def handle_timer_timeout(self, db: Any, *, inbox: WorklineInbox) -> WorklineSession | None:
         """处理系统 TIMER_TIMEOUT：进入 Callback deadline runtime reconciliation。"""
 
-        payload = _as_dict(inbox.payload_json)
+        payload = as_dict(inbox.payload_json)
         inbox_id = _resolve_id(inbox)
         if inbox_id is None:
             logger.warning("TIMER_TIMEOUT inbox 缺少持久化 id，跳过 runtime reconciliation")
@@ -194,7 +187,7 @@ class WorklineRuntimeReconciliationService:
         claim_ack_received_at = getattr(command, "ack_received_at", None) or timezone.to_db_datetime(
             payload.get("ack_received_at")
         )
-        from_status = _enum_value(session.status)
+        from_status = enum_str(session.status)
         session.status = SessionStatus.MANUAL_HOLD
         session.reconciliation_state = RuntimeReconciliationState.PENDING
         session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
@@ -308,14 +301,14 @@ class WorklineRuntimeReconciliationService:
         outbox.blocked_reason = None
 
         if session.reconciliation_state == RuntimeReconciliationState.PENDING:
-            if command is not None and _enum_value(command.status) in {
+            if command is not None and enum_str(command.status) in {
                 CommandStatus.PENDING.value,
                 CommandStatus.SENT.value,
             }:
                 command.status = CommandStatus.FAILED
                 command.completed_at = command.completed_at or now
                 command.error_detail = {
-                    **_as_dict(command.error_detail),
+                    **as_dict(command.error_detail),
                     "error_code": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
                     "error_message": error_message,
                     "outbox_id": _resolve_id(outbox),
@@ -346,7 +339,7 @@ class WorklineRuntimeReconciliationService:
             command.status = CommandStatus.FAILED
             command.completed_at = command.completed_at or now
             command.error_detail = {
-                **_as_dict(command.error_detail),
+                **as_dict(command.error_detail),
                 "error_code": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
                 "error_message": error_message,
                 "outbox_id": _resolve_id(outbox),
@@ -472,7 +465,7 @@ class WorklineRuntimeReconciliationService:
         if session.reconciliation_reason not in _LATE_CALLBACK_EVIDENCE_REASONS:
             return False
 
-        context = _as_dict(session.context_json)
+        context = as_dict(session.context_json)
         evidence = context.get("runtime_reconciliation_late_callback_evidence")
         evidence_items: list[dict[str, Any]] = []
         if isinstance(evidence, list):
@@ -486,7 +479,7 @@ class WorklineRuntimeReconciliationService:
             "recorded_at": timezone.now_for_db().isoformat(),
             "command_id": command_id,
             "command_code": command.command_code,
-            "command_status": _enum_value(command.status),
+            "command_status": enum_str(command.status),
             "payload": callback_payload,
         }
         evidence_items.append(evidence_item)
@@ -526,9 +519,7 @@ class WorklineRuntimeReconciliationService:
         if session is None:
             raise ValueError(f"会话不存在: {session_id}")
         if session.status != SessionStatus.MANUAL_HOLD:
-            raise ValueError(
-                f"当前会话状态不允许解除对账: session_id={session_id}, status={_enum_value(session.status)}"
-            )
+            raise ValueError(f"当前会话状态不允许解除对账: session_id={session_id}, status={enum_str(session.status)}")
         if session.reconciliation_state != RuntimeReconciliationState.PENDING:
             raise ValueError(f"当前会话没有 pending runtime reconciliation: session_id={session_id}")
 
@@ -736,7 +727,7 @@ class WorklineRuntimeReconciliationService:
             return session.status == SessionStatus.WAITING_EXTERNAL
         return (
             command is not None
-            and _enum_value(command.status) == CommandStatus.ACK_RECEIVED.value
+            and enum_str(command.status) == CommandStatus.ACK_RECEIVED.value
             and (
                 command.ack_received_at is not None
                 or timezone.to_db_datetime(payload.get("ack_received_at")) is not None

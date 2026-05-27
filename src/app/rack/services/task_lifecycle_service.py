@@ -20,6 +20,7 @@ from src.app.workline.repositories.session_repository import (
 )
 from src.core.logger import logger
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str, enum_value, optional_int
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -153,23 +154,26 @@ class RackTaskLifecycleService:
                 "sequence_no": sequence_no,
                 "task_type": normalized_task_type,
                 "task_status": RackTaskStatus.REQUESTED.value,
-                "workline_id": _optional_int(getattr(workline, "id", None)),
-                "workline_code": _optional_str(getattr(workline, "line_code", None))
-                or _optional_str(request_json.get("workline_code"))
-                or _optional_str(request_json.get("source_workline_code")),
-                "material_session_id": _optional_int(getattr(session, "id", None)),
-                "rack_kind": rack_kind or _optional_str(request_json.get("rack_kind")),
-                "rack_code": rack_code or _optional_str(request_json.get("rack_code")),
-                "source_position_code": source_position_code or _optional_str(request_json.get("source_position_code")),
-                "target_position_code": target_position_code or _optional_str(request_json.get("target_position_code")),
-                "target_position_role": target_position_role or _optional_str(request_json.get("target_position_role")),
+                "workline_id": optional_int(getattr(workline, "id", None)),
+                "workline_code": coerce_optional_str(getattr(workline, "line_code", None))
+                or coerce_optional_str(request_json.get("workline_code"))
+                or coerce_optional_str(request_json.get("source_workline_code")),
+                "material_session_id": optional_int(getattr(session, "id", None)),
+                "rack_kind": rack_kind or coerce_optional_str(request_json.get("rack_kind")),
+                "rack_code": rack_code or coerce_optional_str(request_json.get("rack_code")),
+                "source_position_code": source_position_code
+                or coerce_optional_str(request_json.get("source_position_code")),
+                "target_position_code": target_position_code
+                or coerce_optional_str(request_json.get("target_position_code")),
+                "target_position_role": target_position_role
+                or coerce_optional_str(request_json.get("target_position_role")),
                 "dispatch_key": dispatch_key,
-                "outbox_id": _optional_int(getattr(outbox, "id", None)),
+                "outbox_id": optional_int(getattr(outbox, "id", None)),
                 "target_code": target_code,
                 "source_system": source_system,
                 "trace_id": trace_id,
                 "source_event_id": _source_event_id(request_json),
-                "source_version": _optional_str(request_json.get("source_version")),
+                "source_version": coerce_optional_str(request_json.get("source_version")),
                 "request_json": request_evidence,
                 "actions_json": dict(actions_json or {}),
                 "requested_at": timezone.now_for_db(),
@@ -189,7 +193,7 @@ class RackTaskLifecycleService:
     ) -> RackTask | None:
         """按外部回调证据更新单个 rack task。"""
 
-        dispatch_key = _optional_str(payload_json.get("dispatch_key")) or _optional_str(
+        dispatch_key = coerce_optional_str(payload_json.get("dispatch_key")) or coerce_optional_str(
             payload_json.get("request_code")
         )
         if dispatch_key is None:
@@ -207,15 +211,15 @@ class RackTaskLifecycleService:
                 f"dispatch_key={dispatch_key}, current_status={_task_status_value(getattr(task, 'task_status', None))}, "
                 f"incoming_status={status.value}"
             )
-            if trace_id is not None and not _optional_str(getattr(task, "trace_id", None)):
+            if trace_id is not None and not coerce_optional_str(getattr(task, "trace_id", None)):
                 task.trace_id = trace_id
                 db.add(task)
             if should_sync_waiting_session:
                 await self._sync_waiting_session_from_operation_status(
                     db,
                     task=task,
-                    error_code=_optional_str(getattr(task, "error_code", None)),
-                    error_message=_optional_str(getattr(task, "error_message", None)),
+                    error_code=coerce_optional_str(getattr(task, "error_code", None)),
+                    error_message=coerce_optional_str(getattr(task, "error_message", None)),
                 )
             return task
 
@@ -223,7 +227,7 @@ class RackTaskLifecycleService:
         task.task_status = status
         task.callback_json = dict(payload_json)
         task.result_json = _task_result_json(status=status, error_code=error_code, error_message=error_message)
-        if trace_id is not None and not _optional_str(getattr(task, "trace_id", None)):
+        if trace_id is not None and not coerce_optional_str(getattr(task, "trace_id", None)):
             task.trace_id = trace_id
         if status == RackTaskStatus.IN_PROGRESS and getattr(task, "started_at", None) is None:
             task.started_at = now
@@ -262,8 +266,8 @@ class RackTaskLifecycleService:
         error_code: str | None,
         error_message: str | None,
     ) -> None:
-        operation_key = _optional_str(getattr(task, "operation_key", None))
-        workline_id = _optional_int(getattr(task, "workline_id", None))
+        operation_key = coerce_optional_str(getattr(task, "operation_key", None))
+        workline_id = optional_int(getattr(task, "workline_id", None))
         if operation_key is None:
             return
         if self._rack_operation_service is None and not hasattr(db, "execute"):
@@ -312,7 +316,7 @@ def _ensure_same_task_identity(
         getattr(task, "operation_key", None) != operation_key
         or getattr(task, "operation_type", None) != operation_type
         or getattr(task, "sequence_no", None) != sequence_no
-        or _enum_value(getattr(task, "task_type", None)) != task_type
+        or enum_value(getattr(task, "task_type", None)) != task_type
         or getattr(task, "dispatch_key", None) != dispatch_key
     ):
         raise ValueError("task_key 已绑定不同 rack task")
@@ -328,19 +332,15 @@ def _ensure_operation_sequence_available(
 ) -> None:
     if (
         getattr(task, "operation_type", None) != operation_type
-        or _enum_value(getattr(task, "task_type", None)) != task_type
+        or enum_value(getattr(task, "task_type", None)) != task_type
         or getattr(task, "task_key", None) != task_key
         or getattr(task, "dispatch_key", None) != dispatch_key
     ):
         raise ValueError("operation sequence 已绑定不同 rack task")
 
 
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
-
-
 def _task_status_value(value: Any) -> str | None:
-    raw = _enum_value(value)
+    raw = enum_value(value)
     return raw if isinstance(raw, str) else None
 
 
@@ -356,7 +356,7 @@ def _is_terminal_task_status(value: Any) -> bool:
 
 def _should_sync_waiting_session_from_callback(payload_json: Mapping[str, Any]) -> bool:
     # 到架回调还需要同一个 inbox 的插件先投影 RACK_ARRIVED/BIN_MOUNTED 资源事实。
-    return _optional_str(payload_json.get("callback_type")) not in {"WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"}
+    return coerce_optional_str(payload_json.get("callback_type")) not in {"WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"}
 
 
 def _apply_operation_status_to_session(
@@ -393,8 +393,8 @@ def _apply_operation_status_to_session(
     elif operation_status == "PENDING":
         context_json["waiting_rack_operation_key"] = operation_key
     else:
-        existing_failure_code = _optional_str(getattr(session, "failure_code", None))
-        existing_failure_message = _optional_str(getattr(session, "failure_message", None))
+        existing_failure_code = coerce_optional_str(getattr(session, "failure_code", None))
+        existing_failure_message = coerce_optional_str(getattr(session, "failure_message", None))
         context_json["waiting_rack_operation_key"] = operation_key
         session.status = SessionStatus.MANUAL_HOLD
         session.current_wait_type = None
@@ -423,8 +423,8 @@ def _rack_task_type(value: str) -> str:
 
 
 def _callback_status(payload_json: Mapping[str, Any]) -> tuple[RackTaskStatus, str | None, str | None]:
-    callback_type = _optional_str(payload_json.get("callback_type"))
-    raw_status = _optional_str(
+    callback_type = coerce_optional_str(payload_json.get("callback_type"))
+    raw_status = coerce_optional_str(
         payload_json.get("task_status")
         or payload_json.get("status")
         or payload_json.get("result")
@@ -478,50 +478,37 @@ def _task_result_json(
 
 def _raw_error_code(payload_json: Mapping[str, Any]) -> str | None:
     return (
-        _optional_str(payload_json.get("reason_code"))
-        or _optional_str(payload_json.get("error_code"))
-        or _optional_str(payload_json.get("code"))
+        coerce_optional_str(payload_json.get("reason_code"))
+        or coerce_optional_str(payload_json.get("error_code"))
+        or coerce_optional_str(payload_json.get("code"))
     )
 
 
 def _raw_error_message(payload_json: Mapping[str, Any]) -> str | None:
     return (
-        _optional_str(payload_json.get("reason_message"))
-        or _optional_str(payload_json.get("error_message"))
-        or _optional_str(payload_json.get("message"))
+        coerce_optional_str(payload_json.get("reason_message"))
+        or coerce_optional_str(payload_json.get("error_message"))
+        or coerce_optional_str(payload_json.get("message"))
     )
 
 
 def _source_event_id(payload_json: Mapping[str, Any]) -> str | None:
     return (
-        _optional_str(payload_json.get("source_event_id"))
-        or _optional_str(payload_json.get("event_id"))
-        or _optional_str(payload_json.get("request_id"))
+        coerce_optional_str(payload_json.get("source_event_id"))
+        or coerce_optional_str(payload_json.get("event_id"))
+        or coerce_optional_str(payload_json.get("request_id"))
     )
 
 
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _required_text(value: Any, field_name: str) -> str:
-    text = _optional_str(value)
+    text = coerce_optional_str(value)
     if text is None:
         raise ValueError(f"operation {field_name} 不能为空")
     return text
 
 
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
 def _required_int(value: Any, field_name: str) -> int:
-    resolved = _optional_int(value)
+    resolved = optional_int(value)
     if resolved is None:
         raise ValueError(f"{field_name} 缺失")
     return resolved

@@ -39,6 +39,7 @@ from src.app.workline.repositories.session_repository import WorklineSessionRepo
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.trace_context import TraceContext
 
@@ -74,11 +75,6 @@ _MANUAL_OPERATION_KIND = {
     "RESUME": InboxKind.MANUAL_RESUME,
     "CANCEL": InboxKind.MANUAL_CANCEL,
 }
-
-
-def _enum_value(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw)
 
 
 # 常用 Event 类型的默认 Payload 模板（不含 device_code/event_type/timestamp，由运行时填充）
@@ -199,23 +195,23 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         raw_payload = outbox.payload_json
         payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
-        status = _enum_value(outbox.status)
+        status = enum_str(outbox.status)
         is_current_action = True
         command_status: str | None = None
         command: Any | None = None
-        dispatch_type = _enum_value(outbox.dispatch_type)
+        dispatch_type = enum_str(outbox.dispatch_type)
         if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
             command_code = payload.get("command_code")
             if isinstance(command_code, str) and command_code:
                 command = await self.command_repo.get_by_command_code(db, command_code)
                 if command is not None:
-                    command_status = _enum_value(getattr(command, "status", None))
+                    command_status = enum_str(getattr(command, "status", None))
                     is_current_action = await self._is_current_sandbox_command_outbox(db, outbox, command)
                     if command_status in _TERMINAL_COMMAND_STATUSES:
                         status = command_status
                     elif command_status == CommandStatus.ACK_RECEIVED.value:
                         status = "ACKED"
-                    elif _enum_value(outbox.status) in _ACK_WAIT_OUTBOX_STATUSES:
+                    elif enum_str(outbox.status) in _ACK_WAIT_OUTBOX_STATUSES:
                         status = SystemOutboxStatus.SENT.value
         elif dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             is_current_action = await self._is_current_sandbox_external_outbox(db, outbox)
@@ -224,7 +220,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
         is_actionable = (
             is_current_action
-            and _enum_value(outbox.status)
+            and enum_str(outbox.status)
             not in {SystemOutboxStatus.BLOCKED_RESOURCE.value, SystemOutboxStatus.FAILED.value}
             and status in {SystemOutboxStatus.SENT.value, "ACKED"}
         )
@@ -235,8 +231,8 @@ class WorklineOperationService(BaseService[Any, Any]):
             session_id=outbox.session_id,
             workline_id=outbox.workline_id,
             dispatch_key=outbox.dispatch_key,
-            dispatch_type=_enum_value(outbox.dispatch_type),
-            target_type=_enum_value(outbox.target_type),
+            dispatch_type=enum_str(outbox.dispatch_type),
+            target_type=enum_str(outbox.target_type),
             target_code=outbox.target_code,
             status=status,
             payload_json=payload,
@@ -282,8 +278,8 @@ class WorklineOperationService(BaseService[Any, Any]):
     def _build_projection_failure_summary(
         self, *, outbox: Any, command: Any | None, hold: Any | None
     ) -> dict[str, Any] | None:
-        outbox_status = _enum_value(outbox.status)
-        command_status = _enum_value(command.status) if command is not None else None
+        outbox_status = enum_str(outbox.status)
+        command_status = enum_str(command.status) if command is not None else None
         failure_outbox_statuses = {
             SystemOutboxStatus.BLOCKED_RESOURCE.value,
             SystemOutboxStatus.FAILED.value,
@@ -356,7 +352,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if isinstance(command_code, str) and command_code:
             command = await self.command_repo.get_by_command_code(db, command_code)
             if command is not None:
-                command_status = _enum_value(getattr(command, "status", None))
+                command_status = enum_str(getattr(command, "status", None))
                 item["command_status"] = command_status
                 if command_status in _TERMINAL_COMMAND_STATUSES:
                     item["status"] = command_status
@@ -396,7 +392,7 @@ class WorklineOperationService(BaseService[Any, Any]):
     async def _is_current_sandbox_command_outbox(self, db: Any, outbox: Any, command: Any) -> bool:
         """判断 outbox 是否是当前 session 正在等待人工推进的命令。"""
 
-        if _enum_value(getattr(command, "status", None)) in _TERMINAL_COMMAND_STATUSES:
+        if enum_str(getattr(command, "status", None)) in _TERMINAL_COMMAND_STATUSES:
             return False
 
         command_id = getattr(command, "id", None)
@@ -408,10 +404,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             return True
 
         session = await self.session_repo.get_by_id(db, session_id)
-        if (
-            session is None
-            or _enum_value(getattr(session, "status", None)) != SessionStatus.WAITING_DEVICE_RESULT.value
-        ):
+        if session is None or enum_str(getattr(session, "status", None)) != SessionStatus.WAITING_DEVICE_RESULT.value:
             return True
 
         awaiting_command_id = getattr(session, "awaiting_command_id", None)
@@ -429,10 +422,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         session = await self.session_repo.get_by_id(db, session_id)
         if session is None:
             return True
-        if _enum_value(getattr(session, "status", None)) != SessionStatus.WAITING_EXTERNAL.value:
+        if enum_str(getattr(session, "status", None)) != SessionStatus.WAITING_EXTERNAL.value:
             return False
 
-        current_wait_type = _enum_value(getattr(session, "current_wait_type", None))
+        current_wait_type = enum_str(getattr(session, "current_wait_type", None))
         if current_wait_type not in {"EXTERNAL_HTTP", "RACK_OPERATION"}:
             return False
         if current_wait_type != "RACK_OPERATION":
@@ -493,7 +486,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         actions = outbox_payload.get("actions")
         action_type = actions.get("action") if isinstance(actions, dict) else None
-        rack_task_type = _enum_value(outbox_payload.get("task_type") or action_type)
+        rack_task_type = enum_str(outbox_payload.get("task_type") or action_type)
         if current_wait_type == "RACK_OPERATION" and rack_task_type == "ALLOCATE_AND_MOVE_RACK":
             return "WMS_RACK_ARRIVED"
 
@@ -706,11 +699,11 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(f"工作线不存在: {outbox.workline_id}")
         self._require_simulation_workline(workline)
 
-        if _enum_value(outbox.dispatch_type) != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
+        if enum_str(outbox.dispatch_type) != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             raise ValueError(f"仅允许 EXTERNAL_HTTP Outbox 模拟外部回调: dispatch_key={dispatch_key}")
-        if _enum_value(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
+        if enum_str(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
             raise ValueError(
-                f"当前 Outbox 状态不允许模拟外部回调: dispatch_key={dispatch_key}, status={_enum_value(outbox.status)}"
+                f"当前 Outbox 状态不允许模拟外部回调: dispatch_key={dispatch_key}, status={enum_str(outbox.status)}"
             )
         if outbox.session_id is None:
             raise ValueError(f"Outbox 未关联会话: dispatch_key={dispatch_key}")
@@ -718,14 +711,14 @@ class WorklineOperationService(BaseService[Any, Any]):
         session = await self.session_repo.get_by_id(db, outbox.session_id)
         if session is None:
             raise ValueError(f"会话不存在: {outbox.session_id}")
-        current_wait_type = _enum_value(getattr(session, "current_wait_type", None))
+        current_wait_type = enum_str(getattr(session, "current_wait_type", None))
         if session.status != SessionStatus.WAITING_EXTERNAL or current_wait_type not in {
             "EXTERNAL_HTTP",
             "RACK_OPERATION",
         }:
             raise ValueError(
                 f"当前会话状态不允许模拟外部回调: session_id={session.id}, "
-                f"status={_enum_value(session.status)}, wait_type={getattr(session, 'current_wait_type', None)}"
+                f"status={enum_str(session.status)}, wait_type={getattr(session, 'current_wait_type', None)}"
             )
 
         raw_outbox_payload = outbox.payload_json
@@ -854,7 +847,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if command is None or command.id is None:
             raise ValueError(f"Command 不存在: {command_code}")
         if (
-            _enum_value(getattr(command, "status", None)) == CommandStatus.ACK_RECEIVED.value
+            enum_str(getattr(command, "status", None)) == CommandStatus.ACK_RECEIVED.value
             or command.ack_received_at is not None
         ):
             raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
@@ -980,7 +973,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             action_label="提交 Result",
         )
 
-        command_type = _enum_value(command.task_type)
+        command_type = enum_str(command.task_type)
         result_payload: dict[str, Any] = {
             "command_code": command.command_code,
             "device_code": device.device_code,
@@ -994,7 +987,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             result_payload["error_detail"] = {"error_message": error_detail}
 
         sandbox_completed_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
-        sandbox_success = _enum_value(result) == CommandResult.SUCCESS.value
+        sandbox_success = enum_str(result) == CommandResult.SUCCESS.value
         command.status = CommandStatus.COMPLETED if sandbox_success else CommandStatus.FAILED
         command.result = CommandResult.SUCCESS if sandbox_success else CommandResult.FAILED
         command.completed_at = sandbox_completed_at
@@ -1075,7 +1068,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if session.status != _RESULT_WAIT_SESSION_STATUS:
             raise ValueError(
-                f"当前会话状态不允许{action_label}: session_id={session_id}, status={_enum_value(session.status)}"
+                f"当前会话状态不允许{action_label}: session_id={session_id}, status={enum_str(session.status)}"
             )
         if session.awaiting_command_id != command.id:
             raise ValueError(
@@ -1086,11 +1079,11 @@ class WorklineOperationService(BaseService[Any, Any]):
         return session
 
     async def _validate_ack_target(self, db: Any, outbox: Any) -> None:
-        if _enum_value(outbox.dispatch_type) != SystemOutboxDispatchType.DEVICE_COMMAND.value:
+        if enum_str(outbox.dispatch_type) != SystemOutboxDispatchType.DEVICE_COMMAND.value:
             raise ValueError(f"仅允许 ACK 设备指令 Outbox: dispatch_key={outbox.dispatch_key}")
-        if _enum_value(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
+        if enum_str(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
             raise ValueError(
-                f"当前 Outbox 状态不允许 ACK: dispatch_key={outbox.dispatch_key}, status={_enum_value(outbox.status)}"
+                f"当前 Outbox 状态不允许 ACK: dispatch_key={outbox.dispatch_key}, status={enum_str(outbox.status)}"
             )
 
         raw_payload = outbox.payload_json

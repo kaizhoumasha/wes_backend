@@ -83,7 +83,7 @@ async def test_diagnostic_service_returns_existing_record_for_duplicate_key() ->
 
 @pytest.mark.asyncio
 async def test_runtime_record_diagnostic_persists_card_after_logging() -> None:
-    from src.celery_app.tasks import workline as task_module
+    from src.app.workline import diagnostic_support
 
     inbox = SimpleNamespace(
         id=11,
@@ -91,13 +91,18 @@ async def test_runtime_record_diagnostic_persists_card_after_logging() -> None:
         payload_json={"event_type": "SCAN_COMPLETED", "device_code": "SCN-01"},
     )
 
-    with patch.object(
-        task_module.workline_diagnostic_service,
-        "record_event",
-        new=AsyncMock(),
-        create=True,
-    ) as mock_record:
-        await task_module._record_diagnostic(
+    with (
+        patch.object(
+            diagnostic_support,
+            "_log_diagnostic",
+            wraps=diagnostic_support._log_diagnostic,
+        ),
+        patch(
+            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.record_event",
+            new=AsyncMock(),
+        ) as mock_record,
+    ):
+        await diagnostic_support._record_diagnostic(
             object(),
             inbox=inbox,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
