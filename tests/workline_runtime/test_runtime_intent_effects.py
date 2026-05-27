@@ -1441,7 +1441,9 @@ async def test_apply_orchestrator_effects_dispatches_runtime_intents(monkeypatch
 
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     intents = [RuntimeIntent.update_context({"pkg_id": "PKG-001"})]
-    await workline_effects._apply_orchestrator_effects(
+    from src.app.workline.services.write_back_service import orchestrator_write_back_service
+
+    await orchestrator_write_back_service.write_back(
         SimpleNamespace(add=MagicMock()),
         session=session,
         workline=SimpleNamespace(id=1, plugin_key="demo_plugin"),
