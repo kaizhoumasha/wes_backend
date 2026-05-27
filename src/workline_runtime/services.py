@@ -9,10 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from src.workline_runtime.run_mode import is_simulation_run_mode
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
+    from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse
 
 
 @runtime_checkable
@@ -21,6 +24,7 @@ class BinAllocator(Protocol):
 
     def allocate(self, barcode: str) -> Mapping[str, Any] | None:
         """按条码分配料箱。"""
+        ...
 
     def plan_allocation(
         self,
@@ -29,6 +33,7 @@ class BinAllocator(Protocol):
         context: Mapping[str, Any] | None = None,
     ) -> SmtRackBinSchedulingDecision | None:
         """按条码和运行时上下文规划料箱调度。"""
+        ...
 
 
 @runtime_checkable
@@ -41,6 +46,7 @@ class ActiveRackSnapshotProvider(Protocol):
         context: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any] | None] | None:
         """按运行时上下文恢复当前 active_bin_rack。"""
+        ...
 
 
 @runtime_checkable
@@ -49,6 +55,16 @@ class RackOperationStatusProvider(Protocol):
 
     def derive_operation_status(self, operation_key: str) -> Awaitable[str]:
         """按 operation_key 读取派生状态。"""
+        ...
+
+
+@runtime_checkable
+class WmsInventoryClient(Protocol):
+    """WMS 库存查询接口。"""
+
+    def query_inventory(self, request: QueryInventoryRequest) -> Awaitable[QueryInventoryResponse]:
+        """按物料查询 WMS 库存。"""
+        ...
 
 
 class BoundRackOperationStatusProvider:
@@ -69,9 +85,15 @@ class WorklineRuntimeServices:
     bin_allocator: BinAllocator | None = None
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     rack_operation_status_provider: RackOperationStatusProvider | None = None
+    wms_inventory_client: WmsInventoryClient | None = None
 
 
-def build_workline_runtime_services(*, db: Any | None = None, workline: Any | None = None) -> WorklineRuntimeServices:
+def build_workline_runtime_services(
+    *,
+    db: Any | None = None,
+    workline: Any | None = None,
+    session: Any | None = None,
+) -> WorklineRuntimeServices:
     """构建当前 worker 使用的运行时服务集合。"""
 
     from src.app.resource.services.smt_rack_bin_scheduling_service import smt_rack_bin_scheduling_service
@@ -88,10 +110,21 @@ def build_workline_runtime_services(*, db: Any | None = None, workline: Any | No
             service=rack_operation_service,
         )
 
+    wms_inventory_client = None
+    if (
+        db is not None
+        and not is_simulation_run_mode(getattr(workline, "run_mode", None))
+        and not is_simulation_run_mode(getattr(session, "run_mode", None))
+    ):
+        from src.app.wms_integration.services import wms_typed_port_service
+
+        wms_inventory_client = wms_typed_port_service
+
     return WorklineRuntimeServices(
         bin_allocator=smt_rack_bin_scheduling_service,
         active_rack_snapshot_provider=active_rack_snapshot_provider,
         rack_operation_status_provider=rack_operation_status_provider,
+        wms_inventory_client=wms_inventory_client,
     )
 
 
@@ -100,6 +133,7 @@ __all__ = [
     "BinAllocator",
     "BoundRackOperationStatusProvider",
     "RackOperationStatusProvider",
+    "WmsInventoryClient",
     "WorklineRuntimeServices",
     "build_workline_runtime_services",
 ]

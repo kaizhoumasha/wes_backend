@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
@@ -14,6 +15,15 @@ from src.app.resource.services import (
     SmtRackBinSchedulingDecisionKind,
     SmtRackOperationRequest,
     smt_rack_bin_scheduling_service,
+)
+from src.app.wms_integration.models.ports import QueryInventoryRequest
+from src.app.wms_integration.services.exceptions import (
+    WmsBusinessRejectedError,
+    WmsCircuitOpenError,
+    WmsEvidencePersistenceError,
+    WmsIntegrationError,
+    WmsTimeoutError,
+    WmsUnavailableError,
 )
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 from src.core.logger import logger
@@ -314,6 +324,36 @@ def _merge_runtime_trace_context(ctx: PluginContext, context: dict[str, Any]) ->
         session_id = getattr(getattr(ctx, "session", None), "id", None)
         if session_id is not None and not _is_mock_value(session_id):
             context["session_id"] = session_id
+
+
+def _resolve_runtime_trace_id(ctx: PluginContext, inbox: Any) -> str | None:
+    for value in (
+        getattr(inbox, "trace_id", None),
+        getattr(ctx, "trace_id", None),
+        getattr(getattr(ctx, "session", None), "trace_id", None),
+    ):
+        if _is_mock_value(value):
+            continue
+        trace_id = non_empty_str(value)
+        if trace_id is not None:
+            return trace_id
+    return None
+
+
+def _wms_evidence_payload(
+    exc: WmsIntegrationError,
+    *,
+    request_id: str,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "operation_name": exc.operation_name,
+        "evidence_key": exc.evidence_key,
+        "reason_code": exc.reason_code,
+        "http_status": exc.http_status,
+        "trace_id": trace_id,
+        "request_id": request_id,
+    }
 
 
 def _merge_runtime_config_context(ctx: PluginContext, context: dict[str, Any]) -> None:
@@ -1002,6 +1042,64 @@ class SmtClassifierPlugin(WorklinePlugin):
                     timeout_seconds=300,
                 ),
             ]
+
+        wms_inventory_client = ctx.services.wms_inventory_client
+        if wms_inventory_client is not None:
+            material_sku = non_empty_str(barcode_decision.six_in_one.HHPN)
+            if material_sku is None:
+                return build_payload_invalid_block("扫码事件缺少 HHPN 字段")
+
+            request_id = uuid.uuid4().hex
+            trace_id = _resolve_runtime_trace_id(ctx, inbox)
+            try:
+                _ = await wms_inventory_client.query_inventory(
+                    QueryInventoryRequest(request_id=request_id, trace_id=trace_id, sku=material_sku)
+                )
+            except WmsBusinessRejectedError as exc:
+                logger.warning(f"Scan rejected by WMS: {exc}")
+                return [
+                    ctx.next.mark_ng(
+                        reason_code="WMS_REJECTED",
+                        message=str(exc),
+                        payload={
+                            **_mark_ng_payload(barcode=pkg_id, location=location),
+                            **_wms_evidence_payload(exc, request_id=request_id, trace_id=trace_id),
+                        },
+                    ),
+                    ctx.next.update_context(
+                        _build_scan_ng_context(
+                            barcode=pkg_id,
+                            barcodes=barcode_decision.barcodes,
+                            location=location,
+                            device_code=event.device_code,
+                        )
+                    ),
+                    ctx.next.command(
+                        device_role=self.INPUT_ARM,
+                        action="PICK_AND_PUT",
+                        payload=build_pick_scan_ng_params(barcode=pkg_id, location=location),
+                        destination_role=self.INPUT_ARM,
+                        timeout_seconds=300,
+                    ),
+                ]
+            except WmsEvidencePersistenceError as exc:
+                logger.error(f"WMS evidence persistence error for scan {pkg_id}: {exc}")
+                return ctx.next.block(
+                    scope=BlockScope.WORKLINE,
+                    reason_code=exc.reason_code or "WMS_EVIDENCE_PERSISTENCE_FAILED",
+                    message=exc.message,
+                    suggested_action="检查 WMS evidence/breaker 本地持久化状态",
+                    payload=_wms_evidence_payload(exc, request_id=request_id, trace_id=trace_id),
+                )
+            except (WmsCircuitOpenError, WmsUnavailableError, WmsTimeoutError) as exc:
+                logger.error(f"WMS Integration error for scan {pkg_id}: {exc}")
+                return ctx.next.block(
+                    scope=BlockScope.MATERIAL,
+                    reason_code=exc.reason_code or "WMS_UNAVAILABLE",
+                    message=exc.message,
+                    suggested_action="WMS 同步调用失败，请检查 WMS 状态或通过断路器恢复",
+                    payload=_wms_evidence_payload(exc, request_id=request_id, trace_id=trace_id),
+                )
 
         return [
             ctx.next.update_context(
