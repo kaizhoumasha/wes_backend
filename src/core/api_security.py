@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from fastapi import Depends, Request
 
+from src.core.client_ip import resolve_client_ip
 from src.core.encryption import encryption_service
 from src.core.exceptions import AuthException, PermissionException, RateLimitException
 from src.database.dependencies import AsyncSessionDep, CacheDep  # 运行时需要，供 FastAPI 依赖注入使用 # noqa: TC001
@@ -21,6 +23,22 @@ class APIAppContext:
     app_name: str
     app_type: str
     permissions: set[str]
+
+
+def _is_ip_allowed(client_ip: str, ip_whitelist: list[str]) -> bool:
+    try:
+        parsed_client_ip = ip_address(client_ip)
+    except ValueError:
+        return client_ip in ip_whitelist
+
+    for allowed_ip in ip_whitelist:
+        try:
+            if parsed_client_ip == ip_address(allowed_ip):
+                return True
+        except ValueError:
+            if client_ip == allowed_ip:
+                return True
+    return False
 
 
 async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep) -> APIAppContext | None:
@@ -78,8 +96,8 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
         raise AuthException("签名验证失败")
 
     if app.ip_whitelist:
-        client_ip = request.client.host if request.client else "unknown"
-        if client_ip not in app.ip_whitelist:
+        client_ip = resolve_client_ip(request)
+        if not _is_ip_allowed(client_ip, app.ip_whitelist):
             raise AuthException(f"IP {client_ip} 不在白名单中")
 
     await _check_rate_limit(cache, app)

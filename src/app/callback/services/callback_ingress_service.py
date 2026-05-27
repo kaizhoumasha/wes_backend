@@ -28,6 +28,7 @@ from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services.callback_normalizer import wms_execution_callback_normalizer
 from src.app.workline.services import inbox_service, workline_diagnostic_service, workline_service  # noqa: F401
+from src.core.client_ip import resolve_client_ip
 from src.core.logger import logger
 from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
@@ -195,7 +196,7 @@ def _build_callback_log_payload(
         "callback_type": callback_type,
         "subject_code": subject_code,
         "request_body": request_body,
-        "client_ip": request.client.host if request.client else None,
+        "client_ip": resolve_client_ip(request),
         "user_agent": request.headers.get("User-Agent"),
         "request_id": trace.request_id,
         "trace_id": trace.trace_id,

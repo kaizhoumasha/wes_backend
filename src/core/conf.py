@@ -39,6 +39,28 @@ class Settings(BaseSettings):
     # ==================== 安全配置 ====================
 
     SKIP_API_AUTH: bool = False
+    TRUSTED_PROXY_IPS: str | list[str] = []
+
+    @field_validator("TRUSTED_PROXY_IPS", mode="before")
+    @classmethod
+    def parse_trusted_proxy_ips(cls, v: str | list[str] | None) -> list[str]:
+        """解析 TRUSTED_PROXY_IPS 环境变量"""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [item.strip() for item in v if item.strip()]
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                pass
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return []
 
     @computed_field
     @property

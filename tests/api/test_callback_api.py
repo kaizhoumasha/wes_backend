@@ -17,9 +17,12 @@ from src.app.callback.models import (
     CallbackResultIngressResponse,
 )
 from src.app.callback.v1 import callback as callback_module
+from src.core.conf import settings
+from src.workline_runtime.trace_context import TraceContext
 
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
+callback_ingress_module = importlib.import_module("src.app.callback.services.callback_ingress_service")
 
 
 def _await_kwargs(mock: AsyncMock) -> JsonDict:
@@ -141,6 +144,34 @@ def create_result_payload(**overrides: object) -> JsonDict:
     }
     payload.update(overrides)
     return payload
+
+
+def test_callback_log_payload_uses_trusted_proxy_client_ip(
+    build_request: RequestFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "TRUSTED_PROXY_IPS", ["10.0.0.10"])
+    request = build_request(
+        body=create_result_payload(),
+        path="/api/v1/callback/result",
+        client_ip="10.0.0.10",
+    )
+    request.headers = {
+        "User-Agent": "TestClient",
+        "X-Real-IP": "203.0.113.10",
+    }
+
+    payload = callback_ingress_module._build_callback_log_payload(
+        request,
+        trace=TraceContext(request_id="req-1", trace_id="trace-1"),
+        callback_type="RESULT",
+        subject_code="CMD-20250317-001",
+        request_body=create_result_payload(),
+        response_status=200,
+        response_time_ms=12,
+    )
+
+    assert payload["client_ip"] == "203.0.113.10"
 
 
 def create_event_payload(**overrides: object) -> JsonDict:
