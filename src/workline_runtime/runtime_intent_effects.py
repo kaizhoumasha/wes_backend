@@ -285,7 +285,7 @@ class RuntimeIntentEffectApplier:
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
 
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         workline_effects._sync_effect_trace_fields(ctx)
         if not intents:
@@ -359,7 +359,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
         if (
@@ -395,7 +395,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         await workline_effects._emit_timeline(
             ctx,
@@ -424,7 +424,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         try:
             target_device = _resolve_target_device(ctx, intent)
@@ -506,7 +506,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         dispatch_key = str(intent.dispatch_key)
         target_code = str(intent.target_code)
@@ -569,7 +569,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         payload_json = dict(intent.payload_json)
         operation_type = str(intent.action)
@@ -685,7 +685,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         payload_json = dict(intent.payload_json)
         operation_type = str(intent.action)
@@ -851,7 +851,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
         timeout_seconds = intent.timeout_seconds or 300
@@ -881,7 +881,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_governance_failure(self, ctx: Any, exc: Any) -> None:
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         ctx["orch_result"].failure = SimpleNamespace(domain=exc.domain, code=exc.code, message=exc.message)
         _ = await workline_effects._apply_failure_transition(ctx)
@@ -904,7 +904,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
         session.status = "MANUAL_HOLD"
@@ -939,7 +939,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_continue_next(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         if intent.action:
             await self._apply_command(ctx, _command_producing_intent_to_command_intent(intent))

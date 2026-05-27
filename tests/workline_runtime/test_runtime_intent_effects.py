@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.workline.services import write_back_service as workline_effects
+from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.ng_return_item_service import ng_return_item_service
-from src.celery_app.tasks import workline as workline_effects
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
@@ -1400,7 +1401,7 @@ def test_result_requires_outbox_dispatch_for_external_request() -> None:
         ],
     )
 
-    assert workline_effects._result_requires_outbox_dispatch(result) is True
+    assert _result_requires_outbox_dispatch(result) is True
 
 
 def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
@@ -1421,7 +1422,7 @@ def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
         ],
     )
 
-    assert workline_effects._result_requires_outbox_dispatch(result) is True
+    assert _result_requires_outbox_dispatch(result) is True
 
 
 def test_wait_session_status_maps_rack_operation_to_external_wait() -> None:

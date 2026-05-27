@@ -1,9 +1,24 @@
+import ast
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.workline_runtime.orchestrator import OrchestratorResult
+
+
+def test_runtime_write_back_does_not_depend_on_celery_task_facade() -> None:
+    source = Path("src/workline_runtime/runtime_intent_effects.py").read_text()
+    tree = ast.parse(source)
+
+    celery_imports = [
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("src.celery_app.tasks")
+    ]
+
+    assert celery_imports == []
 
 
 @pytest.fixture

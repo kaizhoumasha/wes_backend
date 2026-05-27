@@ -13,6 +13,7 @@ from src.app.workline.services.inbox_batch_processor import (
     _load_workline_session,
 )
 from src.workline_runtime.diagnostics import ErrorCode
+from src.workline_runtime.orchestrator import OrchestratorResult
 
 
 @pytest.fixture
@@ -326,3 +327,60 @@ async def test_process_batch_late_command(mock_db, mock_inbox_service):
 
                     assert result["success"] == 1
                     mock_record.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbox_service):
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.trace_id = "trace-1"
+    inbox.payload_json = {"event_type": "SOME_EVENT"}
+    session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
+    workline = SimpleNamespace(id=20)
+    injected_write_back = SimpleNamespace(write_back=AsyncMock())
+    mock_inbox_service.get_new_messages.return_value = [inbox]
+
+    class FakeOrchestratorService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_inbox(self, *args, write_callback, **kwargs):
+            result = OrchestratorResult(success=True, intents=[])
+            await write_callback(result)
+            return result
+
+    with (
+        patch(
+            "src.app.workline.services.inbox_batch_processor._load_related_entities",
+            new_callable=AsyncMock,
+        ) as mock_load,
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_duplicate_entry_event_for_session",
+            return_value=False,
+        ),
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_late_or_duplicate_command_result_for_session",
+            return_value=False,
+        ),
+        patch("src.app.workline.services.inbox_batch_processor.OrchestratorService", FakeOrchestratorService),
+        patch(
+            "src.app.workline.services.write_back_service.orchestrator_write_back_service.write_back",
+            new_callable=AsyncMock,
+        ) as default_write_back,
+    ):
+        mock_load.return_value = {
+            "session": session,
+            "workline": workline,
+            "device": None,
+            "command": None,
+            "devices_by_role": {},
+            "services": {},
+            "safety_checked": True,
+        }
+
+        processor = InboxBatchProcessor(write_back_service=injected_write_back)
+        result = await processor.process_batch(mock_db, limit=1)
+
+    assert result["success"] == 1
+    injected_write_back.write_back.assert_awaited_once()
+    default_write_back.assert_not_awaited()

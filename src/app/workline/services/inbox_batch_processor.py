@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from loguru import logger
 from sqlalchemy import text
 
+from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND, INBOX_PROCESS_TIMEOUT_SECONDS
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.celery_app.app import celery_app
-from src.celery_app.constants import EXTERNAL_HTTP_INBOX_KIND, INBOX_PROCESS_TIMEOUT_SECONDS
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
 from src.utils.value_normalization import (
@@ -969,9 +969,13 @@ class InboxBatchProcessor:
                         from src.workline_runtime.session_resolver import reapply_pending_session_ingress_metadata
 
                         _ = reapply_pending_session_ingress_metadata(_session)
-                        from src.app.workline.services.write_back_service import orchestrator_write_back_service
+                        write_back_service = self.write_back_service
+                        if write_back_service is None:
+                            from src.app.workline.services.write_back_service import orchestrator_write_back_service
 
-                        await orchestrator_write_back_service.write_back(
+                            write_back_service = orchestrator_write_back_service
+
+                        await write_back_service.write_back(
                             db,
                             session=_session,
                             workline=_workline,

@@ -1,6 +1,6 @@
 # 工作线运行时工作流指南
 
-**最后更新**: 2026-04-30
+**最后更新**: 2026-05-27
 
 本文档定义 WES 工作线运行时的标准数据链路，适用于真实设备、SANDBOX 调试和插件开发。本文只描述主干职责和状态边界，具体插件可在此基础上扩展业务决策。
 
@@ -11,7 +11,7 @@
 核心原则：
 
 - `WorklineInbox` 是编排唯一入口。
-- `WorklineOutbox` 是副作用唯一出口。
+- `SystemOutbox` 是副作用统一出口，Workline 只负责写入可派发事实。
 - `DeviceCommand` 是设备命令的业务主键载体。
 - `WorklineSession` 是一条业务链路的 Runtime-owned lifecycle 实例。
 - `WorklineTimeline` 是运行时决策和状态迁移账本。
@@ -29,9 +29,10 @@ Device Submit Event
   -> Plugin 返回 RuntimeIntent
   -> 写入 Timeline 决策记录
   -> 创建 DeviceCommand
-  -> 创建 WorklineOutbox
+  -> 创建 SystemOutbox
   -> Session 进入 WAITING_DEVICE_RESULT
-  -> Dispatcher 派发 Outbox 到目标设备
+  -> SystemOutboxEngine 调度 Workline 域派发
+  -> OutboxDispatchService 派发 Outbox 到目标设备
   -> Outbox 进入 SENT
   -> Device ACK 写入 DeviceCommand
   -> ACK 激活 Session 执行等待 deadline
@@ -40,7 +41,7 @@ Device Submit Event
   -> 写入 COMMAND_RESULT Inbox
   -> Worker 消费 Result Inbox
   -> Plugin 返回 RuntimeIntent 判断下一步
-       -> 有下一条命令：继续创建 DeviceCommand + WorklineOutbox
+       -> 有下一条命令：继续创建 DeviceCommand + SystemOutbox
        -> 无下一条命令：Session COMPLETED
        -> 异常或超时：Session FAILED
 ```
@@ -59,9 +60,9 @@ Device Event -> Inbox -> Runtime Decision
 | --- | --- | --- | --- |
 | Submit Event | 设备 | `callback_logs`, `workline_inbox` | 设备上报物理事件，如扫码完成。 |
 | Inbox Processing | Worker | `workline_sessions`, `workline_timelines` | 恢复上下文，调用插件取得 `RuntimeIntent`。 |
-| Command Decision | Worker | `device_commands`, `workline_outbox`, `workline_timelines` | WES 决定要对哪个目标设备下发什么命令。 |
-| Dispatch Command | Dispatcher | `workline_outbox`, `workline_dispatch_attempts` | Outbox 是待派发记录，Dispatcher 才是真正发命令的组件。 |
-| Device ACK | 设备 | `workline_outbox`, `device_commands` | ACK 表示设备收到命令，不表示执行完成。 |
+| Command Decision | Worker | `device_commands`, `system_outbox`, `workline_timelines` | WES 决定要对哪个目标设备下发什么命令。 |
+| Dispatch Command | `SystemOutboxEngine` / `OutboxDispatchService` | `system_outbox`, `workline_dispatch_attempts` | Outbox 是待派发记录，派发服务才是真正发命令的组件。 |
+| Device ACK | 设备 | `system_outbox`, `device_commands` | ACK 表示设备收到命令，不表示执行完成。 |
 | Execute Command | 设备 | 设备侧状态 | WES 不直接认为命令已完成。 |
 | Submit Result | 设备 | `callback_logs`, `workline_inbox` | Result Callback 写入 `COMMAND_RESULT` Inbox。 |
 | Result Processing | Worker | `workline_sessions`, `workline_timelines`, `device_commands` | Runtime 根据插件返回的 `RuntimeIntent` 决定继续、完成或失败。 |
@@ -86,9 +87,9 @@ Device Event -> Inbox -> Runtime Decision
 - Worker 消费 Inbox 后，才会真正推动 `WorklineSession`。
 - 任何 Result 都必须能关联到 `command_code` 和当前等待的 `awaiting_command_id`。
 
-### 4.2 WorklineOutbox
+### 4.2 SystemOutbox
 
-`WorklineOutbox` 是运行时副作用出口。WES 不直接在插件里调用设备或外部系统，而是写 Outbox，由 Dispatcher 统一派发。
+`SystemOutbox` 是运行时副作用出口。WES 不直接在插件里调用设备或外部系统，而是写 Outbox，由 `SystemOutboxEngine` 统一调度；Workline 域副作用再交给 `OutboxDispatchService` 处理。
 
 常见 `dispatch_type`：
 
@@ -100,8 +101,8 @@ Device Event -> Inbox -> Runtime Decision
 
 | 状态 | 含义 |
 | --- | --- |
-| `NEW` | 已创建，等待 Dispatcher 拉取。 |
-| `DISPATCHING` | Dispatcher 正在派发。 |
+| `NEW` | 已创建，等待系统级派发任务拉取。 |
+| `DISPATCHING` | 派发服务正在派发。 |
 | `SENT` | 已发送到目标；设备 ACK 与 Result 事实记录在 DeviceCommand，不复制到 Outbox。 |
 | `BLOCKED_RESOURCE` | WorkLine runtime reconciliation 隔离中，暂缓派发。 |
 | `FAILED` | 派发失败。 |
@@ -220,7 +221,7 @@ SANDBOX 不走真实设备，但必须复用同一条运行时链路。
 Sandbox Event
   -> DEVICE_EVENT Inbox
   -> Worker
-  -> DeviceCommand + Outbox
+  -> DeviceCommand + SystemOutbox
   -> Pending Outbox 展示
   -> Sandbox ACK
   -> DeviceCommand ACK_RECEIVED
@@ -250,7 +251,7 @@ SANDBOX 特殊点：
 
 不是。
 
-Outbox 是待派发副作用记录。Dispatcher 成功发送后，Outbox 才进入 `SENT`。
+Outbox 是待派发副作用记录。派发服务成功发送后，Outbox 才进入 `SENT`。
 
 ### 7.3 Device ACK 后为什么 Outbox 还在 Pending？
 
@@ -270,7 +271,7 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 
 - 每个 accepted Event 都有 `trace_id`。
 - 每个 Runtime decision 输入都进入 `WorklineInbox`。
-- 每个设备副作用都先写 `DeviceCommand` 和 `WorklineOutbox`。
+- 每个设备副作用都先写 `DeviceCommand` 和 `SystemOutbox`。
 - Outbox 派发有明确目标 `target_code`。
 - ACK 不推动业务状态，只闭环派发接收。
 - Result 通过 `COMMAND_RESULT` Inbox 推动 Runtime decision。
@@ -286,7 +287,7 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 3. 查 `workline_sessions`：Session 当前状态、等待字段、失败字段。
 4. 查 `workline_timelines`：Runtime 做了什么决策。
 5. 查 `device_commands`：是否创建了目标命令。
-6. 查 `workline_outbox`：副作用是否创建、派发、ACK。
+6. 查 `system_outbox`：副作用是否创建、派发、ACK。
 7. 查 `workline_dispatch_attempts`：真实派发是否成功。
 8. 查 Result Inbox：设备执行结果是否回到 WES。
 
