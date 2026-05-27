@@ -146,9 +146,9 @@ async def _send_external_http(url: str, payload_json: dict[str, Any]) -> bool:
 
 
 async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:
-    from src.celery_app.tasks.workline import OutboxDispatcher
+    from src.app.workline.services.outbox_dispatch_service import outbox_dispatch_service
 
-    return await OutboxDispatcher._dispatch(db, limit=limit)
+    return await outbox_dispatch_service.dispatch(db, limit=limit)
 
 
 async def _dispatch_device_command(db: Any, outbox: Any) -> bool:

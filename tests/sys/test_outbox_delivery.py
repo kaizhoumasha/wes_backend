@@ -32,6 +32,19 @@ async def test_dispatch_external_http_registry_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_external_http_sender_failure() -> None:
+    outbox = type("Outbox", (), {"target_code": "TEST_ENDPOINT", "payload_json": {"k": "v"}})()
+    registry = MagicMock()
+    registry.resolve.return_value = type("Endpoint", (), {"url": "http://test/api"})()
+
+    sender = AsyncMock(return_value=False)
+
+    result = await dispatch_external_http(outbox, registry, sender)
+    assert result is False
+    sender.assert_awaited_once_with("http://test/api", {"k": "v"})
+
+
+@pytest.mark.asyncio
 async def test_dispatch_internal_signal_success() -> None:
     outbox = type("Outbox", (), {"target_code": "workline", "payload_json": {"k": "v"}})()
 

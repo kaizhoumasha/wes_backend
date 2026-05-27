@@ -142,10 +142,8 @@ def test_celery_facade_contracts() -> None:
     assert hasattr(workline_tasks, "process_inbox_batch")
     assert "src.celery_app.tasks.workline.process_inbox_batch" in celery_app.tasks
 
-    # assert not hasattr(workline_tasks, "ProcessInboxMessages")
-    # This assertion will be re-enabled after Task 4.
-    # assert not hasattr(workline_tasks, "OutboxDispatcher")
-    # This assertion will be re-enabled after Task 5.
+    assert not hasattr(workline_tasks, "ProcessInboxMessages")
+    assert not hasattr(workline_tasks, "OutboxDispatcher")
 
 
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:
