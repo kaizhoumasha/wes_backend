@@ -68,10 +68,12 @@ def test_completion_policy_migration_only_backfills_canonical_full_box_policy() 
         "def downgrade() -> None:", maxsplit=1
     )[0]
 
-    assert "_ensure_" not in migration_text
     assert "_backfill_legacy" not in migration_text
     assert "system_outbox" not in migration_text
     assert "operation_id" not in migration_text
+    assert "_ensure_completion_policy_column()" in upgrade_body
+    assert "op.drop_column" not in migration_text
+    assert "ix_wes_biz_handling_operations_completion_policy" in migration_text
     assert "UPDATE wes_biz.handling_operations" in upgrade_body
     assert "LIKE '%FULL_BOX_EXCHANGE%'" in migration_text
     assert "LIKE '%FULL_BIN_EXCHANGE%'" not in migration_text
