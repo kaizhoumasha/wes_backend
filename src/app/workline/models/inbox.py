@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -261,6 +261,22 @@ class WorklineInbox(
 
     __tablename__: ClassVar[str] = "workline_inbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+    __table_args__ = (
+        Index(
+            "ix_wes_biz_workline_inbox_new_received_at",
+            "received_at",
+            postgresql_where=text("status = 'NEW'"),
+            sqlite_where=text("status = 'NEW'"),
+        ),
+        Index(
+            "ix_wes_biz_workline_inbox_retry_next_retry_received_at",
+            "next_retry_at",
+            "received_at",
+            postgresql_where=text("status = 'RETRY'"),
+            sqlite_where=text("status = 'RETRY'"),
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
 
     # 关系定义
     session: "WorklineSession" = Relationship(

@@ -16,11 +16,29 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem
+from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
 from src.app.workline.services.inbox_service import WorklineInboxService
 
 # ==================== 测试幂等键计算逻辑 ====================
+
+
+def test_workline_inbox_declares_hot_queue_partial_indexes() -> None:
+    """热队列消费查询必须有匹配状态分支和排序形态的部分索引。"""
+    indexes = {index.name: index for index in WorklineInbox.__table__.indexes if index.name}
+
+    new_index = indexes.get("ix_wes_biz_workline_inbox_new_received_at")
+    retry_index = indexes.get("ix_wes_biz_workline_inbox_retry_next_retry_received_at")
+
+    assert new_index is not None
+    assert [column.name for column in new_index.columns] == ["received_at"]
+    new_where = str(new_index.dialect_options["postgresql"]["where"])
+    assert "status = 'NEW'" in new_where
+
+    assert retry_index is not None
+    assert [column.name for column in retry_index.columns] == ["next_retry_at", "received_at"]
+    retry_where = str(retry_index.dialect_options["postgresql"]["where"])
+    assert "status = 'RETRY'" in retry_where
 
 
 def test_calculate_device_event_idempotency_key_with_vendor_id():
