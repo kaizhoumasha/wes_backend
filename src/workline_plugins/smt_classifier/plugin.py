@@ -1318,7 +1318,7 @@ class SmtClassifierPlugin(WorklinePlugin):
             return build_payload_invalid_block("MOVE_FORWARD 成功回调缺少 pkg_id")
 
         smt_ctx = parse_smt_context(ctx)
-        reel_diameter = smt_ctx.reel_diameter or ""
+        reel_diameter = str(smt_ctx.reel_diameter or "")
         waiting_operation_intents = await self._waiting_rack_operation_intents(
             ctx,
             pkg_id=pkg_id,
@@ -1533,11 +1533,12 @@ class SmtClassifierPlugin(WorklinePlugin):
         bin_location: Mapping[str, Any],
         source_event_id: str | None,
     ) -> list[RuntimeIntent]:
+        bin_location_payload = dict(bin_location)
         return [
             ctx.next.update_context(
                 SmtClassifierContext(
                     pkg_id=pkg_id,
-                    bin_location=bin_location,
+                    bin_location=bin_location_payload,
                 ).to_patch()
             ),
             _build_bin_cell_reservation_intent(
@@ -1552,7 +1553,7 @@ class SmtClassifierPlugin(WorklinePlugin):
                 payload=build_output_to_bin_params(
                     pkg_id=pkg_id,
                     reel_diameter=str(reel_diameter),
-                    bin_location=bin_location,
+                    bin_location=bin_location_payload,
                 ),
                 destination_role=self.OUTPUT_ARM,
                 timeout_seconds=300,
