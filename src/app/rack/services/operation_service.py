@@ -862,7 +862,7 @@ def _target_projection_matches_task(
     move_out_rack_codes: set[str],
 ) -> bool:
     task_type = _task_type(task)
-    task_rack_kind = coerce_optional_str(getattr(task, "rack_kind", None))
+    task_rack_kind = coerce_optional_str(enum_value(getattr(task, "rack_kind", None)))
     task_rack_code = coerce_optional_str(getattr(task, "rack_code", None))
     if task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value and task_rack_kind is None:
         return False
@@ -874,7 +874,8 @@ def _target_projection_matches_task(
         return False
     if task_rack_code is not None and placement_rack_code != task_rack_code:
         return False
-    return task_rack_kind is None or coerce_optional_str(getattr(placement, "rack_kind", None)) == task_rack_kind
+    placement_rack_kind = coerce_optional_str(enum_value(getattr(placement, "rack_kind", None)))
+    return task_rack_kind is None or placement_rack_kind == task_rack_kind
 
 
 def _outbox_payload(spec: RackTaskSpec) -> dict[str, Any]:

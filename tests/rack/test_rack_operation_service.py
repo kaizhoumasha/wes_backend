@@ -2058,6 +2058,28 @@ async def test_derive_operation_status_reconciles_when_projection_rack_kind_mism
 
 
 @pytest.mark.asyncio
+async def test_derive_operation_status_accepts_enum_rack_kind_projection() -> None:
+    task_repository = FakeRackTaskRepository()
+    task_repository.add_existing(
+        operation_key="op-projection-kind-enum",
+        sequence_no=2,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        task_status=RackTaskStatus.SUCCEEDED,
+        rack_kind=RackKind.SINGLE_LAYER.value,
+        target_position_code="CLASSIFIER-WORK",
+    )
+    service, _repo, _lifecycle, _placements = _service(
+        task_repository=task_repository,
+        placements_by_position={"CLASSIFIER-WORK": [_active_rack("RACK-ENUM", rack_kind=RackKind.SINGLE_LAYER)]},
+    )
+
+    assert (
+        await service.derive_operation_status(FakeDb(), operation_key="op-projection-kind-enum")
+        == RackOperationStatus.SUCCEEDED.value
+    )
+
+
+@pytest.mark.asyncio
 async def test_derive_operation_status_consumes_projection_per_inbound_task() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(

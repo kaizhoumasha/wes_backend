@@ -26,6 +26,29 @@
 
 ---
 
+## P2 - Workline worker 吞吐 benchmark 与队列/连接策略调优
+
+**What**: 在 Workline task decomposition 落地后，基于真实数据评估 worker concurrency、队列隔离、batch limit 和 HTTP client strategy。
+
+**Why**: 本次拆分选择单 batch 内顺序处理，以保护事务边界、fencing 语义和共享 `AsyncSession` 安全；吞吐优化需要在职责边界稳定后用基准数据驱动。
+
+**Context**: `docs/superpowers/plans/2026-05-27-workline-task-decomposition.md` Task 7 延后项。
+
+**Scope**:
+- 建立 Workline inbox/outbox worker 吞吐基准
+- 评估 Celery worker concurrency 与队列隔离策略
+- 评估 batch limit 对延迟、锁竞争和重试的影响
+- 评估设备 HTTP client 复用、超时和连接池策略
+- 明确不得在共享 `AsyncSession` 内引入 batch-internal `asyncio.gather`
+
+**Dependencies**: Workline task decomposition 代码稳定后，采集真实或接近真实的任务量、设备 ACK 延迟和 outbox 重试数据。
+
+**Effort**: M (human: 1-2 days / CC: ~30-60 min after metrics are available)
+
+**Priority**: P2
+
+---
+
 ## P1 - WorkLine SafetyZone 与共享设备影响范围
 
 **What**: 为工作线急停冻结补充 SafetyZone / shared-device topology 设计，明确一个设备急停影响哪些工作线、共享输送线、机械臂和缓存位。

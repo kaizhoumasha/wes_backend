@@ -21,7 +21,7 @@
 | Celery task facade / DB session 生命周期 | `WorklineTask`, `process_inbox_batch`, `scan_timeouts_batch`, `scan_device_heartbeats_batch`, `process_signal` | 保留在 `src/celery_app/tasks/workline.py` |
 | Inbox 批处理 | `ProcessInboxMessages._process_batch` | 迁到 `InboxBatchProcessor.process_batch()`；删除旧内部类合同 |
 | session/workline/device/command 解析 | `_load_related_entities` 及相关 helper | 作为 `InboxBatchProcessor` 私有 helper，不导出公共 service |
-| 编排结果写回 | `_apply_orchestrator_effects` 及 effect helper | 迁到 `OrchestratorWriteBackService.apply()` |
+| 编排结果写回 | `_apply_orchestrator_effects` 及 effect helper | 迁到 `OrchestratorWriteBackService.write_back()` |
 | 诊断/timeline 辅助 | `_record_diagnostic`, `_emit_timeline`, `_record_*_timeline` | 保留稳定 builder/service 复用；迁移到所属 service 私有 helper |
 | WORKLINE outbox 派发 | `OutboxDispatcher._dispatch` | 迁到 `OutboxDispatchService.dispatch()`；删除旧内部类合同 |
 | 设备命令通信 | `_dispatch_device_command`, `_reserve_sandbox_device_command`, governance helper | 迁到 `DeviceCommandGateway` |
@@ -80,7 +80,7 @@ Outbox worker
 | `src/app/sys/services/outbox_delivery.py` | Create | sys-owned external HTTP / internal signal delivery helper，单源维护 endpoint allowlist 和 signal target 规则 |
 | `src/app/sys/services/__init__.py` | Modify | 仅导出需要被其它模块复用的 sys outbox 类型/单例 |
 | `src/app/workline/services/inbox_batch_processor.py` | Create | `InboxBatchProcessor.process_batch(db, limit)`；负责 inbox claim、payload gate、特殊事件分流、orchestrator 调用、write callback 和结果统计 |
-| `src/app/workline/services/orchestrator_write_back_service.py` | Create | `OrchestratorWriteBackService.apply(...)`；负责 orchestrator result 到 session/command/outbox/timeline 的原子写回 |
+| `src/app/workline/services/write_back_service.py` | Create | `OrchestratorWriteBackService.write_back(...)`；负责 orchestrator result 到 session/command/outbox/timeline 的原子写回，并承载 RuntimeIntentEffectApplier 复用的 effect helper |
 | `src/app/workline/services/outbox_dispatch_service.py` | Create | `OutboxDispatchService.dispatch(db, limit)`；负责 WORKLINE outbox repair、safety guard、claim、attempt ledger、终态更新、诊断和 SSE |
 | `src/app/workline/services/device_command_gateway.py` | Create | `DeviceCommandGateway.dispatch(db, outbox)` 与 `reserve_sandbox_command(db, outbox)`；负责设备治理、HTTP ACK、设备运行态投影 |
 | `src/app/workline/services/__init__.py` | Modify | 只导出四个核心新 service 类与单例，避免单调用方 helper 公共化 |
@@ -173,7 +173,7 @@ Outbox worker
 
 **Files:**
 
-- Create: `src/app/workline/services/orchestrator_write_back_service.py`
+- Create: `src/app/workline/services/write_back_service.py`
 - Modify: `src/app/workline/services/__init__.py`
 - Modify: `src/celery_app/tasks/workline.py`
 - Create/Modify: `tests/workline_runtime/test_orchestrator_write_back_service.py`
@@ -189,7 +189,7 @@ Outbox worker
   - Expected: 如果 GitNexus 仍返回 LOW/0 callers，必须用 `rg "_apply_orchestrator_effects|_emit_timeline"` 交叉确认。
 
 - [ ] **Step 3: 创建 write-back service**
-  - 公共方法：`apply(db, session, workline, inbox, devices_by_role, source_device, orch_result)`。
+  - 公共方法：`write_back(db, session, workline, inbox, devices_by_role, source_device, orch_result)`。
   - 迁移 `EffectApplyContext`、`_build_effect_apply_context` 和相关 effect helper。
   - 删除旧 `_apply_orchestrator_effects` 公共 wrapper 依赖；若 task 内仍需私有函数，命名为模块私有且不导出。
 
@@ -198,7 +198,7 @@ Outbox worker
 
 - [ ] **Step 5: 验证**
   - Run: `uv run pytest tests/workline_runtime/test_orchestrator_write_back_service.py tests/workline_runtime/test_runtime_intent_effects.py -q`
-  - Run: `uv run ruff check src/app/workline/services/orchestrator_write_back_service.py src/celery_app/tasks/workline.py tests/workline_runtime/test_orchestrator_write_back_service.py`
+  - Run: `uv run ruff check src/app/workline/services/write_back_service.py src/celery_app/tasks/workline.py tests/workline_runtime/test_orchestrator_write_back_service.py`
 
 - [ ] **Step 6: 提交**
   - Commit: `refactor(workline): 拆分编排写回服务`
