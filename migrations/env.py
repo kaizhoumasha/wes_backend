@@ -55,6 +55,7 @@ from src.app.resource.models import (  # noqa: F401
     ResourceStateEvent,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
+from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
 
 # 导入所有 workline 模型
 from src.app.workline.models import (  # noqa: F401

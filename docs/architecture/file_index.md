@@ -2,8 +2,8 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年4月21日
-**同步状态**: ⚠️ 已完成高优先级文档入口修正；其余内容请以实际仓库结构为准
+**最后更新**: 2026年5月27日
+**同步状态**: ⚠️ 已同步 WMS 对接辅助域入口；其余内容请以实际仓库结构为准
 
 ---
 
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-05-27 | docs-wms-integration | 补充 WMS 对接辅助域、迁移、测试和接入 checklist 索引入口 |
 | 2026-04-16 | docs-hotfix | 修正文档入口路径与失效链接，并为历史提案类文档补充状态说明 |
 | 2026-03-31 | v0.1.1.0 | 文档清理：删除 36 个过程文档，补全 callback/device 模块，修复 Mixin 继承示例 |
 | 2026-03-23 | v0.1.0.0 | 初始生产版本：完整 3 层架构、JWT 认证、RBAC 权限、设备管理、作业线模块、254 个测试通过 |
@@ -78,6 +79,8 @@
 | `DOCKER.md` | Docker 使用说明 | 📚 参考资料 |
 | `Jenkinsfile` | Jenkins CI/CD 配置 | 📚参考资料 |
 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
+| `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
+| `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
 | `docs/devops/prod-release-deploy.md` | 生产环境手动发布与回滚 Runbook | 📖 必读文档 |
 
 #### 🚀 应用入口
@@ -416,6 +419,28 @@
 | `services/` | `callback_service.py` | 回调处理服务 | 🔧 架构核心 |
 | `v1/` | `callback.py` | 回调 API 路由（入口校验、early return logging、request_id 入口锚点） | 🔧 架构核心 |
 
+#### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
+
+WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合同、回调标准化、短时查询缓存、DB-backed 熔断、脱敏证据留痕和调用方错误合同。该域不提供公开 `/api/v1/wms/...` 代理接口，也不接管库存主账、SystemOutbox 派发或 RuntimeHold 创建。
+
+| 目录 | 文件 | 用途 | 分类 |
+|------|------|------|------|
+| `models/` | `evidence.py` | WMS 调用证据模型：脱敏快照、canonical hash、trace/correlation 字段 | 🔧 架构核心 |
+| | `circuit_breaker.py` | WMS 熔断状态模型：operation 级共享失败计数、OPEN/HALF_OPEN/CLOSED 状态 | 🔧 架构核心 |
+| | `ports.py` | WMS typed ports 请求/响应合同模型 | 🔧 架构核心 |
+| `repositories/` | `evidence_repository.py` | WMS evidence Repository | 🔧 架构核心 |
+| | `circuit_breaker_repository.py` | WMS circuit breaker state Repository | 🔧 架构核心 |
+| `services/` | `http_client.py` | 同步 WMS HTTP client，暴露 typed exception hierarchy | 🔧 架构核心 |
+| | `typed_ports.py` | 业务域可调用的 WMS typed ports 门面 | 🔧 架构核心 |
+| | `evidence_service.py` | WMS evidence 脱敏、hash 和记录服务 | 🔧 架构核心 |
+| | `circuit_breaker_service.py` | DB-backed WMS 熔断状态转换服务 | 🔧 架构核心 |
+| | `callback_normalizer.py` | WMS/RCS 回调最小包络校验和字段标准化 | 🔧 架构核心 |
+| | `transport_contract.py` | rack/handling WMS/RCS 外部派发 payload 合同辅助 | 🔧 架构核心 |
+| | `cache.py` | WMS read-only 查询短 TTL 缓存封装 | 🔄 常用功能 |
+| | `endpoint_config.py` | WMS endpoint operation path、timeout 和 operation name 配置 | 🔧 架构核心 |
+| | `redaction.py` | WMS request/response 脱敏规则 | 🔧 架构核心 |
+| | `exceptions.py` | WMS typed errors：timeout、5xx、business reject、circuit-open | 🔧 架构核心 |
+
 #### 📡 设备模块 (src/app/device/)
 
 设备（摄像头、机械臂等）管理
@@ -466,6 +491,7 @@
 | `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | `workline_runtime/` | 作业线运行时测试（纯逻辑测试） | 🔧 架构核心 |
+| `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
 
 **Workline Runtime 测试文件**：
 
@@ -473,6 +499,18 @@
 |------|------|------|
 | `workline_runtime/test_enums.py` | 枚举类单元测试（InboxKind, Status 等） | 🔧 架构核心 |
 | `workline_runtime/test_inbox_service.py` | Inbox Service 幂等键计算测试 | 🔧 架构核心 |
+
+**WMS 对接辅助域测试文件**：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `wms_integration/test_wms_client.py` | WMS HTTP client typed error、evidence_key 和熔断交互测试 | 🔧 架构核心 |
+| `wms_integration/test_caller_contract.py` | 首个真实 caller 接入前的 RuntimeHold/diagnostic 合同保护测试 | 🔧 架构核心 |
+| `wms_integration/test_evidence.py` | WMS evidence 脱敏、hash、关联 ID 和保存行为测试 | 🔧 架构核心 |
+| `wms_integration/test_circuit_breaker.py` | DB-backed WMS breaker 状态转换测试 | 🔧 架构核心 |
+| `wms_integration/test_cache.py` | WMS read-only 短缓存、坏缓存清理和降级回源测试 | 🔄 常用功能 |
+| `wms_integration/test_callback_normalizer.py` | WMS/RCS 回调包络校验和字段标准化测试 | 🔧 架构核心 |
+| `wms_integration/test_transport_contract.py` | rack/handling WMS/RCS 派发 payload 合同防漂移测试 | 🔧 架构核心 |
 
 **E2E 测试文件**：
 
@@ -523,7 +561,9 @@
 | `REPOSITORY_GUIDE.md` | Repository 使用指南 | 📚 参考资料 |
 | `integration/interact_backend.md` | 后端交互需求草案（历史提案） | 📚 参考资料 |
 | `integration/callback_event_validation_principles.md` | callback/event 前置校验边界说明 | 📖 必读文档 |
+| `integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：错误处理、RuntimeHold/诊断和 evidence_key 传播 | 📖 必读文档 |
 | `integration/workline_device_error_code_standardization.md` | Workline 插件体系硬件错误码统一规划与迁移表 | 📖 必读文档 |
+| `architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR | 📖 必读文档 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
 | `third_party_integration_whitepaper.md` | 第三方集成指南 | 📚 参考资料 |
@@ -559,6 +599,13 @@
 | 目录 | 用途 | 分类 |
 |------|------|------|
 | `versions/` | 数据库结构变更历史 | 🔧 架构核心 |
+
+**WMS 对接相关迁移**：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `versions/20260527_0025_793f8773f841_add_wms_call_evidence.py` | 新增 WMS call evidence 表与索引 | 🔧 架构核心 |
+| `versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py` | 新增 WMS circuit breaker state 表与索引 | 🔧 架构核心 |
 
 ---
 
@@ -625,7 +672,8 @@
     │   ├───api_auth/         # API 认证
     │   ├───auth/             # 用户认证
     │   ├───demo/             # 示例模块
-    │   └───sys/              # 系统管理
+    │   ├───sys/              # 系统管理
+    │   └───wms_integration/  # WMS 对接辅助域
     │
     ├───common/               # 公共模块
     │
@@ -706,6 +754,7 @@
 | **认证** | `src/app/auth/` | 登录、登出、刷新 Token |
 | **API 认证** | `src/app/api_auth/` | API 应用、签名验证 |
 | **审计日志** | `src/app/sys/` | 操作日志查询 |
+| **WMS 对接辅助域** | `src/app/wms_integration/` | WMS typed ports、evidence、breaker、callback normalizer |
 
 ---
 

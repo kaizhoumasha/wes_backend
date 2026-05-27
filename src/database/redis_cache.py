@@ -250,7 +250,14 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return None
 
-    async def set(self, key: str, value: Any, expire: int | None = None, is_hot: bool = False) -> bool:
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        expire: int | None = None,
+        is_hot: bool = False,
+        max_expire: int | None = None,
+    ) -> bool:
         """
         设置缓存（支持自动降级）
 
@@ -258,6 +265,7 @@ class RedisCache:
         :param value: 缓存值
         :param expire: 过期时间（秒），None 则使用默认值
         :param is_hot: 是否热点数据（热点数据使用较长过期时间）
+        :param max_expire: 实际过期时间上限，None 保持默认随机抖动行为
         :return: 是否成功
         """
         if not await self.is_available():
@@ -278,6 +286,8 @@ class RedisCache:
 
         # 添加随机过期时间（防止缓存雪崩）
         actual_expire = self._random_expire(base_expire)
+        if max_expire is not None:
+            actual_expire = min(actual_expire, max(1, int(max_expire)))
 
         try:
             await self.redis.setex(redis_key, actual_expire, serialized_value)  # type: ignore[arg-type]
