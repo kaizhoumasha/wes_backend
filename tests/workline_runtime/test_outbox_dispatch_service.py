@@ -967,7 +967,7 @@ class TestOutboxDispatchService:
 
         payload = _normalize_vendor_command_payload(
             {
-                "pkg_id": "PKG001",
+                "item_id": "ITEM001",
                 "target_type": "BIN",
                 "target_loc": "BIN_201",
             },
@@ -982,7 +982,7 @@ class TestOutboxDispatchService:
             "priority": 5,
             "timeout": 300000,
             "params": {
-                "pkg_id": "PKG001",
+                "item_id": "ITEM001",
                 "target_type": "BIN",
                 "target_loc": "BIN_201",
             },
@@ -1006,8 +1006,8 @@ class TestOutboxDispatchService:
         """测试 session snapshot 优先使用 workline.contract_version。"""
         from src.app.workline.services.write_back_service import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version="legacy-0.9")
-        workline = SimpleNamespace(plugin_key="smt_classifier", contract_version="wl-2.0")
+        session = SimpleNamespace(plugin_key="test_workline_plugin", contract_version="legacy-0.9")
+        workline = SimpleNamespace(plugin_key="test_workline_plugin", contract_version="wl-2.0")
 
         with patch(
             "src.app.workline.services.write_back_service.get_plugin_contract_version",
@@ -1024,8 +1024,8 @@ class TestOutboxDispatchService:
         """测试 workline.contract_version 缺失时回退 registry。"""
         from src.app.workline.services.write_back_service import _sync_session_contract_snapshot
 
-        session = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
-        workline = SimpleNamespace(plugin_key="smt_classifier", contract_version=None)
+        session = SimpleNamespace(plugin_key="test_workline_plugin", contract_version=None)
+        workline = SimpleNamespace(plugin_key="test_workline_plugin", contract_version=None)
 
         with patch(
             "src.app.workline.services.write_back_service.get_plugin_contract_version",

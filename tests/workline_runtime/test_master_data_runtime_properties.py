@@ -7,13 +7,13 @@ def test_workline_runtime_and_diagnostic_properties() -> None:
         line_code="WL-01",
         line_name="Line 01",
         line_type=LineType.AUTO,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         runtime_config_json={"retry_policy": {"max": 3}},
         diagnostic_profile={"summary_mode": "compact"},
     )
 
-    assert workline.resolved_runtime_config["plugin_key"] == "smt_classifier"
+    assert workline.resolved_runtime_config["plugin_key"] == "test_workline_plugin"
     assert workline.diagnostic_summary["diagnostic_profile"] == {"summary_mode": "compact"}
 
 

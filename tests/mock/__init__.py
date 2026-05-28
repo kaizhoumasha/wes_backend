@@ -13,11 +13,6 @@
 模块:
     - camera_mock_server: 摄像头 Mock 服务 (端口 8003)
     - robot_arm_mock_server: 机械臂 Mock 服务 (端口 8004)
-    - smt_classifier: SMT 粗分机工作线 Mock 服务
-        - Pipeline Mock (PIPELINE01): 端口 8005
-        - Arm Mock (ARM01): 端口 8006
-        - Arm Mock (ARM02): 端口 8007
-        - 运行方式: python tests/mock/smt_classifier/run_all.py
 """
 
 from tests.mock.camera_mock_server import CameraMockServer

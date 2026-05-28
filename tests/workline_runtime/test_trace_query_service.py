@@ -132,7 +132,7 @@ def session_obj() -> SimpleNamespace:
         status="RUNNING",
         current_wait_type="COMMAND_RESULT",
         awaiting_command_id=33,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         last_request_id="req-1",
     )
@@ -270,7 +270,7 @@ def timeline_obj() -> SimpleNamespace:
         stage="DECISION",
         action_type="DECISION_MADE",
         actor_type="PLUGIN",
-        actor_code="smt_classifier",
+        actor_code="test_workline_plugin",
         status="SUCCESS",
         payload_json={
             "request_id": "req-1",
@@ -546,7 +546,7 @@ async def test_by_trace_id_includes_persisted_workline_diagnostics(
         command_code=None,
         device_code="ARM01",
         workline_id=22,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         diagnostic_code="SESSION_RESOLVE_FAILED",
         error_domain="SESSION",
         severity="ERROR",
@@ -554,10 +554,10 @@ async def test_by_trace_id_includes_persisted_workline_diagnostics(
         problem_class="SOFTWARE",
         owner="integration",
         message="Unable to resolve stable business_key from payload",
-        operator_action="补齐 PkgID 后重试",
-        technical_summary="SMT business_key resolver returned None",
-        next_steps_json=["补齐 PkgID/PONumber/pkg_id"],
-        evidence_json={"payload": {"data": {"PkgID": None}}},
+        operator_action="补齐 item_id 后重试",
+        technical_summary="test plugin business_key resolver returned None",
+        next_steps_json=["补齐 item_id"],
+        evidence_json={"payload": {"data": {"item_id": None}}},
     )
     cast("Any", service.diagnostic_repo).get_active_by_trace_id = AsyncMock(return_value=[diagnostic])
     db = _db_with_execute_results(
@@ -598,7 +598,7 @@ async def test_blocking_point_reports_failed_inbox_with_persisted_diagnostic(
         command_code=None,
         device_code="ARM01",
         workline_id=22,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         diagnostic_code="SESSION_RESOLVE_FAILED",
         error_domain="SESSION",
         severity="ERROR",
@@ -606,10 +606,10 @@ async def test_blocking_point_reports_failed_inbox_with_persisted_diagnostic(
         problem_class="SOFTWARE",
         owner="integration",
         message="Unable to resolve stable business_key from payload",
-        operator_action="补齐 PkgID 后重试",
-        technical_summary="SMT business_key resolver returned None",
-        next_steps_json=["补齐 PkgID/PONumber/pkg_id"],
-        evidence_json={"payload": {"data": {"PkgID": None}}},
+        operator_action="补齐 item_id 后重试",
+        technical_summary="test plugin business_key resolver returned None",
+        next_steps_json=["补齐 item_id"],
+        evidence_json={"payload": {"data": {"item_id": None}}},
     )
     cast("Any", service.diagnostic_repo).get_active_by_trace_id = AsyncMock(return_value=[diagnostic])
     db = _db_with_execute_results(

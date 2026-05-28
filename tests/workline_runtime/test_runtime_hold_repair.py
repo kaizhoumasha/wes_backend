@@ -37,7 +37,7 @@ async def _create_pending_reconciliation_session(
     session = WorklineSession(
         session_code=code,
         workline_id=cast("int", workline.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         status=SessionStatus.MANUAL_HOLD,
         reconciliation_state=RuntimeReconciliationState.PENDING,
@@ -95,7 +95,7 @@ async def test_runtime_hold_repair_counts_duplicate_source_key(db_session) -> No
             status=RuntimeHoldStatus.RESOLVED,
             workline_id=cast("int", workline.id),
             session_id=cast("int", session.id),
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             source_kind="TIMER_TIMEOUT",
             source_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,

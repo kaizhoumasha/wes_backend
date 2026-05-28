@@ -7,6 +7,7 @@
   "timestamp": 1777046400100,
   "params": {
     "business_key": "ITEM-001",
+    "item_id": "ITEM-001",
     "station_code": "QC01"
   }
 }

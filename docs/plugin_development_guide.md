@@ -2,9 +2,8 @@
 
 本文面向后续 WORKLINE 插件开发者。插件只负责一种 WORKLINE 业务模板：把硬件设备角色、业务状态、业务判断和命令意图组织起来。插件架构负责提供运行态能力，减少每扩展一条业务线时的心智负担。
 
-当前参考插件：
+当前参考材料：
 
-- `src/workline_plugins/smt_classifier/`：复杂 SMT 粗分业务样板。
 - `docs/templates/workline_plugin/`：沉淀通用插件结构的模板和 fixtures。
 
 ## 核心边界
@@ -329,4 +328,4 @@ uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_
 - 重构计划：`docs/business/workline_plugin_refactor_next_phase_plan.md`
 - Runtime 基类：`src/workline_runtime/plugin_base.py`
 - Manifest：`src/workline_runtime/plugin_manifest.py`
-- SMT 样板：`src/workline_plugins/smt_classifier/`
+- 插件模板：`docs/templates/workline_plugin/`

@@ -12,7 +12,7 @@ async def test_cancel_active_by_material_session_closes_only_active_tasks(db_ses
     session = WorklineSession(
         session_code="session-rack-timeout",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.MANUAL_HOLD,
     )

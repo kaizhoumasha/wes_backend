@@ -730,7 +730,7 @@ class TestRuntimeQueryService:
                     command_code="CMD-001",
                     device_code="ARM01",
                     workline_id=45,
-                    plugin_key="smt_classifier",
+                    plugin_key="test_workline_plugin",
                     canonical_event_type="SCAN_COMPLETED",
                     transition="WAITING->RUNNING",
                     extra={"source": "session_snapshot"},
@@ -747,7 +747,7 @@ class TestRuntimeQueryService:
         assert response.diagnostics[0].command_code == "CMD-001"
         assert response.diagnostics[0].device_code == "ARM01"
         assert response.diagnostics[0].workline_id == 45
-        assert response.diagnostics[0].plugin_key == "smt_classifier"
+        assert response.diagnostics[0].plugin_key == "test_workline_plugin"
         assert response.diagnostics[0].canonical_event_type == "SCAN_COMPLETED"
         assert response.diagnostics[0].transition == "WAITING->RUNNING"
         assert response.diagnostics[0].extra == {"source": "session_snapshot"}

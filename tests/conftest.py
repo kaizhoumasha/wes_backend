@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
 from src.database.sqlite_schema import configure_sqlite_schemas
+from src.workline_plugin_registry import WORKLINE_PLUGIN_REGISTRY, WorklinePluginDefinition
 
 # 使用内存数据库进行测试
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -65,3 +66,20 @@ async def db_session(db_engine):
     async with async_session() as session:
         yield session
         await session.rollback()
+
+
+@pytest.fixture
+def registered_test_workline_plugin():
+    """临时注册测试专用插件，避免生产 registry 保留旧插件兼容层。"""
+
+    old_registry = dict(WORKLINE_PLUGIN_REGISTRY)
+    WORKLINE_PLUGIN_REGISTRY["test_workline_plugin"] = WorklinePluginDefinition(
+        plugin_key="test_workline_plugin",
+        plugin_module="tests.helpers.workline_test_plugin",
+        plugin_class_name="TestWorklinePlugin",
+    )
+    try:
+        yield
+    finally:
+        WORKLINE_PLUGIN_REGISTRY.clear()
+        WORKLINE_PLUGIN_REGISTRY.update(old_registry)

@@ -31,7 +31,7 @@ from src.app.workline.models.session import (
 )
 from src.app.workline.services.runtime_hold_release_service import RuntimeHoldReleaseError, RuntimeHoldReleaseService
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
 
 async def _create_workline(db_session, *, code: str = "WL-HOLD-001") -> WorkLine:
@@ -39,7 +39,7 @@ async def _create_workline(db_session, *, code: str = "WL-HOLD-001") -> WorkLine
         line_code=code,
         line_name=code,
         line_type=LineType.AUTO,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         runtime_config_json={"runtime_hold": {"ng_locations": [{"code": "NG-01", "label": "NG 暂存位 01"}]}},
         runtime_status=WorkLineRuntimeStatus.RECONCILING,
@@ -60,7 +60,7 @@ async def _create_session(
     session = WorklineSession(
         session_code=code,
         workline_id=cast("int", workline.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         status=SessionStatus.MANUAL_HOLD,
         context_json=context or {},
@@ -83,12 +83,12 @@ async def _create_hold(
         hold_type=hold_type,
         workline_id=cast("int", workline.id),
         session_id=cast("int", session.id) if session is not None else None,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         source_kind="TIMER_TIMEOUT",
         source_reason="CALLBACK_DEADLINE_EXPIRED",
         source_idempotency_key=key,
-        evidence_snapshot_json=evidence if evidence is not None else {"PkgID": "PKG-001"},
+        evidence_snapshot_json=evidence if evidence is not None else {"item_id": "ITEM-001"},
     )
     db_session.add(hold)
     await db_session.flush()
@@ -116,7 +116,7 @@ def _return_to_ng_request(service: RuntimeHoldReleaseService, hold: RuntimeHold)
         physical_handoff_evidence=PhysicalHandoffEvidenceInput(
             ng_location_code="NG-01",
             ng_location_scan="NG-01",
-            material_scan_payload={"PkgID": "PKG-001"},
+            material_scan_payload={"item_id": "ITEM-001"},
             line_clear_checked=True,
             late_callback_reviewed=True,
         ),
@@ -169,7 +169,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         db_session,
         workline,
         code="S-HOLD-CONTINUE-REPLAY",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     session.reconciliation_state = RuntimeReconciliationState.PENDING
     session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
@@ -182,7 +182,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="MEASUREMENT_REEL",
-        params={"pkg_id": "PKG-001"},
+        params={"item_id": "ITEM-001"},
         status=CommandStatus.FAILED,
         trace_id="trace-hold-continue-replay",
     )
@@ -199,7 +199,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     hold.source_device_id = cast("int", device.id)
     hold.trace_id = command.trace_id
     request = _continue_request(service, hold).model_copy(
-        update={"result_payload": {"PkgID": "PKG-001", "diameter": "ok"}}
+        update={"result_payload": {"item_id": "ITEM-001", "diameter": "ok"}}
     )
 
     result = await service.resolve_hold(db_session, cast("int", hold.id), request, 42)
@@ -216,7 +216,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     assert session.reconciliation_resolution == RuntimeReconciliationResolution.COMPLETED
     assert command.status == CommandStatus.COMPLETED
     assert command.result == CommandResult.SUCCESS
-    assert command.result_data == {"PkgID": "PKG-001", "diameter": "ok"}
+    assert command.result_data == {"item_id": "ITEM-001", "diameter": "ok"}
 
     inbox = await db_session.get(WorklineInbox, result["created_inbox_id"])
     assert inbox is not None
@@ -231,7 +231,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         "task_type": "MEASUREMENT_REEL",
         "result": "SUCCESS",
         "runtime_hold_release": True,
-        "data": {"PkgID": "PKG-001", "diameter": "ok"},
+        "data": {"item_id": "ITEM-001", "diameter": "ok"},
     }
 
 
@@ -253,7 +253,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
         db_session,
         workline,
         code="S-HOLD-CONTINUE-PARAMS",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     session.reconciliation_state = RuntimeReconciliationState.PENDING
     session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
@@ -266,7 +266,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="MOVE_FORWARD",
-        params={"pkg_id": "PKG-001"},
+        params={"item_id": "ITEM-001"},
         status=CommandStatus.FAILED,
         trace_id="trace-hold-continue-params",
     )
@@ -288,7 +288,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
     await db_session.refresh(command)
     assert command.status == CommandStatus.COMPLETED
     assert command.result == CommandResult.SUCCESS
-    assert command.result_data == {"pkg_id": "PKG-001"}
+    assert command.result_data == {"item_id": "ITEM-001"}
 
     inbox = await db_session.get(WorklineInbox, result["created_inbox_id"])
     assert inbox is not None
@@ -299,7 +299,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
         "task_type": "MOVE_FORWARD",
         "result": "SUCCESS",
         "runtime_hold_release": True,
-        "data": {"pkg_id": "PKG-001"},
+        "data": {"item_id": "ITEM-001"},
     }
 
 
@@ -326,7 +326,7 @@ async def test_failed_resolution_preserves_session_failure_reason(db_session) ->
         db_session,
         workline,
         code="S-HOLD-FAILED-REASON",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     session.failure_domain = "BLOCK"
     session.failure_code = "SCAN_NG"
@@ -349,7 +349,7 @@ async def test_failed_resolution_resolves_active_hold_for_already_failed_session
         db_session,
         workline,
         code="S-HOLD-FAILED-IDEMPOTENT",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     hold = await _create_hold(db_session, workline, session=session, key="hold:failed-idempotent")
     session.status = SessionStatus.FAILED
@@ -421,15 +421,15 @@ async def test_return_to_ng_rejects_active_ng_item_for_same_material_identity(db
         db_session,
         workline,
         code="S-HOLD-MATERIAL-CONFLICT",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     hold = await _create_hold(db_session, workline, session=session, key="hold:material-conflict")
     other_hold = await _create_hold(db_session, workline, session=session, key="hold:material-conflict:other")
     existing_item = NgReturnItem(
         source_workline_id=cast("int", workline.id),
         source_session_id=cast("int", session.id),
-        material_identity_key="smt:PKG-001",
-        material_identity_json={"idempotency_key": "smt:PKG-001"},
+        material_identity_key="test-material:ITEM-001",
+        material_identity_json={"idempotency_key": "test-material:ITEM-001"},
         physical_handoff_evidence_json={"ng_location_code": "NG-01"},
         disposition=MaterialDisposition.RETURN_TO_NG,
         ng_reason_source=NgReasonSource.PLUGIN,
@@ -446,7 +446,7 @@ async def test_return_to_ng_rejects_active_ng_item_for_same_material_identity(db
 
     assert exc_info.value.error_code == "RUNTIME_HOLD_MATERIAL_CONFLICT"
     assert exc_info.value.data == {
-        "material_identity_key": "smt:PKG-001",
+        "material_identity_key": "test-material:ITEM-001",
         "existing_ng_return_item_id": existing_item.id,
         "existing_runtime_hold_id": other_hold.id,
         "existing_status": NgReturnItemStatus.WAITING_REWORK.value,
@@ -463,15 +463,15 @@ async def test_return_to_ng_material_conflict_is_enforced_by_database_when_prech
         db_session,
         workline,
         code="S-HOLD-MATERIAL-RACE",
-        context={"pkg_id": "PKG-001"},
+        context={"item_id": "ITEM-001"},
     )
     hold = await _create_hold(db_session, workline, session=session, key="hold:material-race")
     other_hold = await _create_hold(db_session, workline, session=session, key="hold:material-race:other")
     existing_item = NgReturnItem(
         source_workline_id=cast("int", workline.id),
         source_session_id=cast("int", session.id),
-        material_identity_key="smt:PKG-001",
-        material_identity_json={"idempotency_key": "smt:PKG-001"},
+        material_identity_key="test-material:ITEM-001",
+        material_identity_json={"idempotency_key": "test-material:ITEM-001"},
         physical_handoff_evidence_json={"ng_location_code": "NG-01"},
         disposition=MaterialDisposition.RETURN_TO_NG,
         ng_reason_source=NgReasonSource.PLUGIN,
@@ -501,7 +501,7 @@ async def test_return_to_ng_material_conflict_is_enforced_by_database_when_prech
 
     assert exc_info.value.error_code == "RUNTIME_HOLD_MATERIAL_CONFLICT"
     assert exc_info.value.data == {
-        "material_identity_key": "smt:PKG-001",
+        "material_identity_key": "test-material:ITEM-001",
         "existing_ng_return_item_id": existing_item.id,
         "existing_runtime_hold_id": other_hold.id,
         "existing_status": NgReturnItemStatus.WAITING_REWORK.value,
@@ -538,13 +538,13 @@ async def test_material_identity_missing_or_ambiguous_rejects(db_session) -> Non
         ambiguous_workline,
         session=ambiguous_session,
         key="hold:ambiguous",
-        evidence={"inbox_payload": {"data": {"PkgID": "PKG-001"}}},
+        evidence={"inbox_payload": {"data": {"item_id": "ITEM-001"}}},
     )
     ambiguous_payload = _return_to_ng_request(service, ambiguous_hold).model_dump(mode="json")
     ambiguous_payload["physical_handoff_evidence"] = {
         "ng_location_code": "NG-01",
         "ng_location_scan": "NG-01",
-        "material_scan_payload": {"PkgID": "PKG-002"},
+        "material_scan_payload": {"item_id": "ITEM-002"},
         "line_clear_checked": True,
         "late_callback_reviewed": True,
     }

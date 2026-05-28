@@ -4,6 +4,7 @@
   "timestamp": 1777046400000,
   "data": {
     "business_key": "ITEM-001",
+    "item_id": "ITEM-001",
     "station_code": "QC01",
     "expected_value": 10.0,
     "tolerance": 0.5

@@ -525,7 +525,7 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
     assert decision.bin_location is None
     assert decision.reason_code == "NO_COMPATIBLE_OR_EMPTY_CELL"
     assert decision.rack_operation_request is not None
-    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-001:RACK_OPERATION"
+    assert decision.rack_operation_request.operation_key == "external:smt_rack_bin:trace-001:RACK_OPERATION"
     payload = decision.rack_operation_request.payload
     assert payload["request_type"] == "SMT_RACK_OPERATION"
     assert payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
@@ -544,7 +544,7 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
 
 
 def test_plan_allocation_accepts_legacy_rack_supply_target_alias() -> None:
-    """兼容 seed_e2e_test_data 仍在使用的 wms_rcs_rack_supply_url。"""
+    """兼容旧配置仍在使用的 wms_rcs_rack_supply_url。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(cells=_full_rack_cells())
@@ -598,7 +598,7 @@ def test_plan_allocation_without_active_rack_requests_operation_allocate_only() 
     assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.bin_location is None
     assert decision.rack_operation_request is not None
-    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-supply-001:RACK_OPERATION"
+    assert decision.rack_operation_request.operation_key == "external:smt_rack_bin:trace-supply-001:RACK_OPERATION"
     assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
     payload = decision.rack_operation_request.payload
     assert payload["request_type"] == "SMT_RACK_OPERATION"
@@ -806,7 +806,7 @@ def test_plan_allocation_rejects_arrived_operation_rack_with_occupied_cell() -> 
     )
     context["rack_operation"] = {
         "status": "SUCCEEDED",
-        "operation_key": "external:smt_classifier:trace-001:RACK_OPERATION",
+        "operation_key": "external:smt_rack_bin:trace-001:RACK_OPERATION",
     }
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
@@ -836,9 +836,9 @@ def test_plan_allocation_pending_rack_operation_blocks_duplicate_request() -> No
 
     service = SmtRackBinSchedulingService()
     context = _context(cells=_full_rack_cells())
-    context["waiting_rack_operation_key"] = "external:smt_classifier:trace-001:RACK_OPERATION"
+    context["waiting_rack_operation_key"] = "external:smt_rack_bin:trace-001:RACK_OPERATION"
     context["rack_operation"] = {
-        "operation_key": "external:smt_classifier:trace-001:RACK_OPERATION",
+        "operation_key": "external:smt_rack_bin:trace-001:RACK_OPERATION",
         "status": "PENDING",
     }
 
@@ -930,7 +930,7 @@ def test_plan_allocation_rack_operation_uses_external_operation_key_and_target_c
 
     assert decision.kind == "RACK_OPERATION_REQUIRED"
     assert decision.rack_operation_request is not None
-    assert decision.rack_operation_request.operation_key == "external:smt_classifier:trace-001:RACK_OPERATION"
+    assert decision.rack_operation_request.operation_key == "external:smt_rack_bin:trace-001:RACK_OPERATION"
     assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
 
 

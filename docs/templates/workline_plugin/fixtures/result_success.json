@@ -5,6 +5,7 @@
   "finish_time": 1777046405000,
   "data": {
     "business_key": "ITEM-001",
+    "item_id": "ITEM-001",
     "actual_value": 10.2
   }
 }

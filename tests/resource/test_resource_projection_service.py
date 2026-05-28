@@ -735,7 +735,7 @@ async def test_record_bin_mounted_to_rack_records_empty_bin_snapshots() -> None:
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 
@@ -795,7 +795,7 @@ async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> No
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 
@@ -839,7 +839,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_projects_as_ag
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         reel_thickness="2.5",
         cell_capacity_depth_mm=5.0,
@@ -893,7 +893,7 @@ async def test_record_material_mounted_to_legacy_identity_same_cell_projects_as_
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         reel_thickness="2.5",
         cell_capacity_depth_mm=5.0,
@@ -947,7 +947,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_r
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         reel_thickness="2.5",
         cell_capacity_depth_mm=5.0,
@@ -1008,7 +1008,7 @@ async def test_record_material_mounted_to_same_identity_other_nonfull_cell_creat
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 
@@ -1063,7 +1063,7 @@ async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_c
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         reel_thickness="2.5",
         cell_capacity_depth_mm=5.0,
@@ -1101,7 +1101,7 @@ async def test_record_bin_mounted_to_rack_conflict_creates_hold() -> None:
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 
@@ -1141,7 +1141,7 @@ async def test_record_bin_mounted_to_rack_conflict_on_later_mount_does_not_creat
         session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 

@@ -22,7 +22,7 @@
 
 - `workline_plugin_architecture_design.md`
 - `wms_rcs_interface_requirements.md`
-- `../hardware/workline_topology_overview.md`
+- `../archive/legacy-smt-classifier/workline_topology_overview.md`（历史样例，仅用于语义对照）
 
 ---
 
@@ -266,7 +266,7 @@
 
 ## 8. 用左侧粗分线时序图做验证
 
-以 `../hardware/workline_topology_overview.md` 中 `1.2.2 WES 与设备交互流程（左侧作业线为例）` 为验证样例，结论如下：
+以 `../archive/legacy-smt-classifier/workline_topology_overview.md` 中历史左侧粗分线时序为语义对照，结论如下：
 
 1. `SCAN_COMPLETED` 属于 `callback/event`
 2. WES 接住事件后，应创建或恢复 `WorklineSession`

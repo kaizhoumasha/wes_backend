@@ -13,9 +13,9 @@ from src.workline_runtime.diagnostics import (
 def test_build_diagnostic_card_applies_defaults() -> None:
     context = build_diagnostic_context(
         trace_id="trace-123",
-        session=SimpleNamespace(id=1, trace_id="trace-123", plugin_key="smt_classifier"),
+        session=SimpleNamespace(id=1, trace_id="trace-123", plugin_key="test_workline_plugin"),
         inbox=SimpleNamespace(id=2, trace_id="trace-123"),
-        workline=SimpleNamespace(id=3, line_code="WL-01", plugin_key="smt_classifier"),
+        workline=SimpleNamespace(id=3, line_code="WL-01", plugin_key="test_workline_plugin"),
     )
 
     event = build_diagnostic_event(

@@ -233,7 +233,7 @@ async def test_get_dispatching_device_messages_returns_only_device_command_lease
     session = WorklineSession(
         session_code="session-dispatching-device-candidates",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -280,7 +280,7 @@ async def test_get_blocked_device_busy_messages_returns_only_device_busy_blocks(
     session = WorklineSession(
         session_code="session-blocked-device-busy-candidates",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -333,7 +333,7 @@ async def test_get_pending_messages_does_not_skip_earlier_device_retry(db_sessio
     session = WorklineSession(
         session_code="session-device-fifo-retry",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -387,7 +387,7 @@ async def test_get_pending_messages_returns_only_earliest_active_device_outbox(d
     session = WorklineSession(
         session_code="session-device-fifo-ready",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -494,7 +494,7 @@ async def test_get_sandbox_pending_messages_excludes_terminal_sessions_and_keeps
     failed_session = WorklineSession(
         session_code="session-failed",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
         failure_domain="ORCHESTRATION",
@@ -504,7 +504,7 @@ async def test_get_sandbox_pending_messages_excludes_terminal_sessions_and_keeps
     waiting_session = WorklineSession(
         session_code="session-waiting",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -559,7 +559,7 @@ async def test_get_sandbox_pending_messages_keeps_failed_outbox_history_for_open
     session = WorklineSession(
         session_code="session-manual-hold",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.MANUAL_HOLD,
     )
@@ -589,7 +589,7 @@ async def test_cancel_active_by_session_closes_stale_sandbox_actions(db_session)
     session = WorklineSession(
         session_code="session-timeout",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
         failure_domain="ORCHESTRATION",
@@ -638,14 +638,14 @@ async def test_release_blocked_by_reconciliation_session_requeues_only_owner_blo
     owner_session = WorklineSession(
         session_code="session-owner-reconcile",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.MANUAL_HOLD,
     )
     other_session = WorklineSession(
         session_code="session-other-reconcile",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.MANUAL_HOLD,
     )
@@ -702,7 +702,7 @@ async def test_release_blocked_by_device_requeues_only_device_busy_outbox(db_ses
     session = WorklineSession(
         session_code="session-device-busy-release",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -755,7 +755,7 @@ async def test_get_sandbox_completed_messages_includes_cancelled_terminal_outbox
     session = WorklineSession(
         session_code="session-cancelled-outbox",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.FAILED,
         failure_domain="ORCHESTRATION",

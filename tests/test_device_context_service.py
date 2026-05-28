@@ -16,7 +16,7 @@ async def test_resolve_uses_device_code_lookup() -> None:
                 id=1,
                 device_code=device_code,
                 work_line_id=None,
-                plugin_key="smt_classifier",
+                plugin_key="test_workline_plugin",
                 contract_version="1.0",
             )
 
@@ -32,5 +32,5 @@ async def test_resolve_uses_device_code_lookup() -> None:
     assert error is None
     assert result is not None
     assert result.device.device_code == "ARM_01"
-    assert result.plugin_key == "smt_classifier"
+    assert result.plugin_key == "test_workline_plugin"
     assert result.contract_version == "1.0"

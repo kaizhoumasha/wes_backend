@@ -21,7 +21,7 @@ from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.runtime_hold_query_service import runtime_hold_query_service
 from src.app.workline.v1 import runtime_hold as runtime_hold_api
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
 
 def _get_route(path: str, method: str):
@@ -45,7 +45,7 @@ async def _create_workline(db_session, *, code: str) -> WorkLine:
         line_code=code,
         line_name=code,
         line_type=LineType.AUTO,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         runtime_config_json={"runtime_hold": {"ng_locations": [{"code": "NG-01", "label": "NG 暂存位 01"}]}},
         runtime_status=WorkLineRuntimeStatus.RECONCILING,
@@ -60,7 +60,7 @@ async def _create_session(db_session, workline: WorkLine, *, code: str) -> Workl
     session = WorklineSession(
         session_code=code,
         workline_id=cast("int", workline.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         status=SessionStatus.MANUAL_HOLD,
         context_json={},
@@ -82,12 +82,12 @@ async def _create_hold(
         hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
         workline_id=cast("int", workline.id),
         session_id=cast("int", session.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         source_kind="TIMER_TIMEOUT",
         source_reason="CALLBACK_DEADLINE_EXPIRED",
         source_idempotency_key=key,
-        evidence_snapshot_json=evidence or {"inbox_payload": {"data": {"PkgID": "PKG-API-001"}}},
+        evidence_snapshot_json=evidence or {"inbox_payload": {"data": {"item_id": "ITEM-API-001"}}},
     )
     db_session.add(hold)
     await db_session.flush()
@@ -119,7 +119,7 @@ async def _return_to_ng_request(db_session, hold: RuntimeHold) -> ResolveRuntime
         physical_handoff_evidence={
             "ng_location_code": "NG-01",
             "ng_location_scan": "NG-01",
-            "material_scan_payload": {"PkgID": "PKG-API-001"},
+            "material_scan_payload": {"item_id": "ITEM-API-001"},
             "line_clear_checked": True,
             "late_callback_reviewed": True,
         },
@@ -196,7 +196,7 @@ async def test_resolve_runtime_hold_rejects_safety_estop_hold(db_session) -> Non
     hold = RuntimeHold(
         hold_type=RuntimeHoldType.SAFETY_ESTOP,
         workline_id=cast("int", workline.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         source_kind="SAFETY_ESTOP",
         source_reason="ESTOP_PRESSED",
@@ -334,8 +334,8 @@ async def test_resolve_runtime_hold_material_conflict_returns_decision_model(db_
     existing_item = NgReturnItem(
         source_workline_id=cast("int", workline.id),
         source_session_id=cast("int", session.id),
-        material_identity_key="smt:PKG-API-001",
-        material_identity_json={"idempotency_key": "smt:PKG-API-001"},
+        material_identity_key="test-material:ITEM-API-001",
+        material_identity_json={"idempotency_key": "test-material:ITEM-API-001"},
         physical_handoff_evidence_json={"ng_location_code": "NG-01"},
         disposition=MaterialDisposition.RETURN_TO_NG,
         ng_reason_source=NgReasonSource.PLUGIN,
@@ -359,7 +359,7 @@ async def test_resolve_runtime_hold_material_conflict_returns_decision_model(db_
     body = _json_response_body(response)
     assert response.status_code == 409
     assert body["code"] == "RUNTIME_HOLD_MATERIAL_CONFLICT"
-    assert body["data"]["material_identity_key"] == "smt:PKG-API-001"
+    assert body["data"]["material_identity_key"] == "test-material:ITEM-API-001"
     assert body["data"]["existing_ng_return_item_id"] == existing_item.id
     assert body["data"]["existing_runtime_hold_id"] == other_hold.id
     assert body["data"]["current_hold_version"] == hold.version
@@ -392,7 +392,7 @@ async def test_resolve_runtime_hold_already_resolved_returns_409(db_session) -> 
 
 
 async def test_get_runtime_hold_ng_reasons_returns_plugin_and_fallback(db_session) -> None:
-    response = await runtime_hold_api.get_runtime_hold_ng_reasons(db_session, plugin_key="smt_classifier")
+    response = await runtime_hold_api.get_runtime_hold_ng_reasons(db_session, plugin_key="test_workline_plugin")
 
     codes = {item.code for item in response["data"]}
     assert "SCAN_NG" in codes

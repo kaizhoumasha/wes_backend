@@ -4,6 +4,7 @@
   "timestamp": 1777046520000,
   "data": {
     "business_key": "ITEM-001",
+    "item_id": "ITEM-001",
     "waiting_for": "MEASURE_ITEM"
   }
 }
