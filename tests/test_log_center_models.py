@@ -50,7 +50,7 @@ def test_api_access_log_response_exposes_created_at() -> None:
             "app_name": "Test App",
             "request_id": "req-1",
             "method": "GET",
-            "path": "/api/v1/demo",
+            "path": "/api/v1/workline",
             "status_code": 200,
             "response_time_ms": 128,
             "ip_address": "127.0.0.1",
