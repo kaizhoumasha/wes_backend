@@ -50,7 +50,14 @@ def _looks_like_manifest(value: Any) -> bool:
     )
 
 
-WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {}
+WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
+    "rough_sorter": WorklinePluginDefinition(
+        plugin_key="rough_sorter",
+        plugin_module="src.workline_plugins.rough_sorter.plugin",
+        plugin_class_name="RoughSorterPlugin",
+        contract_module="src.workline_plugins.rough_sorter.contract",
+    ),
+}
 
 
 def get_workline_plugin_definition(plugin_key: str | None) -> WorklinePluginDefinition | None:

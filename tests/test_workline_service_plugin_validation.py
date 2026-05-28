@@ -1,5 +1,6 @@
 """WorkLine 插件配置校验测试。"""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -7,6 +8,14 @@ import pytest
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BadRequestException
+from src.workline_plugin_registry import validate_workline_plugin_assignment
+from src.workline_plugins.rough_sorter.contract import (
+    ROLE_CONVEYOR,
+    ROLE_INPUT_ARM,
+    ROLE_MEASURER,
+    ROLE_OUTPUT_ARM,
+    ROLE_SCANNER,
+)
 
 
 def make_workline() -> WorkLine:
@@ -16,6 +25,20 @@ def make_workline() -> WorkLine:
         line_code="WL-SMT-001",
         line_name="粗分机#1",
         line_type=LineType.AUTO,
+    )
+
+
+def make_device(device_id: int, role: str) -> SimpleNamespace:
+    """创建测试设备拓扑节点。"""
+
+    return SimpleNamespace(
+        id=device_id,
+        device_code=f"DEV-{device_id}",
+        device_role=role,
+        role_index=device_id,
+        sort_order=device_id,
+        upstream_device_id=None,
+        capabilities_json={},
     )
 
 
@@ -34,14 +57,47 @@ def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
     assert workline.plugin_definition is None
 
 
-def test_workline_service_lists_no_plugin_options_after_smt_cleanup() -> None:
-    """旧 SMT 插件清理后，插件下拉选项为空，等待新插件重写注册。"""
+def test_workline_service_lists_rough_sorter_plugin_option() -> None:
+    """粗分机插件注册后，插件下拉选项应暴露新合同版本。"""
 
     service = WorkLineService()
 
     options = service.list_plugin_options()
 
-    assert options == []
+    assert [option.plugin_key for option in options] == ["rough_sorter"]
+    assert options[0].default_contract_version == "rough_sorter.v1"
+
+
+def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
+    """粗分机插件绑定必须具备全部关键设备角色。"""
+
+    validate_workline_plugin_assignment(
+        "rough_sorter",
+        make_workline(),
+        [
+            make_device(1, ROLE_SCANNER),
+            make_device(2, ROLE_MEASURER),
+            make_device(3, ROLE_INPUT_ARM),
+            make_device(4, ROLE_CONVEYOR),
+            make_device(5, ROLE_OUTPUT_ARM),
+        ],
+    )
+
+
+def test_rough_sorter_plugin_assignment_rejects_missing_required_role() -> None:
+    """缺少出料机械臂角色时，WorkLine 绑定应失败。"""
+
+    with pytest.raises(BadRequestException, match=ROLE_OUTPUT_ARM):
+        validate_workline_plugin_assignment(
+            "rough_sorter",
+            make_workline(),
+            [
+                make_device(1, ROLE_SCANNER),
+                make_device(2, ROLE_MEASURER),
+                make_device(3, ROLE_INPUT_ARM),
+                make_device(4, ROLE_CONVEYOR),
+            ],
+        )
 
 
 def test_workline_run_mode_defaults_to_auto() -> None:

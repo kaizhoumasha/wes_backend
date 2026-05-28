@@ -1,0 +1,237 @@
+"""粗分机插件合同层测试。"""
+
+import pytest
+
+from src.workline_plugins.rough_sorter.context import RoughSorterContext
+from src.workline_plugins.rough_sorter.contract import (
+    ACTION_MEASUREMENT_REEL,
+    ACTION_MOVE_FORWARD,
+    ACTION_MOVE_TO_NG,
+    ACTION_PICK_AND_PUT,
+    ACTION_PUT_TO_BIN,
+    ACTION_TARGET_ROLES,
+    DEVICE_TASK_TYPE_BY_ACTION,
+    PHASE_COMPLETED,
+    PHASE_MEASURING,
+    PHASE_MOVING_FORWARD,
+    PHASE_NG_MOVING,
+    PHASE_PICK_TO_PIPELINE,
+    PHASE_PUTTING_TO_BIN,
+    PHASE_SCANNED,
+    PHASE_WAITING_RACK,
+    ROLE_CONVEYOR,
+    ROLE_INPUT_ARM,
+    ROLE_MEASURER,
+    ROLE_OUTPUT_ARM,
+    ROLE_SCANNER,
+    build_measurement_reel_payload,
+    build_move_forward_payload,
+    build_move_to_ng_payload,
+    build_pick_and_put_payload,
+    build_put_to_bin_payload,
+    classify_rough_sorter_result,
+    normalize_six_in_one_payload,
+    resolve_rough_sorter_business_key,
+)
+from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+from src.workline_runtime.contracts import SixInOne
+from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntentKind
+
+
+def _payload_data() -> dict[str, str]:
+    return {
+        "HHPN": "HH-001",
+        "MfrPN": "MFR-001",
+        "Qty": "1500",
+        "DateCode": "260528",
+        "LotCode": "LOT-A",
+        "PkgID": "PKG-001",
+    }
+
+
+def test_normalize_six_in_one_payload_reads_only_data_and_normalizes_aliases() -> None:
+    payload = {
+        "PkgID": "TOP-LEVEL-MUST-BE-IGNORED",
+        "LotCode": "TOP-LOT-MUST-BE-IGNORED",
+        "data": {
+            "ProductNo": "HH-ALIAS",
+            "MfrPN": "MFR-001",
+            "Qty": "1500",
+            "DateCode": "260528",
+            "LotCode": "LOT-A",
+            "PONumber": "PKG-ALIAS",
+        },
+    }
+
+    six_in_one = normalize_six_in_one_payload(payload)
+
+    assert six_in_one.HHPN == "HH-ALIAS"
+    assert six_in_one.PkgID == "PKG-ALIAS"
+    assert six_in_one.LotCode == "LOT-A"
+
+
+def test_business_key_is_derived_only_from_data_pkg_id() -> None:
+    payload = {
+        "PkgID": "TOP-LEVEL-MUST-BE-IGNORED",
+        "business_key": "UPSTREAM-MUST-BE-IGNORED",
+        "data": {"PkgID": "PKG-001"},
+    }
+
+    assert resolve_rough_sorter_business_key(payload) == SixInOne(PkgID="PKG-001").business_key
+
+
+def test_business_key_returns_none_when_data_pkg_id_missing() -> None:
+    assert resolve_rough_sorter_business_key({"PkgID": "TOP-LEVEL-MUST-BE-IGNORED", "data": {}}) is None
+
+
+def test_phase_and_role_contracts_are_declared() -> None:
+    assert {
+        PHASE_SCANNED,
+        PHASE_MEASURING,
+        PHASE_PICK_TO_PIPELINE,
+        PHASE_MOVING_FORWARD,
+        PHASE_WAITING_RACK,
+        PHASE_PUTTING_TO_BIN,
+        PHASE_NG_MOVING,
+        PHASE_COMPLETED,
+    } == {
+        "SCANNED",
+        "MEASURING",
+        "PICK_TO_PIPELINE",
+        "MOVING_FORWARD",
+        "WAITING_RACK",
+        "PUTTING_TO_BIN",
+        "NG_MOVING",
+        "COMPLETED",
+    }
+    assert ACTION_TARGET_ROLES == {
+        ACTION_MEASUREMENT_REEL: ROLE_MEASURER,
+        ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
+        ACTION_MOVE_FORWARD: ROLE_CONVEYOR,
+        ACTION_PUT_TO_BIN: ROLE_OUTPUT_ARM,
+        ACTION_MOVE_TO_NG: ROLE_OUTPUT_ARM,
+    }
+    assert ROLE_SCANNER == "ROUGH_SORTER_SCANNER"
+
+
+@pytest.mark.parametrize(
+    ("builder", "expected_action", "expected_task_type"),
+    [
+        (lambda six: build_measurement_reel_payload(six), ACTION_MEASUREMENT_REEL, "TEST"),
+        (
+            lambda six: build_pick_and_put_payload(
+                business_key=six.business_key or "",
+                source_location="SCAN_POINT",
+                target_location="PIPELINE_IN",
+            ),
+            ACTION_PICK_AND_PUT,
+            "PICK_AND_PUT",
+        ),
+        (
+            lambda six: build_move_forward_payload(
+                business_key=six.business_key or "",
+                source_location="PIPELINE_IN",
+                target_location="PIPELINE_OUT",
+            ),
+            ACTION_MOVE_FORWARD,
+            "MOVE_FORWARD",
+        ),
+        (
+            lambda six: build_put_to_bin_payload(
+                business_key=six.business_key or "",
+                source_location="PIPELINE_OUT",
+                bin_location="RACK-A-01",
+            ),
+            ACTION_PUT_TO_BIN,
+            "PICK_AND_PUT",
+        ),
+        (
+            lambda six: build_move_to_ng_payload(
+                business_key=six.business_key or "",
+                source_location="PIPELINE_OUT",
+                ng_location="NG-01",
+                reason_code="BARCODE_INVALID",
+            ),
+            ACTION_MOVE_TO_NG,
+            "PICK_AND_PUT",
+        ),
+    ],
+)
+def test_command_builders_separate_business_action_from_device_task_type(
+    builder,
+    expected_action: str,
+    expected_task_type: str,
+) -> None:
+    six_in_one = SixInOne.model_validate(_payload_data())
+
+    command_payload = builder(six_in_one)
+
+    assert command_payload["task_type"] == expected_task_type
+    assert command_payload["params"]["action"] == expected_action
+    assert DEVICE_TASK_TYPE_BY_ACTION[expected_action] == expected_task_type
+
+
+def test_measurement_payload_keeps_business_fields_under_params() -> None:
+    six_in_one = SixInOne.model_validate(_payload_data())
+
+    payload = build_measurement_reel_payload(six_in_one, trace_id="trace-001")
+
+    assert payload["params"]["business_key"] == six_in_one.business_key
+    assert payload["params"]["trace_id"] == "trace-001"
+    assert payload["params"]["six_in_one"]["PkgID"] == "PKG-001"
+    assert "PkgID" not in payload
+
+
+def test_result_classifier_marks_measurement_ng_as_business_decision() -> None:
+    payload = {"result": "SUCCESS", "data": {"measurement_result": "NG"}}
+
+    assert classify_rough_sorter_result(payload) == "business_decision"
+
+
+def test_result_classifier_marks_thickness_ng_when_size_is_ok() -> None:
+    payload = {
+        "result": "SUCCESS",
+        "data": {
+            "size_judgement": "OK",
+            "thickness_judgement": "NG",
+        },
+    }
+
+    assert classify_rough_sorter_result(payload) == "business_decision"
+
+
+def test_result_classifier_marks_failed_hardware_result() -> None:
+    payload = {"result": "FAILED", "error_detail": {"error_code": "AXIS_ALARM"}}
+
+    assert classify_rough_sorter_result(payload) == "hardware_failure"
+
+
+def test_rough_sorter_context_is_serializable() -> None:
+    context = RoughSorterContext(
+        six_in_one=_payload_data(),
+        business_key="biz-001",
+        measurement={"reel_diameter": 12.3},
+        wms_validation={"matched": True},
+        target_bin_location="RACK-A-01",
+        rack_operation={"operation_key": "op-001"},
+        ng_reason={"reason_code": "BARCODE_INVALID"},
+        phase=PHASE_SCANNED,
+    )
+
+    dumped = context.model_dump(mode="json")
+
+    assert dumped["six_in_one"]["PkgID"] == "PKG-001"
+    assert dumped["phase"] == PHASE_SCANNED
+
+
+@pytest.mark.asyncio
+async def test_registered_scan_event_returns_explicit_block_until_task2_handler_ships() -> None:
+    plugin = RoughSorterPlugin()
+    ctx = type("Ctx", (), {"logger": type("Logger", (), {"warning": lambda *_args: None})()})()
+    inbox = type("Inbox", (), {"payload_json": {"event_type": "SCAN_COMPLETED", "data": _payload_data()}})()
+
+    intents = await plugin.on_device_event(ctx, inbox)
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].block_scope == BlockScope.MATERIAL
+    assert intents[0].reason_code == "ROUGH_SORTER_HANDLER_NOT_IMPLEMENTED"
