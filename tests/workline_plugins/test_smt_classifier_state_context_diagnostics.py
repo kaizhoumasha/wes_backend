@@ -12,6 +12,7 @@ import pytest
 from src.workline_plugins.smt_classifier import SmtClassifierContext, SmtClassifierPlugin, diagnose_smt_payload
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.services import WorklineRuntimeServices
 
 
 def _make_context() -> MagicMock:
@@ -22,6 +23,7 @@ def _make_context() -> MagicMock:
     ctx.trace_id = "trace-diagnostic"
     ctx.normalized_input = None
     ctx.source_device_role = "INPUT_ARM"
+    ctx.services = WorklineRuntimeServices()
     ctx.next = PluginNext()
     ctx.logger = logging.getLogger("test_smt_diagnostic")
     return ctx
