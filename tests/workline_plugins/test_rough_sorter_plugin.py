@@ -7,17 +7,28 @@ from typing import Any, cast
 import pytest
 
 from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+from src.app.resource.services.smt_rack_bin_scheduling_service import (
+    SmtRackBinSchedulingDecision,
+    SmtRackOperationRequest,
+)
 from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
 from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError, WmsUnavailableError
 from src.app.workline.models.inbox import WorklineInbox
+from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MEASUREMENT_REEL,
+    ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
+    ACTION_PUT_TO_BIN,
     EVENT_SCAN_COMPLETED,
     PHASE_MEASURING,
+    PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
+    PHASE_PUTTING_TO_BIN,
+    PHASE_WAITING_RACK,
+    ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
@@ -26,6 +37,30 @@ from src.workline_runtime.plugin_context import PluginContext
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices
+
+
+class FakeActiveRackSnapshotProvider:
+    def __init__(self, snapshot: dict[str, Any] | None = None) -> None:
+        self.snapshot = snapshot
+        self.contexts: list[Any] = []
+
+    async def active_bin_rack(self, *, context: Any | None = None) -> dict[str, Any] | None:
+        self.contexts.append(context)
+        return self.snapshot
+
+
+class FakeBinAllocator:
+    def __init__(self, decision: Any | None = None) -> None:
+        self.decision = decision
+        self.calls: list[dict[str, Any]] = []
+
+    def allocate(self, barcode: str) -> dict[str, Any] | None:
+        self.calls.append({"method": "allocate", "barcode": barcode})
+        return None
+
+    def plan_allocation(self, barcode: str, *, context: Any | None = None) -> Any:
+        self.calls.append({"method": "plan_allocation", "barcode": barcode, "context": context})
+        return self.decision
 
 
 class FakeWmsInventoryClient:
@@ -112,6 +147,58 @@ def _measurement_ctx(
             error_detail=error_detail or {},
         ),
     )
+
+
+def _command_ctx(
+    *,
+    command_type: str,
+    source_result: str = "SUCCESS",
+    normalized_result: str = "SUCCESS",
+    device_code: str = "RS-COMMAND-01",
+    services: WorklineRuntimeServices | None = None,
+    session_context: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    error_detail: dict[str, Any] | None = None,
+) -> PluginContext:
+    return _ctx(
+        config=config or {},
+        session=SimpleNamespace(context_json=session_context or _rough_sorter_context()),
+        services=services or WorklineRuntimeServices(),
+        normalized_input=NormalizedCommandResult(
+            command_code=f"CMD-{command_type}",
+            source_result=source_result,
+            normalized_result=normalized_result,
+            command_type=command_type,
+            device_code=device_code,
+            error_detail=error_detail or {},
+        ),
+    )
+
+
+def _command_inbox(
+    *,
+    command_type: str,
+    result: str = "SUCCESS",
+    device_code: str = "RS-COMMAND-01",
+    error_detail: dict[str, Any] | None = None,
+) -> WorklineInbox:
+    payload: dict[str, Any] = {
+        "command_code": f"CMD-{command_type}",
+        "device_code": device_code,
+        "task_type": command_type,
+        "result": result,
+    }
+    if error_detail is not None:
+        payload["error_detail"] = error_detail
+    return cast("WorklineInbox", SimpleNamespace(id=4, kind="COMMAND_RESULT", payload_json=payload))
+
+
+def _rough_sorter_context_for_phase(phase: str) -> dict[str, Any]:
+    context = _rough_sorter_context()
+    context["phase"] = phase
+    context["measurement"] = {"reel_diameter": "178.0", "reel_thickness": "15.0"}
+    context["wms_validation"] = {"matched": True}
+    return context
 
 
 def _measurement_inbox(
@@ -372,3 +459,172 @@ async def test_measurement_failed_hardware_error_blocks_material() -> None:
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].block_scope == BlockScope.MATERIAL
     assert intents[0].reason_code == "ROUGH_SORTER_MEASUREMENT_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_pick_and_put_success_at_pick_to_pipeline_dispatches_move_forward() -> None:
+    ctx = _command_ctx(
+        command_type=ACTION_PICK_AND_PUT,
+        device_code="RS-INPUT-ARM-01",
+        session_context=_rough_sorter_context_for_phase(PHASE_PICK_TO_PIPELINE),
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_PICK_AND_PUT, device_code="RS-INPUT-ARM-01"),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+    assert intents[0].context_patch["phase"] == PHASE_MOVING_FORWARD
+    assert intents[1].action == ACTION_MOVE_FORWARD
+    assert intents[1].device_role == ROLE_CONVEYOR
+    assert intents[1].payload_json["params"]["action"] == ACTION_MOVE_FORWARD
+    assert intents[1].payload_json["params"]["source_location"] == "RS-INPUT-ARM-01"
+
+
+@pytest.mark.asyncio
+async def test_pick_and_put_success_at_ng_moving_completes_session() -> None:
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_TO_NG,
+        session_context=_rough_sorter_context_for_phase(PHASE_NG_MOVING),
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(ctx, _command_inbox(command_type=ACTION_MOVE_TO_NG))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.COMPLETE]
+    assert intents[0].context_patch["phase"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_move_forward_success_with_allocated_bin_claims_cell_and_dispatches_put_to_bin() -> None:
+    decision = SmtRackBinSchedulingDecision(
+        bin_location={
+            "bin_id": "BIN-001",
+            "bin_cell_index": "4",
+            "bin_cell_location": "BIN-001-4",
+            "material_identity_key": "HH-001:LOT-A:260528",
+        }
+    )
+    allocator = FakeBinAllocator(decision=decision)
+    active_rack_provider = FakeActiveRackSnapshotProvider(snapshot={"rack_id": "RACK-001"})
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_FORWARD,
+        device_code="RS-CONVEYOR-01",
+        session_context=_rough_sorter_context_for_phase(PHASE_MOVING_FORWARD),
+        services=WorklineRuntimeServices(
+            bin_allocator=allocator,
+            active_rack_snapshot_provider=active_rack_provider,
+        ),
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_MOVE_FORWARD, device_code="RS-CONVEYOR-01"),
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.RESOURCE_RESERVATION,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].context_patch["phase"] == PHASE_PUTTING_TO_BIN
+    assert intents[0].context_patch["target_bin_location"]["bin_id"] == "BIN-001"
+    context_snapshot = RoughSorterContext.model_validate(intents[0].context_patch)
+    assert isinstance(context_snapshot.target_bin_location, dict)
+    assert context_snapshot.target_bin_location["bin_id"] == "BIN-001"
+    assert intents[1].action == "CLAIM_BIN_CELL"
+    assert intents[1].payload_json["pkg_code"] == "PKG-ROUGH-001"
+    assert intents[1].payload_json["bin_code"] == "BIN-001"
+    assert intents[1].payload_json["bin_cell_index"] == "4"
+    assert intents[2].action == ACTION_PUT_TO_BIN
+    assert intents[2].device_role == ROLE_OUTPUT_ARM
+    assert intents[2].payload_json["params"]["bin_location"] == "BIN-001-4"
+    assert allocator.calls[0]["barcode"] == "PKG-ROUGH-001"
+    assert allocator.calls[0]["context"]["active_bin_rack"] == {"rack_id": "RACK-001"}
+
+
+@pytest.mark.asyncio
+async def test_move_forward_success_with_rack_operation_required_stores_resume_anchor() -> None:
+    rack_operation_request = SmtRackOperationRequest(
+        operation_key="external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload={
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "trace_id": "trace-rough-sorter-001",
+            "rack_tasks": [
+                {
+                    "sequence_no": 1,
+                    "task_type": "ALLOCATE_AND_MOVE_RACK",
+                    "rack_kind": "SINGLE_LAYER",
+                    "target_position_code": "SINGLE_LAYER_A",
+                    "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                }
+            ],
+        },
+    )
+    allocator = FakeBinAllocator(decision=SmtRackBinSchedulingDecision(rack_operation_request=rack_operation_request))
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_FORWARD,
+        device_code="RS-CONVEYOR-01",
+        session_context=_rough_sorter_context_for_phase(PHASE_MOVING_FORWARD),
+        services=WorklineRuntimeServices(bin_allocator=allocator),
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_MOVE_FORWARD, device_code="RS-CONVEYOR-01"),
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.RACK_OPERATION_REQUEST,
+    ]
+    assert intents[0].context_patch["phase"] == PHASE_WAITING_RACK
+    assert intents[0].context_patch["resume_source_device_code"] == "RS-CONVEYOR-01"
+    assert intents[0].context_patch["rack_operation"]["operation_key"] == rack_operation_request.operation_key
+    assert intents[1].action == "REPLACE_CLASSIFIER_WORK_RACK"
+    assert intents[1].idempotency_key == rack_operation_request.operation_key
+    assert intents[1].target_code == "WMS_RCS_RACK_OPERATION"
+    assert intents[1].payload_json["rack_tasks"][0]["task_type"] == "ALLOCATE_AND_MOVE_RACK"
+
+
+@pytest.mark.asyncio
+async def test_move_forward_success_with_blocked_allocator_blocks_material() -> None:
+    allocator = FakeBinAllocator(
+        decision=SmtRackBinSchedulingDecision(
+            kind="BLOCKED",
+            reason_code="NO_AVAILABLE_BIN_CELL",
+            message="没有可用料格",
+        )
+    )
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_FORWARD,
+        session_context=_rough_sorter_context_for_phase(PHASE_MOVING_FORWARD),
+        services=WorklineRuntimeServices(bin_allocator=allocator),
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(ctx, _command_inbox(command_type=ACTION_MOVE_FORWARD))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].block_scope == BlockScope.MATERIAL
+    assert intents[0].reason_code == "NO_AVAILABLE_BIN_CELL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_type", [ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG, ACTION_MOVE_FORWARD])
+async def test_handling_command_failed_blocks_without_marking_business_ng(command_type: str) -> None:
+    error_detail = {"error_code": "DEVICE_TIMEOUT", "error_message": "设备执行超时"}
+    ctx = _command_ctx(
+        command_type=command_type,
+        source_result="FAILED",
+        normalized_result="TERMINAL_FAILURE",
+        error_detail=error_detail,
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=command_type, result="FAILED", error_detail=error_detail),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "ROUGH_SORTER_HANDLING_COMMAND_FAILED"

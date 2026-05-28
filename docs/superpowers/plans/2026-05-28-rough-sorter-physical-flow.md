@@ -252,22 +252,22 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - Modify: `src/workline_plugins/rough_sorter/plugin.py`
 - Test: `tests/workline_plugins/test_rough_sorter_plugin.py`
 
-- [ ] 写 `PICK_AND_PUT SUCCESS` 测试，phase 为 `PICK_TO_PIPELINE` 时返回 `UPDATE_CONTEXT + COMMAND(MOVE_FORWARD)`。
-- [ ] 写 `MOVE_FORWARD SUCCESS` 且 `ALLOCATED` 测试，断言 `UPDATE_CONTEXT + RESOURCE_RESERVATION(CLAIM_BIN_CELL) + COMMAND(PUT_TO_BIN)`。
-- [ ] 写 `MOVE_FORWARD SUCCESS` 且 `RACK_OPERATION_REQUIRED` 测试，断言写入 `resume_source_device_code` 和 rack operation context，并返回 `RACK_OPERATION_REQUEST`。
-- [ ] 写 allocator `BLOCKED` 测试，断言进入 Hold。
-- [ ] 实现 `@on_command("PICK_AND_PUT", result="SUCCESS")`：
+- [x] 写 `PICK_AND_PUT SUCCESS` 测试，phase 为 `PICK_TO_PIPELINE` 时返回 `UPDATE_CONTEXT + COMMAND(MOVE_FORWARD)`。
+- [x] 写 `MOVE_FORWARD SUCCESS` 且 `ALLOCATED` 测试，断言 `UPDATE_CONTEXT + RESOURCE_RESERVATION(CLAIM_BIN_CELL) + COMMAND(PUT_TO_BIN)`。
+- [x] 写 `MOVE_FORWARD SUCCESS` 且 `RACK_OPERATION_REQUIRED` 测试，断言写入 `resume_source_device_code` 和 rack operation context，并返回 `RACK_OPERATION_REQUEST`。
+- [x] 写 allocator `BLOCKED` 测试，断言进入 Hold。
+- [x] 实现 `@on_command("PICK_AND_PUT", result="SUCCESS")`：
   - `phase == "NG_MOVING"` 时 `COMPLETE`。
   - `phase == "PICK_TO_PIPELINE"` 时下发 `MOVE_FORWARD`。
   - 其它 phase 走 Hold。
-- [ ] 实现 `@on_command("MOVE_FORWARD", result="SUCCESS")`：
+- [x] 实现 `@on_command("MOVE_FORWARD", result="SUCCESS")`：
   - 读取 active rack snapshot。
   - 调用 `bin_allocator.plan_allocation(...)`。
   - `ALLOCATED` 时先 claim bin cell，再下发 `PUT_TO_BIN`。
   - `RACK_OPERATION_REQUIRED` 时发起 rack operation，context 必须包含恢复锚点。
   - `BLOCKED` 或无 decision 时 Hold。
-- [ ] 实现 `PICK_AND_PUT` / `MOVE_FORWARD` 失败处理：默认 Hold，不误判业务 NG。
-- [ ] 运行：`uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
+- [x] 实现 `PICK_AND_PUT` / `MOVE_FORWARD` 失败处理：默认 Hold，不误判业务 NG。
+- [x] 运行：`uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
 
 ### Task 5: WMS/RCS 到位两阶段恢复
 

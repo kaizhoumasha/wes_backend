@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, cast
 
@@ -12,8 +14,10 @@ from src.app.workline.domain.services.barcode_decision_service import barcode_de
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MEASUREMENT_REEL,
+    ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
+    ACTION_PUT_TO_BIN,
     ACTION_TARGET_ROLES,
     EVENT_SCAN_COMPLETED,
     NG_REASON_BARCODE_INCOMPLETE,
@@ -21,17 +25,23 @@ from src.workline_plugins.rough_sorter.contract import (
     NG_REASON_BARCODE_RULE_NG,
     NG_REASON_MEASUREMENT_NG,
     NG_REASON_WMS_REJECTED,
+    PHASE_COMPLETED,
     PHASE_MEASURING,
+    PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
+    PHASE_PUTTING_TO_BIN,
+    PHASE_WAITING_RACK,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
     build_measurement_reel_payload,
+    build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
+    build_put_to_bin_payload,
     classify_rough_sorter_result,
     normalize_six_in_one_payload,
     resolve_rough_sorter_business_key,
@@ -47,6 +57,7 @@ if TYPE_CHECKING:
 
 DEFAULT_NG_LOCATION = "NG-01"
 DEFAULT_PIPELINE_INPUT_LOCATION = "PIPELINE-IN-01"
+DEFAULT_PIPELINE_OUTPUT_LOCATION = "PIPELINE-OUT-01"
 MEASUREMENT_NG_ERROR_CODES = frozenset({"INSPECTION_SIZE_NG", "INSPECTION_THICKNESS_NG"})
 
 
@@ -118,6 +129,14 @@ def _wms_item_matches(item: WmsInventoryItem, *, sku: str, lot_no: str) -> bool:
     return item.sku == sku and item.lot_no == lot_no
 
 
+def _business_key_from_context(rough_context: RoughSorterContext) -> str | None:
+    return rough_context.business_key or _non_empty_str(rough_context.six_in_one.get("PkgID"))
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {}
+
+
 class RoughSorterPlugin(WorklinePlugin):
     """粗分机插件。"""
 
@@ -177,6 +196,14 @@ class RoughSorterPlugin(WorklinePlugin):
         return DEFAULT_PIPELINE_INPUT_LOCATION
 
     @staticmethod
+    def _pipeline_output_location(ctx: PluginContext) -> str:
+        config = ctx.config
+        pipeline_output_location = config.get("pipeline_output_location")
+        if isinstance(pipeline_output_location, str) and pipeline_output_location:
+            return pipeline_output_location
+        return DEFAULT_PIPELINE_OUTPUT_LOCATION
+
+    @staticmethod
     def _block(reason_code: str, message: str, *, payload: dict[str, Any] | None = None) -> list[RuntimeIntent]:
         return [
             RuntimeIntent.block(
@@ -187,6 +214,94 @@ class RoughSorterPlugin(WorklinePlugin):
                 payload=payload,
             )
         ]
+
+    @staticmethod
+    def _handling_failed_block(ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        payload_json = inbox.payload_json or {}
+        error_detail = _payload_data(payload_json)
+        payload_error_detail = payload_json.get("error_detail")
+        if isinstance(payload_error_detail, dict):
+            error_detail.update(cast("dict[str, Any]", payload_error_detail))
+        error_detail.update(_normalized_error_detail(ctx))
+        error_message = _non_empty_str(error_detail.get("error_message")) or _non_empty_str(error_detail.get("message"))
+        return RoughSorterPlugin._block(
+            "ROUGH_SORTER_HANDLING_COMMAND_FAILED",
+            error_message or "粗分机搬运命令失败，需人工确认设备状态",
+            payload={"error_detail": error_detail},
+        )
+
+    async def _active_bin_rack(self, ctx: PluginContext, allocation_context: dict[str, Any]) -> dict[str, Any] | None:
+        provider = getattr(getattr(ctx, "services", None), "active_rack_snapshot_provider", None)
+        if provider is None:
+            return None
+        snapshot = provider.active_bin_rack(context=allocation_context)
+        if inspect.isawaitable(snapshot):
+            snapshot = await snapshot
+        return _dict_or_empty(snapshot) or None
+
+    async def _allocation_context(self, ctx: PluginContext, rough_context: RoughSorterContext) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "six_in_one": rough_context.six_in_one,
+            "measurement": rough_context.measurement,
+            "wms_validation": rough_context.wms_validation,
+            "rack_operation": rough_context.rack_operation,
+            "config": dict(ctx.config),
+            "trace_id": _non_empty_str(getattr(ctx, "trace_id", None)),
+        }
+        active_bin_rack = await self._active_bin_rack(ctx, context)
+        if active_bin_rack is not None:
+            context["active_bin_rack"] = active_bin_rack
+        return context
+
+    @staticmethod
+    def _bin_location_parts(bin_location: Mapping[str, Any]) -> tuple[str, str, str | None, str | None]:
+        bin_code = _non_empty_str(bin_location.get("bin_code")) or _non_empty_str(bin_location.get("bin_id"))
+        bin_cell_index = _non_empty_str(bin_location.get("bin_cell_index")) or _non_empty_str(
+            bin_location.get("cell_index")
+        )
+        bin_cell_code = _non_empty_str(bin_location.get("bin_cell_code")) or _non_empty_str(
+            bin_location.get("bin_cell_location")
+        )
+        material_identity_key = _non_empty_str(bin_location.get("material_identity_key"))
+        if not bin_code or not bin_cell_index:
+            raise ValueError("bin_location requires bin_code/bin_id and bin_cell_index")
+        return bin_code, bin_cell_index, bin_cell_code, material_identity_key
+
+    @staticmethod
+    def _rack_tasks_from_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        actions = payload.get("actions")
+        if not isinstance(actions, list):
+            return []
+        action_values = cast("list[Any]", actions)
+        tasks: list[dict[str, Any]] = []
+        for index, action in enumerate(action_values, start=1):
+            if not isinstance(action, str) or not action:
+                continue
+            task: dict[str, Any] = {
+                "sequence_no": index,
+                "task_type": action,
+                "rack_kind": payload.get("new_rack_kind") or "SINGLE_LAYER",
+                "target_position_code": payload.get("work_position_code") or "SINGLE_LAYER_A",
+                "target_position_role": payload.get("target_position_role") or "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+            }
+            rack_code = payload.get("single_layer_rack_code") or payload.get("single_layer_rack_id")
+            if rack_code is not None and action == "MOVE_OUT_ACTIVE_RACK":
+                task["rack_code"] = rack_code
+                task["target_position_role"] = payload.get("move_out_target_position_role") or "SMT_EMPTY_RACK_AREA"
+            tasks.append(task)
+        return tasks
+
+    def _rack_operation_payload(self, ctx: PluginContext, payload: Mapping[str, Any]) -> dict[str, Any]:
+        normalized_payload = dict(payload)
+        if "trace_id" not in normalized_payload and ctx.trace_id:
+            normalized_payload["trace_id"] = ctx.trace_id
+        if not isinstance(normalized_payload.get("rack_tasks"), list) and not isinstance(
+            normalized_payload.get("task_specs"), list
+        ):
+            rack_tasks = self._rack_tasks_from_actions(normalized_payload)
+            if rack_tasks:
+                normalized_payload["rack_tasks"] = rack_tasks
+        return normalized_payload
 
     def _measurement_ng_intents(
         self,
@@ -509,6 +624,216 @@ class RoughSorterPlugin(WorklinePlugin):
             error_message or "粗分机测量命令失败，需人工确认设备状态",
             payload={"error_detail": error_detail},
         )
+
+    @on_command(ACTION_PICK_AND_PUT, result="SUCCESS")
+    async def handle_pick_and_put_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理入料抓取/NG 搬运完成。"""
+
+        payload_json = inbox.payload_json or {}
+        rough_context = _session_context(ctx)
+        business_key = _business_key_from_context(rough_context)
+        if business_key is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少业务主键，无法继续搬运流程")
+
+        if rough_context.phase == PHASE_NG_MOVING:
+            return [RuntimeIntent.complete({"phase": PHASE_COMPLETED})]
+
+        if rough_context.phase != PHASE_PICK_TO_PIPELINE:
+            return self._block(
+                "ROUGH_SORTER_PHASE_INVALID",
+                f"粗分机 PICK_AND_PUT 成功回调处于非法阶段: {rough_context.phase}",
+            )
+
+        context_patch = RoughSorterContext(
+            six_in_one=rough_context.six_in_one,
+            business_key=business_key,
+            measurement=rough_context.measurement,
+            wms_validation=rough_context.wms_validation,
+            phase=PHASE_MOVING_FORWARD,
+        ).model_dump(mode="json", exclude_none=True)
+        return [
+            RuntimeIntent.update_context(context_patch),
+            RuntimeIntent.command(
+                device_role=ACTION_TARGET_ROLES[ACTION_MOVE_FORWARD],
+                action=ACTION_MOVE_FORWARD,
+                payload=build_move_forward_payload(
+                    business_key=business_key,
+                    source_location=self._command_source_location(ctx, payload_json),
+                    target_location=self._pipeline_output_location(ctx),
+                ),
+            ),
+        ]
+
+    @on_command(ACTION_MOVE_TO_NG, result="SUCCESS")
+    async def handle_move_to_ng_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理 NG 搬运完成。"""
+
+        return await self.handle_pick_and_put_success(ctx, inbox)
+
+    @on_command(ACTION_MOVE_FORWARD, result="SUCCESS")
+    async def handle_move_forward_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理流水线前进完成，并执行出料料格分配。"""
+
+        payload_json = inbox.payload_json or {}
+        rough_context = _session_context(ctx)
+        business_key = _business_key_from_context(rough_context)
+        if business_key is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少业务主键，无法执行出料分配")
+        if rough_context.phase != PHASE_MOVING_FORWARD:
+            return self._block(
+                "ROUGH_SORTER_PHASE_INVALID",
+                f"粗分机 MOVE_FORWARD 成功回调处于非法阶段: {rough_context.phase}",
+            )
+
+        allocator = getattr(getattr(ctx, "services", None), "bin_allocator", None)
+        if allocator is None:
+            return self._block("ROUGH_SORTER_ALLOCATOR_UNAVAILABLE", "粗分机出料分配缺少 bin_allocator 服务")
+
+        allocation_context = await self._allocation_context(ctx, rough_context)
+        decision = allocator.plan_allocation(business_key, context=allocation_context)
+        if inspect.isawaitable(decision):
+            decision = await decision
+        if decision is None:
+            return self._block("ROUGH_SORTER_ALLOCATION_BLOCKED", "粗分机出料分配未返回可执行决策")
+
+        decision_kind = _non_empty_str(getattr(decision, "kind", None))
+        if decision_kind == "ALLOCATED":
+            return self._allocated_bin_intents(ctx, payload_json, rough_context, business_key, decision)
+        if decision_kind == "RACK_OPERATION_REQUIRED":
+            return self._rack_operation_required_intents(ctx, payload_json, rough_context, business_key, decision)
+        if decision_kind == "BLOCKED":
+            return self._block(
+                _non_empty_str(getattr(decision, "reason_code", None)) or "ROUGH_SORTER_ALLOCATION_BLOCKED",
+                _non_empty_str(getattr(decision, "message", None)) or "粗分机出料分配被资源域阻塞",
+            )
+        return self._block(
+            "ROUGH_SORTER_ALLOCATION_DECISION_INVALID",
+            f"粗分机出料分配返回未知决策: {decision_kind}",
+        )
+
+    def _allocated_bin_intents(
+        self,
+        ctx: PluginContext,
+        payload_json: dict[str, Any],
+        rough_context: RoughSorterContext,
+        business_key: str,
+        decision: Any,
+    ) -> list[RuntimeIntent]:
+        bin_location = getattr(decision, "bin_location", None)
+        if not isinstance(bin_location, Mapping):
+            return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", "ALLOCATED 决策缺少 bin_location")
+        bin_location_map = cast("Mapping[str, Any]", bin_location)
+        try:
+            bin_code, bin_cell_index, bin_cell_code, material_identity_key = self._bin_location_parts(bin_location_map)
+        except ValueError as exc:
+            return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", str(exc))
+
+        claim_payload: dict[str, Any] = {
+            "pkg_code": business_key,
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+        }
+        if bin_cell_code is not None:
+            claim_payload["bin_cell_code"] = bin_cell_code
+        if material_identity_key is not None:
+            claim_payload["material_identity_key"] = material_identity_key
+
+        target_bin_location: dict[str, Any] = dict(bin_location_map)
+        context_patch = RoughSorterContext(
+            six_in_one=rough_context.six_in_one,
+            business_key=business_key,
+            measurement=rough_context.measurement,
+            wms_validation=rough_context.wms_validation,
+            target_bin_location=target_bin_location,
+            phase=PHASE_PUTTING_TO_BIN,
+        ).model_dump(mode="json", exclude_none=True)
+        return [
+            RuntimeIntent.update_context(context_patch),
+            RuntimeIntent.resource_reservation(
+                operation="CLAIM_BIN_CELL",
+                payload=claim_payload,
+                idempotency_key=f"CLAIM_BIN_CELL:{business_key}:{bin_code}:{bin_cell_index}",
+            ),
+            RuntimeIntent.command(
+                device_role=ACTION_TARGET_ROLES[ACTION_PUT_TO_BIN],
+                action=ACTION_PUT_TO_BIN,
+                payload=build_put_to_bin_payload(
+                    business_key=business_key,
+                    source_location=self._command_source_location(ctx, payload_json),
+                    bin_location=bin_cell_code or f"{bin_code}:{bin_cell_index}",
+                ),
+            ),
+        ]
+
+    def _rack_operation_required_intents(
+        self,
+        ctx: PluginContext,
+        payload_json: dict[str, Any],
+        rough_context: RoughSorterContext,
+        business_key: str,
+        decision: Any,
+    ) -> list[RuntimeIntent]:
+        del payload_json, business_key
+        rack_operation_request = getattr(decision, "rack_operation_request", None)
+        if rack_operation_request is None:
+            return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", "RACK_OPERATION_REQUIRED 缺少请求合同")
+
+        operation_key = _non_empty_str(getattr(rack_operation_request, "operation_key", None))
+        target_code = _non_empty_str(getattr(rack_operation_request, "target_code", None))
+        raw_payload = getattr(rack_operation_request, "payload", None)
+        if operation_key is None or target_code is None or not isinstance(raw_payload, Mapping):
+            return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", "货架 operation 请求缺少关键字段")
+
+        raw_payload_map = cast("Mapping[str, Any]", raw_payload)
+        operation_payload = self._rack_operation_payload(ctx, raw_payload_map)
+        operation_type = _non_empty_str(operation_payload.get("operation_type")) or "REPLACE_CLASSIFIER_WORK_RACK"
+        timeout_seconds = int(getattr(rack_operation_request, "timeout_seconds", 1800) or 1800)
+        source_device_code = self._command_source_location(ctx, {})
+        rack_operation_context: dict[str, Any] = {
+            "operation_key": operation_key,
+            "operation_type": operation_type,
+            "target_code": target_code,
+            "status": "REQUESTED",
+            "reason_code": _non_empty_str(getattr(decision, "reason_code", None)),
+            "message": _non_empty_str(getattr(decision, "message", None)),
+        }
+        context_patch = RoughSorterContext(
+            six_in_one=rough_context.six_in_one,
+            business_key=_business_key_from_context(rough_context),
+            measurement=rough_context.measurement,
+            wms_validation=rough_context.wms_validation,
+            rack_operation=rack_operation_context,
+            phase=PHASE_WAITING_RACK,
+        ).model_dump(mode="json", exclude_none=True)
+        context_patch["resume_source_device_code"] = source_device_code
+        return [
+            RuntimeIntent.update_context(context_patch),
+            RuntimeIntent.rack_operation_request(
+                operation_type=operation_type,
+                operation_key=operation_key,
+                target_code=target_code,
+                payload=operation_payload,
+                timeout_seconds=timeout_seconds,
+            ),
+        ]
+
+    @on_command(ACTION_PICK_AND_PUT, result="FAILED")
+    async def handle_pick_and_put_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """搬运失败默认进入 Hold，不做业务 NG 判定。"""
+
+        return self._handling_failed_block(ctx, inbox)
+
+    @on_command(ACTION_MOVE_TO_NG, result="FAILED")
+    async def handle_move_to_ng_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """NG 搬运失败默认进入 Hold，不做业务 NG 判定。"""
+
+        return self._handling_failed_block(ctx, inbox)
+
+    @on_command(ACTION_MOVE_FORWARD, result="FAILED")
+    async def handle_move_forward_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """流水线前进失败默认进入 Hold，不做业务 NG 判定。"""
+
+        return self._handling_failed_block(ctx, inbox)
 
 
 rough_sorter_plugin = RoughSorterPlugin()
