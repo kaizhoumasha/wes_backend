@@ -28,8 +28,6 @@ class CacheSettings:
     DEVICE_LIST = CacheConfig(prefix="app:device:list", expire=600)
     WORKLINE = CacheConfig(prefix="app:workline:detail", expire=3600)
     WORKLINE_LIST = CacheConfig(prefix="app:workline:list", expire=600)
-    DEMO_PRODUCT = CacheConfig(prefix="demo_product:detail", expire=3600)
-    DEMO_PRODUCT_LIST = CacheConfig(prefix="demo_product:list", expire=600)
     API_APP = CacheConfig(prefix="api_app:detail", expire=300)
     API_APP_LIST = CacheConfig(prefix="api_app:list", expire=120)
     AUDIT_LOG = CacheConfig(prefix="audit_log:detail", expire=1800)

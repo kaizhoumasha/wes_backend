@@ -95,7 +95,7 @@ alembic history                               # 查看历史
 
 ```python
 from src.app.admin.models import User, Role, Permission
-from src.app.demo.models.demo_product import DemoProduct
+from src.app.device.models import Device
 ```
 
 如果添加了新的模型文件，需要在 `env.py` 中添加相应的导入。

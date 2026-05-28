@@ -99,7 +99,6 @@ def register_routers(app: FastAPI) -> None:
     from src.app.api_auth import router_v1 as api_auth_router
     from src.app.auth import router_v1 as auth_router
     from src.app.callback import router_v1 as callback_router
-    from src.app.demo import router_v1 as demo_router
     from src.app.device import router_v1 as device_router
     from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
@@ -113,7 +112,6 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(resource_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
-    app.include_router(demo_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:

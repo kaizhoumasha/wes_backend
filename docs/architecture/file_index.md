@@ -317,18 +317,6 @@
 | `v1/` | `audit_log.py` | 审计日志路由 | 📚 参考资料 |
 | | `events.py` | 事件系统路由 | 📚 参考资料 |
 
-#### 🎯 示例模块 (src/app/demo/)
-
-开发参考示例
-
-| 目录 | 文件 | 用途 | 分类 |
-|------|------|------|------|
-| `models/` | `demo_product.py` | 示例产品模型 | 🎯 示例代码 |
-| | `demo_product_list.py` | 示例列表模型 | 🎯 示例代码 |
-| `repositories/` | `demo_product_repository.py` | 示例仓库 | 🎯 示例代码 |
-| `services/` | `demo_product_service.py` | 示例服务 | 🎯 示例代码 |
-| `v1/` | `demo_product.py` | 示例路由 | 🎯 示例代码 |
-
 #### 🔧 作业线模块 (src/app/workline/)
 
 作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）
@@ -671,7 +659,6 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
     │   ├───admin/            # 后台管理
     │   ├───api_auth/         # API 认证
     │   ├───auth/             # 用户认证
-    │   ├───demo/             # 示例模块
     │   ├───sys/              # 系统管理
     │   └───wms_integration/  # WMS 对接辅助域
     │
