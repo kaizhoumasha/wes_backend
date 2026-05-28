@@ -18,6 +18,7 @@ from src.app.workline.models.runtime_hold_api import (
 )
 from src.app.workline.services.runtime_hold_query_service import runtime_hold_query_service
 from src.app.workline.services.runtime_hold_release_service import RuntimeHoldReleaseError, runtime_hold_release_service
+from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
@@ -146,7 +147,8 @@ async def resolve_runtime_hold(
 ) -> ResponseSchemaModel[ResolveRuntimeHoldResponse] | JSONResponse:
     try:
         result = await runtime_hold_release_service.resolve_hold(db, hold_id, payload, current_user_id)
-        await db.commit()
+        async with WorklineUnitOfWork(db=db) as uow:
+            await uow.commit()
         await publish_deferred_sse_events(db)
         if result.get("created_inbox_id") is not None:
             _enqueue_workline_processing()

@@ -12,6 +12,7 @@ from src.app.device.services.device_service import DeviceService
 from src.app.rack.repositories import RackTaskRepository
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
+from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus
@@ -69,6 +70,11 @@ _LATE_CALLBACK_EVIDENCE_REASONS = {
     RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
     RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED,
     RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED,
+}
+_TERMINAL_SESSION_STATUSES = {
+    SessionStatus.COMPLETED.value,
+    SessionStatus.FAILED.value,
+    SessionStatus.CANCELLED.value,
 }
 
 
@@ -194,7 +200,7 @@ class WorklineRuntimeReconciliationService:
             payload.get("ack_received_at")
         )
         from_status = enum_str(session.status)
-        session.status = SessionStatus.MANUAL_HOLD
+        workline_session_lifecycle_service.manual_hold(session, occurred_at=now)
         session.reconciliation_state = RuntimeReconciliationState.PENDING
         session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
         session.reconciliation_source_kind = RuntimeReconciliationSourceKind.TIMER_TIMEOUT
@@ -206,7 +212,6 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_deadline_at = claim_deadline_at
         session.reconciliation_occurred_at = now
         session.reconciliation_late_evidence_received = False
-        self._clear_wait(session)
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
@@ -329,7 +334,10 @@ class WorklineRuntimeReconciliationService:
             await db.flush()
             return session
 
-        session.status = SessionStatus.MANUAL_HOLD
+        from_status = enum_str(getattr(session, "status", None)) or SessionStatus.WAITING_DEVICE_RESULT.value
+        if from_status not in _TERMINAL_SESSION_STATUSES:
+            workline_session_lifecycle_service.manual_hold(session, occurred_at=now)
+        to_status = enum_str(getattr(session, "status", None)) or from_status
         session.reconciliation_state = RuntimeReconciliationState.PENDING
         session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
         session.reconciliation_source_kind = RuntimeReconciliationSourceKind.DISPATCH_ACK_EXHAUSTED
@@ -339,7 +347,6 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_wait_token = getattr(command, "command_code", None)
         session.reconciliation_occurred_at = now
         session.reconciliation_late_evidence_received = False
-        self._clear_wait(session)
 
         if command is not None:
             command.status = CommandStatus.FAILED
@@ -376,8 +383,8 @@ class WorklineRuntimeReconciliationService:
             stage=TimelineStage.FAIL,
             action_type=TimelineActionType.ERROR_OCCURRED,
             status=TimelineStatus.FAILED,
-            from_status=SessionStatus.WAITING_DEVICE_RESULT.value,
-            to_status=SessionStatus.MANUAL_HOLD.value,
+            from_status=from_status,
+            to_status=to_status,
             message="Command ACK exhausted; runtime reconciliation started.",
             payload={
                 "reason": RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,

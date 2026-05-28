@@ -14,6 +14,7 @@ from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
 from src.app.sys.repositories import system_outbox_repository
+from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
@@ -574,13 +575,11 @@ class RuntimeHoldReleaseService:
         operator_id: int,
         resolved_at: Any,
     ) -> None:
-        session.status = SessionStatus(request.resolution)
-        session.ended_at = resolved_at
-        session.current_wait_type = None
-        session.waiting_since = None
-        session.deadline_at = None
-        session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = None
+        workline_session_lifecycle_service.resolve(
+            session,
+            resolution=SessionStatus(request.resolution),
+            occurred_at=resolved_at,
+        )
         self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
         self._write_session_release_context(
             session,
@@ -600,16 +599,11 @@ class RuntimeHoldReleaseService:
     ) -> None:
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
-        session.status = SessionStatus.WAITING_DEVICE_RESULT
-        session.ended_at = None
-        session.current_wait_type = "COMMAND_RESULT"
-        session.waiting_since = resolved_at
-        session.deadline_at = None
-        session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = command.id
-        session.failure_domain = None
-        session.failure_code = None
-        session.failure_message = None
+        workline_session_lifecycle_service.replay_command_result_wait(
+            session,
+            command_id=command.id,
+            occurred_at=resolved_at,
+        )
         self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
         self._write_session_release_context(
             session,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -369,10 +368,8 @@ class RuntimeIntentEffectApplier:
         ):
             return
 
-        session.status = "COMPLETED"
-        workline_effects._clear_session_wait(session)
+        workline_effects.workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
         workline_effects._clear_session_failure(session)
-        session.ended_at = ctx["now"]
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.COMPLETE,
@@ -492,9 +489,8 @@ class RuntimeIntentEffectApplier:
 
         workline_effects._clear_session_failure(ctx["session"])
         if intent.timeout_seconds is None:
-            ctx["session"].status = "RUNNING"
+            workline_effects.workline_session_lifecycle_service.running(ctx["session"])
             workline_effects._clear_session_wait(ctx["session"])
-            ctx["session"].ended_at = None
             return
 
         await self._apply_command_wait(ctx, intent)
@@ -538,13 +534,12 @@ class RuntimeIntentEffectApplier:
         )
 
         workline_effects._clear_session_failure(session)
-        session.status = workline_effects._wait_session_status("EXTERNAL_HTTP")
-        session.current_wait_type = "EXTERNAL_HTTP"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="EXTERNAL_HTTP",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.WAITING,
@@ -637,6 +632,8 @@ class RuntimeIntentEffectApplier:
         tasks: list[Any],
         timeout_seconds: int,
     ) -> None:
+        from src.app.workline.services import write_back_service as workline_effects
+
         session = ctx["session"]
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_operation = context_json.get("rack_operation")
@@ -670,13 +667,12 @@ class RuntimeIntentEffectApplier:
         context_json["rack_operation"] = rack_operation
         session.context_json = context_json
         ctx["session_ctx"] = dict(context_json)
-        session.status = "WAITING_EXTERNAL"
-        session.current_wait_type = "RACK_OPERATION"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="RACK_OPERATION",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
 
     async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (
@@ -759,6 +755,8 @@ class RuntimeIntentEffectApplier:
         rack_code: str | None,
         timeout_seconds: int,
     ) -> None:
+        from src.app.workline.services import write_back_service as workline_effects
+
         session = ctx["session"]
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_operation = context_json.get("handling_operation")
@@ -778,13 +776,12 @@ class RuntimeIntentEffectApplier:
         context_json["handling_operation"] = handling_operation
         session.context_json = context_json
         ctx["session_ctx"] = dict(context_json)
-        session.status = "WAITING_EXTERNAL"
-        session.current_wait_type = "HANDLING_OPERATION"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="HANDLING_OPERATION",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
 
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
         service = self._inbox_service
@@ -855,13 +852,13 @@ class RuntimeIntentEffectApplier:
 
         session = ctx["session"]
         timeout_seconds = intent.timeout_seconds or 300
-        session.status = workline_effects._wait_session_status("COMMAND_RESULT")
-        session.current_wait_type = "COMMAND_RESULT"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = ctx["awaiting_command_id"]
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = None
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="COMMAND_RESULT",
+            occurred_at=ctx["now"],
+            awaiting_command_id=ctx["awaiting_command_id"],
+            deadline_seconds=timeout_seconds,
+        )
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.WAITING,
@@ -907,9 +904,7 @@ class RuntimeIntentEffectApplier:
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
-        session.status = "MANUAL_HOLD"
-        workline_effects._clear_session_wait(session)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
         session.failure_domain = intent.block_scope.value if intent.block_scope is not None else "BLOCK"
         session.failure_code = intent.reason_code
         session.failure_message = intent.message
@@ -946,10 +941,9 @@ class RuntimeIntentEffectApplier:
             return
 
         session = ctx["session"]
-        session.status = "RUNNING"
+        workline_effects.workline_session_lifecycle_service.running(session)
         workline_effects._clear_session_wait(session)
         workline_effects._clear_session_failure(session)
-        session.ended_at = None
 
 
 __all__ = ["RuntimeIntentEffectApplier"]

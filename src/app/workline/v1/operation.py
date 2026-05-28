@@ -29,6 +29,7 @@ from src.app.workline.services import (
     workline_operation_service,
     workline_safety_service,
 )
+from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
@@ -165,7 +166,8 @@ async def cleanup_sandbox_workline(
                 workline_id=workline_id,
                 confirmation=payload.confirmation,
             )
-            await db.commit()
+            async with WorklineUnitOfWork(db=db) as uow:
+                await uow.commit()
             await publish_deferred_sse_events(db)
     except ValueError as exc:
         return cast("ResponseSchemaModel[SandboxCleanupResponse]", _operation_error_response(exc))
@@ -271,7 +273,8 @@ async def simulate_workline_estop(
             source_device_id=payload.source_device_id,
             payload=payload.payload,
         )
-        await db.commit()
+        async with WorklineUnitOfWork(db=db) as uow:
+            await uow.commit()
         await publish_deferred_sse_events(db)
     except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
@@ -302,7 +305,8 @@ async def clear_workline_estop(
             reason=payload.reason,
             operator_id=current_user_id,
         )
-        await db.commit()
+        async with WorklineUnitOfWork(db=db) as uow:
+            await uow.commit()
         await publish_deferred_sse_events(db)
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))

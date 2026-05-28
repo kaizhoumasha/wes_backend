@@ -1,9 +1,9 @@
 import uuid
-from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
+from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
@@ -49,17 +49,11 @@ def _sync_session_contract_snapshot(session: Any, *, workline: Any) -> None:
 
 
 def _clear_session_wait(session: Any) -> None:
-    session.current_wait_type = None
-    session.waiting_since = None
-    session.deadline_at = None
-    session.current_wait_timeout_seconds = None
-    session.awaiting_command_id = None
+    workline_session_lifecycle_service.clear_wait(session)
 
 
 def _clear_session_failure(session: Any) -> None:
-    session.failure_domain = None
-    session.failure_code = None
-    session.failure_message = None
+    workline_session_lifecycle_service.clear_failure(session)
 
 
 def _wait_session_status(wait_type: str) -> str:
@@ -512,12 +506,13 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
         getattr(session, "awaiting_command_id", None) is not None
         or getattr(session, "current_wait_type", None) == "COMMAND_RESULT"
     )
-    session.status = "FAILED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
-    session.failure_domain = failure.domain
-    session.failure_code = failure.code
-    session.failure_message = failure.message
+    workline_session_lifecycle_service.fail(
+        session,
+        occurred_at=ctx["now"],
+        failure_domain=failure.domain,
+        failure_code=failure.code,
+        failure_message=failure.message,
+    )
     session_id = resolve_entity_id(session)
     if should_cancel_pending_outboxes and session_id is not None:
         from src.app.sys.repositories import SystemOutboxRepository
@@ -549,9 +544,7 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
     if ctx["orch_result"].transition != "manual_cancel":
         return False
     session = ctx["session"]
-    session.status = "CANCELLED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
+    workline_session_lifecycle_service.cancel(session, occurred_at=ctx["now"])
     await _emit_timeline(
         ctx,
         stage=TimelineStage.MANUAL,
@@ -579,9 +572,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         transition=getattr(ctx["orch_result"], "transition", None),
         occurred_at=ctx["now"],
     )
-    session.status = "COMPLETED"
-    _clear_session_wait(session)
-    session.ended_at = ctx["now"]
+    workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
     await _emit_timeline(
         ctx,
         stage=TimelineStage.COMPLETE,
@@ -604,16 +595,13 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
     resolved_wait_token = wait.wait_token
     if wait.wait_type == "COMMAND_RESULT":
         resolved_wait_token = ctx["awaiting_command_code"] or wait.wait_token
-    session.status = _wait_session_status(wait.wait_type)
-    session.current_wait_type = wait.wait_type
-    session.waiting_since = ctx["now"]
-    session.awaiting_command_id = ctx["awaiting_command_id"]
-    session.current_wait_timeout_seconds = wait.deadline_seconds
-    if wait.wait_type == "COMMAND_RESULT":
-        session.deadline_at = None
-    else:
-        session.deadline_at = ctx["now"] + timedelta(seconds=wait.deadline_seconds)
-    session.ended_at = None
+    workline_session_lifecycle_service.start_wait(
+        session,
+        wait_type=wait.wait_type,
+        occurred_at=ctx["now"],
+        awaiting_command_id=ctx["awaiting_command_id"],
+        deadline_seconds=wait.deadline_seconds,
+    )
     await _emit_timeline(
         ctx,
         stage=TimelineStage.WAITING,
@@ -639,15 +627,10 @@ def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
     session = ctx["session"]
     transition = getattr(ctx["orch_result"], "transition", None)
     if transition == "manual_hold":
-        session.status = "MANUAL_HOLD"
-        session.ended_at = None
+        workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
         return True
     if transition == "manual_resume":
-        if session.current_wait_type:
-            session.status = _wait_session_status(session.current_wait_type)
-        else:
-            session.status = "RUNNING"
-        session.ended_at = None
+        workline_session_lifecycle_service.resume(session)
         return True
     return False
 
@@ -663,7 +646,7 @@ def _apply_running_fallback(ctx: EffectApplyContext) -> None:
         or getattr(orch_result, "commands", None)
         or getattr(orch_result, "decisions", None)
     ):
-        session.status = "RUNNING"
+        workline_session_lifecycle_service.running(session)
     _clear_session_wait(session)
     session.ended_at = None
 
