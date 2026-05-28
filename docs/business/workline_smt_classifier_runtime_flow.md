@@ -8,9 +8,9 @@
 
 - 一条设备事件如何进入 WES，并转为 `WorklineInbox`
 - `process_inbox_batch` 如何解析 `Session`、调用插件并落库
-- `dispatch_outbox_batch` 如何把命令派发到模拟设备
+- `dispatch_system_outbox_batch` 如何把命令派发到模拟设备
 - 模拟设备如何回调结果，再次进入编排
-- `WorklineInbox / WorklineSession / DeviceCommand / WorklineOutbox / WorklineTimeline` 在每一步的关键字段变化
+- `WorklineInbox / WorklineSession / DeviceCommand / SystemOutbox / WorklineTimeline` 在每一步的关键字段变化
 - 当前 mock 与插件协议之间的已知差异
 
 相关代码：
@@ -75,7 +75,7 @@
 |------|------|
 | `callback.py` | 接收设备 HTTP 回调，转为 `WorklineInbox`，commit 后触发 Celery |
 | `workline.py` | 消费 `Inbox`，加载上下文，调用插件，落库状态、命令和 outbox |
-| `dispatch_outbox_batch` | 读取 `Outbox` 并真正请求设备接口 |
+| `dispatch_system_outbox_batch` | 读取 `Outbox` 并真正请求设备接口 |
 
 ## 2. 涉及的核心表与关键字段
 
@@ -126,7 +126,7 @@
 | `session_id` | 字符串形式 session 标识 |
 | `workline_id` | 归属工作线 |
 
-### 2.4 WorklineOutbox
+### 2.4 SystemOutbox
 
 关键字段：
 
@@ -159,15 +159,15 @@
 
 | 设备 | 角色 | 会写哪些表 | 触发时机 | 备注 |
 |------|------|------------|----------|------|
-| `ARM01` | `INPUT_ARM` | `callback_logs`、`workline_inbox`、`device_commands`、`workline_outbox`、`workline_sessions`、`workline_timelines` | 1. 上报 `SCAN_COMPLETED` 时，WES 写 `CallbackLog + DEVICE_EVENT Inbox`；2. WES 为其创建 `PICK_AND_PUT` 指令时写 `DeviceCommand + Outbox`；3. 它回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并更新 `DeviceCommand / Session / Timeline` | `ARM01` 是当前主链路唯一稳定的 `callback/event` 来源 |
-| `PIPELINE01` | `CONVEYOR` | `callback_logs`、`workline_inbox`、`device_commands`、`workline_outbox`、`workline_sessions`、`workline_timelines` | 仅在 OK 主链路中，WES 给流水线下发 `MOVE_FORWARD` 时写 `DeviceCommand + Outbox`；流水线执行完成回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并推动 `Session / Timeline` 前进 | 不再单独写设备事件事实表 |
-| `ARM02` | `OUTPUT_ARM` | `callback_logs`、`workline_inbox`、`device_commands`、`workline_outbox`、`workline_sessions`、`workline_timelines` | 仅在 OK 主链路尾段，WES 给其下发出料 `PICK_AND_PUT` 时写 `DeviceCommand + Outbox`；它回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并结束 `Session / Timeline` | 主要承担结果回传，不主动发业务事件 |
+| `ARM01` | `INPUT_ARM` | `callback_logs`、`workline_inbox`、`device_commands`、`system_outbox`、`workline_sessions`、`workline_timelines` | 1. 上报 `SCAN_COMPLETED` 时，WES 写 `CallbackLog + DEVICE_EVENT Inbox`；2. WES 为其创建 `PICK_AND_PUT` 指令时写 `DeviceCommand + Outbox`；3. 它回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并更新 `DeviceCommand / Session / Timeline` | `ARM01` 是当前主链路唯一稳定的 `callback/event` 来源 |
+| `PIPELINE01` | `CONVEYOR` | `callback_logs`、`workline_inbox`、`device_commands`、`system_outbox`、`workline_sessions`、`workline_timelines` | 仅在 OK 主链路中，WES 给流水线下发 `MOVE_FORWARD` 时写 `DeviceCommand + Outbox`；流水线执行完成回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并推动 `Session / Timeline` 前进 | 不再单独写设备事件事实表 |
+| `ARM02` | `OUTPUT_ARM` | `callback_logs`、`workline_inbox`、`device_commands`、`system_outbox`、`workline_sessions`、`workline_timelines` | 仅在 OK 主链路尾段，WES 给其下发出料 `PICK_AND_PUT` 时写 `DeviceCommand + Outbox`；它回 `callback/result` 时写 `CallbackLog + COMMAND_RESULT Inbox`，并结束 `Session / Timeline` | 主要承担结果回传，不主动发业务事件 |
 
 进一步说明：
 
 - `callback_logs` 同时覆盖 `callback/event`、`callback/result` 与 `callback/external`
 - `workline_inbox` 是统一编排入口，所以事件和结果最终都会变成一条 Inbox
-- `device_commands` 和 `workline_outbox` 是 WES 对设备的“下行副作用”
+- `device_commands` 和 `system_outbox` 是 WES 对设备的“下行副作用”
 - `workline_sessions` 和 `workline_timelines` 是整条工作线的会话状态与轨迹，不是某一台设备独占的数据
 
 ### 2.7 WorklineTimeline
@@ -219,8 +219,8 @@ sequenceDiagram
     participant PLG as SmtClassifierPlugin
     participant SES as WorklineSession
     participant CMD as DeviceCommand
-    participant OUT as WorklineOutbox
-    participant DISP as dispatch_outbox_batch
+    participant OUT as SystemOutbox
+    participant DISP as dispatch_system_outbox_batch
     participant ARM as Arm Mock
 
     IA->>CB: POST /api/v1/callback/event (SCAN_COMPLETED)
@@ -428,7 +428,7 @@ sequenceDiagram
 }
 ```
 
-#### 5.7.3 WorklineOutbox 新记录
+#### 5.7.3 SystemOutbox 新记录
 
 ```json
 {
@@ -464,7 +464,7 @@ sequenceDiagram
 
 ### 5.8 Step 7: Outbox 派发到 ARM01
 
-`dispatch_outbox_batch()` 会请求：
+`dispatch_system_outbox_batch()` 会请求：
 
 - URL: `http://<ARM01.host>:<ARM01.port>/api/v1/device/command`
 
@@ -840,7 +840,7 @@ IDLE
 | 1 | `POST /callback/event` with `SCAN_COMPLETED + NG` | 新增 `WorklineInbox(kind=DEVICE_EVENT)` |
 | 2 | `process_inbox_batch` | 新增或恢复 `WorklineSession` |
 | 3 | 插件返回 `scan_ng + command + wait` | 更新 `Session`；新增 `Timeline`；新增 `DeviceCommand`；新增 `Outbox` |
-| 4 | `dispatch_outbox_batch` | `Outbox.status: NEW -> SENT` |
+| 4 | `dispatch_system_outbox_batch` | `Outbox.status: NEW -> SENT` |
 | 5 | `POST /callback/result` from `ARM01` | 新增 `WorklineInbox(kind=COMMAND_RESULT)`；更新 `DeviceCommand.status` |
 | 6 | `process_inbox_batch` 再消费 | `Session.status -> COMPLETED`；清空等待字段；新增完成 `Timeline` |
 
@@ -869,8 +869,8 @@ IDLE
 2. 所有输入统一先落为 `WorklineInbox`
 3. 所有业务决策统一由插件产出 `RuntimeIntent`
 4. 所有运行态变化由 Runtime 写回 `WorklineSession`
-5. 所有副作用统一写入 `WorklineOutbox`
-6. 真正的外发由 `dispatch_outbox_batch` 完成
+5. 所有副作用统一写入 `SystemOutbox`
+6. 真正的外发由 `dispatch_system_outbox_batch` 完成
 7. `MOVE_FORWARD SUCCESS` 后先做同步库位分配，只有拿到完整 `target_bin` 才允许创建 `ARM02` 命令
 8. 若 allocation 返回 `AGV_REQUIRED`，则通过 `EXTERNAL_HTTP Outbox -> /callback/external` 闭环恢复 Session
 

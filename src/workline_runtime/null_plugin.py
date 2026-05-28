@@ -7,7 +7,6 @@ NullPlugin - Phase 2 默认插件
 设计参考: 设计文档 phase2-orchestrator
 """
 
-import logging
 from typing import TYPE_CHECKING
 
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
@@ -16,8 +15,6 @@ from src.workline_runtime.runtime_intent import RuntimeIntent
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
-
-logger = logging.getLogger(__name__)
 
 
 class NullPlugin(WorklinePlugin):

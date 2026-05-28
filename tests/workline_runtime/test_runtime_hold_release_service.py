@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -16,9 +16,14 @@ from src.app.workline.models.runtime_hold import (
     RuntimeHoldStatus,
     RuntimeHoldType,
 )
-from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
+from src.app.workline.models.runtime_hold_api import (
+    NgReasonInput,
+    PhysicalHandoffEvidenceInput,
+    ResolveRuntimeHoldRequest,
+)
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import (
+    RuntimeReconciliationReason,
     RuntimeReconciliationResolution,
     RuntimeReconciliationState,
     SessionStatus,
@@ -50,7 +55,7 @@ async def _create_session(
     workline: WorkLine,
     *,
     code: str = "S-HOLD-001",
-    context: dict | None = None,
+    context: dict[str, Any] | None = None,
 ) -> WorklineSession:
     session = WorklineSession(
         session_code=code,
@@ -71,7 +76,7 @@ async def _create_hold(
     *,
     session: WorklineSession | None = None,
     key: str = "hold:1",
-    evidence: dict | None = None,
+    evidence: dict[str, Any] | None = None,
     hold_type: RuntimeHoldType = RuntimeHoldType.RUNTIME_RECONCILIATION,
 ) -> RuntimeHold:
     hold = RuntimeHold(
@@ -107,14 +112,14 @@ def _return_to_ng_request(service: RuntimeHoldReleaseService, hold: RuntimeHold)
         checks={"line_clear_checked": True, "late_callback_reviewed": True},
         operator_note="物料转 NG 返修",
         material_disposition="RETURN_TO_NG",
-        ng_reason={"source": "PLUGIN", "code": "SCAN_NG", "label": "扫码异常"},
-        physical_handoff_evidence={
-            "ng_location_code": "NG-01",
-            "ng_location_scan": "NG-01",
-            "material_scan_payload": {"PkgID": "PKG-001"},
-            "line_clear_checked": True,
-            "late_callback_reviewed": True,
-        },
+        ng_reason=NgReasonInput(source="PLUGIN", code="SCAN_NG", label="扫码异常"),
+        physical_handoff_evidence=PhysicalHandoffEvidenceInput(
+            ng_location_code="NG-01",
+            ng_location_scan="NG-01",
+            material_scan_payload={"PkgID": "PKG-001"},
+            line_clear_checked=True,
+            late_callback_reviewed=True,
+        ),
         hold_version=hold.version,
         latest_evidence_hash=service.build_latest_evidence_hash(hold),
     )
@@ -122,7 +127,7 @@ def _return_to_ng_request(service: RuntimeHoldReleaseService, hold: RuntimeHold)
 
 async def _ng_item_count(db_session, hold_id: int) -> int:
     result = await db_session.execute(
-        select(NgReturnItem).where(NgReturnItem.__table__.c.created_from_runtime_hold_id == hold_id)
+        select(NgReturnItem).where(cast("Any", NgReturnItem.created_from_runtime_hold_id) == hold_id)
     )
     return len(list(result.scalars().all()))
 
@@ -167,7 +172,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         context={"pkg_id": "PKG-001"},
     )
     session.reconciliation_state = RuntimeReconciliationState.PENDING
-    session.reconciliation_reason = "COMMAND_ACK_EXHAUSTED"
+    session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
     command = DeviceCommand(
         command_code="CMD-HOLD-CONTINUE-REPLAY",
         device_id=cast("int", device.id),
@@ -251,7 +256,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
         context={"pkg_id": "PKG-001"},
     )
     session.reconciliation_state = RuntimeReconciliationState.PENDING
-    session.reconciliation_reason = "COMMAND_ACK_EXHAUSTED"
+    session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
     command = DeviceCommand(
         command_code="CMD-HOLD-CONTINUE-PARAMS",
         device_id=cast("int", device.id),
@@ -312,6 +317,59 @@ async def test_return_to_ng_requires_handoff_evidence_and_does_not_release_workl
     await db_session.refresh(hold)
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     assert hold.status == RuntimeHoldStatus.OPEN
+
+
+async def test_failed_resolution_preserves_session_failure_reason(db_session) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-FAILED-REASON")
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-FAILED-REASON",
+        context={"pkg_id": "PKG-001"},
+    )
+    session.failure_domain = "BLOCK"
+    session.failure_code = "SCAN_NG"
+    session.failure_message = "原始阻塞原因"
+    hold = await _create_hold(db_session, workline, session=session, key="hold:failed-reason")
+
+    _ = await service.resolve_hold(db_session, cast("int", hold.id), _return_to_ng_request(service, hold), 42)
+
+    await db_session.refresh(session)
+    assert session.status == SessionStatus.FAILED
+    assert session.failure_domain == "BLOCK"
+    assert session.failure_code == "SCAN_NG"
+    assert session.failure_message == "原始阻塞原因"
+
+
+async def test_failed_resolution_resolves_active_hold_for_already_failed_session(db_session) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-FAILED-IDEMPOTENT")
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-FAILED-IDEMPOTENT",
+        context={"pkg_id": "PKG-001"},
+    )
+    hold = await _create_hold(db_session, workline, session=session, key="hold:failed-idempotent")
+    session.status = SessionStatus.FAILED
+    session.failure_domain = "SAFETY"
+    session.failure_code = "WORKLINE_ESTOPPED"
+    session.failure_message = "WorkLine 急停冻结"
+    await db_session.flush()
+
+    result = await service.resolve_hold(db_session, cast("int", hold.id), _return_to_ng_request(service, hold), 42)
+
+    await db_session.refresh(workline)
+    await db_session.refresh(hold)
+    await db_session.refresh(session)
+    assert result["status"] == RuntimeHoldStatus.RESOLVED.value
+    assert hold.status == RuntimeHoldStatus.RESOLVED
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert session.status == SessionStatus.FAILED
+    assert session.failure_domain == "SAFETY"
+    assert session.failure_code == "WORKLINE_ESTOPPED"
+    assert session.failure_message == "WorkLine 急停冻结"
 
 
 async def test_return_to_ng_requires_ng_reason(db_session) -> None:

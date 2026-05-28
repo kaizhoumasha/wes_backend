@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.utils.value_normalization import as_dict, enum_value
 from src.workline_runtime.run_mode import normalize_run_mode
 
 
@@ -63,14 +64,6 @@ class ResolvedExecutionContext(BaseModel):
     devices_by_role: dict[str, list[ResolvedDeviceRuntimeConfig]] = Field(default_factory=dict)
 
 
-def _dict_value(value: Any) -> dict[str, Any]:
-    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
-
-
-def _enum_str(value: Any) -> Any:
-    return getattr(value, "value", value)
-
-
 def resolve_device_runtime_config(device: Any, *, workline: Any | None = None) -> ResolvedDeviceRuntimeConfig:
     """从 Device 实体解析运行时配置。"""
 
@@ -84,14 +77,14 @@ def resolve_device_runtime_config(device: Any, *, workline: Any | None = None) -
         workline_id=getattr(device, "work_line_id", None) or getattr(workline, "id", None),
         plugin_key=getattr(workline, "plugin_key", None),
         contract_version=getattr(workline, "contract_version", None),
-        protocol=_enum_str(getattr(device, "protocol", None)),
+        protocol=enum_value(getattr(device, "protocol", None)),
         host=getattr(device, "host", None),
         port=getattr(device, "port", None),
         timeout_ms=getattr(device, "timeout", None),
         callback_path=getattr(device, "callback_path", None),
         maintenance_mode=bool(getattr(device, "maintenance_mode", False)),
-        capabilities=_dict_value(getattr(device, "capabilities_json", None)),
-        diagnostic_profile=_dict_value(getattr(device, "diagnostic_profile", None)),
+        capabilities=as_dict(getattr(device, "capabilities_json", None)),
+        diagnostic_profile=as_dict(getattr(device, "diagnostic_profile", None)),
     )
 
 
@@ -105,13 +98,13 @@ def resolve_workline_runtime_config(workline: Any | None) -> ResolvedWorklineRun
         workline_id=getattr(workline, "id", None),
         line_code=getattr(workline, "line_code", None),
         line_name=getattr(workline, "line_name", None),
-        line_type=_enum_str(getattr(workline, "line_type", None)),
+        line_type=enum_value(getattr(workline, "line_type", None)),
         run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
         plugin_key=getattr(workline, "plugin_key", None),
         contract_version=getattr(workline, "contract_version", None),
-        config=_dict_value(getattr(workline, "config", None)),
-        runtime_config=_dict_value(getattr(workline, "runtime_config_json", None)),
-        diagnostic_profile=_dict_value(getattr(workline, "diagnostic_profile", None)),
+        config=as_dict(getattr(workline, "config", None)),
+        runtime_config=as_dict(getattr(workline, "runtime_config_json", None)),
+        diagnostic_profile=as_dict(getattr(workline, "diagnostic_profile", None)),
     )
 
 

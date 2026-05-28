@@ -17,7 +17,7 @@ Plugin owns business judgement. Runtime owns state.
 | 插件输出源 | `RuntimeIntent` | 插件只返回运行时意图，不直接写命令、Outbox、Session 或 Timeline。 |
 | 流程/物料运行状态源 | `WorklineSession` | 当前生产链路中，一条业务链路的等待状态、完成/失败状态、上下文和追踪字段由 Session 承载。 |
 | 命令生命周期 | `DeviceCommand` | 设备命令业务主键、ACK、结果、错误和执行状态的权威记录。 |
-| 派发/ACK/重试证据 | `WorklineOutbox` + `WorklineDispatchAttempt` | Outbox 是副作用出口，DispatchAttempt 是派发尝试、ACK 和重试证据。 |
+| 派发/ACK/重试证据 | `SystemOutbox` + `WorklineDispatchAttempt` | Outbox 是副作用出口，DispatchAttempt 是派发尝试、ACK 和重试证据。 |
 | 异常恢复源 | `RuntimeHold` | 人工介入、对账、恢复和挂起原因的权威记录。 |
 | 追踪事实流 | `WorklineTimeline` | Runtime 决策、状态迁移、等待、派发准备、完成/失败等可追溯事实账本。 |
 | 资源物理事实 | `ResourceStateEvent` + active projections | 货架、料箱、库位等物理事实先写事件，再由 active projections 表达当前视图。 |
@@ -46,7 +46,7 @@ Runtime 负责校验 `RuntimeIntent`、验证拓扑和设备执行关系，并�
 
 `RuntimeIntentEffectApplier` 是 `RuntimeIntent` 的真实落地层。它负责把插件返回的意图转换成：
 
-- `DeviceCommand` + `WorklineOutbox`
+- `DeviceCommand` + `SystemOutbox`
 - `WorklineTimeline`
 - `WorklineSession` 状态/等待/上下文变更
 - `RuntimeHold`

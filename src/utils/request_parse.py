@@ -17,6 +17,7 @@ from redis.exceptions import RedisError
 from user_agents import parse  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from XdbSearchIP.xdbSearcher import XdbSearcher  # pyright: ignore[reportMissingTypeStubs]
 
+from src.core.client_ip import resolve_client_ip
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.path_conf import IP2REGION_XDB
@@ -62,16 +63,7 @@ class UserAgentInfo:
 
 def get_request_ip(request: Request) -> str:
     """获取请求的 ip 地址"""
-    real = request.headers.get("X-Real-IP")
-    if real:
-        ip = real
-    else:
-        forwarded = request.headers.get("X-Forwarded-For")
-        ip = forwarded.split(",")[0] if forwarded else request.client.host if request.client else "Unknown Host"
-    # 忽略 pytest
-    if ip == "testclient":
-        ip = "127.0.0.1"
-    return ip
+    return resolve_client_ip(request)
 
 
 async def get_location_online(ip: str, user_agent: str) -> LocationInfo | None:

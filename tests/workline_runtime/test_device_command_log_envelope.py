@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.celery_app.tasks.workline import _build_device_command_log_envelope
+from src.app.workline.services.device_command_gateway import _build_device_command_log_envelope
 
 
 def test_device_command_log_envelope_keeps_business_params_and_redacts_secrets() -> None:
@@ -30,4 +30,4 @@ def test_device_command_log_envelope_keeps_business_params_and_redacts_secrets()
     assert envelope["payload"]["command_code"] == "CMD_MEASUREMENT_REEL_001"
     assert envelope["payload"]["params"]["PkgID"] == "SVYU00125TP4LCR02_2"
     assert envelope["payload"]["params"]["station"] == "ARM03"
-    assert envelope["payload"]["params"]["api_token"] == "***REDACTED***"
+    assert envelope["payload"]["params"]["api_token"] == "***"

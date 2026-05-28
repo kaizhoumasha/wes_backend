@@ -45,17 +45,13 @@ from src.app.workline.services.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
 from src.utils.timezone import timezone
+from src.utils.value_normalization import enum_str
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-def _enum_value(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw)
 
 
 def _as_source_system(value: Any) -> ResourceSourceSystem:
@@ -425,7 +421,7 @@ class ResourceProjectionService:
                 "workline_id": resolved_workline_id,
                 "workline_code": workline_code,
                 "position_code": position_code,
-                "position_role": _enum_value(getattr(position, "position_role", "")),
+                "position_role": enum_str(getattr(position, "position_role", "")),
                 "logic_location_code": getattr(position, "logic_location_code", None),
                 "external_location_code": resolved_external_location,
                 "placement_status": RackPlacementStatus.ARRIVED.value,

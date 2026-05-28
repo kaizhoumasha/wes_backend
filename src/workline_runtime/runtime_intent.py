@@ -293,6 +293,7 @@ class RuntimeIntent(BaseModel):
         reason_code: str,
         message: str,
         suggested_action: str | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> RuntimeIntent:
         return cls(
             kind=RuntimeIntentKind.BLOCK,
@@ -300,6 +301,7 @@ class RuntimeIntent(BaseModel):
             reason_code=reason_code,
             message=message,
             suggested_action=suggested_action,
+            payload_json=deepcopy(payload) if payload is not None else {},
         )
 
     @classmethod

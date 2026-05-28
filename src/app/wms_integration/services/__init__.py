@@ -34,6 +34,7 @@ from .exceptions import (
 )
 from .http_client import WmsHttpClient, WmsHttpResult, wms_http_client
 from .redaction import REDACTED_VALUE, canonical_sha256, redact_sensitive
+from .service_locator import wms_typed_port_service
 from .transport_contract import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsTransportContractService,
@@ -76,4 +77,5 @@ __all__ = [
     "wms_execution_callback_normalizer",
     "wms_http_client",
     "wms_transport_contract_service",
+    "wms_typed_port_service",
 ]

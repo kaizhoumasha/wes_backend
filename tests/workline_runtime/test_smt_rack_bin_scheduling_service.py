@@ -1,5 +1,7 @@
 """SMT 货架/料箱调度领域服务测试。"""
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.app.resource.services import (
@@ -940,3 +942,26 @@ def test_runtime_services_injects_default_smt_rack_bin_scheduler() -> None:
     assert isinstance(services.bin_allocator, SmtRackBinSchedulingService)
     assert services.bin_allocator is smt_rack_bin_scheduling_service
     assert services.bin_allocator.allocate("PKG-002") == SmtRackBinSchedulingService().allocate("PKG-002")
+
+
+def test_runtime_services_do_not_inject_wms_client_for_simulation_workline() -> None:
+    """SIMULATION 工作线不能在插件阶段同步访问真实 WMS。"""
+
+    services = build_workline_runtime_services(
+        db=object(),
+        workline=SimpleNamespace(run_mode="SIMULATION"),
+    )
+
+    assert services.wms_inventory_client is None
+
+
+def test_runtime_services_do_not_inject_wms_client_for_simulation_session() -> None:
+    """Session 级 SIMULATION 覆盖工作线模式时，也不能注入真实 WMS client。"""
+
+    services = build_workline_runtime_services(
+        db=object(),
+        workline=SimpleNamespace(run_mode="AUTO"),
+        session=SimpleNamespace(run_mode="SIMULATION"),
+    )
+
+    assert services.wms_inventory_client is None

@@ -25,7 +25,7 @@
 - `workline_sessions`：业务状态机实例，已有 `run_mode`、`business_key`、`context_json`、`contract_version`、等待和失败字段。
 - `workline_timelines`：状态迁移、决策、派发准备、等待、失败等业务时间线。
 - `device_commands`：设备命令控制流，已有 `command_code`、`trace_id`、`plugin_key`、`contract_version`、ACK 和结果字段。
-- `workline_outbox`：副作用派发队列，承载设备命令、外部 HTTP 和内部信号。
+- `system_outbox`：副作用派发队列，承载设备命令、外部 HTTP 和内部信号。
 
 当前协议也已经确立两层包络：
 
@@ -192,7 +192,7 @@
   - command `ACK_RECEIVED`：设备服务接受任务。
   - command `COMPLETED`：设备物理动作完成并 callback/result。
 
-### 6. workline_outbox
+### 6. system_outbox
 
 新增字段：
 
@@ -513,7 +513,7 @@ SMT 仓储标准要求的核心是：物料、批次、位置、设备动作和 
 - `workline_inbox.event_id` unique。
 - `workline_inbox.idempotency_key` unique。
 - `workline_timelines(session_id, seq_no)` unique。
-- `workline_outbox.dispatch_key` unique。
+- `system_outbox.dispatch_key` unique。
 - `device_commands.session_id` 改整数 FK。
 - 补充 trace 相关索引。
 
@@ -693,7 +693,7 @@ SMT 仓储标准要求的核心是：物料、批次、位置、设备动作和 
 
 | 前提 | 评审 | 决策 |
 | --- | --- | --- |
-| 正确问题是“可追踪、可操作的诊断”，不是继续加日志。 | 成立。当前已有 `callback_logs`、`workline_inbox`、`workline_sessions`、`workline_timelines`、`device_commands`、`workline_outbox` 和运行时诊断卡，但事实还不够持久、也不够操作化。 | 接受。 |
+| 正确问题是“可追踪、可操作的诊断”，不是继续加日志。 | 成立。当前已有 `callback_logs`、`workline_inbox`、`workline_sessions`、`workline_timelines`、`device_commands`、`system_outbox` 和运行时诊断卡，但事实还不够持久、也不够操作化。 | 接受。 |
 | accepted event 必须有 `event_id`、`trace_id` 和可恢复性判断。 | 成立，但被拒绝或失败的 ingress 也需要稳定 trace 或诊断根。 | 接受，并要求补入口失败测试。 |
 | 系统未发布，所以可以直接统一到 `trace_id`。 | 终审后成立。当前分支同步清理代码、测试、mock、迁移和新增文档，不保留旧命名。 | 用户终审：破坏式收口。 |
 | 供应商会回传 `trace_id` / `causation_id`。 | 假设偏弱。`command_code` 是唯一可靠的供应商侧恢复键。 | 接受为可选合规信号，不能作为恢复前提。 |
@@ -715,7 +715,7 @@ SMT 仓储标准要求的核心是：物料、批次、位置、设备动作和 
 | 运行时诊断 | `src/workline_runtime/diagnostics/`、callback/workline 任务中的 `_log_diagnostic` | 持久化现有诊断卡契约，不另造第二套 shape。 |
 | Trace 查询 | `trace_query_service.py`、`src/app/workline/v1/trace.py` | 扩展现有 read model。当前已聚合 callback、inbox、session、command、outbox、timeline。 |
 | Runtime overview | `runtime_query_service.py`、`runtime.py` | 诊断存在后再投影 blocking point 和 first failure。 |
-| SANDBOX pending outbox | `WorklineOutboxRepository.get_sandbox_pending_messages` | 复用并硬化，补 API/service 层和 attempt 记录。 |
+| SANDBOX pending outbox | `SystemOutboxRepository.get_sandbox_pending_messages` | 复用并硬化，补 API/service 层和 attempt 记录。 |
 | 设备 payload envelope | `_DEVICE_COMMAND_RESERVED_FIELDS`、`_normalize_vendor_command_payload`、`_build_outbox_payload` | 这是协议热路径，本分支直接收敛到新合同并以测试锁定。 |
 
 #### 0C. 理想状态差距
@@ -802,8 +802,8 @@ process_inbox_batch
   -> plugin runtime
   -> TimelineGenerator
   -> DeviceCommandService
-  -> WorklineOutboxService
-  -> WorklineDispatchAttemptService
+  -> OrchestratorWriteBackService
+    -> SystemOutboxRepository
 
 Trace APIs
   -> TraceQueryService
@@ -1009,8 +1009,8 @@ Celery WORKLINE task
   -> TimelineGenerator
   -> WorklineDiagnosticService
   -> DeviceCommandService
-  -> WorklineOutboxService
-    -> WorklineOutboxAttemptService
+  -> OrchestratorWriteBackService
+    -> SystemOutboxRepository
 
 Trace APIs
   -> TraceQueryService
@@ -1038,7 +1038,7 @@ Sandbox / manual / replay APIs
 | 领域 | 现有模式 | 工程建议 |
 | --- | --- | --- |
 | API | `v1/` 路由调用 service。 | 新 API 不得直接查 DB 或 repository。 |
-| Service | 编排和 runtime service 承载业务逻辑。 | 新增 `WorklineDiagnosticService`、`WorklineOutboxAttemptService`、必要 operation service。 |
+| Service | 编排和 runtime service 承载业务逻辑。 | 新增 `WorklineDiagnosticService`、`WorklineDispatchAttemptService`、必要 operation service。 |
 | Repository | Base repository 模式。 | 新增 trace read model 查询 helper。 |
 | Diagnostics | `DiagnosticContext`、`DiagnosticEvent`、`DiagnosticCard`、`diagnostic_builder`。 | 持久化这套契约。 |
 | Trace context | `TraceContext` 已能投影 callback/inbox/session/timeline。 | 扩展 canonical `trace_id`，保留 `trace_id` alias。 |
@@ -1467,7 +1467,7 @@ trace/diagnostics APIs
 | 编排入口 | `workline_inbox`、`InboxService` | 复用，补事件身份和 DB 幂等。 |
 | 业务状态 | `workline_sessions`、`SessionResolver` | 复用，补 diagnostic 指针和 trace alias。 |
 | 指令恢复 | `device_commands.command_code` | 作为 result 恢复硬锚点。 |
-| 当前 outbox 状态 | `workline_outbox` | 保留 current-state projection，新增 attempts 解释历史。 |
+| 当前 outbox 状态 | `system_outbox` | 保留 current-state projection，新增 attempts 解释历史。 |
 | runtime 诊断卡 | `src/workline_runtime/diagnostics/` | 作为持久诊断卡契约基础。 |
 | trace 查询 | `TraceQueryService` | 扩展为多 session read model，不重建宽表。 |
 | sandbox 语义 | plugin guide、sandbox happy path、run_mode | API 化，不在 payload 注入 sandbox 字段。 |
@@ -1521,7 +1521,7 @@ callback_logs          workline_inbox            workline_diagnostics
                   +------------+-------------+
                   |                          |
                   v                          v
-            DeviceCommand              WorklineOutbox
+            DeviceCommand              SystemOutbox
                   |                          |
                   +------------+-------------+
                                v

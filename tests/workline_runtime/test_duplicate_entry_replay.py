@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import SessionStatus
-from src.celery_app.tasks.workline import _is_duplicate_entry_event_for_session
+from src.app.workline.services.inbox_batch_processor import _is_duplicate_entry_event_for_session
 
 
 def _entry_payload(**extra):

@@ -4,16 +4,35 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from src.app.workline.services.write_back_service import _map_command_task_type
 from src.celery_app import config
 from src.celery_app.tasks import workline as workline_tasks
-from src.celery_app.tasks.workline import _ensure_non_empty_retry_result, _map_command_task_type
+from src.celery_app.tasks.workline import _ensure_non_empty_retry_result
 from src.database import db as db_module
+from src.workline_runtime.diagnostics import ErrorCode
 
 if TYPE_CHECKING:
     from types import TracebackType
 
+from src.app.workline.services.inbox_batch_processor import InboxBatchProcessor, _resolve_effect_source_device
+
+
+class _MockScalars:
+    def all(self) -> list[Any]:
+        return []
+
+
+class _MockResult:
+    def scalars(self) -> _MockScalars:
+        return _MockScalars()
+
 
 class _FakeAsyncSession:
+    def __init__(self, commit_success: bool = True) -> None:
+        self.commit_success = commit_success
+        self.committed = False
+        self.closed = False
+
     async def __aenter__(self) -> _FakeAsyncSession:
         return self
 
@@ -25,8 +44,14 @@ class _FakeAsyncSession:
     ) -> None:
         _ = exc_type, exc, tb
 
+    async def commit(self) -> None:
+        self.committed = True
+
     async def close(self) -> None:
-        pass
+        self.closed = True
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return _MockResult()
 
 
 def test_ensure_non_empty_retry_result_allows_empty_first_attempt() -> None:
@@ -94,23 +119,38 @@ def test_system_outbox_dispatch_task_is_registered() -> None:
 def test_legacy_outbox_dispatch_task_names_are_removed() -> None:
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.celery_app.app import celery_app
+    from src.core.task_queue_gateway import DISPATCH_SYSTEM_OUTBOX_TASK
 
     sent_tasks: list[str] = []
 
-    def fake_send_task(name: str, **_kwargs: Any) -> None:
-        sent_tasks.append(name)
+    class FakeQueueGateway:
+        def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
+            _ = limit
 
-    original_send_task = cast("Any", celery_app).send_task
-    cast("Any", celery_app).send_task = fake_send_task
-    try:
-        CallbackOrchestrationService()._enqueue_outbox_dispatch()
-    finally:
-        cast("Any", celery_app).send_task = original_send_task
+        def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
+            _ = outbox_id, limit
+            sent_tasks.append(DISPATCH_SYSTEM_OUTBOX_TASK)
+
+        def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None:
+            _ = target_code, payload
+
+    CallbackOrchestrationService(queue_gateway=FakeQueueGateway())._enqueue_outbox_dispatch()
 
     assert sent_tasks == ["src.celery_app.tasks.sys.dispatch_system_outbox_batch"]
     assert not hasattr(workline_tasks, "dispatch_outbox_batch")
     assert "src.celery_app.tasks.workline.dispatch_outbox_batch" not in celery_app.tasks
     assert "src.celery_app.tasks.handling.dispatch_system_outbox_batch" not in celery_app.tasks
+
+
+def test_celery_facade_contracts() -> None:
+    from src.celery_app.app import celery_app
+
+    assert hasattr(workline_tasks, "process_inbox_batch")
+    assert "src.celery_app.tasks.workline.process_inbox_batch" in celery_app.tasks
+
+    assert not hasattr(workline_tasks, "process_inbox_messages")
+    assert not hasattr(workline_tasks, "ProcessInboxMessages")
+    assert not hasattr(workline_tasks, "OutboxDispatcher")
 
 
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_context() -> None:
@@ -132,7 +172,7 @@ def test_resolve_effect_source_device_uses_rack_operation_resume_code_from_conte
     )
     inbox = cast("Any", type("Inbox", (), {"payload_json": {"callback_type": "WMS_RACK_ARRIVED"}})())
 
-    assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
+    assert _resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
 
 
 def test_resolve_effect_source_device_uses_rack_operation_resume_code_for_conveyor() -> None:
@@ -154,7 +194,7 @@ def test_resolve_effect_source_device_uses_rack_operation_resume_code_for_convey
     )
     inbox = cast("Any", type("Inbox", (), {"payload_json": {"callback_type": "WMS_RACK_ARRIVED"}})())
 
-    assert workline_tasks._resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
+    assert _resolve_effect_source_device(inbox, session, {"CONVEYOR": [conveyor]}) is conveyor
 
 
 def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,17 +210,73 @@ def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.Monke
         init_called = True
         cast("Any", db_module).AsyncSessionLocal = fake_session_factory
 
-    async def fake_process_batch(db: Any, *, limit: int) -> workline_tasks.ProcessResult:
+    async def fake_process_batch(self: Any, db: Any, limit: int = 10) -> workline_tasks.ProcessResult:
         assert isinstance(db, _FakeAsyncSession)
         assert limit == 0
         return {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
 
     monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
     monkeypatch.setattr(db_module, "init_db", fake_init_db)
-    monkeypatch.setattr(workline_tasks.ProcessInboxMessages, "_process_batch", staticmethod(fake_process_batch))
+
+    # ProcessInboxMessages is removed, now we should mock the new inbox_batch_processor
+    monkeypatch.setattr(InboxBatchProcessor, "process_batch", fake_process_batch)
 
     try:
         assert task(limit=0) == {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
         assert init_called
     finally:
         task.cleanup()
+
+
+def test_process_inbox_batch_records_batch_diagnostic_on_final_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = workline_tasks.process_inbox_batch
+    task.cleanup()
+    recorded: list[dict[str, Any]] = []
+    retry_calls: list[dict[str, Any]] = []
+
+    class RetryScheduled(RuntimeError):
+        pass
+
+    def fake_session_factory() -> _FakeAsyncSession:
+        return _FakeAsyncSession()
+
+    async def failing_process_batch(self: Any, db: Any, limit: int = 10) -> workline_tasks.ProcessResult:
+        _ = self, db, limit
+        raise RuntimeError("batch-db-down")
+
+    async def fake_record_diagnostic(db: Any, **kwargs: Any) -> None:
+        recorded.append({"db": db, **kwargs})
+
+    def fake_retry(*, exc: Exception, countdown: int) -> None:
+        retry_calls.append({"exc": exc, "countdown": countdown})
+        raise RetryScheduled(str(exc))
+
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", fake_session_factory)
+    monkeypatch.setattr(InboxBatchProcessor, "process_batch", failing_process_batch)
+    monkeypatch.setattr("src.app.workline.diagnostic_support._record_diagnostic", fake_record_diagnostic)
+    monkeypatch.setattr(task, "retry", fake_retry)
+    task.request.retries = task.max_retries
+    task.request.id = "task-123"
+
+    try:
+        with pytest.raises(RetryScheduled, match="batch-db-down"):
+            task(limit=7)
+    finally:
+        task.request.retries = 0
+        task.request.id = None
+        task.cleanup()
+
+    assert len(retry_calls) == 1
+    assert isinstance(retry_calls[0]["exc"], RuntimeError)
+    assert retry_calls[0]["countdown"] == 40
+    assert recorded
+    diagnostic = recorded[0]
+    assert diagnostic["inbox"] is None
+    assert diagnostic["error_code"] == ErrorCode.INBOX_RETRY_EXHAUSTED
+    assert diagnostic["message"] == "Inbox batch processing exhausted retries: batch-db-down"
+    assert diagnostic["request_id"] == "task-123"
+    assert diagnostic["trace_id"] == "celery:src.celery_app.tasks.workline.process_inbox_batch"
+    assert diagnostic["extra"]["task_name"] == "src.celery_app.tasks.workline.process_inbox_batch"
+    assert diagnostic["extra"]["limit"] == 7
+    assert diagnostic["extra"]["retries"] == task.max_retries
+    assert diagnostic["extra"]["exception_type"] == "RuntimeError"

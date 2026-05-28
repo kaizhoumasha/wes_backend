@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from src.app.device.models.command import DeviceCommand
 from src.app.workline.models.runtime_hold import (
@@ -27,6 +27,7 @@ from src.app.workline.services.runtime_hold_release_service import (
     runtime_hold_release_service,
 )
 from src.app.workline.services.trace_response_builder import build_failed_command_evidence
+from src.utils.value_normalization import as_dict, optional_enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.ng_reason import BUILTIN_NG_REASONS, NgReasonDefinition
 
@@ -46,16 +47,6 @@ _DISPATCH_ACK_CHECKS = [
     "physical_state_confirmed",
     "safe_to_release_blocked_work",
 ]
-
-
-def _enum_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    return str(getattr(value, "value", value))
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
 
 class RuntimeHoldQueryService:
@@ -87,8 +78,8 @@ class RuntimeHoldQueryService:
         return RuntimeHoldDetailResponse(
             summary=self._summary(hold),
             source=self._source(hold),
-            evidence_snapshot_json=_as_dict(hold.evidence_snapshot_json),
-            release_evidence_json=_as_dict(hold.release_evidence_json),
+            evidence_snapshot_json=as_dict(hold.evidence_snapshot_json),
+            release_evidence_json=as_dict(hold.release_evidence_json),
             failed_command_evidence=build_failed_command_evidence(command),
             release_eligibility=self._release_eligibility(hold, session=session),
             blockers=blockers,
@@ -159,7 +150,7 @@ class RuntimeHoldQueryService:
             allowed_resolutions=["COMPLETED", "FAILED", "CANCELLED"] if can_resolve else [],
             allowed_material_dispositions=self._allowed_dispositions(hold) if can_resolve else [],
             latest_evidence_hash=self.release_service.build_latest_evidence_hash(hold, session=session),
-            reason=None if can_resolve else f"RuntimeHold status is {_enum_value(hold.status)}",
+            reason=None if can_resolve else f"RuntimeHold status is {optional_enum_str(hold.status)}",
         )
 
     def _required_checks(self, hold: RuntimeHold) -> list[str]:
@@ -177,8 +168,8 @@ class RuntimeHoldQueryService:
     def _summary(self, hold: RuntimeHold) -> RuntimeHoldSummary:
         return RuntimeHoldSummary(
             id=cast("int", hold.id),
-            hold_type=_enum_value(hold.hold_type) or "",
-            status=_enum_value(hold.status) or "",
+            hold_type=optional_enum_str(hold.hold_type) or "",
+            status=optional_enum_str(hold.status) or "",
             blocking=hold.blocking,
             workline_id=hold.workline_id,
             session_id=hold.session_id,
@@ -186,7 +177,7 @@ class RuntimeHoldQueryService:
             plugin_key=hold.plugin_key,
             contract_version=hold.contract_version,
             source_reason=hold.source_reason,
-            material_disposition=_enum_value(hold.material_disposition),
+            material_disposition=optional_enum_str(hold.material_disposition),
             ng_reason_code=hold.ng_reason_code,
             ng_reason_label=hold.ng_reason_label,
             version=hold.version,
@@ -209,8 +200,8 @@ class RuntimeHoldQueryService:
     def _blocker(self, hold: RuntimeHold) -> RuntimeHoldBlocker:
         return RuntimeHoldBlocker(
             id=cast("int", hold.id),
-            hold_type=_enum_value(hold.hold_type) or "",
-            status=_enum_value(hold.status) or "",
+            hold_type=optional_enum_str(hold.hold_type) or "",
+            status=optional_enum_str(hold.status) or "",
             source_reason=hold.source_reason,
             session_id=hold.session_id,
             source_device_id=hold.source_device_id,
@@ -234,15 +225,15 @@ class RuntimeHoldQueryService:
             source_command_id=item.source_command_id,
             source_event_id=item.source_event_id,
             material_identity_key=item.material_identity_key,
-            material_identity_json=_as_dict(item.material_identity_json),
-            physical_handoff_evidence_json=_as_dict(item.physical_handoff_evidence_json),
-            disposition=_enum_value(item.disposition) or "",
-            ng_reason_source=_enum_value(item.ng_reason_source) or "",
+            material_identity_json=as_dict(item.material_identity_json),
+            physical_handoff_evidence_json=as_dict(item.physical_handoff_evidence_json),
+            disposition=optional_enum_str(item.disposition) or "",
+            ng_reason_source=optional_enum_str(item.ng_reason_source) or "",
             ng_reason_code=item.ng_reason_code or "",
             ng_reason_label=item.ng_reason_label or "",
             operator_note=item.operator_note,
             created_from_runtime_hold_id=item.created_from_runtime_hold_id,
-            status=_enum_value(item.status) or "",
+            status=optional_enum_str(item.status) or "",
             confirmed_by=item.confirmed_by,
             confirmed_at=item.confirmed_at,
             created_at=getattr(item, "created_at", None),

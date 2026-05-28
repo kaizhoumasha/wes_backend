@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.workline.services import write_back_service as workline_effects
+from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.ng_return_item_service import ng_return_item_service
-from src.celery_app.tasks import workline as workline_effects
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
@@ -484,6 +485,7 @@ async def test_block_intent_holds_session_without_command_creation(monkeypatch: 
                 reason_code="MATERIAL_BLOCKED",
                 message="物料需要人工处理",
                 suggested_action="检查标签",
+                payload={"evidence_key": "EVD-1234"},
             )
         ],
     )
@@ -495,6 +497,7 @@ async def test_block_intent_holds_session_without_command_creation(monkeypatch: 
     assert session.failure_code == "MATERIAL_BLOCKED"
     assert db.add.call_count == 0
     assert captured[0]["payload"]["suggested_action"] == "检查标签"
+    assert captured[0]["payload"]["evidence"] == {"evidence_key": "EVD-1234"}
 
 
 @pytest.mark.asyncio
@@ -1398,7 +1401,7 @@ def test_result_requires_outbox_dispatch_for_external_request() -> None:
         ],
     )
 
-    assert workline_effects._result_requires_outbox_dispatch(result) is True
+    assert _result_requires_outbox_dispatch(result) is True
 
 
 def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
@@ -1419,7 +1422,7 @@ def test_result_requires_outbox_dispatch_for_rack_operation_request() -> None:
         ],
     )
 
-    assert workline_effects._result_requires_outbox_dispatch(result) is True
+    assert _result_requires_outbox_dispatch(result) is True
 
 
 def test_wait_session_status_maps_rack_operation_to_external_wait() -> None:
@@ -1439,7 +1442,9 @@ async def test_apply_orchestrator_effects_dispatches_runtime_intents(monkeypatch
 
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     intents = [RuntimeIntent.update_context({"pkg_id": "PKG-001"})]
-    await workline_effects._apply_orchestrator_effects(
+    from src.app.workline.services.write_back_service import orchestrator_write_back_service
+
+    await orchestrator_write_back_service.write_back(
         SimpleNamespace(add=MagicMock()),
         session=session,
         workline=SimpleNamespace(id=1, plugin_key="demo_plugin"),

@@ -9,18 +9,36 @@
 """
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem
-from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
+from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
+from src.app.workline.repositories.inbox_repository import WorklineInboxClaim, WorklineInboxRepository
 from src.app.workline.services.inbox_service import WorklineInboxService
 
 # ==================== 测试幂等键计算逻辑 ====================
+
+
+def test_workline_inbox_declares_hot_queue_partial_indexes() -> None:
+    """热队列消费查询必须有匹配状态分支和排序形态的部分索引。"""
+    indexes = {index.name: index for index in WorklineInbox.__table__.indexes if index.name}
+
+    new_index = indexes.get("ix_wes_biz_workline_inbox_new_received_at")
+    retry_index = indexes.get("ix_wes_biz_workline_inbox_retry_next_retry_received_at")
+
+    assert new_index is not None
+    assert [column.name for column in new_index.columns] == ["received_at"]
+    new_where = str(new_index.dialect_options["postgresql"]["where"])
+    assert "status = 'NEW'" in new_where
+
+    assert retry_index is not None
+    assert [column.name for column in retry_index.columns] == ["next_retry_at", "received_at"]
+    retry_where = str(retry_index.dialect_options["postgresql"]["where"])
+    assert "status = 'RETRY'" in retry_where
 
 
 def test_calculate_device_event_idempotency_key_with_vendor_id():
@@ -264,12 +282,133 @@ async def test_get_new_messages_only_selects_retry_ready_messages() -> None:
     assert "status = :status_1 OR wes_biz.workline_inbox.status = :status_2 OR" not in sql
 
 
+@pytest.mark.asyncio
+async def test_claim_pending_messages_atomically_claims_ready_and_stale_messages() -> None:
+    repository = WorklineInboxRepository()
+    captured: dict[str, object] = {}
+
+    class _FakeMappings:
+        def all(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": 1,
+                    "processor_token": "worker-token",
+                    "received_at": datetime(2026, 5, 28, 8, 0, 0),
+                    "session_id": 10,
+                    "workline_id": 20,
+                    "device_id": 30,
+                    "kind": InboxKind.DEVICE_EVENT,
+                    "payload_json": {"device_code": "SCN-01"},
+                }
+            ]
+
+    class _FakeResult:
+        def mappings(self) -> _FakeMappings:
+            return _FakeMappings()
+
+    class _FakeDB:
+        async def execute(self, statement: object) -> _FakeResult:
+            captured["statement"] = statement
+            return _FakeResult()
+
+    claims = await repository.claim_pending_messages(
+        _FakeDB(),  # type: ignore[arg-type]
+        limit=5,
+        processor_token="worker-token",
+        stale_after_seconds=300,
+    )
+
+    assert claims == [
+        WorklineInboxClaim(
+            id=1,
+            processor_token="worker-token",
+            received_at=datetime(2026, 5, 28, 8, 0, 0),
+            session_id=10,
+            workline_id=20,
+            device_id=30,
+            kind=InboxKind.DEVICE_EVENT,
+            payload_json={"device_code": "SCN-01"},
+        )
+    ]
+    sql = str(captured["statement"].compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
+    assert "UPDATE wes_biz.workline_inbox SET" in sql
+    assert "status=%(status)s" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "status = %(status_2)s" in sql
+    assert "updated_at <= %(updated_at_1)s" in sql
+    assert "NOT (EXISTS" in sql
+    assert "earlier_inbox.status =" in sql
+    assert "RETURNING wes_biz.workline_inbox.id" in sql
+
+
+@pytest.mark.asyncio
+async def test_update_processing_message_requires_processing_status_and_token() -> None:
+    repository = WorklineInboxRepository()
+    captured: dict[str, object] = {}
+
+    class _FakeResult:
+        def scalar_one_or_none(self) -> int | None:
+            return None
+
+    class _FakeDB:
+        async def execute(self, statement: object) -> _FakeResult:
+            captured["statement"] = statement
+            return _FakeResult()
+
+    result = await repository.update_processing_message(
+        _FakeDB(),  # type: ignore[arg-type]
+        inbox_id=42,
+        processor_token="worker-token",
+        data={"status": InboxStatus.PROCESSED, "processed_at": datetime(2026, 5, 28, 8, 1, 0)},
+    )
+
+    assert result is None
+    sql = str(captured["statement"].compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
+    assert "WHERE wes_biz.workline_inbox.id = %(id_1)s" in sql
+    assert "wes_biz.workline_inbox.status = %(status_1)s" in sql
+    assert "wes_biz.workline_inbox.processor_token = %(processor_token_1)s" in sql
+
+
+@pytest.mark.asyncio
+async def test_update_processing_message_returns_populated_updated_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = WorklineInboxRepository()
+    captured: dict[str, object] = {}
+    refreshed = SimpleNamespace(id=42, status=InboxStatus.PROCESSED, processor_token=None)
+
+    class _FakeResult:
+        def scalar_one_or_none(self) -> object:
+            return refreshed
+
+    class _FakeDB:
+        async def execute(self, statement: object) -> _FakeResult:
+            captured["statement"] = statement
+            return _FakeResult()
+
+    async def _unexpected_get_by_id(_db: object, _inbox_id: int) -> object:
+        raise AssertionError("fencing update must return the refreshed ORM row directly")
+
+    monkeypatch.setattr(repository, "get_by_id", _unexpected_get_by_id)
+
+    result = await repository.update_processing_message(
+        _FakeDB(),  # type: ignore[arg-type]
+        inbox_id=42,
+        processor_token="worker-token",
+        data={"status": InboxStatus.PROCESSED, "processor_token": None},
+    )
+
+    assert result is refreshed
+    statement = captured["statement"]
+    assert statement.get_execution_options()["populate_existing"] is True  # type: ignore[attr-defined]
+
+
 class _FakeInboxRepo:
     def __init__(self, inbox: object | None) -> None:
         self.inbox = inbox
         self.update_calls: list[tuple[object, int, dict[str, object]]] = []
         self.created_data: dict[str, object] | None = None
         self.create_idempotent_calls: list[tuple[object, dict[str, object], str]] = []
+        self.claim_calls: list[tuple[object, int, str, int]] = []
+        self.update_processing_calls: list[tuple[object, int, str, dict[str, object]]] = []
 
     def calculate_command_result_idempotency_key(
         self,
@@ -307,6 +446,83 @@ class _FakeInboxRepo:
     async def update(self, db: object, inbox_id: int, data: dict[str, object]) -> object:
         self.update_calls.append((db, inbox_id, data))
         return SimpleNamespace(id=inbox_id, **data)
+
+    async def claim_pending_messages(
+        self,
+        db: object,
+        *,
+        limit: int,
+        processor_token: str,
+        stale_after_seconds: int,
+    ) -> list[WorklineInboxClaim]:
+        self.claim_calls.append((db, limit, processor_token, stale_after_seconds))
+        return [
+            WorklineInboxClaim(
+                id=7,
+                processor_token=processor_token,
+                received_at=datetime(2026, 5, 28, 8, 0, 0),
+                session_id=None,
+                workline_id=None,
+                device_id=None,
+                kind=InboxKind.DEVICE_EVENT,
+                payload_json={},
+            )
+        ]
+
+    async def update_processing_message(
+        self,
+        db: object,
+        *,
+        inbox_id: int,
+        processor_token: str,
+        data: dict[str, object],
+    ) -> object | None:
+        self.update_processing_calls.append((db, inbox_id, processor_token, data))
+        if processor_token == "stale-token":
+            return None
+        return SimpleNamespace(id=inbox_id, **data)
+
+
+@pytest.mark.asyncio
+async def test_service_claim_pending_messages_commits_after_atomic_claim() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=None)
+    service.repo = fake_repo  # type: ignore[assignment]
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    claims = await service.claim_pending_messages(db, limit=10, processor_token="worker-1", stale_after_seconds=120)
+
+    assert [claim.id for claim in claims] == [7]
+    assert fake_repo.claim_calls == [(db, 10, "worker-1", 120)]
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_processed_with_token_uses_fencing_update() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=4))
+    service.repo = fake_repo  # type: ignore[assignment]
+    db = object()
+
+    result = await service.mark_as_processed(db, 4, processor_token="worker-1")
+
+    assert len(fake_repo.update_processing_calls) == 1
+    _, inbox_id, token, data = fake_repo.update_processing_calls[0]
+    assert inbox_id == 4
+    assert token == "worker-1"
+    assert data["status"] == InboxStatus.PROCESSED
+    assert data["processor_token"] is None
+    assert result.status == InboxStatus.PROCESSED
+
+
+@pytest.mark.asyncio
+async def test_mark_as_processed_with_token_rejects_stale_processor() -> None:
+    service = WorklineInboxService()
+    fake_repo = _FakeInboxRepo(inbox=SimpleNamespace(id=4))
+    service.repo = fake_repo  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="处理令牌已失效"):
+        await service.mark_as_processed(object(), 4, processor_token="stale-token")
 
 
 @pytest.mark.asyncio

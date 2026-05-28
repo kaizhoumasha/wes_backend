@@ -10,36 +10,10 @@ from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
 from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
 from src.utils.timezone import timezone
+from src.utils.value_normalization import dict_attr, enum_str, optional_int_attr, optional_str_attr, required_int_attr
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-
-def _enum_value(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw)
-
-
-def _int_attr(value: Any, name: str) -> int | None:
-    raw = getattr(value, name, None)
-    return raw if isinstance(raw, int) else None
-
-
-def _required_int_attr(value: Any, name: str) -> int:
-    raw = _int_attr(value, name)
-    if raw is None:
-        raise ValueError(f"{name} is required")
-    return raw
-
-
-def _str_attr(value: Any, name: str) -> str | None:
-    raw = getattr(value, name, None)
-    return raw if isinstance(raw, str) and raw else None
-
-
-def _json_attr(value: Any, name: str) -> dict[str, Any]:
-    raw = getattr(value, name, None)
-    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _dt_key(value: Any) -> str | None:
@@ -65,23 +39,27 @@ class RuntimeHoldCreationService:
     ) -> RuntimeHold:
         """Callback deadline expired 时幂等创建 RuntimeHold。"""
 
-        session_id = _required_int_attr(session, "id")
-        inbox_id = _required_int_attr(inbox, "id")
+        session_id = required_int_attr(session, "id")
+        inbox_id = required_int_attr(inbox, "id")
         command_id = (
-            _int_attr(command, "id") if command is not None else _int_attr(session, "reconciliation_command_id")
+            optional_int_attr(command, "id")
+            if command is not None
+            else optional_int_attr(session, "reconciliation_command_id")
         )
         device_id = (
-            _int_attr(command, "device_id") if command is not None else _int_attr(session, "reconciliation_device_id")
+            optional_int_attr(command, "device_id")
+            if command is not None
+            else optional_int_attr(session, "reconciliation_device_id")
         )
         source_reason = "CALLBACK_DEADLINE_EXPIRED"
         return await self.repository.create_open_hold(
             db,
             hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
-            workline_id=_required_int_attr(session, "workline_id"),
+            workline_id=required_int_attr(session, "workline_id"),
             session_id=session_id,
-            trace_id=_str_attr(session, "trace_id"),
-            plugin_key=_str_attr(session, "plugin_key"),
-            contract_version=_str_attr(session, "contract_version"),
+            trace_id=optional_str_attr(session, "trace_id"),
+            plugin_key=optional_str_attr(session, "plugin_key"),
+            contract_version=optional_str_attr(session, "contract_version"),
             source_kind="TIMER_TIMEOUT",
             source_reason=source_reason,
             source_idempotency_key=f"callback-timeout:{session_id}:{inbox_id}",
@@ -92,11 +70,11 @@ class RuntimeHoldCreationService:
                 "session_id": session_id,
                 "inbox_id": inbox_id,
                 "command_id": command_id,
-                "command_code": _str_attr(command, "command_code") if command is not None else None,
+                "command_code": optional_str_attr(command, "command_code") if command is not None else None,
                 "device_id": device_id,
                 "deadline_at": _dt_key(getattr(session, "reconciliation_deadline_at", None)),
-                "wait_token": _str_attr(session, "reconciliation_wait_token"),
-                "inbox_payload": _json_attr(inbox, "payload_json"),
+                "wait_token": optional_str_attr(session, "reconciliation_wait_token"),
+                "inbox_payload": dict_attr(inbox, "payload_json"),
                 "reason": source_reason,
             },
         )
@@ -112,19 +90,19 @@ class RuntimeHoldCreationService:
     ) -> RuntimeHold:
         """HTTP no-ACK retry exhausted 时幂等创建 RuntimeHold。"""
 
-        session_id = _required_int_attr(session, "id")
-        outbox_id = _required_int_attr(outbox, "id")
-        command_id = _int_attr(command, "id") if command is not None else None
-        device_id = _int_attr(command, "device_id") if command is not None else None
+        session_id = required_int_attr(session, "id")
+        outbox_id = required_int_attr(outbox, "id")
+        command_id = optional_int_attr(command, "id") if command is not None else None
+        device_id = optional_int_attr(command, "device_id") if command is not None else None
         command_key = str(command_id) if command_id is not None else "no-command"
         return await self.repository.create_open_hold(
             db,
             hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
-            workline_id=_required_int_attr(session, "workline_id"),
+            workline_id=required_int_attr(session, "workline_id"),
             session_id=session_id,
-            trace_id=_str_attr(session, "trace_id"),
-            plugin_key=_str_attr(session, "plugin_key"),
-            contract_version=_str_attr(session, "contract_version"),
+            trace_id=optional_str_attr(session, "trace_id"),
+            plugin_key=optional_str_attr(session, "plugin_key"),
+            contract_version=optional_str_attr(session, "contract_version"),
             source_kind="DISPATCH_ACK_EXHAUSTED",
             source_reason=source_reason,
             source_idempotency_key=f"dispatch-ack-exhausted:{outbox_id}:{command_key}",
@@ -134,10 +112,10 @@ class RuntimeHoldCreationService:
             evidence_snapshot_json={
                 "session_id": session_id,
                 "outbox_id": outbox_id,
-                "dispatch_key": _str_attr(outbox, "dispatch_key"),
-                "outbox_payload": _json_attr(outbox, "payload_json"),
+                "dispatch_key": optional_str_attr(outbox, "dispatch_key"),
+                "outbox_payload": dict_attr(outbox, "payload_json"),
                 "command_id": command_id,
-                "command_code": _str_attr(command, "command_code") if command is not None else None,
+                "command_code": optional_str_attr(command, "command_code") if command is not None else None,
                 "device_id": device_id,
                 "reason": source_reason,
             },
@@ -146,23 +124,23 @@ class RuntimeHoldCreationService:
     async def create_for_safety_estop(self, db: Any, *, incident: Any) -> RuntimeHold:
         """Safety ESTOP incident 创建后幂等创建 RuntimeHold。"""
 
-        incident_id = _required_int_attr(incident, "id")
-        source_reason = _str_attr(incident, "reason") or "ESTOP_PRESSED"
+        incident_id = required_int_attr(incident, "id")
+        source_reason = optional_str_attr(incident, "reason") or "ESTOP_PRESSED"
         return await self.repository.create_open_hold(
             db,
             hold_type=RuntimeHoldType.SAFETY_ESTOP,
-            workline_id=_required_int_attr(incident, "workline_id"),
+            workline_id=required_int_attr(incident, "workline_id"),
             source_kind="SAFETY_ESTOP",
             source_reason=source_reason,
             source_idempotency_key=f"safety-estop:{incident_id}",
-            source_inbox_id=_int_attr(incident, "source_inbox_id"),
-            source_command_id=_int_attr(incident, "source_command_id"),
-            source_device_id=_int_attr(incident, "source_device_id"),
+            source_inbox_id=optional_int_attr(incident, "source_inbox_id"),
+            source_command_id=optional_int_attr(incident, "source_command_id"),
+            source_device_id=optional_int_attr(incident, "source_device_id"),
             evidence_snapshot_json={
                 "incident_id": incident_id,
-                "event_type": _str_attr(incident, "event_type"),
+                "event_type": optional_str_attr(incident, "event_type"),
                 "reason": source_reason,
-                "evidence": _json_attr(incident, "evidence_json"),
+                "evidence": dict_attr(incident, "evidence_json"),
             },
         )
 
@@ -207,7 +185,7 @@ class RuntimeHoldCreationService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if (
             workline is None
-            or _enum_value(getattr(workline, "runtime_status", None)) == WorkLineRuntimeStatus.ESTOPPED.value
+            or enum_str(getattr(workline, "runtime_status", None)) == WorkLineRuntimeStatus.ESTOPPED.value
         ):
             return
         workline.runtime_status = WorkLineRuntimeStatus.RECONCILING

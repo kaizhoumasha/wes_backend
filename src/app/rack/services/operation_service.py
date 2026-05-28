@@ -48,6 +48,7 @@ from src.app.workline.services.rack_position_service import (
     workline_rack_position_service,
 )
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_int, coerce_optional_str, enum_value
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,10 +119,10 @@ class RackOperationService:
 
         operation_key = _required_text(operation_key, "operation_key")
         operation_type = _required_text(operation_type, "operation_type")
-        workline_code = _optional_str(getattr(workline, "line_code", None))
-        workline_id = _optional_int(getattr(workline, "id", None))
-        material_session_id = _optional_int(getattr(session, "id", None))
-        target_code = _optional_str(target_code) or DEFAULT_RACK_OPERATION_ENDPOINT
+        workline_code = coerce_optional_str(getattr(workline, "line_code", None))
+        workline_id = coerce_optional_int(getattr(workline, "id", None))
+        material_session_id = coerce_optional_int(getattr(session, "id", None))
+        target_code = coerce_optional_str(target_code) or DEFAULT_RACK_OPERATION_ENDPOINT
         trace_id = _required_text(trace_id, "trace_id")
         specs = self._normalize_task_specs(
             operation_key=operation_key,
@@ -175,7 +176,7 @@ class RackOperationService:
                 session=session,
                 workline=workline,
                 outbox=outbox,
-                operation_id=_optional_int(getattr(operation, "id", None)),
+                operation_id=coerce_optional_int(getattr(operation, "id", None)),
                 operation_key=operation_key,
                 operation_type=operation_type,
                 sequence_no=spec.sequence_no,
@@ -257,17 +258,17 @@ class RackOperationService:
             return existing
 
         outbox = SystemOutbox(
-            session_id=_optional_int(getattr(session, "id", None)),
-            workline_id=_optional_int(getattr(workline, "id", None)),
+            session_id=coerce_optional_int(getattr(session, "id", None)),
+            workline_id=coerce_optional_int(getattr(workline, "id", None)),
             operation_domain="RACK",
-            operation_key=_optional_str(spec.request_json.get("operation_key")),
+            operation_key=coerce_optional_str(spec.request_json.get("operation_key")),
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=spec.dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=spec.target_code,
             payload_json=payload_json,
             status=SystemOutboxStatus.NEW,
-            trace_id=_optional_str(spec.request_json.get("trace_id")),
+            trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
         )
         try:
             async with db.begin_nested():
@@ -380,12 +381,12 @@ class RackOperationService:
         if sequence_no <= 0:
             raise ValueError("rack operation task_specs sequence_no must be greater than 0")
         task_type = _rack_task_type(task_spec.get("task_type"))
-        rack_code = _optional_str(task_spec.get("rack_code"))
-        rack_kind = _optional_str(task_spec.get("rack_kind"))
-        source_position_code = _optional_str(task_spec.get("source_position_code"))
-        target_position_code = _optional_str(task_spec.get("target_position_code"))
-        target_position_role = _optional_str(task_spec.get("target_position_role"))
-        spec_target_code = _optional_str(task_spec.get("target_code")) or target_code
+        rack_code = coerce_optional_str(task_spec.get("rack_code"))
+        rack_kind = coerce_optional_str(task_spec.get("rack_kind"))
+        source_position_code = coerce_optional_str(task_spec.get("source_position_code"))
+        target_position_code = coerce_optional_str(task_spec.get("target_position_code"))
+        target_position_role = coerce_optional_str(task_spec.get("target_position_role"))
+        spec_target_code = coerce_optional_str(task_spec.get("target_code")) or target_code
 
         raw_actions = task_spec.get("actions_json")
         actions_json = dict(raw_actions) if isinstance(raw_actions, Mapping) else {}
@@ -421,7 +422,7 @@ class RackOperationService:
             source_position_code=source_position_code,
             target_position_code=target_position_code,
             target_position_role=target_position_role,
-            dispatch_key=_optional_str(task_spec.get("dispatch_key")) or envelope.dispatch_key,
+            dispatch_key=coerce_optional_str(task_spec.get("dispatch_key")) or envelope.dispatch_key,
             target_code=envelope.target_code,
             request_json=envelope.payload_json,
             actions_json=actions_json,
@@ -475,8 +476,8 @@ class RackOperationService:
         for spec in specs:
             if spec.task_type != RackTaskType.MOVE_RACK.value:
                 continue
-            rack_code = _optional_str(spec.rack_code)
-            source_position_code = _optional_str(spec.source_position_code)
+            rack_code = coerce_optional_str(spec.rack_code)
+            source_position_code = coerce_optional_str(spec.source_position_code)
             if rack_code is None or source_position_code is None:
                 raise ValueError("rack operation MOVE_RACK requires rack_code and source_position_code")
             source_rack_key = (source_position_code, rack_code)
@@ -495,7 +496,7 @@ class RackOperationService:
                 position_code=source_position_code,
             )
             for spec in source_specs:
-                rack_code = _optional_str(spec.rack_code)
+                rack_code = coerce_optional_str(spec.rack_code)
                 if rack_code is None:
                     raise ValueError("rack operation MOVE_RACK requires rack_code")
                 active_source_rack = active_source_racks_by_code.get(rack_code)
@@ -623,7 +624,7 @@ class RackOperationService:
             if spec.required
             and spec.task_type == RackTaskType.MOVE_RACK.value
             and spec.source_position_code == source_position_code
-            for rack_code in [_optional_str(spec.rack_code)]
+            for rack_code in [coerce_optional_str(spec.rack_code)]
             if rack_code in active_source_rack_codes
         }
         existing_tasks = await self.rack_task_repository.list_by_operation_key(db, operation_key=operation_key)
@@ -640,7 +641,7 @@ class RackOperationService:
                 RackTaskStatus.IN_PROGRESS.value,
                 RackTaskStatus.SUCCEEDED.value,
             }
-            for rack_code in [_optional_str(getattr(task, "rack_code", None))]
+            for rack_code in [coerce_optional_str(getattr(task, "rack_code", None))]
             if rack_code in active_source_rack_codes
         )
         return len(release_rack_codes)
@@ -674,7 +675,7 @@ class RackOperationService:
                 workline_code=workline_code,
                 position_code=position_code,
             )
-            for rack_code in [_optional_str(getattr(placement, "rack_code", None))]
+            for rack_code in [coerce_optional_str(getattr(placement, "rack_code", None))]
             if rack_code is not None
         }
 
@@ -703,7 +704,7 @@ class RackOperationService:
             rack_code
             for task in tasks
             if _task_type(task) == RackTaskType.MOVE_RACK.value
-            for rack_code in [_optional_str(getattr(task, "rack_code", None))]
+            for rack_code in [coerce_optional_str(getattr(task, "rack_code", None))]
             if rack_code is not None
         }
         target_tasks_by_position: dict[tuple[str, str], list[Any]] = {}
@@ -713,13 +714,13 @@ class RackOperationService:
             if task_type == RackTaskType.MOVE_RACK.value and await self._move_out_rack_still_at_source(db, task):
                 return False
 
-            target_position_code = _optional_str(getattr(task, "target_position_code", None))
+            target_position_code = coerce_optional_str(getattr(task, "target_position_code", None))
             if target_position_code is None:
                 if task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value:
                     return False
                 continue
 
-            workline_code = _optional_str(getattr(task, "workline_code", None))
+            workline_code = coerce_optional_str(getattr(task, "workline_code", None))
             if workline_code is None:
                 return False
             target_tasks_by_position.setdefault((workline_code, target_position_code), []).append(task)
@@ -737,9 +738,9 @@ class RackOperationService:
         return True
 
     async def _move_out_rack_still_at_source(self, db: AsyncSession, task: Any) -> bool:
-        rack_code = _optional_str(getattr(task, "rack_code", None))
-        source_position_code = _optional_str(getattr(task, "source_position_code", None))
-        workline_code = _optional_str(getattr(task, "workline_code", None))
+        rack_code = coerce_optional_str(getattr(task, "rack_code", None))
+        source_position_code = coerce_optional_str(getattr(task, "source_position_code", None))
+        workline_code = coerce_optional_str(getattr(task, "workline_code", None))
         if rack_code is None or source_position_code is None or workline_code is None:
             return False
         placements = await self.rack_placement_repository.list_active_by_workline_position(
@@ -747,7 +748,7 @@ class RackOperationService:
             workline_code=workline_code,
             position_code=source_position_code,
         )
-        return any(_optional_str(getattr(placement, "rack_code", None)) == rack_code for placement in placements)
+        return any(coerce_optional_str(getattr(placement, "rack_code", None)) == rack_code for placement in placements)
 
 
 def _ensure_existing_operation_request_consistent(
@@ -782,12 +783,15 @@ def _ensure_existing_operation_request_consistent(
 
 
 def _ensure_task_spec_contract(spec: RackTaskSpec) -> None:
-    if spec.task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value and _optional_str(spec.target_position_code) is None:
+    if (
+        spec.task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value
+        and coerce_optional_str(spec.target_position_code) is None
+    ):
         raise ValueError("rack operation ALLOCATE_AND_MOVE_RACK requires target_position_code")
     if (
         spec.task_type == RackTaskType.MOVE_RACK.value
-        and _optional_str(spec.target_position_code) is None
-        and _optional_str(spec.target_position_role) is None
+        and coerce_optional_str(spec.target_position_code) is None
+        and coerce_optional_str(spec.target_position_role) is None
     ):
         raise ValueError("rack operation MOVE_RACK requires target_position_code or target_position_role")
 
@@ -858,19 +862,20 @@ def _target_projection_matches_task(
     move_out_rack_codes: set[str],
 ) -> bool:
     task_type = _task_type(task)
-    task_rack_kind = _optional_str(getattr(task, "rack_kind", None))
-    task_rack_code = _optional_str(getattr(task, "rack_code", None))
+    task_rack_kind = coerce_optional_str(enum_value(getattr(task, "rack_kind", None)))
+    task_rack_code = coerce_optional_str(getattr(task, "rack_code", None))
     if task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value and task_rack_kind is None:
         return False
     if task_type == RackTaskType.MOVE_RACK.value and task_rack_code is None:
         return False
 
-    placement_rack_code = _optional_str(getattr(placement, "rack_code", None))
+    placement_rack_code = coerce_optional_str(getattr(placement, "rack_code", None))
     if task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value and placement_rack_code in move_out_rack_codes:
         return False
     if task_rack_code is not None and placement_rack_code != task_rack_code:
         return False
-    return task_rack_kind is None or _optional_str(getattr(placement, "rack_kind", None)) == task_rack_kind
+    placement_rack_kind = coerce_optional_str(enum_value(getattr(placement, "rack_kind", None)))
+    return task_rack_kind is None or placement_rack_kind == task_rack_kind
 
 
 def _outbox_payload(spec: RackTaskSpec) -> dict[str, Any]:
@@ -906,7 +911,7 @@ def _reserved_target_position_codes(specs: list[RackTaskSpec]) -> set[str]:
     return {
         target_position_code
         for spec in specs
-        for target_position_code in [_optional_str(spec.target_position_code)]
+        for target_position_code in [coerce_optional_str(spec.target_position_code)]
         if target_position_code is not None
         and _spec_occupies_target_position(spec, target_position_code=target_position_code)
     }
@@ -946,19 +951,15 @@ def _task_required(task: Any) -> bool:
 
 
 def _task_status(task: Any) -> str | None:
-    return _enum_value(getattr(task, "task_status", None))
+    return enum_value(getattr(task, "task_status", None))
 
 
 def _task_type(task: Any) -> str | None:
-    return _enum_value(getattr(task, "task_type", None))
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
+    return enum_value(getattr(task, "task_type", None))
 
 
 def _rack_kind(value: RackKind | str) -> RackKind:
-    raw_value = _enum_value(value)
+    raw_value = enum_value(value)
     try:
         return RackKind(str(raw_value))
     except ValueError as exc:
@@ -966,13 +967,13 @@ def _rack_kind(value: RackKind | str) -> RackKind:
 
 
 def _rack_kind_value(value: Any) -> str | None:
-    if _optional_str(value) is None:
+    if coerce_optional_str(value) is None:
         return None
     return _rack_kind(value).value
 
 
 def _rack_task_type(value: Any) -> str:
-    raw_value = _enum_value(value)
+    raw_value = enum_value(value)
     try:
         return RackTaskType(str(raw_value)).value
     except ValueError as exc:
@@ -980,30 +981,17 @@ def _rack_task_type(value: Any) -> str:
 
 
 def _required_text(value: Any, field_name: str) -> str:
-    text = _optional_str(value)
+    text = coerce_optional_str(value)
     if text is None:
         raise ValueError(f"{field_name} is required")
     return text
 
 
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(_enum_value(value)).strip()
-    return text or None
-
-
 def _required_int(value: Any, field_name: str) -> int:
-    number = _optional_int(value)
+    number = coerce_optional_int(value)
     if number is None:
         raise ValueError(f"{field_name} is required")
     return number
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    return int(value)
 
 
 rack_operation_service = RackOperationService()

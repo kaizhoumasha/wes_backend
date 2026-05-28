@@ -10,6 +10,7 @@ from sqlalchemy import and_, exists, or_, select
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
+from src.utils.value_normalization import enum_value
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -511,10 +512,10 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     "session_id": outbox.session_id,
                     "workline_id": outbox.workline_id,
                     "dispatch_key": outbox.dispatch_key,
-                    "dispatch_type": _enum_value(outbox.dispatch_type),
-                    "target_type": _enum_value(outbox.target_type),
+                    "dispatch_type": enum_value(outbox.dispatch_type),
+                    "target_type": enum_value(outbox.target_type),
                     "target_code": outbox.target_code,
-                    "status": _enum_value(outbox.status),
+                    "status": enum_value(outbox.status),
                     "last_error": outbox.last_error,
                     "is_actionable": False,
                     "runtime_hold_id": outbox.blocked_by_runtime_hold_id,
@@ -587,10 +588,6 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_device_id = None
         outbox.blocked_workline_id = None
         outbox.blocked_reason = None
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
 
 
 system_outbox_repository = SystemOutboxRepository()

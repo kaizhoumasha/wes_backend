@@ -21,6 +21,7 @@ from src.app.workline.repositories.session_repository import (
 )
 from src.core.logger import logger
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str, optional_int
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,9 +71,9 @@ class HandlingOperationLifecycleService:
         """按 WMS/RCS 回调证据更新 handling step。"""
 
         dispatch_key = (
-            _optional_str(payload_json.get("dispatch_key"))
-            or _optional_str(payload_json.get("exchange_request_code"))
-            or _optional_str(payload_json.get("request_code"))
+            coerce_optional_str(payload_json.get("dispatch_key"))
+            or coerce_optional_str(payload_json.get("exchange_request_code"))
+            or coerce_optional_str(payload_json.get("request_code"))
         )
         if dispatch_key is None:
             return None
@@ -105,7 +106,7 @@ class HandlingOperationLifecycleService:
         step.step_status = status
         step.callback_json = dict(payload_json)
         step.result_json = _step_result_json(status=status, error_code=error_code, error_message=error_message)
-        if trace_id is not None and not _optional_str(getattr(step, "trace_id", None)):
+        if trace_id is not None and not coerce_optional_str(getattr(step, "trace_id", None)):
             step.trace_id = trace_id
         if status == HandlingStepStatus.IN_PROGRESS and getattr(step, "started_at", None) is None:
             step.started_at = now
@@ -131,7 +132,7 @@ class HandlingOperationLifecycleService:
         return step
 
     async def _sync_move_for_step(self, db: AsyncSession, *, step: Any, step_status: HandlingStepStatus) -> None:
-        move_id = _optional_int(getattr(step, "move_id", None))
+        move_id = optional_int(getattr(step, "move_id", None))
         if move_id is None:
             return
         move = await self.move_repository.get_by_id(db, move_id)
@@ -157,7 +158,7 @@ class HandlingOperationLifecycleService:
         error_code: str | None,
         error_message: str | None,
     ) -> None:
-        operation_key = _optional_str(getattr(step, "operation_key", None))
+        operation_key = coerce_optional_str(getattr(step, "operation_key", None))
         if operation_key is None:
             return
 
@@ -165,7 +166,7 @@ class HandlingOperationLifecycleService:
         if operation is None:
             return
 
-        workline_id = _optional_int(getattr(operation, "workline_id", None))
+        workline_id = optional_int(getattr(operation, "workline_id", None))
         session = None
         if workline_id is not None:
             session = await self.session_repository.get_open_session_by_waiting_handling_operation_key(
@@ -268,7 +269,7 @@ def _source_version_is_stale(existing_callback_json: Any, incoming_payload_json:
 def _callback_source_version(value: Any) -> str | None:
     if not isinstance(value, Mapping):
         return None
-    return _optional_str(value.get("source_version"))
+    return coerce_optional_str(value.get("source_version"))
 
 
 def _version_sort_key(value: str) -> tuple[int, int | str]:
@@ -281,10 +282,10 @@ def _version_sort_key(value: str) -> tuple[int, int | str]:
 def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]) -> tuple[str, str] | None:
     if session is None:
         return None
-    callback_type = _optional_str(payload_json.get("callback_type"))
+    callback_type = coerce_optional_str(payload_json.get("callback_type"))
     if callback_type not in _FULL_BOX_EXCHANGE_CALLBACK_TYPES:
         return None
-    incoming_rack_release_id = _optional_str(payload_json.get("rack_release_id"))
+    incoming_rack_release_id = coerce_optional_str(payload_json.get("rack_release_id"))
     if incoming_rack_release_id is None:
         return None
 
@@ -292,8 +293,8 @@ def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]
     handling_operation = context_json.get("handling_operation")
     expected_rack_release_id = None
     if isinstance(handling_operation, Mapping):
-        expected_rack_release_id = _optional_str(handling_operation.get("rack_release_id"))
-    expected_rack_release_id = expected_rack_release_id or _optional_str(context_json.get("rack_release_id"))
+        expected_rack_release_id = coerce_optional_str(handling_operation.get("rack_release_id"))
+    expected_rack_release_id = expected_rack_release_id or coerce_optional_str(context_json.get("rack_release_id"))
     if expected_rack_release_id is not None and incoming_rack_release_id != expected_rack_release_id:
         return (
             "RACK_RELEASE_ID_MISMATCH",
@@ -303,8 +304,8 @@ def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]
 
 
 def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStepStatus, str | None, str | None]:
-    callback_type = _optional_str(payload_json.get("callback_type"))
-    raw_status = _optional_str(
+    callback_type = coerce_optional_str(payload_json.get("callback_type"))
+    raw_status = coerce_optional_str(
         payload_json.get("exchange_status")
         or payload_json.get("task_status")
         or payload_json.get("status")
@@ -437,17 +438,17 @@ def _step_status_value(value: Any) -> str | None:
 
 def _raw_error_code(payload_json: Mapping[str, Any]) -> str | None:
     return (
-        _optional_str(payload_json.get("reason_code"))
-        or _optional_str(payload_json.get("error_code"))
-        or _optional_str(payload_json.get("code"))
+        coerce_optional_str(payload_json.get("reason_code"))
+        or coerce_optional_str(payload_json.get("error_code"))
+        or coerce_optional_str(payload_json.get("code"))
     )
 
 
 def _raw_error_message(payload_json: Mapping[str, Any]) -> str | None:
     return (
-        _optional_str(payload_json.get("reason_message"))
-        or _optional_str(payload_json.get("error_message"))
-        or _optional_str(payload_json.get("message"))
+        coerce_optional_str(payload_json.get("reason_message"))
+        or coerce_optional_str(payload_json.get("error_message"))
+        or coerce_optional_str(payload_json.get("message"))
     )
 
 
@@ -458,19 +459,6 @@ def _has_post_exchange_relations(payload_json: Mapping[str, Any]) -> bool:
     if isinstance(relations, list):
         return bool(relations)
     return False
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
 
 
 handling_operation_lifecycle_service = HandlingOperationLifecycleService()

@@ -405,12 +405,16 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         sessions = list(result.scalars().all())
         now = timezone.now_for_db()
+        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
+
         for session in sessions:
-            session.status = SessionStatus.FAILED
-            session.failure_domain = "SAFETY"
-            session.failure_code = "WORKLINE_ESTOPPED"
-            session.failure_message = f"WorkLine 急停冻结，incident_id={incident_id}"
-            session.ended_at = now
+            workline_session_lifecycle_service.fail(
+                session,
+                occurred_at=now,
+                failure_domain="SAFETY",
+                failure_code="WORKLINE_ESTOPPED",
+                failure_message=f"WorkLine 急停冻结，incident_id={incident_id}",
+            )
         return len(sessions)
 
 

@@ -41,6 +41,7 @@ ARM_MEASUREMENT_REEL_DIAMETER=15inch \
 | SMT 流水线 Mock | 8005 | 模拟 SMT 粗分机流水线 |
 | SMT 进料臂 Mock (ARM01) | 8006 | 模拟进料机械臂（扫码、检测、搬运、NG 放置） |
 | SMT 出料臂 Mock (ARM02) | 8007 | 模拟出料机械臂（从流水线到 BIN） |
+| WMS Mock 服务 | 8011 | 模拟上位 WMS 系统（主数据、库存、故障注入） |
 
 ## SMT 粗分机 Mock 服务
 
@@ -172,6 +173,11 @@ uv run python tests/mock/camera_mock_server.py
 python tests/mock/robot_arm_mock_server.py
 # 或
 uv run python tests/mock/robot_arm_mock_server.py
+
+# 运行 WMS Mock
+python tests/mock/wms_mock_server.py
+# 或
+uv run python tests/mock/wms_mock_server.py
 ```
 
 ## API 接口
@@ -630,6 +636,35 @@ curl -X POST http://localhost:8004/api/v1/robot/execute \
 
 # 查看失败记录
 curl http://localhost:8004/api/v1/robot/executions
+```
+
+### WMS Mock (端口 8011)
+
+#### 主数据查询
+
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `GET /` | - | 健康检查 |
+| `GET /api/wms/materials/{id}` | - | 查询单个物料 |
+| `GET /api/wms/racks/{id}` | - | 查询货架信息 |
+| `GET /api/wms/zones` | - | 查询所有区域 |
+
+#### 故障注入
+
+用于模拟 HTTP 超时、500 错误等场景，测试 WES 的 `WmsCircuitBreakerService` 及重试机制。
+
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/debug/simulate-failure` | POST | 模拟下一次请求返回指定 HTTP 状态码并可附带延迟 |
+
+```bash
+# 设置下一次请求返回 500 并在 2 秒后响应
+curl -X POST http://localhost:8011/debug/simulate-failure \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": 500,
+    "delay": 2.0
+  }'
 ```
 
 ### E2E 测试

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 from src.workline_runtime.material_target_resolver import resolve_destination_device
 from src.workline_runtime.runtime_intent import (
     BlockScope,
@@ -163,12 +163,6 @@ def _non_empty_text(value: Any) -> str | None:
     return text or None
 
 
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
 def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw_specs = payload_json.get("rack_tasks") or payload_json.get("task_specs")
     if not isinstance(raw_specs, list) or not raw_specs:
@@ -290,7 +284,7 @@ class RuntimeIntentEffectApplier:
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
         _validate_runtime_intents(intents)
 
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         workline_effects._sync_effect_trace_fields(ctx)
         if not intents:
@@ -364,7 +358,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
         if (
@@ -374,10 +368,8 @@ class RuntimeIntentEffectApplier:
         ):
             return
 
-        session.status = "COMPLETED"
-        workline_effects._clear_session_wait(session)
+        workline_effects.workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
         workline_effects._clear_session_failure(session)
-        session.ended_at = ctx["now"]
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.COMPLETE,
@@ -400,7 +392,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         await workline_effects._emit_timeline(
             ctx,
@@ -429,14 +421,14 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         try:
             target_device = _resolve_target_device(ctx, intent)
         except ValueError as exc:
             await self._apply_destination_failure(ctx, exc)
             return
-        target_device_id = workline_effects._resolve_required_pk(target_device, "target_device")
+        target_device_id = resolve_required_pk(target_device, "target_device")
         try:
             workline_effects._enforce_device_command_governance(
                 target_device,
@@ -460,9 +452,7 @@ class RuntimeIntentEffectApplier:
             action=str(intent.action),
             default_command_code=generated_command_code,
         )
-        resolved_command_code = workline_effects._string_value(
-            vendor_payload.get("command_code"), generated_command_code
-        )
+        resolved_command_code = string_value(vendor_payload.get("command_code"), generated_command_code)
         command_data = workline_effects._build_command_create_payload(
             ctx,
             command_intent=SimpleNamespace(action=str(intent.action), parameters=dict(intent.payload_json)),
@@ -499,9 +489,8 @@ class RuntimeIntentEffectApplier:
 
         workline_effects._clear_session_failure(ctx["session"])
         if intent.timeout_seconds is None:
-            ctx["session"].status = "RUNNING"
+            workline_effects.workline_session_lifecycle_service.running(ctx["session"])
             workline_effects._clear_session_wait(ctx["session"])
-            ctx["session"].ended_at = None
             return
 
         await self._apply_command_wait(ctx, intent)
@@ -513,7 +502,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         dispatch_key = str(intent.dispatch_key)
         target_code = str(intent.target_code)
@@ -545,13 +534,12 @@ class RuntimeIntentEffectApplier:
         )
 
         workline_effects._clear_session_failure(session)
-        session.status = workline_effects._wait_session_status("EXTERNAL_HTTP")
-        session.current_wait_type = "EXTERNAL_HTTP"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="EXTERNAL_HTTP",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.WAITING,
@@ -576,7 +564,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         payload_json = dict(intent.payload_json)
         operation_type = str(intent.action)
@@ -644,6 +632,8 @@ class RuntimeIntentEffectApplier:
         tasks: list[Any],
         timeout_seconds: int,
     ) -> None:
+        from src.app.workline.services import write_back_service as workline_effects
+
         session = ctx["session"]
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_operation = context_json.get("rack_operation")
@@ -677,13 +667,12 @@ class RuntimeIntentEffectApplier:
         context_json["rack_operation"] = rack_operation
         session.context_json = context_json
         ctx["session_ctx"] = dict(context_json)
-        session.status = "WAITING_EXTERNAL"
-        session.current_wait_type = "RACK_OPERATION"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="RACK_OPERATION",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
 
     async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (
@@ -692,7 +681,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         payload_json = dict(intent.payload_json)
         operation_type = str(intent.action)
@@ -716,11 +705,11 @@ class RuntimeIntentEffectApplier:
             ctx_map["db"],
             operation_key=operation_key,
             operation_type=operation_type,
-            workline_id=_optional_int(getattr(ctx_map["workline"], "id", None)),
+            workline_id=optional_int(getattr(ctx_map["workline"], "id", None)),
             workline_code=_non_empty_text(
                 getattr(ctx_map["workline"], "line_code", None) or getattr(ctx_map["workline"], "workline_code", None)
             ),
-            material_session_id=_optional_int(getattr(session, "id", None)),
+            material_session_id=optional_int(getattr(session, "id", None)),
             trace_id=trace_id,
             moves=moves,
             carrier_type=str(payload_json["carrier_type"]),
@@ -766,6 +755,8 @@ class RuntimeIntentEffectApplier:
         rack_code: str | None,
         timeout_seconds: int,
     ) -> None:
+        from src.app.workline.services import write_back_service as workline_effects
+
         session = ctx["session"]
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_operation = context_json.get("handling_operation")
@@ -785,13 +776,12 @@ class RuntimeIntentEffectApplier:
         context_json["handling_operation"] = handling_operation
         session.context_json = context_json
         ctx["session_ctx"] = dict(context_json)
-        session.status = "WAITING_EXTERNAL"
-        session.current_wait_type = "HANDLING_OPERATION"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = None
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = ctx["now"] + timedelta(seconds=timeout_seconds)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="HANDLING_OPERATION",
+            occurred_at=ctx["now"],
+            deadline_seconds=timeout_seconds,
+        )
 
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
         service = self._inbox_service
@@ -858,17 +848,17 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
         timeout_seconds = intent.timeout_seconds or 300
-        session.status = workline_effects._wait_session_status("COMMAND_RESULT")
-        session.current_wait_type = "COMMAND_RESULT"
-        session.waiting_since = ctx["now"]
-        session.awaiting_command_id = ctx["awaiting_command_id"]
-        session.current_wait_timeout_seconds = timeout_seconds
-        session.deadline_at = None
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="COMMAND_RESULT",
+            occurred_at=ctx["now"],
+            awaiting_command_id=ctx["awaiting_command_id"],
+            deadline_seconds=timeout_seconds,
+        )
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.WAITING,
@@ -888,7 +878,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_governance_failure(self, ctx: Any, exc: Any) -> None:
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         ctx["orch_result"].failure = SimpleNamespace(domain=exc.domain, code=exc.code, message=exc.message)
         _ = await workline_effects._apply_failure_transition(ctx)
@@ -911,27 +901,29 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
-        session.status = "MANUAL_HOLD"
-        workline_effects._clear_session_wait(session)
-        session.ended_at = None
+        workline_effects.workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
         session.failure_domain = intent.block_scope.value if intent.block_scope is not None else "BLOCK"
         session.failure_code = intent.reason_code
         session.failure_message = intent.message
+
+        timeline_payload: dict[str, Any] = {
+            **workline_effects._effect_trace_payload(ctx),
+            "block_scope": session.failure_domain,
+            "reason_code": intent.reason_code,
+            "message": intent.message,
+            "suggested_action": intent.suggested_action,
+        }
+        if intent.payload_json:
+            timeline_payload["evidence"] = dict(intent.payload_json)
 
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.MANUAL,
             action_type=TimelineActionType.MANUAL_HOLD,
-            payload={
-                **workline_effects._effect_trace_payload(ctx),
-                "block_scope": session.failure_domain,
-                "reason_code": intent.reason_code,
-                "message": intent.message,
-                "suggested_action": intent.suggested_action,
-            },
+            payload=timeline_payload,
             from_status=ctx["current_status"],
             to_status="MANUAL_HOLD",
             actor_type=TimelineActorType.ORCHESTRATOR,
@@ -942,17 +934,16 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_continue_next(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.celery_app.tasks import workline as workline_effects
+        from src.app.workline.services import write_back_service as workline_effects
 
         if intent.action:
             await self._apply_command(ctx, _command_producing_intent_to_command_intent(intent))
             return
 
         session = ctx["session"]
-        session.status = "RUNNING"
+        workline_effects.workline_session_lifecycle_service.running(session)
         workline_effects._clear_session_wait(session)
         workline_effects._clear_session_failure(session)
-        session.ended_at = None
 
 
 __all__ = ["RuntimeIntentEffectApplier"]

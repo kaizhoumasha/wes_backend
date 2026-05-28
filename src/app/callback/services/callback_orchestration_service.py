@@ -20,6 +20,7 @@ from src.app.workline.models.timeline import (
     TimelineStatus,
 )
 from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.workline_runtime.timeline_generator import timeline_generator
 from src.workline_runtime.trace_context import TraceContext
 
@@ -104,9 +105,11 @@ class CallbackOrchestrationService:
         *,
         rack_task_service: Any | None = None,
         handling_operation_service: Any | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self._rack_task_service = rack_task_service
         self._handling_operation_service = handling_operation_service
+        self._queue_gateway = queue_gateway
 
     def _is_duplicate_inbox_error(self, error: ValueError) -> bool:
         return _DUPLICATE_ERROR_MARKER in str(error)
@@ -131,24 +134,14 @@ class CallbackOrchestrationService:
         return None
 
     def _enqueue_workline_processing(self) -> None:
-        from src.celery_app.app import celery_app
-
         try:
-            cast("Any", celery_app).send_task(
-                "src.celery_app.tasks.workline.process_inbox_batch",
-                kwargs={"limit": 10},
-            )
+            self._queue_gateway.enqueue_workline_inbox(limit=10)
         except Exception as exc:
             logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     def _enqueue_outbox_dispatch(self) -> None:
-        from src.celery_app.app import celery_app
-
         try:
-            cast("Any", celery_app).send_task(
-                "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
-                kwargs={"limit": 50},
-            )
+            self._queue_gateway.enqueue_outbox(limit=50)
         except Exception as exc:
             logger.warning(f"Callback 后续 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 

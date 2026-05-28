@@ -32,6 +32,7 @@ def test_block_intent_requires_reason_and_scope():
         reason_code="BARCODE_INVALID",
         message="条码无法识别",
         suggested_action="人工复核条码",
+        payload={"evidence_key": "EVD-1234"},
     )
 
     assert intent.kind == RuntimeIntentKind.BLOCK
@@ -39,6 +40,7 @@ def test_block_intent_requires_reason_and_scope():
     assert intent.reason_code == "BARCODE_INVALID"
     assert intent.message == "条码无法识别"
     assert intent.suggested_action == "人工复核条码"
+    assert intent.payload_json == {"evidence_key": "EVD-1234"}
 
 
 def test_invalid_command_requires_action() -> None:

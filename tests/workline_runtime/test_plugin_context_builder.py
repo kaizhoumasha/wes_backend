@@ -93,7 +93,9 @@ class TestPluginContextBuilder:
         assert ctx.services == mock_services
 
         # 验证工具存在
-        assert isinstance(ctx.logger, logging.Logger)
+        from src.core.logger import logger as core_logger
+
+        assert ctx.logger == core_logger
         assert callable(ctx.clock)
 
     def test_build_extracts_config_from_workline(
@@ -202,8 +204,9 @@ class TestPluginContextBuilder:
             trace_id="trace-123",
         )
 
-        # logger 应该是 logging.Logger 实例
-        assert isinstance(ctx.logger, logging.Logger)
+        from src.core.logger import logger as core_logger
+
+        assert ctx.logger == core_logger
 
         # clock 应该是可调用对象
         assert callable(ctx.clock)

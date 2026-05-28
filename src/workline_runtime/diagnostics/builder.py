@@ -2,20 +2,11 @@
 
 from typing import Any
 
+from src.utils.value_normalization import optional_int_attr, optional_str, optional_str_attr
 from src.workline_runtime.trace_context import TraceContext
 
 from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity, error_domain_for
 from .models import DiagnosticCard, DiagnosticContext, DiagnosticEvent
-
-
-def _safe_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _safe_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
 
 
 def _resolve_diagnostic_device_code(
@@ -26,8 +17,8 @@ def _resolve_diagnostic_device_code(
 ) -> str | None:
     return (
         resolved_trace.device_code
-        or _safe_str(getattr(device, "device_code", None))
-        or _safe_str(getattr(outbox, "target_code", None))
+        or optional_str_attr(device, "device_code")
+        or optional_str_attr(outbox, "target_code")
     )
 
 
@@ -39,8 +30,8 @@ def _resolve_diagnostic_plugin_key(
 ) -> str | None:
     return (
         resolved_trace.plugin_key
-        or _safe_str(getattr(session, "plugin_key", None))
-        or _safe_str(getattr(workline, "plugin_key", None))
+        or optional_str_attr(session, "plugin_key")
+        or optional_str_attr(workline, "plugin_key")
     )
 
 
@@ -178,15 +169,15 @@ def build_diagnostic_context(
         resolved_trace = resolved_trace.with_device(device)
 
     return DiagnosticContext(
-        request_id=resolved_trace.request_id or _safe_str(request_id),
-        trace_id=resolved_trace.trace_id or _safe_str(trace_id),
-        session_id=resolved_trace.session_id or _safe_int(getattr(session, "id", None)),
-        inbox_id=resolved_trace.inbox_id or _safe_int(getattr(inbox, "id", None)),
-        outbox_id=resolved_trace.outbox_id or _safe_int(getattr(outbox, "id", None)),
-        command_code=resolved_trace.command_code or _safe_str(getattr(command, "command_code", None)),
+        request_id=resolved_trace.request_id or optional_str(request_id),
+        trace_id=resolved_trace.trace_id or optional_str(trace_id),
+        session_id=resolved_trace.session_id or optional_int_attr(session, "id"),
+        inbox_id=resolved_trace.inbox_id or optional_int_attr(inbox, "id"),
+        outbox_id=resolved_trace.outbox_id or optional_int_attr(outbox, "id"),
+        command_code=resolved_trace.command_code or optional_str_attr(command, "command_code"),
         device_code=_resolve_diagnostic_device_code(resolved_trace, device=device, outbox=outbox),
-        workline_id=resolved_trace.workline_id or _safe_int(getattr(session, "workline_id", None)),
-        workline_code=_safe_str(getattr(workline, "line_code", None)),
+        workline_id=resolved_trace.workline_id or optional_int_attr(session, "workline_id"),
+        workline_code=optional_str_attr(workline, "line_code"),
         plugin_key=_resolve_diagnostic_plugin_key(resolved_trace, session=session, workline=workline),
         canonical_event_type=resolved_trace.canonical_event_type,
         transition=resolved_trace.transition,

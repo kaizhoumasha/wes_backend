@@ -241,10 +241,27 @@ For git worktrees, treat `.env` as worktree-local state. Generating or editing `
 # ps.
 use Chinese to Write document and Communication and Commit Comment
 
+---
+
+## 🛠 Agent Tooling & Efficiency
+
+### GitNexus — 架构导航与变更安全
+本项目使用 GitNexus 构建代码知识图谱。Agent 在执行写操作前必须遵守以下红线：
+
+- **强制影响分析**：在修改任何函数、类或方法前，必须运行 `gitnexus_impact({target: "symbolName", direction: "upstream"})`。
+- **风险确认**：如果影响分析返回 HIGH 或 CRITICAL 风险，必须在操作前向用户汇报并确认。
+- **提交前检测**：在 Commit 前运行 `gitnexus_detect_changes()`，验证变更范围是否符合预期。
+
+### RTK (Rust Token Killer) — Token 优化
+本项目环境通过 RTK 代理执行 Shell 命令以节省 60-90% 的 Token。
+
+- **效率监控**：Agent 可以定期运行 `rtk gain` 查看 Token 节省情况。
+- **调试模式**：如果遇到 RTK 过滤导致的输出丢失，可使用 `rtk proxy <cmd>` 获取原始输出。
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (23610 symbols, 38569 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (24139 symbols, 39839 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

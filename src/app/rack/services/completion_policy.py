@@ -6,6 +6,7 @@ from typing import Any
 
 from src.app.rack.models.operation import RackOperationStatus, RackTaskStatus
 from src.app.sys.models import OperationCompletionPolicy
+from src.utils.value_normalization import enum_value
 
 
 def resolve_operation_completion_policy(operation: Any | None) -> OperationCompletionPolicy:
@@ -13,7 +14,7 @@ def resolve_operation_completion_policy(operation: Any | None) -> OperationCompl
 
     raw_policy = getattr(operation, "completion_policy", None)
     try:
-        return OperationCompletionPolicy(_enum_value(raw_policy))
+        return OperationCompletionPolicy(enum_value(raw_policy))
     except ValueError:
         return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
@@ -24,7 +25,7 @@ def resolve_request_completion_policy(
     """解析请求指定的完成策略；Rack 默认必须等待资源投影确认。"""
 
     if completion_policy is not None:
-        return OperationCompletionPolicy(_enum_value(completion_policy))
+        return OperationCompletionPolicy(enum_value(completion_policy))
     return OperationCompletionPolicy.RESOURCE_PROJECTION_REQUIRED
 
 
@@ -60,11 +61,7 @@ def requires_resource_projection_confirmation(completion_policy: OperationComple
 
 
 def _task_status(task: Any) -> str | None:
-    return _enum_value(getattr(task, "task_status", None))
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
+    return enum_value(getattr(task, "task_status", None))
 
 
 __all__ = [

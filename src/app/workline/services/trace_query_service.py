@@ -46,6 +46,7 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.core.base_service import BaseService
+from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 from src.workline_runtime.diagnostics import (
     DiagnosticContext,
     ErrorCode,
@@ -116,18 +117,6 @@ class TraceQueryResult:
         }
 
 
-def _safe_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _enum_str(value: Any) -> str | None:
-    raw = getattr(value, "value", value)
-    return str(raw) if raw is not None else None
-
-
 def _merge_unique_by_id(existing: list[Any], items: list[Any]) -> list[Any]:
     existing_ids = {getattr(item, "id", None) for item in existing if getattr(item, "id", None) is not None}
     return existing + [item for item in items if getattr(item, "id", None) not in existing_ids]
@@ -146,10 +135,11 @@ def _callback_diagnostic_extra(callback: Any) -> dict[str, Any]:
 def _timeline_trace(trace: TraceContext, timeline: WorklineTimeline) -> TraceContext:
     payload = payload_dict(getattr(timeline, "payload_json", None))
     timeline_trace = TraceContext.from_request(
-        request_id=_safe_str(payload.get("request_id")),
-        trace_id=_safe_str(payload.get("trace_id")) or trace.trace_id,
-        canonical_event_type=_safe_str(payload.get("canonical_event_type")),
-        transition=_safe_str(getattr(timeline, "to_status", None)) or _safe_str(getattr(timeline, "action_type", None)),
+        request_id=coerce_optional_str(payload.get("request_id")),
+        trace_id=coerce_optional_str(payload.get("trace_id")) or trace.trace_id,
+        canonical_event_type=coerce_optional_str(payload.get("canonical_event_type")),
+        transition=coerce_optional_str(getattr(timeline, "to_status", None))
+        or coerce_optional_str(getattr(timeline, "action_type", None)),
     )
     return timeline_trace.with_session(
         SimpleNamespace(
@@ -394,7 +384,7 @@ class TraceQueryService(BaseService[Any, Any]):
         source_event_ids = [
             source_event_id
             for event in resource_state_events
-            if (source_event_id := _safe_str(getattr(event, "source_event_id", None))) is not None
+            if (source_event_id := coerce_optional_str(getattr(event, "source_event_id", None))) is not None
         ]
         predicates = []
         if source_event_ids:
@@ -419,7 +409,7 @@ class TraceQueryService(BaseService[Any, Any]):
         source_event_ids = [
             source_event_id
             for event in resource_state_events
-            if (source_event_id := _safe_str(getattr(event, "source_event_id", None))) is not None
+            if (source_event_id := coerce_optional_str(getattr(event, "source_event_id", None))) is not None
         ]
         idempotency_keys = [
             f"resource-reconciliation:{reason_code}:{source_event_id}"
@@ -540,27 +530,27 @@ class TraceQueryService(BaseService[Any, Any]):
     ) -> list[DiagnosticContext]:
         return [
             DiagnosticContext(
-                request_id=_safe_str(getattr(item, "request_id", None)) or trace.request_id,
-                trace_id=_safe_str(getattr(item, "trace_id", None)) or trace.trace_id,
+                request_id=coerce_optional_str(getattr(item, "request_id", None)) or trace.request_id,
+                trace_id=coerce_optional_str(getattr(item, "trace_id", None)) or trace.trace_id,
                 session_id=getattr(item, "session_id", None),
                 inbox_id=getattr(item, "inbox_id", None),
                 outbox_id=getattr(item, "outbox_id", None),
-                command_code=_safe_str(getattr(item, "command_code", None)),
-                device_code=_safe_str(getattr(item, "device_code", None)),
+                command_code=coerce_optional_str(getattr(item, "command_code", None)),
+                device_code=coerce_optional_str(getattr(item, "device_code", None)),
                 workline_id=getattr(item, "workline_id", None),
-                plugin_key=_safe_str(getattr(item, "plugin_key", None)),
+                plugin_key=coerce_optional_str(getattr(item, "plugin_key", None)),
                 extra={
                     "source": "workline_diagnostic",
                     "diagnostic_id": getattr(item, "id", None),
-                    "diagnostic_code": _safe_str(getattr(item, "diagnostic_code", None)),
-                    "error_domain": _safe_str(getattr(item, "error_domain", None)),
-                    "severity": _safe_str(getattr(item, "severity", None)),
-                    "recoverability": _safe_str(getattr(item, "recoverability", None)),
-                    "problem_class": _safe_str(getattr(item, "problem_class", None)),
-                    "owner": _safe_str(getattr(item, "owner", None)),
-                    "message": _safe_str(getattr(item, "message", None)),
-                    "operator_action": _safe_str(getattr(item, "operator_action", None)),
-                    "technical_summary": _safe_str(getattr(item, "technical_summary", None)),
+                    "diagnostic_code": coerce_optional_str(getattr(item, "diagnostic_code", None)),
+                    "error_domain": coerce_optional_str(getattr(item, "error_domain", None)),
+                    "severity": coerce_optional_str(getattr(item, "severity", None)),
+                    "recoverability": coerce_optional_str(getattr(item, "recoverability", None)),
+                    "problem_class": coerce_optional_str(getattr(item, "problem_class", None)),
+                    "owner": coerce_optional_str(getattr(item, "owner", None)),
+                    "message": coerce_optional_str(getattr(item, "message", None)),
+                    "operator_action": coerce_optional_str(getattr(item, "operator_action", None)),
+                    "technical_summary": coerce_optional_str(getattr(item, "technical_summary", None)),
                     "next_steps": list(getattr(item, "next_steps_json", None) or []),
                     "evidence": dict(getattr(item, "evidence_json", None) or {}),
                 },
@@ -647,7 +637,7 @@ class TraceQueryService(BaseService[Any, Any]):
     def _build_blocking_point(self, result: TraceQueryResult, *, trace_id: str) -> TraceBlockingPointResponse:
         trace = result.trace
         failed_outbox = next(
-            (item for item in result.outboxes if _enum_str(getattr(item, "status", None)) == "FAILED"), None
+            (item for item in result.outboxes if optional_enum_str(getattr(item, "status", None)) == "FAILED"), None
         )
         if failed_outbox is not None:
             context = build_diagnostic_context(
@@ -666,14 +656,14 @@ class TraceQueryService(BaseService[Any, Any]):
                     "outbox": {
                         "id": getattr(failed_outbox, "id", None),
                         "dispatch_key": getattr(failed_outbox, "dispatch_key", None),
-                        "status": _enum_str(getattr(failed_outbox, "status", None)),
+                        "status": optional_enum_str(getattr(failed_outbox, "status", None)),
                         "last_error": getattr(failed_outbox, "last_error", None),
                     }
                 },
             )
 
         dead_letter_inbox = next(
-            (item for item in result.inboxes if _enum_str(getattr(item, "status", None)) == "DEAD_LETTER"),
+            (item for item in result.inboxes if optional_enum_str(getattr(item, "status", None)) == "DEAD_LETTER"),
             None,
         )
         if dead_letter_inbox is not None:
@@ -692,14 +682,14 @@ class TraceQueryService(BaseService[Any, Any]):
                 evidence={
                     "inbox": {
                         "id": getattr(dead_letter_inbox, "id", None),
-                        "status": _enum_str(getattr(dead_letter_inbox, "status", None)),
+                        "status": optional_enum_str(getattr(dead_letter_inbox, "status", None)),
                         "error_message": getattr(dead_letter_inbox, "error_message", None),
                     }
                 },
             )
 
         failed_inbox = next(
-            (item for item in result.inboxes if _enum_str(getattr(item, "status", None)) == "FAILED"),
+            (item for item in result.inboxes if optional_enum_str(getattr(item, "status", None)) == "FAILED"),
             None,
         )
         if failed_inbox is not None:
@@ -731,7 +721,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 evidence={
                     "inbox": {
                         "id": getattr(failed_inbox, "id", None),
-                        "status": _enum_str(getattr(failed_inbox, "status", None)),
+                        "status": optional_enum_str(getattr(failed_inbox, "status", None)),
                         "error_message": getattr(failed_inbox, "error_message", None),
                     },
                     "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
@@ -739,7 +729,7 @@ class TraceQueryService(BaseService[Any, Any]):
             )
 
         failed_command = next(
-            (item for item in result.commands if _enum_str(getattr(item, "status", None)) == "FAILED"), None
+            (item for item in result.commands if optional_enum_str(getattr(item, "status", None)) == "FAILED"), None
         )
         if failed_command is not None:
             context = build_diagnostic_context(trace=trace.with_command(failed_command), command=failed_command)
@@ -753,16 +743,16 @@ class TraceQueryService(BaseService[Any, Any]):
                 evidence={
                     "command": {
                         "command_code": getattr(failed_command, "command_code", None),
-                        "status": _enum_str(getattr(failed_command, "status", None)),
+                        "status": optional_enum_str(getattr(failed_command, "status", None)),
                         "error_detail": getattr(failed_command, "error_detail", None),
                     }
                 },
             )
 
         session = result.session
-        if session is not None and _enum_str(getattr(session, "status", None)) == "FAILED":
+        if session is not None and optional_enum_str(getattr(session, "status", None)) == "FAILED":
             context = build_diagnostic_context(trace=trace.with_session(session), session=session)
-            failure_code = _enum_str(getattr(session, "failure_code", None)) or ""
+            failure_code = optional_enum_str(getattr(session, "failure_code", None)) or ""
             session_error_code = _SESSION_FAILURE_CODE_MAP.get(failure_code, ErrorCode.SESSION_RESOLVE_FAILED)
             return self._blocking_response(
                 trace=trace,
@@ -774,7 +764,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 evidence={
                     "session": {
                         "id": getattr(session, "id", None),
-                        "status": _enum_str(getattr(session, "status", None)),
+                        "status": optional_enum_str(getattr(session, "status", None)),
                         "failure_code": getattr(session, "failure_code", None),
                         "failure_message": getattr(session, "failure_message", None),
                     }

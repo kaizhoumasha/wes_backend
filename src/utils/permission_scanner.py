@@ -1,4 +1,3 @@
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -9,8 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import Permission, Role, role_permission
 from src.app.admin.repositories.perm_repository import PermissionRepository
-
-logger = logging.getLogger(__name__)
+from src.core.logger import logger
 
 _READ_ONLY_SUFFIXES = (":list", ":detail", ":tree")
 _USER_READ_ONLY_SUFFIXES = (":list", ":detail")

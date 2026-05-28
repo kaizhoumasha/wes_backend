@@ -10,6 +10,7 @@ from src.app.sys.models import SystemOutboxDispatchType
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.core.logger import logger
+from src.utils.value_normalization import enum_value
 
 ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
@@ -47,11 +48,13 @@ class SystemOutboxEngine:
         external_http_sender: ExternalHttpSender | None = None,
         endpoint_registry: EndpointRegistry = endpoint_registry,
         workline_domain_dispatcher: DomainDispatcher | None = None,
+        device_command_dispatcher: Callable[[Any, Any], Awaitable[bool]] | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
         self.endpoint_registry = endpoint_registry
         self.workline_domain_dispatcher = workline_domain_dispatcher or _dispatch_workline_domain
+        self.device_command_dispatcher = device_command_dispatcher or _dispatch_device_command
 
     async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:
         result: DispatchResult = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
@@ -118,48 +121,17 @@ class SystemOutboxEngine:
         return result
 
     async def dispatch_single(self, db: Any, outbox: Any) -> bool:
-        dispatch_type = _enum_value(getattr(outbox, "dispatch_type", None))
+        from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
+
+        dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
         if dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-            return await self.dispatch_external_http(outbox)
+            return await dispatch_external_http(outbox, self.endpoint_registry, self.external_http_sender)
         if dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL.value:
-            return await self.dispatch_internal_signal(outbox)
+            return await dispatch_internal_signal(outbox)
         if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
-            return await self.dispatch_device_command(db, outbox)
+            return await self.device_command_dispatcher(db, outbox)
         logger.warning(f"未知的 SystemOutbox 派发类型: {dispatch_type}")
         return False
-
-    async def dispatch_external_http(self, outbox: Any) -> bool:
-        try:
-            endpoint = self.endpoint_registry.resolve(str(getattr(outbox, "target_code", "") or ""))
-        except ValueError as exc:
-            logger.warning(str(exc))
-            return False
-        payload = _payload_dict(getattr(outbox, "payload_json", None))
-        return await self.external_http_sender(endpoint.url, payload)
-
-    async def dispatch_internal_signal(self, outbox: Any) -> bool:
-        target_code = getattr(outbox, "target_code", None)
-        if not isinstance(target_code, str) or target_code not in ALLOWED_INTERNAL_SIGNALS:
-            logger.error(f"SystemOutbox 内部信号派发失败: 未知的目标服务 {target_code}")
-            return False
-
-        try:
-            from src.celery_app.app import celery_app
-
-            celery_app.send_task(
-                f"src.celery_app.tasks.{target_code}.process_signal",
-                kwargs={"payload": _payload_dict(getattr(outbox, "payload_json", None))},
-            )
-            return True
-        except Exception as exc:
-            logger.error(f"SystemOutbox 内部信号派发失败: {exc}")
-            return False
-
-    async def dispatch_device_command(self, db: Any, outbox: Any) -> bool:
-        # Workline device command governance is still the source of truth for device ACK semantics.
-        from src.celery_app.tasks.workline import OutboxDispatcher
-
-        return await OutboxDispatcher._dispatch_device_command(db, outbox)
 
 
 async def _send_external_http(url: str, payload_json: dict[str, Any]) -> bool:
@@ -175,9 +147,15 @@ async def _send_external_http(url: str, payload_json: dict[str, Any]) -> bool:
 
 
 async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:
-    from src.celery_app.tasks.workline import OutboxDispatcher
+    from src.app.workline.services.outbox_dispatch_service import outbox_dispatch_service
 
-    return await OutboxDispatcher._dispatch(db, limit=limit)
+    return await outbox_dispatch_service.dispatch(db, limit=limit)
+
+
+async def _dispatch_device_command(db: Any, outbox: Any) -> bool:
+    from src.app.workline.services.device_command_gateway import device_command_gateway
+
+    return await device_command_gateway.dispatch(db, outbox)
 
 
 async def _commit_if_supported(db: Any) -> None:
@@ -190,10 +168,6 @@ async def _commit_if_supported(db: Any) -> None:
 
 def _payload_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
-
-
-def _enum_value(value: Any) -> Any:
-    return getattr(value, "value", value)
 
 
 def _merge_dispatch_result(target: DispatchResult, source: DispatchResult) -> None:

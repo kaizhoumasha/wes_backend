@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, Column, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -254,13 +254,35 @@ class WorklineInbox(
     - processor_token: 处理器令牌（用于锁定）
 
     状态机:
-        NEW → PROCESSING → PROCESSED
-               ↓
-             FAILED
+        NEW ─┐
+             ├─ atomic claim + processor_token → PROCESSING ─┬→ PROCESSED
+        RETRY┘                                                ├→ RETRY
+        stale PROCESSING (updated_at 超时) ────────────────────└→ DEAD_LETTER
+
+    处理约束:
+    - claim 只返回轻量字段，处理 session 内必须重新加载 ORM。
+    - 所有 consumer 终态更新必须携带 id + PROCESSING + processor_token 条件。
+    - 同 bucket 串行，不同 bucket 可按配置有界并发处理。
     """
 
     __tablename__: ClassVar[str] = "workline_inbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value  # 业务数据表
+    __table_args__ = (
+        Index(
+            "ix_wes_biz_workline_inbox_new_received_at",
+            "received_at",
+            postgresql_where=text("status = 'NEW'"),
+            sqlite_where=text("status = 'NEW'"),
+        ),
+        Index(
+            "ix_wes_biz_workline_inbox_retry_next_retry_received_at",
+            "next_retry_at",
+            "received_at",
+            postgresql_where=text("status = 'RETRY'"),
+            sqlite_where=text("status = 'RETRY'"),
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
 
     # 关系定义
     session: "WorklineSession" = Relationship(

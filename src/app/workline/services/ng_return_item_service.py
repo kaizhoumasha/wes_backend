@@ -13,6 +13,7 @@ from src.app.workline.models.runtime_hold import (
     NgReturnItemStatus,
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
+from src.utils.value_normalization import as_dict
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
@@ -21,10 +22,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
 
 
 def _as_non_empty_str(value: Any) -> str | None:
@@ -49,7 +46,7 @@ class NgReturnItemService:
     ) -> NgReturnItem | None:
         """Record a normal workflow NG material after physical NG diversion completed."""
 
-        session_context = _as_dict(getattr(session, "context_json", None))
+        session_context = as_dict(getattr(session, "context_json", None))
         if not self._is_completed_ng_flow(session_context=session_context, transition=transition):
             return None
 
@@ -66,7 +63,7 @@ class NgReturnItemService:
             MaterialIdentityInput(
                 session_context=session_context,
                 source_payload=self._source_payload(session_context),
-                command_payload=_as_dict(getattr(inbox, "payload_json", None)),
+                command_payload=as_dict(getattr(inbox, "payload_json", None)),
                 plugin_context={
                     "plugin_key": plugin_key,
                     "contract_version": _as_non_empty_str(getattr(session, "contract_version", None))
@@ -146,7 +143,7 @@ class NgReturnItemService:
         )
 
     def _source_payload(self, session_context: dict[str, Any]) -> dict[str, Any]:
-        return _as_dict(session_context.get("initial_payload") or session_context.get("source_payload"))
+        return as_dict(session_context.get("initial_payload") or session_context.get("source_payload"))
 
     def _material_identity_key(self, *, material_identity: Any, plugin_key: str, session: Any) -> str:
         if material_identity.resolution_status == MaterialIdentityResolutionStatus.RESOLVED:
@@ -199,7 +196,7 @@ class NgReturnItemService:
         material_identity_hash: str | None,
         occurred_at: Any,
     ) -> dict[str, Any]:
-        payload = _as_dict(getattr(inbox, "payload_json", None))
+        payload = as_dict(getattr(inbox, "payload_json", None))
         return {
             "source": "WORKFLOW_SCAN_NG",
             "source_inbox_id": getattr(inbox, "id", None),

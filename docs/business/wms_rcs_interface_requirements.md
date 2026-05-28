@@ -1254,7 +1254,7 @@ WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"
 |------|------|
 | `callback_type` | 必填，示例：`WMS_FULL_BOX_EXCHANGE_RESULT`。 |
 | `trace_id` | 必填，用于恢复 WES Trace 和 Session。 |
-| `dispatch_key` | 必填，WES `WorklineOutbox(EXTERNAL_HTTP)` 派发键。 |
+| `dispatch_key` | 必填，WES `SystemOutbox(EXTERNAL_HTTP)` 派发键。 |
 | `exchange_request_code` | 满箱交换必填，与 `dispatch_key` 同源。 |
 | `rack_release_id` | 满箱交换必填，必须与 Session context 一致。 |
 | `wms_rcs_task_id` | 必填，WMS/RCS 侧任务 ID。 |

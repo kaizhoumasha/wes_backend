@@ -26,8 +26,9 @@ from src.utils.request_parse import (
 class TestGetRequestIp:
     """测试获取请求 IP 地址"""
 
-    def test_get_ip_from_x_real_ip(self):
-        """测试：从 X-Real-IP header 获取 IP"""
+    def test_get_ip_from_x_real_ip_from_trusted_proxy(self, monkeypatch):
+        """测试：可信代理来源才从 X-Real-IP header 获取 IP"""
+        monkeypatch.setattr("src.core.conf.settings.TRUSTED_PROXY_IPS", ["127.0.0.1"])
         request = Mock(spec=Request)
         request.headers = {"X-Real-IP": "192.168.1.100"}
         request.client = Mock(host="127.0.0.1")
@@ -35,23 +36,24 @@ class TestGetRequestIp:
         ip = get_request_ip(request)
         assert ip == "192.168.1.100"
 
-    def test_get_ip_from_x_forwarded_for(self):
-        """测试：从 X-Forwarded-For header 获取 IP"""
+    def test_get_ip_ignores_x_forwarded_for_from_untrusted_peer(self, monkeypatch):
+        """测试：非可信来源不能通过 X-Forwarded-For 伪造 IP"""
+        monkeypatch.setattr("src.core.conf.settings.TRUSTED_PROXY_IPS", ["10.0.0.10"])
         request = Mock(spec=Request)
         request.headers = {"X-Forwarded-For": "203.0.113.1, 198.51.100.1"}
         request.client = Mock(host="127.0.0.1")
 
         ip = get_request_ip(request)
-        assert ip == "203.0.113.1"  # 应该取第一个 IP
+        assert ip == "127.0.0.1"
 
     def test_get_ip_no_client(self):
-        """测试：没有 client 信息时返回 Unknown Host"""
+        """测试：没有 client 信息时返回 unknown"""
         request = Mock(spec=Request)
         request.headers = {}
         request.client = None
 
         ip = get_request_ip(request)
-        assert ip == "Unknown Host"
+        assert ip == "unknown"
 
 
 # ==================== get_location_online 测试 ====================

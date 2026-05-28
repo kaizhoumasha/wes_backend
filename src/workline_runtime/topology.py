@@ -5,22 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from src.utils.value_normalization import as_dict, optional_int_attr, optional_str_attr
+from src.workline_runtime.device_ordering import device_sort_key
+
 if TYPE_CHECKING:
     from src.workline_runtime.plugin_manifest import WorklinePluginManifest
-
-
-def _safe_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
-def _safe_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _safe_dict(value: Any) -> dict[str, Any]:
-    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
 
 
 def _string_set(value: Any) -> frozenset[str]:
@@ -28,17 +17,6 @@ def _string_set(value: Any) -> frozenset[str]:
         return frozenset()
     values = cast("list[Any] | tuple[Any, ...] | set[Any] | frozenset[Any]", value)
     return frozenset(item for item in values if isinstance(item, str) and item)
-
-
-def _device_sort_key(device: Any) -> tuple[int, int, int]:
-    sort_order = getattr(device, "sort_order", 0)
-    role_index = getattr(device, "role_index", 0)
-    device_id = _safe_int(getattr(device, "id", None)) or 0
-    return (
-        sort_order if isinstance(sort_order, int) else 0,
-        role_index if isinstance(role_index, int) else 0,
-        device_id,
-    )
 
 
 def _extract_capabilities(capabilities_json: dict[str, Any]) -> frozenset[str]:
@@ -91,20 +69,20 @@ class WorklineTopologyView:
         """从工作线设备列表推导拓扑视图。"""
 
         snapshots: list[TopologyDeviceSnapshot] = []
-        for device in sorted(devices, key=_device_sort_key):
-            device_id = _safe_int(getattr(device, "id", None))
-            role = _safe_str(getattr(device, "device_role", None))
+        for device in sorted(devices, key=device_sort_key):
+            device_id = optional_int_attr(device, "id")
+            role = optional_str_attr(device, "device_role")
             if device_id is None or role is None:
                 continue
 
-            capabilities_json = _safe_dict(getattr(device, "capabilities_json", None))
+            capabilities_json = as_dict(getattr(device, "capabilities_json", None))
             snapshots.append(
                 TopologyDeviceSnapshot(
                     device_id=device_id,
-                    device_code=_safe_str(getattr(device, "device_code", None)),
+                    device_code=optional_str_attr(device, "device_code"),
                     device_role=role,
-                    role_index=_safe_int(getattr(device, "role_index", None)),
-                    upstream_device_id=_safe_int(getattr(device, "upstream_device_id", None)),
+                    role_index=optional_int_attr(device, "role_index"),
+                    upstream_device_id=optional_int_attr(device, "upstream_device_id"),
                     capabilities=_extract_capabilities(capabilities_json),
                     supported_event_types=_string_set(capabilities_json.get("supports_event_types")),
                     supported_command_types=_string_set(capabilities_json.get("supports_command_types")),

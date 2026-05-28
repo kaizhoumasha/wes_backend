@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from src.core.client_ip import resolve_client_ip
 from src.core.exceptions import ServiceUnavailableException
 from src.core.logger import logger
 
@@ -57,8 +58,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         self._current_requests -= 1
         else:
             # 超过并发限制，返回 503
+            client_ip = resolve_client_ip(request)
             logger.error(
                 f"并发限制: 拒绝请求 {request.method} {request.url.path} "
-                f"(当前并发: {self._current_requests}/{self.max_concurrent})"
+                f"from {client_ip} (当前并发: {self._current_requests}/{self.max_concurrent})"
             )
             raise ServiceUnavailableException("服务器繁忙，请稍后重试")
