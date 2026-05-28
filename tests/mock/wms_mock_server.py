@@ -95,7 +95,15 @@ MOCK_RACKS = {
     }
 }
 
-MOCK_INVENTORY = {"CAP001": {"total_qty": 50000, "available_qty": 50000, "reserved_qty": 0}}
+MOCK_INVENTORY = {
+    ("CAP001", "LOT-A"): {
+        "sku": "CAP001",
+        "lot_no": "LOT-A",
+        "total_qty": 50000,
+        "available_qty": 50000,
+        "reserved_qty": 0,
+    }
+}
 
 MOCK_GRNS = {
     "GRN.0001": {
@@ -222,43 +230,33 @@ async def get_grn(grn_id: str):
 # --- 交易接口 (Inventory / Reservations) ---
 
 
+def _inventory_items(*, sku: str, lot_no: str | None = None) -> list[dict[str, Any]]:
+    if not sku:
+        return []
+    if lot_no:
+        item = MOCK_INVENTORY.get((sku, lot_no))
+        return [dict(item)] if item is not None else []
+    return [dict(item) for (item_sku, _), item in MOCK_INVENTORY.items() if item_sku == sku]
+
+
 @app.post("/api/wms/inventory/query", summary="查询库存 (POST)")
 async def query_inventory_post(payload: dict[str, Any]):
     # Note: 此为兼容当前代码 `wms_integration` 中的 post_json 方法而存在。
-    material_id = payload.get("sku", "")
-    inv = MOCK_INVENTORY.get(material_id, {"total_qty": 0, "available_qty": 0, "reserved_qty": 0})
+    material_id = str(payload.get("sku") or "")
+    lot_no = payload.get("lot_no")
     return {
         "code": 200,
-        "data": {
-            "items": [
-                {
-                    "sku": material_id,
-                    "total_qty": inv["total_qty"],
-                    "available_qty": inv["available_qty"],
-                    "reserved_qty": inv["reserved_qty"],
-                }
-            ]
-        },
+        "data": {"items": _inventory_items(sku=material_id, lot_no=lot_no if isinstance(lot_no, str) else None)},
     }
 
 
 @app.get("/api/wms/inventory/query", summary="查询库存 (GET)")
-async def query_inventory_get(material_id: str | None = None, sku: str | None = None):
+async def query_inventory_get(material_id: str | None = None, sku: str | None = None, lot_no: str | None = None):
     # 此为符合文档白皮书的标准 GET 路由
     target_sku = sku or material_id or ""
-    inv = MOCK_INVENTORY.get(target_sku, {"total_qty": 0, "available_qty": 0, "reserved_qty": 0})
     return {
         "code": 200,
-        "data": {
-            "items": [
-                {
-                    "sku": target_sku,
-                    "total_qty": inv["total_qty"],
-                    "available_qty": inv["available_qty"],
-                    "reserved_qty": inv["reserved_qty"],
-                }
-            ]
-        },
+        "data": {"items": _inventory_items(sku=target_sku, lot_no=lot_no)},
     }
 
 

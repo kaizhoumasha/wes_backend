@@ -222,27 +222,27 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - Modify: `tests/mock/wms_mock_server.py`
 - Test: `tests/mock/test_wms_mock_server.py` 或现有 mock 合同测试文件
 
-- [ ] 写测量成功 + WMS 匹配测试，fake client 返回 `QueryInventoryResponse(items=[WmsInventoryItem(...)])`。
-- [ ] 写 WMS 无匹配测试，fake client 返回 `QueryInventoryResponse(items=[])`，断言进入物理 NG。
-- [ ] 写 WMS 非空错配测试：返回 wrong `sku` 或 wrong `lot_no` 的 item 时仍进入物理 NG。
-- [ ] 写 WMS 业务拒绝测试，fake client 抛 `WmsBusinessRejectedError`，断言进入 `MARK_NG + MOVE_TO_NG` 且保留 WMS reason/evidence。
-- [ ] 写 WMS 不可用测试，断言 `BLOCK` 且 reason code 保留 WMS 依赖问题。
-- [ ] 写 WMS request 测试，断言 `QueryInventoryRequest.request_id == "rough-sorter:inventory:{business_key 或 PkgID}"` 且携带 `trace_id`。
-- [ ] 写测量 `SUCCESS` 但 `reel_diameter` / `reel_thickness` 缺失或不可解析测试，断言进入 Hold。
-- [ ] 写测量尺寸/厚度 NG 测试，断言 `MARK_NG + MOVE_TO_NG`。
-- [ ] 写 WMS mock 合同测试：
+- [x] 写测量成功 + WMS 匹配测试，fake client 返回 `QueryInventoryResponse(items=[WmsInventoryItem(...)])`。
+- [x] 写 WMS 无匹配测试，fake client 返回 `QueryInventoryResponse(items=[])`，断言进入物理 NG。
+- [x] 写 WMS 非空错配测试：返回 wrong `sku` 或 wrong `lot_no` 的 item 时仍进入物理 NG。
+- [x] 写 WMS 业务拒绝测试，fake client 抛 `WmsBusinessRejectedError`，断言进入 `MARK_NG + MOVE_TO_NG` 且保留 WMS reason/evidence。
+- [x] 写 WMS 不可用测试，断言 `BLOCK` 且 reason code 保留 WMS 依赖问题。
+- [x] 写 WMS request 测试，断言 `QueryInventoryRequest.request_id == "rough-sorter:inventory:{business_key 或 PkgID}"` 且携带 `trace_id`。
+- [x] 写测量 `SUCCESS` 但 `reel_diameter` / `reel_thickness` 缺失或不可解析测试，断言进入 Hold。
+- [x] 写测量尺寸/厚度 NG 测试，断言 `MARK_NG + MOVE_TO_NG`。
+- [x] 写 WMS mock 合同测试：
   - 已知 `sku + lot_no` 返回匹配 item。
   - 未知 `sku + lot_no` 返回 `items=[]`。
-- [ ] 实现 `@on_command("MEASUREMENT_REEL", result="SUCCESS")`：
+- [x] 实现 `@on_command("MEASUREMENT_REEL", result="SUCCESS")`：
   - 校验 `reel_diameter`、`reel_thickness`。
   - 构造 `QueryInventoryRequest`。
   - WMS 匹配后写入 context 并下发 `PICK_AND_PUT`。
   - WMS 无匹配或业务拒绝走物理 NG。
   - WMS 不可用、协议异常或证据异常走 Hold。
-- [ ] 实现 `@on_command("MEASUREMENT_REEL", result="FAILED")`：
+- [x] 实现 `@on_command("MEASUREMENT_REEL", result="FAILED")`：
   - `INSPECTION_SIZE_NG` / `INSPECTION_THICKNESS_NG` 走物理 NG。
   - 其它失败走 Hold。
-- [ ] 运行：
+- [x] 运行：
   - `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
   - `uv run pytest tests/mock/test_wms_mock_server.py -v`
 
