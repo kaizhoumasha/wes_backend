@@ -34,7 +34,7 @@ def _business_key_resolver(payload_json: dict) -> str | None:
 
 def test_manifest_normalizes_role_maps_and_resolves_business_key() -> None:
     manifest = WorklinePluginManifest(
-        plugin_key="inbound_tote_qc",
+        plugin_key="example_plugin",
         contract_version="spike",
         required_device_roles=(DeviceRoleRequirement("ENTRY_SCANNER"),),
         business_key_resolver=_business_key_resolver,
@@ -63,7 +63,7 @@ def test_topology_view_derives_roles_and_upstream_downstream() -> None:
 
 def test_validate_topology_manifest_accepts_permissive_device_capabilities() -> None:
     manifest = WorklinePluginManifest(
-        plugin_key="inbound_tote_qc",
+        plugin_key="example_plugin",
         contract_version="spike",
         required_device_roles=(
             DeviceRoleRequirement("ENTRY_SCANNER", min_count=1, max_count=1),
@@ -85,7 +85,7 @@ def test_validate_topology_manifest_accepts_permissive_device_capabilities() -> 
 
 def test_validate_topology_manifest_rejects_missing_role() -> None:
     manifest = WorklinePluginManifest(
-        plugin_key="inbound_tote_qc",
+        plugin_key="example_plugin",
         contract_version="spike",
         required_device_roles=(
             DeviceRoleRequirement("ENTRY_SCANNER", min_count=1, max_count=1),
@@ -101,7 +101,7 @@ def test_validate_topology_manifest_rejects_missing_role() -> None:
 
 def test_validate_topology_manifest_rejects_unsupported_command_type() -> None:
     manifest = WorklinePluginManifest(
-        plugin_key="inbound_tote_qc",
+        plugin_key="example_plugin",
         contract_version="spike",
         required_device_roles=(DeviceRoleRequirement("WEIGH_SCALE", min_count=1, max_count=1),),
         business_key_resolver=_business_key_resolver,

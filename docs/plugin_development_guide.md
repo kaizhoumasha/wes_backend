@@ -5,8 +5,7 @@
 当前参考插件：
 
 - `src/workline_plugins/smt_classifier/`：复杂 SMT 粗分业务样板。
-- `src/workline_plugins/inbound_tote_qc/`：第二个最小插件 spike，用于验证平台抽象不依赖 SMT 特例。
-- `docs/templates/workline_plugin/`：从两个插件交集沉淀出来的模板和 fixtures。
+- `docs/templates/workline_plugin/`：沉淀通用插件结构的模板和 fixtures。
 
 ## 核心边界
 
@@ -75,7 +74,7 @@ src/workline_plugins/<plugin_key>/
 tests/workline_plugins/test_<plugin_key>_plugin.py
 ```
 
-模板见 `docs/templates/workline_plugin/`。模板不是 SMT 的缩小复制，而是 SMT 和 `inbound_tote_qc` 的共同结构。
+模板见 `docs/templates/workline_plugin/`。模板抽象通用插件结构，不复制 SMT 的私有复杂度。
 
 ## contract.py
 
@@ -328,8 +327,6 @@ uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_
 
 - 白皮书：`docs/integration/third_party_integration_whitepaper.md`
 - 重构计划：`docs/business/workline_plugin_refactor_next_phase_plan.md`
-- 第二插件 spike：`docs/business/workline_plugin_second_spike.md`
 - Runtime 基类：`src/workline_runtime/plugin_base.py`
 - Manifest：`src/workline_runtime/plugin_manifest.py`
 - SMT 样板：`src/workline_plugins/smt_classifier/`
-- 最小第二插件：`src/workline_plugins/inbound_tote_qc/`
