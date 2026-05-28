@@ -21,9 +21,7 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_WAITING_RACK,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
-    ROLE_MEASURER,
     ROLE_OUTPUT_ARM,
-    ROLE_SCANNER,
     build_measurement_reel_payload,
     build_move_forward_payload,
     build_move_to_ng_payload,
@@ -105,13 +103,17 @@ def test_phase_and_role_contracts_are_declared() -> None:
         "COMPLETED",
     }
     assert ACTION_TARGET_ROLES == {
-        ACTION_MEASUREMENT_REEL: ROLE_MEASURER,
+        ACTION_MEASUREMENT_REEL: ROLE_INPUT_ARM,
         ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
         ACTION_MOVE_FORWARD: ROLE_CONVEYOR,
         ACTION_PUT_TO_BIN: ROLE_OUTPUT_ARM,
         ACTION_MOVE_TO_NG: ROLE_OUTPUT_ARM,
     }
-    assert ROLE_SCANNER == "ROUGH_SORTER_SCANNER"
+    assert {ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM} == {
+        "ROUGH_SORTER_INPUT_ARM",
+        "ROUGH_SORTER_CONVEYOR",
+        "ROUGH_SORTER_OUTPUT_ARM",
+    }
 
 
 @pytest.mark.parametrize(
@@ -225,13 +227,19 @@ def test_rough_sorter_context_is_serializable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registered_scan_event_returns_explicit_block_until_task2_handler_ships() -> None:
+async def test_registered_scan_event_dispatches_after_task2_handler_ships() -> None:
     plugin = RoughSorterPlugin()
-    ctx = type("Ctx", (), {"logger": type("Logger", (), {"warning": lambda *_args: None})()})()
+    ctx = type(
+        "Ctx",
+        (),
+        {
+            "config": {},
+            "logger": type("Logger", (), {"warning": lambda *_args: None})(),
+            "trace_id": "trace-rough-sorter-contract",
+        },
+    )()
     inbox = type("Inbox", (), {"payload_json": {"event_type": "SCAN_COMPLETED", "data": _payload_data()}})()
 
     intents = await plugin.on_device_event(ctx, inbox)
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].block_scope == BlockScope.MATERIAL
-    assert intents[0].reason_code == "ROUGH_SORTER_HANDLER_NOT_IMPLEMENTED"
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]

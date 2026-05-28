@@ -74,12 +74,11 @@ SCAN_COMPLETED
 
 ### 2.1.1 设备角色合同
 
-- `ROLE_SCANNER`：接收 `SCAN_COMPLETED`。
-- `ROLE_MEASURER`：执行 `MEASUREMENT_REEL`。
-- `ROLE_INPUT_ARM`：执行入料 `PICK_AND_PUT`。
+- `ROLE_INPUT_ARM`：执行 `MEASUREMENT_REEL` 和入料 `PICK_AND_PUT`。
 - `ROLE_CONVEYOR`：执行 `MOVE_FORWARD`。
 - `ROLE_OUTPUT_ARM`：执行 `PUT_TO_BIN` 和 `MOVE_TO_NG`。
-- manifest 必须声明上述 role 常量、`event_source_roles` 和 `command_target_roles`，测试必须覆盖缺失关键角色时 WorkLine 绑定失败。
+- `SCAN_COMPLETED` 是入口事件，不声明独立设备角色，也不配置 `event_source_roles`。
+- manifest 必须声明上述三个物理设备 role 常量和 `command_target_roles`，测试必须覆盖缺失关键角色时 WorkLine 绑定失败。
 
 ### 2.2 payload 边界
 
@@ -201,17 +200,17 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - Modify: `tests/workline_runtime/test_session_resolver.py`
 - Test: `tests/workline_plugins/test_rough_sorter_plugin.py`
 
-- [ ] 运行 GitNexus impact：`npx gitnexus impact RoughSorterPlugin --direction upstream`
-- [ ] 增加 SessionResolver 测试：`DEVICE_EVENT` 的 `payload.data.PkgID` 能通过 rough_sorter manifest 派生 business key，并创建/复用同一 Session。
-- [ ] 增加扫码 OK 测试，调用 `RoughSorterPlugin().on_device_event(ctx, inbox)`，断言返回 `UPDATE_CONTEXT + COMMAND`，命令 action 为 `MEASUREMENT_REEL`。
-- [ ] 增加扫码 NG 测试，断言返回 `UPDATE_CONTEXT + MARK_NG + COMMAND`，命令 action 为 `MOVE_TO_NG`。
-- [ ] 增加 callback 路由测试：设备回调只带 `task_type="TEST"` 时，`DeviceCommand.params.action="MEASUREMENT_REEL"` 能让 command result 路由到 `MEASUREMENT_REEL` handler。
-- [ ] 实现 `@on_event("SCAN_COMPLETED")`：
+- [x] 运行 GitNexus impact：`npx gitnexus impact RoughSorterPlugin --direction upstream`
+- [x] 增加 SessionResolver 测试：`DEVICE_EVENT` 的 `payload.data.PkgID` 能通过 rough_sorter manifest 派生 business key，并创建/复用同一 Session。
+- [x] 增加扫码 OK 测试，调用 `RoughSorterPlugin().on_device_event(ctx, inbox)`，断言返回 `UPDATE_CONTEXT + COMMAND`，命令 action 为 `MEASUREMENT_REEL`。
+- [x] 增加扫码 NG 测试，断言返回 `UPDATE_CONTEXT + MARK_NG + COMMAND`，命令 action 为 `MOVE_TO_NG`。
+- [x] 增加 callback 路由测试：设备回调只带 `task_type="TEST"` 时，`DeviceCommand.params.action="MEASUREMENT_REEL"` 能让 command result 路由到 `MEASUREMENT_REEL` handler。
+- [x] 实现 `@on_event("SCAN_COMPLETED")`：
   - 解析 `payload.data`。
   - 调用 `barcode_decision_service.evaluate(...)`。
   - OK 写入 context 并下发 `MEASUREMENT_REEL`。
   - 非 OK 写入 NG context，`MARK_NG` 后下发 `MOVE_TO_NG`。
-- [ ] 运行：
+- [x] 运行：
   - `uv run pytest tests/workline_runtime/test_session_resolver.py -k rough_sorter -v`
   - `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
 

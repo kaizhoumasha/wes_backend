@@ -12,9 +12,7 @@ from src.workline_plugin_registry import validate_workline_plugin_assignment
 from src.workline_plugins.rough_sorter.contract import (
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
-    ROLE_MEASURER,
     ROLE_OUTPUT_ARM,
-    ROLE_SCANNER,
 )
 
 
@@ -75,11 +73,9 @@ def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
         "rough_sorter",
         make_workline(),
         [
-            make_device(1, ROLE_SCANNER),
-            make_device(2, ROLE_MEASURER),
-            make_device(3, ROLE_INPUT_ARM),
-            make_device(4, ROLE_CONVEYOR),
-            make_device(5, ROLE_OUTPUT_ARM),
+            make_device(1, ROLE_INPUT_ARM),
+            make_device(2, ROLE_CONVEYOR),
+            make_device(3, ROLE_OUTPUT_ARM),
         ],
     )
 
@@ -92,10 +88,8 @@ def test_rough_sorter_plugin_assignment_rejects_missing_required_role() -> None:
             "rough_sorter",
             make_workline(),
             [
-                make_device(1, ROLE_SCANNER),
-                make_device(2, ROLE_MEASURER),
-                make_device(3, ROLE_INPUT_ARM),
-                make_device(4, ROLE_CONVEYOR),
+                make_device(1, ROLE_INPUT_ARM),
+                make_device(2, ROLE_CONVEYOR),
             ],
         )
 

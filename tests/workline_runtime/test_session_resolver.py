@@ -19,6 +19,7 @@ import pytest
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus
 from src.utils.timezone import timezone
+from src.workline_plugins.rough_sorter.contract import resolve_rough_sorter_business_key
 from src.workline_runtime.session_resolver import SessionResolveError, _resolve_business_key
 
 pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
@@ -1217,6 +1218,48 @@ class TestSessionResolver:
         assert session.business_key == expected_hash
         assert session.barcode is None
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_uses_rough_sorter_data_pkg_id_as_business_key(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """粗分机 DEVICE_EVENT 应通过 payload.data.PkgID 派生并复用同一 Session。"""
+
+        payload = {
+            "device_code": "RS-SCAN-01",
+            "event_type": "SCAN_COMPLETED",
+            "data": {
+                "HHPN": "HH-001",
+                "MfrPN": "MFR-001",
+                "Qty": "1500",
+                "DateCode": "260528",
+                "LotCode": "LOT-A",
+                "PkgID": "PKG-ROUGH-001",
+            },
+        }
+        expected_key = resolve_rough_sorter_business_key(payload)
+        workline = make_workline(workline_id=1, plugin_key="rough_sorter")
+
+        first_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+        second_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert first_session.business_key == expected_key
+        assert second_session.id == first_session.id
+        assert second_session.ingress_count == 2
+        assert ("business_key", 1, expected_key) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_incomplete_scan_key_when_test_item_id_missing(
