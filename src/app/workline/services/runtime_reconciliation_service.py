@@ -155,7 +155,13 @@ class WorklineRuntimeReconciliationService:
         await db.flush()
         return session
 
-    async def handle_timer_timeout(self, db: Any, *, inbox: WorklineInbox) -> WorklineSession | None:
+    async def handle_timer_timeout(
+        self,
+        db: Any,
+        *,
+        inbox: WorklineInbox,
+        processor_token: str | None = None,
+    ) -> WorklineSession | None:
         """处理系统 TIMER_TIMEOUT：进入 Callback deadline runtime reconciliation。"""
 
         payload = as_dict(inbox.payload_json)
@@ -166,7 +172,7 @@ class WorklineRuntimeReconciliationService:
 
         session_id = inbox.session_id if isinstance(inbox.session_id, int) else payload.get("session_id")
         if not isinstance(session_id, int):
-            _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
+            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
             return None
 
         session = await self.session_repository.get_for_update(db, session_id)
@@ -174,12 +180,12 @@ class WorklineRuntimeReconciliationService:
             SessionStatus.WAITING_DEVICE_RESULT,
             SessionStatus.WAITING_EXTERNAL,
         }:
-            _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
+            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
             return session
 
         command = await self._load_timeout_command(db, session=session, payload=payload)
         if not self._timer_timeout_claim_matches(session=session, command=command, payload=payload):
-            _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
+            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
             return session
 
         now = timezone.now_for_db()
@@ -267,7 +273,7 @@ class WorklineRuntimeReconciliationService:
             },
         )
 
-        _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
+        _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
         await db.flush()
         return session
 

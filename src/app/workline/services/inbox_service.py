@@ -251,6 +251,26 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         """
         return await self.repo.get_new_messages(db, limit=limit)
 
+    async def claim_pending_messages(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 10,
+        processor_token: str,
+        stale_after_seconds: int = 300,
+        auto_commit: bool = True,
+    ):
+        """原子 claim Inbox 热队列消息，claim 成功后立即提交释放行锁。"""
+
+        claims = await self.repo.claim_pending_messages(
+            db,
+            limit=limit,
+            processor_token=processor_token,
+            stale_after_seconds=stale_after_seconds,
+        )
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
+        return claims
+
     async def mark_as_processing(
         self,
         db: AsyncSession,
@@ -284,6 +304,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         db: AsyncSession,
         inbox_id: int,
         *,
+        processor_token: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineInbox:
         """
@@ -297,14 +318,25 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         Returns:
             更新后的消息
         """
+        data = {
+            "status": InboxStatus.PROCESSED,
+            "processed_at": timezone.now_for_db(),
+            "error_message": None,
+            "next_retry_at": None,
+            "processor_token": None,  # nosec B105
+        }
+        if processor_token is not None:
+            return await self._update_processing_inbox(
+                db,
+                inbox_id,
+                processor_token=processor_token,
+                data=data,
+                auto_commit=auto_commit,
+            )
         return await self._update_inbox(
             db,
             inbox_id,
-            status=InboxStatus.PROCESSED,
-            processed_at=timezone.now_for_db(),
-            error_message=None,
-            next_retry_at=None,
-            processor_token=None,
+            **data,
             auto_commit=auto_commit,
         )
 
@@ -314,6 +346,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         inbox_id: int,
         error_message: str,
         *,
+        processor_token: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineInbox:
         """
@@ -343,26 +376,40 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         if attempt_count < max_attempts:
             # 可以重试：增加计数，设置下次重试时间
             next_retry = timezone.now_for_db() + timedelta(seconds=60 * (2**attempt_count))
-            return await self._update_inbox(
-                db,
-                inbox_id,
-                status=InboxStatus.RETRY,
-                error_message=error_message,
-                attempt_count=attempt_count + 1,
-                next_retry_at=next_retry,
-                processed_at=timezone.now_for_db(),
-                auto_commit=auto_commit,
-            )
+            data = {
+                "status": InboxStatus.RETRY,
+                "error_message": error_message,
+                "attempt_count": attempt_count + 1,
+                "next_retry_at": next_retry,
+                "processed_at": timezone.now_for_db(),
+                "processor_token": None,  # nosec B105
+            }
+            if processor_token is not None:
+                return await self._update_processing_inbox(
+                    db,
+                    inbox_id,
+                    processor_token=processor_token,
+                    data=data,
+                    auto_commit=auto_commit,
+                )
+            return await self._update_inbox(db, inbox_id, **data, auto_commit=auto_commit)
 
         # 重试耗尽：进入死信队列
-        return await self._update_inbox(
-            db,
-            inbox_id,
-            status=InboxStatus.DEAD_LETTER,
-            error_message=error_message,
-            processed_at=timezone.now_for_db(),
-            auto_commit=auto_commit,
-        )
+        data = {
+            "status": InboxStatus.DEAD_LETTER,
+            "error_message": error_message,
+            "processed_at": timezone.now_for_db(),
+            "processor_token": None,  # nosec B105
+        }
+        if processor_token is not None:
+            return await self._update_processing_inbox(
+                db,
+                inbox_id,
+                processor_token=processor_token,
+                data=data,
+                auto_commit=auto_commit,
+            )
+        return await self._update_inbox(db, inbox_id, **data, auto_commit=auto_commit)
 
     async def mark_as_dead_letter(
         self,
@@ -370,18 +417,30 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         inbox_id: int,
         error_message: str,
         *,
+        processor_token: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineInbox:
         """标记为不可自动重试的终态死信。"""
 
+        data = {
+            "status": InboxStatus.DEAD_LETTER,
+            "error_message": error_message,
+            "processed_at": timezone.now_for_db(),
+            "next_retry_at": None,
+            "processor_token": None,  # nosec B105
+        }
+        if processor_token is not None:
+            return await self._update_processing_inbox(
+                db,
+                inbox_id,
+                processor_token=processor_token,
+                data=data,
+                auto_commit=auto_commit,
+            )
         return await self._update_inbox(
             db,
             inbox_id,
-            status=InboxStatus.DEAD_LETTER,
-            error_message=error_message,
-            processed_at=timezone.now_for_db(),
-            next_retry_at=None,
-            processor_token=None,
+            **data,
             auto_commit=auto_commit,
         )
 
@@ -454,6 +513,26 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         updated = await self.repo.update(db, inbox_id, data)
         if updated is None:
             raise RuntimeError(f"更新 Inbox 消息失败: {inbox_id}")
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
+        return updated
+
+    async def _update_processing_inbox(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        *,
+        processor_token: str,
+        data: dict[str, Any],
+        auto_commit: bool = True,
+    ) -> WorklineInbox:
+        updated = await self.repo.update_processing_message(
+            db,
+            inbox_id=inbox_id,
+            processor_token=processor_token,
+            data=data,
+        )
+        if updated is None:
+            raise ValueError(f"Inbox {inbox_id} 处理令牌已失效或状态已变化")
         await self._commit_inbox_mutation(db, auto_commit=auto_commit)
         return updated
 

@@ -361,7 +361,7 @@ class DeviceHeartbeatScanner:
     max_retries=3,
     default_retry_delay=5,
 )
-def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
+def process_inbox_batch(self: WorklineTask, limit: int = 10, parallelism: int | None = None) -> ProcessResult:
     """批量处理 Inbox 消息 (Celery 任务入口)
     从数据库获取 status='NEW' 的 Inbox 消息，调用 InboxBatchProcessor.process_batch() 执行处理。
     处理流程（详见 InboxBatchProcessor）：
@@ -381,6 +381,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
     Args:
         self: Celery 任务实例（bind=True）
         limit: 批处理数量，默认 10
+        parallelism: 可选覆盖单次批处理并发度，会在 Processor 内 clamp 到安全范围
     Returns:
         处理结果统计 {
             "processed": 处理总数,
@@ -400,7 +401,9 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
             from src.app.workline.services.write_back_service import orchestrator_write_back_service
 
             processor = InboxBatchProcessor(write_back_service=orchestrator_write_back_service)
-            return await processor.process_batch(db, limit=limit)
+            if parallelism is None:
+                return await processor.process_batch(db, limit=limit)
+            return await processor.process_batch(db, limit=limit, parallelism=parallelism)
 
     try:
         result = _run_async(_process())

@@ -254,9 +254,15 @@ class WorklineInbox(
     - processor_token: 处理器令牌（用于锁定）
 
     状态机:
-        NEW → PROCESSING → PROCESSED
-               ↓
-             FAILED
+        NEW ─┐
+             ├─ atomic claim + processor_token → PROCESSING ─┬→ PROCESSED
+        RETRY┘                                                ├→ RETRY
+        stale PROCESSING (updated_at 超时) ────────────────────└→ DEAD_LETTER
+
+    处理约束:
+    - claim 只返回轻量字段，处理 session 内必须重新加载 ORM。
+    - 所有 consumer 终态更新必须携带 id + PROCESSING + processor_token 条件。
+    - 同 bucket 串行，不同 bucket 可按配置有界并发处理。
     """
 
     __tablename__: ClassVar[str] = "workline_inbox"  # pyright: ignore[reportIncompatibleVariableOverride]

@@ -154,7 +154,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         inbox=inbox,
         command=command,
     )
-    mark_processed.assert_awaited_once_with(db, 88, auto_commit=False)
+    mark_processed.assert_awaited_once_with(db, 88, processor_token=None, auto_commit=False)
     add_timeline.assert_awaited_once()
     timeline = add_timeline.await_args.args[1]
     assert timeline.payload_json["runtime_hold_id"] == 9901
@@ -323,7 +323,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         material_session_id=545,
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
-    mark_processed.assert_awaited_once_with(db, 85599, auto_commit=False)
+    mark_processed.assert_awaited_once_with(db, 85599, processor_token=None, auto_commit=False)
     runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
         db,
         session=session,
@@ -409,7 +409,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         material_session_id=546,
         reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
     )
-    mark_processed.assert_awaited_once_with(db, 85600, auto_commit=False)
+    mark_processed.assert_awaited_once_with(db, 85600, processor_token=None, auto_commit=False)
     runtime_hold_creation_service.create_for_callback_deadline_expired.assert_awaited_once_with(
         db,
         session=session,
