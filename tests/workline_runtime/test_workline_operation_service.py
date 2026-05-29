@@ -1100,7 +1100,8 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        task_type="PICK_AND_PUT",
+        task_type="TEST",
+        params={"action": "MEASUREMENT_REEL"},
         workline_id=45,
         session_id=530,
         session_id_int=530,
@@ -1143,8 +1144,8 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     result_payload = inbox_repo.created["payload_json"]
     assert result_payload["command_code"] == "CMD-001"
     assert result_payload["device_code"] == "ARM01"
-    assert result_payload["command_type"] == "PICK_AND_PUT"
-    assert result_payload["task_type"] == "PICK_AND_PUT"
+    assert result_payload["command_type"] == "MEASUREMENT_REEL"
+    assert result_payload["task_type"] == "TEST"
     assert result_payload["result"] == "SUCCESS"
     assert result_payload["sandbox_mode"] is True
     assert result_payload["data"] == {"item_id": "ITEM-001"}

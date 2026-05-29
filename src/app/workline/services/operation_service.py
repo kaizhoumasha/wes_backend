@@ -963,12 +963,17 @@ class WorklineOperationService(BaseService[Any, Any]):
             action_label="提交 Result",
         )
 
-        command_type = enum_str(command.task_type)
+        command_task_type = enum_str(command.task_type)
+        raw_command_params = getattr(command, "params", None)
+        command_params = raw_command_params if isinstance(raw_command_params, dict) else {}
+        command_type = (
+            command_params.get("action") if isinstance(command_params.get("action"), str) else command_task_type
+        )
         result_payload: dict[str, Any] = {
             "command_code": command.command_code,
             "device_code": device.device_code,
             "command_type": command_type,
-            "task_type": command_type,
+            "task_type": command_task_type,
             "result": result,
             "sandbox_mode": True,
             "data": dict(payload or {}),
