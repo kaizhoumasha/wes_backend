@@ -556,7 +556,7 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_command_intent_without_timeout_still_waits_for_result(
+async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
@@ -566,7 +566,7 @@ async def test_command_intent_without_timeout_still_waits_for_result(
         command_code="CMD-NO-TIMEOUT",
         task_type="TEST",
         priority=5,
-        timeout_ms=300000,
+        timeout_ms=180000,
         params={"action": "MEASUREMENT_REEL"},
     )
     db = SimpleNamespace(add=MagicMock())
@@ -603,7 +603,7 @@ async def test_command_intent_without_timeout_still_waits_for_result(
         [
             RuntimeIntent.command(
                 action="MEASUREMENT_REEL",
-                payload={"task_type": "TEST", "timeout": 300000, "params": {"action": "MEASUREMENT_REEL"}},
+                payload={"task_type": "TEST", "timeout": 180000, "params": {"action": "MEASUREMENT_REEL"}},
                 destination=Destination.current(),
             )
         ],
@@ -615,11 +615,11 @@ async def test_command_intent_without_timeout_still_waits_for_result(
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.awaiting_command_id == 88
     assert session.waiting_since == ctx["now"]
-    assert session.current_wait_timeout_seconds == 300
+    assert session.current_wait_timeout_seconds == 180
     assert session.deadline_at is None
     assert [timeline["action_type"].value for timeline in timelines] == ["COMMAND_SENT", "WAIT_STARTED"]
     assert timelines[1]["payload"]["wait_token"] == "CMD-NO-TIMEOUT"
-    assert timelines[1]["payload"]["deadline_seconds"] == 300
+    assert timelines[1]["payload"]["deadline_seconds"] == 180
 
 
 @pytest.mark.asyncio
