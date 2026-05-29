@@ -839,10 +839,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         command = await self.command_repo.get_by_command_code(db, command_code)
         if command is None or command.id is None:
             raise ValueError(f"Command 不存在: {command_code}")
-        if (
-            enum_str(getattr(command, "status", None)) == CommandStatus.ACK_RECEIVED.value
-            or command.ack_received_at is not None
-        ):
+        command_status = enum_str(getattr(command, "status", None))
+        if command_status in _TERMINAL_COMMAND_STATUSES:
+            raise ValueError(f"Command 已终态，不能模拟 ACK: {command_code}")
+        if command_status == CommandStatus.ACK_RECEIVED.value or command.ack_received_at is not None:
             raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
 
         ack_received_at = timezone.now_for_db()
@@ -969,19 +969,20 @@ class WorklineOperationService(BaseService[Any, Any]):
         command_type = (
             command_params.get("action") if isinstance(command_params.get("action"), str) else command_task_type
         )
+        sandbox_completed_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
         result_payload: dict[str, Any] = {
             "command_code": command.command_code,
             "device_code": device.device_code,
             "command_type": command_type,
             "task_type": command_task_type,
             "result": result,
+            "finish_time": timezone.to_utc_timestamp(sandbox_completed_at) * 1000,
             "sandbox_mode": True,
             "data": dict(payload or {}),
         }
         if error_detail:
             result_payload["error_detail"] = {"error_message": error_detail}
 
-        sandbox_completed_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
         sandbox_success = enum_str(result) == CommandResult.SUCCESS.value
         command.status = CommandStatus.COMPLETED if sandbox_success else CommandStatus.FAILED
         command.result = CommandResult.SUCCESS if sandbox_success else CommandResult.FAILED

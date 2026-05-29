@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -201,6 +201,36 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(select(WorklineSession).where(columns.id == session_id).with_for_update())
         return result.scalar_one_or_none()
+
+    async def persist_command_result_wait(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        occurred_at: Any,
+        command_id: int | None,
+        timeout_seconds: int,
+    ) -> None:
+        """显式持久化命令 Result 等待态，避免异步懒加载丢失会话状态写回。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        await db.execute(
+            update(WorklineSession)
+            .where(columns.id == session_id)
+            .values(
+                status=SessionStatus.WAITING_DEVICE_RESULT,
+                current_wait_type="COMMAND_RESULT",
+                waiting_since=occurred_at,
+                deadline_at=None,
+                current_wait_timeout_seconds=timeout_seconds,
+                awaiting_command_id=command_id,
+                ended_at=None,
+                failure_domain=None,
+                failure_code=None,
+                failure_message=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
 
     async def get_open_session_by_awaiting_command_id(
         self,

@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -8,6 +9,7 @@ from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
+from src.utils.timezone import timezone
 
 
 class _InboxRepoStub:
@@ -699,8 +701,6 @@ async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
 
 @pytest.mark.asyncio
 async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() -> None:
-    from datetime import datetime
-
     from src.app.device.models.command import CommandStatus
     from src.app.workline.services.operation_service import WorklineOperationService
 
@@ -746,6 +746,56 @@ async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() ->
             )
 
     assert command.ack_received_at == ack_received_at
+    activate_deadline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ack_rejects_terminal_command_without_regressing_status() -> None:
+    from src.app.device.models.command import CommandStatus
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    command = SimpleNamespace(
+        id=9,
+        command_code="CMD-001",
+        session_id_int=530,
+        status=CommandStatus.COMPLETED,
+        sent_at=datetime(2026, 5, 8, 9, 0, 0),
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+    )
+    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with patch(
+        "src.app.workline.services.runtime_reconciliation_service."
+        "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+        new=AsyncMock(),
+    ) as activate_deadline:
+        with pytest.raises(ValueError, match="Command 已终态"):
+            await service.submit_sandbox_ack(
+                object(),
+                dispatch_key="device-command:CMD-001",
+                auto_commit=False,
+            )
+
+    assert command.status == CommandStatus.COMPLETED
+    assert command.ack_received_at is None
     activate_deadline.assert_not_awaited()
 
 
@@ -1095,6 +1145,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     from src.app.workline.services.operation_service import WorklineOperationService
 
     input_payload = {"item_id": "ITEM-001"}
+    completed_at = datetime(2026, 5, 29, 8, 0, 1)
     db = object()
     device = SimpleNamespace(id=7, device_code="ARM01")
     command = SimpleNamespace(
@@ -1131,6 +1182,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
             device_code="ARM01",
             result="SUCCESS",
             payload=input_payload,
+            timestamp=completed_at,
             auto_commit=False,
         )
 
@@ -1147,6 +1199,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     assert result_payload["command_type"] == "MEASUREMENT_REEL"
     assert result_payload["task_type"] == "TEST"
     assert result_payload["result"] == "SUCCESS"
+    assert result_payload["finish_time"] == timezone.to_utc_timestamp(completed_at) * 1000
     assert result_payload["sandbox_mode"] is True
     assert result_payload["data"] == {"item_id": "ITEM-001"}
     assert "item_id" not in result_payload
