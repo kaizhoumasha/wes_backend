@@ -23,7 +23,7 @@ def test_runtime_write_back_does_not_depend_on_celery_task_facade() -> None:
 
 @pytest.fixture
 def mock_db():
-    return AsyncMock()
+    return MagicMock()
 
 
 @pytest.mark.asyncio
@@ -52,6 +52,7 @@ async def test_write_back_calls_applier(mock_db):
             orch_result=orch_result,
         )
 
+        mock_db.add.assert_called_once_with(session)
         mock_applier.apply.assert_awaited_once()
         call_args = mock_applier.apply.call_args
         ctx = call_args[0][0]
