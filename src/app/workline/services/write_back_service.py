@@ -673,8 +673,6 @@ class OrchestratorWriteBackService:
             source_device=source_device,
             orch_result=orch_result,
         )
-        db.add(session)
-
         from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 
         await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
