@@ -934,6 +934,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -941,6 +942,14 @@ class RuntimeIntentEffectApplier:
         session.failure_domain = intent.block_scope.value if intent.block_scope is not None else "BLOCK"
         session.failure_code = intent.reason_code
         session.failure_message = intent.message
+        await WorklineSessionRepository().persist_manual_hold(
+            ctx["db"],
+            session_id=resolve_required_pk(session, "session"),
+            occurred_at=ctx["now"],
+            failure_domain=session.failure_domain,
+            failure_code=session.failure_code,
+            failure_message=session.failure_message,
+        )
 
         timeline_payload: dict[str, Any] = {
             **workline_effects._effect_trace_payload(ctx),

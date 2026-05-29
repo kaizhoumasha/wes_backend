@@ -517,6 +517,7 @@ async def test_block_intent_holds_session_without_command_creation(monkeypatch: 
     assert session.failure_domain == "MATERIAL"
     assert session.failure_code == "MATERIAL_BLOCKED"
     assert db.add.call_count == 0
+    db.execute.assert_awaited_once()
     assert captured[0]["payload"]["suggested_action"] == "检查标签"
     assert captured[0]["payload"]["evidence"] == {"evidence_key": "EVD-1234"}
 

@@ -262,6 +262,38 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             .execution_options(synchronize_session=False)
         )
 
+    async def persist_manual_hold(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        occurred_at: Any,
+        failure_domain: str | None,
+        failure_code: str | None,
+        failure_message: str | None,
+    ) -> None:
+        """显式持久化人工挂起态，确保 BLOCK 终态不会因异步写回丢失。"""
+
+        _ = occurred_at  # 保留状态发生时间参数，与 wait/complete 持久化接口语义一致。
+        columns = cast("Any", WorklineSession).__table__.c
+        await db.execute(
+            update(WorklineSession)
+            .where(columns.id == session_id)
+            .values(
+                status=SessionStatus.MANUAL_HOLD,
+                current_wait_type=None,
+                waiting_since=None,
+                deadline_at=None,
+                current_wait_timeout_seconds=None,
+                awaiting_command_id=None,
+                ended_at=None,
+                failure_domain=failure_domain,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
     async def get_open_session_by_awaiting_command_id(
         self,
         db: AsyncSession,
