@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from src.workline_runtime.contracts import SixInOne
 
@@ -10,6 +10,7 @@ ROUGH_SORTER_PLUGIN_KEY = "rough_sorter"
 ROUGH_SORTER_CONTRACT_VERSION = "rough_sorter.v1"
 
 EVENT_SCAN_COMPLETED = "SCAN_COMPLETED"
+EVENT_ROUGH_SORTER_STORAGE_RETRY = "ROUGH_SORTER_STORAGE_RETRY"
 
 ACTION_MEASUREMENT_REEL = "MEASUREMENT_REEL"
 ACTION_PICK_AND_PUT = "PICK_AND_PUT"
@@ -57,7 +58,7 @@ def _payload_data(payload_json: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload_json, dict):
         return {}
     data = payload_json.get("data")
-    return dict(data) if isinstance(data, dict) else {}
+    return cast("dict[str, Any]", data.copy()) if isinstance(data, dict) else {}
 
 
 def _non_empty_str(value: Any) -> str | None:
@@ -217,6 +218,7 @@ __all__ = [
     "ACTION_PUT_TO_BIN",
     "ACTION_TARGET_ROLES",
     "DEVICE_TASK_TYPE_BY_ACTION",
+    "EVENT_ROUGH_SORTER_STORAGE_RETRY",
     "EVENT_SCAN_COMPLETED",
     "NG_REASON_BARCODE_INCOMPLETE",
     "NG_REASON_BARCODE_INVALID",

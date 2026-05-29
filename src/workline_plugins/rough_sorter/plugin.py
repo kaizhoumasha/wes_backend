@@ -19,6 +19,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     ACTION_TARGET_ROLES,
+    EVENT_ROUGH_SORTER_STORAGE_RETRY,
     EVENT_SCAN_COMPLETED,
     NG_REASON_BARCODE_INCOMPLETE,
     NG_REASON_BARCODE_INVALID,
@@ -76,6 +77,15 @@ def _non_empty_str(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _non_empty_str_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        item = _non_empty_str(value)
+        return [item] if item is not None else []
+    if not isinstance(value, list):
+        return []
+    return [item for raw_item in cast("list[Any]", value) if (item := _non_empty_str(raw_item)) is not None]
 
 
 def _payload_data(payload_json: dict[str, Any]) -> dict[str, Any]:
@@ -154,7 +164,7 @@ class RoughSorterPlugin(WorklinePlugin):
         business_key_resolver=resolve_rough_sorter_business_key,
         result_classifier=classify_rough_sorter_result,
         context_model=RoughSorterContext,
-        supported_events=frozenset({EVENT_SCAN_COMPLETED}),
+        supported_events=frozenset({EVENT_SCAN_COMPLETED, EVENT_ROUGH_SORTER_STORAGE_RETRY}),
         supported_commands=frozenset(ACTION_TARGET_ROLES),
         command_target_roles=ACTION_TARGET_ROLES,
         ng_reason_catalog=(
@@ -248,6 +258,8 @@ class RoughSorterPlugin(WorklinePlugin):
             "config": dict(ctx.config),
             "trace_id": _non_empty_str(getattr(ctx, "trace_id", None)),
         }
+        if rough_context.active_bin_rack is not None:
+            context["active_bin_rack"] = rough_context.active_bin_rack
         active_bin_rack = await self._active_bin_rack(ctx, context)
         if active_bin_rack is not None:
             context["active_bin_rack"] = active_bin_rack
@@ -302,6 +314,157 @@ class RoughSorterPlugin(WorklinePlugin):
             if rack_tasks:
                 normalized_payload["rack_tasks"] = rack_tasks
         return normalized_payload
+
+    @staticmethod
+    def _operation_key(payload_json: Mapping[str, Any], rough_context: RoughSorterContext) -> str | None:
+        return _non_empty_str(payload_json.get("operation_key")) or _non_empty_str(
+            rough_context.rack_operation.get("operation_key")
+        )
+
+    @staticmethod
+    def _session_id(ctx: PluginContext) -> str | None:
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return str(session_id) if session_id is not None else None
+
+    @staticmethod
+    def _resume_source_device_code(ctx: PluginContext, rough_context: RoughSorterContext) -> str | None:
+        raw_context = getattr(getattr(ctx, "session", None), "context_json", None)
+        session_context = cast("dict[str, Any]", raw_context) if isinstance(raw_context, dict) else {}
+        rack_operation = session_context.get("rack_operation")
+        rack_operation_map: Mapping[str, Any] = (
+            cast("Mapping[str, Any]", rack_operation) if isinstance(rack_operation, Mapping) else {}
+        )
+        return (
+            _non_empty_str(rack_operation_map.get("resume_source_device_code"))
+            or _non_empty_str(session_context.get("resume_source_device_code"))
+            or _non_empty_str(rough_context.rack_operation.get("resume_source_device_code"))
+        )
+
+    @staticmethod
+    def _rack_arrived_payload(payload_json: Mapping[str, Any], rough_context: RoughSorterContext) -> dict[str, Any]:
+        target = payload_json.get("target")
+        target_map: Mapping[str, Any] = cast("Mapping[str, Any]", target) if isinstance(target, Mapping) else {}
+        active_bin_rack = payload_json.get("active_bin_rack")
+        active_bin_rack_map: Mapping[str, Any] = (
+            cast("Mapping[str, Any]", active_bin_rack) if isinstance(active_bin_rack, Mapping) else {}
+        )
+        position_code = (
+            _non_empty_str(payload_json.get("position_code"))
+            or _non_empty_str(payload_json.get("target_position_code"))
+            or _non_empty_str(target_map.get("position_code"))
+            or _non_empty_str(rough_context.rack_operation.get("position_code"))
+            or _non_empty_str(rough_context.rack_operation.get("target_position_code"))
+            or _non_empty_str(rough_context.rack_operation.get("work_position_code"))
+        )
+        rack_code = (
+            _non_empty_str(payload_json.get("rack_code"))
+            or _non_empty_str(payload_json.get("rack_id"))
+            or _non_empty_str(active_bin_rack_map.get("rack_code"))
+            or _non_empty_str(active_bin_rack_map.get("rack_id"))
+            or _non_empty_str(rough_context.rack_operation.get("rack_code"))
+        )
+        rack_kind = (
+            _non_empty_str(payload_json.get("rack_kind"))
+            or _non_empty_str(payload_json.get("rack_type"))
+            or _non_empty_str(active_bin_rack_map.get("rack_kind"))
+            or _non_empty_str(active_bin_rack_map.get("rack_type"))
+            or _non_empty_str(rough_context.rack_operation.get("rack_kind"))
+            or _non_empty_str(rough_context.rack_operation.get("new_rack_kind"))
+        )
+        released_rack_codes = _non_empty_str_list(payload_json.get("released_rack_codes")) or _non_empty_str_list(
+            rough_context.rack_operation.get("released_rack_codes")
+        )
+        fact_payload: dict[str, Any] = {
+            "operation_key": _non_empty_str(payload_json.get("operation_key"))
+            or _non_empty_str(rough_context.rack_operation.get("operation_key")),
+            "callback_type": _non_empty_str(payload_json.get("callback_type")),
+            "dispatch_key": _non_empty_str(payload_json.get("dispatch_key")),
+            "source_event_id": _non_empty_str(payload_json.get("source_event_id")),
+            "source_system": _non_empty_str(payload_json.get("source_system")),
+            "source_version": _non_empty_str(payload_json.get("source_version")),
+            "occurred_at": payload_json.get("occurred_at"),
+            "workline_code": _non_empty_str(payload_json.get("workline_code")),
+            "rack_code": rack_code,
+            "rack_kind": rack_kind,
+            "position_code": position_code,
+            "released_rack_codes": released_rack_codes or None,
+        }
+        if isinstance(active_bin_rack, Mapping):
+            fact_payload["active_bin_rack"] = dict(cast("Mapping[str, Any]", active_bin_rack))
+        return {key: value for key, value in fact_payload.items() if value is not None}
+
+    @staticmethod
+    def _bin_mounted_intents(payload_json: Mapping[str, Any], operation_key: str) -> list[RuntimeIntent]:
+        bin_mounts = payload_json.get("bin_mounts")
+        if not isinstance(bin_mounts, list):
+            return []
+        rack_code = _non_empty_str(payload_json.get("rack_code"))
+        normalized_mounts: list[dict[str, str]] = []
+        for mount in cast("list[Any]", bin_mounts):
+            if not isinstance(mount, Mapping):
+                continue
+            mount_payload = dict(cast("Mapping[str, Any]", mount))
+            rack_code = (
+                rack_code
+                or _non_empty_str(mount_payload.get("rack_code"))
+                or _non_empty_str(mount_payload.get("rack_id"))
+            )
+            rack_slot_code = _non_empty_str(mount_payload.get("rack_slot_code")) or _non_empty_str(
+                mount_payload.get("slot_code")
+            )
+            bin_code = _non_empty_str(mount_payload.get("bin_code")) or _non_empty_str(mount_payload.get("bin_id"))
+            if rack_slot_code is None or bin_code is None:
+                continue
+            normalized_mounts.append({"rack_slot_code": rack_slot_code, "bin_code": bin_code})
+        if rack_code is None or not normalized_mounts:
+            return []
+        payload: dict[str, Any] = {
+            "operation_key": operation_key,
+            "callback_type": _non_empty_str(payload_json.get("callback_type")),
+            "dispatch_key": _non_empty_str(payload_json.get("dispatch_key")),
+            "source_event_id": _non_empty_str(payload_json.get("source_event_id")),
+            "source_system": _non_empty_str(payload_json.get("source_system")),
+            "source_version": _non_empty_str(payload_json.get("source_version")),
+            "occurred_at": payload_json.get("occurred_at"),
+            "rack_code": rack_code,
+            "bin_mounts": normalized_mounts,
+        }
+        return [
+            RuntimeIntent.resource_fact(
+                fact_type="BIN_MOUNTED",
+                payload={key: value for key, value in payload.items() if value is not None},
+                idempotency_key=f"BIN_MOUNTED:{operation_key}:{rack_code}",
+            )
+        ]
+
+    def _storage_retry_data(
+        self,
+        payload_json: Mapping[str, Any],
+        rough_context: RoughSorterContext,
+        *,
+        operation_key: str,
+        retry_event_id: str,
+    ) -> dict[str, Any]:
+        business_key = _business_key_from_context(rough_context)
+        retry_data: dict[str, Any] = {
+            "PkgID": business_key,
+            "business_key": business_key,
+            "six_in_one": rough_context.six_in_one,
+            "measurement": rough_context.measurement,
+            "wms_validation": rough_context.wms_validation,
+            "rack_operation": {
+                **rough_context.rack_operation,
+                "operation_key": operation_key,
+                "status": "ARRIVED",
+            },
+            "operation_key": operation_key,
+            "callback_type": _non_empty_str(payload_json.get("callback_type")),
+            "idempotency_key": retry_event_id,
+        }
+        active_bin_rack = payload_json.get("active_bin_rack")
+        if isinstance(active_bin_rack, Mapping):
+            retry_data["active_bin_rack"] = dict(cast("Mapping[str, Any]", active_bin_rack))
+        return {key: value for key, value in retry_data.items() if value is not None}
 
     def _measurement_ng_intents(
         self,
@@ -510,6 +673,113 @@ class RoughSorterPlugin(WorklinePlugin):
             ),
         ]
 
+    @on_event(EVENT_ROUGH_SORTER_STORAGE_RETRY)
+    async def handle_storage_retry(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理货架到位后的内部重试事件，重新执行出料分配。"""
+
+        payload_json = inbox.payload_json or {}
+        payload_data = _payload_data(payload_json)
+        rough_context = _session_context(ctx)
+        if rough_context.phase != PHASE_WAITING_RACK:
+            return self._block(
+                "ROUGH_SORTER_PHASE_INVALID",
+                f"粗分机 storage retry 处于非法阶段: {rough_context.phase}",
+            )
+        business_key = _business_key_from_context(rough_context)
+        if business_key is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少业务主键，无法重试出料分配")
+
+        rack_operation = dict(rough_context.rack_operation)
+        retry_rack_operation = payload_data.get("rack_operation")
+        if isinstance(retry_rack_operation, Mapping):
+            rack_operation.update(cast("Mapping[str, Any]", retry_rack_operation))
+        active_bin_rack = (
+            dict(cast("Mapping[str, Any]", payload_data["active_bin_rack"]))
+            if isinstance(payload_data.get("active_bin_rack"), Mapping)
+            else rough_context.active_bin_rack
+        )
+        retry_context = RoughSorterContext(
+            six_in_one=rough_context.six_in_one,
+            business_key=business_key,
+            measurement=rough_context.measurement,
+            wms_validation=rough_context.wms_validation,
+            active_bin_rack=active_bin_rack,
+            target_bin_location=rough_context.target_bin_location,
+            rack_operation=rack_operation,
+            ng_reason=rough_context.ng_reason,
+            phase=rough_context.phase,
+        )
+        return await self._storage_allocation_intents(ctx, payload_json, retry_context, business_key)
+
+    async def on_external_http(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理 WMS/RCS 货架到位回调，先落资源事实，再创建内部重试事件。"""
+
+        payload_json = inbox.payload_json or {}
+        callback_type = _non_empty_str(payload_json.get("callback_type")) or _non_empty_str(
+            payload_json.get("message_type")
+        )
+        if callback_type not in {"WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"}:
+            return []
+
+        rough_context = _session_context(ctx)
+        operation_key = self._operation_key(payload_json, rough_context)
+        session_id = self._session_id(ctx)
+        business_key = _business_key_from_context(rough_context)
+        if operation_key is None or session_id is None or business_key is None:
+            return self._block(
+                "ROUGH_SORTER_CONTEXT_MISSING",
+                "粗分机货架到位回调缺少 operation_key/session_id/business_key，无法创建稳定重试事件",
+            )
+
+        retry_event_id = f"rough-sorter-storage-retry:{operation_key}:{session_id}"
+        source_device_code = self._resume_source_device_code(ctx, rough_context) or _non_empty_str(
+            getattr(ctx, "source_device_code", None)
+        )
+        source_device_code = source_device_code or _non_empty_str(
+            getattr(getattr(ctx, "session", None), "source_device_code", None)
+        )
+        source_device_code = source_device_code or _non_empty_str(
+            rough_context.rack_operation.get("source_device_code")
+        )
+        source_device_code = source_device_code or _non_empty_str(
+            getattr(getattr(ctx, "normalized_input", None), "device_code", None)
+        )
+        source_device_code = source_device_code or _non_empty_str(payload_json.get("device_code")) or "UNKNOWN"
+
+        rack_arrived_payload = self._rack_arrived_payload(payload_json, rough_context)
+        missing_projection_fields = [
+            field
+            for field in ("rack_code", "rack_kind", "position_code")
+            if _non_empty_str(rack_arrived_payload.get(field)) is None
+        ]
+        if missing_projection_fields:
+            return self._block(
+                "ROUGH_SORTER_RACK_ARRIVED_FACT_INCOMPLETE",
+                f"粗分机货架到位回调缺少资源投影必需字段: {', '.join(missing_projection_fields)}",
+            )
+
+        return [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload=rack_arrived_payload,
+                idempotency_key=f"RACK_ARRIVED:{operation_key}",
+            ),
+            *self._bin_mounted_intents(payload_json, operation_key),
+            RuntimeIntent.device_event(
+                device_code=source_device_code,
+                event_type=EVENT_ROUGH_SORTER_STORAGE_RETRY,
+                data=self._storage_retry_data(
+                    payload_json,
+                    rough_context,
+                    operation_key=operation_key,
+                    retry_event_id=retry_event_id,
+                ),
+                event_id=retry_event_id,
+                causation_id=_non_empty_str(payload_json.get("source_event_id")) or getattr(inbox, "event_id", None),
+                canonical_event_type=EVENT_ROUGH_SORTER_STORAGE_RETRY,
+            ),
+        ]
+
     @on_command(ACTION_MEASUREMENT_REEL, result="SUCCESS")
     async def handle_measurement_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """处理测量成功结果，并在 WMS 库存匹配后进入入线抓取。"""
@@ -685,6 +955,15 @@ class RoughSorterPlugin(WorklinePlugin):
                 f"粗分机 MOVE_FORWARD 成功回调处于非法阶段: {rough_context.phase}",
             )
 
+        return await self._storage_allocation_intents(ctx, payload_json, rough_context, business_key)
+
+    async def _storage_allocation_intents(
+        self,
+        ctx: PluginContext,
+        payload_json: dict[str, Any],
+        rough_context: RoughSorterContext,
+        business_key: str,
+    ) -> list[RuntimeIntent]:
         allocator = getattr(getattr(ctx, "services", None), "bin_allocator", None)
         if allocator is None:
             return self._block("ROUGH_SORTER_ALLOCATOR_UNAVAILABLE", "粗分机出料分配缺少 bin_allocator 服务")
@@ -789,6 +1068,25 @@ class RoughSorterPlugin(WorklinePlugin):
         operation_type = _non_empty_str(operation_payload.get("operation_type")) or "REPLACE_CLASSIFIER_WORK_RACK"
         timeout_seconds = int(getattr(rack_operation_request, "timeout_seconds", 1800) or 1800)
         source_device_code = self._command_source_location(ctx, {})
+        target_position_code = (
+            _non_empty_str(operation_payload.get("target_position_code"))
+            or _non_empty_str(operation_payload.get("work_position_code"))
+            or _non_empty_str(operation_payload.get("position_code"))
+        )
+        rack_kind = _non_empty_str(operation_payload.get("new_rack_kind")) or _non_empty_str(
+            operation_payload.get("rack_kind")
+        )
+        rack_tasks = operation_payload.get("rack_tasks")
+        if isinstance(rack_tasks, list):
+            for task in cast("list[Any]", rack_tasks):
+                if not isinstance(task, Mapping):
+                    continue
+                task_map = cast("Mapping[str, Any]", task)
+                task_type = _non_empty_str(task_map.get("task_type"))
+                if task_type != "ALLOCATE_AND_MOVE_RACK":
+                    continue
+                target_position_code = target_position_code or _non_empty_str(task_map.get("target_position_code"))
+                rack_kind = rack_kind or _non_empty_str(task_map.get("rack_kind"))
         rack_operation_context: dict[str, Any] = {
             "operation_key": operation_key,
             "operation_type": operation_type,
@@ -797,6 +1095,11 @@ class RoughSorterPlugin(WorklinePlugin):
             "reason_code": _non_empty_str(getattr(decision, "reason_code", None)),
             "message": _non_empty_str(getattr(decision, "message", None)),
         }
+        if target_position_code is not None:
+            rack_operation_context["target_position_code"] = target_position_code
+            rack_operation_context["work_position_code"] = target_position_code
+        if rack_kind is not None:
+            rack_operation_context["rack_kind"] = rack_kind
         context_patch = RoughSorterContext(
             six_in_one=rough_context.six_in_one,
             business_key=_business_key_from_context(rough_context),

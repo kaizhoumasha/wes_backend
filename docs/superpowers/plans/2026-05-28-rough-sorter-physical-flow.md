@@ -276,16 +276,16 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - Test: `tests/workline_plugins/test_rough_sorter_plugin.py`
 - Test: `tests/workline_runtime/test_runtime_intent_effects.py`
 
-- [ ] 写 `on_external_http` 测试：`WMS_RACK_ARRIVED` / `RCS_RACK_ARRIVED` 返回 resource facts 和内部 retry event，不在同一 handler 内下发 `PUT_TO_BIN`。
-- [ ] 写 effect/orchestrator 级测试：resource fact 落地后创建内部重试 inbox；重试 inbox 再触发分配。
-- [ ] 写重复回调幂等测试：同一 rack operation 的 arrived callback 生成相同 `ROUGH_SORTER_STORAGE_RETRY` `event_id`，不得创建多个 retry inbox。
-- [ ] 实现 `on_external_http(ctx, inbox)`：
+- [x] 写 `on_external_http` 测试：`WMS_RACK_ARRIVED` / `RCS_RACK_ARRIVED` 返回 resource facts 和内部 retry event，不在同一 handler 内下发 `PUT_TO_BIN`。
+- [x] 写 effect/orchestrator 级测试：resource fact 落地后创建内部重试 inbox；重试 inbox 再触发分配。
+- [x] 写重复回调幂等测试：同一 rack operation 的 arrived callback 生成相同 `ROUGH_SORTER_STORAGE_RETRY` `event_id`，不得创建多个 retry inbox。
+- [x] 实现 `on_external_http(ctx, inbox)`：
   - 仅处理 rack arrived 类型回调。
   - 生成 `RESOURCE_FACT RACK_ARRIVED`，必要时生成 `BIN_MOUNTED`。
   - 生成内部 `DEVICE_EVENT`，event type 为 `ROUGH_SORTER_STORAGE_RETRY`，`event_id="rough-sorter-storage-retry:{operation_key}:{session_id}"`，data 必须包含 `PkgID`、业务上下文和幂等键。
-- [ ] 在 manifest 中声明 `ROUGH_SORTER_STORAGE_RETRY`。
-- [ ] 实现 `@on_event("ROUGH_SORTER_STORAGE_RETRY")`，复用出料分配逻辑。
-- [ ] 运行：
+- [x] 在 manifest 中声明 `ROUGH_SORTER_STORAGE_RETRY`。
+- [x] 实现 `@on_event("ROUGH_SORTER_STORAGE_RETRY")`，复用出料分配逻辑。
+- [x] 运行：
   - `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
   - `uv run pytest tests/workline_runtime/test_runtime_intent_effects.py -k resource -v`
 

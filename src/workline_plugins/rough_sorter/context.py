@@ -12,6 +12,7 @@ class RoughSorterContext(BaseModel):
     business_key: str | None = None
     measurement: dict[str, Any] = Field(default_factory=dict)
     wms_validation: dict[str, Any] = Field(default_factory=dict)
+    active_bin_rack: dict[str, Any] | None = None
     target_bin_location: dict[str, Any] | str | None = None
     rack_operation: dict[str, Any] = Field(default_factory=dict)
     ng_reason: dict[str, Any] = Field(default_factory=dict)
