@@ -895,6 +895,7 @@ class RuntimeIntentEffectApplier:
                 failure_code=None,
                 failure_message=None,
             )
+            .execution_options(synchronize_session=False)
         )
         await workline_effects._emit_timeline(
             ctx,
