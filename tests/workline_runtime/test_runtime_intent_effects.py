@@ -556,6 +556,73 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_command_intent_without_timeout_still_waits_for_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    created_payloads: list[dict[str, Any]] = []
+    created_command = SimpleNamespace(
+        id=88,
+        command_code="CMD-NO-TIMEOUT",
+        task_type="TEST",
+        priority=5,
+        timeout_ms=300000,
+        params={"action": "MEASUREMENT_REEL"},
+    )
+    db = SimpleNamespace(add=MagicMock())
+    session = _session(
+        status="NEW",
+        current_wait_type=None,
+        awaiting_command_id=None,
+        waiting_since=None,
+        deadline_at=None,
+        current_wait_timeout_seconds=None,
+    )
+    source = SimpleNamespace(id=1, device_code="ARM01")
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["source_device"] = source
+    ctx["devices_by_role"] = {"INPUT_ARM": [source]}
+    ctx["current_status"] = "NEW"
+
+    async def fake_create(_repo, _db, payload):
+        created_payloads.append(payload)
+        return created_command
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_enforce_device_command_governance", lambda *_, **__: None)
+    monkeypatch.setattr(
+        "src.app.device.repositories.command_repository.DeviceCommandRepository.create",
+        fake_create,
+    )
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"task_type": "TEST", "timeout": 300000, "params": {"action": "MEASUREMENT_REEL"}},
+                destination=Destination.current(),
+            )
+        ],
+    )
+
+    assert created_payloads[0]["device_id"] == 1
+    assert created_payloads[0]["task_type"] == "TEST"
+    assert session.status == "WAITING_DEVICE_RESULT"
+    assert session.current_wait_type == "COMMAND_RESULT"
+    assert session.awaiting_command_id == 88
+    assert session.waiting_since == ctx["now"]
+    assert session.current_wait_timeout_seconds == 300
+    assert session.deadline_at is None
+    assert [timeline["action_type"].value for timeline in timelines] == ["COMMAND_SENT", "WAIT_STARTED"]
+    assert timelines[1]["payload"]["wait_token"] == "CMD-NO-TIMEOUT"
+    assert timelines[1]["payload"]["deadline_seconds"] == 300
+
+
+@pytest.mark.asyncio
 async def test_external_request_intent_creates_external_outbox_and_immediate_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
