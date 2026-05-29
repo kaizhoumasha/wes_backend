@@ -1,5 +1,27 @@
 # TODOS
 
+## P2 - WorkLine 角色优先设备绑定向导
+
+**What**: 为 WorkLine 配置台补充按插件角色引导绑定设备的向导，优先按 manifest 角色和能力缺口组织现场配置。
+
+**Why**: 本轮后端已将插件角色/能力作为配置事实源，启用前预检可以发现缺角色、重复角色和能力不匹配；后续需要让运维在前端直接按角色补齐设备，减少在设备列表中来回切换。
+
+**Context**: WorkLine 配置控制台两阶段交付中的 P2 后续项。
+
+**Scope**:
+- 按插件 required roles 展示待绑定角色、唯一性和能力要求
+- 支持从未绑定设备或当前 WorkLine 设备中选择/调整角色
+- 对 active WorkLine 只读展示，并提示需停用后调整
+- 复用 `configuration-status.checks[]` 展示 blocker 和修复入口
+
+**Dependencies**: 前端配置页和后端 `configuration-status` 合同稳定后实施。
+
+**Effort**: M
+
+**Priority**: P2
+
+---
+
 ## P2 - 监控与告警配置
 
 **What**: 为 SMT 粗分机工作线配置监控仪表盘和告警规则。

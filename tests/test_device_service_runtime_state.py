@@ -71,6 +71,14 @@ class FakeDeviceRepo:
             and getattr(device, "error_code", None) == "WORKLINE_ESTOPPED"
         ]
 
+    async def after_device_change(
+        self,
+        _db: object,
+        old_work_line_id: int | None,
+        new_work_line_id: int | None,
+    ) -> None:
+        _ = old_work_line_id, new_work_line_id
+
 
 class FakeCommandRepo:
     def __init__(self, active_commands: list[SimpleNamespace] | None = None) -> None:
@@ -668,3 +676,93 @@ def test_plain_update_rejects_runtime_fields() -> None:
 
     with pytest.raises(BusinessException, match="专用操作"):
         service._reject_runtime_update({"maintenance_mode": True})
+
+
+class FakeWorkLineRepo:
+    def __init__(self, *worklines: SimpleNamespace) -> None:
+        self.worklines = {workline.id: workline for workline in worklines}
+        self.get_by_id_calls: list[int] = []
+        self.get_for_update_calls: list[int] = []
+
+    async def get_by_id(self, _db: object, workline_id: int) -> SimpleNamespace | None:
+        self.get_by_id_calls.append(workline_id)
+        return self.worklines.get(workline_id)
+
+    async def get_for_update(self, _db: object, workline_id: int) -> SimpleNamespace | None:
+        self.get_for_update_calls.append(workline_id)
+        return self.worklines.get(workline_id)
+
+
+@pytest.mark.asyncio
+async def test_plain_update_rejects_topology_changes_when_workline_is_active() -> None:
+    device = SimpleNamespace(
+        id=7,
+        device_code="ARM01",
+        work_line_id=3,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        role_index=1,
+        upstream_device_id=None,
+        capabilities_json={},
+        device_status=DeviceStatus.IDLE,
+        current_command_id=None,
+        error_code=None,
+        maintenance_mode=False,
+    )
+    service = _service(FakeDeviceRepo(device))
+    service.workline_repo = FakeWorkLineRepo(SimpleNamespace(id=3, is_active=True))  # type: ignore[attr-defined]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with pytest.raises(BusinessException, match="已启用作业线"):
+        await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+
+
+@pytest.mark.asyncio
+async def test_plain_update_locks_workline_before_topology_guard() -> None:
+    device = SimpleNamespace(
+        id=7,
+        device_code="ARM01",
+        work_line_id=3,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        role_index=1,
+        upstream_device_id=None,
+        capabilities_json={},
+        device_status=DeviceStatus.IDLE,
+        current_command_id=None,
+        error_code=None,
+        maintenance_mode=False,
+    )
+    workline_repo = FakeWorkLineRepo(SimpleNamespace(id=3, is_active=True))
+    service = _service(FakeDeviceRepo(device))
+    service.workline_repo = workline_repo  # type: ignore[attr-defined]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with pytest.raises(BusinessException, match="已启用作业线"):
+        await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+
+    assert workline_repo.get_for_update_calls == [3]
+
+
+@pytest.mark.asyncio
+async def test_plain_update_allows_topology_changes_after_workline_is_deactivated() -> None:
+    device = SimpleNamespace(
+        id=7,
+        device_code="ARM01",
+        work_line_id=3,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        role_index=1,
+        upstream_device_id=None,
+        capabilities_json={},
+        device_status=DeviceStatus.IDLE,
+        current_command_id=None,
+        error_code=None,
+        maintenance_mode=False,
+    )
+    repo = FakeDeviceRepo(device)
+    service = _service(repo)
+    service.workline_repo = FakeWorkLineRepo(SimpleNamespace(id=3, is_active=False))  # type: ignore[attr-defined]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    updated = await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+
+    assert updated is device
+    assert device.device_role == "ROUGH_SORTER_CONVEYOR"

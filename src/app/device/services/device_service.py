@@ -11,6 +11,7 @@ from src.app.sys.services.event_stream_service import (
     defer_sse_event,
     publish_deferred_sse_events,
 )
+from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.exceptions import BusinessException
@@ -23,6 +24,16 @@ if TYPE_CHECKING:
 class DeviceService(BaseService[Device, DeviceRepository]):
     """设备业务逻辑层"""
 
+    TOPOLOGY_FIELDS = frozenset(
+        {
+            "work_line_id",
+            "device_role",
+            "role_index",
+            "upstream_device_id",
+            "capabilities_json",
+            "sort_order",
+        }
+    )
     RUNTIME_FIELDS = frozenset(
         {
             "device_status",
@@ -44,6 +55,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             list_cache_expire=cache_settings.DEVICE_LIST.expire,
         )
         self.command_repo = DeviceCommandRepository()
+        self.workline_repo: WorkLineRepository = workline_repository
 
     @staticmethod
     def _resolve_work_line_id(device: Device | None) -> int | None:
@@ -459,6 +471,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
     ) -> Device | None:
         """创建设备前校验 capability schema。"""
 
+        await self._reject_active_workline_topology_update(db, None, data)
         self._validate_capabilities(data)
         return await super().create(db, data, cache)
 
@@ -476,6 +489,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         old_state = self._runtime_old_state(old_device)
 
         self._reject_runtime_update(data)
+        await self._reject_active_workline_topology_update(db, old_device, data)
         self._validate_capabilities(data, current=old_device)
 
         # 执行更新
@@ -508,6 +522,34 @@ class DeviceService(BaseService[Device, DeviceRepository]):
                 message=f"设备运行态字段只能通过专用操作修改: {', '.join(submitted_runtime_fields)}",
                 detail={"fields": submitted_runtime_fields},
             )
+
+    async def _reject_active_workline_topology_update(
+        self,
+        db: "AsyncSession",
+        current: Device | None,
+        data: dict[str, Any],
+    ) -> None:
+        """已启用 WorkLine 下禁止通过设备 CRUD 改变拓扑事实。"""
+
+        submitted_topology_fields = sorted(self.TOPOLOGY_FIELDS.intersection(data))
+        if not submitted_topology_fields:
+            return
+
+        affected_workline_ids: set[int] = set()
+        old_workline_id = self._resolve_work_line_id(current)
+        if isinstance(old_workline_id, int):
+            affected_workline_ids.add(old_workline_id)
+        new_workline_id = data.get("work_line_id")
+        if isinstance(new_workline_id, int):
+            affected_workline_ids.add(new_workline_id)
+
+        for workline_id in affected_workline_ids:
+            workline = await self.workline_repo.get_for_update(db, workline_id)
+            if bool(getattr(workline, "is_active", False)):
+                raise BusinessException(
+                    message="已启用作业线下不能修改设备拓扑字段，请先停用作业线",
+                    detail={"work_line_id": workline_id, "fields": submitted_topology_fields},
+                )
 
     def _changed_runtime_fields(
         self,

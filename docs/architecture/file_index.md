@@ -374,7 +374,11 @@
 
 #### 🧩 作业线插件实现 (src/workline_plugins/)
 
-当前无已注册作业线插件实现。新插件重写后补充本索引。
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `rough_sorter/plugin.py` | 粗分机工作线插件：按真实物理流程产出 RuntimeIntent，覆盖扫码、测量、WMS 校验、搬运、入箱、货架补给和 NG 闭环 | 🔄 常用功能 |
+| `rough_sorter/contract.py` | 粗分机插件合同：插件 key、事件/命令/phase/角色常量、命令 payload builder、业务键解析和结果分类 | 🔄 常用功能 |
+| `rough_sorter/context.py` | 粗分机 Session context 快照模型 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档

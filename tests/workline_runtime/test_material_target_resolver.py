@@ -42,6 +42,33 @@ def test_resolves_role_within_downstream_candidates():
     assert resolved == weigh
 
 
+def test_resolves_role_within_source_branch_before_global_candidates():
+    source = Device(id=1, device_role="ENTRY_SCANNER")
+    branch_weigh = Device(id=2, device_role="WEIGH_SCALE", upstream_device_id=1)
+    other_branch = Device(id=3, device_role="WEIGH_SCALE", upstream_device_id=99)
+
+    resolved = resolve_destination_device(
+        destination=Destination.role("WEIGH_SCALE"),
+        source_device=source,
+        devices=[source, branch_weigh, other_branch],
+    )
+
+    assert resolved == branch_weigh
+
+
+def test_resolves_role_across_all_devices_without_upstream_link():
+    source = Device(id=1, device_role="ENTRY_SCANNER")
+    weigh = Device(id=3, device_role="WEIGH_SCALE")
+
+    resolved = resolve_destination_device(
+        destination=Destination.role("WEIGH_SCALE"),
+        source_device=source,
+        devices=[source, weigh],
+    )
+
+    assert resolved == weigh
+
+
 def test_resolves_role_to_current_device_when_source_has_target_role():
     source = Device(id=1, device_role="INPUT_ARM")
     conveyor = Device(id=2, device_role="CONVEYOR", upstream_device_id=1)
@@ -50,6 +77,19 @@ def test_resolves_role_to_current_device_when_source_has_target_role():
         destination=Destination.role("INPUT_ARM"),
         source_device=source,
         devices=[source, conveyor],
+    )
+
+    assert resolved == source
+
+
+def test_resolves_role_to_current_device_before_other_same_role_devices():
+    source = Device(id=1, device_role="INPUT_ARM")
+    other_input = Device(id=2, device_role="INPUT_ARM", upstream_device_id=99)
+
+    resolved = resolve_destination_device(
+        destination=Destination.role("INPUT_ARM"),
+        source_device=source,
+        devices=[source, other_input],
     )
 
     assert resolved == source

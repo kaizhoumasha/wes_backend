@@ -690,14 +690,14 @@ Timeout 由专门扫描任务负责产生：
 
 * `device_role`: 如 `SCANNER`、`ROBOT_ARM`、`XRAY`
 * `role_index`: 同角色多设备序号（如 `ROBOT_ARM_1`、`ROBOT_ARM_2`）
-* `upstream_device_id`: 上游设备ID（线性拓扑，符合 KISS 原则）
+* `upstream_device_id`: 上游设备ID（物理路径辅助信息，不作为插件配置事实源）
 * `capabilities`: 能力列表
 * `vendor_type`: 厂商类型
 
 关键原则：
 
 * 插件按角色选设备，不按 `device_code` 写死设备
-* 设备拓扑采用简单的线性模型（上游→下游），避免过度设计
+* 插件配置事实源是 manifest 声明的角色、数量和能力；物理上下游只辅助路径展示和少量 NEXT 兼容意图
 
 #### 8.2.1 线性拓扑设计
 

@@ -83,7 +83,7 @@ class DeviceBase(BaseMixin):
         default=None,
         foreign_key="wes_biz.devices.id",
         ondelete="SET NULL",
-        description="上游设备ID（线性拓扑）",
+        description="上游设备ID（物理路径辅助信息）",
     )
 
     # ===== 厂商和能力（架构 8.2 节）=====
@@ -190,7 +190,7 @@ class Device(
     架构设计参考:
     - device_role: 业务角色（SCANNER, ROBOT_ARM, XRAY），用于插件按角色选设备
     - role_index: 同角色多设备序号（如 ROBOT_ARM_1, ROBOT_ARM_2）
-    - upstream_device_id: 线性拓扑（符合 KISS 原则）
+    - upstream_device_id: 物理路径辅助信息；插件配置事实以角色和能力为准
     - plugin_key/contract_version 的唯一来源是 WorkLine，而非 Device
 
     注意:
@@ -255,7 +255,7 @@ class DeviceEditableBase(BaseMixin):
     sort_order: int = Field(default=0, description="排序顺序")
     device_role: str = Field(max_length=50, description="设备业务角色（SCANNER, ROBOT_ARM, XRAY, CONVEYOR）")
     role_index: int = Field(default=1, ge=1, description="同角色序号（1, 2, 3...）")
-    upstream_device_id: int | None = Field(default=None, description="上游设备ID（线性拓扑）")
+    upstream_device_id: int | None = Field(default=None, description="上游设备ID（物理路径辅助信息）")
     vendor_type: str | None = Field(default=None, max_length=50, description="厂商类型（ECS, KEYENCE, FANUC...）")
     capabilities_json: dict[str, Any] = Field(
         default_factory=dict, description="设备能力声明（支持事件、命令、回调等）"

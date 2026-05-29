@@ -19,7 +19,7 @@
 ### 插件不负责什么
 
 - 不直接写 Inbox / Outbox / DeviceCommand / WorklineSession。
-- 不查询数据库拼设备拓扑，拓扑由平台根据 `Device.upstream_device_id` 和 manifest 校验。
+- 不查询数据库拼设备拓扑，启用前配置校验由平台根据 manifest 的角色、数量和能力要求完成；`Device.upstream_device_id` 只作为物理路径辅助信息。
 - 不把 sandbox 标志写入消息 payload。
 - 不在 runtime、callback、dispatcher 中为某个业务插件开私有分支。
 - 不维护插件私有状态机，不写 Session 状态，不维护物料当前位置。
@@ -316,7 +316,7 @@ uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_
 1. 从 `docs/templates/workline_plugin/` 复制模板。
 2. 先写 `contract.py`，锁定 `data` / `params` 和业务键。
 3. 写 `context.py`，明确插件需要读取和更新的业务事实。
-4. 写 manifest，声明设备角色、能力和拓扑方向。
+4. 写 manifest，声明设备角色、唯一性、能力、事件来源角色和命令目标角色。
 5. 写第一个事件 handler，让它产生一个命令和 wait。
 6. 写第一个命令 result handler，让它推进状态或完成。
 7. 补业务 NG、已建模异常流和真正系统错误。

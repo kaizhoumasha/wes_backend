@@ -6,11 +6,18 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories import device_repository
-from src.app.workline.models import WorkLine, WorkLinePluginOption, WorkLineRunMode
+from src.app.workline.models import (
+    WorkLine,
+    WorkLineConfigurationCheck,
+    WorkLineConfigurationStatus,
+    WorkLinePluginOption,
+    WorkLineRunMode,
+)
 from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
+from src.core.exceptions import BusinessException, OptimisticLockException
 from src.utils.device_cache import workline_device_cache
 from src.workline_plugin_registry import (
     get_plugin_contract_version,
@@ -18,7 +25,27 @@ from src.workline_plugin_registry import (
     list_workline_plugin_definitions,
     validate_workline_plugin_assignment,
 )
-from src.workline_runtime.run_mode import is_sandbox_allowed_environment, is_simulation_run_mode, normalize_run_mode
+from src.workline_runtime.run_mode import (
+    is_sandbox_allowed_environment,
+    is_simulation_run_mode,
+    normalize_run_mode,
+)
+from src.workline_runtime.topology import WorklineTopologyView
+
+_BLOCKER = "BLOCKER"
+_FAIL = "FAIL"
+_OK = "PASS"
+_ACTIVE_CONFIGURATION_FIELDS = frozenset(
+    {
+        "line_code",
+        "plugin_key",
+        "contract_version",
+        "config",
+        "runtime_config_json",
+        "run_mode",
+        "line_type",
+    }
+)
 
 
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
@@ -57,6 +84,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""
+        self._reject_active_state_write(data)
         self._validate_plugin_key(data.get("plugin_key"))
         self._validate_plugin_contract_version(data)
         self._validate_run_mode(data)
@@ -71,12 +99,17 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         data: dict[str, Any],
         cache: object | None = None,
     ) -> WorkLine | None:
-        """更新工作线前校验插件拓扑要求。"""
-        current = await self.repo.get_by_id(db, id)
+        """更新工作线基础配置；拓扑完整性由启用预检负责。"""
+        self._reject_active_state_write(data)
+        if _ACTIVE_CONFIGURATION_FIELDS.intersection(data):
+            current = await self.repo.get_for_update(db, id)
+        else:
+            current = await self.repo.get_by_id(db, id)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {id}")
 
-        await self._validate_plugin_assignment(db, current=current, data=data)
+        self._reject_active_configuration_update(current, data)
+        self._validate_plugin_key(data.get("plugin_key"))
         self._validate_plugin_contract_version(data, current=current)
         self._validate_run_mode(data, current=current)
         self._validate_runtime_config(data, current=current)
@@ -85,6 +118,19 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     async def delete(self, db: AsyncSession, id: int, cache: object | None = None) -> bool | None:
         """删除工作线后失效设备缓存"""
+        current = await self.repo.get_for_update(db, id)
+        if current is None:
+            return None
+        if current.is_active:
+            raise BusinessException("作业线已启用，请先停用后再删除")
+
+        workload = await self.repo.get_unfinished_workload_summary(db, id)
+        if workload["count"] > 0:
+            raise BusinessException(
+                message="存在未完成运行负载，不能删除作业线",
+                detail={"workload": workload},
+            )
+
         result = await super().delete(db, id, cache)
         if result:
             # 失效该工作线的设备缓存
@@ -110,6 +156,272 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             plugin_key=plugin_key,
         )
         validate_workline_plugin_assignment(plugin_key, workline_like, devices)
+
+    async def configuration_status(self, db: AsyncSession, workline_id: int) -> WorkLineConfigurationStatus:
+        """返回 WorkLine 启用前结构化配置状态。"""
+
+        workline = await self.repo.get_by_id(db, workline_id)
+        if workline is None:
+            raise ValueError(f"WorkLine 不存在: {workline_id}")
+
+        devices = await device_repository.get_by_work_line_id(db, workline_id)
+        checks = self._build_configuration_checks(workline, devices)
+        can_activate = not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
+        return WorkLineConfigurationStatus(
+            workline_id=workline_id,
+            is_active=bool(workline.is_active),
+            can_activate=can_activate,
+            checks=checks,
+        )
+
+    async def activate(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        version: int,
+        cache: object | None = None,
+    ) -> WorkLine | None:
+        """通过配置预检后启用 WorkLine。"""
+
+        current = await self.repo.get_for_update(db, workline_id)
+        if current is None:
+            raise ValueError(f"WorkLine 不存在: {workline_id}")
+        self._assert_version(current, workline_id, version)
+
+        devices = await device_repository.get_by_work_line_id(db, workline_id)
+        checks = self._build_configuration_checks(current, devices)
+        can_activate = not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
+        if not can_activate:
+            raise BusinessException(
+                message="配置预检未通过，不能启用作业线",
+                detail={"checks": [check.model_dump() for check in checks]},
+            )
+        if current.is_active:
+            return current
+        return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
+
+    async def deactivate(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        version: int,
+        cache: object | None = None,
+    ) -> WorkLine | None:
+        """停用 WorkLine；存在未完成运行负载时拒绝。"""
+
+        current = await self.repo.get_for_update(db, workline_id)
+        if current is None:
+            raise ValueError(f"WorkLine 不存在: {workline_id}")
+        self._assert_version(current, workline_id, version)
+
+        workload = await self.repo.get_unfinished_workload_summary(db, workline_id)
+        if workload["count"] > 0:
+            raise BusinessException(
+                message="存在未完成运行负载，不能停用作业线",
+                detail={"workload": workload},
+            )
+        if not current.is_active:
+            return current
+        return await self._set_active_state(db, workline_id, is_active=False, version=version, cache=cache)
+
+    async def _set_active_state(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        is_active: bool,
+        version: int,
+        cache: object | None,
+    ) -> WorkLine | None:
+        updated = await self.repo.update(db, workline_id, {"is_active": is_active, "version": version})
+        await self._commit_mutation(db)
+        if cache:
+            await self.invalidate_cache(cache, workline_id, invalidate_list=True)
+        return updated
+
+    @staticmethod
+    def _assert_version(workline: WorkLine, workline_id: int, version: int) -> None:
+        if getattr(workline, "version", None) != version:
+            raise OptimisticLockException(
+                resource_type="WorkLine",
+                resource_id=workline_id,
+                current_version=getattr(workline, "version", None),
+                provided_version=version,
+            )
+
+    @staticmethod
+    def _reject_active_state_write(data: dict[str, Any]) -> None:
+        if "is_active" in data:
+            raise BusinessException(
+                message="作业线启用状态只能通过专用操作修改",
+                detail={"fields": ["is_active"]},
+            )
+
+    @staticmethod
+    def _reject_active_configuration_update(workline: WorkLine, data: dict[str, Any]) -> None:
+        if not bool(getattr(workline, "is_active", False)):
+            return
+        submitted_fields = sorted(_ACTIVE_CONFIGURATION_FIELDS.intersection(data))
+        if submitted_fields:
+            raise BusinessException(
+                message="已启用作业线下不能修改插件、合同或运行配置，请先停用作业线",
+                detail={
+                    "workline_id": getattr(workline, "id", None),
+                    "fields": submitted_fields,
+                },
+            )
+
+    def _build_configuration_checks(
+        self,
+        workline: WorkLine,
+        devices: list[Any],
+    ) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        plugin_key = self._resolve_plugin_key({}, workline)
+        definition = get_workline_plugin_definition(plugin_key)
+        if plugin_key is None:
+            return [
+                self._check(
+                    "PLUGIN_CONFIGURED",
+                    _FAIL,
+                    _BLOCKER,
+                    {"message": "未选择工作线插件"},
+                )
+            ]
+        if definition is None:
+            return [
+                self._check(
+                    "PLUGIN_CONFIGURED",
+                    _FAIL,
+                    _BLOCKER,
+                    {"plugin_key": plugin_key, "message": "不支持的工作线插件"},
+                )
+            ]
+
+        manifest = definition.manifest
+        checks.append(self._check("PLUGIN_CONFIGURED", _OK, "INFO", {"plugin_key": plugin_key}))
+        expected_contract_version = manifest.contract_version
+        checks.append(
+            self._check(
+                "CONTRACT_VERSION_CURRENT",
+                _OK if workline.contract_version == expected_contract_version else _FAIL,
+                "INFO" if workline.contract_version == expected_contract_version else _BLOCKER,
+                {
+                    "actual": workline.contract_version,
+                    "expected": expected_contract_version,
+                },
+            )
+        )
+        checks.append(self._run_mode_check(workline))
+
+        topology = WorklineTopologyView.from_devices(devices)
+        checks.extend(self._role_requirement_checks(manifest, topology))
+        checks.extend(self._event_source_checks(manifest, topology))
+        checks.extend(self._command_target_checks(manifest, topology))
+        return checks
+
+    @staticmethod
+    def _check(
+        code: str,
+        status: str,
+        severity: str,
+        context: dict[str, Any],
+    ) -> WorkLineConfigurationCheck:
+        return WorkLineConfigurationCheck(
+            code=code,
+            status=status,  # type: ignore[arg-type]
+            severity=severity,  # type: ignore[arg-type]
+            context=context,
+        )
+
+    @staticmethod
+    def _run_mode_check(workline: WorkLine) -> WorkLineConfigurationCheck:
+        run_mode = normalize_run_mode(getattr(workline, "run_mode", WorkLineRunMode.AUTO))
+        if is_simulation_run_mode(run_mode) and not is_sandbox_allowed_environment(settings.APP_ENV):
+            return WorkLineService._check(
+                "RUN_MODE_ALLOWED",
+                _FAIL,
+                _BLOCKER,
+                {"run_mode": run_mode, "app_env": settings.APP_ENV},
+            )
+        return WorkLineService._check("RUN_MODE_ALLOWED", _OK, "INFO", {"run_mode": run_mode})
+
+    @staticmethod
+    def _role_requirement_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        for requirement in manifest.required_device_roles:
+            devices = topology.devices_for_role(requirement.role)
+            count = len(devices)
+            role_passes = count >= requirement.min_count and (
+                requirement.max_count is None or count <= requirement.max_count
+            )
+            checks.append(
+                WorkLineService._check(
+                    "ROLE_REQUIREMENT",
+                    _OK if role_passes else _FAIL,
+                    "INFO" if role_passes else _BLOCKER,
+                    {
+                        "role": requirement.role,
+                        "min_count": requirement.min_count,
+                        "max_count": requirement.max_count,
+                        "count": count,
+                    },
+                )
+            )
+
+            if requirement.capabilities:
+                for device in devices:
+                    missing_capabilities = requirement.capabilities - device.capabilities
+                    checks.append(
+                        WorkLineService._check(
+                            "DEVICE_CAPABILITY",
+                            _OK if not missing_capabilities else _FAIL,
+                            "INFO" if not missing_capabilities else _BLOCKER,
+                            {
+                                "role": requirement.role,
+                                "device_id": device.device_id,
+                                "device_code": device.device_code,
+                                "missing_capabilities": sorted(missing_capabilities),
+                            },
+                        )
+                    )
+        return checks
+
+    @staticmethod
+    def _event_source_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        for event_type, roles in manifest.event_source_roles.items():
+            has_source = any(
+                device.supports_event(event_type) for role in roles for device in topology.devices_for_role(role)
+            )
+            checks.append(
+                WorkLineService._check(
+                    "EVENT_SOURCE_CAPABILITY",
+                    _OK if has_source else _FAIL,
+                    "INFO" if has_source else _BLOCKER,
+                    {"event_type": event_type, "roles": list(roles)},
+                )
+            )
+        return checks
+
+    @staticmethod
+    def _command_target_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        for command_type, roles in manifest.command_target_roles.items():
+            has_target = any(
+                device.supports_command(command_type) for role in roles for device in topology.devices_for_role(role)
+            )
+            checks.append(
+                WorkLineService._check(
+                    "COMMAND_TARGET_CAPABILITY",
+                    _OK if has_target else _FAIL,
+                    "INFO" if has_target else _BLOCKER,
+                    {"command_type": command_type, "roles": list(roles)},
+                )
+            )
+        return checks
 
     @staticmethod
     def _validate_plugin_key(plugin_key: object) -> None:
@@ -163,10 +475,13 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _apply_runtime_defaults(data: dict[str, Any], current: WorkLine | None = None) -> None:
         """为工作线写入运行时治理默认值。"""
         plugin_key_explicit = "plugin_key" in data
+        contract_version_explicit = "contract_version" in data
         plugin_key = WorkLineService._resolve_plugin_key(data, current)
         if plugin_key is None:
-            if plugin_key_explicit and "contract_version" not in data:
+            if plugin_key_explicit and not contract_version_explicit:
                 data["contract_version"] = None
+            return
+        if current is not None and not plugin_key_explicit and not contract_version_explicit:
             return
 
         resolved = get_plugin_contract_version(plugin_key)

@@ -511,6 +511,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         original = await self.inbox_repo.get_by_id(db, inbox_id)
         if original is None:
             raise ValueError(f"Inbox 不存在: {inbox_id}")
+        if original.workline_id is None:
+            raise ValueError(f"Inbox 未关联工作线: {inbox_id}")
+        _ = await self._lock_active_workline_for_runtime_write(db, original.workline_id)
         if original.session_id is not None:
             session = await self.session_repo.get_by_id(db, original.session_id)
             if session is not None:
@@ -579,6 +582,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
         workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
+        _ = await self._lock_active_workline_for_runtime_write(db, session.workline_id)
 
         normalized_operation = operation.upper()
         kind = _MANUAL_OPERATION_KIND.get(normalized_operation)
@@ -632,10 +636,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         仅允许 SIMULATION 工作线，写入 inbox 后触发编排处理。
         """
 
-        workline = await self.workline_repo.get_by_id(db, workline_id)
-        if workline is None:
-            raise ValueError(f"工作线不存在: {workline_id}")
-        self._require_simulation_workline(workline)
+        _ = await self._lock_simulation_workline_for_runtime_write(db, workline_id)
 
         event_trace_id = trace_id or f"sandbox:{uuid.uuid4().hex}"
         event_payload = dict(payload or {})
@@ -692,10 +693,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if outbox.workline_id is None:
             raise ValueError(f"Outbox 未关联工作线: dispatch_key={dispatch_key}")
-        workline = await self.workline_repo.get_by_id(db, outbox.workline_id)
-        if workline is None:
-            raise ValueError(f"工作线不存在: {outbox.workline_id}")
-        self._require_simulation_workline(workline)
+        _ = await self._lock_simulation_workline_for_runtime_write(db, outbox.workline_id)
 
         if enum_str(outbox.dispatch_type) != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             raise ValueError(f"仅允许 EXTERNAL_HTTP Outbox 模拟外部回调: dispatch_key={dispatch_key}")
@@ -830,10 +828,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if outbox.workline_id is None:
             raise ValueError(f"Outbox 未关联工作线: dispatch_key={dispatch_key}")
-        workline = await self.workline_repo.get_by_id(db, outbox.workline_id)
-        if workline is None:
-            raise ValueError(f"工作线不存在: {outbox.workline_id}")
-        self._require_simulation_workline(workline)
+        _ = await self._lock_simulation_workline_for_runtime_write(db, outbox.workline_id)
         await self._validate_ack_target(db, outbox)
 
         raw_payload = outbox.payload_json
@@ -948,10 +943,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if workline_id is None:
             raise ValueError(f"Command 未关联工作线: {command_code}")
 
-        workline = await self.workline_repo.get_by_id(db, workline_id)
-        if workline is None:
-            raise ValueError(f"工作线不存在: {workline_id}")
-        self._require_simulation_workline(workline)
+        _ = await self._lock_simulation_workline_for_runtime_write(db, workline_id)
 
         if command.id is None:
             raise ValueError(f"Command 缺少主键: {command_code}")
@@ -1047,6 +1039,19 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(
                 f"仅允许 SIMULATION 工作线使用沙箱功能: workline_id={workline.id}, run_mode={workline.run_mode}"
             )
+
+    async def _lock_active_workline_for_runtime_write(self, db: Any, workline_id: int) -> Any:
+        workline = await self.workline_repo.get_for_update(db, workline_id)
+        if workline is None:
+            raise ValueError(f"工作线不存在: {workline_id}")
+        if not bool(getattr(workline, "is_active", False)):
+            raise ValueError(f"工作线未启用，不能写入运行数据: workline_id={workline_id}")
+        return workline
+
+    async def _lock_simulation_workline_for_runtime_write(self, db: Any, workline_id: int) -> Any:
+        workline = await self._lock_active_workline_for_runtime_write(db, workline_id)
+        self._require_simulation_workline(workline)
+        return workline
 
     async def _load_session_waiting_for_command(
         self,

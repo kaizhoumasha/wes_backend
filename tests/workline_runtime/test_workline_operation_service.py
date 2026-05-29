@@ -48,6 +48,7 @@ class _SingleItemRepoStub:
     def __init__(self, item: object | None = None) -> None:
         self.item = item
         self.get_by_id = AsyncMock(return_value=item)
+        self.get_for_update = AsyncMock(return_value=item)
         self.get_by_device_code = AsyncMock(return_value=item)
         self.get_by_command_code = AsyncMock(return_value=item)
 
@@ -64,6 +65,55 @@ class _RuntimeHoldRepoStub:
     def __init__(self, hold: object | None = None) -> None:
         self.hold = hold
         self.find_latest_for_projection = AsyncMock(return_value=hold)
+
+
+@pytest.mark.asyncio
+async def test_submit_sandbox_event_locks_workline_before_creating_inbox() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    workline = SimpleNamespace(id=42, run_mode=WorkLineRunMode.SIMULATION, is_active=True, plugin_key="rough_sorter")
+    workline_repo = _SingleItemRepoStub(workline)
+    inbox_repo = _InboxRepoStub()
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        workline_repo=cast("Any", workline_repo),
+    )
+
+    db = object()
+    inbox = await service.submit_sandbox_event(
+        db,
+        workline_id=42,
+        device_id=7,
+        event_type="BARCODE_SCANNED",
+        auto_commit=False,
+    )
+
+    assert inbox is not None
+    workline_repo.get_for_update.assert_awaited_once_with(db, 42)
+    workline_repo.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_sandbox_event_rejects_inactive_simulation_workline() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    workline = SimpleNamespace(id=42, run_mode=WorkLineRunMode.SIMULATION, is_active=False)
+    inbox_repo = _InboxRepoStub()
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with pytest.raises(ValueError, match="未启用"):
+        await service.submit_sandbox_event(
+            object(),
+            workline_id=42,
+            device_id=7,
+            event_type="BARCODE_SCANNED",
+            auto_commit=False,
+        )
+
+    inbox_repo.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -86,16 +136,18 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
     )
     inbox_repo = _InboxRepoStub(original)
     session = SimpleNamespace(id=2, reconciliation_state=None)
+    workline_repo = _SingleItemRepoStub(SimpleNamespace(id=1, is_active=True))
     service = WorklineOperationService(
         inbox_repo=cast("Any", inbox_repo),
         session_repo=cast("Any", _SessionRepoStub(session)),
+        workline_repo=cast("Any", workline_repo),
     )
 
-    replay = await service.replay_inbox(
-        object(), inbox_id=10, reason="重新诊断", operator_id="ops-1", auto_commit=False
-    )
+    db = object()
+    replay = await service.replay_inbox(db, inbox_id=10, reason="重新诊断", operator_id="ops-1", auto_commit=False)
 
     assert replay.id == 88
+    workline_repo.get_for_update.assert_awaited_once_with(db, 1)
     assert inbox_repo.created is not None
     assert inbox_repo.created["kind"] == InboxKind.DEVICE_EVENT
     assert inbox_repo.created["trace_id"] == "trace-001"
@@ -104,6 +156,38 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
     assert inbox_repo.created["payload_json"]["replay_of_event_id"] == "event-original"
     assert inbox_repo.created["payload_json"]["message_type"] == original_payload["message_type"]
     assert original.payload_json == original_payload
+
+
+@pytest.mark.asyncio
+async def test_replay_inbox_rejects_inactive_workline() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    original = SimpleNamespace(
+        id=10,
+        kind=InboxKind.DEVICE_EVENT,
+        payload_json={"message_type": "DEVICE_EVENT"},
+        trace_id="trace-001",
+        event_id="event-original",
+        causation_id=None,
+        workline_id=1,
+        device_id=None,
+        command_id=None,
+        session_id=None,
+        source_message_id="req-001",
+    )
+    inbox_repo = _InboxRepoStub(original)
+    workline_repo = _SingleItemRepoStub(SimpleNamespace(id=1, is_active=False))
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        workline_repo=cast("Any", workline_repo),
+    )
+
+    db = object()
+    with pytest.raises(ValueError, match="未启用"):
+        await service.replay_inbox(db, inbox_id=10, reason="重新诊断", operator_id="ops-1", auto_commit=False)
+
+    workline_repo.get_for_update.assert_awaited_once_with(db, 1)
+    inbox_repo.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -125,6 +209,40 @@ async def test_manual_operation_requires_open_session_state() -> None:
             reason="需要检查",
             auto_commit=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_manual_operation_rejects_inactive_workline() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    session = SimpleNamespace(
+        id=20,
+        status=SessionStatus.RUNNING,
+        workline_id=1,
+        trace_id="trace-open",
+        reconciliation_state=None,
+    )
+    inbox_repo = _InboxRepoStub()
+    workline_repo = _SingleItemRepoStub(SimpleNamespace(id=1, is_active=False))
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        workline_repo=cast("Any", workline_repo),
+    )
+
+    db = object()
+    with pytest.raises(ValueError, match="未启用"):
+        await service.create_manual_operation(
+            db,
+            session_id=20,
+            operation="HOLD",
+            operator_id="ops-1",
+            reason="需要检查",
+            auto_commit=False,
+        )
+
+    workline_repo.get_for_update.assert_awaited_once_with(db, 1)
+    inbox_repo.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -150,7 +268,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
         workline_id=45,
         trace_id="trace-001",
     )
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     callback_payload = {
         "active_bin_rack": {
             "rack_id": "RACK-001",
@@ -251,7 +369,7 @@ async def test_sandbox_external_callback_accepts_rack_operation_wait() -> None:
         trace_id="trace-001",
         context_json={"rack_operation": {"resume_callback_type": "WMS_RACK_ARRIVED"}},
     )
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock(return_value=None))
     service = WorklineOperationService(
@@ -289,7 +407,7 @@ async def test_sandbox_external_callback_rejects_device_outbox() -> None:
         workline_id=45,
         payload_json={"command_code": "CMD-001"},
     )
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
         workline_repo=cast("Any", _SingleItemRepoStub(workline)),
@@ -323,7 +441,7 @@ async def test_sandbox_external_callback_requires_waiting_external_session() -> 
         workline_id=45,
         trace_id="trace-001",
     )
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
         session_repo=cast("Any", _SessionRepoStub(session)),
@@ -360,7 +478,7 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
         session_id_int=530,
     )
     session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
         outbox_repo=cast("Any", outbox_repo),
@@ -399,7 +517,7 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
         session_id_int=530,
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=10)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
         outbox_repo=cast("Any", outbox_repo),
@@ -416,6 +534,55 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
         )
 
     outbox_repo.get_by_dispatch_key.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ack_rejects_inactive_simulation_workline() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    outbox = SimpleNamespace(
+        id=34,
+        dispatch_key="device-command:CMD-001",
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        status=SystemOutboxStatus.SENT,
+        sent_at=None,
+        next_retry_at=None,
+        last_error=None,
+        session_id=530,
+        workline_id=45,
+        payload_json={"command_code": "CMD-001"},
+    )
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=False)
+    command = SimpleNamespace(
+        id=9,
+        command_code="CMD-001",
+        session_id_int=530,
+        sent_at=None,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+    )
+    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    service = WorklineOperationService(
+        outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        command_repo=cast("Any", _SingleItemRepoStub(command)),
+        workline_repo=cast("Any", _SingleItemRepoStub(workline)),
+    )
+
+    with (
+        patch(
+            "src.app.workline.services.runtime_reconciliation_service."
+            "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+            new=AsyncMock(return_value=session),
+        ),
+        pytest.raises(ValueError, match="未启用"),
+    ):
+        await service.submit_sandbox_ack(
+            object(),
+            dispatch_key="device-command:CMD-001",
+            auto_commit=False,
+        )
 
 
 @pytest.mark.asyncio
@@ -445,7 +612,7 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
         ack_message=None,
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
         outbox_repo=cast("Any", outbox_repo),
@@ -504,7 +671,7 @@ async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
         ack_message=None,
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
         session_repo=cast("Any", _SessionRepoStub(session)),
@@ -558,7 +725,7 @@ async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() ->
         ack_message="SANDBOX_ACK",
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
         session_repo=cast("Any", _SessionRepoStub(session)),
@@ -941,7 +1108,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
         trace_id="trace-001",
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     outbox_repo = _OutboxRepoStub()
     service = WorklineOperationService(
@@ -1002,7 +1169,7 @@ async def test_sandbox_result_rejects_command_when_session_is_waiting_for_anothe
         trace_id="trace-001",
     )
     session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=10)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     service = WorklineOperationService(
         inbox_repo=cast("Any", inbox_repo),
@@ -1041,7 +1208,7 @@ async def test_sandbox_result_rejects_command_when_session_is_not_waiting_for_de
         trace_id="trace-001",
     )
     session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_command_id=9)
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION)
+    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     service = WorklineOperationService(
         inbox_repo=cast("Any", inbox_repo),

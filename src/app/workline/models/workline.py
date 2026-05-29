@@ -107,7 +107,6 @@ class WorkLineBase(BaseMixin):
         description="工作线诊断配置（软件/硬件分类偏好、展示策略等）",
     )
     description: str | None = Field(default=None, max_length=500, description="作业线描述")
-    is_active: bool = Field(default=True, description="是否启用")
 
 
 class WorkLine(
@@ -153,6 +152,7 @@ class WorkLine(
     stopped_at: datetime | None = Field(default=None, index=True, description="进入急停冻结的时间")
     stopped_reason: str | None = Field(default=None, max_length=200, description="进入急停冻结的原因")
     resumed_at: datetime | None = Field(default=None, index=True, description="恢复 READY 的时间")
+    is_active: bool = Field(default=False, description="是否启用")
 
     @property
     def plugin_definition(self) -> WorklinePluginDefinition | None:
@@ -188,11 +188,11 @@ class WorkLine(
         }
 
 
-class WorkLineCreate(ModelFactory(WorkLineBase).for_create()):
+class WorkLineCreate(ModelFactory(WorkLineBase).for_create(exclude=("is_active",))):
     """作业线创建 Schema - 接收客户端输入"""
 
 
-class WorkLineUpdate(ModelFactory(WorkLineBase).for_optimistic_update()):
+class WorkLineUpdate(ModelFactory(WorkLineBase).for_optimistic_update(exclude=("is_active",))):
     """作业线更新 Schema - 所有字段可选"""
 
 
@@ -201,6 +201,7 @@ class WorkLineResponse(WorkLineBase):
 
     id: int
     version: int
+    is_active: bool
 
 
 class WorkLinePluginOption(BaseModel):
@@ -210,3 +211,27 @@ class WorkLinePluginOption(BaseModel):
     label: str = Field(description="插件显示文本")
     contract_versions: list[str] = Field(default_factory=list, description="可选契约版本")
     default_contract_version: str = Field(description="默认契约版本")
+
+
+class WorkLineConfigurationCheck(BaseModel):
+    """作业线启用前结构化检查项。"""
+
+    code: str = Field(description="检查项编码")
+    status: Literal["PASS", "FAIL", "WARN"] = Field(description="检查结果")
+    severity: Literal["INFO", "WARNING", "BLOCKER"] = Field(description="严重程度")
+    context: dict[str, Any] = Field(default_factory=dict, description="检查上下文")
+
+
+class WorkLineConfigurationStatus(BaseModel):
+    """作业线配置状态响应。"""
+
+    workline_id: int = Field(description="作业线 ID")
+    is_active: bool = Field(description="是否已启用")
+    can_activate: bool = Field(description="是否满足启用条件")
+    checks: list[WorkLineConfigurationCheck] = Field(default_factory=list, description="启用前检查项")
+
+
+class WorkLineStateTransitionRequest(BaseModel):
+    """作业线启停请求。"""
+
+    version: int = Field(description="WorkLine 乐观锁版本号")

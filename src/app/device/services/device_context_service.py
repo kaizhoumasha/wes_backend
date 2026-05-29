@@ -82,7 +82,7 @@ class DeviceContextService:
         is_workline_bound = isinstance(work_line_id, int) and work_line_id > 0
 
         if is_workline_bound and work_line_id is not None:
-            workline = await self._workline_repo.get_by_id(db, work_line_id)
+            workline = await self._workline_repo.get_for_update(db, work_line_id)
             if workline is None:
                 return None, self._build_not_found(f"设备 {device_code} 关联的工作线不存在")
 

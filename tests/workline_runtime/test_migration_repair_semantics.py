@@ -78,3 +78,25 @@ def test_completion_policy_migration_only_backfills_canonical_full_box_policy() 
     assert "LIKE '%FULL_BOX_EXCHANGE%'" in migration_text
     assert "LIKE '%FULL_BIN_EXCHANGE%'" not in migration_text
     assert "LIKE '%RACK_BIN_EXCHANGE%'" not in migration_text
+
+
+def test_workline_activation_default_migration_preserves_existing_active_rows() -> None:
+    migration = Path("migrations/versions/20260529_1053_c1ea657cb2d7_workline_activation_state_default.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+    normalized_upgrade = " ".join(upgrade_body.split())
+
+    assert "server_default=sa.false()" in upgrade_body
+    assert "SET is_active = false WHERE is_active = true" not in normalized_upgrade
+    assert "SET is_active = false WHERE is_active IS NULL OR is_active = true" not in normalized_upgrade
+
+
+def test_workline_activation_default_migration_downgrade_restores_previous_server_default() -> None:
+    migration = Path("migrations/versions/20260529_1053_c1ea657cb2d7_workline_activation_state_default.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    downgrade_body = migration_text.split("def downgrade() -> None:", maxsplit=1)[1]
+
+    assert "server_default=None" in downgrade_body
+    assert "server_default=sa.true()" not in downgrade_body

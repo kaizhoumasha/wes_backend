@@ -7,7 +7,7 @@ Sandbox 用于 WORKLINE 级调试。它会保留真实编排链路，只把真�
 - `APP_ENV=dev` 或 `APP_ENV=test`。
 - WorkLine 的 `run_mode=SIMULATION`。
 - 插件已注册到 `src/workline_plugin_registry.py`，`plugin_key`、`contract_version` 与 WorkLine 配置一致。
-- 设备拓扑满足插件 manifest，设备上下游关系由 `Device.upstream_device_id` 推导。
+- 设备角色、唯一性和能力满足插件 manifest；`Device.upstream_device_id` 仅作为物理路径辅助信息。
 - 事件、结果和命令 payload 不增加 `sandbox` 标志字段。
 
 ## 流程

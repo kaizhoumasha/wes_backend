@@ -99,16 +99,27 @@ def resolve_destination_device(
         if optional_str_attr(source_device, "device_role") == destination.value:
             return source_device
 
-        downstream_candidates = [
+        source_id = optional_int_attr(source_device, "id")
+        downstream_role_candidates = [
             device
             for device in devices
-            if optional_int_attr(device, "upstream_device_id") == optional_int_attr(source_device, "id")
+            if optional_int_attr(device, "upstream_device_id") == source_id
             and optional_str_attr(device, "device_role") == destination.value
+        ]
+        if downstream_role_candidates:
+            return _resolve_single_candidate(
+                destination=destination,
+                source_device=source_device,
+                candidates=downstream_role_candidates,
+            )
+
+        role_candidates = [
+            device for device in devices if optional_str_attr(device, "device_role") == destination.value
         ]
         return _resolve_single_candidate(
             destination=destination,
             source_device=source_device,
-            candidates=downstream_candidates,
+            candidates=role_candidates,
         )
 
     if destination.kind == DestinationKind.DEVICE:

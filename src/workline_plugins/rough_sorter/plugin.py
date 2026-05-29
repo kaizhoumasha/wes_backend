@@ -157,9 +157,9 @@ class RoughSorterPlugin(WorklinePlugin):
         plugin_key=ROUGH_SORTER_PLUGIN_KEY,
         contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         required_device_roles=(
-            DeviceRoleRequirement(role=ROLE_INPUT_ARM, min_count=1),
-            DeviceRoleRequirement(role=ROLE_CONVEYOR, min_count=1),
-            DeviceRoleRequirement(role=ROLE_OUTPUT_ARM, min_count=1),
+            DeviceRoleRequirement(role=ROLE_INPUT_ARM, min_count=1, max_count=1),
+            DeviceRoleRequirement(role=ROLE_CONVEYOR, min_count=1, max_count=1),
+            DeviceRoleRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
         ),
         business_key_resolver=resolve_rough_sorter_business_key,
         result_classifier=classify_rough_sorter_result,
