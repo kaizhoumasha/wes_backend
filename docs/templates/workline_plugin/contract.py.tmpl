@@ -6,7 +6,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.workline_runtime.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    hash_material_evidence,
+)
+from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import EventPayload
+
+PLUGIN_KEY = "{{PLUGIN_KEY}}"
+CONTRACT_VERSION = "{{CONTRACT_VERSION}}"
+
 
 class ItemArrivedData(BaseModel):
     """事件 data 业务层。"""
@@ -14,6 +25,7 @@ class ItemArrivedData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     business_key: str
+    item_id: str
     station_code: str
     expected_value: float = Field(gt=0)
     tolerance: float = Field(gt=0)
@@ -31,6 +43,7 @@ class MeasureCompletedData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     business_key: str
+    item_id: str
     actual_value: float = Field(gt=0)
 
 
@@ -40,16 +53,39 @@ class DivertParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     business_key: str
+    item_id: str
     destination_lane: Literal["PASS_LANE", "HOLD_LANE"]
     reason_code: str
 
 
-def resolve_business_key(payload: dict[str, Any]) -> str:
-    """从 event.data 解析稳定业务键。"""
+PLUGIN_NG_REASONS = (
+    NgReasonDefinition(
+        canonical_code="VALUE_OUT_OF_TOLERANCE",
+        label="检测值超出允差",
+        source=NgReasonSource.PLUGIN,
+        plugin_key=PLUGIN_KEY,
+        contract_version=CONTRACT_VERSION,
+        maps_from=("VALUE_OUT_OF_TOLERANCE",),
+    ),
+)
 
+
+def _payload_data(payload: dict[str, Any]) -> dict[str, Any]:
     data = payload.get("data")
-    if not isinstance(data, dict):
-        raise ValueError("ITEM_ARRIVED.data is required")
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_business_key(payload: dict[str, Any]) -> str | None:
+    """从本插件事件 data 解析稳定业务键。
+
+    仅处理本插件声明的业务事件；不属于本插件的 payload 返回 None，
+    让通用 resolver 继续尝试 business_key、event identity 或 barcode。
+    """
+
+    if payload.get("event_type") != "ITEM_ARRIVED":
+        return None
+
+    data = _payload_data(payload)
     business_key = data.get("business_key")
     if not isinstance(business_key, str) or not business_key:
         raise ValueError("ITEM_ARRIVED.data.business_key is required")
@@ -57,20 +93,74 @@ def resolve_business_key(payload: dict[str, Any]) -> str:
 
 
 def classify_result(payload: dict[str, Any]) -> str | None:
-    """区分设备失败和成功结果；业务 NG 由插件 handler 根据 data 判断。"""
+    """区分设备失败和可由 payload 直接判断的业务结果。
+
+    复杂业务 NG 可继续由 handler 结合 session context 生成 MARK_NG。
+    """
 
     if payload.get("result") == "FAILED":
         return "hardware_failure"
+    data = _payload_data(payload)
+    if payload.get("result") == "SUCCESS" and data.get("business_decision") == "NG":
+        return "business_decision"
     return None
 
 
-def build_measure_params(*, business_key: str, station_code: str) -> dict[str, str]:
-    return {"business_key": business_key, "station_code": station_code}
+def _material_identity_from_mapping(value: dict[str, Any]) -> str | None:
+    item_id = value.get("item_id")
+    return item_id if isinstance(item_id, str) and item_id else None
 
 
-def build_divert_params(*, business_key: str, destination_lane: str, reason_code: str) -> dict[str, str]:
+def resolve_material_identity(input_value: MaterialIdentityInput) -> MaterialIdentity:
+    """解析插件物料身份，供 NG return / runtime hold 去重。"""
+
+    source_payload = dict(input_value.source_payload or {})
+    source_data = source_payload.get("data")
+    source_data = source_data if isinstance(source_data, dict) else source_payload
+    scan_payload = dict(input_value.material_scan_payload or {})
+    session_context = dict(input_value.session_context or {})
+
+    source_item_id = _material_identity_from_mapping(source_data)
+    scan_item_id = _material_identity_from_mapping(scan_payload)
+    context_item_id = _material_identity_from_mapping(session_context)
+    item_id = source_item_id or scan_item_id or context_item_id
+    evidence = {
+        "source": source_data,
+        "scan": scan_payload,
+        "context": session_context,
+    }
+
+    if not item_id:
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.MISSING,
+            raw_evidence_hash=hash_material_evidence(evidence),
+        )
+
+    if source_item_id and scan_item_id and source_item_id != scan_item_id:
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.AMBIGUOUS,
+            raw_evidence_hash=hash_material_evidence(evidence),
+        )
+
+    business_key = source_data.get("business_key") or session_context.get("business_key")
+    business_key = business_key if isinstance(business_key, str) and business_key else None
+    return MaterialIdentity(
+        resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+        idempotency_key=f"{PLUGIN_KEY}:{item_id}",
+        business_key=business_key,
+        display={"item_id": item_id},
+        raw_evidence_hash=hash_material_evidence(evidence),
+    )
+
+
+def build_measure_params(*, business_key: str, item_id: str, station_code: str) -> dict[str, str]:
+    return {"business_key": business_key, "item_id": item_id, "station_code": station_code}
+
+
+def build_divert_params(*, business_key: str, item_id: str, destination_lane: str, reason_code: str) -> dict[str, str]:
     return {
         "business_key": business_key,
+        "item_id": item_id,
         "destination_lane": destination_lane,
         "reason_code": reason_code,
     }

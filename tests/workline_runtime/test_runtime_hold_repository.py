@@ -152,7 +152,7 @@ async def test_creation_service_builds_callback_timeout_hold_key_and_snapshot(db
         id=91,
         workline_id=45,
         trace_id="trace-001",
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         reconciliation_deadline_at=None,
         reconciliation_wait_token="COMMAND_RESULT:CMD-1",
@@ -181,7 +181,7 @@ async def test_creation_service_builds_dispatch_ack_exhausted_hold_key(db_sessio
         id=91,
         workline_id=45,
         trace_id="trace-001",
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
     outbox = SimpleNamespace(id=12, dispatch_key="device-command:CMD-001", payload_json={})

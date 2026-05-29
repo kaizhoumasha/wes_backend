@@ -214,7 +214,7 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
         session_id="session-001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 
@@ -308,7 +308,7 @@ async def test_record_empty_rack_verified_conflict_creates_runtime_hold() -> Non
         session_id="session-ecs-001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
 

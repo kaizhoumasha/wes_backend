@@ -15,7 +15,7 @@ async def _create_workline_with_devices(db_session) -> tuple[WorkLine, Device, D
         line_name="运行态拓扑测试线",
         line_type=LineType.AUTO,
         run_mode=WorkLineRunMode.SIMULATION,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0.0",
     )
     db_session.add(workline)

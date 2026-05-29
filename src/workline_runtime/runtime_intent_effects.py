@@ -792,18 +792,23 @@ class RuntimeIntentEffectApplier:
 
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
-        _ = await service.create_device_event_inbox(
-            db=ctx_map["db"],
-            device_code=str(payload["device_code"]),
-            event_type=str(payload["event_type"]),
-            timestamp=int(payload["timestamp"]),
-            data=dict(payload["data"]),
-            trace_id=_ctx_trace_id(ctx_map),
-            event_id=payload.get("event_id"),
-            causation_id=payload.get("causation_id"),
-            canonical_event_type=payload.get("canonical_event_type"),
-            auto_commit=False,
-        )
+        from src.app.workline.services.inbox_service import DuplicateInboxError
+
+        try:
+            _ = await service.create_device_event_inbox(
+                db=ctx_map["db"],
+                device_code=str(payload["device_code"]),
+                event_type=str(payload["event_type"]),
+                timestamp=int(payload["timestamp"]),
+                data=dict(payload["data"]),
+                trace_id=_ctx_trace_id(ctx_map),
+                event_id=payload.get("event_id"),
+                causation_id=payload.get("causation_id"),
+                canonical_event_type=payload.get("canonical_event_type"),
+                auto_commit=False,
+            )
+        except DuplicateInboxError:
+            return
 
     async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         service = self._resource_projection_service

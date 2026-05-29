@@ -22,7 +22,7 @@ async def test_get_timed_out_sessions_includes_external_waits_without_command(db
     expired_session = WorklineSession(
         session_code="session-external-timeout",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_EXTERNAL,
         current_wait_type="EXTERNAL_HTTP",

@@ -19,7 +19,10 @@ import pytest
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus
 from src.utils.timezone import timezone
+from src.workline_plugins.rough_sorter.contract import resolve_rough_sorter_business_key
 from src.workline_runtime.session_resolver import SessionResolveError, _resolve_business_key
+
+pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
 
 
 class MockSessionRepository:
@@ -280,7 +283,7 @@ class TestSessionResolver:
             source_message_id="req-001",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         workline.contract_version = "wl-2026.04"
         workline.run_mode = "SIMULATION"
         devices_by_role = make_devices_by_role()
@@ -300,7 +303,7 @@ class TestSessionResolver:
         # Assert
         assert session is not None
         assert session.workline_id == 1
-        assert session.plugin_key == "smt_classifier"
+        assert session.plugin_key == "test_workline_plugin"
         assert session.business_key == "ORDER_001"
         assert session.run_mode == RunMode.SIMULATION
         assert session.status == SessionStatus.NEW
@@ -327,7 +330,7 @@ class TestSessionResolver:
             source_message_id="req-lock",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_LOCK"},
         )
-        workline = make_workline(workline_id=7, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=7, plugin_key="test_workline_plugin")
 
         _ = await resolver.resolve_or_create(
             db=mock_db,
@@ -352,7 +355,7 @@ class TestSessionResolver:
             source_message_id="req-002",
             payload_json={"barcode": "PKG12346", "business_key": "ORDER_003"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         workline.contract_version = None
 
         with patch(
@@ -409,7 +412,7 @@ class TestSessionResolver:
             id=100,
             session_code="SESSION_100",
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="ORDER_001",
             status=SessionStatus.RUNNING,
             ingress_count=1,
@@ -427,7 +430,7 @@ class TestSessionResolver:
             source_message_id="req-new",
             payload_json={"barcode": "PKG12345", "business_key": "ORDER_001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -471,7 +474,7 @@ class TestSessionResolver:
             id=101,
             session_code="SESSION_101",
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="ORDER_001",
             status=SessionStatus.COMPLETED,
             ended_at=timezone.now_for_db() - timedelta(minutes=3),
@@ -492,7 +495,7 @@ class TestSessionResolver:
         session = await resolver.resolve_or_create(
             db=mock_db,
             inbox=inbox,
-            workline=make_workline(workline_id=1, plugin_key="smt_classifier"),
+            workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
             devices_by_role=make_devices_by_role(),
         )
 
@@ -514,7 +517,7 @@ class TestSessionResolver:
             id=200,
             session_code="SESSION_200",
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="ORDER_002",
             status=SessionStatus.WAITING_DEVICE_RESULT,
             context_json={"step": "waiting_pick"},
@@ -525,7 +528,7 @@ class TestSessionResolver:
             kind=InboxKind.TIMER_TIMEOUT,
             session_id=200,
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -554,7 +557,7 @@ class TestSessionResolver:
             id=300,
             session_code="SESSION_300",
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="ORDER_003",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={"wms_order": "WO123"},
@@ -567,7 +570,7 @@ class TestSessionResolver:
             trace_id="trace_12345",
             payload_json={"wms_response": "success"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -598,7 +601,7 @@ class TestSessionResolver:
             id=300,
             session_code="SESSION_SMT_300",
             workline_id=45,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="SMT_REEL_001",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={},
@@ -608,7 +611,7 @@ class TestSessionResolver:
             id=301,
             session_code="SESSION_FULLBOX_301",
             workline_id=50,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="release-001",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={},
@@ -656,7 +659,7 @@ class TestSessionResolver:
             id=300,
             session_code="SESSION_SMT_300",
             workline_id=45,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="SMT_REEL_001",
             status=SessionStatus.WAITING_EXTERNAL,
             context_json={
@@ -666,7 +669,7 @@ class TestSessionResolver:
             trace_id="trace-shared-001",
         )
         mock_session_repo.sessions[300] = material_session
-        dispatch_key = "external:smt_classifier:trace-001:RACK_OPERATION"
+        dispatch_key = "external:test_workline_plugin:trace-001:RACK_OPERATION"
         resolver.outbox_repo.outboxes[dispatch_key] = SimpleNamespace(
             id=77,
             session_id=None,
@@ -714,7 +717,7 @@ class TestSessionResolver:
             id=300,
             session_code="SESSION_SMT_300",
             workline_id=45,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="SMT_REEL_001",
             status=SessionStatus.WAITING_EXTERNAL,
             current_wait_type="RACK_OPERATION",
@@ -728,7 +731,7 @@ class TestSessionResolver:
             trace_id="trace-shared-001",
         )
         mock_session_repo.sessions[300] = material_session
-        dispatch_key = "external:smt_classifier:trace-001:RACK_MOVE_OUT"
+        dispatch_key = "external:test_workline_plugin:trace-001:RACK_MOVE_OUT"
         resolver.rack_task_repo.tasks[dispatch_key] = SimpleNamespace(
             id=901,
             dispatch_key=dispatch_key,
@@ -769,7 +772,7 @@ class TestSessionResolver:
             id=301,
             session_code="SESSION_SMT_301",
             workline_id=45,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="SMT_REEL_001",
             status=SessionStatus.WAITING_EXTERNAL,
             current_wait_type="HANDLING_OPERATION",
@@ -831,7 +834,7 @@ class TestSessionResolver:
             id=400,
             session_code="SESSION_400",
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             business_key="ORDER_004",
             status=SessionStatus.MANUAL_HOLD,
             context_json={"manual_reason": "quality_check"},
@@ -843,7 +846,7 @@ class TestSessionResolver:
             session_id=400,
             payload_json={"operator": "user001"},
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -871,7 +874,7 @@ class TestSessionResolver:
             kind=InboxKind.TIMER_TIMEOUT,
             session_id=999,  # 不存在的 Session
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act & Assert
@@ -895,7 +898,7 @@ class TestSessionResolver:
             kind=InboxKind.EXTERNAL_HTTP,
             trace_id=None,  # 缺失 trace_id
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act & Assert
@@ -920,7 +923,7 @@ class TestSessionResolver:
             device_id=1,
             payload_json={"data": {"barcode": "PKG12345"}},  # 无 business_key，barcode 在 data 内
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         devices_by_role = make_devices_by_role()
 
         # Act
@@ -946,28 +949,26 @@ class TestSessionResolver:
 
         assert key == "PKG12345"
 
-    def test_resolve_business_key_uses_plugin_manifest_resolver_for_smt_six_in_one(self):
-        """SMT Six-In-One 业务键由插件 manifest resolver 解析。"""
+    def test_resolve_business_key_uses_plugin_manifest_resolver_for_test_item(self):
+        """测试插件业务键由插件 manifest resolver 解析。"""
         payload = {
             "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "LotCode": "LOTABC123",
-                "DateCode": "20260409",
-                "PkgID": "SVYU00125TP4LCR02_2",
+                "part_no": "PART-001",
+                "vendor_part_no": "VENDOR-PART-001",
+                "quantity": "7387",
+                "lot_no": "LOTABC123",
+                "production_date": "20260409",
+                "item_id": "ITEM-001",
             }
         }
 
-        key1 = _resolve_business_key(payload, plugin_key="smt_classifier")
-        key2 = _resolve_business_key(payload, plugin_key="smt_classifier")
+        key1 = _resolve_business_key(payload, plugin_key="test_workline_plugin")
+        key2 = _resolve_business_key(payload, plugin_key="test_workline_plugin")
 
         import hashlib
         import json
 
-        expected_hash = hashlib.sha256(
-            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
         assert key1 == expected_hash
         assert key2 == expected_hash
@@ -977,23 +978,21 @@ class TestSessionResolver:
         payload = {
             "business_key": "UPSTREAM-MISMATCH",
             "data": {
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "LotCode": "LOTABC123",
-                "DateCode": "20260409",
-                "PkgID": "SVYU00125TP4LCR02_2",
+                "part_no": "PART-001",
+                "vendor_part_no": "VENDOR-PART-001",
+                "quantity": "7387",
+                "lot_no": "LOTABC123",
+                "production_date": "20260409",
+                "item_id": "ITEM-001",
             },
         }
 
-        key = _resolve_business_key(payload, plugin_key="smt_classifier")
+        key = _resolve_business_key(payload, plugin_key="test_workline_plugin")
 
         import hashlib
         import json
 
-        expected_hash = hashlib.sha256(
-            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
         assert key == expected_hash
 
@@ -1009,7 +1008,7 @@ class TestSessionResolver:
             SessionResolveError,
             match="Unable to resolve stable business_key from payload",
         ):
-            _resolve_business_key(payload, plugin_key="smt_classifier")
+            _resolve_business_key(payload, plugin_key="test_workline_plugin")
 
     def test_resolve_business_key_uses_event_id_for_material_arrived(self):
         """无业务条码的传感器事件应优先使用 event_id 形成稳定归属键。"""
@@ -1040,7 +1039,7 @@ class TestSessionResolver:
             SessionResolveError,
             match="Unable to resolve stable business_key from payload",
         ):
-            _resolve_business_key(payload, plugin_key="smt_classifier")
+            _resolve_business_key(payload, plugin_key="test_workline_plugin")
 
     def test_resolve_business_key_raises_when_stable_identity_missing(self):
         """缺少稳定业务标识时，不应伪造随机 business_key。"""
@@ -1097,7 +1096,7 @@ class TestSessionResolver:
                 "data": None,
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         with pytest.raises(
             SessionResolveError,
@@ -1132,7 +1131,7 @@ class TestSessionResolver:
                 },
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
             db=mock_db,
@@ -1164,7 +1163,7 @@ class TestSessionResolver:
                 },
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         with pytest.raises(
             SessionResolveError,
@@ -1180,28 +1179,28 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 0
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_uses_new_six_in_one_fields_as_business_key(
+    async def test_resolve_device_event_uses_test_plugin_item_fields_as_business_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试 DEVICE_EVENT 使用新 Six-In-One 字段生成稳定 business_key。"""
+        """测试 DEVICE_EVENT 使用测试插件字段生成稳定 business_key。"""
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
             payload_json={
                 "data": {
-                    "HHPN": "620100L00-011-G",
-                    "MfrPN": "CC0402JRNPO9BN220",
-                    "Qty": "7387",
-                    "LotCode": "LOTABC123",
-                    "DateCode": "20260409",
-                    "PkgID": "SVYU00125TP4LCR02_2",
+                    "part_no": "PART-001",
+                    "vendor_part_no": "VENDOR-PART-001",
+                    "quantity": "7387",
+                    "lot_no": "LOTABC123",
+                    "production_date": "20260409",
+                    "item_id": "ITEM-001",
                 }
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
             db=mock_db,
@@ -1210,26 +1209,66 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        # PkgID 生成 16 位稳定业务键
+        # item_id 生成 16 位稳定业务键
         import hashlib
         import json
 
-        expected_hash = hashlib.sha256(
-            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
         assert session.business_key == expected_hash
-        assert session.barcode == "SVYU00125TP4LCR02_2"
+        assert session.barcode is None
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_uses_incomplete_scan_key_when_smt_pkg_id_missing(
+    async def test_resolve_device_event_uses_rough_sorter_data_pkg_id_as_business_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """SMT 扫码缺 PkgID 时仍需建会话，让插件生成 NG 分流指令。"""
+        """粗分机 DEVICE_EVENT 应通过 payload.data.PkgID 派生并复用同一 Session。"""
+
+        payload = {
+            "device_code": "RS-SCAN-01",
+            "event_type": "SCAN_COMPLETED",
+            "data": {
+                "HHPN": "HH-001",
+                "MfrPN": "MFR-001",
+                "Qty": "1500",
+                "DateCode": "260528",
+                "LotCode": "LOT-A",
+                "PkgID": "PKG-ROUGH-001",
+            },
+        }
+        expected_key = resolve_rough_sorter_business_key(payload)
+        workline = make_workline(workline_id=1, plugin_key="rough_sorter")
+
+        first_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+        second_session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
+            workline=workline,
+            devices_by_role=make_devices_by_role(),
+        )
+
+        assert first_session.business_key == expected_key
+        assert second_session.id == first_session.id
+        assert second_session.ingress_count == 2
+        assert ("business_key", 1, expected_key) in mock_session_repo.find_calls
+
+    @pytest.mark.asyncio
+    async def test_resolve_device_event_uses_incomplete_scan_key_when_test_item_id_missing(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        """测试插件扫码缺 item_id 时仍需建会话，让插件生成 NG 分流指令。"""
 
         payload = {
             "device_code": "ARM01",
@@ -1238,11 +1277,11 @@ class TestSessionResolver:
             "timestamp": 1777338994000,
             "data": {
                 "location": "ARM01",
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
+                "part_no": "PART-001",
+                "vendor_part_no": "VENDOR-PART-001",
+                "quantity": "7387",
+                "production_date": "122625",
+                "lot_no": "8904936031",
             },
         }
         inbox = make_inbox(
@@ -1251,7 +1290,7 @@ class TestSessionResolver:
             source_message_id="req-incomplete-scan",
             payload_json=payload,
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
             db=mock_db,
@@ -1260,8 +1299,8 @@ class TestSessionResolver:
             devices_by_role=make_devices_by_role(),
         )
 
-        assert session.business_key.startswith("incomplete-scan:")
-        assert session.business_key == _resolve_business_key(payload, plugin_key="smt_classifier")
+        assert session.business_key.startswith("incomplete-test-item:")
+        assert session.business_key == _resolve_business_key(payload, plugin_key="test_workline_plugin")
         assert ("business_key", 1, session.business_key) in mock_session_repo.find_calls
         assert len(mock_session_repo.created_sessions) == 1
 
@@ -1272,7 +1311,7 @@ class TestSessionResolver:
         mock_session_repo,
         resolver,
     ):
-        """缺 PkgID 的同一份扫码证据不能因为跨秒重复上报而拆成多个 NG 周期。"""
+        """缺 item_id 的同一份扫码证据不能因为跨秒重复上报而拆成多个 NG 周期。"""
         payload = {
             "device_code": "ARM01",
             "event_type": "SCAN_COMPLETED",
@@ -1280,20 +1319,20 @@ class TestSessionResolver:
             "timestamp": 1777338994000,
             "data": {
                 "location": "ARM01",
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
+                "part_no": "PART-001",
+                "vendor_part_no": "VENDOR-PART-001",
+                "quantity": "7387",
+                "production_date": "122625",
+                "lot_no": "8904936031",
             },
         }
         later_payload = {**payload, "timestamp": 1777338999000}
-        assert _resolve_business_key(payload, plugin_key="smt_classifier") == _resolve_business_key(
+        assert _resolve_business_key(payload, plugin_key="test_workline_plugin") == _resolve_business_key(
             later_payload,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
         )
 
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         first_session = await resolver.resolve_or_create(
             db=mock_db,
             inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
@@ -1312,19 +1351,17 @@ class TestSessionResolver:
         assert len(mock_session_repo.created_sessions) == 1
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_rejects_six_in_one_without_plugin_key(
+    async def test_resolve_device_event_rejects_test_plugin_item_without_plugin_key(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """plugin_key 缺失时不再由通用 resolver 解析 SMT Six-In-One。"""
+        """plugin_key 缺失时不再由通用 resolver 解析测试插件专属字段。"""
         import hashlib
         import json
 
-        expected_hash = hashlib.sha256(
-            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
         _ = await mock_session_repo.create(
             mock_db,
             {
@@ -1348,12 +1385,12 @@ class TestSessionResolver:
             source_message_id="req-none-plugin",
             payload_json={
                 "data": {
-                    "HHPN": "620100L00-011-G",
-                    "MfrPN": "CC0402JRNPO9BN220",
-                    "Qty": "7387",
-                    "LotCode": "LOTABC123",
-                    "DateCode": "20260409",
-                    "PkgID": "SVYU00125TP4LCR02_2",
+                    "part_no": "PART-001",
+                    "vendor_part_no": "VENDOR-PART-001",
+                    "quantity": "7387",
+                    "lot_no": "LOTABC123",
+                    "production_date": "20260409",
+                    "item_id": "ITEM-001",
                 }
             },
         )
@@ -1374,25 +1411,23 @@ class TestSessionResolver:
         assert ("business_key", 1, expected_hash) not in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_device_event_new_six_in_one_key_reuses_existing_session(
+    async def test_resolve_device_event_test_plugin_item_key_reuses_existing_session(
         self,
         mock_db,
         mock_session_repo,
         resolver,
     ):
-        """测试相同的新 Six-In-One 数据会命中同一 business_key。"""
+        """测试相同的测试插件数据会命中同一 business_key。"""
         import hashlib
         import json
 
-        expected_hash = hashlib.sha256(
-            json.dumps("SVYU00125TP4LCR02_2", ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
         _ = await mock_session_repo.create(
             mock_db,
             {
                 "session_code": "SES_EXISTING",
                 "workline_id": 1,
-                "plugin_key": "smt_classifier",
+                "plugin_key": "test_workline_plugin",
                 "business_key": expected_hash,
                 "status": SessionStatus.NEW,
                 "ingress_count": 1,
@@ -1410,16 +1445,16 @@ class TestSessionResolver:
             source_message_id="req-latest",
             payload_json={
                 "data": {
-                    "HHPN": "620100L00-011-G",
-                    "MfrPN": "CC0402JRNPO9BN220",
-                    "Qty": "7387",
-                    "LotCode": "LOTABC123",
-                    "DateCode": "20260409",
-                    "PkgID": "SVYU00125TP4LCR02_2",
+                    "part_no": "PART-001",
+                    "vendor_part_no": "VENDOR-PART-001",
+                    "quantity": "7387",
+                    "lot_no": "LOTABC123",
+                    "production_date": "20260409",
+                    "item_id": "ITEM-001",
                 }
             },
         )
-        workline = make_workline(workline_id=1, plugin_key="smt_classifier")
+        workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
             db=mock_db,

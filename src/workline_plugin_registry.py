@@ -51,11 +51,11 @@ def _looks_like_manifest(value: Any) -> bool:
 
 
 WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
-    "smt_classifier": WorklinePluginDefinition(
-        plugin_key="smt_classifier",
-        plugin_module="src.workline_plugins.smt_classifier",
-        plugin_class_name="SmtClassifierPlugin",
-        contract_module=None,
+    "rough_sorter": WorklinePluginDefinition(
+        plugin_key="rough_sorter",
+        plugin_module="src.workline_plugins.rough_sorter.plugin",
+        plugin_class_name="RoughSorterPlugin",
+        contract_module="src.workline_plugins.rough_sorter.contract",
     ),
 }
 

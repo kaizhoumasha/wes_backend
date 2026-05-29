@@ -20,7 +20,7 @@ def test_ng_reason_catalog_rejects_duplicate_canonical_codes() -> None:
         canonical_code="SCAN_NG",
         label="扫码异常",
         source=NgReasonSource.PLUGIN,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         maps_from=("SCAN_NG",),
     )
@@ -38,7 +38,7 @@ def test_ng_reason_catalog_keeps_plugin_and_builtin_groups() -> None:
         canonical_code="SCAN_NG",
         label="扫码异常",
         source=NgReasonSource.PLUGIN,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         maps_from=("SCAN_NG",),
     )

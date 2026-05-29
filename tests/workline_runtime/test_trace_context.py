@@ -14,11 +14,11 @@ class TestTraceContext:
             id=11,
             workline_id=2,
             trace_id="trace-session",
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.2.3",
             last_request_id="req-session",
         )
-        workline = SimpleNamespace(id=2, plugin_key="smt_classifier", contract_version="1.2.3")
+        workline = SimpleNamespace(id=2, plugin_key="test_workline_plugin", contract_version="1.2.3")
         inbox = SimpleNamespace(
             id=33,
             source_message_id="req-001",
@@ -38,7 +38,7 @@ class TestTraceContext:
             trace_id="trace-001",
             workline_id=2,
             device_id=5,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.2.3",
         )
         outbox = SimpleNamespace(id=9, dispatch_key="dispatch-9", workline_id=2, session_id=11)
@@ -63,7 +63,7 @@ class TestTraceContext:
         assert trace.outbox_id == 9
         assert trace.dispatch_key == "dispatch-9"
         assert trace.canonical_event_type == "SCAN_COMPLETED"
-        assert trace.plugin_key == "smt_classifier"
+        assert trace.plugin_key == "test_workline_plugin"
         assert trace.contract_version == "1.2.3"
 
     def test_diagnostic_and_plugin_context_share_same_trace(self) -> None:
@@ -71,12 +71,14 @@ class TestTraceContext:
             id=21,
             workline_id=3,
             trace_id="trace-ctx-001",
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="2.0.0",
             last_request_id="req-ctx-001",
             context_json={"barcode": "BC-001"},
         )
-        workline = SimpleNamespace(id=3, plugin_key="smt_classifier", contract_version="2.0.0", config={"mode": "auto"})
+        workline = SimpleNamespace(
+            id=3, plugin_key="test_workline_plugin", contract_version="2.0.0", config={"mode": "auto"}
+        )
         inbox = SimpleNamespace(
             id=55,
             source_message_id="req-ctx-001",
@@ -103,7 +105,7 @@ class TestTraceContext:
         assert diagnostic.trace_id == "trace-ctx-001"
         assert diagnostic.session_id == 21
         assert diagnostic.workline_id == 3
-        assert diagnostic.plugin_key == "smt_classifier"
+        assert diagnostic.plugin_key == "test_workline_plugin"
         assert diagnostic.canonical_event_type == "SCAN_COMPLETED"
         assert ctx.trace_id == "trace-ctx-001"
         assert ctx.trace.request_id == "req-ctx-001"

@@ -99,18 +99,18 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
                 "resume_source_device_role": "STALE_ROLE",
             }
         },
-        trace_id="trace-smt-full",
+        trace_id="trace-rack-full",
         workline_id=45,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         last_request_id=None,
     )
     workline = SimpleNamespace(
         id=45,
         line_code="WL-CONVEYOR-02",
-        line_name="SMT 粗分右线",
+        line_name="测试输送右线",
         line_type="CONVEYOR",
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         run_mode="SIMULATION",
         config={},
@@ -156,10 +156,10 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
         kind="EXTERNAL_HTTP",
         payload_json={
             "callback_type": "WMS_RACK_ARRIVED",
-            "dispatch_key": "external:smt_classifier:trace-smt-full:RACK_OPERATION",
+            "dispatch_key": "external:test_workline_plugin:trace-rack-full:RACK_OPERATION",
             "active_bin_rack": {"rack_id": "RACK-NEXT-01", "cells": []},
         },
-        trace_id="trace-smt-full",
+        trace_id="trace-rack-full",
         source_message_id=None,
         event_id=None,
         causation_id=None,
@@ -173,7 +173,7 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
         workline=workline,
         devices_by_role={"CONVEYOR": [conveyor], "OUTPUT_ARM": [output_arm]},
         services=WorklineRuntimeServices(),
-        trace_id="trace-smt-full",
+        trace_id="trace-rack-full",
         inbox=inbox,
     )
     assert ctx.source_device.device_code == "PIPELINE02"
@@ -191,18 +191,18 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
                 "resume_source_device_role": "CONVEYOR",
             }
         },
-        trace_id="trace-smt-supply",
+        trace_id="trace-rack-supply",
         workline_id=30,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         last_request_id=None,
     )
     workline = SimpleNamespace(
         id=30,
         line_code="WL-CONVEYOR-01",
-        line_name="SMT 粗分左线",
+        line_name="测试输送左线",
         line_type="CONVEYOR",
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         run_mode="AUTO",
         config={},
@@ -248,10 +248,10 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
         kind="EXTERNAL_HTTP",
         payload_json={
             "callback_type": "WMS_RACK_ARRIVED",
-            "dispatch_key": "external:smt_classifier:trace-smt-supply:RACK_OPERATION",
+            "dispatch_key": "external:test_workline_plugin:trace-rack-supply:RACK_OPERATION",
             "active_bin_rack": {"rack_id": "RACK-NEXT-02", "cells": []},
         },
-        trace_id="trace-smt-supply",
+        trace_id="trace-rack-supply",
         source_message_id=None,
         event_id=None,
         causation_id=None,
@@ -265,7 +265,7 @@ def test_build_resolves_external_http_source_device_from_session_rack_operation_
         workline=workline,
         devices_by_role={"CONVEYOR": [conveyor], "OUTPUT_ARM": [output_arm]},
         services=WorklineRuntimeServices(),
-        trace_id="trace-smt-supply",
+        trace_id="trace-rack-supply",
         inbox=inbox,
     )
     assert ctx.source_device.device_code == "PIPELINE01"

@@ -104,7 +104,7 @@ curl -s -X POST "$BASE/runtime-holds/1/resolve" \
 ## 查询 NG 原因与 NG Items
 
 ```bash
-curl -s "$BASE/runtime-holds/ng-reasons?plugin_key=smt_classifier" \
+curl -s "$BASE/runtime-holds/ng-reasons" \
   -H "Authorization: Bearer $TOKEN"
 
 curl -s "$BASE/ng-return-items?runtime_hold_id=1&status=WAITING_REWORK" \

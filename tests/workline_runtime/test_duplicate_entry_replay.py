@@ -9,7 +9,7 @@ def _entry_payload(**extra):
     payload = {
         "event_type": "SCAN_COMPLETED",
         "device_code": "ARM03",
-        "data": {"PkgID": "SVYU00125TP4LCR02_2"},
+        "data": {"item_id": "ITEM-001"},
     }
     payload.update(extra)
     return payload
@@ -23,7 +23,7 @@ def test_payload_invalid_replay_entry_can_be_reprocessed() -> None:
         current_wait_type=None,
         failure_code="PAYLOAD_INVALID",
     )
-    workline = SimpleNamespace(plugin_key="smt_classifier")
+    workline = SimpleNamespace(plugin_key="test_workline_plugin")
 
     assert (
         _is_duplicate_entry_event_for_session(
@@ -44,7 +44,7 @@ def test_non_replay_manual_hold_entry_still_archives_as_duplicate() -> None:
         current_wait_type=None,
         failure_code="PAYLOAD_INVALID",
     )
-    workline = SimpleNamespace(plugin_key="smt_classifier")
+    workline = SimpleNamespace(plugin_key="test_workline_plugin")
 
     assert (
         _is_duplicate_entry_event_for_session(
@@ -65,7 +65,7 @@ def test_replay_entry_for_busy_session_still_archives_as_duplicate() -> None:
         current_wait_type="DEVICE_CALLBACK",
         failure_code="PAYLOAD_INVALID",
     )
-    workline = SimpleNamespace(plugin_key="smt_classifier")
+    workline = SimpleNamespace(plugin_key="test_workline_plugin")
 
     assert (
         _is_duplicate_entry_event_for_session(

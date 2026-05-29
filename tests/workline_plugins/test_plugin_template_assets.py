@@ -67,7 +67,7 @@ def test_invalid_fixture_documents_flattened_business_fields() -> None:
 
     assert "business_key" in invalid_event
     assert "data" not in invalid_event
-    assert set(invalid_event) - EVENT_FIELDS == {"business_key", "station_code"}
+    assert set(invalid_event) - EVENT_FIELDS == {"business_key", "item_id", "station_code"}
 
 
 def test_code_templates_do_not_use_legacy_step_code() -> None:
@@ -88,3 +88,23 @@ def test_plugin_guide_uses_current_result_classifier_contract() -> None:
 
     assert "ClassificationResult" not in guide
     assert "def classify_result(payload: dict[str, Any]) -> str | None:" in guide
+
+
+def test_registry_template_points_to_plugin_module() -> None:
+    expected_module = 'plugin_module="src.workline_plugins.{{PLUGIN_MODULE}}.plugin"'
+
+    registry_template = (TEMPLATE_DIR / "registry_entry.py.tmpl").read_text(encoding="utf-8")
+    tests_template = (TEMPLATE_DIR / "tests.py.tmpl").read_text(encoding="utf-8")
+
+    assert expected_module in registry_template
+    assert expected_module in tests_template
+
+
+def test_plugin_template_imports_command_result_type_at_runtime() -> None:
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+
+    runtime_import = "from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult"
+    type_checking_import = "if TYPE_CHECKING:\n    " + runtime_import
+
+    assert runtime_import in plugin_template
+    assert type_checking_import not in plugin_template

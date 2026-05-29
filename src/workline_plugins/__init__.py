@@ -9,24 +9,14 @@ if TYPE_CHECKING:
         WorklinePluginDefinition,
         get_workline_plugin_definition,
     )
-    from src.workline_plugins.smt_classifier import (
-        SmtClassifierPlugin,
-        smt_classifier_plugin,
-    )
 
 __all__ = [
     "WORKLINE_PLUGIN_REGISTRY",
-    "SmtClassifierPlugin",
     "WorklinePluginDefinition",
     "get_workline_plugin_definition",
-    "smt_classifier_plugin",
 ]
 
 _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
-    "SmtClassifierPlugin": (
-        "src.workline_plugins.smt_classifier",
-        "SmtClassifierPlugin",
-    ),
     "WORKLINE_PLUGIN_REGISTRY": (
         "src.workline_plugin_registry",
         "WORKLINE_PLUGIN_REGISTRY",
@@ -38,10 +28,6 @@ _EXPORT_SOURCES: dict[str, tuple[str, str]] = {
     "get_workline_plugin_definition": (
         "src.workline_plugin_registry",
         "get_workline_plugin_definition",
-    ),
-    "smt_classifier_plugin": (
-        "src.workline_plugins.smt_classifier",
-        "smt_classifier_plugin",
     ),
 }
 

@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src.workline_runtime.plugin_sdk import normalize_inbox_input, resolve_execution_context
+
+pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
 
 
 def test_resolve_execution_context_uses_workline_defaults_and_device_overrides() -> None:
@@ -10,7 +14,7 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
         line_name="Line A",
         line_type="AUTO",
         run_mode="SIMULATION",
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         config={"plugin": "config"},
         runtime_config_json={"timeout_policy": {"command": 30}},
@@ -35,9 +39,9 @@ def test_resolve_execution_context_uses_workline_defaults_and_device_overrides()
     runtime = resolve_execution_context(workline, {"SCANNER": [device]})
 
     assert runtime.workline is not None
-    assert runtime.workline.plugin_key == "smt_classifier"
+    assert runtime.workline.plugin_key == "test_workline_plugin"
     assert runtime.workline.run_mode == "SIMULATION"
-    assert runtime.devices_by_role["SCANNER"][0].plugin_key == "smt_classifier"
+    assert runtime.devices_by_role["SCANNER"][0].plugin_key == "test_workline_plugin"
     assert runtime.devices_by_role["SCANNER"][0].communication_profile["host"] == "127.0.0.1"
 
 
@@ -127,7 +131,7 @@ def test_normalize_inbox_input_uses_runtime_classifier_for_business_ng() -> None
         },
     )
 
-    normalized = normalize_inbox_input(inbox, plugin_key="smt_classifier")
+    normalized = normalize_inbox_input(inbox, plugin_key="test_workline_plugin")
 
     assert normalized.normalized_result == "SUCCESS"
     assert normalized.result_classification == "business_decision"
@@ -149,7 +153,7 @@ def test_normalize_inbox_input_treats_failed_inspection_ng_code_as_hardware_fail
         },
     )
 
-    normalized = normalize_inbox_input(inbox, plugin_key="smt_classifier")
+    normalized = normalize_inbox_input(inbox, plugin_key="test_workline_plugin")
 
     assert normalized.normalized_result == "TERMINAL_FAILURE"
     assert normalized.result_classification == "hardware_failure"

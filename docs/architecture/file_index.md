@@ -351,8 +351,7 @@
 **相关文档**：
 - 运行时语义 SSOT：`docs/business/workline_business_data_event_flow_spec.md` v0.1
 - 架构设计：`docs/business/workline_plugin_architecture_design.md` v3.2
-- SMT 粗分机完整数据流：`docs/business/workline_smt_classifier_runtime_flow.md`
-- SMT 粗分机硬件偏差分析：`docs/business/workline_smt_classifier_hardware_gap_analysis.md`
+- 历史 SMT 粗分机资料：`docs/archive/legacy-smt-classifier/`
 
 #### 🔧 作业线运行时 (src/workline_runtime/)
 
@@ -375,11 +374,7 @@
 
 #### 🧩 作业线插件实现 (src/workline_plugins/)
 
-| 文件 | 用途 | 分类 |
-|------|------|------|
-| `smt_classifier/plugin.py` | 当前标准化改造样板插件：只产出 RuntimeIntent，协议细节下沉到局部模块，运行时拥有拓扑、Session、命令和终态副作用 | 🔄 常用功能 |
-| `smt_classifier/contract.py` | SMT 粗分机插件协议模型（事件/结果 Payload） | 🔄 常用功能 |
-| `smt_classifier/normalizers.py` | SMT 粗分机插件数据解析与设备错误码兼容辅助 | 🔄 常用功能 |
+当前无已注册作业线插件实现。新插件重写后补充本索引。
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
@@ -555,8 +550,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
 | `third_party_integration_whitepaper.md` | 第三方集成指南 | 📚 参考资料 |
-| `workline_smt_classifier_runtime_flow.md` | SMT 粗分机插件与 Mock 设备端到端数据流说明 | 📚 参考资料 |
-| `workline_smt_classifier_hardware_gap_analysis.md` | SMT 粗分机当前实现与真实硬件协议偏差分析 | 📚 参考资料 |
+| `archive/legacy-smt-classifier/` | 已归档的旧 SMT 粗分机插件资料 | 📚 历史资料 |
 | `hardware/SMT粗分机接口调用说明书20260321-v1.md` | 当前 SMT 粗分机联调协议说明（现行标准） | 📖 必读文档 |
 | `hardware/SMT流水线接口调用说明书20260320-v1.md` | 当前 SMT 流水线联调协议说明（现行标准） | 📖 必读文档 |
 | `hardware/SMT分拣机ECS接口调用说明书V1-20260318.md` | 历史 ECS 协议转写稿，仅用于历史比对与偏差分析，非当前标准 | 📚 参考资料 |

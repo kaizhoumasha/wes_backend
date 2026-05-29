@@ -91,7 +91,7 @@ class TestCallbackResultIdempotency:
             trace_id="trace-001",
             params={"action": "PICK_AND_PUT"},
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             device_id=7,
         )
@@ -118,9 +118,9 @@ class TestCallbackResultIdempotency:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="test_workline_plugin", contract_version="1.0", is_active=True
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -190,9 +190,9 @@ class TestCallbackEventIdempotency:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier", contract_version="1.0", is_active=True
+                                plugin_key="test_workline_plugin", contract_version="1.0", is_active=True
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,

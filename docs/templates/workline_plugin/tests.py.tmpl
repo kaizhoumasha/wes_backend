@@ -6,17 +6,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
-from src.workline_runtime.plugin_next import PluginNext
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_plugin_registry import WorklinePluginDefinition
 from src.workline_plugins.{{PLUGIN_MODULE}}.context import {{CONTEXT_CLASS}}
 from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
     ItemArrivedPayload,
     build_divert_params,
     build_measure_params,
     resolve_business_key,
+    resolve_material_identity,
 )
 from src.workline_plugins.{{PLUGIN_MODULE}}.plugin import {{PLUGIN_CLASS}}
+from src.workline_runtime.material_identity import (
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+)
+from src.workline_runtime.plugin_next import PluginNext
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
 
 def make_ctx(context_json=None):
@@ -42,6 +48,7 @@ def test_event_payload_uses_data_boundary() -> None:
         "timestamp": 1777046400000,
         "data": {
             "business_key": "ITEM-001",
+            "item_id": "ITEM-001",
             "station_code": "QC01",
             "expected_value": 10.0,
             "tolerance": 0.5,
@@ -52,18 +59,20 @@ def test_event_payload_uses_data_boundary() -> None:
 
 
 def test_command_params_helpers() -> None:
-    assert build_measure_params(business_key="ITEM-001", station_code="QC01") == {
+    assert build_measure_params(business_key="ITEM-001", item_id="ITEM-001", station_code="QC01") == {
         "business_key": "ITEM-001",
+        "item_id": "ITEM-001",
         "station_code": "QC01",
     }
     assert build_divert_params(
         business_key="ITEM-001",
+        item_id="ITEM-001",
         destination_lane="PASS_LANE",
         reason_code="VALUE_OK",
     )["destination_lane"] == "PASS_LANE"
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio()
 async def test_happy_path_event_creates_measure_command() -> None:
     plugin = {{PLUGIN_CLASS}}()
     ctx = make_ctx()
@@ -74,6 +83,7 @@ async def test_happy_path_event_creates_measure_command() -> None:
             "timestamp": 1777046400000,
             "data": {
                 "business_key": "ITEM-001",
+                "item_id": "ITEM-001",
                 "station_code": "QC01",
                 "expected_value": 10.0,
                 "tolerance": 0.5,
@@ -88,13 +98,15 @@ async def test_happy_path_event_creates_measure_command() -> None:
         RuntimeIntentKind.COMMAND,
     ]
     assert intents[0].context_patch["business_key"] == "ITEM-001"
+    assert intents[0].context_patch["item_id"] == "ITEM-001"
     assert intents[1].action == "MEASURE_ITEM"
     assert intents[1].device_role == "MEASURE_DEVICE"
     assert intents[1].payload_json["business_key"] == "ITEM-001"
+    assert intents[1].payload_json["item_id"] == "ITEM-001"
     assert intents[1].timeout_seconds == 120
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio()
 async def test_business_ng_is_decision_not_failure() -> None:
     plugin = {{PLUGIN_CLASS}}()
     ctx = make_ctx({"expected_value": 10.0, "tolerance": 0.5})
@@ -103,7 +115,7 @@ async def test_business_ng_is_decision_not_failure() -> None:
         command_code="CMD-001",
         device_code="MEASURE01",
         result="SUCCESS",
-        data={"business_key": "ITEM-001", "actual_value": 11.0},
+        data={"business_key": "ITEM-001", "item_id": "ITEM-001", "actual_value": 11.0},
     )
 
     intents = await plugin.handle_measure_success(ctx, command_result)
@@ -115,3 +127,30 @@ async def test_business_ng_is_decision_not_failure() -> None:
     ]
     assert intents[1].reason_code == "VALUE_OUT_OF_TOLERANCE"
     assert intents[2].action == "DIVERT_ITEM"
+
+
+def test_registry_definition_loads_manifest() -> None:
+    definition = WorklinePluginDefinition(
+        plugin_key="{{PLUGIN_KEY}}",
+        plugin_module="src.workline_plugins.{{PLUGIN_MODULE}}.plugin",
+        plugin_class_name="{{PLUGIN_CLASS}}",
+    )
+
+    assert definition.plugin_class is {{PLUGIN_CLASS}}
+    assert definition.manifest.plugin_key == "{{PLUGIN_KEY}}"
+    assert definition.manifest.contract_version == "{{CONTRACT_VERSION}}"
+
+
+def test_manifest_exposes_material_identity_and_ng_reasons() -> None:
+    manifest = {{PLUGIN_CLASS}}.manifest
+
+    identity = resolve_material_identity(
+        MaterialIdentityInput(source_payload={"data": {"business_key": "ITEM-001", "item_id": "ITEM-001"}})
+    )
+
+    assert identity.resolution_status == MaterialIdentityResolutionStatus.RESOLVED
+    assert identity.idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
+    assert manifest.resolve_material_identity(
+        MaterialIdentityInput(source_payload={"data": {"item_id": "ITEM-001"}})
+    ).idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
+    assert [reason.canonical_code for reason in manifest.list_ng_reasons()] == ["VALUE_OUT_OF_TOLERANCE"]

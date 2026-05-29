@@ -11,7 +11,7 @@ from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.ng_return_item_service import NgReturnItemService
 from src.utils.timezone import timezone
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
 
 async def _create_scan_ng_fixture(db_session):
@@ -19,7 +19,7 @@ async def _create_scan_ng_fixture(db_session):
         line_code="WL-NG-ITEM",
         line_name="WL-NG-ITEM",
         line_type=LineType.AUTO,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
     )
     db_session.add(workline)
@@ -40,12 +40,12 @@ async def _create_scan_ng_fixture(db_session):
         "device_code": device.device_code,
         "data": {
             "location": "ARM01",
-            "HHPN": "620100L00-011-G",
-            "MfrPN": "CC0402JRNPO9BN220",
-            "Qty": "7387",
-            "DateCode": "122625",
-            "LotCode": "8904936031",
-            "PkgID": "6",
+            "part_no": "PART-001",
+            "vendor_part_no": "VENDOR-PART-001",
+            "quantity": "7387",
+            "production_date": "122625",
+            "lot_no": "8904936031",
+            "item_id": "ITEM-6",
         },
     }
     session = WorklineSession(
@@ -55,13 +55,13 @@ async def _create_scan_ng_fixture(db_session):
         contract_version=workline.contract_version,
         status=SessionStatus.WAITING_DEVICE_RESULT,
         context_json={
-            "barcode": "6",
-            "barcodes": ["620100L00-011-G", "CC0402JRNPO9BN220", "7387", "122625", "8904936031", "6"],
+            "barcode": "ITEM-6",
+            "barcodes": ["PART-001", "VENDOR-PART-001", "7387", "122625", "8904936031", "ITEM-6"],
             "initial_payload": initial_payload,
             "ng_reason": "SCAN_NG",
             "pick_place_reason": "SCAN_NG",
             "scan_ng_reason_code": "BARCODE_INVALID",
-            "scan_ng_reason_message": "条码格式错误: 6",
+            "scan_ng_reason_message": "条码格式错误: ITEM-6",
         },
         trace_id="trace-ng-item",
     )
@@ -77,7 +77,7 @@ async def _create_scan_ng_fixture(db_session):
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="PICK_AND_PUT",
-        params={"barcode": "6", "source_type": "INPUT_PLATFORM", "target_type": "NG_PLATFORM"},
+        params={"barcode": "ITEM-6", "source_type": "INPUT_PLATFORM", "target_type": "NG_PLATFORM"},
         status=CommandStatus.COMPLETED,
         trace_id=session.trace_id,
     )
@@ -125,9 +125,9 @@ async def test_record_scan_ng_completion_creates_material_ng_item(db_session) ->
     assert item.source_session_id == session.id
     assert item.source_command_id == inbox.command_id
     assert item.source_event_id == inbox.event_id
-    assert item.material_identity_key == "smt:6"
-    assert item.material_identity_json["idempotency_key"] == "smt:6"
-    assert item.material_identity_json["display"]["PkgID"] == "6"
+    assert item.material_identity_key == "test-material:ITEM-6"
+    assert item.material_identity_json["idempotency_key"] == "test-material:ITEM-6"
+    assert item.material_identity_json["display"]["item_id"] == "ITEM-6"
     assert item.created_from_runtime_hold_id is None
     assert item.ng_reason_source == NgReasonSource.PLUGIN
     assert item.ng_reason_code == "BARCODE_INVALID"
@@ -177,15 +177,15 @@ async def test_record_scan_ng_completion_uses_session_identity_when_material_ide
             "device_code": "ARM03-NG-ITEM",
             "data": {
                 "location": "ARM01",
-                "HHPN": "620100L00-011-G",
-                "MfrPN": "CC0402JRNPO9BN220",
-                "Qty": "7387",
-                "DateCode": "122625",
-                "LotCode": "8904936031",
+                "part_no": "PART-001",
+                "vendor_part_no": "VENDOR-PART-001",
+                "quantity": "7387",
+                "production_date": "122625",
+                "lot_no": "8904936031",
             },
         },
         "scan_ng_reason_code": "BARCODE_INCOMPLETE",
-        "scan_ng_reason_message": "条码不完整，缺失字段: PkgID",
+        "scan_ng_reason_message": "条码不完整，缺失字段: item_id",
     }
     await db_session.flush()
 
@@ -199,7 +199,7 @@ async def test_record_scan_ng_completion_uses_session_identity_when_material_ide
     )
 
     assert item is not None
-    assert item.material_identity_key == f"workflow-ng:smt_classifier:session:{session.id}"
+    assert item.material_identity_key == f"workflow-ng:test_workline_plugin:session:{session.id}"
     assert item.material_identity_json["resolution_status"] == "MISSING"
     assert item.material_identity_json["fallback_identity"] is True
     assert item.ng_reason_code == "BARCODE_INCOMPLETE"

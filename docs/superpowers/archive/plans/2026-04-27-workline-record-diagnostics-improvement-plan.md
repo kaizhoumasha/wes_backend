@@ -315,7 +315,7 @@ Outbox 当前状态不足以诊断网络、设备、供应商接口问题。每�
   "issued_at": 1777286400000,
   "expires_at": 1777286700000,
   "timeout_ms": 300000,
-  "contract_version": "smt_classifier.v1",
+  "contract_version": "workline_plugin.v1",
   "callback_url": "http://wes/api/v1/callback/result",
   "params": {}
 }
@@ -639,7 +639,7 @@ SMT 仓储标准要求的核心是：物料、批次、位置、设备动作和 
 建议测试位置：
 
 - `tests/workline_runtime/`
-- `tests/workline_plugins/smt_classifier/`
+- `tests/workline_plugins/<plugin_key>/`
 - `tests/api/workline/`
 - `tests/e2e/`
 - `tests/resilience/`

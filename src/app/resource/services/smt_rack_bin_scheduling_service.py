@@ -980,7 +980,7 @@ class SmtRackBinSchedulingService:
             if active_rack is not None:
                 rack_id = str(active_rack.get("rack_id") or active_rack.get("rack_code") or "")
             token = f"{material.get('PkgID')}:{rack_id}"
-        return f"external:smt_classifier:{token}:RACK_OPERATION"
+        return f"external:smt_rack_bin:{token}:RACK_OPERATION"
 
     def _context_dispatch_token(self, context: Mapping[str, Any]) -> str | None:
         value = self._first_text(

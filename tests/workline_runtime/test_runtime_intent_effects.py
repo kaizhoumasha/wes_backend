@@ -9,6 +9,7 @@ import pytest
 
 from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
+from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import ng_return_item_service
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
@@ -1169,6 +1170,107 @@ async def test_device_event_intent_creates_device_event_inbox_without_waiting_cu
     assert session.status == "RUNNING"
     assert session.current_wait_type is None
     assert session.awaiting_command_id is None
+
+
+@pytest.mark.asyncio
+async def test_resource_fact_then_device_event_creates_storage_retry_inbox() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService()
+
+    class RecordingInboxService:
+        def __init__(self) -> None:
+            self.created: dict[str, Any] = {}
+
+        async def create_device_event_inbox(self, **kwargs: Any) -> object:
+            self.created = kwargs
+            return SimpleNamespace(id=789)
+
+    recording_inbox_service = RecordingInboxService()
+    retry_event_id = "rough-sorter-storage-retry:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION:321"
+
+    await RuntimeIntentEffectApplier(
+        resource_projection_service=resource_projection,
+        inbox_service=recording_inbox_service,
+    ).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload={
+                    "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+                    "rack_code": "RACK-001",
+                },
+                idempotency_key="RACK_ARRIVED:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+            ),
+            RuntimeIntent.device_event(
+                device_code="RS-CONVEYOR-01",
+                event_type="ROUGH_SORTER_STORAGE_RETRY",
+                timestamp=1770000000000,
+                data={"PkgID": "PKG-ROUGH-001", "idempotency_key": retry_event_id},
+                event_id=retry_event_id,
+                causation_id="wms-rack-arrived-001",
+                canonical_event_type="ROUGH_SORTER_STORAGE_RETRY",
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
+    assert recording_inbox_service.created["event_type"] == "ROUGH_SORTER_STORAGE_RETRY"
+    assert recording_inbox_service.created["event_id"] == retry_event_id
+    assert recording_inbox_service.created["data"]["idempotency_key"] == retry_event_id
+    assert recording_inbox_service.created["canonical_event_type"] == "ROUGH_SORTER_STORAGE_RETRY"
+    assert recording_inbox_service.created["auto_commit"] is False
+
+
+@pytest.mark.asyncio
+async def test_resource_fact_duplicate_storage_retry_device_event_is_treated_as_idempotent() -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService()
+
+    class DuplicateInboxService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create_device_event_inbox(self, **_kwargs: Any) -> object:
+            self.calls += 1
+            raise DuplicateInboxError(
+                "设备事件已存在（幂等键重复）: device_event:retry",
+                existing_inbox=SimpleNamespace(id=789),
+            )
+
+    duplicate_inbox_service = DuplicateInboxService()
+    retry_event_id = "rough-sorter-storage-retry:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION:321"
+
+    await RuntimeIntentEffectApplier(
+        resource_projection_service=resource_projection,
+        inbox_service=duplicate_inbox_service,
+    ).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload={
+                    "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+                    "rack_code": "RACK-001",
+                },
+                idempotency_key="RACK_ARRIVED:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+            ),
+            RuntimeIntent.device_event(
+                device_code="RS-CONVEYOR-01",
+                event_type="ROUGH_SORTER_STORAGE_RETRY",
+                timestamp=1770000000000,
+                data={"PkgID": "PKG-ROUGH-001", "idempotency_key": retry_event_id},
+                event_id=retry_event_id,
+                causation_id="wms-rack-arrived-duplicate",
+                canonical_event_type="ROUGH_SORTER_STORAGE_RETRY",
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
+    assert duplicate_inbox_service.calls == 1
 
 
 @pytest.mark.asyncio

@@ -99,7 +99,7 @@ async def _seed_trace_graph(db_session: AsyncSession) -> SmokeFixture:
         line_code="WL-SMOKE-001",
         line_name="Smoke Line",
         line_type=LineType.AUTO,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         contract_version="1.0",
         config={},
         runtime_config_json={},
@@ -125,7 +125,7 @@ async def _seed_trace_graph(db_session: AsyncSession) -> SmokeFixture:
     session = WorklineSession(
         session_code="SES-SMOKE-001",
         workline_id=workline_id,
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         status=SessionStatus.RUNNING,
         trace_id="trace-smoke-001",
         context_json={},

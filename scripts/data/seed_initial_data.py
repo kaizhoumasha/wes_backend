@@ -684,7 +684,6 @@ async def seed_all(db: AsyncSession) -> None:
     print("  - finance / admin123 (财务人员)")
     print("  - user1 / admin123 (普通用户)")
     print("  - user2 / admin123 (普通用户)")
-    print("\n💡 E2E 测试数据请运行: uv run python scripts/data/seed_e2e_test_data.py")
     print("\n⚠️  生产环境请立即修改默认密码！")
 
 

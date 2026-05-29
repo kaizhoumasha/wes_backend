@@ -79,16 +79,16 @@ def mock_fast_fail_check():
                             id=1,
                             code=device_code,
                             work_line_id=1,
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             device_status="ONLINE",
                         ),
                         workline=SimpleNamespace(
                             id=1,
                             is_active=True,
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                         ),
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                         work_line_id=1,
                         is_workline_bound=True,
@@ -210,7 +210,7 @@ def create_wms_external_payload(**overrides: object) -> JsonDict:
     payload: JsonDict = {
         "callback_type": "WMS_RACK_ARRIVED",
         "trace_id": "trace-wms-001",
-        "dispatch_key": "external:smt_classifier:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
+        "dispatch_key": "external:test_workline_plugin:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
         "status": "SUCCEEDED",
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
@@ -514,7 +514,7 @@ class TestCallbackResultAPI:
             trace_id="trace-001",
             params={"task_type": "PICK_AND_PUT"},
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             device_id=7,
         )
@@ -537,7 +537,7 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -553,11 +553,11 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -631,7 +631,7 @@ class TestCallbackResultAPI:
             trace_id="trace-vendor-001",
             params={"task_type": "PICK_AND_PUT"},
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             session_id=None,
             device_id=7,
@@ -662,11 +662,11 @@ class TestCallbackResultAPI:
                     ),
                     workline=SimpleNamespace(
                         id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                         is_active=True,
                     ),
-                    plugin_key="smt_classifier",
+                    plugin_key="test_workline_plugin",
                     contract_version="1.0",
                     work_line_id=1,
                     is_workline_bound=True,
@@ -742,7 +742,7 @@ class TestCallbackResultAPI:
             trace_id="trace-mismatch-001",
             params={"task_type": "PICK_AND_PUT"},
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             session_id=None,
             device_id=8,
@@ -765,11 +765,11 @@ class TestCallbackResultAPI:
                             ),
                             workline=SimpleNamespace(
                                 id=1,
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -831,7 +831,7 @@ class TestCallbackResultAPI:
                         trace_id="trace-001",
                         params={"task_type": "PICK_AND_PUT"},
                         workline_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -841,7 +841,7 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -857,11 +857,11 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -972,7 +972,7 @@ class TestCallbackResultAPI:
             trace_id="trace-001",
             params={"action": "PICK_AND_PUT"},
             workline_id=1,
-            plugin_key="smt_classifier",
+            plugin_key="test_workline_plugin",
             contract_version="1.0",
             device_id=7,
         )
@@ -987,7 +987,7 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -1003,11 +1003,11 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -1066,7 +1066,7 @@ class TestCallbackResultAPI:
                         trace_id="trace-ctx-001",
                         params={"task_type": "PICK_AND_PUT"},
                         workline_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -1118,11 +1118,11 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(id=7, device_code="ARM_01", capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -1138,7 +1138,7 @@ class TestCallbackResultAPI:
                         trace_id="trace-cap-bad-001",
                         params={"task_type": "PICK_AND_PUT"},
                         workline_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                         device_id=7,
                     )
@@ -1192,7 +1192,7 @@ class TestCallbackEventAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="smt_classifier",
+                        plugin_key="test_workline_plugin",
                         contract_version="1.0",
                     )
                 ),
@@ -1204,11 +1204,11 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -1406,7 +1406,7 @@ class TestCallbackEventAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="smt_classifier",  # 使用有效的插件
+                        plugin_key="test_workline_plugin",  # 使用有效的插件
                         contract_version="1.0",
                     )
                 ),
@@ -1418,11 +1418,11 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -1477,12 +1477,12 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                                 runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "SCAN_COMPLETED"}},
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
@@ -1540,11 +1540,11 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="smt_classifier",
+                                plugin_key="test_workline_plugin",
                                 contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="smt_classifier",
+                            plugin_key="test_workline_plugin",
                             contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,

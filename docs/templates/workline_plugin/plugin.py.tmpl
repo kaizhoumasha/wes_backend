@@ -11,17 +11,19 @@ from src.workline_runtime.plugin_base import (
     resolve_normalized_command_failure,
 )
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
-from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult  # noqa: TC001
 from src.workline_runtime.runtime_intent import BlockScope
 
 from .context import {{CONTEXT_CLASS}}, parse_context
 from .contract import (
+    PLUGIN_NG_REASONS,
     ItemArrivedPayload,
     MeasureCompletedData,
     build_divert_params,
     build_measure_params,
     classify_result,
     resolve_business_key,
+    resolve_material_identity,
 )
 
 
@@ -38,6 +40,8 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
         ),
         business_key_resolver=resolve_business_key,
         result_classifier=classify_result,
+        material_identity_resolver=resolve_material_identity,
+        ng_reason_catalog=PLUGIN_NG_REASONS,
         context_model={{CONTEXT_CLASS}},
         event_source_roles={"ITEM_ARRIVED": "ENTRY_SENSOR"},
         command_target_roles={"MEASURE_ITEM": "MEASURE_DEVICE", "DIVERT_ITEM": "DIVERT_DEVICE"},
@@ -51,6 +55,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
             ctx.next.update_context(
                 {{CONTEXT_CLASS}}(
                     business_key=event.data.business_key,
+                    item_id=event.data.item_id,
                     station_code=event.data.station_code,
                     expected_value=event.data.expected_value,
                     tolerance=event.data.tolerance,
@@ -61,6 +66,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
                 action="MEASURE_ITEM",
                 payload=build_measure_params(
                     business_key=event.data.business_key,
+                    item_id=event.data.item_id,
                     station_code=event.data.station_code,
                 ),
                 destination_role="MEASURE_DEVICE",
@@ -88,6 +94,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
             ctx.next.update_context(
                 {{CONTEXT_CLASS}}(
                     business_key=measure_data.business_key,
+                    item_id=measure_data.item_id,
                     actual_value=measure_data.actual_value,
                     destination_lane=destination_lane,
                     reason_code=reason_code,
@@ -101,6 +108,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
                     message="业务检测超出允差，分流到异常线",
                     payload={
                         "business_key": measure_data.business_key,
+                        "item_id": measure_data.item_id,
                         "expected_value": business_ctx.expected_value,
                         "actual_value": measure_data.actual_value,
                         "tolerance": business_ctx.tolerance,
@@ -113,6 +121,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
                 action="DIVERT_ITEM",
                 payload=build_divert_params(
                     business_key=measure_data.business_key,
+                    item_id=measure_data.item_id,
                     destination_lane=destination_lane,
                     reason_code=reason_code,
                 ),

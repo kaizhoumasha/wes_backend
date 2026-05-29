@@ -37,7 +37,7 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     session = WorklineSession(
         session_code="S-ESTOP-001",
         workline_id=cast("int", workline.id),
-        plugin_key="smt_classifier",
+        plugin_key="test_workline_plugin",
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
     db_session.add_all([device, session])
