@@ -260,6 +260,10 @@ class RoughSorterPlugin(WorklinePlugin):
         }
         if rough_context.active_bin_rack is not None:
             context["active_bin_rack"] = rough_context.active_bin_rack
+        for measurement_key in ("reel_diameter", "reel_thickness"):
+            measurement_value = _non_empty_str(rough_context.measurement.get(measurement_key))
+            if measurement_value is not None:
+                context[measurement_key] = measurement_value
         active_bin_rack = await self._active_bin_rack(ctx, context)
         if active_bin_rack is not None:
             context["active_bin_rack"] = active_bin_rack
@@ -446,6 +450,16 @@ class RoughSorterPlugin(WorklinePlugin):
                 idempotency_key=f"BIN_MOUNTED:{operation_key}:{rack_code}",
             )
         ]
+
+    @staticmethod
+    def _has_active_rack_template(payload_json: Mapping[str, Any]) -> bool:
+        active_bin_rack = payload_json.get("active_bin_rack")
+        if not isinstance(active_bin_rack, Mapping):
+            return False
+        raw_cells = (
+            active_bin_rack.get("cells") or active_bin_rack.get("bin_cells") or active_bin_rack.get("cell_snapshots")
+        )
+        return isinstance(raw_cells, list) and any(isinstance(cell, Mapping) for cell in raw_cells)
 
     def _storage_retry_data(
         self,
@@ -741,6 +755,7 @@ class RoughSorterPlugin(WorklinePlugin):
                 "粗分机货架到位回调缺少 operation_key/session_id/business_key，无法创建稳定重试事件",
             )
 
+        callback_event_id = _non_empty_str(payload_json.get("source_event_id")) or getattr(inbox, "event_id", None)
         retry_event_id = f"rough-sorter-storage-retry:{operation_key}:{session_id}"
         source_device_code = self._resume_source_device_code(ctx, rough_context) or _non_empty_str(
             getattr(ctx, "source_device_code", None)
@@ -768,13 +783,19 @@ class RoughSorterPlugin(WorklinePlugin):
                 f"粗分机货架到位回调缺少资源投影必需字段: {', '.join(missing_projection_fields)}",
             )
 
-        return [
+        intents = [
             RuntimeIntent.resource_fact(
                 fact_type="RACK_ARRIVED",
                 payload=rack_arrived_payload,
                 idempotency_key=f"RACK_ARRIVED:{operation_key}",
             ),
             *self._bin_mounted_intents(payload_json, operation_key),
+        ]
+        if not self._has_active_rack_template(payload_json):
+            return intents
+
+        return [
+            *intents,
             RuntimeIntent.device_event(
                 device_code=source_device_code,
                 event_type=EVENT_ROUGH_SORTER_STORAGE_RETRY,
@@ -785,7 +806,7 @@ class RoughSorterPlugin(WorklinePlugin):
                     retry_event_id=retry_event_id,
                 ),
                 event_id=retry_event_id,
-                causation_id=_non_empty_str(payload_json.get("source_event_id")) or getattr(inbox, "event_id", None),
+                causation_id=callback_event_id,
                 canonical_event_type=EVENT_ROUGH_SORTER_STORAGE_RETRY,
             ),
         ]
@@ -906,10 +927,9 @@ class RoughSorterPlugin(WorklinePlugin):
         )
 
     @on_command(ACTION_PICK_AND_PUT, result="SUCCESS")
-    async def handle_pick_and_put_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+    async def handle_pick_and_put_success(self, ctx: PluginContext, _inbox: WorklineInbox) -> list[RuntimeIntent]:
         """处理入料抓取/NG 搬运完成。"""
 
-        payload_json = inbox.payload_json or {}
         rough_context = _session_context(ctx)
         business_key = _business_key_from_context(rough_context)
         if business_key is None:
@@ -938,7 +958,7 @@ class RoughSorterPlugin(WorklinePlugin):
                 action=ACTION_MOVE_FORWARD,
                 payload=build_move_forward_payload(
                     business_key=business_key,
-                    source_location=self._command_source_location(ctx, payload_json),
+                    source_location=self._pipeline_input_location(ctx),
                     target_location=self._pipeline_output_location(ctx),
                 ),
             ),
@@ -1048,7 +1068,14 @@ class RoughSorterPlugin(WorklinePlugin):
             return self._block("ROUGH_SORTER_ALLOCATOR_UNAVAILABLE", "粗分机出料分配缺少 bin_allocator 服务")
 
         allocation_context = await self._allocation_context(ctx, rough_context)
-        decision = allocator.plan_allocation(business_key, context=allocation_context)
+        active_bin_rack = allocation_context.get("active_bin_rack")
+        allocation_rough_context = rough_context
+        if isinstance(active_bin_rack, Mapping) and rough_context.active_bin_rack is None:
+            allocation_rough_context = rough_context.model_copy(
+                update={"active_bin_rack": dict(cast("Mapping[str, Any]", active_bin_rack))}
+            )
+        allocation_barcode = _non_empty_str(rough_context.six_in_one.get("PkgID")) or business_key
+        decision = allocator.plan_allocation(allocation_barcode, context=allocation_context)
         if inspect.isawaitable(decision):
             decision = await decision
         if decision is None:
@@ -1056,7 +1083,7 @@ class RoughSorterPlugin(WorklinePlugin):
 
         decision_kind = _non_empty_str(getattr(decision, "kind", None))
         if decision_kind == "ALLOCATED":
-            return self._allocated_bin_intents(ctx, payload_json, rough_context, business_key, decision)
+            return self._allocated_bin_intents(ctx, payload_json, allocation_rough_context, business_key, decision)
         if decision_kind == "RACK_OPERATION_REQUIRED":
             return self._rack_operation_required_intents(ctx, payload_json, rough_context, business_key, decision)
         if decision_kind == "BLOCKED":
@@ -1102,6 +1129,7 @@ class RoughSorterPlugin(WorklinePlugin):
             business_key=business_key,
             measurement=rough_context.measurement,
             wms_validation=rough_context.wms_validation,
+            active_bin_rack=rough_context.active_bin_rack,
             target_bin_location=target_bin_location,
             phase=PHASE_PUTTING_TO_BIN,
         ).model_dump(mode="json", exclude_none=True)

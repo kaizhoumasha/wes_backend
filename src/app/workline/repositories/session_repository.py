@@ -1,5 +1,6 @@
 """WorklineSession Repository 层"""
 
+from datetime import timedelta
 from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, update
@@ -224,6 +225,38 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 deadline_at=None,
                 current_wait_timeout_seconds=timeout_seconds,
                 awaiting_command_id=command_id,
+                ended_at=None,
+                failure_domain=None,
+                failure_code=None,
+                failure_message=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+    async def persist_external_wait(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        wait_type: str,
+        occurred_at: Any,
+        timeout_seconds: int | None,
+        context_json: dict[str, Any] | None,
+    ) -> None:
+        """显式持久化外部等待态，避免 rack/handling 等待只停留在 ORM 对象内存中。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        await db.execute(
+            update(WorklineSession)
+            .where(columns.id == session_id)
+            .values(
+                status=SessionStatus.WAITING_EXTERNAL,
+                context_json=context_json or {},
+                current_wait_type=wait_type,
+                waiting_since=occurred_at,
+                deadline_at=None if timeout_seconds is None else occurred_at + timedelta(seconds=timeout_seconds),
+                current_wait_timeout_seconds=timeout_seconds,
+                awaiting_command_id=None,
                 ended_at=None,
                 failure_domain=None,
                 failure_code=None,

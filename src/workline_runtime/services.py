@@ -7,6 +7,7 @@ Repository 或 SQL。未注入的能力必须由插件自身使用确定性领�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.workline_runtime.run_mode import is_simulation_run_mode
@@ -78,6 +79,30 @@ class BoundRackOperationStatusProvider:
         return str(await self._service.derive_operation_status(self._db, operation_key=operation_key))
 
 
+class SandboxWmsInventoryClient:
+    """SIMULATION 运行模式下的确定性 WMS 库存查询替身。"""
+
+    async def query_inventory(self, request: QueryInventoryRequest) -> QueryInventoryResponse:
+        from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
+
+        return QueryInventoryResponse(
+            request_id=request.request_id,
+            reason_code="SANDBOX_WMS_INVENTORY",
+            message="SANDBOX WMS 库存校验通过",
+            items=[
+                WmsInventoryItem(
+                    sku=request.sku,
+                    lot_no=request.lot_no,
+                    warehouse_code=request.warehouse_code,
+                    owner_code=request.owner_code,
+                    total_qty=Decimal("1"),
+                    available_qty=Decimal("1"),
+                    reserved_qty=Decimal("0"),
+                )
+            ],
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class WorklineRuntimeServices:
     """插件运行时可访问的领域服务集合。"""
@@ -111,11 +136,12 @@ def build_workline_runtime_services(
         )
 
     wms_inventory_client = None
-    if (
-        db is not None
-        and not is_simulation_run_mode(getattr(workline, "run_mode", None))
-        and not is_simulation_run_mode(getattr(session, "run_mode", None))
+    if db is not None and (
+        is_simulation_run_mode(getattr(workline, "run_mode", None))
+        or is_simulation_run_mode(getattr(session, "run_mode", None))
     ):
+        wms_inventory_client = SandboxWmsInventoryClient()
+    elif db is not None:
         from src.app.wms_integration.services import wms_typed_port_service
 
         wms_inventory_client = wms_typed_port_service
@@ -133,6 +159,7 @@ __all__ = [
     "BinAllocator",
     "BoundRackOperationStatusProvider",
     "RackOperationStatusProvider",
+    "SandboxWmsInventoryClient",
     "WmsInventoryClient",
     "WorklineRuntimeServices",
     "build_workline_runtime_services",

@@ -509,7 +509,8 @@ async def test_pick_and_put_success_at_pick_to_pipeline_dispatches_move_forward(
     assert intents[1].device_role == ROLE_CONVEYOR
     assert intents[1].payload_json["task_type"] == ACTION_MOVE_FORWARD
     assert "action" not in intents[1].payload_json["params"]
-    assert intents[1].payload_json["params"]["source_location"] == "RS-INPUT-ARM-01"
+    assert intents[1].payload_json["params"]["source_location"] == "PIPELINE-IN-01"
+    assert intents[1].payload_json["params"]["target_location"] == "PIPELINE-OUT-01"
 
 
 @pytest.mark.asyncio
@@ -571,6 +572,33 @@ async def test_move_forward_success_with_allocated_bin_claims_cell_and_dispatche
     assert intents[2].payload_json["params"]["bin_location"] == "BIN-001-4"
     assert allocator.calls[0]["barcode"] == "PKG-ROUGH-001"
     assert allocator.calls[0]["context"]["active_bin_rack"] == {"rack_id": "RACK-001"}
+
+
+@pytest.mark.asyncio
+async def test_move_forward_success_allocates_with_pkg_id_when_business_key_is_hashed() -> None:
+    decision = SmtRackBinSchedulingDecision(
+        bin_location={
+            "bin_id": "BIN-001",
+            "bin_cell_index": "4",
+            "bin_cell_location": "BIN-001-4",
+        }
+    )
+    allocator = FakeBinAllocator(decision=decision)
+    session_context = _rough_sorter_context_for_phase(PHASE_MOVING_FORWARD)
+    session_context["business_key"] = "29c900591c055bc6"
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_FORWARD,
+        device_code="RS-CONVEYOR-01",
+        session_context=session_context,
+        services=WorklineRuntimeServices(bin_allocator=allocator),
+    )
+
+    await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_MOVE_FORWARD, device_code="RS-CONVEYOR-01"),
+    )
+
+    assert allocator.calls[0]["barcode"] == "PKG-ROUGH-001"
 
 
 @pytest.mark.asyncio
@@ -641,7 +669,7 @@ async def test_rack_arrived_external_http_emits_resource_facts_and_stable_retry_
         "rack_code": "RACK-001",
         "rack_kind": "SINGLE_LAYER",
         "target_position_code": "SINGLE_LAYER_A",
-        "active_bin_rack": {"rack_id": "RACK-001", "cells": []},
+        "active_bin_rack": {"rack_id": "RACK-001", "cells": [{"bin_code": "BIN-001", "bin_cell_index": "1"}]},
         "bin_mounts": [
             {"bin_code": "BIN-001", "rack_code": "RACK-001", "slot_code": "A"},
             {"bin_code": "BIN-002", "rack_code": "RACK-001", "rack_slot_code": "B"},
@@ -675,11 +703,73 @@ async def test_rack_arrived_external_http_emits_resource_facts_and_stable_retry_
     )
     assert intents[2].payload_json["device_code"] == "RS-CONVEYOR-01"
     assert intents[2].payload_json["data"]["PkgID"] == "PKG-ROUGH-001"
-    assert intents[2].payload_json["data"]["idempotency_key"] == intents[2].payload_json["event_id"]
 
-    repeated_payload = {**callback_payload, "source_event_id": "wms-rack-arrived-duplicate"}
-    repeated_intents = await RoughSorterPlugin().on_external_http(ctx, _external_http_inbox(repeated_payload))
-    assert repeated_intents[2].payload_json["event_id"] == intents[2].payload_json["event_id"]
+
+@pytest.mark.asyncio
+async def test_rack_arrived_external_http_uses_operation_stable_retry_id_for_callback_redelivery() -> None:
+    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context["rack_operation"] = {
+        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+        "target_code": "WMS_RCS_RACK_OPERATION",
+        "status": "REQUESTED",
+    }
+    session_context["resume_source_device_code"] = "RS-CONVEYOR-01"
+    ctx = _external_http_ctx(session_context=session_context, session_id=321)
+    base_payload = {
+        "callback_type": "WMS_RACK_ARRIVED",
+        "dispatch_key": "rack-operation:dispatch-001",
+        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        "rack_code": "RACK-001",
+        "rack_kind": "SINGLE_LAYER",
+        "target_position_code": "SINGLE_LAYER_A",
+        "active_bin_rack": {"rack_id": "RACK-001", "cells": [{"bin_code": "BIN-001", "bin_cell_index": "1"}]},
+    }
+
+    first = await RoughSorterPlugin().on_external_http(
+        ctx,
+        _external_http_inbox({**base_payload, "source_event_id": "wms-rack-arrived-001"}),
+    )
+    second = await RoughSorterPlugin().on_external_http(
+        ctx,
+        _external_http_inbox({**base_payload, "source_event_id": "wms-rack-arrived-002"}),
+    )
+
+    first_retry = first[-1].payload_json["event_id"]
+    second_retry = second[-1].payload_json["event_id"]
+    assert first_retry == "rough-sorter-storage-retry:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION:321"
+    assert second_retry == first_retry
+    assert first[-1].payload_json["causation_id"] == "wms-rack-arrived-001"
+    assert second[-1].payload_json["causation_id"] == "wms-rack-arrived-002"
+    assert first[-1].payload_json["data"]["idempotency_key"] == first_retry
+    assert second[-1].payload_json["data"]["idempotency_key"] == second_retry
+
+
+@pytest.mark.asyncio
+async def test_rack_arrived_external_http_without_active_rack_template_does_not_create_retry() -> None:
+    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context["rack_operation"] = {
+        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+        "target_code": "WMS_RCS_RACK_OPERATION",
+        "status": "REQUESTED",
+    }
+    session_context["resume_source_device_code"] = "RS-CONVEYOR-01"
+    ctx = _external_http_ctx(session_context=session_context, session_id=321)
+    payload = {
+        "callback_type": "WMS_RACK_ARRIVED",
+        "dispatch_key": "rack-operation:dispatch-001",
+        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        "source_event_id": "wms-rack-arrived-001",
+        "rack_code": "RACK-001",
+        "rack_kind": "SINGLE_LAYER",
+        "target_position_code": "SINGLE_LAYER_A",
+    }
+
+    intents = await RoughSorterPlugin().on_external_http(ctx, _external_http_inbox(payload))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT]
+    assert intents[0].action == "RACK_ARRIVED"
 
 
 @pytest.mark.asyncio
@@ -765,8 +855,11 @@ async def test_rough_sorter_storage_retry_event_replans_allocation_after_resourc
         RuntimeIntentKind.COMMAND,
     ]
     assert intents[0].context_patch["phase"] == PHASE_PUTTING_TO_BIN
+    assert intents[0].context_patch["active_bin_rack"] == {"rack_id": "RACK-001", "cells": []}
     assert intents[2].action == ACTION_PUT_TO_BIN
     assert allocator.calls[0]["context"]["active_bin_rack"] == {"rack_id": "RACK-001", "cells": []}
+    assert allocator.calls[0]["context"]["reel_diameter"] == "178.0"
+    assert allocator.calls[0]["context"]["reel_thickness"] == "15.0"
 
 
 @pytest.mark.asyncio
@@ -812,7 +905,10 @@ async def test_rough_sorter_storage_retry_uses_callback_active_bin_rack_without_
         RuntimeIntentKind.RESOURCE_RESERVATION,
         RuntimeIntentKind.COMMAND,
     ]
+    assert intents[0].context_patch["active_bin_rack"] == callback_active_bin_rack
     assert allocator.calls[0]["context"]["active_bin_rack"] == callback_active_bin_rack
+    assert allocator.calls[0]["context"]["reel_diameter"] == "178.0"
+    assert allocator.calls[0]["context"]["reel_thickness"] == "15.0"
 
 
 @pytest.mark.asyncio

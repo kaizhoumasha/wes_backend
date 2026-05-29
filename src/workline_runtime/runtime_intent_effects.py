@@ -266,6 +266,8 @@ def _is_reconciling_result(result: Any) -> bool:
 def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
     if intent.target_device_id is not None:
         destination = Destination.device(intent.target_device_id)
+    elif intent.destination is None and intent.device_role:
+        destination = Destination.role(intent.device_role)
     else:
         destination = intent.destination or Destination.current()
 
@@ -623,6 +625,7 @@ class RuntimeIntentEffectApplier:
             tasks=list(tasks),
             timeout_seconds=timeout_seconds,
         )
+        await self._persist_session_waiting_for_rack_operation(ctx, timeout_seconds=timeout_seconds)
 
         workline_effects._clear_session_failure(session)
         await workline_effects._emit_timeline(
@@ -692,6 +695,19 @@ class RuntimeIntentEffectApplier:
             wait_type="RACK_OPERATION",
             occurred_at=ctx["now"],
             deadline_seconds=timeout_seconds,
+        )
+
+    async def _persist_session_waiting_for_rack_operation(self, ctx: Any, *, timeout_seconds: int) -> None:
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+
+        session = ctx["session"]
+        await WorklineSessionRepository().persist_external_wait(
+            ctx["db"],
+            session_id=resolve_required_pk(session, "session"),
+            wait_type="RACK_OPERATION",
+            occurred_at=ctx["now"],
+            timeout_seconds=timeout_seconds,
+            context_json=getattr(session, "context_json", None),
         )
 
     async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:

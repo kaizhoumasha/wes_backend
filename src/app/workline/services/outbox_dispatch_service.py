@@ -281,7 +281,7 @@ class OutboxDispatchService:
         outbox_repo = SystemOutboxRepository()
         _ = await _repair_orphaned_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
         _ = await _repair_self_blocked_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
-        messages = await outbox_repo.get_pending_messages(db, limit=limit, operation_domains=("WORKLINE",))
+        messages = await outbox_repo.get_pending_messages(db, limit=limit, operation_domains=("WORKLINE", "RACK"))
         for outbox in messages:
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)

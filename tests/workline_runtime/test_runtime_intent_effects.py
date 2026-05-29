@@ -578,6 +578,55 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_command_intent_without_destination_uses_device_role_as_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SimpleNamespace(id=1, device_code="ARM03", device_role="ROUGH_SORTER_INPUT_ARM")
+    target = SimpleNamespace(
+        id=2,
+        device_code="PIPELINE02",
+        device_role="ROUGH_SORTER_CONVEYOR",
+        upstream_device_id=1,
+    )
+    created_payloads: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["source_device"] = source
+    ctx["devices_by_role"] = {"ROUGH_SORTER_INPUT_ARM": [source], "ROUGH_SORTER_CONVEYOR": [target]}
+
+    async def fake_create(_repo, _db, payload):
+        created_payloads.append(payload)
+        return SimpleNamespace(
+            id=88,
+            command_code="CMD-MOVE-FORWARD",
+            task_type="MOVE_FORWARD",
+            priority=5,
+            timeout_ms=30000,
+            params={},
+        )
+
+    monkeypatch.setattr(workline_effects, "_enforce_device_command_governance", lambda *_, **__: None)
+    monkeypatch.setattr("src.app.device.repositories.command_repository.DeviceCommandRepository.create", fake_create)
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.command(
+                action="MOVE_FORWARD",
+                device_role="ROUGH_SORTER_CONVEYOR",
+                payload={},
+                timeout_seconds=30,
+            )
+        ],
+    )
+
+    assert created_payloads[0]["device_id"] == 2
+    assert db.add.call_args.args[0].target_code == "PIPELINE02"
+
+
+@pytest.mark.asyncio
 async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -853,6 +902,82 @@ async def test_rack_operation_request_stores_operation_wait_fields(
     assert operation_calls[0]["trace_id"] == "trace-runtime"
     assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
     assert session.context_json["rack_operation"]["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_persists_external_wait_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    session = _session(
+        status="WAITING_DEVICE_RESULT",
+        current_wait_type="COMMAND_RESULT",
+        awaiting_command_id=88,
+        context_json={},
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    persist_wait = AsyncMock()
+
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:1:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                )
+            ]
+
+    class RecordingSessionRepository:
+        async def persist_external_wait(self, *args: Any, **kwargs: Any) -> None:
+            await persist_wait(*args, **kwargs)
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository",
+        RecordingSessionRepository,
+    )
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="WMS_RCS_RACK_OPERATION",
+                payload={
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                        }
+                    ]
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    persist_wait.assert_awaited_once_with(
+        db,
+        session_id=session.id,
+        wait_type="RACK_OPERATION",
+        occurred_at=ctx["now"],
+        timeout_seconds=1800,
+        context_json=session.context_json,
+    )
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RACK_OPERATION"
+    assert session.awaiting_command_id is None
 
 
 @pytest.mark.asyncio

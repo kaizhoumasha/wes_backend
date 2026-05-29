@@ -79,7 +79,7 @@ class TestOutboxDispatchService:
 
     @pytest.mark.asyncio
     async def test_dispatcher_only_loads_workline_domain_outbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Workline 历史 dispatcher 只能处理 WORKLINE 域，避免抢占 Rack/Handling 消息。"""
+        """Workline dispatcher 处理需要沙箱/设备治理的域，避免通用引擎抢占。"""
 
         instances: list[object] = []
 
@@ -100,7 +100,7 @@ class TestOutboxDispatchService:
         result = await OutboxDispatchService().dispatch(SimpleNamespace(commit=AsyncMock()), limit=7)
 
         assert result == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-        assert instances[0].pending_filters == [{"limit": 7, "operation_domains": ("WORKLINE",)}]
+        assert instances[0].pending_filters == [{"limit": 7, "operation_domains": ("WORKLINE", "RACK")}]
 
     @pytest.fixture
     def mock_db(self):

@@ -15,6 +15,7 @@ from src.utils.value_normalization import enum_value
 ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
 WORKLINE_OPERATION_DOMAIN = "WORKLINE"
+RACK_OPERATION_DOMAIN = "RACK"
 ALLOWED_INTERNAL_SIGNALS = frozenset({"core", "handling", "sys", "workline"})
 
 
@@ -75,7 +76,7 @@ class SystemOutboxEngine:
         messages = await self.outbox_repository.get_pending_messages(
             db,
             limit=remaining_limit,
-            exclude_operation_domains=(WORKLINE_OPERATION_DOMAIN,),
+            exclude_operation_domains=(WORKLINE_OPERATION_DOMAIN, RACK_OPERATION_DOMAIN),
         )
 
         for outbox in messages:

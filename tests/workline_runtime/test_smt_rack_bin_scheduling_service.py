@@ -9,7 +9,8 @@ from src.app.resource.services import (
     SmtRackBinSchedulingService,
     smt_rack_bin_scheduling_service,
 )
-from src.workline_runtime.services import build_workline_runtime_services
+from src.app.wms_integration.models import QueryInventoryRequest
+from src.workline_runtime.services import SandboxWmsInventoryClient, build_workline_runtime_services
 
 SIX_IN_ONE = {
     "HHPN": "620100L00-011-G",
@@ -944,19 +945,19 @@ def test_runtime_services_injects_default_smt_rack_bin_scheduler() -> None:
     assert services.bin_allocator.allocate("PKG-002") == SmtRackBinSchedulingService().allocate("PKG-002")
 
 
-def test_runtime_services_do_not_inject_wms_client_for_simulation_workline() -> None:
-    """SIMULATION 工作线不能在插件阶段同步访问真实 WMS。"""
+def test_runtime_services_inject_sandbox_wms_client_for_simulation_workline() -> None:
+    """SIMULATION 工作线不能在插件阶段同步访问真实 WMS，只能访问 sandbox WMS client。"""
 
     services = build_workline_runtime_services(
         db=object(),
         workline=SimpleNamespace(run_mode="SIMULATION"),
     )
 
-    assert services.wms_inventory_client is None
+    assert isinstance(services.wms_inventory_client, SandboxWmsInventoryClient)
 
 
-def test_runtime_services_do_not_inject_wms_client_for_simulation_session() -> None:
-    """Session 级 SIMULATION 覆盖工作线模式时，也不能注入真实 WMS client。"""
+def test_runtime_services_inject_sandbox_wms_client_for_simulation_session() -> None:
+    """Session 级 SIMULATION 覆盖工作线模式时，也只能注入 sandbox WMS client。"""
 
     services = build_workline_runtime_services(
         db=object(),
@@ -964,4 +965,29 @@ def test_runtime_services_do_not_inject_wms_client_for_simulation_session() -> N
         session=SimpleNamespace(run_mode="SIMULATION"),
     )
 
-    assert services.wms_inventory_client is None
+    assert isinstance(services.wms_inventory_client, SandboxWmsInventoryClient)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_wms_client_returns_matching_inventory_for_simulation_workline() -> None:
+    """SIMULATION 工作线注入 sandbox WMS client，避免粗分机 happy path 访问真实 WMS。"""
+
+    services = build_workline_runtime_services(
+        db=object(),
+        workline=SimpleNamespace(run_mode="SIMULATION"),
+    )
+
+    assert services.wms_inventory_client is not None
+
+    response = await services.wms_inventory_client.query_inventory(
+        QueryInventoryRequest(
+            request_id="rough-sorter:inventory:PKG-001",
+            trace_id="trace-sandbox-wms-001",
+            sku="HH-001",
+            lot_no="LOT-A",
+        )
+    )
+
+    assert len(response.items) == 1
+    assert response.items[0].sku == "HH-001"
+    assert response.items[0].lot_no == "LOT-A"

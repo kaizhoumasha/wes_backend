@@ -17,14 +17,27 @@ class FakeSystemOutboxRepository:
         self.mark_dispatching_calls: list[int] = []
         self.mark_sent_calls: list[int] = []
         self.mark_failed_calls: list[tuple[int, str, int]] = []
+        self.pending_filters: list[dict[str, Any]] = []
 
     async def get_pending_messages(
         self,
         _db: Any,
         limit: int = 50,
-        **_filters: Any,
+        **filters: Any,
     ) -> list[Any]:
-        return self.messages[:limit]
+        self.pending_filters.append({"limit": limit, **filters})
+        messages = self.messages
+        excluded_domains = tuple(filters.get("exclude_operation_domains") or ())
+        if excluded_domains:
+            messages = [
+                message for message in messages if getattr(message, "operation_domain", None) not in excluded_domains
+            ]
+        included_domains = tuple(filters.get("operation_domains") or ())
+        if included_domains:
+            messages = [
+                message for message in messages if getattr(message, "operation_domain", None) in included_domains
+            ]
+        return messages[:limit]
 
     async def mark_as_dispatching(self, _db: Any, outbox_id: int) -> Any | None:
         self.mark_dispatching_calls.append(outbox_id)
@@ -75,6 +88,7 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
         "attempt_count": 0,
         "next_retry_at": None,
         "last_error": None,
+        "operation_domain": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -166,6 +180,26 @@ async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_go
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+    assert repo.mark_dispatching_calls == []
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_dispatch() -> None:
+    message = _outbox(id=5, operation_domain="RACK", target_code="WMS_RCS_RACK_OPERATION")
+    repo = FakeSystemOutboxRepository([message])
+    sender = AsyncMock(return_value=True)
+    db = SimpleNamespace(commit=AsyncMock())
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        external_http_sender=sender,
+        workline_domain_dispatcher=_no_workline_messages,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
+
+    assert result == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+    assert repo.pending_filters[-1]["exclude_operation_domains"] == ("WORKLINE", "RACK")
+    sender.assert_not_awaited()
     assert repo.mark_dispatching_calls == []
 
 
