@@ -164,22 +164,19 @@ def _non_empty_text(value: Any) -> str | None:
     return text or None
 
 
-def _positive_int(value: Any) -> int | None:
-    resolved = optional_int(value)
-    if resolved is None or resolved <= 0:
-        return None
-    return resolved
+def _int_value(value: Any) -> int | None:
+    return optional_int(value)
 
 
 def _resolve_command_result_timeout_seconds(intent: RuntimeIntent) -> int:
-    explicit_timeout = _positive_int(intent.timeout_seconds)
+    explicit_timeout = _int_value(intent.timeout_seconds)
     if explicit_timeout is not None:
-        return explicit_timeout
+        return max(1, explicit_timeout)
 
     payload = intent.payload_json if isinstance(intent.payload_json, Mapping) else {}
-    timeout_ms = _positive_int(payload.get("timeout"))
+    timeout_ms = _int_value(payload.get("timeout"))
     if timeout_ms is not None:
-        return max(1, (timeout_ms + 999) // 1000)
+        return max(1, (max(0, timeout_ms) + 999) // 1000)
 
     return _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS
 
