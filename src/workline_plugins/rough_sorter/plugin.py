@@ -280,6 +280,16 @@ class RoughSorterPlugin(WorklinePlugin):
         return bin_code, bin_cell_index, bin_cell_code, material_identity_key
 
     @staticmethod
+    def _material_identity_key(six_in_one: Mapping[str, Any]) -> str | None:
+        material_code = _non_empty_str(six_in_one.get("HHPN"))
+        vendor_code = _non_empty_str(six_in_one.get("MfrPN"))
+        date_code = _non_empty_str(six_in_one.get("DateCode"))
+        lot_code = _non_empty_str(six_in_one.get("LotCode"))
+        if material_code or date_code or lot_code:
+            return f"MAT:{material_code or ''}:{vendor_code or ''}:{date_code or ''}:{lot_code or ''}"
+        return None
+
+    @staticmethod
     def _rack_tasks_from_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
         actions = payload.get("actions")
         if not isinstance(actions, list):
@@ -956,6 +966,75 @@ class RoughSorterPlugin(WorklinePlugin):
             )
 
         return await self._storage_allocation_intents(ctx, payload_json, rough_context, business_key)
+
+    @on_command(ACTION_PUT_TO_BIN, result="SUCCESS")
+    async def handle_put_to_bin_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理出料机械臂放入料箱成功，落资源终态并完成 Session。"""
+
+        payload_json = inbox.payload_json or {}
+        rough_context = _session_context(ctx)
+        business_key = _business_key_from_context(rough_context)
+        if business_key is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少业务主键，无法完成出料入箱")
+        if rough_context.phase != PHASE_PUTTING_TO_BIN:
+            return self._block(
+                "ROUGH_SORTER_PHASE_INVALID",
+                f"粗分机 PUT_TO_BIN 成功回调处于非法阶段: {rough_context.phase}",
+            )
+        if not isinstance(rough_context.target_bin_location, Mapping):
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少目标料箱格位，无法完成出料入箱")
+
+        bin_location = cast("Mapping[str, Any]", rough_context.target_bin_location)
+        try:
+            bin_code, bin_cell_index, bin_cell_code, material_identity_key = self._bin_location_parts(bin_location)
+        except ValueError as exc:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", str(exc))
+        material_identity_key = material_identity_key or self._material_identity_key(rough_context.six_in_one)
+        if material_identity_key is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少物料身份键，无法记录入箱事实")
+
+        source_event_id = _non_empty_str(payload_json.get("command_code")) or f"PUT_TO_BIN:{business_key}"
+        consume_payload = {
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "source_event_id": source_event_id,
+        }
+        mounted_payload: dict[str, Any] = {
+            "bin_code": bin_code,
+            "bin_cell_code": bin_cell_code,
+            "bin_cell_index": bin_cell_index,
+            "material_identity_key": material_identity_key,
+            "pkg_code": business_key,
+            "material_code": _non_empty_str(rough_context.six_in_one.get("HHPN")),
+            "lot_code": _non_empty_str(rough_context.six_in_one.get("LotCode")),
+            "date_code": _non_empty_str(rough_context.six_in_one.get("DateCode")),
+            "wms_inventory_id": _non_empty_str(rough_context.wms_validation.get("wms_inventory_id"))
+            or _non_empty_str(rough_context.wms_validation.get("inventory_id")),
+            "source_event_id": source_event_id,
+            "reel_diameter": _non_empty_str(rough_context.measurement.get("reel_diameter")),
+            "reel_thickness": _non_empty_str(rough_context.measurement.get("reel_thickness")),
+            "cell_capacity_depth_mm": bin_location.get("cell_capacity_depth_mm")
+            or bin_location.get("capacity_depth_mm"),
+        }
+        return [
+            RuntimeIntent.resource_reservation(
+                operation="CONSUME_BIN_CELL",
+                payload=consume_payload,
+                idempotency_key=f"CONSUME_BIN_CELL:{business_key}:{bin_code}:{bin_cell_index}",
+            ),
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={key: value for key, value in mounted_payload.items() if value is not None},
+                idempotency_key=f"MATERIAL_MOUNTED:{business_key}:{bin_code}:{bin_cell_index}",
+            ),
+            RuntimeIntent.complete({"phase": PHASE_COMPLETED}),
+        ]
+
+    @on_command(ACTION_PUT_TO_BIN, result="FAILED")
+    async def handle_put_to_bin_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理出料放置失败：保留预约并进入 Hold，等待人工确认物理状态。"""
+
+        return self._handling_failed_block(ctx, inbox)
 
     async def _storage_allocation_intents(
         self,

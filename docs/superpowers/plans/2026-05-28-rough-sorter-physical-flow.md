@@ -295,23 +295,23 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - Modify: `src/workline_plugins/rough_sorter/plugin.py`
 - Test: `tests/workline_plugins/test_rough_sorter_plugin.py`
 
-- [ ] 写 `PUT_TO_BIN SUCCESS` 测试，断言返回 `RESOURCE_RESERVATION(CONSUME_BIN_CELL) + RESOURCE_FACT(MATERIAL_MOUNTED) + COMPLETE`。
-- [ ] 写 `PUT_TO_BIN FAILED` 测试，断言只返回 `BLOCK` 并保留当前 bin cell reservation。
-- [ ] 实现 `@on_command("PUT_TO_BIN", result="SUCCESS")`：
+- [x] 写 `PUT_TO_BIN SUCCESS` 测试，断言返回 `RESOURCE_RESERVATION(CONSUME_BIN_CELL) + RESOURCE_FACT(MATERIAL_MOUNTED) + COMPLETE`。
+- [x] 写 `PUT_TO_BIN FAILED` 测试，断言只返回 `BLOCK` 并保留当前 bin cell reservation。
+- [x] 实现 `@on_command("PUT_TO_BIN", result="SUCCESS")`：
   - 消费 bin cell reservation。
   - 记录 `MATERIAL_MOUNTED` resource fact。
   - 完成 Session。
-- [ ] 实现 `@on_command("PUT_TO_BIN", result="FAILED")`：
+- [x] 实现 `@on_command("PUT_TO_BIN", result="FAILED")`：
   - 不释放 reservation。
   - Hold，保留设备错误码和错误信息，等待人工确认料盘和硬件状态后再处理预约。
-- [ ] 运行：`uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
+- [x] 运行：`uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -v`
 
 ### Task 7: 集成回归与质量门禁
 
 **Files:**
 - All changed files
 
-- [ ] 运行插件和注册表测试：
+- [x] 运行插件和注册表测试：
 
 ```bash
 uv run pytest \
@@ -321,7 +321,7 @@ uv run pytest \
   -v
 ```
 
-- [ ] 运行 runtime 相关回归：
+- [x] 运行 runtime 相关回归：
 
 ```bash
 uv run pytest \
@@ -332,7 +332,7 @@ uv run pytest \
   -v
 ```
 
-- [ ] 运行 WMS mock / typed port 相关回归：
+- [x] 运行 WMS mock / typed port 相关回归：
 
 ```bash
 uv run pytest \
@@ -341,20 +341,20 @@ uv run pytest \
   -v
 ```
 
-- [ ] 新增并运行 rough_sorter 业务集成 smoke：
+- [x] 新增并运行 rough_sorter 业务集成 smoke：
 
 ```bash
 uv run pytest tests/integration/workline_runtime/test_rough_sorter_physical_flow_integration.py -v
 ```
 
-- [ ] 运行 lint/format：
+- [x] 运行 lint/format：
 
 ```bash
 uv run ruff format src/workline_plugins/rough_sorter tests/workline_plugins tests/workline_runtime tests/mock src/workline_plugin_registry.py
 uv run ruff check src/workline_plugins/rough_sorter tests/workline_plugins tests/workline_runtime tests/mock src/workline_plugin_registry.py
 ```
 
-- [ ] 提交前运行 GitNexus 变更检测：
+- [x] 提交前运行 GitNexus 变更检测：
 
 ```bash
 npx gitnexus detect-changes

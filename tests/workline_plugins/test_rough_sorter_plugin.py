@@ -22,6 +22,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     EVENT_SCAN_COMPLETED,
+    PHASE_COMPLETED,
     PHASE_MEASURING,
     PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
@@ -809,6 +810,86 @@ async def test_rough_sorter_storage_retry_uses_callback_active_bin_rack_without_
         RuntimeIntentKind.COMMAND,
     ]
     assert allocator.calls[0]["context"]["active_bin_rack"] == callback_active_bin_rack
+
+
+@pytest.mark.asyncio
+async def test_put_to_bin_success_consumes_reservation_records_material_and_completes() -> None:
+    session_context = _rough_sorter_context_for_phase(PHASE_PUTTING_TO_BIN)
+    session_context["target_bin_location"] = {
+        "bin_id": "BIN-001",
+        "bin_cell_index": "4",
+        "bin_cell_location": "BIN-001-4",
+        "material_identity_key": "MAT:HH-001:MFR-001:260528:LOT-A",
+        "capacity_depth_mm": 10.0,
+    }
+    session_context["wms_validation"] = {
+        "matched": True,
+        "wms_inventory_id": "INV-ROUGH-001",
+    }
+    ctx = _command_ctx(
+        command_type=ACTION_PUT_TO_BIN,
+        device_code="RS-OUTPUT-01",
+        session_context=session_context,
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_PUT_TO_BIN, device_code="RS-OUTPUT-01"),
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_RESERVATION,
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[0].action == "CONSUME_BIN_CELL"
+    assert intents[0].payload_json["bin_code"] == "BIN-001"
+    assert intents[0].payload_json["bin_cell_index"] == "4"
+    assert intents[0].idempotency_key == "CONSUME_BIN_CELL:PKG-ROUGH-001:BIN-001:4"
+    assert intents[1].action == "MATERIAL_MOUNTED"
+    assert intents[1].payload_json["pkg_code"] == "PKG-ROUGH-001"
+    assert intents[1].payload_json["bin_code"] == "BIN-001"
+    assert intents[1].payload_json["bin_cell_index"] == "4"
+    assert intents[1].payload_json["bin_cell_code"] == "BIN-001-4"
+    assert intents[1].payload_json["material_identity_key"] == "MAT:HH-001:MFR-001:260528:LOT-A"
+    assert intents[1].payload_json["material_code"] == "HH-001"
+    assert intents[1].payload_json["lot_code"] == "LOT-A"
+    assert intents[1].payload_json["date_code"] == "260528"
+    assert intents[1].payload_json["wms_inventory_id"] == "INV-ROUGH-001"
+    assert intents[1].payload_json["reel_diameter"] == "178.0"
+    assert intents[1].payload_json["reel_thickness"] == "15.0"
+    assert intents[1].payload_json["cell_capacity_depth_mm"] == 10.0
+    assert intents[1].idempotency_key == "MATERIAL_MOUNTED:PKG-ROUGH-001:BIN-001:4"
+    assert intents[2].context_patch["phase"] == PHASE_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_put_to_bin_failed_blocks_without_releasing_reservation() -> None:
+    error_detail = {"error_code": "OUTPUT_ARM_JAMMED", "error_message": "出料机械臂卡料"}
+    session_context = _rough_sorter_context_for_phase(PHASE_PUTTING_TO_BIN)
+    session_context["target_bin_location"] = {
+        "bin_id": "BIN-001",
+        "bin_cell_index": "4",
+        "bin_cell_location": "BIN-001-4",
+    }
+    ctx = _command_ctx(
+        command_type=ACTION_PUT_TO_BIN,
+        source_result="FAILED",
+        normalized_result="TERMINAL_FAILURE",
+        device_code="RS-OUTPUT-01",
+        error_detail=error_detail,
+        session_context=session_context,
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_PUT_TO_BIN, result="FAILED", error_detail=error_detail),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "ROUGH_SORTER_HANDLING_COMMAND_FAILED"
+    assert intents[0].payload_json["error_detail"]["error_code"] == "OUTPUT_ARM_JAMMED"
+    assert intents[0].payload_json["error_detail"]["error_message"] == "出料机械臂卡料"
 
 
 @pytest.mark.asyncio
