@@ -415,27 +415,27 @@ npx gitnexus detect-changes
 
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~2h / CC: ~20min)** — WMS validation — Lock business reject, stable request ID, and strict item matching.
+- [x] **T1 (P1, human: ~2h / CC: ~20min)** — WMS validation — Lock business reject, stable request ID, and strict item matching.
   - Surfaced by: Architecture/Test review — WMS business reject, request_id, wrong sku/lot gaps.
   - Files: `src/workline_plugins/rough_sorter/plugin.py`, `src/workline_plugins/rough_sorter/contract.py`, `tests/workline_plugins/test_rough_sorter_plugin.py`, `tests/mock/test_wms_mock_server.py`
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py tests/mock/test_wms_mock_server.py -v`
-- [ ] **T2 (P1, human: ~2h / CC: ~20min)** — Command contract — Preserve WES action through `params.action`.
+- [x] **T2 (P1, human: ~2h / CC: ~20min)** — Command contract — Preserve WES action through `params.action`.
   - Surfaced by: Architecture review — business action/device task_type split would otherwise route callbacks to `TEST`/`PICK_AND_PUT`.
   - Files: `src/workline_plugins/rough_sorter/contract.py`, `tests/workline_plugins/test_rough_sorter_contract.py`, callback route regression test
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_contract.py tests/workline_runtime/test_runtime_config_and_normalization.py -v`
-- [ ] **T3 (P1, human: ~1h / CC: ~10min)** — Physical safety — Keep reservation on `PUT_TO_BIN FAILED`.
+- [x] **T3 (P1, human: ~1h / CC: ~10min)** — Physical safety — Keep reservation on `PUT_TO_BIN FAILED`.
   - Surfaced by: Architecture review — releasing a cell after uncertain placement can double-allocate a physically occupied cell.
   - Files: `src/workline_plugins/rough_sorter/plugin.py`, `tests/workline_plugins/test_rough_sorter_plugin.py`
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py -k put_to_bin -v`
-- [ ] **T4 (P1, human: ~1.5h / CC: ~15min)** — Retry idempotency — Use stable storage retry `event_id`.
+- [x] **T4 (P1, human: ~1.5h / CC: ~15min)** — Retry idempotency — Use stable storage retry `event_id`.
   - Surfaced by: Test review — retry event data-only idempotency would include timestamp and allow duplicate retry inboxes.
   - Files: `src/workline_plugins/rough_sorter/plugin.py`, `tests/workline_plugins/test_rough_sorter_plugin.py`, `tests/workline_runtime/test_runtime_intent_effects.py`
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py tests/workline_runtime/test_runtime_intent_effects.py -k 'device_event or resource' -v`
-- [ ] **T5 (P2, human: ~1h / CC: ~10min)** — Contract hygiene — Centralize phase and role constants.
+- [x] **T5 (P2, human: ~1h / CC: ~10min)** — Contract hygiene — Centralize phase and role constants.
   - Surfaced by: Code Quality review — phase strings and role names were underspecified and would drift across tests/config.
   - Files: `src/workline_plugins/rough_sorter/contract.py`, `src/workline_plugins/rough_sorter/plugin.py`, `tests/test_workline_service_plugin_validation.py`
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_contract.py tests/test_workline_service_plugin_validation.py -v`
-- [ ] **T6 (P2, human: ~3h / CC: ~30min)** — Integration smoke — Add full rough_sorter physical-loop test.
+- [x] **T6 (P2, human: ~3h / CC: ~30min)** — Integration smoke — Add full rough_sorter physical-loop test.
   - Surfaced by: Test review — plugin/unit/effect tests do not prove the cross-layer physical loop.
   - Files: `tests/integration/workline_runtime/test_rough_sorter_physical_flow_integration.py`
   - Verify: `uv run pytest tests/integration/workline_runtime/test_rough_sorter_physical_flow_integration.py -v`
