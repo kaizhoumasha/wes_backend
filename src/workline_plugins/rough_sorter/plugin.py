@@ -451,16 +451,6 @@ class RoughSorterPlugin(WorklinePlugin):
             )
         ]
 
-    @staticmethod
-    def _has_active_rack_template(payload_json: Mapping[str, Any]) -> bool:
-        active_bin_rack = payload_json.get("active_bin_rack")
-        if not isinstance(active_bin_rack, Mapping):
-            return False
-        raw_cells = (
-            active_bin_rack.get("cells") or active_bin_rack.get("bin_cells") or active_bin_rack.get("cell_snapshots")
-        )
-        return isinstance(raw_cells, list) and any(isinstance(cell, Mapping) for cell in raw_cells)
-
     def _storage_retry_data(
         self,
         payload_json: Mapping[str, Any],
@@ -783,16 +773,15 @@ class RoughSorterPlugin(WorklinePlugin):
                 f"粗分机货架到位回调缺少资源投影必需字段: {', '.join(missing_projection_fields)}",
             )
 
+        bin_mounted_intents = self._bin_mounted_intents(payload_json, operation_key)
         intents = [
             RuntimeIntent.resource_fact(
                 fact_type="RACK_ARRIVED",
                 payload=rack_arrived_payload,
                 idempotency_key=f"RACK_ARRIVED:{operation_key}",
             ),
-            *self._bin_mounted_intents(payload_json, operation_key),
+            *bin_mounted_intents,
         ]
-        if not self._has_active_rack_template(payload_json):
-            return intents
 
         return [
             *intents,
@@ -1019,12 +1008,13 @@ class RoughSorterPlugin(WorklinePlugin):
             "bin_cell_index": bin_cell_index,
             "source_event_id": source_event_id,
         }
+        resource_pkg_code = _non_empty_str(rough_context.six_in_one.get("PkgID")) or business_key
         mounted_payload: dict[str, Any] = {
             "bin_code": bin_code,
             "bin_cell_code": bin_cell_code,
             "bin_cell_index": bin_cell_index,
             "material_identity_key": material_identity_key,
-            "pkg_code": business_key,
+            "pkg_code": resource_pkg_code,
             "material_code": _non_empty_str(rough_context.six_in_one.get("HHPN")),
             "lot_code": _non_empty_str(rough_context.six_in_one.get("LotCode")),
             "date_code": _non_empty_str(rough_context.six_in_one.get("DateCode")),
@@ -1045,7 +1035,7 @@ class RoughSorterPlugin(WorklinePlugin):
             RuntimeIntent.resource_fact(
                 fact_type="MATERIAL_MOUNTED",
                 payload={key: value for key, value in mounted_payload.items() if value is not None},
-                idempotency_key=f"MATERIAL_MOUNTED:{business_key}:{bin_code}:{bin_cell_index}",
+                idempotency_key=f"MATERIAL_MOUNTED:{resource_pkg_code}:{bin_code}:{bin_cell_index}",
             ),
             RuntimeIntent.complete({"phase": PHASE_COMPLETED}),
         ]
@@ -1083,7 +1073,14 @@ class RoughSorterPlugin(WorklinePlugin):
 
         decision_kind = _non_empty_str(getattr(decision, "kind", None))
         if decision_kind == "ALLOCATED":
-            return self._allocated_bin_intents(ctx, payload_json, allocation_rough_context, business_key, decision)
+            return self._allocated_bin_intents(
+                ctx,
+                payload_json,
+                allocation_rough_context,
+                business_key,
+                allocation_barcode,
+                decision,
+            )
         if decision_kind == "RACK_OPERATION_REQUIRED":
             return self._rack_operation_required_intents(ctx, payload_json, rough_context, business_key, decision)
         if decision_kind == "BLOCKED":
@@ -1102,6 +1099,7 @@ class RoughSorterPlugin(WorklinePlugin):
         payload_json: dict[str, Any],
         rough_context: RoughSorterContext,
         business_key: str,
+        resource_pkg_code: str,
         decision: Any,
     ) -> list[RuntimeIntent]:
         bin_location = getattr(decision, "bin_location", None)
@@ -1114,7 +1112,7 @@ class RoughSorterPlugin(WorklinePlugin):
             return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", str(exc))
 
         claim_payload: dict[str, Any] = {
-            "pkg_code": business_key,
+            "pkg_code": resource_pkg_code,
             "bin_code": bin_code,
             "bin_cell_index": bin_cell_index,
         }
@@ -1138,7 +1136,7 @@ class RoughSorterPlugin(WorklinePlugin):
             RuntimeIntent.resource_reservation(
                 operation="CLAIM_BIN_CELL",
                 payload=claim_payload,
-                idempotency_key=f"CLAIM_BIN_CELL:{business_key}:{bin_code}:{bin_cell_index}",
+                idempotency_key=f"CLAIM_BIN_CELL:{resource_pkg_code}:{bin_code}:{bin_cell_index}",
             ),
             RuntimeIntent.command(
                 device_role=ACTION_TARGET_ROLES[ACTION_PUT_TO_BIN],

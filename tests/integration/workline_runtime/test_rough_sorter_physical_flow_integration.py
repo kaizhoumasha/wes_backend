@@ -178,6 +178,6 @@ async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_complet
     ]
     assert put_intents[0].action == "CONSUME_BIN_CELL"
     assert put_intents[1].action == "MATERIAL_MOUNTED"
-    assert put_intents[1].payload_json["pkg_code"] == session_context["business_key"]
+    assert put_intents[1].payload_json["pkg_code"] == session_context["six_in_one"]["PkgID"]
     assert put_intents[1].payload_json["bin_code"] == "BIN-001"
     assert put_intents[2].context_patch["phase"] == PHASE_COMPLETED
