@@ -818,8 +818,8 @@ def test_plan_allocation_rejects_arrived_operation_rack_with_occupied_cell() -> 
     assert decision.bin_location is None
 
 
-def test_plan_allocation_missing_rack_operation_target_blocks_configuration() -> None:
-    """缺少 WMS/RCS 目标地址时阻断物料，避免把请求类型当作 HTTP URL 派发。"""
+def test_plan_allocation_missing_rack_operation_target_uses_default_endpoint_code() -> None:
+    """SANDBOX 未携带显式 WMS/RCS 地址时，仍使用系统默认逻辑端点创建 operation。"""
 
     service = SmtRackBinSchedulingService()
     context = _context(cells=_full_rack_cells())
@@ -827,9 +827,11 @@ def test_plan_allocation_missing_rack_operation_target_blocks_configuration() ->
 
     decision = service.plan_allocation("SVYU00125TP4LCR02_2", context=context)
 
-    assert decision.kind == "BLOCKED"
-    assert decision.reason_code == "RACK_OPERATION_TARGET_MISSING"
-    assert decision.rack_operation_request is None
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.reason_code == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
+    assert decision.rack_operation_request.payload["target_code"] == "WMS_RCS_RACK_OPERATION"
 
 
 def test_plan_allocation_pending_rack_operation_blocks_duplicate_request() -> None:
