@@ -204,6 +204,15 @@ class WorkLineResponse(WorkLineBase):
     is_active: bool
 
 
+class DeviceRoleRequirementOption(BaseModel):
+    """设备角色要求明细。"""
+
+    role: str = Field(description="必需角色名")
+    min_count: int = Field(description="最小数量限制")
+    max_count: int | None = Field(default=None, description="最大数量限制")
+    capabilities: list[str] = Field(default_factory=list, description="要求能力声明")
+
+
 class WorkLinePluginOption(BaseModel):
     """作业线插件下拉选项。"""
 
@@ -211,6 +220,9 @@ class WorkLinePluginOption(BaseModel):
     label: str = Field(description="插件显示文本")
     contract_versions: list[str] = Field(default_factory=list, description="可选契约版本")
     default_contract_version: str = Field(description="默认契约版本")
+    required_device_roles: list[DeviceRoleRequirementOption] = Field(default_factory=list, description="必需设备角色")
+    supported_events: list[str] = Field(default_factory=list, description="支持的事件")
+    supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
 
 
 class WorkLineConfigurationCheck(BaseModel):

@@ -110,6 +110,7 @@ from .timeline import (
     WorklineTimelineCreate,
 )
 from .workline import (
+    DeviceRoleRequirementOption,
     LineType,
     WorkLine,
     WorkLineBase,
@@ -126,6 +127,7 @@ from .workline import (
 __all__ = [
     "BinCellReservationStatus",
     "ClearWorkLineEstopRequest",
+    "DeviceRoleRequirementOption",
     "DiagnosticCardResponse",
     "DiagnosticStatus",
     "DispatchAttemptStatus",

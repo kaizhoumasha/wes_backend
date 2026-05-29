@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories import device_repository
 from src.app.workline.models import (
+    DeviceRoleRequirementOption,
     WorkLine,
     WorkLineConfigurationCheck,
     WorkLineConfigurationStatus,
@@ -78,6 +79,17 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                     label=definition.plugin_key,
                     contract_versions=[manifest.contract_version],
                     default_contract_version=manifest.contract_version,
+                    required_device_roles=[
+                        DeviceRoleRequirementOption(
+                            role=req.role,
+                            min_count=req.min_count,
+                            max_count=req.max_count,
+                            capabilities=list(req.capabilities) if req.capabilities else [],
+                        )
+                        for req in manifest.required_device_roles
+                    ],
+                    supported_events=sorted(manifest.supported_events),
+                    supported_commands=sorted(manifest.supported_commands),
                 )
             )
         return options
@@ -166,7 +178,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         checks = self._build_configuration_checks(workline, devices)
-        can_activate = not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
+        can_activate = self._can_activate(checks)
         return WorkLineConfigurationStatus(
             workline_id=workline_id,
             is_active=bool(workline.is_active),
@@ -191,7 +203,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         checks = self._build_configuration_checks(current, devices)
-        can_activate = not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
+        can_activate = self._can_activate(checks)
         if not can_activate:
             raise BusinessException(
                 message="配置预检未通过，不能启用作业线",
@@ -272,6 +284,10 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                     "fields": submitted_fields,
                 },
             )
+
+    @staticmethod
+    def _can_activate(checks: list[WorkLineConfigurationCheck]) -> bool:
+        return not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
 
     def _build_configuration_checks(
         self,

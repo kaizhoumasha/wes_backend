@@ -122,16 +122,17 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             inbox_where,
             runtime_hold_count,
         )
+        by_type = {
+            "sessions": session_count,
+            "commands": command_count,
+            "outboxes": outbox_count,
+            "inboxes": inbox_count,
+            "runtime_holds": runtime_hold_count,
+        }
         return {
-            "count": session_count + command_count + outbox_count + inbox_count + runtime_hold_count,
+            "count": sum(by_type.values()),
             "sample": sample,
-            "by_type": {
-                "sessions": session_count,
-                "commands": command_count,
-                "outboxes": outbox_count,
-                "inboxes": inbox_count,
-                "runtime_holds": runtime_hold_count,
-            },
+            "by_type": by_type,
         }
 
     @staticmethod
