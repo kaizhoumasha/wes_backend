@@ -23,6 +23,10 @@ TABLE = "handling_operations"
 COMPLETION_POLICY_COLUMN = "completion_policy"
 COMPLETION_POLICY_INDEX = "ix_wes_biz_handling_operations_completion_policy"
 COMPLETION_POLICY_CONSTRAINT = "operationcompletionpolicy"
+COMPLETION_POLICY_CONSTRAINT_NAMES = (
+    COMPLETION_POLICY_CONSTRAINT,
+    "ck_handling_operations_operationcompletionpolicy",
+)
 
 
 def _column_exists(column_name: str) -> bool:
@@ -61,6 +65,10 @@ def _constraint_exists(constraint_name: str) -> bool:
     )
 
 
+def _completion_policy_constraint_exists() -> bool:
+    return any(_constraint_exists(constraint_name) for constraint_name in COMPLETION_POLICY_CONSTRAINT_NAMES)
+
+
 def _index_exists(index_name: str) -> bool:
     bind = op.get_bind()
     return bool(
@@ -93,7 +101,7 @@ def _ensure_completion_policy_column() -> None:
             schema=SCHEMA,
         )
 
-    if not _constraint_exists(COMPLETION_POLICY_CONSTRAINT):
+    if not _completion_policy_constraint_exists():
         op.create_check_constraint(
             COMPLETION_POLICY_CONSTRAINT,
             TABLE,

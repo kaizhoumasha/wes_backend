@@ -194,6 +194,13 @@ pipeline {
                             exit 1
                         fi
 
+                        echo "🏭 同步 TEST 环境 WorkLine 与 Device 基础数据..."
+                        docker compose \
+                            --env-file "${DEPLOY_ENV_FILE}" \
+                            -f "${DEPLOY_COMPOSE_FILE}" \
+                            exec -T api \
+                            /opt/venv/bin/python scripts/data/sync_test_workline_devices.py
+
                         echo "🔐 同步 TEST 环境权限..."
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \

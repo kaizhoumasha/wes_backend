@@ -80,6 +80,34 @@ def test_completion_policy_migration_only_backfills_canonical_full_box_policy() 
     assert "LIKE '%RACK_BIN_EXCHANGE%'" not in migration_text
 
 
+def test_completion_policy_migration_detects_existing_named_check_constraint() -> None:
+    migration = Path("migrations/versions/20260526_1544_c5d469c98d89_set_handling_full_box_completion_policy.py")
+    migration_text = migration.read_text(encoding="utf-8")
+
+    assert "ck_handling_operations_operationcompletionpolicy" in migration_text
+    assert "COMPLETION_POLICY_CONSTRAINT_NAMES" in migration_text
+    assert "any(_constraint_exists(constraint_name) for constraint_name in COMPLETION_POLICY_CONSTRAINT_NAMES)" in (
+        migration_text
+    )
+
+
+def test_workline_inbox_hot_queue_index_migration_uses_transactional_indexes() -> None:
+    migration = Path("migrations/versions/20260527_1434_a6c2c77adabd_add_workline_inbox_hot_queue_indexes.py")
+    migration_text = migration.read_text(encoding="utf-8")
+
+    assert "autocommit_block" not in migration_text
+    assert "postgresql_concurrently=True" not in migration_text
+    assert "if_not_exists=True" in migration_text
+    assert "if_exists=True" in migration_text
+
+
+def test_test_deploy_pipeline_syncs_workline_and_device_seed_data() -> None:
+    pipeline = Path("Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    assert "sync_test_workline_devices.py" in pipeline
+    assert pipeline.index("sync_test_workline_devices.py") < pipeline.index("sync_permissions.py")
+
+
 def test_workline_activation_default_migration_preserves_existing_active_rows() -> None:
     migration = Path("migrations/versions/20260529_1053_c1ea657cb2d7_workline_activation_state_default.py")
     migration_text = migration.read_text(encoding="utf-8")
