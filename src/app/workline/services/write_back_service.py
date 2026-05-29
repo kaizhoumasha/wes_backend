@@ -559,7 +559,9 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.workline.repositories.session_repository import WorklineSessionRepository
     from src.app.workline.services.ng_return_item_service import ng_return_item_service
+    from src.utils.value_normalization import resolve_required_pk
 
     if not getattr(ctx["orch_result"], "complete", False):
         return False
@@ -573,6 +575,12 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         occurred_at=ctx["now"],
     )
     workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
+    await WorklineSessionRepository().persist_completed(
+        ctx["db"],
+        session_id=resolve_required_pk(session, "session"),
+        occurred_at=ctx["now"],
+        context_json=getattr(session, "context_json", None),
+    )
     await _emit_timeline(
         ctx,
         stage=TimelineStage.COMPLETE,

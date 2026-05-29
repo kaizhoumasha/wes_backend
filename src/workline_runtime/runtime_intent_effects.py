@@ -376,6 +376,7 @@ class RuntimeIntentEffectApplier:
             TimelineStage,
             TimelineStatus,
         )
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -388,6 +389,12 @@ class RuntimeIntentEffectApplier:
 
         workline_effects.workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
         workline_effects._clear_session_failure(session)
+        await WorklineSessionRepository().persist_completed(
+            ctx["db"],
+            session_id=resolve_required_pk(session, "session"),
+            occurred_at=ctx["now"],
+            context_json=getattr(session, "context_json", None),
+        )
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.COMPLETE,

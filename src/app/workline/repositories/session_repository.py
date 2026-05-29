@@ -232,6 +232,36 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             .execution_options(synchronize_session=False)
         )
 
+    async def persist_completed(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        occurred_at: Any,
+        context_json: dict[str, Any] | None,
+    ) -> None:
+        """显式持久化完成态，确保终态与 timeline 保持一致。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        _ = await db.execute(
+            update(WorklineSession)
+            .where(columns.id == session_id)
+            .values(
+                status=SessionStatus.COMPLETED,
+                context_json=context_json or {},
+                current_wait_type=None,
+                waiting_since=None,
+                deadline_at=None,
+                current_wait_timeout_seconds=None,
+                awaiting_command_id=None,
+                ended_at=occurred_at,
+                failure_domain=None,
+                failure_code=None,
+                failure_message=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
     async def get_open_session_by_awaiting_command_id(
         self,
         db: AsyncSession,

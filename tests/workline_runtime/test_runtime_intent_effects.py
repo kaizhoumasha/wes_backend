@@ -190,6 +190,23 @@ async def test_update_context_and_complete(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_complete_intent_persists_session_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_moved": True})])
+
+    assert session.status == "COMPLETED"
+    db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session(context_json={"pkg_id": "PKG-001"})
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
