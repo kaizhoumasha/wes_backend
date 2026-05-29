@@ -34,6 +34,7 @@ _SUPPORTED_INTENT_KINDS = {
 }
 _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
+_DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -161,6 +162,26 @@ def _non_empty_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _positive_int(value: Any) -> int | None:
+    resolved = optional_int(value)
+    if resolved is None or resolved <= 0:
+        return None
+    return resolved
+
+
+def _resolve_command_result_timeout_seconds(intent: RuntimeIntent) -> int:
+    explicit_timeout = _positive_int(intent.timeout_seconds)
+    if explicit_timeout is not None:
+        return explicit_timeout
+
+    payload = intent.payload_json if isinstance(intent.payload_json, Mapping) else {}
+    timeout_ms = _positive_int(payload.get("timeout"))
+    if timeout_ms is not None:
+        return max(1, (timeout_ms + 999) // 1000)
+
+    return _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS
 
 
 def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -488,11 +509,6 @@ class RuntimeIntentEffectApplier:
         )
 
         workline_effects._clear_session_failure(ctx["session"])
-        if intent.timeout_seconds is None:
-            workline_effects.workline_session_lifecycle_service.running(ctx["session"])
-            workline_effects._clear_session_wait(ctx["session"])
-            return
-
         await self._apply_command_wait(ctx, intent)
 
     async def _apply_external_request(self, ctx: Any, intent: RuntimeIntent) -> None:
@@ -856,7 +872,7 @@ class RuntimeIntentEffectApplier:
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
-        timeout_seconds = intent.timeout_seconds or 300
+        timeout_seconds = _resolve_command_result_timeout_seconds(intent)
         workline_effects.workline_session_lifecycle_service.start_wait(
             session,
             wait_type="COMMAND_RESULT",
