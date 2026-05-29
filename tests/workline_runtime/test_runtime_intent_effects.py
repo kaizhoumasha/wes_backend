@@ -47,7 +47,7 @@ def _session(**overrides: Any) -> SimpleNamespace:
 def _ctx(orch_result: OrchestratorResult, *, session: Any | None = None, db: Any | None = None) -> dict[str, Any]:
     resolved_session = session or _session()
     return {
-        "db": db or SimpleNamespace(add=MagicMock()),
+        "db": db or SimpleNamespace(add=MagicMock(), execute=AsyncMock()),
         "session": resolved_session,
         "workline": SimpleNamespace(id=1, plugin_key="demo_plugin", contract_version="1.0"),
         "inbox": SimpleNamespace(id=10, trace_id="trace-runtime", payload_json={"canonical_event_type": "SCAN"}),
@@ -256,7 +256,7 @@ async def test_resource_reservation_intent_is_applied_before_command(monkeypatch
     source = SimpleNamespace(id=1, device_code="CONV01", device_role="CONVEYOR")
     target = SimpleNamespace(id=2, device_code="OUT01", device_role="OUTPUT_ARM", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
@@ -473,7 +473,7 @@ async def test_mark_ng_writes_business_decision_timeline(monkeypatch: pytest.Mon
 async def test_block_intent_holds_session_without_command_creation(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
     session = _session()
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
@@ -518,7 +518,7 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     )
     created_payloads: list[dict[str, Any]] = []
     timelines: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
@@ -554,6 +554,7 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     assert created_payloads[0]["task_type"] == "MOVE_FORWARD"
     assert session.status == "WAITING_DEVICE_RESULT"
     assert session.awaiting_command_id == 88
+    db.execute.assert_awaited_once()
     assert db.add.call_count == 1
     assert [timeline["related_command_id"] for timeline in timelines] == [88, 88]
 
@@ -572,7 +573,7 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
         timeout_ms=180000,
         params={"action": "MEASUREMENT_REEL"},
     )
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(
         status="NEW",
         current_wait_type=None,
@@ -620,6 +621,7 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
     assert session.waiting_since == ctx["now"]
     assert session.current_wait_timeout_seconds == 180
     assert session.deadline_at is None
+    db.execute.assert_awaited_once()
     assert [timeline["action_type"].value for timeline in timelines] == ["COMMAND_SENT", "WAIT_STARTED"]
     assert timelines[1]["payload"]["wait_token"] == "CMD-NO-TIMEOUT"
     assert timelines[1]["payload"]["deadline_seconds"] == 180
@@ -630,7 +632,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
@@ -673,7 +675,7 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
 ) -> None:
     timelines: list[dict[str, Any]] = []
     operation_calls: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].line_code = "WL-SMT-01"
@@ -774,7 +776,7 @@ async def test_rack_operation_request_stores_operation_wait_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     operation_calls: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(
         status="RUNNING",
         current_wait_type=None,
@@ -838,7 +840,7 @@ async def test_rack_operation_request_stores_operation_wait_fields(
 async def test_rack_operation_request_preserves_operation_metadata_written_by_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     operation_key = "rack-operation:trace-runtime"
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
@@ -929,7 +931,7 @@ async def test_bin_operation_request_calls_handling_service_and_waits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timelines: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     service = RecordingHandlingOperationService()
@@ -991,7 +993,7 @@ async def test_bin_operation_request_calls_handling_service_and_waits(
 async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     service = RecordingHandlingOperationService()
@@ -1422,7 +1424,7 @@ def test_command_result_timeout_resolution(intent: RuntimeIntent, expected_timeo
 async def test_command_destination_current_targets_source_device(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     created_payloads: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
@@ -1456,7 +1458,7 @@ async def test_command_destination_next_targets_topology_downstream(monkeypatch:
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     target = SimpleNamespace(id=2, device_code="CONV01", device_role="CONVEYOR", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
@@ -1489,7 +1491,7 @@ async def test_command_destination_next_targets_topology_downstream(monkeypatch:
 async def test_command_destination_device_outside_topology_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     timelines: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
@@ -1522,7 +1524,7 @@ async def test_command_destination_ng_route_uses_configured_route_role(monkeypat
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     ng_target = SimpleNamespace(id=3, device_code="NG01", device_role="NG_BUFFER", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
-    db = SimpleNamespace(add=MagicMock())
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].config = {"route_roles": {"NG_ROUTE": "NG_BUFFER"}}

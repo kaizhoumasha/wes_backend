@@ -860,6 +860,9 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from sqlalchemy import update
+
+        from src.app.workline.models.session import SessionStatus, WorklineSession
         from src.app.workline.models.timeline import (
             TimelineActionType,
             TimelineActorType,
@@ -876,6 +879,22 @@ class RuntimeIntentEffectApplier:
             occurred_at=ctx["now"],
             awaiting_command_id=ctx["awaiting_command_id"],
             deadline_seconds=timeout_seconds,
+        )
+        await ctx["db"].execute(
+            update(WorklineSession)
+            .where(WorklineSession.id == resolve_required_pk(session, "session"))
+            .values(
+                status=SessionStatus.WAITING_DEVICE_RESULT,
+                current_wait_type="COMMAND_RESULT",
+                waiting_since=ctx["now"],
+                deadline_at=None,
+                current_wait_timeout_seconds=timeout_seconds,
+                awaiting_command_id=ctx["awaiting_command_id"],
+                ended_at=None,
+                failure_domain=None,
+                failure_code=None,
+                failure_message=None,
+            )
         )
         await workline_effects._emit_timeline(
             ctx,
