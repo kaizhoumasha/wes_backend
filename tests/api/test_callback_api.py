@@ -512,7 +512,8 @@ class TestCallbackResultAPI:
     async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         existing_command = SimpleNamespace(
             trace_id="trace-001",
-            params={"task_type": "PICK_AND_PUT"},
+            task_type="PICK_AND_PUT",
+            params={},
             workline_id=1,
             plugin_key="test_workline_plugin",
             contract_version="1.0",
@@ -593,13 +594,17 @@ class TestCallbackResultAPI:
             from src.app.callback.v1.callback import callback_result
 
             response = await callback_result(
-                request=build_request(body=create_result_payload(), path="/api/v1/callback/result"),
+                request=build_request(
+                    body=create_result_payload(data={"command_type": "TEST", "task_type": "TEST"}),
+                    path="/api/v1/callback/result",
+                ),
                 db=db_session,
             )
 
         assert response["code"] == "1000"
         assert _response_data(response)["ack"] is True
         assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
+        assert mock_create_inbox.call_args.kwargs["task_type"] == "PICK_AND_PUT"
         mock_mark_finished.assert_awaited_once_with(
             db_session,
             device_id=7,
@@ -970,7 +975,8 @@ class TestCallbackResultAPI:
     ) -> None:
         existing_command = SimpleNamespace(
             trace_id="trace-001",
-            params={"action": "PICK_AND_PUT"},
+            task_type="PICK_AND_PUT",
+            params={},
             workline_id=1,
             plugin_key="test_workline_plugin",
             contract_version="1.0",

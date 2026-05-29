@@ -4,6 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.workline_plugins.rough_sorter.contract import (
+    ACTION_MEASUREMENT_REEL,
+    ACTION_MOVE_FORWARD,
+    ACTION_MOVE_TO_NG,
+    ACTION_PICK_AND_PUT,
+    ACTION_PUT_TO_BIN,
+    ROLE_CONVEYOR,
+    ROLE_INPUT_ARM,
+    ROLE_OUTPUT_ARM,
+)
+from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
 
@@ -120,3 +131,58 @@ def test_validate_topology_manifest_rejects_unsupported_command_type() -> None:
 
     with pytest.raises(ValueError, match="命令 WEIGH_TOTE 没有可用目标设备角色"):
         validate_topology_manifest(manifest, topology)
+
+
+def test_rough_sorter_topology_requires_concrete_extended_command_types() -> None:
+    topology = WorklineTopologyView.from_devices(
+        [
+            _device(
+                1,
+                code="RS-INPUT-01",
+                role=ROLE_INPUT_ARM,
+                capabilities_json={"supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT]},
+            ),
+            _device(
+                2,
+                code="RS-CONVEYOR-01",
+                role=ROLE_CONVEYOR,
+                capabilities_json={"supports_command_types": [ACTION_MOVE_FORWARD]},
+            ),
+            _device(
+                3,
+                code="RS-OUTPUT-01",
+                role=ROLE_OUTPUT_ARM,
+                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG]},
+            ),
+        ]
+    )
+
+    validate_topology_manifest(RoughSorterPlugin.manifest, topology)
+
+
+def test_rough_sorter_topology_rejects_legacy_test_only_measurement_capability() -> None:
+    topology = WorklineTopologyView.from_devices(
+        [
+            _device(
+                1,
+                code="RS-INPUT-01",
+                role=ROLE_INPUT_ARM,
+                capabilities_json={"supports_command_types": ["TEST", ACTION_PICK_AND_PUT]},
+            ),
+            _device(
+                2,
+                code="RS-CONVEYOR-01",
+                role=ROLE_CONVEYOR,
+                capabilities_json={"supports_command_types": [ACTION_MOVE_FORWARD]},
+            ),
+            _device(
+                3,
+                code="RS-OUTPUT-01",
+                role=ROLE_OUTPUT_ARM,
+                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG]},
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match=f"命令 {ACTION_MEASUREMENT_REEL} 没有可用目标设备角色"):
+        validate_topology_manifest(RoughSorterPlugin.manifest, topology)

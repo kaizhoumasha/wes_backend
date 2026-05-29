@@ -18,7 +18,7 @@
 - 业务字段只允许出现在 `payload.data`；不兼容顶层业务字段。
 - 插件测试调用真实 runtime 入口：`on_device_event(ctx, inbox)`、`on_command_result(ctx, inbox)`、`on_external_http(ctx, inbox)`。
 - 测试和实现只使用 `RuntimeIntent` 真实字段：`payload_json`、`action`、`idempotency_key`、`context_patch`。
-- 设备命令 builder 必须在 `params.action` 写入 WES 业务 action；设备顶层 `task_type` 只表达现场协议动作。
+- 设备命令 builder 必须输出具体 `task_type`；旧 `params.action` 二级路由合同已废弃。
 - WMS/RCS 货架到位恢复采用两阶段：先落资源事实并创建内部重试 inbox，下一轮再分配。
 - 发起 rack operation 前写入 `resume_source_device_code` 和重试上下文，保证回调恢复能找到正确设备/拓扑。
 - `ROUGH_SORTER_STORAGE_RETRY` 必须使用稳定 `event_id`，避免重复 WMS/RCS 回调创建多个 retry inbox。
@@ -65,12 +65,12 @@ SCAN_COMPLETED
 ```
 
 - `SCAN_COMPLETED` 由扫码点或入料机械臂上报，业务数据必须位于 `payload.data`。
-- `MEASUREMENT_REEL` 是 WES 业务 action，默认映射设备 `task_type="TEST"`。
+- `MEASUREMENT_REEL` 是正式设备 `task_type`，由入料测量设备执行；旧 `TEST + params.action=MEASUREMENT_REEL` 合同已废弃。
 - `PICK_AND_PUT` 是入料机械臂从读码/检测点抓取到流水线进料位的业务动作。
 - `MOVE_FORWARD` 是流水线将料盘移至出料位的业务动作。
-- `PUT_TO_BIN` 是 WES 业务 action，默认映射设备 `task_type="PICK_AND_PUT"`，由出料机械臂执行。
-- `MOVE_TO_NG` 是 WES 内部 NG 搬运业务 action，默认映射设备 `task_type="PICK_AND_PUT"` 且目标为 NG 位。
-- 所有命令 payload builder 必须输出 `params.action=<WES 业务 action>`，确保设备回调即使只回传 `task_type` 也能由 callback 层还原业务命令类型。
+- `PUT_TO_BIN` 是正式设备 `task_type`，由出料机械臂执行；旧 `PICK_AND_PUT + params.action=PUT_TO_BIN` 合同已废弃。
+- `MOVE_TO_NG` 是正式设备 `task_type`，由出料机械臂将异常料盘移动到 NG 位；旧 `PICK_AND_PUT + params.action=MOVE_TO_NG` 合同已废弃。
+- 所有命令 payload builder 必须输出具体 `task_type`，且不得写入 `params.action`；设备能力配置也必须声明具体 `supports_command_types`。
 
 ### 2.1.1 设备角色合同
 
@@ -204,7 +204,7 @@ MATERIAL_MOUNTED + COMPLETE    WMS/RCS callback -> RESOURCE_FACT + RETRY_EVENT
 - [x] 增加 SessionResolver 测试：`DEVICE_EVENT` 的 `payload.data.PkgID` 能通过 rough_sorter manifest 派生 business key，并创建/复用同一 Session。
 - [x] 增加扫码 OK 测试，调用 `RoughSorterPlugin().on_device_event(ctx, inbox)`，断言返回 `UPDATE_CONTEXT + COMMAND`，命令 action 为 `MEASUREMENT_REEL`。
 - [x] 增加扫码 NG 测试，断言返回 `UPDATE_CONTEXT + MARK_NG + COMMAND`，命令 action 为 `MOVE_TO_NG`。
-- [x] 增加 callback 路由测试：设备回调只带 `task_type="TEST"` 时，`DeviceCommand.params.action="MEASUREMENT_REEL"` 能让 command result 路由到 `MEASUREMENT_REEL` handler。
+- [x] 增加 callback 路由测试：设备回调携带旧 `command_type/task_type=TEST` 时，已持久化 `DeviceCommand.task_type="MEASUREMENT_REEL"` 仍路由到 `MEASUREMENT_REEL` handler。
 - [x] 实现 `@on_event("SCAN_COMPLETED")`：
   - 解析 `payload.data`。
   - 调用 `barcode_decision_service.evaluate(...)`。
@@ -367,7 +367,7 @@ npx gitnexus detect-changes
 - 条码 NG、测量 NG、WMS 无匹配必须走物理 NG 搬运，NG 搬运成功后流程完成并保留 NG 证据。
 - WMS 不可用、设备未知失败、流水线失败、出料放置失败、投影冲突必须进入 Hold。
 - WMS 业务拒绝进入物理 NG；WMS 不可用、超时、熔断、协议异常和 evidence 异常进入 Hold。
-- 设备命令回调必须通过 `DeviceCommand.params.action` 还原 WES 业务 action，不得依赖设备 `task_type` 与业务 action 一致。
+- 设备命令回调必须通过已持久化 `DeviceCommand.task_type` 还原 WES 业务命令；设备回调 payload 中的 `command_type/task_type` 不覆盖路由 key。
 - 无存储位置时必须通过 `RACK_OPERATION_REQUEST` 进入货架操作域，不直接调用 HTTP、Repository 或 DB。
 - WMS/RCS 到位回调必须先落资源事实，再通过带稳定 `event_id` 的内部 retry event 重新分配；不得在同一 plugin handler 中读未落库投影。
 - `PUT_TO_BIN` 成功后必须消费预约、记录 `MATERIAL_MOUNTED`、完成 Session。
@@ -380,7 +380,7 @@ npx gitnexus detect-changes
 - 不实现 NG 返工工单、NG 容器生命周期、PDA 离线扫码；这些属于 Runtime Hold/NG 后续域。
 - 不做 Workline worker 吞吐并发调优；该项已有独立 TODO。
 - 不做 WMS evidence 留存清理/归档 job。
-- 不在本次把 Runtime 扩展为一等 `business_action` 字段；本次用 `params.action` 作为局部合同，并已决定后续补充 TODO。
+- 不在本次把 Runtime 扩展为一等 `business_action` 字段；当前合同以具体 `task_type` 作为唯一命令类型来源。
 - 不实现 PUT_TO_BIN 失败自动释放预约；失败后 WES 不能确定料盘和硬件状态，必须人工确认后释放。
 - 不引入新的 Repository、Service 或 API route；本次只接入现有 runtime/plugin 服务容器能力。
 
@@ -419,8 +419,8 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: Architecture/Test review — WMS business reject, request_id, wrong sku/lot gaps.
   - Files: `src/workline_plugins/rough_sorter/plugin.py`, `src/workline_plugins/rough_sorter/contract.py`, `tests/workline_plugins/test_rough_sorter_plugin.py`, `tests/mock/test_wms_mock_server.py`
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_plugin.py tests/mock/test_wms_mock_server.py -v`
-- [x] **T2 (P1, human: ~2h / CC: ~20min)** — Command contract — Preserve WES action through `params.action`.
-  - Surfaced by: Architecture review — business action/device task_type split would otherwise route callbacks to `TEST`/`PICK_AND_PUT`.
+- [x] **T2 (P1, human: ~2h / CC: ~20min)** — Command contract — Use concrete `task_type` as the single command type.
+  - Surfaced by: Architecture review — business action/device task_type split would otherwise require `params.action` secondary routing.
   - Files: `src/workline_plugins/rough_sorter/contract.py`, `tests/workline_plugins/test_rough_sorter_contract.py`, callback route regression test
   - Verify: `uv run pytest tests/workline_plugins/test_rough_sorter_contract.py tests/workline_runtime/test_runtime_config_and_normalization.py -v`
 - [x] **T3 (P1, human: ~1h / CC: ~10min)** — Physical safety — Keep reservation on `PUT_TO_BIN FAILED`.

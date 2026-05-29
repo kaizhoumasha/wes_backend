@@ -89,7 +89,8 @@ class TestCallbackResultIdempotency:
     ) -> None:
         existing_command = SimpleNamespace(
             trace_id="trace-001",
-            params={"action": "PICK_AND_PUT"},
+            task_type="PICK_AND_PUT",
+            params={},
             workline_id=1,
             plugin_key="test_workline_plugin",
             contract_version="1.0",

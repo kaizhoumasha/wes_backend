@@ -586,10 +586,10 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
     created_command = SimpleNamespace(
         id=88,
         command_code="CMD-NO-TIMEOUT",
-        task_type="TEST",
+        task_type="MEASUREMENT_REEL",
         priority=5,
         timeout_ms=180000,
-        params={"action": "MEASUREMENT_REEL"},
+        params={"business_key": "PKG-001"},
     )
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     session = _session(
@@ -625,14 +625,15 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
         [
             RuntimeIntent.command(
                 action="MEASUREMENT_REEL",
-                payload={"task_type": "TEST", "timeout": 180000, "params": {"action": "MEASUREMENT_REEL"}},
+                payload={"task_type": "MEASUREMENT_REEL", "timeout": 180000, "params": {"business_key": "PKG-001"}},
                 destination=Destination.current(),
             )
         ],
     )
 
     assert created_payloads[0]["device_id"] == 1
-    assert created_payloads[0]["task_type"] == "TEST"
+    assert created_payloads[0]["task_type"] == "MEASUREMENT_REEL"
+    assert created_payloads[0]["params"] == {"business_key": "PKG-001"}
     assert session.status == "WAITING_DEVICE_RESULT"
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.awaiting_command_id == 88

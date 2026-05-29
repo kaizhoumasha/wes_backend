@@ -10,7 +10,6 @@ from src.workline_plugins.rough_sorter.contract import (
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     ACTION_TARGET_ROLES,
-    DEVICE_TASK_TYPE_BY_ACTION,
     PHASE_COMPLETED,
     PHASE_MEASURING,
     PHASE_MOVING_FORWARD,
@@ -117,16 +116,15 @@ def test_phase_and_role_contracts_are_declared() -> None:
 
 
 @pytest.mark.parametrize(
-    ("builder", "expected_action", "expected_task_type"),
+    ("builder", "expected_task_type"),
     [
-        (lambda six: build_measurement_reel_payload(six), ACTION_MEASUREMENT_REEL, "TEST"),
+        (lambda six: build_measurement_reel_payload(six), ACTION_MEASUREMENT_REEL),
         (
             lambda six: build_pick_and_put_payload(
                 business_key=six.business_key or "",
                 source_location="SCAN_POINT",
                 target_location="PIPELINE_IN",
             ),
-            ACTION_PICK_AND_PUT,
             "PICK_AND_PUT",
         ),
         (
@@ -135,7 +133,6 @@ def test_phase_and_role_contracts_are_declared() -> None:
                 source_location="PIPELINE_IN",
                 target_location="PIPELINE_OUT",
             ),
-            ACTION_MOVE_FORWARD,
             "MOVE_FORWARD",
         ),
         (
@@ -145,7 +142,6 @@ def test_phase_and_role_contracts_are_declared() -> None:
                 bin_location="RACK-A-01",
             ),
             ACTION_PUT_TO_BIN,
-            "PICK_AND_PUT",
         ),
         (
             lambda six: build_move_to_ng_payload(
@@ -155,13 +151,11 @@ def test_phase_and_role_contracts_are_declared() -> None:
                 reason_code="BARCODE_INVALID",
             ),
             ACTION_MOVE_TO_NG,
-            "PICK_AND_PUT",
         ),
     ],
 )
-def test_command_builders_separate_business_action_from_device_task_type(
+def test_command_builders_emit_concrete_task_type_without_params_action(
     builder,
-    expected_action: str,
     expected_task_type: str,
 ) -> None:
     six_in_one = SixInOne.model_validate(_payload_data())
@@ -169,8 +163,7 @@ def test_command_builders_separate_business_action_from_device_task_type(
     command_payload = builder(six_in_one)
 
     assert command_payload["task_type"] == expected_task_type
-    assert command_payload["params"]["action"] == expected_action
-    assert DEVICE_TASK_TYPE_BY_ACTION[expected_action] == expected_task_type
+    assert "action" not in command_payload["params"]
 
 
 def test_measurement_payload_keeps_business_fields_under_params() -> None:

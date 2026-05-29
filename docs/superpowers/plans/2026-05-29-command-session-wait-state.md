@@ -89,14 +89,14 @@ async def test_command_intent_without_timeout_still_waits_for_result(
         [
             RuntimeIntent.command(
                 action="MEASUREMENT_REEL",
-                payload={"timeout": 300000, "params": {"action": "MEASUREMENT_REEL"}},
+                payload={"task_type": "MEASUREMENT_REEL", "timeout": 300000},
                 destination=Destination.current(),
             )
         ],
     )
 
     assert created_payloads[0]["device_id"] == 1
-    assert created_payloads[0]["task_type"] == "TEST"
+    assert created_payloads[0]["task_type"] == "MEASUREMENT_REEL"
     assert session.status == "WAITING_DEVICE_RESULT"
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.awaiting_command_id == 88

@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -152,7 +152,7 @@ class WorkLine(
     stopped_at: datetime | None = Field(default=None, index=True, description="进入急停冻结的时间")
     stopped_reason: str | None = Field(default=None, max_length=200, description="进入急停冻结的原因")
     resumed_at: datetime | None = Field(default=None, index=True, description="恢复 READY 的时间")
-    is_active: bool = Field(default=False, description="是否启用")
+    is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
 
     @property
     def plugin_definition(self) -> WorklinePluginDefinition | None:

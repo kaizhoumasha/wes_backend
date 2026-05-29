@@ -964,11 +964,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
 
         command_task_type = enum_str(command.task_type)
-        raw_command_params = getattr(command, "params", None)
-        command_params = raw_command_params if isinstance(raw_command_params, dict) else {}
-        command_type = (
-            command_params.get("action") if isinstance(command_params.get("action"), str) else command_task_type
-        )
+        command_type = command_task_type
         sandbox_completed_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
         result_payload: dict[str, Any] = {
             "command_code": command.command_code,

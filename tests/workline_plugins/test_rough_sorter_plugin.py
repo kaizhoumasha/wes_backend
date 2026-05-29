@@ -237,7 +237,7 @@ def _measurement_inbox(
     payload: dict[str, Any] = {
         "command_code": "CMD-MEASURE-001",
         "device_code": "RS-MEASURE-01",
-        "task_type": "TEST",
+        "task_type": ACTION_MEASUREMENT_REEL,
         "result": result,
         "data": data or {"reel_diameter": "178.0", "reel_thickness": "15.0"},
     }
@@ -269,8 +269,8 @@ async def test_scan_ok_updates_context_and_dispatches_measurement_command() -> N
     assert intents[0].context_patch["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
     assert intents[1].action == ACTION_MEASUREMENT_REEL
     assert intents[1].device_role == ROLE_INPUT_ARM
-    assert intents[1].payload_json["task_type"] == "TEST"
-    assert intents[1].payload_json["params"]["action"] == ACTION_MEASUREMENT_REEL
+    assert intents[1].payload_json["task_type"] == ACTION_MEASUREMENT_REEL
+    assert "action" not in intents[1].payload_json["params"]
 
 
 @pytest.mark.asyncio
@@ -287,15 +287,16 @@ async def test_scan_ng_marks_material_ng_and_dispatches_move_to_ng() -> None:
     assert intents[1].reason_code == "SCAN_NG_BY_RULE"
     assert intents[2].action == ACTION_MOVE_TO_NG
     assert intents[2].device_role == ROLE_OUTPUT_ARM
-    assert intents[2].payload_json["params"]["action"] == ACTION_MOVE_TO_NG
+    assert intents[2].payload_json["task_type"] == ACTION_MOVE_TO_NG
+    assert "action" not in intents[2].payload_json["params"]
     assert intents[2].payload_json["params"]["source_location"] == "RS-SCAN-01"
 
 
 @pytest.mark.asyncio
-async def test_measurement_callback_routes_by_command_params_action_when_device_reports_test_task_type() -> None:
-    command = SimpleNamespace(task_type="TEST", params={"action": ACTION_MEASUREMENT_REEL})
+async def test_measurement_callback_routes_by_persisted_task_type_when_device_reports_stale_command_type() -> None:
+    command = SimpleNamespace(task_type=ACTION_MEASUREMENT_REEL, params={})
     resolved_action = CallbackOrchestrationService()._resolve_command_type(
-        {"task_type": "TEST"},
+        {"command_type": "TEST", "task_type": "TEST"},
         command.params,
         command,
     )
@@ -311,7 +312,8 @@ async def test_measurement_callback_routes_by_command_params_action_when_device_
     assert intents[0].context_patch["wms_validation"]["matched"] is True
     assert intents[1].action == ACTION_PICK_AND_PUT
     assert intents[1].device_role == ROLE_INPUT_ARM
-    assert intents[1].payload_json["params"]["action"] == ACTION_PICK_AND_PUT
+    assert intents[1].payload_json["task_type"] == ACTION_PICK_AND_PUT
+    assert "action" not in intents[1].payload_json["params"]
     assert wms_client.requests[0].request_id == "rough-sorter:inventory:PKG-ROUGH-001"
     assert wms_client.requests[0].trace_id == "trace-rough-sorter-001"
     assert wms_client.requests[0].sku == "HH-001"
@@ -505,7 +507,8 @@ async def test_pick_and_put_success_at_pick_to_pipeline_dispatches_move_forward(
     assert intents[0].context_patch["phase"] == PHASE_MOVING_FORWARD
     assert intents[1].action == ACTION_MOVE_FORWARD
     assert intents[1].device_role == ROLE_CONVEYOR
-    assert intents[1].payload_json["params"]["action"] == ACTION_MOVE_FORWARD
+    assert intents[1].payload_json["task_type"] == ACTION_MOVE_FORWARD
+    assert "action" not in intents[1].payload_json["params"]
     assert intents[1].payload_json["params"]["source_location"] == "RS-INPUT-ARM-01"
 
 

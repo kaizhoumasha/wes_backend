@@ -116,21 +116,14 @@ class CallbackOrchestrationService:
 
     def _resolve_command_type(
         self,
-        callback_result_data: JsonDict,
-        command_params: JsonDict,
+        _callback_result_data: JsonDict,
+        _command_params: JsonDict,
         existing_command: object,
     ) -> str | None:
-        candidates = [
-            callback_result_data.get("command_type"),
-            command_params.get("action"),
-            command_params.get("task_type"),
-        ]
         existing_task_type = getattr(existing_command, "task_type", None)
-        candidates.append(getattr(existing_task_type, "value", existing_task_type))
-
-        for candidate in candidates:
-            if isinstance(candidate, str) and candidate:
-                return candidate
+        candidate = getattr(existing_task_type, "value", existing_task_type)
+        if isinstance(candidate, str) and candidate:
+            return candidate
         return None
 
     def _enqueue_workline_processing(self) -> None:
@@ -365,6 +358,7 @@ class CallbackOrchestrationService:
                     finish_time=callback.finish_time,
                     data=callback.data or {},
                     command_type=command_type,
+                    task_type=command_type,
                     error_detail=callback.error_detail,
                     source_message_id=trace.request_id,
                     trace_id=inherited_trace_id,

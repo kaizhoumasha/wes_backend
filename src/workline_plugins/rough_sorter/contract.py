@@ -37,14 +37,6 @@ NG_REASON_BARCODE_RULE_NG = "BARCODE_RULE_NG"
 NG_REASON_MEASUREMENT_NG = "MEASUREMENT_NG"
 NG_REASON_WMS_REJECTED = "WMS_REJECTED"
 
-DEVICE_TASK_TYPE_BY_ACTION: dict[str, str] = {
-    ACTION_MEASUREMENT_REEL: "TEST",
-    ACTION_PICK_AND_PUT: "PICK_AND_PUT",
-    ACTION_MOVE_FORWARD: "MOVE_FORWARD",
-    ACTION_PUT_TO_BIN: "PICK_AND_PUT",
-    ACTION_MOVE_TO_NG: "PICK_AND_PUT",
-}
-
 ACTION_TARGET_ROLES: dict[str, str] = {
     ACTION_MEASUREMENT_REEL: ROLE_INPUT_ARM,
     ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
@@ -80,11 +72,9 @@ def _base_command_payload(
     action: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    command_params = dict(params or {})
-    command_params["action"] = action
     return {
-        "task_type": DEVICE_TASK_TYPE_BY_ACTION[action],
-        "params": command_params,
+        "task_type": action,
+        "params": dict(params or {}),
     }
 
 
@@ -217,7 +207,6 @@ __all__ = [
     "ACTION_PICK_AND_PUT",
     "ACTION_PUT_TO_BIN",
     "ACTION_TARGET_ROLES",
-    "DEVICE_TASK_TYPE_BY_ACTION",
     "EVENT_ROUGH_SORTER_STORAGE_RETRY",
     "EVENT_SCAN_COMPLETED",
     "NG_REASON_BARCODE_INCOMPLETE",

@@ -128,6 +128,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         finish_time: int,
         data: dict[str, Any] | None = None,
         command_type: str | None = None,
+        task_type: str | None = None,
         error_detail: dict[str, Any] | None = None,
         source_message_id: str | None = None,
         trace_id: str | None = None,
@@ -173,6 +174,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         }
         if command_type:
             payload["command_type"] = command_type
+        if task_type:
+            payload["task_type"] = task_type
         if error_detail:
             payload["error_detail"] = error_detail
         if event_id:
