@@ -61,6 +61,24 @@ def test_system_outbox_rack_domain_migration_does_not_rewrite_system_outbox_shap
     assert "ix_system_outbox_operation_status" not in upgrade_body
 
 
+def test_system_outbox_deployed_schema_repair_adds_missing_final_contract_without_dropping_legacy_column() -> None:
+    migration = Path("migrations/versions/20260530_0144_86b2d22f0103_repair_system_outbox_deployed_schema_.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+
+    assert "_column_exists" in migration_text
+    assert "_ensure_system_outbox_columns()" in upgrade_body
+    assert "device_id" in migration_text
+    assert "operation_domain" in migration_text
+    assert "blocked_by_runtime_hold_id" in migration_text
+    assert "ix_system_outbox_device_fifo" in migration_text
+    assert "fk_system_outbox_device_id" in migration_text
+    assert "op.drop_column" not in upgrade_body
+    assert "operation_id" not in upgrade_body
+
+
 def test_completion_policy_migration_only_backfills_canonical_full_box_policy() -> None:
     migration = Path("migrations/versions/20260526_1544_c5d469c98d89_set_handling_full_box_completion_policy.py")
     migration_text = migration.read_text(encoding="utf-8")
