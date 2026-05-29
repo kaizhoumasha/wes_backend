@@ -13,7 +13,10 @@ from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import ng_return_item_service
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
-from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
+from src.workline_runtime.runtime_intent_effects import (
+    RuntimeIntentEffectApplier,
+    _resolve_command_result_timeout_seconds,
+)
 from src.workline_runtime.trace_context import TraceContext
 
 
@@ -1338,6 +1341,81 @@ async def test_resource_fact_duplicate_storage_retry_device_event_is_treated_as_
 
     assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
     assert duplicate_inbox_service.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("intent", "expected_timeout_seconds"),
+    [
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 1500},
+                destination=Destination.current(),
+            ),
+            2,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 500},
+                destination=Destination.current(),
+            ),
+            1,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 0},
+                destination=Destination.current(),
+            ),
+            1,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": -100},
+                destination=Destination.current(),
+            ),
+            1,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 300000},
+                destination=Destination.current(),
+            ),
+            300,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={},
+                destination=Destination.current(),
+            ),
+            300,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 300000},
+                destination=Destination.current(),
+                timeout_seconds=42,
+            ),
+            42,
+        ),
+        (
+            RuntimeIntent.command(
+                action="MEASUREMENT_REEL",
+                payload={"timeout": 300000},
+                destination=Destination.current(),
+                timeout_seconds=0,
+            ),
+            1,
+        ),
+    ],
+)
+def test_command_result_timeout_resolution(intent: RuntimeIntent, expected_timeout_seconds: int) -> None:
+    assert _resolve_command_result_timeout_seconds(intent) == expected_timeout_seconds
 
 
 @pytest.mark.asyncio
