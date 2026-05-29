@@ -409,6 +409,11 @@ pipeline {
                             echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
                             $COMPOSE_CMD exec -T api alembic upgrade head
 
+                            if [ "${DEPLOY_NAME}" = "testing" ]; then
+                                echo -e "${GREEN}🌱 同步 testing WorkLine 与 Device 基础数据...${NC}"
+                                $COMPOSE_CMD exec -T api python scripts/data/sync_test_workline_devices.py
+                            fi
+
                             echo -e "${GREEN}🏥 健康检查...${NC}"
                             RETRY_COUNT=0
                             MAX_RETRIES=${HEALTH_CHECK_RETRIES}
