@@ -121,6 +121,22 @@ async def _get_device_by_code(db: AsyncSession, device_code: str) -> Device | No
     return result.scalar_one_or_none()
 
 
+async def _has_existing_workline_or_device_data(db: AsyncSession) -> bool:
+    """检查 testing 库是否已有 WorkLine 或 Device 数据。
+
+    testing 部署脚本只负责空库初始化；一旦测试库已有任何 WorkLine 或 Device，
+    现场联调人员可能已经修改运行模式、通信配置或拓扑，不再自动创建、修复或补齐。
+    """
+
+    workline_count = await db.scalar(
+        select(func.count()).select_from(WorkLine).where(WorkLine.is_deleted.is_(False))  # type: ignore[arg-type]
+    )
+    device_count = await db.scalar(
+        select(func.count()).select_from(Device).where(Device.is_deleted.is_(False))  # type: ignore[arg-type]
+    )
+    return int(workline_count or 0) > 0 or int(device_count or 0) > 0
+
+
 async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
     values = {
         "line_code": TEST_ROUGH_SORTER_LINE_CODE,
@@ -164,7 +180,7 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
     devices_by_code: dict[str, Device] = {}
 
     for seed in TEST_ROUGH_SORTER_DEVICES:
-        values = {
+        synced_values = {
             "device_code": seed.device_code,
             "device_name": seed.device_name,
             "work_line_id": workline_id,
@@ -175,11 +191,6 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
             "role_index": seed.role_index,
             "vendor_type": "SANDBOX",
             "capabilities_json": seed.capabilities_json,
-            "host": seed.device_code,
-            "port": 8080,
-            "protocol": DeviceProtocol.HTTP,
-            "timeout": 300000,
-            "callback_path": "/api/v1/device/command",
             "max_concurrent_tasks": 1,
             "idempotency_ttl": 3600,
             "diagnostic_profile": {
@@ -187,11 +198,19 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
                 "seed_source": "jenkins-testing",
             },
         }
+        create_values = {
+            **synced_values,
+            "host": seed.device_code,
+            "port": 8080,
+            "protocol": DeviceProtocol.HTTP,
+            "timeout": 300000,
+            "callback_path": "/api/v1/device/command",
+        }
 
         device = await _get_device_by_code(db, seed.device_code)
         if device is None:
             device = Device(
-                **values,
+                **create_values,
                 device_status=DeviceStatus.IDLE,
                 current_command_id=None,
                 error_code=None,
@@ -201,7 +220,8 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
             await db.flush()
             states[seed.device_code] = "created"
         else:
-            changed = _set_attrs(device, values)
+            # 防御性保留：已有设备的通信配置可能指向现场联调硬件，不能被默认种子值覆盖。
+            changed = _set_attrs(device, synced_values)
             await db.flush()
             states[seed.device_code] = "updated" if changed else "unchanged"
         devices_by_code[seed.device_code] = device
@@ -231,7 +251,32 @@ def _summarize(states: list[str]) -> dict[str, int]:
 
 
 async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -> dict[str, Any]:
-    """幂等同步 testing 环境粗分机 WorkLine 与 Device 基础信息。"""
+    """仅在 testing 空库时初始化粗分机 WorkLine 与 Device 基础信息。"""
+
+    if await _has_existing_workline_or_device_data(db):
+        existing_workline = await _get_workline_by_code(db, TEST_ROUGH_SORTER_LINE_CODE)
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
+
+        workline_count_result = await db.execute(select(func.count()).select_from(WorkLine))
+        device_count_result = await db.execute(select(func.count()).select_from(Device))
+        device_states = {seed.device_code: "unchanged" for seed in TEST_ROUGH_SORTER_DEVICES}
+        return {
+            "workline": {
+                "line_code": TEST_ROUGH_SORTER_LINE_CODE,
+                "state": "unchanged",
+                "id": existing_workline.id if existing_workline is not None else None,
+            },
+            "devices": device_states,
+            "summary": {
+                "worklines": _summarize(["unchanged"]),
+                "devices": _summarize(list(device_states.values())),
+                "total_worklines": int(workline_count_result.scalar_one() or 0),
+                "total_devices": int(device_count_result.scalar_one() or 0),
+            },
+        }
 
     workline, workline_state = await _upsert_test_workline(db)
     device_states = await _upsert_test_devices(db, workline)
