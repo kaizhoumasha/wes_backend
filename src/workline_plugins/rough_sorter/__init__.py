@@ -2,14 +2,12 @@
 
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     EVENT_ROUGH_SORTER_STORAGE_RETRY,
     ROUGH_SORTER_PLUGIN_KEY,
-    build_measurement_reel_payload,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
@@ -21,7 +19,6 @@ from src.workline_plugins.rough_sorter.contract import (
 from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin, rough_sorter_plugin
 
 __all__ = [
-    "ACTION_MEASUREMENT_REEL",
     "ACTION_MOVE_FORWARD",
     "ACTION_MOVE_TO_NG",
     "ACTION_PICK_AND_PUT",
@@ -30,7 +27,6 @@ __all__ = [
     "ROUGH_SORTER_PLUGIN_KEY",
     "RoughSorterContext",
     "RoughSorterPlugin",
-    "build_measurement_reel_payload",
     "build_move_forward_payload",
     "build_move_to_ng_payload",
     "build_pick_and_put_payload",

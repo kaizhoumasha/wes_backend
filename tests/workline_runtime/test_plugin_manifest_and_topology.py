@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -140,9 +139,7 @@ def test_rough_sorter_topology_requires_concrete_extended_command_types() -> Non
                 1,
                 code="RS-INPUT-01",
                 role=ROLE_INPUT_ARM,
-                capabilities_json={
-                    "supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG]
-                },
+                capabilities_json={"supports_command_types": [ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG]},
             ),
             _device(
                 2,
@@ -162,14 +159,14 @@ def test_rough_sorter_topology_requires_concrete_extended_command_types() -> Non
     validate_topology_manifest(RoughSorterPlugin.manifest, topology)
 
 
-def test_rough_sorter_topology_rejects_legacy_test_only_measurement_capability() -> None:
+def test_rough_sorter_topology_rejects_missing_pick_and_put_capability() -> None:
     topology = WorklineTopologyView.from_devices(
         [
             _device(
                 1,
                 code="RS-INPUT-01",
                 role=ROLE_INPUT_ARM,
-                capabilities_json={"supports_command_types": ["TEST", ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG]},
+                capabilities_json={"supports_command_types": ["TEST", ACTION_MOVE_TO_NG]},
             ),
             _device(
                 2,
@@ -186,5 +183,5 @@ def test_rough_sorter_topology_rejects_legacy_test_only_measurement_capability()
         ]
     )
 
-    with pytest.raises(ValueError, match=f"命令 {ACTION_MEASUREMENT_REEL} 没有可用目标设备角色"):
+    with pytest.raises(ValueError, match=f"命令 {ACTION_PICK_AND_PUT} 没有可用目标设备角色"):
         validate_topology_manifest(RoughSorterPlugin.manifest, topology)

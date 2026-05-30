@@ -1,6 +1,6 @@
 # 粗分机 Runtime 流程与设备协议示例
 
-> 日期：2026-05-30
+> 日期：2026-05-31
 > 适用范围：`rough_sorter` WorkLine 插件、设备事件上报、设备命令下发、Result Callback、WMS/RCS 外部回调。
 
 本文只描述当前未发布合同。设备协议不保留旧兼容字段：WES 下发命令只使用 `task_type`，不再下发 `command_type`；`command_code` 由 WES 统一生成，插件不得传入或覆盖。
@@ -18,7 +18,6 @@
 
 ```text
 Session 417
-  CMD-20260530-S417-MEASUREMENT_REEL-ABCDEF12
   CMD-20260530-S417-PICK_AND_PUT-9F2A1C0B
   CMD-20260530-S417-MOVE_FORWARD-7A8B9C0D
   CMD-20260530-S417-PUT_TO_BIN-0D1E2F3A
@@ -56,24 +55,27 @@ WES 行为：
 
 - 解析 `data` 中的六合一码，生成或恢复 `WorklineSession`。
 - 新 Session 示例：`session_id=417`，`trace_id=trace_...`。
-- 生成第一条设备命令 `MEASUREMENT_REEL`，进入等待设备 Result。
+- 条码有效时生成第一条设备命令 `PICK_AND_PUT`，进入等待设备 Result。
+- 条码无效时生成 `MOVE_TO_NG`，NG 搬运成功后完成当前 Session。
 
-## 3. 入料机械臂：测量与入料搬运
+## 3. 入料机械臂：入料搬运与测量回传
 
 执行角色：`ROUGH_SORTER_INPUT_ARM`，示例设备 `RS-INPUT-ARM-01`。
 
-### 3.1 WES 下发测量命令
+### 3.1 WES 下发入料搬运命令
 
 ```json
 {
   "device_code": "RS-INPUT-ARM-01",
-  "command_code": "CMD-20260530-S417-MEASUREMENT_REEL-ABCDEF12",
-  "task_type": "MEASUREMENT_REEL",
+  "command_code": "CMD-20260530-S417-PICK_AND_PUT-9F2A1C0B",
+  "task_type": "PICK_AND_PUT",
   "priority": 5,
   "timeout": 300000,
   "timestamp": 1777046400100,
   "params": {
     "business_key": "PKG-20260530-000001",
+    "source_location": "SCAN_STATION",
+    "target_location": "CONVEYOR_INPUT",
     "six_in_one": {
       "HHPN": "HHPN-001",
       "MfrPN": "MFR-001",
@@ -93,13 +95,17 @@ POST /api/v1/callback/result
 Content-Type: application/json
 ```
 
+`PICK_AND_PUT` 执行成功后，Result 必须带回测量值：
+
 ```json
 {
   "device_code": "RS-INPUT-ARM-01",
-  "command_code": "CMD-20260530-S417-MEASUREMENT_REEL-ABCDEF12",
+  "command_code": "CMD-20260530-S417-PICK_AND_PUT-9F2A1C0B",
   "result": "SUCCESS",
   "finish_time": 1777046409000,
   "data": {
+    "actual_source_location": "SCAN_STATION",
+    "actual_target_location": "CONVEYOR_INPUT",
     "measurement_result": "OK",
     "reel_diameter": 180,
     "reel_thickness": 16
@@ -111,42 +117,9 @@ Content-Type: application/json
 WES 行为：
 
 - 通过 `command_code` 找到 `DeviceCommand` 和等待中的 Session。
-- 按六合一码查询 WMS 库存准入。
-- 准入成功后生成入料搬运命令。
-
-### 3.2 WES 下发入料搬运命令
-
-```json
-{
-  "device_code": "RS-INPUT-ARM-01",
-  "command_code": "CMD-20260530-S417-PICK_AND_PUT-9F2A1C0B",
-  "task_type": "PICK_AND_PUT",
-  "priority": 5,
-  "timeout": 300000,
-  "timestamp": 1777046410000,
-  "params": {
-    "business_key": "PKG-20260530-000001",
-    "source_location": "SCAN_STATION",
-    "target_location": "CONVEYOR_INPUT"
-  }
-}
-```
-
-Result Callback：
-
-```json
-{
-  "device_code": "RS-INPUT-ARM-01",
-  "command_code": "CMD-20260530-S417-PICK_AND_PUT-9F2A1C0B",
-  "result": "SUCCESS",
-  "finish_time": 1777046415000,
-  "data": {
-    "actual_source_location": "SCAN_STATION",
-    "actual_target_location": "CONVEYOR_INPUT"
-  },
-  "error_detail": null
-}
-```
+- 校验 `reel_diameter` / `reel_thickness`；缺失、不可解析、非正数或业务 NG 判定时下发 `MOVE_TO_NG`。
+- 测量有效后按六合一码查询 WMS 库存准入。
+- WMS 准入成功后生成 `MOVE_FORWARD`；WMS 无匹配或业务拒绝时下发 `MOVE_TO_NG`。
 
 ## 4. 输送线：前进到出料位
 
@@ -178,15 +151,14 @@ Result Callback：
   "command_code": "CMD-20260530-S417-MOVE_FORWARD-7A8B9C0D",
   "result": "SUCCESS",
   "finish_time": 1777046422000,
-  "data": {
-    "current_position": "CONVEYOR_OUTPUT"
-  },
+  "data": {},
   "error_detail": null
 }
 ```
 
 WES 行为：
 
+- `MOVE_FORWARD` Result 只要求成功/失败，不要求再携带测量值。
 - 按本地资源投影为物料分配可用 `bin_cell_location`。
 - 如果没有可用料格，进入 WMS/RCS 货架补给等待分支。
 - 如果分配成功，下发出料入箱命令。

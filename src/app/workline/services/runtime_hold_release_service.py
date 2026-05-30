@@ -57,18 +57,28 @@ if TYPE_CHECKING:
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
-def _valid_measurement_reel_payload(payload: dict[str, Any]) -> bool:
-    for field_name in ("reel_diameter", "reel_thickness"):
-        value = payload.get(field_name)
-        if value is None or value == "":
-            return False
-        try:
-            decimal_value = Decimal(str(value))
-        except (InvalidOperation, ValueError):
-            return False
-        if not decimal_value.is_finite() or decimal_value <= 0:
-            return False
-    return True
+def _is_valid_runtime_measurement_payload(payload: dict[str, Any]) -> bool:
+    try:
+        reel_diameter = Decimal(str(payload.get("reel_diameter")))
+        reel_thickness = Decimal(str(payload.get("reel_thickness")))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return reel_diameter.is_finite() and reel_thickness.is_finite() and reel_diameter > 0 and reel_thickness > 0
+
+
+def _requires_runtime_measurement_continue_payload(command: DeviceCommand) -> bool:
+    return enum_str(command.plugin_key) == "rough_sorter" and enum_str(command.task_type) == "PICK_AND_PUT"
+
+
+def _validate_runtime_measurement_continue_payload(payload: dict[str, Any], command: DeviceCommand) -> None:
+    if not _requires_runtime_measurement_continue_payload(command):
+        return
+    if _is_valid_runtime_measurement_payload(payload):
+        return
+    raise RuntimeHoldReleaseError(
+        "INVALID_CONTINUE_RESULT_PAYLOAD",
+        "PICK_AND_PUT 继续需要补录有效 reel_diameter/reel_thickness",
+    )
 
 
 def _latest_matching_late_callback_data(session: Any | None, command: DeviceCommand) -> dict[str, Any]:
@@ -98,28 +108,16 @@ def _runtime_continue_result_payload(
     *,
     session: Any | None = None,
 ) -> dict[str, Any]:
-    is_measurement_reel = enum_str(command.task_type) == "MEASUREMENT_REEL"
     payload = as_dict(request.result_payload)
     if payload:
-        if is_measurement_reel and not _valid_measurement_reel_payload(payload):
-            raise RuntimeHoldReleaseError(
-                "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
-                "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
-            )
+        _validate_runtime_measurement_continue_payload(payload, command)
         return payload
     payload = _latest_matching_late_callback_data(session, command)
     if payload:
-        if is_measurement_reel and not _valid_measurement_reel_payload(payload):
-            raise RuntimeHoldReleaseError(
-                "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
-                "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
-            )
+        _validate_runtime_measurement_continue_payload(payload, command)
         return payload
-    if is_measurement_reel:
-        raise RuntimeHoldReleaseError(
-            "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
-            "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
-        )
+    if _requires_runtime_measurement_continue_payload(command):
+        _validate_runtime_measurement_continue_payload({}, command)
     return as_dict(command.params)
 
 

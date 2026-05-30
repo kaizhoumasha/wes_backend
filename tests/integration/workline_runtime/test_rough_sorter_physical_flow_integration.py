@@ -9,7 +9,6 @@ import pytest
 from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
 from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
     from src.workline_runtime.plugin_context import PluginContext
 
 # End-to-end smoke boundary:
-# SCAN -> MEASURE -> WMS query -> PICK -> MOVE -> allocate bin -> PUT_TO_BIN.
+# SCAN -> PICK with measurement -> WMS query -> MOVE -> allocate bin -> PUT_TO_BIN.
 # Fake WMS/rack services stay outside RuntimeIntent effects.
 # This test asserts the intent contract shape.
 
@@ -136,26 +135,21 @@ async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_complet
         ),
     )
     assert [intent.kind for intent in scan_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert scan_intents[1].action == ACTION_MEASUREMENT_REEL
+    assert scan_intents[1].action == ACTION_PICK_AND_PUT
     session_context = _apply_context(session_context, scan_intents[0].context_patch)
+    assert session_context["phase"] == PHASE_PICK_TO_PIPELINE
 
-    measurement_intents = await plugin.on_command_result(
+    pick_intents = await plugin.on_command_result(
         _ctx(session_context),
         _command_inbox(
-            ACTION_MEASUREMENT_REEL,
+            ACTION_PICK_AND_PUT,
             data={"reel_diameter": "178.0", "reel_thickness": "15.0"},
         ),
     )
-    assert [intent.kind for intent in measurement_intents] == [
+    assert [intent.kind for intent in pick_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.COMMAND,
     ]
-    assert measurement_intents[1].action == ACTION_PICK_AND_PUT
-    session_context = _apply_context(session_context, measurement_intents[0].context_patch)
-    assert session_context["phase"] == PHASE_PICK_TO_PIPELINE
-
-    pick_intents = await plugin.on_command_result(_ctx(session_context), _command_inbox(ACTION_PICK_AND_PUT))
-    assert [intent.kind for intent in pick_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
     assert pick_intents[1].action == ACTION_MOVE_FORWARD
     session_context = _apply_context(session_context, pick_intents[0].context_patch)
     assert session_context["phase"] == PHASE_MOVING_FORWARD

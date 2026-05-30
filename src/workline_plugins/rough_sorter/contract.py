@@ -12,14 +12,12 @@ ROUGH_SORTER_CONTRACT_VERSION = "rough_sorter.v1"
 EVENT_SCAN_COMPLETED = "SCAN_COMPLETED"
 EVENT_ROUGH_SORTER_STORAGE_RETRY = "ROUGH_SORTER_STORAGE_RETRY"
 
-ACTION_MEASUREMENT_REEL = "MEASUREMENT_REEL"
 ACTION_PICK_AND_PUT = "PICK_AND_PUT"
 ACTION_MOVE_FORWARD = "MOVE_FORWARD"
 ACTION_PUT_TO_BIN = "PUT_TO_BIN"
 ACTION_MOVE_TO_NG = "MOVE_TO_NG"
 
 PHASE_SCANNED = "SCANNED"
-PHASE_MEASURING = "MEASURING"
 PHASE_PICK_TO_PIPELINE = "PICK_TO_PIPELINE"
 PHASE_MOVING_FORWARD = "MOVING_FORWARD"
 PHASE_WAITING_RACK = "WAITING_RACK"
@@ -38,7 +36,6 @@ NG_REASON_MEASUREMENT_NG = "MEASUREMENT_NG"
 NG_REASON_WMS_REJECTED = "WMS_REJECTED"
 
 ACTION_TARGET_ROLES: dict[str, str] = {
-    ACTION_MEASUREMENT_REEL: ROLE_INPUT_ARM,
     ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
     ACTION_MOVE_FORWARD: ROLE_CONVEYOR,
     ACTION_PUT_TO_BIN: ROLE_OUTPUT_ARM,
@@ -96,33 +93,30 @@ def resolve_rough_sorter_business_key(payload_json: dict[str, Any]) -> str | Non
     return normalize_six_in_one_payload(payload_json).business_key
 
 
-def build_measurement_reel_payload(six_in_one: SixInOne, *, trace_id: str | None = None) -> dict[str, Any]:
-    """构造测量命令 payload。"""
-
-    params: dict[str, Any] = {
-        "business_key": six_in_one.business_key,
-        "six_in_one": _six_in_one_dict(six_in_one),
-    }
-    if trace_id:
-        params["trace_id"] = trace_id
-    return _base_command_payload(action=ACTION_MEASUREMENT_REEL, params=params)
-
-
 def build_pick_and_put_payload(
     *,
     business_key: str,
     source_location: str,
     target_location: str,
+    six_in_one: SixInOne | dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """构造入料机械臂抓取放置命令 payload。"""
 
+    params: dict[str, Any] = {
+        "business_key": business_key,
+        "source_location": source_location,
+        "target_location": target_location,
+    }
+    if isinstance(six_in_one, SixInOne):
+        params["six_in_one"] = _six_in_one_dict(six_in_one)
+    elif isinstance(six_in_one, dict):
+        params["six_in_one"] = dict(six_in_one)
+    if trace_id:
+        params["trace_id"] = trace_id
     return _base_command_payload(
         action=ACTION_PICK_AND_PUT,
-        params={
-            "business_key": business_key,
-            "source_location": source_location,
-            "target_location": target_location,
-        },
+        params=params,
     )
 
 
@@ -201,7 +195,6 @@ def classify_rough_sorter_result(payload_json: dict[str, Any]) -> str | None:
 
 
 __all__ = [
-    "ACTION_MEASUREMENT_REEL",
     "ACTION_MOVE_FORWARD",
     "ACTION_MOVE_TO_NG",
     "ACTION_PICK_AND_PUT",
@@ -215,7 +208,6 @@ __all__ = [
     "NG_REASON_MEASUREMENT_NG",
     "NG_REASON_WMS_REJECTED",
     "PHASE_COMPLETED",
-    "PHASE_MEASURING",
     "PHASE_MOVING_FORWARD",
     "PHASE_NG_MOVING",
     "PHASE_PICK_TO_PIPELINE",
@@ -227,7 +219,6 @@ __all__ = [
     "ROLE_OUTPUT_ARM",
     "ROUGH_SORTER_CONTRACT_VERSION",
     "ROUGH_SORTER_PLUGIN_KEY",
-    "build_measurement_reel_payload",
     "build_move_forward_payload",
     "build_move_to_ng_payload",
     "build_pick_and_put_payload",

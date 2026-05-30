@@ -160,6 +160,8 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
 ) -> None:
     service = RuntimeHoldReleaseService()
     workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-REPLAY")
+    workline.plugin_key = "rough_sorter"
+    workline.contract_version = "rough_sorter.v1"
     device = Device(
         device_code="ARM03-HOLD-CONTINUE-REPLAY",
         device_name="ARM03",
@@ -175,6 +177,8 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         code="S-HOLD-CONTINUE-REPLAY",
         context={"item_id": "ITEM-001"},
     )
+    session.plugin_key = workline.plugin_key
+    session.contract_version = workline.contract_version
     session.reconciliation_state = RuntimeReconciliationState.PENDING
     session.reconciliation_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED
     command = DeviceCommand(
@@ -185,7 +189,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         session_id_int=cast("int", session.id),
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
-        task_type="MEASUREMENT_REEL",
+        task_type="PICK_AND_PUT",
         params={"item_id": "ITEM-001"},
         status=CommandStatus.FAILED,
         trace_id="trace-hold-continue-replay",
@@ -241,7 +245,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     assert inbox.payload_json == {
         "command_code": command.command_code,
         "device_code": device.device_code,
-        "task_type": "MEASUREMENT_REEL",
+        "task_type": "PICK_AND_PUT",
         "result": "SUCCESS",
         "runtime_hold_release": True,
         "data": {
@@ -323,11 +327,94 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
     }
 
 
-async def test_continue_for_measurement_hold_uses_late_callback_payload_when_result_payload_is_empty(
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        None,
+        {"reel_diameter": "NaN", "reel_thickness": "15.0"},
+        {"reel_diameter": "178.0", "reel_thickness": "Infinity"},
+        {"reel_diameter": "0", "reel_thickness": "15.0"},
+        {"reel_diameter": "178.0", "reel_thickness": "-1"},
+    ],
+)
+async def test_continue_for_rough_sorter_pick_and_put_requires_valid_measurement_payload(
+    db_session,
+    result_payload: dict[str, str] | None,
+) -> None:
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-ROUGH-PICK-NO-MEASUREMENT")
+    workline.plugin_key = "rough_sorter"
+    workline.contract_version = "rough_sorter.v1"
+    device = Device(
+        device_code="ARM03-HOLD-ROUGH-PICK-NO-MEASUREMENT",
+        device_name="ARM03",
+        work_line_id=workline.id,
+        device_role="ROBOT_ARM",
+        role_index=3,
+    )
+    db_session.add(device)
+    await db_session.flush()
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-ROUGH-PICK-NO-MEASUREMENT",
+        context={"item_id": "ITEM-001"},
+    )
+    session.plugin_key = workline.plugin_key
+    session.contract_version = workline.contract_version
+    session.reconciliation_state = RuntimeReconciliationState.PENDING
+    session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
+    command = DeviceCommand(
+        command_code="CMD-HOLD-ROUGH-PICK-NO-MEASUREMENT",
+        device_id=cast("int", device.id),
+        workline_id=cast("int", workline.id),
+        session_id=session.session_code,
+        session_id_int=cast("int", session.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        task_type="PICK_AND_PUT",
+        params={"business_key": "ITEM-001"},
+        status=CommandStatus.FAILED,
+        trace_id="trace-hold-rough-pick-no-measurement",
+    )
+    db_session.add(command)
+    await db_session.flush()
+    hold = await _create_hold(
+        db_session,
+        workline,
+        session=session,
+        key="hold:rough-pick-no-measurement",
+    )
+    hold.plugin_key = workline.plugin_key
+    hold.contract_version = workline.contract_version
+    hold.source_reason = "CALLBACK_DEADLINE_EXPIRED"
+    hold.source_command_id = cast("int", command.id)
+    hold.source_device_id = cast("int", device.id)
+    hold.trace_id = command.trace_id
+
+    request_update: dict[str, Any] = {"latest_evidence_hash": service.build_latest_evidence_hash(hold, session=session)}
+    if result_payload is not None:
+        request_update["result_payload"] = result_payload
+    request = _continue_request(service, hold).model_copy(update=request_update)
+
+    with pytest.raises(RuntimeHoldReleaseError, match="reel_diameter/reel_thickness"):
+        await service.resolve_hold(db_session, cast("int", hold.id), request, 42)
+
+    await db_session.refresh(hold)
+    await db_session.refresh(command)
+    assert hold.status == RuntimeHoldStatus.OPEN
+    assert command.status == CommandStatus.FAILED
+    assert command.result is None
+    assert command.result_data is None
+
+
+async def test_continue_for_command_hold_uses_late_callback_payload_when_result_payload_is_empty(
     db_session,
 ) -> None:
     service = RuntimeHoldReleaseService()
     workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-LATE-CALLBACK")
+    workline.plugin_key = "rough_sorter"
+    workline.contract_version = "rough_sorter.v1"
     device = Device(
         device_code="ARM03-HOLD-CONTINUE-LATE-CALLBACK",
         device_name="ARM03",
@@ -357,6 +444,8 @@ async def test_continue_for_measurement_hold_uses_late_callback_payload_when_res
             ]
         },
     )
+    session.plugin_key = workline.plugin_key
+    session.contract_version = workline.contract_version
     session.reconciliation_state = RuntimeReconciliationState.PENDING
     session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
     session.reconciliation_late_evidence_received = True
@@ -368,7 +457,7 @@ async def test_continue_for_measurement_hold_uses_late_callback_payload_when_res
         session_id_int=cast("int", session.id),
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
-        task_type="MEASUREMENT_REEL",
+        task_type="PICK_AND_PUT",
         params={"business_key": "ITEM-001"},
         status=CommandStatus.FAILED,
         trace_id="trace-hold-continue-late-callback",
@@ -396,136 +485,6 @@ async def test_continue_for_measurement_hold_uses_late_callback_payload_when_res
     inbox = await db_session.get(WorklineInbox, result["created_inbox_id"])
     assert inbox is not None
     assert inbox.payload_json["data"] == measurement_payload
-
-
-async def test_continue_for_measurement_hold_requires_result_payload_without_late_callback(
-    db_session,
-) -> None:
-    service = RuntimeHoldReleaseService()
-    workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-MEASUREMENT-REQUIRES-PAYLOAD")
-    device = Device(
-        device_code="ARM03-HOLD-CONTINUE-MEASUREMENT-REQUIRES-PAYLOAD",
-        device_name="ARM03",
-        work_line_id=workline.id,
-        device_role="ROBOT_ARM",
-        role_index=3,
-    )
-    db_session.add(device)
-    await db_session.flush()
-    session = await _create_session(
-        db_session,
-        workline,
-        code="S-HOLD-CONTINUE-MEASUREMENT-REQUIRES-PAYLOAD",
-        context={"item_id": "ITEM-001"},
-    )
-    session.reconciliation_state = RuntimeReconciliationState.PENDING
-    session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
-    command = DeviceCommand(
-        command_code="CMD-HOLD-CONTINUE-MEASUREMENT-REQUIRES-PAYLOAD",
-        device_id=cast("int", device.id),
-        workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
-        plugin_key=workline.plugin_key,
-        contract_version=workline.contract_version,
-        task_type="MEASUREMENT_REEL",
-        params={"business_key": "ITEM-001"},
-        status=CommandStatus.FAILED,
-        trace_id="trace-hold-continue-measurement-requires-payload",
-    )
-    db_session.add(command)
-    await db_session.flush()
-    hold = await _create_hold(
-        db_session,
-        workline,
-        session=session,
-        key="hold:continue-measurement-requires-payload",
-    )
-    hold.source_reason = "CALLBACK_DEADLINE_EXPIRED"
-    hold.source_command_id = cast("int", command.id)
-    hold.source_device_id = cast("int", device.id)
-    hold.trace_id = command.trace_id
-
-    with pytest.raises(RuntimeHoldReleaseError, match="reel_diameter/reel_thickness"):
-        await service.resolve_hold(db_session, cast("int", hold.id), _continue_request(service, hold), 42)
-
-    await db_session.refresh(hold)
-    await db_session.refresh(command)
-    assert hold.status == RuntimeHoldStatus.OPEN
-    assert command.status == CommandStatus.FAILED
-
-
-@pytest.mark.parametrize(
-    "result_payload",
-    [
-        {"reel_diameter": "NaN", "reel_thickness": "15.0"},
-        {"reel_diameter": "178.0", "reel_thickness": "Infinity"},
-        {"reel_diameter": "0", "reel_thickness": "15.0"},
-        {"reel_diameter": "178.0", "reel_thickness": "-1"},
-    ],
-)
-async def test_continue_for_measurement_hold_rejects_non_finite_or_non_positive_result_payload(
-    db_session,
-    result_payload: dict[str, str],
-) -> None:
-    service = RuntimeHoldReleaseService()
-    workline = await _create_workline(db_session, code="WL-HOLD-CONTINUE-MEASUREMENT-INVALID-PAYLOAD")
-    device = Device(
-        device_code="ARM03-HOLD-CONTINUE-MEASUREMENT-INVALID-PAYLOAD",
-        device_name="ARM03",
-        work_line_id=workline.id,
-        device_role="ROBOT_ARM",
-        role_index=3,
-    )
-    db_session.add(device)
-    await db_session.flush()
-    session = await _create_session(
-        db_session,
-        workline,
-        code="S-HOLD-CONTINUE-MEASUREMENT-INVALID-PAYLOAD",
-        context={"item_id": "ITEM-001"},
-    )
-    session.reconciliation_state = RuntimeReconciliationState.PENDING
-    session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
-    command = DeviceCommand(
-        command_code="CMD-HOLD-CONTINUE-MEASUREMENT-INVALID-PAYLOAD",
-        device_id=cast("int", device.id),
-        workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
-        plugin_key=workline.plugin_key,
-        contract_version=workline.contract_version,
-        task_type="MEASUREMENT_REEL",
-        params={"business_key": "ITEM-001"},
-        status=CommandStatus.FAILED,
-        trace_id="trace-hold-continue-measurement-invalid-payload",
-    )
-    db_session.add(command)
-    await db_session.flush()
-    hold = await _create_hold(
-        db_session,
-        workline,
-        session=session,
-        key=f"hold:continue-measurement-invalid-payload:{result_payload['reel_diameter']}",
-    )
-    hold.source_reason = "CALLBACK_DEADLINE_EXPIRED"
-    hold.source_command_id = cast("int", command.id)
-    hold.source_device_id = cast("int", device.id)
-    hold.trace_id = command.trace_id
-    request = _continue_request(service, hold).model_copy(
-        update={
-            "latest_evidence_hash": service.build_latest_evidence_hash(hold, session=session),
-            "result_payload": result_payload,
-        }
-    )
-
-    with pytest.raises(RuntimeHoldReleaseError, match="reel_diameter/reel_thickness"):
-        await service.resolve_hold(db_session, cast("int", hold.id), request, 42)
-
-    await db_session.refresh(hold)
-    await db_session.refresh(command)
-    assert hold.status == RuntimeHoldStatus.OPEN
-    assert command.status == CommandStatus.FAILED
 
 
 async def test_return_to_ng_requires_handoff_evidence_and_does_not_release_workline(db_session) -> None:

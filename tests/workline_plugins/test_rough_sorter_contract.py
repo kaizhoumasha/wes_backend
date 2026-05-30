@@ -4,14 +4,12 @@ import pytest
 
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     ACTION_TARGET_ROLES,
     PHASE_COMPLETED,
-    PHASE_MEASURING,
     PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
@@ -21,7 +19,6 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
-    build_measurement_reel_payload,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
@@ -84,7 +81,6 @@ def test_business_key_returns_none_when_data_pkg_id_missing() -> None:
 def test_phase_and_role_contracts_are_declared() -> None:
     assert {
         PHASE_SCANNED,
-        PHASE_MEASURING,
         PHASE_PICK_TO_PIPELINE,
         PHASE_MOVING_FORWARD,
         PHASE_WAITING_RACK,
@@ -93,7 +89,6 @@ def test_phase_and_role_contracts_are_declared() -> None:
         PHASE_COMPLETED,
     } == {
         "SCANNED",
-        "MEASURING",
         "PICK_TO_PIPELINE",
         "MOVING_FORWARD",
         "WAITING_RACK",
@@ -102,7 +97,6 @@ def test_phase_and_role_contracts_are_declared() -> None:
         "COMPLETED",
     }
     assert ACTION_TARGET_ROLES == {
-        ACTION_MEASUREMENT_REEL: ROLE_INPUT_ARM,
         ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
         ACTION_MOVE_FORWARD: ROLE_CONVEYOR,
         ACTION_PUT_TO_BIN: ROLE_OUTPUT_ARM,
@@ -118,12 +112,13 @@ def test_phase_and_role_contracts_are_declared() -> None:
 @pytest.mark.parametrize(
     ("builder", "expected_task_type"),
     [
-        (lambda six: build_measurement_reel_payload(six), ACTION_MEASUREMENT_REEL),
         (
             lambda six: build_pick_and_put_payload(
                 business_key=six.business_key or "",
                 source_location="SCAN_POINT",
                 target_location="PIPELINE_IN",
+                six_in_one=six,
+                trace_id="trace-001",
             ),
             "PICK_AND_PUT",
         ),
@@ -166,12 +161,21 @@ def test_command_builders_emit_concrete_task_type_without_params_action(
     assert "action" not in command_payload["params"]
 
 
-def test_measurement_payload_keeps_business_fields_under_params() -> None:
+def test_pick_and_put_payload_keeps_business_fields_under_params() -> None:
     six_in_one = SixInOne.model_validate(_payload_data())
 
-    payload = build_measurement_reel_payload(six_in_one, trace_id="trace-001")
+    payload = build_pick_and_put_payload(
+        business_key=six_in_one.business_key or "",
+        source_location="SCAN_POINT",
+        target_location="PIPELINE_IN",
+        six_in_one=six_in_one,
+        trace_id="trace-001",
+    )
 
+    assert payload["task_type"] == ACTION_PICK_AND_PUT
     assert payload["params"]["business_key"] == six_in_one.business_key
+    assert payload["params"]["source_location"] == "SCAN_POINT"
+    assert payload["params"]["target_location"] == "PIPELINE_IN"
     assert payload["params"]["trace_id"] == "trace-001"
     assert payload["params"]["six_in_one"]["PkgID"] == "PKG-001"
     assert "PkgID" not in payload
@@ -236,3 +240,5 @@ async def test_registered_scan_event_dispatches_after_task2_handler_ships() -> N
     intents = await plugin.on_device_event(ctx, inbox)
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
+    assert intents[1].action == ACTION_PICK_AND_PUT

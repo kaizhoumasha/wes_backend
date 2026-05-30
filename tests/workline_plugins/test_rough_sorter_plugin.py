@@ -16,14 +16,12 @@ from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError
 from src.app.workline.models.inbox import WorklineInbox
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
     EVENT_SCAN_COMPLETED,
     PHASE_COMPLETED,
-    PHASE_MEASURING,
     PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
@@ -123,7 +121,7 @@ def _rough_sorter_context(pkg_id: str = "PKG-ROUGH-001") -> dict[str, Any]:
             "PkgID": pkg_id,
         },
         "business_key": pkg_id,
-        "phase": PHASE_MEASURING,
+        "phase": PHASE_PICK_TO_PIPELINE,
     }
 
 
@@ -143,7 +141,7 @@ def _measurement_ctx(
             command_code="CMD-MEASURE-001",
             source_result=source_result,
             normalized_result=normalized_result,
-            command_type=ACTION_MEASUREMENT_REEL,
+            command_type=ACTION_PICK_AND_PUT,
             device_code="RS-MEASURE-01",
             data=data or {"reel_diameter": "178.0", "reel_thickness": "15.0"},
             error_detail=error_detail or {},
@@ -238,7 +236,7 @@ def _measurement_inbox(
     payload: dict[str, Any] = {
         "command_code": "CMD-MEASURE-001",
         "device_code": "RS-MEASURE-01",
-        "task_type": ACTION_MEASUREMENT_REEL,
+        "task_type": ACTION_PICK_AND_PUT,
         "result": result,
         "data": data or {"reel_diameter": "178.0", "reel_thickness": "15.0"},
     }
@@ -262,20 +260,21 @@ def _wms_response(*, sku: str = "HH-001", lot_no: str | None = "LOT-A") -> Query
 
 
 @pytest.mark.asyncio
-async def test_scan_ok_updates_context_and_dispatches_measurement_command() -> None:
+async def test_scan_ok_updates_context_and_dispatches_pick_and_put_command() -> None:
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(_scan_payload()))
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_MEASURING
+    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
     assert intents[0].context_patch["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
-    assert intents[1].action == ACTION_MEASUREMENT_REEL
+    assert intents[1].action == ACTION_PICK_AND_PUT
     assert intents[1].device_role == ROLE_INPUT_ARM
-    assert intents[1].payload_json["task_type"] == ACTION_MEASUREMENT_REEL
+    assert intents[1].payload_json["task_type"] == ACTION_PICK_AND_PUT
     assert "action" not in intents[1].payload_json["params"]
+    assert intents[1].payload_json["params"]["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
 
 
 @pytest.mark.asyncio
-async def test_catalog_scan_payload_dispatches_measurement_command() -> None:
+async def test_catalog_scan_payload_dispatches_pick_and_put_command() -> None:
     payload = rough_sorter_scan_completed_payload()
     payload["device_code"] = "RS-SCAN-01"
     payload["event_type"] = EVENT_SCAN_COMPLETED
@@ -283,11 +282,12 @@ async def test_catalog_scan_payload_dispatches_measurement_command() -> None:
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(payload))
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_MEASURING
+    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
     assert intents[0].context_patch["six_in_one"]["HHPN"] == payload["data"]["HHPN"]
     assert intents[0].context_patch["six_in_one"]["PkgID"] == payload["data"]["PkgID"]
     assert "location" not in intents[0].context_patch["six_in_one"]
-    assert intents[1].action == ACTION_MEASUREMENT_REEL
+    assert intents[1].action == ACTION_PICK_AND_PUT
+    assert intents[1].payload_json["params"]["source_location"] == payload["data"]["location"]
 
 
 @pytest.mark.asyncio
@@ -310,8 +310,8 @@ async def test_scan_ng_marks_material_ng_and_dispatches_move_to_ng() -> None:
 
 
 @pytest.mark.asyncio
-async def test_measurement_callback_routes_by_persisted_task_type_when_device_reports_stale_command_type() -> None:
-    command = SimpleNamespace(task_type=ACTION_MEASUREMENT_REEL, params={})
+async def test_pick_and_put_callback_validates_measurement_and_wms_before_move_forward() -> None:
+    command = SimpleNamespace(task_type=ACTION_PICK_AND_PUT, params={})
     resolved_action = CallbackOrchestrationService()._resolve_command_type(
         {"command_type": "TEST", "task_type": "TEST"},
         command.params,
@@ -323,13 +323,14 @@ async def test_measurement_callback_routes_by_persisted_task_type_when_device_re
 
     intents = await RoughSorterPlugin().on_command_result(ctx, inbox)
 
-    assert resolved_action == ACTION_MEASUREMENT_REEL
+    assert resolved_action == ACTION_PICK_AND_PUT
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
+    assert intents[0].context_patch["phase"] == PHASE_MOVING_FORWARD
+    assert intents[0].context_patch["measurement"]["reel_diameter"] == "178.0"
     assert intents[0].context_patch["wms_validation"]["matched"] is True
-    assert intents[1].action == ACTION_PICK_AND_PUT
-    assert intents[1].device_role == ROLE_INPUT_ARM
-    assert intents[1].payload_json["task_type"] == ACTION_PICK_AND_PUT
+    assert intents[1].action == ACTION_MOVE_FORWARD
+    assert intents[1].device_role == ROLE_CONVEYOR
+    assert intents[1].payload_json["task_type"] == ACTION_MOVE_FORWARD
     assert "action" not in intents[1].payload_json["params"]
     assert wms_client.requests[0].request_id == "rough-sorter:inventory:PKG-ROUGH-001"
     assert wms_client.requests[0].trace_id == "trace-rough-sorter-001"
@@ -365,7 +366,7 @@ async def test_measurement_success_with_catalog_wms_unknown_material_marks_ng() 
         session_context={
             "six_in_one": payload_data,
             "business_key": payload_data["PkgID"],
-            "phase": PHASE_MEASURING,
+            "phase": PHASE_PICK_TO_PIPELINE,
         },
     )
 
@@ -459,16 +460,23 @@ async def test_measurement_success_with_wms_unavailable_blocks_material() -> Non
     [
         {"reel_thickness": "15.0"},
         {"reel_diameter": "178.0", "reel_thickness": "bad-thickness"},
+        {"reel_diameter": "0", "reel_thickness": "15.0"},
     ],
 )
-async def test_measurement_success_with_missing_or_unparseable_measurement_blocks(data: dict[str, Any]) -> None:
+async def test_pick_and_put_success_with_missing_or_invalid_measurement_marks_ng(data: dict[str, Any]) -> None:
     ctx = _measurement_ctx(wms_client=FakeWmsInventoryClient(response=_wms_response()), data=data)
 
     intents = await RoughSorterPlugin().on_command_result(ctx, _measurement_inbox(data=data))
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].block_scope == BlockScope.MATERIAL
-    assert intents[0].reason_code == "ROUGH_SORTER_MEASUREMENT_PAYLOAD_INVALID"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.MARK_NG,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].context_patch["phase"] == PHASE_NG_MOVING
+    assert intents[1].reason_code == "MEASUREMENT_NG"
+    assert intents[2].action == ACTION_MOVE_TO_NG
+    assert intents[2].payload_json["params"]["source_location"] == "PIPELINE-IN-01"
 
 
 @pytest.mark.asyncio
@@ -479,7 +487,7 @@ async def test_measurement_success_with_missing_or_unparseable_measurement_block
         {"reel_diameter": "178.0", "reel_thickness": "15.0", "thickness_judgement": "NG"},
     ],
 )
-async def test_measurement_success_with_size_or_thickness_ng_marks_ng(data: dict[str, Any]) -> None:
+async def test_pick_and_put_success_with_size_or_thickness_ng_marks_ng(data: dict[str, Any]) -> None:
     ctx = _measurement_ctx(wms_client=FakeWmsInventoryClient(response=_wms_response()), data=data)
 
     intents = await RoughSorterPlugin().on_command_result(ctx, _measurement_inbox(data=data))
@@ -494,30 +502,8 @@ async def test_measurement_success_with_size_or_thickness_ng_marks_ng(data: dict
 
 
 @pytest.mark.asyncio
-async def test_measurement_failed_business_ng_marks_ng_and_moves_to_ng() -> None:
-    error_detail = {"error_code": "INSPECTION_THICKNESS_NG", "error_message": "厚度检测 NG"}
-    ctx = _measurement_ctx(
-        source_result="FAILED",
-        normalized_result="TERMINAL_FAILURE",
-        error_detail=error_detail,
-    )
-
-    intents = await RoughSorterPlugin().on_command_result(
-        ctx,
-        _measurement_inbox(result="FAILED", error_detail=error_detail),
-    )
-
-    assert [intent.kind for intent in intents] == [
-        RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.MARK_NG,
-        RuntimeIntentKind.COMMAND,
-    ]
-    assert intents[1].reason_code == "MEASUREMENT_NG"
-
-
-@pytest.mark.asyncio
-async def test_measurement_failed_hardware_error_blocks_material() -> None:
-    error_detail = {"error_code": "MOTOR_TIMEOUT", "error_message": "测量电机超时"}
+async def test_pick_and_put_failed_blocks_material_without_business_ng() -> None:
+    error_detail = {"error_code": "PICK_AND_PUT_FAILED", "error_message": "入料搬运失败"}
     ctx = _measurement_ctx(
         source_result="FAILED",
         normalized_result="TERMINAL_FAILURE",
@@ -531,20 +517,19 @@ async def test_measurement_failed_hardware_error_blocks_material() -> None:
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].block_scope == BlockScope.MATERIAL
-    assert intents[0].reason_code == "ROUGH_SORTER_MEASUREMENT_FAILED"
+    assert intents[0].reason_code == "ROUGH_SORTER_HANDLING_COMMAND_FAILED"
 
 
 @pytest.mark.asyncio
 async def test_pick_and_put_success_at_pick_to_pipeline_dispatches_move_forward() -> None:
-    ctx = _command_ctx(
-        command_type=ACTION_PICK_AND_PUT,
-        device_code="RS-INPUT-ARM-01",
+    ctx = _measurement_ctx(
+        wms_client=FakeWmsInventoryClient(response=_wms_response()),
         session_context=_rough_sorter_context_for_phase(PHASE_PICK_TO_PIPELINE),
     )
 
     intents = await RoughSorterPlugin().on_command_result(
         ctx,
-        _command_inbox(command_type=ACTION_PICK_AND_PUT, device_code="RS-INPUT-ARM-01"),
+        _measurement_inbox(),
     )
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]

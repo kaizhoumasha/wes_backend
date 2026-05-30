@@ -13,7 +13,6 @@ from src.app.workline.domain.models import BarcodeDecisionType
 from src.app.workline.domain.services.barcode_decision_service import barcode_decision_service
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -27,7 +26,6 @@ from src.workline_plugins.rough_sorter.contract import (
     NG_REASON_MEASUREMENT_NG,
     NG_REASON_WMS_REJECTED,
     PHASE_COMPLETED,
-    PHASE_MEASURING,
     PHASE_MOVING_FORWARD,
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
@@ -38,7 +36,6 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_OUTPUT_ARM,
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
-    build_measurement_reel_payload,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
@@ -59,7 +56,6 @@ if TYPE_CHECKING:
 DEFAULT_NG_LOCATION = "NG-01"
 DEFAULT_PIPELINE_INPUT_LOCATION = "PIPELINE-IN-01"
 DEFAULT_PIPELINE_OUTPUT_LOCATION = "PIPELINE-OUT-01"
-MEASUREMENT_NG_ERROR_CODES = frozenset({"INSPECTION_SIZE_NG", "INSPECTION_THICKNESS_NG"})
 
 
 def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
@@ -120,7 +116,14 @@ def _parse_decimal(value: Any) -> Decimal | None:
 def _measurement_payload(data: dict[str, Any]) -> dict[str, Any] | None:
     reel_diameter = _parse_decimal(data.get("reel_diameter"))
     reel_thickness = _parse_decimal(data.get("reel_thickness"))
-    if reel_diameter is None or reel_thickness is None:
+    if (
+        reel_diameter is None
+        or reel_thickness is None
+        or not reel_diameter.is_finite()
+        or not reel_thickness.is_finite()
+        or reel_diameter <= 0
+        or reel_thickness <= 0
+    ):
         return None
     measurement = dict(data)
     measurement["reel_diameter"] = str(reel_diameter)
@@ -178,6 +181,9 @@ class RoughSorterPlugin(WorklinePlugin):
 
     @staticmethod
     def _scan_source_location(payload_json: dict[str, Any]) -> str:
+        payload_location = _non_empty_str(_payload_data(payload_json).get("location"))
+        if payload_location:
+            return payload_location
         device_code = payload_json.get("device_code")
         return device_code if isinstance(device_code, str) and device_code else "UNKNOWN"
 
@@ -490,6 +496,7 @@ class RoughSorterPlugin(WorklinePlugin):
         reason_message: str,
         measurement: dict[str, Any] | None = None,
         wms_validation: dict[str, Any] | None = None,
+        source_location: str | None = None,
     ) -> list[RuntimeIntent]:
         business_key = rough_context.business_key or _non_empty_str(rough_context.six_in_one.get("PkgID"))
         if not business_key:
@@ -526,7 +533,7 @@ class RoughSorterPlugin(WorklinePlugin):
                 action=ACTION_MOVE_TO_NG,
                 payload=build_move_to_ng_payload(
                     business_key=business_key,
-                    source_location=self._command_source_location(ctx, payload_json),
+                    source_location=source_location or self._command_source_location(ctx, payload_json),
                     ng_location=self._ng_location(ctx),
                     reason_code=reason_code,
                 ),
@@ -540,6 +547,7 @@ class RoughSorterPlugin(WorklinePlugin):
         *,
         rough_context: RoughSorterContext,
         measurement: dict[str, Any],
+        source_location: str | None = None,
     ) -> list[RuntimeIntent]:
         return self._measurement_ng_intents(
             ctx,
@@ -548,6 +556,7 @@ class RoughSorterPlugin(WorklinePlugin):
             reason_code=NG_REASON_MEASUREMENT_NG,
             reason_message="粗分机测量判定 NG",
             measurement=measurement,
+            source_location=source_location,
         )
 
     @staticmethod
@@ -573,6 +582,8 @@ class RoughSorterPlugin(WorklinePlugin):
         rough_context: RoughSorterContext,
         payload_json: dict[str, Any],
         measurement: dict[str, Any],
+        *,
+        source_location: str | None = None,
     ) -> tuple[QueryInventoryRequest, list[WmsInventoryItem]] | list[RuntimeIntent]:
         request = self._wms_query_request(ctx, rough_context)
         if request is None:
@@ -585,7 +596,7 @@ class RoughSorterPlugin(WorklinePlugin):
         if wms_client is None:
             return self._block(
                 "WMS_UNAVAILABLE",
-                "粗分机测量成功后必须校验 WMS 库存，但当前运行时未注入 WMS 库存客户端",
+                "粗分机入料成功并取得测量值后必须校验 WMS 库存，但当前运行时未注入 WMS 库存客户端",
             )
 
         try:
@@ -606,6 +617,7 @@ class RoughSorterPlugin(WorklinePlugin):
                     "evidence_key": exc.evidence_key,
                     "target_code": exc.target_code,
                 },
+                source_location=source_location,
             )
         except WmsIntegrationError as exc:
             return self._block(
@@ -645,14 +657,20 @@ class RoughSorterPlugin(WorklinePlugin):
             context_patch = RoughSorterContext(
                 six_in_one=six_in_one_payload,
                 business_key=decision.business_key,
-                phase=PHASE_MEASURING,
+                phase=PHASE_PICK_TO_PIPELINE,
             ).model_dump(mode="json", exclude_none=True)
             return [
                 RuntimeIntent.update_context(context_patch),
                 RuntimeIntent.command(
-                    device_role=ACTION_TARGET_ROLES[ACTION_MEASUREMENT_REEL],
-                    action=ACTION_MEASUREMENT_REEL,
-                    payload=build_measurement_reel_payload(six_in_one, trace_id=ctx.trace_id or None),
+                    device_role=ACTION_TARGET_ROLES[ACTION_PICK_AND_PUT],
+                    action=ACTION_PICK_AND_PUT,
+                    payload=build_pick_and_put_payload(
+                        business_key=decision.business_key,
+                        source_location=self._scan_source_location(payload_json),
+                        target_location=self._pipeline_input_location(ctx),
+                        six_in_one=six_in_one,
+                        trace_id=ctx.trace_id or None,
+                    ),
                 ),
             ]
 
@@ -800,30 +818,47 @@ class RoughSorterPlugin(WorklinePlugin):
             ),
         ]
 
-    @on_command(ACTION_MEASUREMENT_REEL, result="SUCCESS")
-    async def handle_measurement_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """处理测量成功结果，并在 WMS 库存匹配后进入入线抓取。"""
+    async def _post_pick_and_put_success_intents(
+        self,
+        ctx: PluginContext,
+        payload_json: dict[str, Any],
+        *,
+        rough_context: RoughSorterContext,
+        business_key: str,
+    ) -> list[RuntimeIntent]:
+        """处理入料成功后的测量值校验、WMS 准入与流水线推进。"""
 
-        payload_json = inbox.payload_json or {}
         data = _payload_data(payload_json)
         data.update(_normalized_data(ctx))
         measurement = _measurement_payload(data)
+        pipeline_input_location = self._pipeline_input_location(ctx)
         if measurement is None:
-            return self._block(
-                "ROUGH_SORTER_MEASUREMENT_PAYLOAD_INVALID",
-                "粗分机测量成功回调缺少有效 reel_diameter/reel_thickness",
+            return self._measurement_ng_intents(
+                ctx,
+                payload_json,
+                rough_context=rough_context,
+                reason_code=NG_REASON_MEASUREMENT_NG,
+                reason_message="粗分机测量值缺失或无效",
+                measurement=dict(data),
+                source_location=pipeline_input_location,
             )
 
-        rough_context = _session_context(ctx)
         if _measurement_is_ng(data):
             return self._measurement_ng_by_payload(
                 ctx,
                 payload_json,
                 rough_context=rough_context,
                 measurement=measurement,
+                source_location=pipeline_input_location,
             )
 
-        wms_result = await self._query_wms_inventory(ctx, rough_context, payload_json, measurement)
+        wms_result = await self._query_wms_inventory(
+            ctx,
+            rough_context,
+            payload_json,
+            measurement,
+            source_location=pipeline_input_location,
+        )
         if isinstance(wms_result, list):
             return wms_result
         request, items = wms_result
@@ -851,13 +886,7 @@ class RoughSorterPlugin(WorklinePlugin):
                     "lot_no": request.lot_no,
                     "item_count": len(items),
                 },
-            )
-
-        business_key = rough_context.business_key or _non_empty_str(rough_context.six_in_one.get("PkgID"))
-        if not business_key:
-            return self._block(
-                "ROUGH_SORTER_CONTEXT_MISSING",
-                "粗分机上下文缺少业务主键，无法下发入线抓取动作",
+                source_location=pipeline_input_location,
             )
 
         wms_validation: dict[str, Any] = {
@@ -871,54 +900,26 @@ class RoughSorterPlugin(WorklinePlugin):
             business_key=business_key,
             measurement=measurement,
             wms_validation=wms_validation,
-            phase=PHASE_PICK_TO_PIPELINE,
+            phase=PHASE_MOVING_FORWARD,
         ).model_dump(mode="json", exclude_none=True)
         return [
             RuntimeIntent.update_context(context_patch),
             RuntimeIntent.command(
-                device_role=ACTION_TARGET_ROLES[ACTION_PICK_AND_PUT],
-                action=ACTION_PICK_AND_PUT,
-                payload=build_pick_and_put_payload(
+                device_role=ACTION_TARGET_ROLES[ACTION_MOVE_FORWARD],
+                action=ACTION_MOVE_FORWARD,
+                payload=build_move_forward_payload(
                     business_key=business_key,
-                    source_location=self._command_source_location(ctx, payload_json),
-                    target_location=self._pipeline_input_location(ctx),
+                    source_location=pipeline_input_location,
+                    target_location=self._pipeline_output_location(ctx),
                 ),
             ),
         ]
 
-    @on_command(ACTION_MEASUREMENT_REEL, result="FAILED")
-    async def handle_measurement_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """处理测量失败：业务 NG 入 NG 线，硬件/通信失败进入人工 Hold。"""
+    @on_command(ACTION_PICK_AND_PUT, result="SUCCESS")
+    async def handle_pick_and_put_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """处理入料抓取完成，并在测量值与 WMS 准入通过后驱动流水线。"""
 
         payload_json = inbox.payload_json or {}
-        error_detail = _payload_data(payload_json)
-        payload_error_detail = payload_json.get("error_detail")
-        if isinstance(payload_error_detail, dict):
-            error_detail.update(cast("dict[str, Any]", payload_error_detail))
-        error_detail.update(_normalized_error_detail(ctx))
-        error_code = str(error_detail.get("error_code") or error_detail.get("code") or "").upper()
-        error_message = _non_empty_str(error_detail.get("error_message")) or _non_empty_str(error_detail.get("message"))
-
-        if error_code in MEASUREMENT_NG_ERROR_CODES:
-            return self._measurement_ng_intents(
-                ctx,
-                payload_json,
-                rough_context=_session_context(ctx),
-                reason_code=NG_REASON_MEASUREMENT_NG,
-                reason_message=error_message or "粗分机测量判定 NG",
-                measurement={"error_detail": error_detail},
-            )
-
-        return self._block(
-            "ROUGH_SORTER_MEASUREMENT_FAILED",
-            error_message or "粗分机测量命令失败，需人工确认设备状态",
-            payload={"error_detail": error_detail},
-        )
-
-    @on_command(ACTION_PICK_AND_PUT, result="SUCCESS")
-    async def handle_pick_and_put_success(self, ctx: PluginContext, _inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """处理入料抓取/NG 搬运完成。"""
-
         rough_context = _session_context(ctx)
         business_key = _business_key_from_context(rough_context)
         if business_key is None:
@@ -933,25 +934,12 @@ class RoughSorterPlugin(WorklinePlugin):
                 f"粗分机 PICK_AND_PUT 成功回调处于非法阶段: {rough_context.phase}",
             )
 
-        context_patch = RoughSorterContext(
-            six_in_one=rough_context.six_in_one,
+        return await self._post_pick_and_put_success_intents(
+            ctx,
+            payload_json,
+            rough_context=rough_context,
             business_key=business_key,
-            measurement=rough_context.measurement,
-            wms_validation=rough_context.wms_validation,
-            phase=PHASE_MOVING_FORWARD,
-        ).model_dump(mode="json", exclude_none=True)
-        return [
-            RuntimeIntent.update_context(context_patch),
-            RuntimeIntent.command(
-                device_role=ACTION_TARGET_ROLES[ACTION_MOVE_FORWARD],
-                action=ACTION_MOVE_FORWARD,
-                payload=build_move_forward_payload(
-                    business_key=business_key,
-                    source_location=self._pipeline_input_location(ctx),
-                    target_location=self._pipeline_output_location(ctx),
-                ),
-            ),
-        ]
+        )
 
     @on_command(ACTION_MOVE_TO_NG, result="SUCCESS")
     async def handle_move_to_ng_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:

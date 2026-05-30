@@ -9,7 +9,6 @@ from scripts.data.sync_test_workline_devices import (
 from src.app.device.models import Device, DeviceStatus
 from src.app.workline.models import WorkLine, WorkLineRunMode
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -45,7 +44,6 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session) 
     input_arm, conveyor, output_arm = devices
     assert input_arm.capabilities_json["supports_event_types"] == [EVENT_SCAN_COMPLETED]
     assert input_arm.capabilities_json["supports_command_types"] == [
-        ACTION_MEASUREMENT_REEL,
         ACTION_PICK_AND_PUT,
         ACTION_MOVE_TO_NG,
     ]
@@ -82,7 +80,6 @@ async def test_sync_test_workline_devices_is_idempotent_and_repairs_existing_row
         await db_session.execute(select(Device).where(Device.device_code == "RS-INPUT-ARM-01"))
     ).scalar_one()
     assert repaired_device.capabilities_json["supports_command_types"] == [
-        ACTION_MEASUREMENT_REEL,
         ACTION_PICK_AND_PUT,
         ACTION_MOVE_TO_NG,
     ]

@@ -84,6 +84,18 @@ def test_sandbox_scan_completed_template_uses_catalog_payload_and_fresh_copy() -
     assert isinstance(second["timestamp"], int)
 
 
+def test_sandbox_move_forward_template_keeps_result_payload_status_only() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    service = WorklineOperationService()
+    payload = service._get_default_payload_template("MOVE_FORWARD", "RS-CONVEYOR-01")
+
+    assert payload["data"] == {}
+    assert payload["event_type"] == "MOVE_FORWARD"
+    assert payload["device_code"] == "RS-CONVEYOR-01"
+    assert isinstance(payload["timestamp"], int)
+
+
 @pytest.mark.asyncio
 async def test_submit_sandbox_event_locks_workline_before_creating_inbox() -> None:
     from src.app.workline.services.operation_service import WorklineOperationService
@@ -1166,7 +1178,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        task_type="MEASUREMENT_REEL",
+        task_type="PICK_AND_PUT",
         params={"business_key": "PKG-001"},
         workline_id=45,
         session_id=530,
@@ -1211,7 +1223,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     result_payload = inbox_repo.created["payload_json"]
     assert result_payload["command_code"] == "CMD-001"
     assert result_payload["device_code"] == "ARM01"
-    assert result_payload["task_type"] == "MEASUREMENT_REEL"
+    assert result_payload["task_type"] == "PICK_AND_PUT"
     assert "command_type" not in result_payload
     assert result_payload["result"] == "SUCCESS"
     assert result_payload["finish_time"] == timezone.to_utc_timestamp(completed_at) * 1000

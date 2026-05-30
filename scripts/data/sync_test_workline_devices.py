@@ -21,7 +21,6 @@ from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.utils.device_cache import workline_device_cache
 from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MEASUREMENT_REEL,
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -59,7 +58,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
         sort_order=10,
         capabilities_json={
             "supports_event_types": [EVENT_SCAN_COMPLETED],
-            "supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG],
+            "supports_command_types": [ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG],
             "supports_ack_response": True,
             "supports_result_callback": True,
         },

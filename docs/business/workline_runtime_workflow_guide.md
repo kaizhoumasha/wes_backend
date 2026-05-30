@@ -124,7 +124,7 @@ Device Event -> Inbox -> Runtime Decision
 
 - `command_code`：设备回调 Result 必须原样带回。
 - `device_id`：目标设备 ID。
-- `task_type`：命令类型，如 `MEASUREMENT_REEL`、`MOVE_FORWARD`、`PICK_AND_PUT`。
+- `task_type`：命令类型，如 `PICK_AND_PUT`、`MOVE_FORWARD`、`PUT_TO_BIN`。
 - `params`：业务参数。
 - `session_id_int`：关联 `WorklineSession.id`。
 - `trace_id`：端到端链路 ID。

@@ -231,11 +231,12 @@
 | `SCAN` | 扫码/识别 | 视觉/扫码器进行条码或OCR识别 |
 | `ROTATE` | 旋转 | 转盘/机械臂旋转操作 |
 | `PROCESS`| 加工/检测 | 贴标、X-Ray检测等原子动作 |
-| `MEASUREMENT_REEL` | 料盘测量 | 粗分机扩展类型，入料测量设备执行 |
+| `PICK_AND_PUT` | 入料抓取/测量回传 | 粗分机扩展类型，入料机械臂执行；成功 Result 必须带 `reel_diameter` / `reel_thickness` |
+| `MOVE_FORWARD` | 输送线前进 | 粗分机扩展类型，输送线执行；Result 只需返回成功/失败 |
 | `PUT_TO_BIN` | 出料入箱 | 粗分机扩展类型，出料机械臂执行 |
-| `MOVE_TO_NG` | NG 搬运 | 粗分机扩展类型，出料机械臂将异常料盘移动到 NG 位 |
+| `MOVE_TO_NG` | NG 搬运 | 粗分机扩展类型，入料机械臂将异常料盘移动到 NG 位 |
 
-粗分机扩展类型是正式 `task_type`，设备能力配置必须在 `supports_command_types` 中声明具体类型；不要使用 `TEST + params.action` 或 `PICK_AND_PUT + params.action` 表达上述业务命令。
+粗分机扩展类型是正式 `task_type`，设备能力配置必须在 `supports_command_types` 中声明具体类型；不要使用 `TEST + params.action` 或任何 `params.action` 叠加方式表达上述业务命令。
 
 ### 5.2 状态枚举 (status)
 | 状态代码 | 含义 |

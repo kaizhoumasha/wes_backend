@@ -88,17 +88,17 @@ _DEFAULT_EVENT_PAYLOAD_TEMPLATES: dict[str, dict[str, Any]] = {
     "TOTE_ARRIVED": {
         "data": {"tote_id": "TOTE001", "location": "INBOUND"},
     },
-    "MEASUREMENT_REEL": {
-        "data": {"PkgID": "SVYU00125TP4LCR02_2", "reel_diameter": "7.0", "reel_thickness": "2.5"},
-    },
     "MOVE_FORWARD": {
-        "data": {"PkgID": "SVYU00125TP4LCR02_2", "from_location": "MEASUREMENT", "to_location": "OUTPUT"},
+        "data": {},
     },
     "PICK_AND_PUT": {
         "data": {
             "PkgID": "SVYU00125TP4LCR02_2",
             "from_location": "INPUT",
-            "to_location": "BIN01",
+            "to_location": "PIPELINE-IN-01",
+            "reel_diameter": "7.0",
+            "reel_thickness": "2.5",
+            "measurement_result": "OK",
             "result": "SUCCESS",
         },
     },
