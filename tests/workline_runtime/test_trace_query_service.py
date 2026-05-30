@@ -528,6 +528,97 @@ async def test_blocking_point_returns_operable_diagnostic_card(
 
 
 @pytest.mark.asyncio
+async def test_blocking_point_reports_manual_hold_wms_timeout(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    """设备链路完成后进入 MANUAL_HOLD 时，应直接指向 WMS 超时而不是 UNKNOWN。"""
+
+    session_obj.status = "MANUAL_HOLD"
+    session_obj.failure_domain = "INTEGRATION"
+    session_obj.failure_code = "WMS_TIMEOUT"
+    session_obj.failure_message = "WMS 同步调用超时"
+    command_obj.status = "COMPLETED"
+    command_obj.ack_received_at = 1
+    command_obj.completed_at = 2
+    timeline_obj.status = "BLOCKED"
+    timeline_obj.action_type = "MANUAL_HOLD_CREATED"
+    timeline_obj.failure_domain = "INTEGRATION"
+    timeline_obj.message = "WMS 同步调用超时"
+    timeline_obj.payload_json = {
+        "request_id": "rough-sorter:inventory:39222b903aa0f149",
+        "trace_id": "trace-1",
+        "block_scope": "MATERIAL",
+        "reason_code": "WMS_TIMEOUT",
+        "target_code": "WMS_INVENTORY",
+        "suggested_action": "人工检查粗分机当前物料与依赖状态",
+    }
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.get_blocking_point(db, "trace-1")
+
+    assert result.blocking_point == "external_wms"
+    assert result.owner == "integration"
+    assert result.diagnostic_card.error_code == "WMS_TIMEOUT"
+    assert "WMS 同步调用超时" in result.diagnostic_card.summary
+    assert result.evidence["session"]["status"] == "MANUAL_HOLD"
+    assert result.evidence["timeline"]["reason_code"] == "WMS_TIMEOUT"
+    assert result.evidence["timeline"]["target_code"] == "WMS_INVENTORY"
+    assert result.evidence["command_chain"]["completed_commands"] == ["CMD-1"]
+
+
+@pytest.mark.asyncio
+async def test_blocking_point_does_not_mask_non_timeout_manual_hold_as_wms_timeout(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    session_obj.status = "MANUAL_HOLD"
+    session_obj.failure_domain = "INTEGRATION"
+    session_obj.failure_code = "WMS_UNAVAILABLE"
+    session_obj.failure_message = "WMS 依赖不可用"
+    command_obj.status = "COMPLETED"
+    command_obj.ack_received_at = 1
+    command_obj.completed_at = 2
+    timeline_obj.status = "BLOCKED"
+    timeline_obj.action_type = "MANUAL_HOLD_CREATED"
+    timeline_obj.failure_domain = "INTEGRATION"
+    timeline_obj.message = "WMS 依赖不可用"
+    timeline_obj.payload_json = {
+        "request_id": "rough-sorter:inventory:39222b903aa0f149",
+        "trace_id": "trace-1",
+        "block_scope": "MATERIAL",
+        "reason_code": "WMS_UNAVAILABLE",
+        "target_code": "WMS_INVENTORY",
+    }
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.get_blocking_point(db, "trace-1")
+
+    assert result.blocking_point != "external_wms"
+    assert result.diagnostic_card.error_code != "WMS_TIMEOUT"
+
+
+@pytest.mark.asyncio
 async def test_by_trace_id_includes_persisted_workline_diagnostics(
     service: TraceQueryService,
     session_obj: SimpleNamespace,

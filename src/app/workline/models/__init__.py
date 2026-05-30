@@ -38,6 +38,13 @@ from .inbox import (
     WorklineInboxBase,
     WorklineInboxCreate,
 )
+from .integration_debug import (
+    IntegrationDebugCaseListResponse,
+    IntegrationDebugCaseResponse,
+    IntegrationDebugEvidenceLink,
+    IntegrationDebugNextAction,
+    IntegrationDebugStageCheck,
+)
 from .rack_position import (
     WorklineRackPosition,
     WorklineRackPositionBase,
@@ -133,6 +140,11 @@ __all__ = [
     "DispatchAttemptStatus",
     "InboxKind",
     "InboxStatus",
+    "IntegrationDebugCaseListResponse",
+    "IntegrationDebugCaseResponse",
+    "IntegrationDebugEvidenceLink",
+    "IntegrationDebugNextAction",
+    "IntegrationDebugStageCheck",
     "LineType",
     "MaterialDisposition",
     "NgReasonSource",

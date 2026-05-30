@@ -77,6 +77,7 @@ class ErrorCode(str, Enum):
 
     # 重试 / 配置 / 兜底问题
     INBOX_RETRY_EXHAUSTED = "INBOX_RETRY_EXHAUSTED"  # Inbox 重试次数耗尽，仍未处理成功。
+    WMS_TIMEOUT = "WMS_TIMEOUT"  # 外部 WMS 同步或查询调用超时。
     CONFIG_INVALID = "CONFIG_INVALID"  # 运行所需配置非法、缺失或彼此冲突。
     UNKNOWN = "UNKNOWN"  # 暂未识别根因的兜底错误码。
 
@@ -95,6 +96,7 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.OUTBOX_DISPATCH_FAILED: ErrorDomain.INTEGRATION,
     ErrorCode.INBOX_PROCESSING_TIMEOUT: ErrorDomain.SYSTEM,
     ErrorCode.INBOX_RETRY_EXHAUSTED: ErrorDomain.SYSTEM,
+    ErrorCode.WMS_TIMEOUT: ErrorDomain.INTEGRATION,
     ErrorCode.CONFIG_INVALID: ErrorDomain.CONFIG,
     ErrorCode.UNKNOWN: ErrorDomain.SYSTEM,
 }

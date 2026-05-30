@@ -120,6 +120,13 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "Inbox worker 处理超时，未完成本次编排事务。",
         ["检查 worker 日志和锁等待", "修复后重试或 replay inbox"],
     ),
+    ErrorCode.WMS_TIMEOUT: (
+        Severity.ERROR,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.SOFTWARE,
+        "WMS 库存或同步调用超时，请先确认外部系统状态。",
+        ["检查 WMS_INVENTORY 请求", "确认 WMS 服务与网络链路", "确认后重新触发测试"],
+    ),
     ErrorCode.CONFIG_INVALID: (
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
