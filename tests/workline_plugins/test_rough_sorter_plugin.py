@@ -303,7 +303,7 @@ async def test_scan_ng_marks_material_ng_and_dispatches_move_to_ng() -> None:
     assert intents[0].context_patch["ng_reason"]["reason_code"] == "SCAN_NG_BY_RULE"
     assert intents[1].reason_code == "SCAN_NG_BY_RULE"
     assert intents[2].action == ACTION_MOVE_TO_NG
-    assert intents[2].device_role == ROLE_OUTPUT_ARM
+    assert intents[2].device_role == ROLE_INPUT_ARM
     assert intents[2].payload_json["task_type"] == ACTION_MOVE_TO_NG
     assert "action" not in intents[2].payload_json["params"]
     assert intents[2].payload_json["params"]["source_location"] == "RS-SCAN-01"
@@ -352,7 +352,7 @@ async def test_measurement_success_with_wms_no_match_marks_ng_and_moves_to_ng() 
     assert intents[0].context_patch["wms_validation"]["matched"] is False
     assert intents[1].reason_code == "WMS_REJECTED"
     assert intents[2].action == ACTION_MOVE_TO_NG
-    assert intents[2].device_role == ROLE_OUTPUT_ARM
+    assert intents[2].device_role == ROLE_INPUT_ARM
 
 
 @pytest.mark.asyncio
@@ -379,6 +379,7 @@ async def test_measurement_success_with_catalog_wms_unknown_material_marks_ng() 
     assert intents[0].context_patch["wms_validation"]["matched"] is False
     assert intents[1].reason_code == "WMS_REJECTED"
     assert intents[2].action == ACTION_MOVE_TO_NG
+    assert intents[2].device_role == ROLE_INPUT_ARM
 
 
 @pytest.mark.asyncio

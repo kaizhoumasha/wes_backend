@@ -140,7 +140,9 @@ def test_rough_sorter_topology_requires_concrete_extended_command_types() -> Non
                 1,
                 code="RS-INPUT-01",
                 role=ROLE_INPUT_ARM,
-                capabilities_json={"supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT]},
+                capabilities_json={
+                    "supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG]
+                },
             ),
             _device(
                 2,
@@ -152,7 +154,7 @@ def test_rough_sorter_topology_requires_concrete_extended_command_types() -> Non
                 3,
                 code="RS-OUTPUT-01",
                 role=ROLE_OUTPUT_ARM,
-                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG]},
+                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN]},
             ),
         ]
     )
@@ -167,7 +169,7 @@ def test_rough_sorter_topology_rejects_legacy_test_only_measurement_capability()
                 1,
                 code="RS-INPUT-01",
                 role=ROLE_INPUT_ARM,
-                capabilities_json={"supports_command_types": ["TEST", ACTION_PICK_AND_PUT]},
+                capabilities_json={"supports_command_types": ["TEST", ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG]},
             ),
             _device(
                 2,
@@ -179,7 +181,7 @@ def test_rough_sorter_topology_rejects_legacy_test_only_measurement_capability()
                 3,
                 code="RS-OUTPUT-01",
                 role=ROLE_OUTPUT_ARM,
-                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG]},
+                capabilities_json={"supports_command_types": [ACTION_PUT_TO_BIN]},
             ),
         ]
     )

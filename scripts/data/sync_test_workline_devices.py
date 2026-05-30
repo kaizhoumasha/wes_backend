@@ -59,7 +59,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
         sort_order=10,
         capabilities_json={
             "supports_event_types": [EVENT_SCAN_COMPLETED],
-            "supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT],
+            "supports_command_types": [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG],
             "supports_ack_response": True,
             "supports_result_callback": True,
         },
@@ -85,7 +85,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
         sort_order=30,
         upstream_device_code="RS-CONVEYOR-01",
         capabilities_json={
-            "supports_command_types": [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG],
+            "supports_command_types": [ACTION_PUT_TO_BIN],
             "supports_ack_response": True,
             "supports_result_callback": True,
         },

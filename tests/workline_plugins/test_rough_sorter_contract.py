@@ -106,7 +106,7 @@ def test_phase_and_role_contracts_are_declared() -> None:
         ACTION_PICK_AND_PUT: ROLE_INPUT_ARM,
         ACTION_MOVE_FORWARD: ROLE_CONVEYOR,
         ACTION_PUT_TO_BIN: ROLE_OUTPUT_ARM,
-        ACTION_MOVE_TO_NG: ROLE_OUTPUT_ARM,
+        ACTION_MOVE_TO_NG: ROLE_INPUT_ARM,
     }
     assert {ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM} == {
         "ROUGH_SORTER_INPUT_ARM",

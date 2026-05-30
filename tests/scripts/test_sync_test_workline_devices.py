@@ -44,9 +44,13 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session) 
 
     input_arm, conveyor, output_arm = devices
     assert input_arm.capabilities_json["supports_event_types"] == [EVENT_SCAN_COMPLETED]
-    assert input_arm.capabilities_json["supports_command_types"] == [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT]
+    assert input_arm.capabilities_json["supports_command_types"] == [
+        ACTION_MEASUREMENT_REEL,
+        ACTION_PICK_AND_PUT,
+        ACTION_MOVE_TO_NG,
+    ]
     assert conveyor.capabilities_json["supports_command_types"] == [ACTION_MOVE_FORWARD]
-    assert output_arm.capabilities_json["supports_command_types"] == [ACTION_PUT_TO_BIN, ACTION_MOVE_TO_NG]
+    assert output_arm.capabilities_json["supports_command_types"] == [ACTION_PUT_TO_BIN]
     assert conveyor.upstream_device_id == input_arm.id
     assert output_arm.upstream_device_id == conveyor.id
 
@@ -77,6 +81,10 @@ async def test_sync_test_workline_devices_is_idempotent_and_repairs_existing_row
     repaired_device = (
         await db_session.execute(select(Device).where(Device.device_code == "RS-INPUT-ARM-01"))
     ).scalar_one()
-    assert repaired_device.capabilities_json["supports_command_types"] == [ACTION_MEASUREMENT_REEL, ACTION_PICK_AND_PUT]
+    assert repaired_device.capabilities_json["supports_command_types"] == [
+        ACTION_MEASUREMENT_REEL,
+        ACTION_PICK_AND_PUT,
+        ACTION_MOVE_TO_NG,
+    ]
     assert repaired_device.device_status == DeviceStatus.ERROR
     assert repaired_device.error_code == "TEST_RUNTIME_STATE"

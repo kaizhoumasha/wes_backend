@@ -676,7 +676,7 @@ class RoughSorterPlugin(WorklinePlugin):
                 payload={"six_in_one": six_in_one_payload},
             ),
             RuntimeIntent.command(
-                device_role=ROLE_OUTPUT_ARM,
+                device_role=ACTION_TARGET_ROLES[ACTION_MOVE_TO_NG],
                 action=ACTION_MOVE_TO_NG,
                 payload=build_move_to_ng_payload(
                     business_key=decision.business_key,
