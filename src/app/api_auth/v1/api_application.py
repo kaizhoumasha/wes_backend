@@ -23,6 +23,7 @@ from src.utils.permission_scanner import sync_permissions_to_db
 
 response_builder_any = cast("Any", response_builder)
 api_app_service_any = cast("Any", api_app_service)
+APP_API_PERMISSION_TYPE = "app_api"
 
 
 def _value_error_response(
@@ -64,7 +65,11 @@ def register_custom_route(
         返回可供分配给 API 应用的权限列表。
         """
         # 通过 Service 层获取 API 权限（符合分层架构）
-        permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
+        permissions = await permission_service.get_api_permissions(
+            db,
+            perm_type=APP_API_PERMISSION_TYPE,
+            exclude_deleted=True,
+        )
 
         return cast("ResponseSchemaModel[list[Any]]", response_builder_any.success(data=permissions))
 
@@ -79,7 +84,11 @@ def register_custom_route(
     ) -> ResponseSchemaModel[list[Any]]:
         """重新扫描代码中的权限并同步到数据库。"""
         _ = await sync_permissions_to_db(request.app, db)
-        permissions = await permission_service.get_api_permissions(db, exclude_deleted=True)
+        permissions = await permission_service.get_api_permissions(
+            db,
+            perm_type=APP_API_PERMISSION_TYPE,
+            exclude_deleted=True,
+        )
         return cast(
             "ResponseSchemaModel[list[Any]]",
             response_builder_any.success(data=permissions, message="权限同步成功"),
@@ -183,9 +192,17 @@ def register_custom_route(
         except ValueError as exc:
             return cast("ResponseSchemaModel[APIApplicationResponse]", _value_error_response(api, id, exc))
 
+        response_resource = await api_app_service.get_by_id(db, cache, id, max_depth=1) or app
+        if response_resource is None:
+            return cast(
+                "ResponseSchemaModel[APIApplicationResponse]",
+                response_builder_any.fail(code=BusinessErrorCode.OPERATION_FAILED, message="有效期重置失败"),
+            )
+
+        response_data = api_app_service.to_response(response_resource, APIApplicationResponse)
         return cast(
             "ResponseSchemaModel[APIApplicationResponse]",
-            response_builder_any.success(data=APIApplicationResponse.model_validate(app), message="有效期重置成功"),
+            response_builder_any.success(data=response_data, message="有效期重置成功"),
         )
 
     class TryInvokeApplication(BaseModel):

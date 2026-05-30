@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from sqlalchemy.inspection import inspect as sa_inspect
 
+from src.app.api_auth.models import APIApplication, APIApplicationResponse
 from src.app.api_auth.models.api_application import ValidityPeriod
 from src.app.api_auth.v1 import api_application as api_application_module
 
@@ -36,6 +39,78 @@ def test_generated_crud_routes_use_api_application_permission_resource() -> None
     assert _permission_names("/applications/{id}", "DELETE") == ["api-auth:api_application:delete"]
     assert _permission_names("/applications/trash/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
     assert _permission_names("/applications/{id}/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
+
+
+def test_application_response_exposes_assigned_permissions() -> None:
+    assert "permissions" in APIApplicationResponse.model_fields
+
+
+def test_application_model_registers_permissions_relationship() -> None:
+    relationship = sa_inspect(APIApplication).relationships["permissions"]
+
+    assert relationship.secondary is not None
+    assert relationship.secondary.name == "api_app_permissions"
+
+
+@pytest.mark.asyncio
+async def test_reset_validity_route_serializes_with_service_to_avoid_lazy_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _get_route("/applications/{id}/reset-validity", "POST")
+    app = object()
+    serialized_app = {"id": 12, "app_id": "app_lazy", "permissions": []}
+    monkeypatch.setattr(api_application_module.api_app_service, "reset_validity_period", AsyncMock(return_value=app))
+    monkeypatch.setattr(api_application_module.api_app_service, "get_by_id", AsyncMock(return_value=app))
+    to_response = Mock(return_value=serialized_app)
+    monkeypatch.setattr(api_application_module.api_app_service, "to_response", to_response)
+    model_validate = Mock(side_effect=AssertionError("direct model_validate would access lazy permissions"))
+    monkeypatch.setattr(api_application_module.APIApplicationResponse, "model_validate", model_validate)
+    db = object()
+    cache = object()
+
+    response = await route.endpoint(
+        id=12,
+        data=api_application_module.ResetValidityPeriodSchema(version=1, validity_period=ValidityPeriod.ONE_YEAR),
+        db=db,
+        cache=cache,
+    )
+
+    api_application_module.api_app_service.get_by_id.assert_awaited_once_with(db, cache, 12, max_depth=1)
+    to_response.assert_called_once_with(app, api_application_module.APIApplicationResponse)
+    model_validate.assert_not_called()
+    assert response["data"] == serialized_app
+
+
+@pytest.mark.asyncio
+async def test_available_permissions_route_returns_only_app_api_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    route = _get_route("/applications/available-permissions", "GET")
+    db = object()
+    get_api_permissions = AsyncMock(return_value=[])
+    monkeypatch.setattr(api_application_module.permission_service, "get_api_permissions", get_api_permissions)
+
+    response = await route.endpoint(db=db)
+
+    get_api_permissions.assert_awaited_once_with(db, perm_type="app_api", exclude_deleted=True)
+    assert response["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_sync_available_permissions_route_returns_only_app_api_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = _get_route("/applications/available-permissions/sync", "POST")
+    app = object()
+    db = object()
+    sync_permissions_to_db = AsyncMock(return_value={"created": 0, "updated": 0, "skipped": 0, "total": 0})
+    get_api_permissions = AsyncMock(return_value=[])
+    monkeypatch.setattr(api_application_module, "sync_permissions_to_db", sync_permissions_to_db)
+    monkeypatch.setattr(api_application_module.permission_service, "get_api_permissions", get_api_permissions)
+
+    response = await route.endpoint(request=SimpleNamespace(app=app), db=db)
+
+    sync_permissions_to_db.assert_awaited_once_with(app, db)
+    get_api_permissions.assert_awaited_once_with(db, perm_type="app_api", exclude_deleted=True)
+    assert response["data"] == []
 
 
 @pytest.mark.asyncio

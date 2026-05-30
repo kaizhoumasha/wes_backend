@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Index
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.admin.models import PermissionResponse
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -185,6 +186,7 @@ class APIApplicationResponse(APIApplicationBase, EnterpriseMixin, SoftDeleteMixi
     version: int = Field(default=0)
     status: AppStatus = Field(default=AppStatus.ACTIVE)
     expires_at: datetime | None = None
+    permissions: list[PermissionResponse] = Field(default_factory=list)
 
     @computed_field
     @property

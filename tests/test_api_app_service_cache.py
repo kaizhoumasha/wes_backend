@@ -420,6 +420,7 @@ async def test_assign_permissions_commits_and_invalidates_permission_cache() -> 
     db.commit.assert_awaited_once()
     db.rollback.assert_not_awaited()
     assert f"{service.cache_prefix}:{app_id}:*" in cache.deleted_patterns
+    assert f"{service.list_cache_prefix}:*" in cache.deleted_patterns
     assert permission_key not in cache.storage
     assert permission_key in cache.deleted_keys
 

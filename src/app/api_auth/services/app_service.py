@@ -187,8 +187,13 @@ class APIAppService(BaseService[APIApplication, APIAppRepository]):
         await self._commit_mutation(db)
 
         # 3. 清除缓存
-        _ = await self.invalidate_cache(cache, id)
-        _ = await self._invalidate_app_permission_cache(cache, id)
+        await self._invalidate_app_cache_entries(
+            cache,
+            application_id=id,
+            app_id=app.app_id,
+            invalidate_list=True,
+            invalidate_permissions=True,
+        )
 
     async def reset_validity_period(
         self,
