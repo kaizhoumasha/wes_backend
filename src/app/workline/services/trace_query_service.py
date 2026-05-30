@@ -76,6 +76,7 @@ _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "CONFIG_INVALID": ErrorCode.CONFIG_INVALID,
     "CALLBACK_SCHEMA_INVALID": ErrorCode.CALLBACK_SCHEMA_INVALID,
     "INBOX_RETRY_EXHAUSTED": ErrorCode.INBOX_RETRY_EXHAUSTED,
+    "WMS_TIMEOUT": ErrorCode.WMS_TIMEOUT,
 }
 
 _RESOURCE_RECONCILIATION_REASON_CODES: tuple[str, ...] = (
@@ -750,6 +751,61 @@ class TraceQueryService(BaseService[Any, Any]):
             )
 
         session = result.session
+        manual_hold_block = self._manual_hold_block(result)
+        if session is not None and manual_hold_block is not None:
+            timeline, block_payload = manual_hold_block
+            context = build_diagnostic_context(
+                trace=trace.with_session(session),
+                session=session,
+                extra={
+                    "source": "manual_hold",
+                    "failure_domain": getattr(session, "failure_domain", None),
+                    "failure_code": getattr(session, "failure_code", None),
+                    "timeline": {
+                        "id": getattr(timeline, "id", None),
+                        "seq_no": getattr(timeline, "seq_no", None),
+                        "action_type": getattr(timeline, "action_type", None),
+                    },
+                },
+            )
+            completed_commands = [
+                getattr(command, "command_code", None)
+                for command in result.commands
+                if optional_enum_str(getattr(command, "status", None)) == "COMPLETED"
+            ]
+            return self._blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                blocking_point="external_wms",
+                error_code=ErrorCode.WMS_TIMEOUT,
+                message=getattr(session, "failure_message", None)
+                or getattr(timeline, "message", None)
+                or "WMS 同步调用超时",
+                context=context,
+                evidence={
+                    "session": {
+                        "id": getattr(session, "id", None),
+                        "status": optional_enum_str(getattr(session, "status", None)),
+                        "failure_domain": getattr(session, "failure_domain", None),
+                        "failure_code": getattr(session, "failure_code", None),
+                        "failure_message": getattr(session, "failure_message", None),
+                    },
+                    "timeline": {
+                        "id": getattr(timeline, "id", None),
+                        "seq_no": getattr(timeline, "seq_no", None),
+                        "action_type": optional_enum_str(getattr(timeline, "action_type", None)),
+                        "status": optional_enum_str(getattr(timeline, "status", None)),
+                        "reason_code": block_payload.get("reason_code"),
+                        "target_code": block_payload.get("target_code"),
+                        "block_scope": block_payload.get("block_scope"),
+                        "suggested_action": block_payload.get("suggested_action"),
+                    },
+                    "command_chain": {
+                        "completed_commands": [code for code in completed_commands if code],
+                    },
+                },
+            )
+
         if session is not None and optional_enum_str(getattr(session, "status", None)) == "FAILED":
             context = build_diagnostic_context(trace=trace.with_session(session), session=session)
             failure_code = optional_enum_str(getattr(session, "failure_code", None)) or ""
@@ -812,6 +868,28 @@ class TraceQueryService(BaseService[Any, Any]):
             evidence=evidence,
             next_steps=[],
         )
+
+    @staticmethod
+    def _manual_hold_block(result: TraceQueryResult) -> tuple[WorklineTimeline, dict[str, Any]] | None:
+        session = result.session
+        if session is None or optional_enum_str(getattr(session, "status", None)) != "MANUAL_HOLD":
+            return None
+        session_failure_code = optional_enum_str(getattr(session, "failure_code", None))
+        matched_timelines: list[tuple[WorklineTimeline, dict[str, Any]]] = []
+        for timeline in result.timelines:
+            payload = payload_dict(getattr(timeline, "payload_json", None))
+            reason_code = coerce_optional_str(payload.get("reason_code"))
+            if reason_code == "WMS_TIMEOUT":
+                matched_timelines.append((timeline, payload))
+        if matched_timelines:
+            return matched_timelines[-1]
+        if session_failure_code == "WMS_TIMEOUT":
+            latest = result.timelines[-1] if result.timelines else SimpleNamespace(payload_json={})
+            return cast("WorklineTimeline", latest), {
+                "reason_code": session_failure_code,
+                "target_code": "WMS_INVENTORY",
+            }
+        return None
 
     @staticmethod
     def _diagnostic_for_entity(

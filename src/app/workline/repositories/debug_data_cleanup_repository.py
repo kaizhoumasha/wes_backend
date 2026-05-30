@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import delete, or_, select, update
 
-from src.app.device.models import Device, DeviceCommand, DeviceStatus
+from src.app.device.models import Device, DeviceCommand
 from src.app.handling.models import HandlingMove, HandlingOperation, HandlingStep
 from src.app.rack.models import RackOperation, RackTask
 from src.app.resource.models import (
@@ -27,10 +27,9 @@ from src.app.workline.models.diagnostic import WorklineDiagnostic
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.runtime_hold import NgReturnItem, RuntimeHold
-from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident
+from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.timeline import WorklineTimeline
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -258,7 +257,7 @@ class DebugDataCleanupRepository:
         )
 
     async def execute_cleanup(self, db: AsyncSession, *, selection: DebugDataCleanupSelection) -> None:
-        """删除过程数据并重置受影响工作线运行态。"""
+        """删除过程数据；仅断开必要引用，不重置 WorkLine/Device 运行态。"""
 
         await self._clear_cyclic_refs(db, selection)
         await db.flush()
@@ -289,7 +288,6 @@ class DebugDataCleanupRepository:
         await self._delete_by_ids(db, WorklineInbox, selection.inboxes)
         await self._delete_by_ids(db, DeviceCommand, selection.commands)
         await self._delete_by_ids(db, WorklineSession, selection.sessions)
-        await self._reset_workline_runtime_state(db, selection.worklines)
         await db.flush()
 
     async def _collect_ids(self, db: AsyncSession, stmt: Any | None) -> list[int]:
@@ -307,19 +305,19 @@ class DebugDataCleanupRepository:
     async def _clear_cyclic_refs(self, db: AsyncSession, selection: DebugDataCleanupSelection) -> None:
         outbox_columns = cast("Any", SystemOutbox).__table__.c
         for hold_ids in self._chunks(selection.runtime_holds):
-            await db.execute(
+            _ = await db.execute(
                 update(SystemOutbox)
                 .where(outbox_columns.blocked_by_runtime_hold_id.in_(hold_ids))
                 .values(blocked_by_runtime_hold_id=None)
             )
         for outbox_ids in self._chunks(selection.outboxes):
-            await db.execute(
+            _ = await db.execute(
                 update(SystemOutbox).where(outbox_columns.id.in_(outbox_ids)).values(blocked_by_runtime_hold_id=None)
             )
 
         hold_columns = cast("Any", RuntimeHold).__table__.c
         for hold_ids in self._chunks(selection.runtime_holds):
-            await db.execute(
+            _ = await db.execute(
                 update(RuntimeHold)
                 .where(hold_columns.reopened_from_hold_id.in_(hold_ids))
                 .values(reopened_from_hold_id=None)
@@ -327,37 +325,28 @@ class DebugDataCleanupRepository:
 
         session_columns = cast("Any", WorklineSession).__table__.c
         for session_ids in self._chunks(selection.sessions):
-            await db.execute(
+            _ = await db.execute(
                 update(WorklineSession).where(session_columns.id.in_(session_ids)).values(awaiting_command_id=None)
+            )
+
+        workline_columns = cast("Any", WorkLine).__table__.c
+        for incident_ids in self._chunks(selection.safety_incidents):
+            _ = await db.execute(
+                update(WorkLine)
+                .where(workline_columns.active_safety_incident_id.in_(incident_ids))
+                .values(active_safety_incident_id=None)
             )
 
         device_columns = cast("Any", Device).__table__.c
         for command_ids in self._chunks(selection.commands):
-            await db.execute(
-                update(Device)
-                .where(device_columns.current_command_id.in_(command_ids))
-                .values(current_command_id=None, device_status=DeviceStatus.IDLE, error_code=None)
+            _ = await db.execute(
+                update(Device).where(device_columns.current_command_id.in_(command_ids)).values(current_command_id=None)
             )
 
     async def _delete_by_ids(self, db: AsyncSession, model: type[Any], ids: list[int]) -> None:
         columns = cast("Any", model).__table__.c
         for id_batch in self._chunks(ids):
-            await db.execute(delete(model).where(columns.id.in_(id_batch)))
-
-    async def _reset_workline_runtime_state(self, db: AsyncSession, workline_ids: list[int]) -> None:
-        columns = cast("Any", WorkLine).__table__.c
-        for workline_id_batch in self._chunks(workline_ids):
-            await db.execute(
-                update(WorkLine)
-                .where(columns.id.in_(workline_id_batch))
-                .values(
-                    runtime_status=WorkLineRuntimeStatus.READY,
-                    active_safety_incident_id=None,
-                    stopped_at=None,
-                    stopped_reason=None,
-                    resumed_at=timezone.now_for_db(),
-                )
-            )
+            _ = await db.execute(delete(model).where(columns.id.in_(id_batch)))
 
     def _empty_selection(self) -> DebugDataCleanupSelection:
         return DebugDataCleanupSelection(

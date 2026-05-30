@@ -343,14 +343,14 @@ async def test_cleanup_workline_deletes_process_data_and_preserves_source_data(d
 
     device = await db_session.get(Device, graph["device_id"])
     assert device.current_command_id is None
-    assert device.device_status == DeviceStatus.IDLE
-    assert device.error_code is None
+    assert device.device_status == DeviceStatus.RUNNING
+    assert device.error_code == "DEBUG_BUSY"
 
     workline = await db_session.get(WorkLine, graph["workline_id"])
-    assert workline.runtime_status == WorkLineRuntimeStatus.READY
-    assert workline.stopped_at is None
-    assert workline.stopped_reason is None
-    assert workline.resumed_at is not None
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_at is not None
+    assert workline.stopped_reason == "DEBUG_DATA_TEST"
+    assert workline.resumed_at is None
 
 
 @pytest.mark.asyncio

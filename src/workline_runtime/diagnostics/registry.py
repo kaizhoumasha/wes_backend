@@ -146,6 +146,15 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
         docs_anchor="INBOX_RETRY_EXHAUSTED",
     ),
+    ErrorCode.WMS_TIMEOUT: DiagnosticCodeDefinition(
+        code=ErrorCode.WMS_TIMEOUT,
+        owner="integration",
+        cause="WES 已完成前序设备链路，但调用 WMS 库存或同步接口超时。",
+        operator_action="保持当前物料状态，人工检查粗分机当前物料与 WMS 库存依赖状态。",
+        fix="检查 WMS_INVENTORY 请求、网络链路和 WMS 服务日志，确认后重新触发集成测试。",
+        recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        docs_anchor="WMS_TIMEOUT",
+    ),
     ErrorCode.CONFIG_INVALID: DiagnosticCodeDefinition(
         code=ErrorCode.CONFIG_INVALID,
         owner="configuration",

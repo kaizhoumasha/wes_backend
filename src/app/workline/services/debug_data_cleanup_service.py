@@ -71,7 +71,7 @@ class DebugDataCleanupService:
             selection=selection,
             dry_run=False,
             deleted=True,
-            message=f"已清理工作线 {workline.line_code} 的调试过程数据，并重置工作线运行状态",
+            message=f"已清理工作线 {workline.line_code} 的调试过程数据，未修改工作线与设备元数据",
         )
 
     async def preview_all(self, db: AsyncSession) -> DebugDataCleanupResponse:
@@ -108,7 +108,7 @@ class DebugDataCleanupService:
             selection=selection,
             dry_run=False,
             deleted=True,
-            message="已清理全部工作线调试过程数据，并重置工作线运行状态",
+            message="已清理全部工作线调试过程数据，未修改工作线与设备元数据",
         )
 
     async def _get_required_workline(self, db: AsyncSession, workline_id: int) -> WorkLine:

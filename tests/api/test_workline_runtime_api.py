@@ -1,5 +1,7 @@
+from collections.abc import Mapping
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -7,6 +9,11 @@ import pytest
 from src.app.workline.v1 import runtime as runtime_module
 from src.app.workline.v1 import trace as trace_module
 from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from src.app.callback.models import CallbackLog
+    from src.app.device.models import Device, DeviceCommand
+    from src.app.workline.models import WorkLine, WorklineInbox, WorklineSession
 
 
 class _TraceContextStub:
@@ -23,6 +30,21 @@ class AnyArgHashable:
 
     def __hash__(self):
         return 0
+
+
+def _response_data(response: object) -> Any:
+    if isinstance(response, Mapping):
+        return cast("Mapping[str, Any]", response)["data"]
+    return cast("Any", response).data
+
+
+def _response_message(response: object) -> str:
+    if isinstance(response, Mapping):
+        message = cast("Mapping[str, Any]", response)["message"]
+    else:
+        message = cast("Any", response).message
+    assert isinstance(message, str)
+    return message
 
 
 def _get_route(module, path: str, method: str):
@@ -55,6 +77,83 @@ class TestWorklineRuntimeRoutePermissions:
         assert _permission_names(runtime_module, "/devices/{device_id}", "GET") == ["biz:device:list"]
 
 
+class TestWorklineIntegrationDebugApi:
+    def test_integration_debug_routes_require_workline_list_permission(self) -> None:
+        from src.app.workline.v1 import integration_debug as integration_debug_module
+
+        assert _permission_names(integration_debug_module, "/cases/latest", "GET") == ["biz:workline:list"]
+        assert _permission_names(integration_debug_module, "/cases/lookup", "GET") == ["biz:workline:list"]
+
+    @pytest.mark.asyncio
+    async def test_lookup_case_uses_integration_debug_service(self) -> None:
+        from src.app.workline.models.integration_debug import IntegrationDebugCaseResponse
+        from src.app.workline.v1.integration_debug import lookup_integration_debug_case
+
+        result = IntegrationDebugCaseResponse(
+            case_id="session:11",
+            status="MANUAL_HOLD",
+            phase="external_wms",
+            verdict="blocked",
+            blocking_domain="INTEGRATION",
+            blocking_code="WMS_TIMEOUT",
+            owner="integration",
+            severity="error",
+            recoverability="manual_intervention_required",
+            summary="设备链路已完成，当前阻塞在 WMS 库存同步超时",
+            facts={"session_id": 11},
+            stage_checks=[],
+            evidence_links=[],
+            next_actions=[],
+        )
+
+        with patch(
+            "src.app.workline.v1.integration_debug.integration_debug_service.lookup_case",
+            new=AsyncMock(return_value=result),
+        ) as mock_lookup:
+            response = await lookup_integration_debug_case(
+                anchor_type="session_id",
+                anchor="11",
+                db=AsyncMock(),
+                include_raw=False,
+            )
+
+        mock_lookup.assert_awaited_once_with(
+            AnyArgHashable(),
+            anchor_type="session_id",
+            anchor="11",
+            include_raw=False,
+        )
+        assert _response_data(response).blocking_code == "WMS_TIMEOUT"
+
+    @pytest.mark.asyncio
+    async def test_latest_cases_uses_integration_debug_service(self) -> None:
+        from src.app.workline.models.integration_debug import IntegrationDebugCaseListResponse
+        from src.app.workline.v1.integration_debug import get_latest_integration_debug_cases
+
+        result = IntegrationDebugCaseListResponse(total=0, items=[])
+
+        with patch(
+            "src.app.workline.v1.integration_debug.integration_debug_service.latest_cases",
+            new=AsyncMock(return_value=result),
+        ) as mock_latest:
+            response = await get_latest_integration_debug_cases(
+                db=AsyncMock(),
+                limit=10,
+                workline_id=None,
+                device_id=None,
+                status=None,
+            )
+
+        mock_latest.assert_awaited_once_with(
+            AnyArgHashable(),
+            limit=10,
+            workline_id=None,
+            device_id=None,
+            status=None,
+        )
+        assert _response_data(response).total == 0
+
+
 class TestWorklineTraceApi:
     @pytest.mark.asyncio
     async def test_get_trace_by_request_id_uses_trace_query_service(self) -> None:
@@ -80,8 +179,8 @@ class TestWorklineTraceApi:
             response = await get_trace_by_request_id("req-001", db=AsyncMock())
 
         mock_by_request_id.assert_awaited_once_with(AnyArgHashable(), "req-001")
-        assert response["data"].trace.request_id == "req-001"
-        assert response["data"].summary.callback_logs == 0
+        assert _response_data(response).trace.request_id == "req-001"
+        assert _response_data(response).summary.callback_logs == 0
 
     @pytest.mark.asyncio
     async def test_query_trace_list_uses_runtime_query_service(self) -> None:
@@ -98,7 +197,7 @@ class TestWorklineTraceApi:
             response = await query_trace_list(payload=payload, db=AsyncMock())
 
         mock_get_trace_list.assert_awaited_once_with(AnyArgHashable(), payload)
-        assert response["data"].total == 1
+        assert _response_data(response).total == 1
 
     @pytest.mark.asyncio
     async def test_get_trace_by_exchange_request_code_uses_trace_query_service(self) -> None:
@@ -138,7 +237,7 @@ class TestWorklineTraceApi:
             AnyArgHashable(),
             "external:smt:release-001:FULL_BIN_EXCHANGE",
         )
-        assert response["data"].trace.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
+        assert _response_data(response).trace.dispatch_key == "external:smt:release-001:FULL_BIN_EXCHANGE"
 
 
 def test_trace_callback_log_item_allows_null_updated_at() -> None:
@@ -180,7 +279,7 @@ class TestWorklineRuntimeApi:
             response = await get_runtime_overview(db=AsyncMock(), include_sim=False)
 
         mock_get_overview.assert_awaited_once_with(AnyArgHashable(), include_sim=False)
-        assert response["data"].stats == []
+        assert _response_data(response).stats == []
 
     @pytest.mark.asyncio
     async def test_get_runtime_devices_uses_workline_scoped_service(self) -> None:
@@ -200,7 +299,7 @@ class TestWorklineRuntimeApi:
             response = await get_runtime_devices(db=AsyncMock(), workline_id=45)
 
         mock_list_devices.assert_awaited_once_with(AnyArgHashable(), 45)
-        assert response["data"] == []
+        assert _response_data(response) == []
 
     @pytest.mark.asyncio
     async def test_get_runtime_workline_detail_returns_not_found_when_missing(self) -> None:
@@ -213,7 +312,7 @@ class TestWorklineRuntimeApi:
             response = await get_runtime_workline_detail(workline_id=404, db=AsyncMock())
 
         mock_get_workline_detail.assert_awaited_once_with(AnyArgHashable(), 404)
-        assert response["message"] == "工作线运行态不存在: 404"
+        assert _response_message(response) == "工作线运行态不存在: 404"
 
     @pytest.mark.asyncio
     async def test_get_runtime_device_detail_uses_workline_scoped_service(self) -> None:
@@ -253,7 +352,7 @@ class TestWorklineRuntimeApi:
             response = await get_runtime_device_detail(device_id=39, db=AsyncMock(), workline_id=45)
 
         mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 45, 39)
-        assert response["data"].summary.workline_id == 45
+        assert _response_data(response).summary.workline_id == 45
 
     @pytest.mark.asyncio
     async def test_get_runtime_device_detail_returns_not_found_when_missing(self) -> None:
@@ -273,7 +372,7 @@ class TestWorklineRuntimeApi:
             response = await get_runtime_device_detail(device_id=404, db=AsyncMock(), workline_id=45)
 
         mock_get_device_detail.assert_awaited_once_with(AnyArgHashable(), 45, 404)
-        assert response["message"] == "工作线设备运行态不存在: worklineId=45, deviceId=404"
+        assert _response_message(response) == "工作线设备运行态不存在: worklineId=45, deviceId=404"
 
 
 class TestRuntimeQueryService:
@@ -333,32 +432,35 @@ class TestRuntimeQueryService:
 
         service = RuntimeQueryService()
         now = timezone.now_for_db()
-        session = SimpleNamespace(
-            id=11,
-            session_code="S11",
-            trace_id="trace-11",
-            last_request_id=None,
-            business_key="stable-key-11",
-            barcode=None,
-            last_inbox_id=370,
-            context_json={
-                "initial_payload": {
-                    "data": {
-                        "PkgID": "SVYU00125TP4LCR02_9",
-                        "HHPN": "620100L00-011-G",
+        session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                id=11,
+                session_code="S11",
+                trace_id="trace-11",
+                last_request_id=None,
+                business_key="stable-key-11",
+                barcode=None,
+                last_inbox_id=370,
+                context_json={
+                    "initial_payload": {
+                        "data": {
+                            "PkgID": "SVYU00125TP4LCR02_9",
+                            "HHPN": "620100L00-011-G",
+                        }
                     }
-                }
-            },
-            workline_id=5,
-            status="FAILED",
-            current_wait_type=None,
-            failure_domain=None,
-            failure_code=None,
-            started_at=None,
-            last_ingress_at=None,
-            deadline_at=None,
+                },
+                workline_id=5,
+                status="FAILED",
+                current_wait_type=None,
+                failure_domain=None,
+                failure_code=None,
+                started_at=None,
+                last_ingress_at=None,
+                deadline_at=None,
+            ),
         )
-        workline = SimpleNamespace(line_name="SMT 线", line_code="WL-5")
+        workline = cast("WorkLine", SimpleNamespace(line_name="SMT 线", line_code="WL-5"))
 
         item = service._build_trace_list_item(
             session,
@@ -388,25 +490,28 @@ class TestRuntimeQueryService:
                 "HHPN": "620100L00-011-G",
             },
         }
-        session = SimpleNamespace(
-            id=11,
-            session_code="S11",
-            trace_id="trace-11",
-            last_request_id=None,
-            business_key="stable-key-11",
-            barcode=None,
-            last_inbox_id=370,
-            context_json={},
-            workline_id=5,
-            status="RUNNING",
-            current_wait_type=None,
-            failure_domain=None,
-            failure_code=None,
-            started_at=None,
-            last_ingress_at=None,
-            deadline_at=None,
+        session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                id=11,
+                session_code="S11",
+                trace_id="trace-11",
+                last_request_id=None,
+                business_key="stable-key-11",
+                barcode=None,
+                last_inbox_id=370,
+                context_json={},
+                workline_id=5,
+                status="RUNNING",
+                current_wait_type=None,
+                failure_domain=None,
+                failure_code=None,
+                started_at=None,
+                last_ingress_at=None,
+                deadline_at=None,
+            ),
         )
-        inbox = SimpleNamespace(id=370, payload_json=event_payload)
+        inbox = cast("WorklineInbox", SimpleNamespace(id=370, payload_json=event_payload))
 
         item = service._build_trace_list_item(
             session,
@@ -458,29 +563,35 @@ class TestRuntimeQueryService:
 
         now = timezone.now_for_db()
         service = RuntimeQueryService()
-        workline = SimpleNamespace(
-            id=5,
-            line_code="WL-05",
-            line_name="SMT 线",
-            line_type="SMT",
-            zone_name=None,
-            plugin_key=None,
-            contract_version=None,
-            is_active=True,
-            run_mode="AUTO",
-            runtime_status="READY",
-            active_safety_incident_id=None,
-            stopped_at=None,
-            stopped_reason=None,
-            resumed_at=None,
+        workline = cast(
+            "WorkLine",
+            SimpleNamespace(
+                id=5,
+                line_code="WL-05",
+                line_name="SMT 线",
+                line_type="SMT",
+                zone_name=None,
+                plugin_key=None,
+                contract_version=None,
+                is_active=True,
+                run_mode="AUTO",
+                runtime_status="READY",
+                active_safety_incident_id=None,
+                stopped_at=None,
+                stopped_reason=None,
+                resumed_at=None,
+            ),
         )
-        timed_out_session = SimpleNamespace(
-            status="WAITING_EXTERNAL",
-            deadline_at=now - timedelta(minutes=5),
-            last_ingress_at=None,
-            waiting_since=now - timedelta(minutes=10),
-            started_at=None,
-            created_at=now - timedelta(minutes=20),
+        timed_out_session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                status="WAITING_EXTERNAL",
+                deadline_at=now - timedelta(minutes=5),
+                last_ingress_at=None,
+                waiting_since=now - timedelta(minutes=10),
+                started_at=None,
+                created_at=now - timedelta(minutes=20),
+            ),
         )
 
         summary = service._build_workline_summary(workline, [], [timed_out_session])
@@ -493,37 +604,46 @@ class TestRuntimeQueryService:
 
         now = timezone.now_for_db()
         service = RuntimeQueryService()
-        workline = SimpleNamespace(
-            id=5,
-            line_code="WL-05",
-            line_name="SMT 线",
-            line_type="SMT",
-            zone_name=None,
-            plugin_key=None,
-            contract_version=None,
-            is_active=True,
-            run_mode="AUTO",
-            runtime_status="READY",
-            active_safety_incident_id=None,
-            stopped_at=None,
-            stopped_reason=None,
-            resumed_at=None,
+        workline = cast(
+            "WorkLine",
+            SimpleNamespace(
+                id=5,
+                line_code="WL-05",
+                line_name="SMT 线",
+                line_type="SMT",
+                zone_name=None,
+                plugin_key=None,
+                contract_version=None,
+                is_active=True,
+                run_mode="AUTO",
+                runtime_status="READY",
+                active_safety_incident_id=None,
+                stopped_at=None,
+                stopped_reason=None,
+                resumed_at=None,
+            ),
         )
-        running_session = SimpleNamespace(
-            status="RUNNING",
-            deadline_at=None,
-            last_ingress_at=now - timedelta(minutes=1),
-            waiting_since=None,
-            started_at=now - timedelta(minutes=5),
-            created_at=now - timedelta(minutes=6),
+        running_session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                status="RUNNING",
+                deadline_at=None,
+                last_ingress_at=now - timedelta(minutes=1),
+                waiting_since=None,
+                started_at=now - timedelta(minutes=5),
+                created_at=now - timedelta(minutes=6),
+            ),
         )
-        waiting_session = SimpleNamespace(
-            status="WAITING_EXTERNAL",
-            deadline_at=now + timedelta(minutes=10),
-            last_ingress_at=None,
-            waiting_since=now - timedelta(minutes=2),
-            started_at=now - timedelta(minutes=8),
-            created_at=now - timedelta(minutes=9),
+        waiting_session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                status="WAITING_EXTERNAL",
+                deadline_at=now + timedelta(minutes=10),
+                last_ingress_at=None,
+                waiting_since=now - timedelta(minutes=2),
+                started_at=now - timedelta(minutes=8),
+                created_at=now - timedelta(minutes=9),
+            ),
         )
 
         summary = service._build_workline_summary(workline, [], [running_session, waiting_session])
@@ -538,21 +658,24 @@ class TestRuntimeQueryService:
 
         stopped_at = timezone.now_for_db()
         service = RuntimeQueryService()
-        workline = SimpleNamespace(
-            id=5,
-            line_code="WL-05",
-            line_name="SMT 线",
-            line_type="SMT",
-            zone_name=None,
-            plugin_key=None,
-            contract_version=None,
-            is_active=True,
-            run_mode="AUTO",
-            runtime_status=WorkLineRuntimeStatus.ESTOPPED,
-            active_safety_incident_id=1001,
-            stopped_at=stopped_at,
-            stopped_reason="ESTOP_PRESSED",
-            resumed_at=None,
+        workline = cast(
+            "WorkLine",
+            SimpleNamespace(
+                id=5,
+                line_code="WL-05",
+                line_name="SMT 线",
+                line_type="SMT",
+                zone_name=None,
+                plugin_key=None,
+                contract_version=None,
+                is_active=True,
+                run_mode="AUTO",
+                runtime_status=WorkLineRuntimeStatus.ESTOPPED,
+                active_safety_incident_id=1001,
+                stopped_at=stopped_at,
+                stopped_reason="ESTOP_PRESSED",
+                resumed_at=None,
+            ),
         )
 
         summary = service._build_workline_summary(workline, [], [])
@@ -567,136 +690,154 @@ class TestRuntimeQueryService:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        workline = SimpleNamespace(
-            id=None,
-            line_code="WL-05",
-            line_name="SMT 线",
-            line_type="SMT",
-            zone_name=None,
-            plugin_key=None,
-            contract_version=None,
-            is_active=True,
+        workline = cast(
+            "WorkLine",
+            SimpleNamespace(
+                id=None,
+                line_code="WL-05",
+                line_name="SMT 线",
+                line_type="SMT",
+                zone_name=None,
+                plugin_key=None,
+                contract_version=None,
+                is_active=True,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"workline\.id"):
-            service._build_workline_summary(workline, [], [])
+            _ = service._build_workline_summary(workline, [], [])
 
     def test_build_workline_device_item_requires_persisted_device(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        device = SimpleNamespace(
-            id=None,
-            device_code="ARM-01",
-            device_name="机械臂",
-            device_role="INPUT_ARM",
-            role_index=1,
-            upstream_device_id=None,
-            device_status="IDLE",
-            maintenance_mode=False,
-            current_command_id=None,
-            last_heartbeat_at=None,
-            error_code=None,
+        device = cast(
+            "Device",
+            SimpleNamespace(
+                id=None,
+                device_code="ARM-01",
+                device_name="机械臂",
+                device_role="INPUT_ARM",
+                role_index=1,
+                upstream_device_id=None,
+                device_status="IDLE",
+                maintenance_mode=False,
+                current_command_id=None,
+                last_heartbeat_at=None,
+                error_code=None,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"device\.id"):
-            service._build_workline_device_item(device)
+            _ = service._build_workline_device_item(device)
 
     def test_build_device_summary_requires_persisted_device(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        device = SimpleNamespace(
-            id=None,
-            device_code="ARM-01",
-            device_name="机械臂",
-            device_role="INPUT_ARM",
-            role_index=1,
-            work_line_id=8,
-            device_status="IDLE",
-            maintenance_mode=False,
-            current_command_id=None,
-            last_heartbeat_at=None,
-            error_code=None,
+        device = cast(
+            "Device",
+            SimpleNamespace(
+                id=None,
+                device_code="ARM-01",
+                device_name="机械臂",
+                device_role="INPUT_ARM",
+                role_index=1,
+                work_line_id=8,
+                device_status="IDLE",
+                maintenance_mode=False,
+                current_command_id=None,
+                last_heartbeat_at=None,
+                error_code=None,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"device\.id"):
-            service._build_device_summary(device, None, 0, None)
+            _ = service._build_device_summary(device, None, 0, None)
 
     def test_build_callback_item_requires_persisted_callback_log(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        callback_log = SimpleNamespace(
-            id=None,
-            callback_type="event",
-            subject_code="ARM-01",
-            request_id=None,
-            trace_id=None,
-            response_status=200,
-            response_time_ms=15,
-            error_message=None,
-            ingress_outcome=None,
-            failure_stage=None,
-            request_body={},
-            created_at=timezone.now_for_db(),
-            updated_at=None,
+        callback_log = cast(
+            "CallbackLog",
+            SimpleNamespace(
+                id=None,
+                callback_type="event",
+                subject_code="ARM-01",
+                request_id=None,
+                trace_id=None,
+                response_status=200,
+                response_time_ms=15,
+                error_message=None,
+                ingress_outcome=None,
+                failure_stage=None,
+                request_body={},
+                created_at=timezone.now_for_db(),
+                updated_at=None,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"callback_log\.id"):
-            service._build_callback_item(callback_log)
+            _ = service._build_callback_item(callback_log)
 
     def test_build_command_item_requires_persisted_command(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        command = SimpleNamespace(
-            id=None,
-            device_id=1,
-            command_code="CMD-01",
-            trace_id=None,
-            workline_id=8,
-            session_id="9",
-            task_type="MOVE",
-            status="SENT",
-            result=None,
-            retry_count=0,
-            sent_at=None,
-            ack_received_at=None,
-            completed_at=None,
-            ack_code=None,
-            ack_message=None,
-            ack_trace_id=None,
-            params={},
-            result_data=None,
-            error_detail=None,
-            get_duration_ms=lambda: None,
+        command = cast(
+            "DeviceCommand",
+            SimpleNamespace(
+                id=None,
+                device_id=1,
+                command_code="CMD-01",
+                trace_id=None,
+                workline_id=8,
+                session_id="9",
+                task_type="MOVE",
+                status="SENT",
+                result=None,
+                retry_count=0,
+                sent_at=None,
+                ack_received_at=None,
+                completed_at=None,
+                ack_code=None,
+                ack_message=None,
+                ack_trace_id=None,
+                params={},
+                result_data=None,
+                error_detail=None,
+                get_duration_ms=lambda: None,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"device_command\.id"):
-            service._build_command_item(command)
+            _ = service._build_command_item(command)
 
     def test_build_trace_list_item_requires_persisted_session(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
-        session = SimpleNamespace(
-            id=None,
-            session_code="S-01",
-            trace_id=None,
-            last_request_id=None,
-            workline_id=8,
-            status="RUNNING",
-            current_wait_type=None,
-            failure_domain=None,
-            failure_code=None,
-            started_at=None,
-            last_ingress_at=None,
-            deadline_at=None,
+        session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                id=None,
+                session_code="S-01",
+                trace_id=None,
+                last_request_id=None,
+                workline_id=8,
+                status="RUNNING",
+                current_wait_type=None,
+                failure_domain=None,
+                failure_code=None,
+                started_at=None,
+                last_ingress_at=None,
+                deadline_at=None,
+            ),
         )
 
         with pytest.raises(ValueError, match=r"session\.id"):
-            service._build_trace_list_item(
+            _ = service._build_trace_list_item(
                 session,
                 None,
                 None,
@@ -1103,44 +1244,53 @@ class TestRuntimeQueryService:
 
         service = RuntimeQueryService()
         now = timezone.now_for_db()
-        session = SimpleNamespace(
-            id=31,
-            session_code="S31",
-            trace_id="trace-31",
-            last_request_id=None,
-            business_key="stable-key-31",
-            barcode=None,
-            last_inbox_id=802,
-            context_json={},
-            workline_id=5,
-            status="RUNNING",
-            awaiting_command_id=None,
-            current_wait_type=None,
-            failure_domain=None,
-            failure_code=None,
-            started_at=now,
-            last_ingress_at=now,
-            waiting_since=None,
-            ended_at=None,
-            created_at=now,
-            deadline_at=None,
+        session = cast(
+            "WorklineSession",
+            SimpleNamespace(
+                id=31,
+                session_code="S31",
+                trace_id="trace-31",
+                last_request_id=None,
+                business_key="stable-key-31",
+                barcode=None,
+                last_inbox_id=802,
+                context_json={},
+                workline_id=5,
+                status="RUNNING",
+                awaiting_command_id=None,
+                current_wait_type=None,
+                failure_domain=None,
+                failure_code=None,
+                started_at=now,
+                last_ingress_at=now,
+                waiting_since=None,
+                ended_at=None,
+                created_at=now,
+                deadline_at=None,
+            ),
         )
-        device_event_inbox = SimpleNamespace(
-            id=801,
-            device_id=None,
-            payload_json={
-                "event_type": "SCAN_COMPLETED",
-                "device_code": "ARM03",
-                "data": {"PkgID": "EVENT-PKG-31"},
-            },
+        device_event_inbox = cast(
+            "WorklineInbox",
+            SimpleNamespace(
+                id=801,
+                device_id=None,
+                payload_json={
+                    "event_type": "SCAN_COMPLETED",
+                    "device_code": "ARM03",
+                    "data": {"PkgID": "EVENT-PKG-31"},
+                },
+            ),
         )
-        command_result_inbox = SimpleNamespace(
-            id=802,
-            device_id=None,
-            payload_json={
-                "event_type": "COMMAND_RESULT",
-                "data": {"PkgID": "RESULT-PKG-31"},
-            },
+        command_result_inbox = cast(
+            "WorklineInbox",
+            SimpleNamespace(
+                id=802,
+                device_id=None,
+                payload_json={
+                    "event_type": "COMMAND_RESULT",
+                    "data": {"PkgID": "RESULT-PKG-31"},
+                },
+            ),
         )
 
         with (

@@ -12,6 +12,7 @@ from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_s
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
 from .inbox_batch_processor import InboxBatchProcessor
 from .inbox_service import WorklineInboxService, inbox_service
+from .integration_debug_service import IntegrationDebugService, integration_debug_service
 from .ng_return_item_service import NgReturnItemService, ng_return_item_service
 from .operation_service import WorklineOperationService, workline_operation_service
 from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service
@@ -37,6 +38,7 @@ __all__ = [
     "DebugDataCleanupService",
     "DeviceCommandGateway",
     "InboxBatchProcessor",
+    "IntegrationDebugService",
     "NgReturnItemService",
     "OrchestratorWriteBackService",
     "OutboxDispatchService",
@@ -62,6 +64,7 @@ __all__ = [
     "debug_data_cleanup_service",
     "device_command_gateway",
     "inbox_service",
+    "integration_debug_service",
     "ng_return_item_service",
     "orchestrator_write_back_service",
     "outbox_dispatch_service",
