@@ -304,6 +304,8 @@ class TestTraceTransactionSmoke:
         assert timeline_rows[0].stage == TimelineStage.CALLBACK
         assert timeline_rows[0].action_type == TimelineActionType.COMMAND_ACKED
         assert timeline_rows[0].related_command_id == command_id
+        assert timeline_rows[0].payload_json["task_type"] == TaskType.PICK_AND_PUT.value
+        assert "command_type" not in timeline_rows[0].payload_json
 
         trace_query = TraceQueryService()
         trace_result = await trace_query.by_trace_id(db_session, session_trace_id)

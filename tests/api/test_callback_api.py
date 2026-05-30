@@ -603,8 +603,8 @@ class TestCallbackResultAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["ack"] is True
-        assert mock_create_inbox.call_args.kwargs["command_type"] == "PICK_AND_PUT"
         assert mock_create_inbox.call_args.kwargs["task_type"] == "PICK_AND_PUT"
+        assert "command_type" not in mock_create_inbox.call_args.kwargs
         mock_mark_finished.assert_awaited_once_with(
             db_session,
             device_id=7,

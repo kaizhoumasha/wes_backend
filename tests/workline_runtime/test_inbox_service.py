@@ -667,7 +667,7 @@ async def test_create_command_result_inbox_uses_command_result_kind() -> None:
         result="SUCCESS",
         finish_time=1702627250000,
         data={"foo": "bar"},
-        command_type="PICK_AND_PUT",
+        task_type="PICK_AND_PUT",
         error_detail={"message": "ok"},
         source_message_id="req-001",
         trace_id="trace-001",
@@ -679,7 +679,8 @@ async def test_create_command_result_inbox_uses_command_result_kind() -> None:
     assert fake_repo.created_data["source_system"] == SourceSystem.DEVICE
     assert fake_repo.created_data["source_message_id"] == "req-001"
     assert fake_repo.created_data["trace_id"] == "trace-001"
-    assert fake_repo.created_data["payload_json"]["command_type"] == "PICK_AND_PUT"
+    assert fake_repo.created_data["payload_json"]["task_type"] == "PICK_AND_PUT"
+    assert "command_type" not in fake_repo.created_data["payload_json"]
     assert fake_repo.created_data["payload_json"]["error_detail"] == {"message": "ok"}
 
 

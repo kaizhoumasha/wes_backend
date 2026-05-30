@@ -541,6 +541,7 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"INPUT_ARM": [source], "CONVEYOR": [target]}
+    generated_command_codes: list[tuple[str, int | None]] = []
 
     async def fake_create(_repo, _db, payload):
         created_payloads.append(payload)
@@ -550,6 +551,13 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
         timelines.append(kwargs)
 
     monkeypatch.setattr(workline_effects, "_enforce_device_command_governance", lambda *_, **__: None)
+    monkeypatch.setattr(
+        workline_effects,
+        "_build_command_code",
+        lambda task_type, *, session_id=None: (
+            generated_command_codes.append((task_type, session_id)) or "CMD-20260101-S123-MOVE_FORWARD-ABCDEF12"
+        ),
+    )
     monkeypatch.setattr(
         "src.app.device.repositories.command_repository.DeviceCommandRepository.create",
         fake_create,
@@ -569,12 +577,16 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     )
 
     assert created_payloads[0]["device_id"] == 2
+    assert created_payloads[0]["command_code"] == "CMD-20260101-S123-MOVE_FORWARD-ABCDEF12"
     assert created_payloads[0]["task_type"] == "MOVE_FORWARD"
+    assert generated_command_codes == [("MOVE_FORWARD", 123)]
     assert session.status == "WAITING_DEVICE_RESULT"
     assert session.awaiting_command_id == 88
     db.execute.assert_awaited_once()
     assert db.add.call_count == 1
     assert [timeline["related_command_id"] for timeline in timelines] == [88, 88]
+    assert timelines[0]["payload"]["task_type"] == "MOVE_FORWARD"
+    assert "command_type" not in timelines[0]["payload"]
 
 
 @pytest.mark.asyncio

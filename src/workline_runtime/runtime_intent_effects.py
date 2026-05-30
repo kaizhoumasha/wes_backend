@@ -472,7 +472,8 @@ class RuntimeIntentEffectApplier:
             raise ValueError(f"Target device missing device_code: {target_device_id}")
 
         generated_command_code = workline_effects._build_command_code(
-            workline_effects._map_command_task_type(str(intent.action))
+            workline_effects._map_command_task_type(str(intent.action)),
+            session_id=resolve_required_pk(ctx["session"], "session"),
         )
         vendor_payload = workline_effects._normalize_vendor_command_payload(
             intent.payload_json,
@@ -503,7 +504,7 @@ class RuntimeIntentEffectApplier:
             payload=workline_effects._command_timeline_payload(
                 ctx,
                 command_code=command.command_code,
-                command_type=str(intent.action),
+                task_type=str(intent.action),
                 dispatch_key=command_outbox.dispatch_key,
                 parameters=workline_effects.payload_dict(vendor_payload.get("params")),
             ),

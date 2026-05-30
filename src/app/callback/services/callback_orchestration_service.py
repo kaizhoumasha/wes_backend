@@ -195,7 +195,7 @@ class CallbackOrchestrationService:
         inbox: object,
         command: object,
         trace: TraceContext,
-        command_type: str | None,
+        task_type: str | None,
         device_code: str,
         command_result: str,
     ) -> None:
@@ -206,7 +206,7 @@ class CallbackOrchestrationService:
             action_type=TimelineActionType.COMMAND_ACKED,
             payload=resolved_trace.project_timeline_payload(
                 command_code=getattr(command, "command_code", None),
-                command_type=command_type,
+                task_type=task_type,
                 result=command_result,
                 device_code=device_code,
             ),
@@ -357,7 +357,6 @@ class CallbackOrchestrationService:
                     result=callback.result.value,
                     finish_time=callback.finish_time,
                     data=callback.data or {},
-                    command_type=command_type,
                     task_type=command_type,
                     error_detail=callback.error_detail,
                     source_message_id=trace.request_id,
@@ -404,7 +403,7 @@ class CallbackOrchestrationService:
                             inbox=result_inbox,
                             command=command,
                             trace=trace,
-                            command_type=command_type,
+                            task_type=command_type,
                             device_code=callback.device_code,
                             command_result=callback.result.value,
                         )

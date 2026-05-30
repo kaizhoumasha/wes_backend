@@ -140,8 +140,8 @@ curl -sS -X POST "$WES_API/callback/result" \
     "event_id": "evt-result-0001",
     "causation_id": "evt-scan-0001",
     "data": {
-      "command_type": "MOVE_MATERIAL",
-      "task_type": "MOVE_MATERIAL"
+      "current_location": "BUFFER-01",
+      "handled_qty": 1
     }
   }'
 ```

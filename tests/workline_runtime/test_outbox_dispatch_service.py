@@ -978,7 +978,6 @@ class TestOutboxDispatchService:
         assert payload == {
             "command_code": "CMD-STRICT-001",
             "task_type": "PICK_AND_PUT",
-            "command_type": "PICK_AND_PUT",
             "priority": 5,
             "timeout": 300000,
             "params": {
@@ -989,6 +988,32 @@ class TestOutboxDispatchService:
             "timestamp": payload["timestamp"],
         }
         assert isinstance(payload["timestamp"], int)
+        assert "command_type" not in payload
+
+    def test_build_outbox_payload_uses_task_type_without_command_type_alias(self):
+        """测试下发给设备的最终 payload 只保留 task_type。"""
+        from src.app.workline.services.write_back_service import _build_outbox_payload
+
+        command = SimpleNamespace(
+            command_code="CMD-STRICT-001",
+            task_type="PICK_AND_PUT",
+            priority=5,
+            timeout_ms=300000,
+            params={"item_id": "ITEM001"},
+        )
+
+        payload = _build_outbox_payload(command, device_code="ARM03")
+
+        assert payload == {
+            "command_code": "CMD-STRICT-001",
+            "task_type": "PICK_AND_PUT",
+            "priority": 5,
+            "timeout": 300000,
+            "params": {"item_id": "ITEM001"},
+            "timestamp": payload["timestamp"],
+            "device_code": "ARM03",
+        }
+        assert "command_type" not in payload
 
     def test_normalize_vendor_command_payload_does_not_accept_legacy_command_id(self):
         """测试设备派发归一化不再接受 legacy command_id。"""
@@ -1001,6 +1026,46 @@ class TestOutboxDispatchService:
         )
 
         assert payload["command_code"] == "CMD-NEW-001"
+
+    def test_build_command_code_includes_session_anchor(self):
+        """测试 WES 生成的 command_code 能直接看出所属 Session。"""
+        from src.app.workline.services.write_back_service import _build_command_code
+
+        fixed_now = datetime(2026, 5, 30, 9, 10, 11)
+
+        with (
+            patch("src.app.workline.services.write_back_service.timezone.now_for_db", return_value=fixed_now),
+            patch(
+                "src.app.workline.services.write_back_service.uuid.uuid4",
+                return_value=SimpleNamespace(hex="abcdef1234567890"),
+            ),
+        ):
+            command_code = _build_command_code("pick-and-put", session_id=417)
+
+        assert command_code == "CMD-20260530-S417-PICK_AND_PUT-ABCDEF12"
+        assert len(command_code) <= 100
+
+    def test_normalize_vendor_command_payload_rejects_plugin_command_code(self):
+        """测试插件不得覆盖 WES 统一生成的 command_code。"""
+        from src.app.workline.services.write_back_service import _normalize_vendor_command_payload
+
+        with pytest.raises(ValueError, match="command_code"):
+            _normalize_vendor_command_payload(
+                {"command_code": "CMD-PLUGIN-001", "task_type": "PICK_AND_PUT"},
+                action="PICK_AND_PUT",
+                default_command_code="CMD-WES-001",
+            )
+
+    def test_normalize_vendor_command_payload_rejects_nested_plugin_command_code(self):
+        """测试插件不得通过 params.command_code 绕过 WES 统一生成的 command_code。"""
+        from src.app.workline.services.write_back_service import _normalize_vendor_command_payload
+
+        with pytest.raises(ValueError, match="command_code"):
+            _normalize_vendor_command_payload(
+                {"task_type": "PICK_AND_PUT", "params": {"command_code": "CMD-PLUGIN-001"}},
+                action="PICK_AND_PUT",
+                default_command_code="CMD-WES-001",
+            )
 
     def test_sync_session_contract_snapshot_prefers_workline_contract_version(self):
         """测试 session snapshot 优先使用 workline.contract_version。"""

@@ -1211,8 +1211,8 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     result_payload = inbox_repo.created["payload_json"]
     assert result_payload["command_code"] == "CMD-001"
     assert result_payload["device_code"] == "ARM01"
-    assert result_payload["command_type"] == "MEASUREMENT_REEL"
     assert result_payload["task_type"] == "MEASUREMENT_REEL"
+    assert "command_type" not in result_payload
     assert result_payload["result"] == "SUCCESS"
     assert result_payload["finish_time"] == timezone.to_utc_timestamp(completed_at) * 1000
     assert result_payload["sandbox_mode"] is True

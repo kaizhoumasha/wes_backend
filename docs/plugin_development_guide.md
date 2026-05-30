@@ -21,6 +21,7 @@
 - 不直接写 Inbox / Outbox / DeviceCommand / WorklineSession。
 - 不查询数据库拼设备拓扑，启用前配置校验由平台根据 manifest 的角色、数量和能力要求完成；`Device.upstream_device_id` 只作为物理路径辅助信息。
 - 不把 sandbox 标志写入消息 payload。
+- 不生成、传入或覆盖 `command_code`；设备命令编码由 WES Runtime 统一生成，并作为设备幂等键下发。
 - 不在 runtime、callback、dispatcher 中为某个业务插件开私有分支。
 - 不维护插件私有状态机，不写 Session 状态，不维护物料当前位置。
 - 不处理命令幂等、ACK、Result、Timeout、Retry；这些属于 Runtime。

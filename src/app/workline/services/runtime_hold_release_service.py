@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
@@ -56,10 +57,69 @@ if TYPE_CHECKING:
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
-def _runtime_continue_result_payload(request: ResolveRuntimeHoldRequest, command: DeviceCommand) -> dict[str, Any]:
+def _valid_measurement_reel_payload(payload: dict[str, Any]) -> bool:
+    for field_name in ("reel_diameter", "reel_thickness"):
+        value = payload.get(field_name)
+        if value is None or value == "":
+            return False
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return False
+        if not decimal_value.is_finite() or decimal_value <= 0:
+            return False
+    return True
+
+
+def _latest_matching_late_callback_data(session: Any | None, command: DeviceCommand) -> dict[str, Any]:
+    context = as_dict(getattr(session, "context_json", None))
+    evidence = context.get("runtime_reconciliation_late_callback_evidence")
+    if not isinstance(evidence, list):
+        return {}
+
+    for item in reversed([raw_item for raw_item in evidence if isinstance(raw_item, dict)]):
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        evidence_command_code = item.get("command_code") or payload.get("command_code")
+        if evidence_command_code != command.command_code:
+            continue
+        if enum_str(payload.get("result")) != CommandResult.SUCCESS.value:
+            continue
+        data = payload.get("data")
+        if isinstance(data, dict) and data:
+            return dict(data)
+    return {}
+
+
+def _runtime_continue_result_payload(
+    request: ResolveRuntimeHoldRequest,
+    command: DeviceCommand,
+    *,
+    session: Any | None = None,
+) -> dict[str, Any]:
+    is_measurement_reel = enum_str(command.task_type) == "MEASUREMENT_REEL"
     payload = as_dict(request.result_payload)
     if payload:
+        if is_measurement_reel and not _valid_measurement_reel_payload(payload):
+            raise RuntimeHoldReleaseError(
+                "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
+                "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
+            )
         return payload
+    payload = _latest_matching_late_callback_data(session, command)
+    if payload:
+        if is_measurement_reel and not _valid_measurement_reel_payload(payload):
+            raise RuntimeHoldReleaseError(
+                "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
+                "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
+            )
+        return payload
+    if is_measurement_reel:
+        raise RuntimeHoldReleaseError(
+            "RUNTIME_HOLD_CONTINUE_RESULT_PAYLOAD_REQUIRED",
+            "MEASUREMENT_REEL 继续需要补录有效 reel_diameter/reel_thickness",
+        )
     return as_dict(command.params)
 
 
@@ -194,6 +254,13 @@ class RuntimeHoldReleaseService:
                 release_context=return_to_ng_context,
             )
 
+        source_command = await self._resolve_source_command(
+            db,
+            hold=hold,
+            request=request,
+            resolved_at=now,
+            session=session,
+        )
         self._write_release_facts(
             hold,
             request=request,
@@ -205,8 +272,6 @@ class RuntimeHoldReleaseService:
         hold.status = RuntimeHoldStatus.RESOLVED
         hold.resolved_by = operator_id
         hold.resolved_at = now
-
-        source_command = await self._resolve_source_command(db, hold=hold, request=request, resolved_at=now)
         created_inbox = None
         if session is not None:
             if source_command is not None and self._should_replay_command_result(
@@ -227,6 +292,7 @@ class RuntimeHoldReleaseService:
                     command=source_command,
                     resolved_at=now,
                     session_id=cast("int", session.id),
+                    session=session,
                 )
             else:
                 self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
@@ -663,14 +729,15 @@ class RuntimeHoldReleaseService:
         hold: RuntimeHold,
         request: ResolveRuntimeHoldRequest,
         resolved_at: Any,
+        session: Any | None,
     ) -> DeviceCommand | None:
         if hold.source_command_id is None:
             return None
         command = await self.command_repo.get_by_id(db, hold.source_command_id)
         if command is None:
             return None
-        result_payload = _runtime_continue_result_payload(request, command)
         if request.resolution == SessionStatus.COMPLETED.value:
+            result_payload = _runtime_continue_result_payload(request, command, session=session)
             command.status = CommandStatus.COMPLETED
             command.result = CommandResult.SUCCESS
             command.result_data = result_payload
@@ -703,6 +770,7 @@ class RuntimeHoldReleaseService:
         command: DeviceCommand,
         resolved_at: Any,
         session_id: int,
+        session: Any | None,
     ) -> WorklineInbox:
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
@@ -713,11 +781,10 @@ class RuntimeHoldReleaseService:
             raise ValueError(f"设备不存在: {command.device_id}")
 
         command_type = enum_str(command.task_type)
-        result_payload = _runtime_continue_result_payload(request, command)
+        result_payload = _runtime_continue_result_payload(request, command, session=session)
         payload = {
             "command_code": command.command_code,
             "device_code": device.device_code,
-            "command_type": command_type,
             "task_type": command_type,
             "result": CommandResult.SUCCESS.value,
             "runtime_hold_release": True,

@@ -955,12 +955,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
 
         command_task_type = enum_str(command.task_type)
-        command_type = command_task_type
         sandbox_completed_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
         result_payload: dict[str, Any] = {
             "command_code": command.command_code,
             "device_code": device.device_code,
-            "command_type": command_type,
             "task_type": command_task_type,
             "result": result,
             "finish_time": timezone.to_utc_timestamp(sandbox_completed_at) * 1000,
