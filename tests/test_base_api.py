@@ -5,11 +5,16 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.core import rbac as rbac_module
 from src.core.base_api import BaseAPI
+from src.core.error_handlers import register_exception_handlers
 from src.core.openapi import generate_route_operation_id
 from src.core.tree_api import BatchSortRequest, SortItem, TreeAPI
+from src.database.db import get_db
+from src.database.dependencies import _get_cache_service
 
 
 class DummyModel:
@@ -82,10 +87,12 @@ class FakeBatchService(FakeService):
     def __init__(self) -> None:
         super().__init__()
         self.create_error: Exception | None = None
+        self.delete_calls: list[tuple[object, int, object]] = []
         self.delete_results: dict[int, bool] = {}
         self.delete_errors: dict[int, Exception] = {}
         self.restore_results: dict[int, object] = {}
         self.restore_errors: dict[int, Exception] = {}
+        self.permanent_delete_calls: list[tuple[object, int, object]] = []
         self.permanent_delete_results: dict[int, bool] = {}
         self.permanent_delete_errors: dict[int, Exception] = {}
 
@@ -95,6 +102,7 @@ class FakeBatchService(FakeService):
         return SimpleNamespace(id=1, name=data["name"], children=[])
 
     async def delete(self, db: object, id: int, cache: object) -> bool:
+        self.delete_calls.append((db, id, cache))
         if id in self.delete_errors:
             raise self.delete_errors[id]
         return self.delete_results.get(id, True)
@@ -105,6 +113,7 @@ class FakeBatchService(FakeService):
         return self.restore_results.get(id, SimpleNamespace(id=id, name=f"restored-{id}", children=[]))
 
     async def permanent_delete(self, db: object, id: int, cache: object) -> bool:
+        self.permanent_delete_calls.append((db, id, cache))
         if id in self.permanent_delete_errors:
             raise self.permanent_delete_errors[id]
         return self.permanent_delete_results.get(id, True)
@@ -343,6 +352,99 @@ async def test_delete_endpoint_maps_value_error_to_standard_fail_response() -> N
 
     assert response["code"] == "4001"
     assert response["message"] == "当前状态不允许删除"
+
+
+@pytest.mark.asyncio
+async def test_delete_endpoint_permanent_query_uses_permanent_delete_for_soft_delete_models() -> None:
+    service = FakeBatchService()
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_bulk_delete=False,
+        enable_permission=False,
+    )
+
+    endpoint = _get_endpoint(api, "/dummy/{id}", "DELETE")
+    db = object()
+    cache = object()
+
+    response = await endpoint(id=5, db=db, cache=cache, permanent=True)
+
+    assert service.delete_calls == []
+    assert service.permanent_delete_calls == [(db, 5, cache)]
+    assert response["data"] == {"message": "DummySoftDeleteModel已永久删除"}
+
+
+def test_delete_endpoint_permanent_query_requires_permanent_delete_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeBatchService()
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_bulk_delete=False,
+    )
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(api.router)
+    app.dependency_overrides[rbac_module.require_auth] = lambda: 42
+    app.dependency_overrides[get_db] = lambda: object()
+    app.dependency_overrides[_get_cache_service] = lambda: object()
+
+    async def get_delete_only_permissions(db: object, user_id: int, cache: object | None = None) -> set[str]:
+        return {"test:dummysoftdeletemodel:delete"}
+
+    monkeypatch.setattr(rbac_module, "get_user_permissions", get_delete_only_permissions)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.delete("/dummy/5?permanent=true")
+
+    assert response.status_code == 403
+    assert service.permanent_delete_calls == []
+
+
+def test_delete_endpoint_permanent_query_allows_permanent_delete_only_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeBatchService()
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=service,
+        response_schema=DummyResponse,
+        prefix="/dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_bulk_delete=False,
+    )
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(api.router)
+    app.dependency_overrides[rbac_module.require_auth] = lambda: 42
+    app.dependency_overrides[get_db] = lambda: object()
+    app.dependency_overrides[_get_cache_service] = lambda: object()
+
+    async def get_permanent_delete_only_permissions(db: object, user_id: int, cache: object | None = None) -> set[str]:
+        return {"test:dummysoftdeletemodel:permanent_delete"}
+
+    monkeypatch.setattr(rbac_module, "get_user_permissions", get_permanent_delete_only_permissions)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.delete("/dummy/5?permanent=true")
+
+    assert response.status_code == 200
+    assert service.delete_calls == []
+    assert service.permanent_delete_calls
 
 
 @pytest.mark.asyncio

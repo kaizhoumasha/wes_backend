@@ -9,13 +9,15 @@ from typing import Annotated, Any, TypeVar, cast
 
 from fastapi import APIRouter, Body, Depends, Path, Query
 
+from src.core.exceptions import PermissionException
 from src.core.logger import logger
 from src.core.openapi import normalize_operation_id_part
 from src.core.query_models import QueryOptions
-from src.core.rbac import RequirePermission
+from src.core.rbac import RequirePermission, has_permission
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
 from src.core.response.response_schema import BatchOperationResponseModel, ListResponseSchemaModel, ResponseSchemaModel
 from src.core.response.response_util import response_builder
+from src.core.security import require_auth
 from src.core.service_protocols import CrudServiceProtocol
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
@@ -148,6 +150,38 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _permission_dependencies(self, action: str) -> list[Any]:
         perm_code = self._get_permission_code(action)
         return [Depends(RequirePermission(perm_code))] if perm_code else []
+
+    def _delete_permission_dependency(self) -> Callable[..., Any]:
+        """生成删除接口的条件权限依赖。"""
+        delete_perm_code = self._get_permission_code("delete")
+        permanent_delete_perm_code = self._get_permission_code("permanent_delete")
+
+        async def skip_permission_check() -> None:
+            return None
+
+        if not delete_perm_code:
+            return skip_permission_check
+
+        async def verify_delete_permission(
+            user_id: Annotated[int, Depends(require_auth)],
+            db: AsyncSessionDep,
+            cache: CacheDep,
+            permanent: Annotated[bool, Query(description="是否永久删除（仅软删除模型生效）")] = False,
+        ) -> None:
+            required_perm_code = (
+                permanent_delete_perm_code
+                if permanent and self.supports_soft_delete and permanent_delete_perm_code
+                else delete_perm_code
+            )
+
+            if not await has_permission(db, user_id, required_perm_code, cache):
+                raise PermissionException(f"需要权限: {required_perm_code}")
+
+        # 挂载 delete 权限元数据，保持权限扫描与历史路由契约兼容。
+        cast("Any", verify_delete_permission).permission_required = delete_perm_code
+        cast("Any", verify_delete_permission).is_rbac = True
+
+        return verify_delete_permission
 
     def _build_operation_id_prefix(self) -> str:
         parts = [normalize_operation_id_part(part) for part in self.prefix.strip("/").split("/") if part]
@@ -307,21 +341,32 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_delete(self) -> None:
         """注册删除接口（自动检测软删除支持）"""
         summary = self._build_summary("delete", f"删除{self.resource_name}")
+        delete_permission_dependency = self._delete_permission_dependency()
 
         @self.router.delete(
             "/{id}",
             summary=summary,
             operation_id=self._operation_id("delete"),
             response_model=ResponseSchemaModel[dict[str, str]],
-            dependencies=self._permission_dependencies("delete"),
+            dependencies=[Depends(delete_permission_dependency)],
         )
         async def delete(  # pyright: ignore[reportUnusedFunction]
             id: Annotated[int, Path(...)],
             db: AsyncSessionDep,
             cache: CacheDep,
+            permanent: Annotated[bool, Query(description="是否永久删除（仅软删除模型生效）")] = False,
         ) -> dict[str, Any]:
             response_builder_any = self._response_builder()
             try:
+                if permanent and self.supports_soft_delete:
+                    success = await self.service.permanent_delete(db, id, cache)
+                    if not success:
+                        return response_builder_any.fail(
+                            code=ResourceErrorCode.NOT_FOUND, message=self._not_found_message(id)
+                        )
+                    logger.info(f"永久删除{self.resource_name}成功: id={id}")
+                    return response_builder_any.success(data={"message": f"{self.resource_name}已永久删除"})
+
                 # 软删除或物理删除（根据模型支持情况）
                 success = await self.service.delete(db, id, cache)
                 if not success:
