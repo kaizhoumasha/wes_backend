@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from src.workline_runtime.sandbox_catalog import mock_wms_inventory_seed, rough_sorter_scan_completed_payload
 from tests.mock import wms_mock_server
 
 
@@ -33,25 +34,29 @@ def test_wms_mock_locations_route_passes_ruff_safe_variable_path() -> None:
 
 
 def test_wms_mock_inventory_query_matches_known_sku_and_lot_no() -> None:
+    payload_data = rough_sorter_scan_completed_payload()["data"]
+    inventory = mock_wms_inventory_seed()[("CAP001", "LOT-A")]
     with TestClient(wms_mock_server.app) as client:
-        response = client.post("/api/wms/inventory/query", json={"sku": "CAP001", "lot_no": "LOT-A"})
+        response = client.post(
+            "/api/wms/inventory/query",
+            json={"sku": payload_data["HHPN"], "lot_no": payload_data["LotCode"]},
+        )
 
     assert response.status_code == 200
-    assert response.json()["data"]["items"] == [
-        {
-            "sku": "CAP001",
-            "lot_no": "LOT-A",
-            "total_qty": 50000,
-            "available_qty": 50000,
-            "reserved_qty": 0,
-        }
-    ]
+    assert response.json()["data"]["items"] == [inventory]
 
 
 def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no() -> None:
+    payload_data = rough_sorter_scan_completed_payload()["data"]
     with TestClient(wms_mock_server.app) as client:
-        unknown_sku_response = client.post("/api/wms/inventory/query", json={"sku": "UNKNOWN", "lot_no": "LOT-A"})
-        unknown_lot_response = client.get("/api/wms/inventory/query", params={"sku": "CAP001", "lot_no": "UNKNOWN"})
+        unknown_sku_response = client.post(
+            "/api/wms/inventory/query",
+            json={"sku": "UNKNOWN", "lot_no": payload_data["LotCode"]},
+        )
+        unknown_lot_response = client.get(
+            "/api/wms/inventory/query",
+            params={"sku": payload_data["HHPN"], "lot_no": "UNKNOWN"},
+        )
 
     assert unknown_sku_response.status_code == 200
     assert unknown_sku_response.json()["data"]["items"] == []

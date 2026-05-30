@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -42,6 +43,7 @@ from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
@@ -80,17 +82,6 @@ _MANUAL_OPERATION_KIND = {
 
 # 常用 Event 类型的默认 Payload 模板（不含 device_code/event_type/timestamp，由运行时填充）
 _DEFAULT_EVENT_PAYLOAD_TEMPLATES: dict[str, dict[str, Any]] = {
-    "SCAN_COMPLETED": {
-        "data": {
-            "location": "ARM01",
-            "HHPN": "620100L00-011-G",
-            "MfrPN": "CC0402JRNPO9BN220",
-            "Qty": "7387",
-            "DateCode": "122625",
-            "LotCode": "8904936031",
-            "PkgID": "SVYU00125TP4LCR02_2",
-        },
-    },
     "ESTOP_PRESSED": {
         "data": None,
     },
@@ -1116,7 +1107,10 @@ class WorklineOperationService(BaseService[Any, Any]):
     def _get_default_payload_template(self, event_type: str, device_code: str | None = None) -> dict[str, Any]:
         """获取事件类型的默认 Payload 模板，动态填充 device_code/event_type/timestamp。"""
 
-        template = dict(self.DEFAULT_EVENT_PAYLOAD_TEMPLATES.get(event_type, {}))
+        if event_type == "SCAN_COMPLETED":
+            template = rough_sorter_scan_completed_payload()
+        else:
+            template = deepcopy(self.DEFAULT_EVENT_PAYLOAD_TEMPLATES.get(event_type, {}))
         template["event_type"] = event_type
         template["timestamp"] = int(timezone.now_utc().timestamp() * 1000)
         template["device_code"] = device_code or "DEVICE_CODE"

@@ -7,10 +7,10 @@ Repository 或 SQL。未注入的能力必须由插件自身使用确定性领�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.workline_runtime.run_mode import is_simulation_run_mode
+from src.workline_runtime.sandbox_catalog import query_sandbox_wms_inventory_rows
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -85,21 +85,18 @@ class SandboxWmsInventoryClient:
     async def query_inventory(self, request: QueryInventoryRequest) -> QueryInventoryResponse:
         from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
 
+        rows = query_sandbox_wms_inventory_rows(
+            sku=request.sku,
+            lot_no=request.lot_no,
+            warehouse_code=request.warehouse_code,
+            owner_code=request.owner_code,
+        )
+        items = [WmsInventoryItem.model_validate(row) for row in rows]
         return QueryInventoryResponse(
             request_id=request.request_id,
             reason_code="SANDBOX_WMS_INVENTORY",
-            message="SANDBOX WMS 库存校验通过",
-            items=[
-                WmsInventoryItem(
-                    sku=request.sku,
-                    lot_no=request.lot_no,
-                    warehouse_code=request.warehouse_code,
-                    owner_code=request.owner_code,
-                    total_qty=Decimal("1"),
-                    available_qty=Decimal("1"),
-                    reserved_qty=Decimal("0"),
-                )
-            ],
+            message="SANDBOX WMS 库存校验通过" if items else "SANDBOX WMS 未匹配到库存",
+            items=items,
         )
 
 

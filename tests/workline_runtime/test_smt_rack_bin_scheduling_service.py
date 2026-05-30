@@ -10,6 +10,7 @@ from src.app.resource.services import (
     smt_rack_bin_scheduling_service,
 )
 from src.app.wms_integration.models import QueryInventoryRequest
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 from src.workline_runtime.services import SandboxWmsInventoryClient, build_workline_runtime_services
 
 SIX_IN_ONE = {
@@ -974,6 +975,7 @@ def test_runtime_services_inject_sandbox_wms_client_for_simulation_session() -> 
 async def test_sandbox_wms_client_returns_matching_inventory_for_simulation_workline() -> None:
     """SIMULATION 工作线注入 sandbox WMS client，避免粗分机 happy path 访问真实 WMS。"""
 
+    payload_data = rough_sorter_scan_completed_payload()["data"]
     services = build_workline_runtime_services(
         db=object(),
         workline=SimpleNamespace(run_mode="SIMULATION"),
@@ -985,11 +987,33 @@ async def test_sandbox_wms_client_returns_matching_inventory_for_simulation_work
         QueryInventoryRequest(
             request_id="rough-sorter:inventory:PKG-001",
             trace_id="trace-sandbox-wms-001",
-            sku="HH-001",
-            lot_no="LOT-A",
+            sku=payload_data["HHPN"],
+            lot_no=payload_data["LotCode"],
         )
     )
 
     assert len(response.items) == 1
-    assert response.items[0].sku == "HH-001"
-    assert response.items[0].lot_no == "LOT-A"
+    assert response.items[0].sku == payload_data["HHPN"]
+    assert response.items[0].lot_no == payload_data["LotCode"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_wms_client_returns_empty_inventory_for_unknown_material() -> None:
+    services = build_workline_runtime_services(
+        db=object(),
+        workline=SimpleNamespace(run_mode="SIMULATION"),
+    )
+
+    assert services.wms_inventory_client is not None
+
+    response = await services.wms_inventory_client.query_inventory(
+        QueryInventoryRequest(
+            request_id="rough-sorter:inventory:UNKNOWN",
+            trace_id="trace-sandbox-wms-unknown",
+            sku="UNKNOWN",
+            lot_no="LOT-A",
+        )
+    )
+
+    assert response.reason_code == "SANDBOX_WMS_INVENTORY"
+    assert response.items == []

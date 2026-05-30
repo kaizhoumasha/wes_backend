@@ -10,6 +10,7 @@ from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.models.workline import WorkLineRunMode
 from src.utils.timezone import timezone
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
 
 class _InboxRepoStub:
@@ -67,6 +68,20 @@ class _RuntimeHoldRepoStub:
     def __init__(self, hold: object | None = None) -> None:
         self.hold = hold
         self.find_latest_for_projection = AsyncMock(return_value=hold)
+
+
+def test_sandbox_scan_completed_template_uses_catalog_payload_and_fresh_copy() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    service = WorklineOperationService()
+    first = service._get_default_payload_template("SCAN_COMPLETED", "RS-SCAN-01")
+    first["data"]["HHPN"] = "BROKEN"
+    second = service._get_default_payload_template("SCAN_COMPLETED", "RS-SCAN-01")
+
+    assert second["data"] == rough_sorter_scan_completed_payload()["data"]
+    assert second["event_type"] == "SCAN_COMPLETED"
+    assert second["device_code"] == "RS-SCAN-01"
+    assert isinstance(second["timestamp"], int)
 
 
 @pytest.mark.asyncio

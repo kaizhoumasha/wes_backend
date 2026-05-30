@@ -37,7 +37,8 @@ from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 from src.workline_runtime.plugin_context import PluginContext
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntentKind
-from src.workline_runtime.services import WorklineRuntimeServices
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
+from src.workline_runtime.services import SandboxWmsInventoryClient, WorklineRuntimeServices
 
 
 class FakeActiveRackSnapshotProvider:
@@ -274,6 +275,22 @@ async def test_scan_ok_updates_context_and_dispatches_measurement_command() -> N
 
 
 @pytest.mark.asyncio
+async def test_catalog_scan_payload_dispatches_measurement_command() -> None:
+    payload = rough_sorter_scan_completed_payload()
+    payload["device_code"] = "RS-SCAN-01"
+    payload["event_type"] = EVENT_SCAN_COMPLETED
+
+    intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(payload))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+    assert intents[0].context_patch["phase"] == PHASE_MEASURING
+    assert intents[0].context_patch["six_in_one"]["HHPN"] == payload["data"]["HHPN"]
+    assert intents[0].context_patch["six_in_one"]["PkgID"] == payload["data"]["PkgID"]
+    assert "location" not in intents[0].context_patch["six_in_one"]
+    assert intents[1].action == ACTION_MEASUREMENT_REEL
+
+
+@pytest.mark.asyncio
 async def test_scan_ng_marks_material_ng_and_dispatches_move_to_ng() -> None:
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(_scan_payload(pkg_id="PKG-SIZENG-001")))
 
@@ -336,6 +353,32 @@ async def test_measurement_success_with_wms_no_match_marks_ng_and_moves_to_ng() 
     assert intents[1].reason_code == "WMS_REJECTED"
     assert intents[2].action == ACTION_MOVE_TO_NG
     assert intents[2].device_role == ROLE_OUTPUT_ARM
+
+
+@pytest.mark.asyncio
+async def test_measurement_success_with_catalog_wms_unknown_material_marks_ng() -> None:
+    payload_data = rough_sorter_scan_completed_payload()["data"]
+    payload_data["HHPN"] = "UNKNOWN"
+    payload_data["PkgID"] = "PKG-UNKNOWN-001"
+    ctx = _measurement_ctx(
+        wms_client=cast("Any", SandboxWmsInventoryClient()),
+        session_context={
+            "six_in_one": payload_data,
+            "business_key": payload_data["PkgID"],
+            "phase": PHASE_MEASURING,
+        },
+    )
+
+    intents = await RoughSorterPlugin().on_command_result(ctx, _measurement_inbox())
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.MARK_NG,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].context_patch["wms_validation"]["matched"] is False
+    assert intents[1].reason_code == "WMS_REJECTED"
+    assert intents[2].action == ACTION_MOVE_TO_NG
 
 
 @pytest.mark.asyncio

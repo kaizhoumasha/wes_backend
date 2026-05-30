@@ -15,7 +15,6 @@ import asyncio
 import logging
 import os
 import sys
-from decimal import Decimal
 
 # 添加项目根目录到 sys.path
 from pathlib import Path
@@ -29,6 +28,8 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.workline_runtime.sandbox_catalog import mock_wms_inventory_seed, mock_wms_materials_seed
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(message)s",
@@ -40,23 +41,7 @@ logger = logging.getLogger(__name__)
 # 种子数据 (Seed Data)
 # ============================================
 
-MOCK_MATERIALS = {
-    "CAP001": {
-        "material_id": "CAP001",
-        "material_name": "电容 0402",
-        "vendor": "V0001",
-        "standard_dims": "7inch",
-        "standard_thickness": 15.0,
-        "is_msd": False,
-        "is_high_value": False,
-        "is_precious": False,
-        "is_pcb": False,
-        "is_irregular": False,
-        "material_type": "ELECTRONIC",
-        "lc_cycle": 30,
-        "floor_life": 168,
-    }
-}
+MOCK_MATERIALS = mock_wms_materials_seed()
 
 MOCK_ZONES = [
     {
@@ -95,15 +80,7 @@ MOCK_RACKS = {
     }
 }
 
-MOCK_INVENTORY = {
-    ("CAP001", "LOT-A"): {
-        "sku": "CAP001",
-        "lot_no": "LOT-A",
-        "total_qty": 50000,
-        "available_qty": 50000,
-        "reserved_qty": 0,
-    }
-}
+MOCK_INVENTORY = mock_wms_inventory_seed()
 
 MOCK_GRNS = {
     "GRN.0001": {
