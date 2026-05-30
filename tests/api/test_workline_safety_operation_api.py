@@ -1,10 +1,11 @@
+import importlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.workline.models.operation import SandboxCleanupResponse
+from src.app.workline.models.operation import DebugDataCleanupResponse, SandboxCleanupResponse
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.v1 import operation as operation_api
 
@@ -96,6 +97,72 @@ class _SandboxCleanupValueErrorStub:
 
     async def cleanup_workline(self, *_args: Any, **_kwargs: Any) -> SandboxCleanupResponse:
         raise ValueError("仅允许 SIMULATION 工作线执行沙箱清理")
+
+
+class _DebugDataCleanupServiceStub:
+    def __init__(self) -> None:
+        self.preview_workline_id: int | None = None
+        self.cleanup_workline_args: dict[str, Any] | None = None
+        self.preview_all_called = False
+        self.cleanup_all_confirmation: str | None = None
+
+    async def preview_workline(self, _db: Any, *, workline_id: int) -> DebugDataCleanupResponse:
+        self.preview_workline_id = workline_id
+        return DebugDataCleanupResponse(
+            scope="WORKLINE",
+            workline_id=workline_id,
+            dry_run=True,
+            deleted=False,
+            counts={"sessions": 1},
+            affected_workline_ids=[workline_id],
+            affected_session_ids=[91],
+            message="dry-run only",
+        )
+
+    async def cleanup_workline(
+        self,
+        _db: Any,
+        *,
+        workline_id: int,
+        confirmation: str | None,
+    ) -> DebugDataCleanupResponse:
+        self.cleanup_workline_args = {"workline_id": workline_id, "confirmation": confirmation}
+        return DebugDataCleanupResponse(
+            scope="WORKLINE",
+            workline_id=workline_id,
+            dry_run=False,
+            deleted=True,
+            counts={"sessions": 1},
+            affected_workline_ids=[workline_id],
+            affected_session_ids=[91],
+            message="deleted",
+        )
+
+    async def preview_all(self, _db: Any) -> DebugDataCleanupResponse:
+        self.preview_all_called = True
+        return DebugDataCleanupResponse(
+            scope="ALL",
+            workline_id=None,
+            dry_run=True,
+            deleted=False,
+            counts={"sessions": 2},
+            affected_workline_ids=[45, 46],
+            affected_session_ids=[91, 92],
+            message="dry-run all",
+        )
+
+    async def cleanup_all(self, _db: Any, *, confirmation: str | None) -> DebugDataCleanupResponse:
+        self.cleanup_all_confirmation = confirmation
+        return DebugDataCleanupResponse(
+            scope="ALL",
+            workline_id=None,
+            dry_run=False,
+            deleted=True,
+            counts={"sessions": 2},
+            affected_workline_ids=[45, 46],
+            affected_session_ids=[91, 92],
+            message="deleted all",
+        )
 
 
 class _DbStub:
@@ -197,6 +264,35 @@ def test_cleanup_sandbox_workline_route_uses_dedicated_permission() -> None:
     assert "biz:workline:update" not in permissions
 
 
+def test_debug_cleanup_routes_use_dedicated_permission() -> None:
+    for path in (
+        "/debug-data/worklines/{workline_id}/cleanup",
+        "/debug-data/cleanup-all",
+    ):
+        route = next(route for route in operation_api.router.routes if getattr(route, "path", None) == path)
+        permissions = [
+            getattr(getattr(dependency, "dependency", None), "permission_required", None)
+            for dependency in getattr(route, "dependencies", [])
+        ]
+
+        assert "biz:workline:cleanup-debug-data" in permissions
+        assert "biz:workline:update" not in permissions
+
+
+def test_debug_cleanup_routes_are_not_registered_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(operation_api.settings, "APP_ENV", "prod")
+    reloaded = importlib.reload(operation_api)
+    try:
+        route_paths = {getattr(route, "path", None) for route in reloaded.router.routes}
+
+        assert "/debug-data/worklines/{workline_id}/cleanup" not in route_paths
+        assert "/debug-data/cleanup-all" not in route_paths
+        assert "/sandbox/worklines/{workline_id}/cleanup" not in route_paths
+    finally:
+        monkeypatch.setattr(reloaded.settings, "APP_ENV", "test")
+        importlib.reload(reloaded)
+
+
 @pytest.mark.asyncio
 async def test_cleanup_sandbox_workline_dry_run_previews_without_commit(
     monkeypatch: pytest.MonkeyPatch,
@@ -260,6 +356,76 @@ async def test_cleanup_sandbox_workline_maps_value_error_without_commit(
     assert db.committed is False
     assert response["code"] == "4001"
     assert "SIMULATION" in response["message"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_debug_data_workline_dry_run_previews_without_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _DebugDataCleanupServiceStub()
+    monkeypatch.setattr(operation_api, "debug_data_cleanup_service", service)
+    db = _DbStub()
+
+    response = await operation_api.cleanup_debug_data_workline(
+        workline_id=45,
+        payload=operation_api.DebugDataCleanupRequest(dry_run=True),
+        db=db,  # type: ignore[arg-type]
+    )
+
+    data = _response_data(response)
+    assert response["code"] == "1000"
+    assert service.preview_workline_id == 45
+    assert service.cleanup_workline_args is None
+    assert db.committed is False
+    assert data["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_cleanup_debug_data_workline_executes_commit_and_publishes_sse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _DebugDataCleanupServiceStub()
+    publish = AsyncMock()
+    monkeypatch.setattr(operation_api, "debug_data_cleanup_service", service)
+    monkeypatch.setattr(operation_api, "publish_deferred_sse_events", publish)
+    db = _DbStub()
+
+    response = await operation_api.cleanup_debug_data_workline(
+        workline_id=45,
+        payload=operation_api.DebugDataCleanupRequest(dry_run=False, confirmation="WL-AUTO"),
+        db=db,  # type: ignore[arg-type]
+    )
+
+    data = _response_data(response)
+    assert response["code"] == "1000"
+    assert service.cleanup_workline_args == {"workline_id": 45, "confirmation": "WL-AUTO"}
+    assert db.committed is True
+    publish.assert_awaited_once_with(db)
+    assert data["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_cleanup_all_debug_data_executes_commit_and_publishes_sse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _DebugDataCleanupServiceStub()
+    publish = AsyncMock()
+    monkeypatch.setattr(operation_api, "debug_data_cleanup_service", service)
+    monkeypatch.setattr(operation_api, "publish_deferred_sse_events", publish)
+    db = _DbStub()
+
+    response = await operation_api.cleanup_all_debug_data(
+        payload=operation_api.DebugDataCleanupRequest(dry_run=False, confirmation="CLEAR-ALL-DEBUG-DATA"),
+        db=db,  # type: ignore[arg-type]
+    )
+
+    data = _response_data(response)
+    assert response["code"] == "1000"
+    assert service.cleanup_all_confirmation == "CLEAR-ALL-DEBUG-DATA"
+    assert db.committed is True
+    publish.assert_awaited_once_with(db)
+    assert data["scope"] == "ALL"
+    assert data["deleted"] is True
 
 
 def test_clear_estop_request_does_not_accept_operator_id() -> None:

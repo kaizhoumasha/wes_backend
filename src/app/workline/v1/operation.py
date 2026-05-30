@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, status
 
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.operation import (
+    DebugDataCleanupRequest,
+    DebugDataCleanupResponse,
     ManualOperationRequest,
     ReplayInboxRequest,
     ResolveRuntimeReconciliationRequest,
@@ -25,11 +27,14 @@ from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runt
 )
 from src.app.workline.services import (
     WorkLineSafetyBlocked,
+    debug_data_cleanup_service,
     sandbox_cleanup_service,
     workline_operation_service,
     workline_safety_service,
 )
+from src.app.workline.services.debug_data_cleanup_service import NON_PROD_ENVS
 from src.app.workline.unit_of_work import WorklineUnitOfWork
+from src.core.conf import settings
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
@@ -39,6 +44,13 @@ from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 from src.utils.value_normalization import enum_value
 
 router = APIRouter(tags=["工作线诊断操作"])
+debug_router = APIRouter(tags=["工作线诊断操作"])
+
+
+def _is_debug_cleanup_enabled() -> bool:
+    """调试清理入口只在非生产环境注册。"""
+
+    return settings.APP_ENV in NON_PROD_ENVS
 
 
 def _inbox_response(inbox: Any) -> dict[str, Any]:
@@ -145,7 +157,7 @@ async def get_sandbox_completed(
     return cast("ResponseSchemaModel[list[dict[str, Any]]]", response_builder.success(data=items))
 
 
-@router.post(
+@debug_router.post(
     "/sandbox/worklines/{workline_id}/cleanup",
     summary="[biz:workline:cleanup-sandbox] 清理工作线沙箱运行时数据",
     response_model=ResponseSchemaModel[SandboxCleanupResponse],
@@ -172,6 +184,59 @@ async def cleanup_sandbox_workline(
     except ValueError as exc:
         return cast("ResponseSchemaModel[SandboxCleanupResponse]", _operation_error_response(exc))
     return cast("ResponseSchemaModel[SandboxCleanupResponse]", response_builder.success(data=result))
+
+
+@debug_router.post(
+    "/debug-data/worklines/{workline_id}/cleanup",
+    summary="[biz:workline:cleanup-debug-data] 清理工作线调试过程数据",
+    response_model=ResponseSchemaModel[DebugDataCleanupResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:cleanup-debug-data"))],
+)
+async def cleanup_debug_data_workline(
+    workline_id: int,
+    payload: DebugDataCleanupRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[DebugDataCleanupResponse]:
+    try:
+        if payload.dry_run:
+            result = await debug_data_cleanup_service.preview_workline(db, workline_id=workline_id)
+        else:
+            result = await debug_data_cleanup_service.cleanup_workline(
+                db,
+                workline_id=workline_id,
+                confirmation=payload.confirmation,
+            )
+            async with WorklineUnitOfWork(db=db) as uow:
+                await uow.commit()
+            await publish_deferred_sse_events(db)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[DebugDataCleanupResponse]", _operation_error_response(exc))
+    return cast("ResponseSchemaModel[DebugDataCleanupResponse]", response_builder.success(data=result))
+
+
+@debug_router.post(
+    "/debug-data/cleanup-all",
+    summary="[biz:workline:cleanup-debug-data] 清理全部工作线调试过程数据",
+    response_model=ResponseSchemaModel[DebugDataCleanupResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:cleanup-debug-data"))],
+)
+async def cleanup_all_debug_data(
+    payload: DebugDataCleanupRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[DebugDataCleanupResponse]:
+    try:
+        if payload.dry_run:
+            result = await debug_data_cleanup_service.preview_all(db)
+        else:
+            result = await debug_data_cleanup_service.cleanup_all(db, confirmation=payload.confirmation)
+            async with WorklineUnitOfWork(db=db) as uow:
+                await uow.commit()
+            await publish_deferred_sse_events(db)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[DebugDataCleanupResponse]", _operation_error_response(exc))
+    return cast("ResponseSchemaModel[DebugDataCleanupResponse]", response_builder.success(data=result))
 
 
 @router.post(
@@ -445,6 +510,10 @@ async def get_sandbox_templates(
             response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
         )
     return cast("ResponseSchemaModel[SandboxTemplatesResponse]", response_builder.success(data=templates))
+
+
+if _is_debug_cleanup_enabled():
+    router.include_router(debug_router)
 
 
 __all__ = ["router"]

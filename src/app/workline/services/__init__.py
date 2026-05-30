@@ -6,6 +6,7 @@ from .bin_cell_reservation_service import (
     WorklineBinCellReservationService,
     workline_bin_cell_reservation_service,
 )
+from .debug_data_cleanup_service import DebugDataCleanupService, debug_data_cleanup_service
 from .device_command_gateway import DeviceCommandGateway, device_command_gateway
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
@@ -33,6 +34,7 @@ from .write_back_service import OrchestratorWriteBackService, orchestrator_write
 __all__ = [
     "BinCellReservationResult",
     "BinCellReservationStatusCode",
+    "DebugDataCleanupService",
     "DeviceCommandGateway",
     "InboxBatchProcessor",
     "NgReturnItemService",
@@ -57,6 +59,7 @@ __all__ = [
     "WorklineRuntimeReconciliationService",
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
+    "debug_data_cleanup_service",
     "device_command_gateway",
     "inbox_service",
     "ng_return_item_service",
