@@ -258,6 +258,77 @@ class TestOutboxDispatchService:
         assert record_diagnostic.await_args.kwargs["message"] == "DEVICE_STATUS_PRECHECK_FAILED"
 
     @pytest.mark.asyncio
+    async def test_dispatch_status_precheck_failure_enters_reconciliation_when_exhausted(
+        self,
+        mock_db,
+        mock_outbox_repo,
+    ):
+        """Status precheck 耗尽 retry 后仍进入现有 runtime reconciliation 隔离。"""
+        from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+
+        outbox = MockOutbox(
+            outbox_id=21,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_code="ARM01",
+            session_id=530,
+            attempt_count=2,
+            payload_json={"command_code": "CMD-STATUS-PRECHECK-FAILED", "task_type": "PICK_AND_PUT"},
+        )
+        mock_outbox_repo.get_pending_messages.return_value = [outbox]
+
+        async def mock_mark_failed(_db, _outbox_id, error, _max_retries):
+            outbox.attempt_count += 1
+            outbox.last_error = error
+            outbox.status = SystemOutboxStatus.FAILED
+            return outbox
+
+        mock_outbox_repo.mark_as_failed = AsyncMock(side_effect=mock_mark_failed)
+        device_repo = MagicMock()
+        device_repo.get_by_device_code = AsyncMock(
+            return_value=_mock_device_record(
+                id=18,
+                device_code="ARM01",
+                callback_path=None,
+                capabilities_json={"supports_command_types": ["PICK_AND_PUT"]},
+                maintenance_mode=False,
+                device_status=DeviceStatus.IDLE,
+                current_command_id=None,
+            )
+        )
+        command_repo = MagicMock()
+        command_repo.get_by_command_code = AsyncMock(return_value=_mock_command_record(id=777, session_id_int=530))
+        runtime_service = SimpleNamespace(handle_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=530)))
+
+        with (
+            patch(
+                "src.app.sys.repositories.SystemOutboxRepository",
+                return_value=mock_outbox_repo,
+            ),
+            patch("src.app.device.repositories.device_repository.device_repository", device_repo),
+            patch("src.app.device.repositories.command_repository.DeviceCommandRepository", return_value=command_repo),
+            patch(
+                "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
+                runtime_service,
+            ),
+            patch(
+                "src.app.workline.services.outbox_dispatch_service._record_diagnostic", new_callable=AsyncMock
+            ) as record_diagnostic,
+            patch("httpx.AsyncClient") as mock_client,
+        ):
+            _configure_status_unavailable(mock_client)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock()
+            result = await OutboxDispatchService().dispatch(mock_db)
+
+        assert result["failed"] == 1
+        mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
+        assert record_diagnostic.await_args.kwargs["error_code"] == ErrorCode.OUTBOX_DISPATCH_FAILED
+        runtime_service.handle_dispatch_ack_exhausted.assert_awaited_once()
+        call_kwargs = runtime_service.handle_dispatch_ack_exhausted.await_args.kwargs
+        assert call_kwargs["outbox"] is outbox
+        assert call_kwargs["command"].id == 777
+        assert call_kwargs["error_message"] == "DEVICE_STATUS_PRECHECK_FAILED"
+
+    @pytest.mark.asyncio
     async def test_dispatch_blocks_estopped_workline_before_side_effect(self, mock_db, mock_outbox_repo):
         """WorkLine 已急停时，outbox 派发应在真实副作用前被阻断。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService

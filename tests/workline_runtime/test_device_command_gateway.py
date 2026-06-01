@@ -226,6 +226,46 @@ async def test_dispatch_realtime_status_failure_never_posts_command(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_realtime_status_uses_standard_path_not_capability_override(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    device = _dispatchable_device()
+    device.capabilities_json = {
+        "supports_command_types": ["MOVE_FORWARD"],
+        "status_path": "/vendor/status",
+    }
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=device))
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-STANDARD-STATUS",
+            "payload_json": {"command_code": "CMD-GW-STANDARD-STATUS", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert CapturingAsyncClient.requests[0]["url"] == (
+        "http://mock_ecs:8010/api/v1/device/status?device_code=RS-CONVEYOR-01"
+    )
+
+
+@pytest.mark.asyncio
 async def test_dispatch_command_post_timeout_after_realtime_status_uses_ack_timeout(monkeypatch) -> None:
     CapturingAsyncClient.requests.clear()
     CapturingAsyncClient.status_response = FakeStatusResponse(

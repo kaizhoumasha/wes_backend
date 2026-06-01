@@ -121,14 +121,9 @@ def _resolve_device_command_path(device: Any) -> str:
 
 
 def _resolve_device_status_path(device: Any) -> str:
-    """优先使用 capabilities_json.status_path，未配置时回退标准状态路径。"""
+    """设备命令派发前实时状态检查固定使用 ECS 标准状态路径。"""
 
-    capabilities = getattr(device, "capabilities_json", None)
-    raw = capabilities if isinstance(capabilities, dict) else {}
-    status_path = coerce_string_value(raw.get("status_path")) or _DEFAULT_DEVICE_STATUS_PATH
-    if not status_path.startswith("/"):
-        status_path = f"/{status_path}"
-    return status_path
+    return _DEFAULT_DEVICE_STATUS_PATH
 
 
 def _resolve_device_protocol_scheme(device: Any) -> str:

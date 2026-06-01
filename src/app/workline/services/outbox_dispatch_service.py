@@ -419,13 +419,12 @@ class OutboxDispatchService:
                         message=failure_reason,
                         extra=trace_extra,
                     )
-                    if failure_code != "DEVICE_STATUS_PRECHECK_FAILED":
-                        await _mark_device_command_failed_if_dispatch_exhausted(
-                            db,
-                            outbox=outbox,
-                            failed_outbox=failed_outbox,
-                            error_message=failure_reason,
-                        )
+                    await _mark_device_command_failed_if_dispatch_exhausted(
+                        db,
+                        outbox=outbox,
+                        failed_outbox=failed_outbox,
+                        error_message=failure_reason,
+                    )
                     await db.commit()
                     result["failed"] += 1
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
