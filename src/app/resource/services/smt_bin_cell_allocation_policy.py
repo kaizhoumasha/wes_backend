@@ -266,11 +266,21 @@ class SmtBinCellAllocationPolicy:
                 return active_snapshot[key]
         return []
 
-    def _cell_sort_key(self, cell: Mapping[str, Any]) -> tuple[str, str]:
+    def _cell_sort_key(self, cell: Mapping[str, Any]) -> tuple[int, str, str]:
         return (
+            self._allocation_priority(cell),
             self._target_bin_code(cell) or "",
             self._target_cell_index(cell) or self._text_or_none(cell.get("bin_cell_location")) or "",
         )
+
+    def _allocation_priority(self, cell: Mapping[str, Any]) -> int:
+        raw_priority = self._text_or_none(cell.get("allocation_priority"))
+        if raw_priority is None:
+            return 0
+        try:
+            return int(raw_priority)
+        except ValueError:
+            return 0
 
     def _is_occupied(self, cell: Mapping[str, Any]) -> bool:
         return self._cell_status(cell) in self.OCCUPIED_STATUSES

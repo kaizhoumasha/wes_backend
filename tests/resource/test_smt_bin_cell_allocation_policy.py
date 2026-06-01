@@ -258,6 +258,24 @@ def test_equal_candidates_are_selected_by_stable_bin_and_cell_sort_order() -> No
     assert forward.target_cell_index == reverse.target_cell_index == "1"
 
 
+def test_explicit_allocation_priority_wins_before_stable_bin_and_cell_sort_order() -> None:
+    policy = SmtBinCellAllocationPolicy()
+    lower_bin_cell = _cell("BIN-A", "1", status="EMPTY", capacity_depth_mm="10", used_depth_mm="0")
+    lower_bin_cell["allocation_priority"] = "1"
+    preferred_cell = _cell("BIN-B", "2", status="EMPTY", capacity_depth_mm="10", used_depth_mm="0")
+    preferred_cell["allocation_priority"] = "0"
+
+    result = policy.allocate(
+        active_snapshot={"cells": [lower_bin_cell, preferred_cell]},
+        material_identity_key=MATERIAL_IDENTITY_KEY,
+        reel_thickness_mm="1",
+    )
+
+    assert result.kind == "ALLOCATED"
+    assert result.target_bin_code == "BIN-B"
+    assert result.target_cell_index == "2"
+
+
 def test_policy_constructor_and_allocate_signature_do_not_accept_persistence_dependencies() -> None:
     policy_signature = inspect.signature(SmtBinCellAllocationPolicy)
     allocate_signature = inspect.signature(SmtBinCellAllocationPolicy.allocate)
