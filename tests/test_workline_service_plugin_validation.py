@@ -534,8 +534,58 @@ async def test_configuration_status_reports_incomplete_command_target_communicat
     ]
     assert status.can_activate is False
     assert communication_checks
+    assert communication_checks[0].severity == "BLOCKER"
     assert communication_checks[0].context["device_code"] == "ROUGH-COMM-DEV-2"
     assert set(communication_checks[0].context["missing_fields"]) == {"host", "port", "status_path"}
+
+
+@pytest.mark.asyncio
+async def test_activate_simulation_does_not_block_on_command_target_communication(db_session) -> None:
+    """SIMULATION 沙箱模式缺少真实 ECS 通信配置时，不应被通信检查 blocker 阻断。"""
+
+    workline = WorkLine(
+        line_code="WL-ROUGH-SIM-COMM-CHECK",
+        line_name="粗分机 SIM 通信检查",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+        run_mode=WorkLineRunMode.SIMULATION,
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    for index, role in enumerate((ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM), start=1):
+        db_session.add(
+            Device(
+                device_code=f"ROUGH-SIM-COMM-DEV-{index}",
+                device_name=f"粗分机 SIM 通信设备{index}",
+                work_line_id=workline.id,
+                device_role=role,
+                role_index=1,
+                capabilities_json={},
+                host=None,
+                port=None,
+            )
+        )
+    await db_session.commit()
+
+    service = WorkLineService()
+    status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    communication_checks = [
+        check for check in status.checks if check.code == "COMMAND_TARGET_COMMUNICATION" and check.status == "WARN"
+    ]
+    assert status.can_activate is True
+    assert communication_checks
+    assert communication_checks[0].severity == "WARNING"
+    assert communication_checks[0].context["device_code"] == "ROUGH-SIM-COMM-DEV-1"
+
+    with patch("src.app.workline.services.workline_service.settings.APP_ENV", "dev"):
+        activated = await service.activate(db_session, workline.id, version=workline.version)  # type: ignore[arg-type]
+
+    assert activated is not None
+    assert activated.is_active is True
 
 
 @pytest.mark.asyncio

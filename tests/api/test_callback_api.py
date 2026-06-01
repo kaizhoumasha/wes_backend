@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import Request, Response
 from fastapi.routing import APIRoute
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.callback.models import (
@@ -37,6 +38,12 @@ def _response_data(response: JsonDict) -> JsonDict:
     if hasattr(data, "model_dump"):
         return cast("JsonDict", data.model_dump())
     return cast("JsonDict", data)
+
+
+def _response_model_data(response: JsonDict) -> JsonDict:
+    validated = TypeAdapter(CallbackEventIngressResponse).validate_python(response)
+    serialized = TypeAdapter(CallbackEventIngressResponse).dump_python(validated, mode="json")
+    return _response_data(cast("JsonDict", serialized))
 
 
 def _get_route(path: str, method: str) -> APIRoute:
@@ -1817,6 +1824,9 @@ class TestCallbackEventAPI:
         data = _response_data(response)
         assert data["status"] == "accepted"
         assert data["device_code"] == "ARM_01"
+        response_model_data = _response_model_data(response)
+        assert response_model_data["status"] == "accepted"
+        assert response_model_data["diagnostic"] == {"checked_devices": ["ARM_01"]}
         mock_admit_start.assert_awaited_once()
         admit_kwargs = _await_kwargs(mock_admit_start)
         assert admit_kwargs["device_code"] == "ARM_01"
@@ -1903,6 +1913,10 @@ class TestCallbackEventAPI:
         assert data["ack"] is False
         assert data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
         assert data["diagnostic"]["device_code"] == "RS-CONV-01"
+        response_model_data = _response_model_data(response)
+        assert response_model_data["ack"] is False
+        assert response_model_data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
+        assert response_model_data["diagnostic"]["device_code"] == "RS-CONV-01"
         mock_admit_start.assert_awaited_once()
         mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()

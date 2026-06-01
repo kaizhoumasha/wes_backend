@@ -300,7 +300,7 @@ def _build_start_admission_conflict_fail(message: str, *, reason_code: str, diag
     return response_builder.fail(
         code=ResourceErrorCode.CONFLICT,
         message=message,
-        data={"ack": False, "reason_code": reason_code, "diagnostic": diagnostic},
+        data=build_callback_rejected_response(reason_code=reason_code, diagnostic=diagnostic),
     )
 
 
@@ -626,15 +626,15 @@ async def _handle_event_start_admission(
                 "CallbackEventIngressResponse",
                 response_builder.success(
                     message="START accepted",
-                    data={
-                        "status": "accepted",
-                        "device_code": device_code,
-                        "request_id": request_id,
-                        "trace_id": _resolve_callback_trace_id(event_data),
-                        "event_id": _resolve_callback_event_id(event_data),
-                        "causation_id": _resolve_callback_causation_id(event_data),
-                        "diagnostic": admission.diagnostic,
-                    },
+                    data=build_callback_event_accepted_response(
+                        status="accepted",
+                        device_code=device_code,
+                        request_id=request_id,
+                        trace_id=_resolve_callback_trace_id(event_data),
+                        event_id=_resolve_callback_event_id(event_data),
+                        causation_id=_resolve_callback_causation_id(event_data),
+                        diagnostic=admission.diagnostic,
+                    ),
                 ),
             ),
             http_status=200,

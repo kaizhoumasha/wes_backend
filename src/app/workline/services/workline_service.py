@@ -37,6 +37,7 @@ from src.workline_runtime.topology import WorklineTopologyView
 _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
 _OK = "PASS"
+_WARN = "WARN"
 _ACTIVE_CONFIGURATION_FIELDS = frozenset(
     {
         "line_code",
@@ -337,7 +338,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks.extend(self._role_requirement_checks(manifest, topology))
         checks.extend(self._event_source_checks(manifest, topology))
         checks.extend(self._command_target_checks(manifest, topology))
-        checks.extend(self._command_target_communication_checks(manifest, devices))
+        checks.extend(self._command_target_communication_checks(workline, manifest, devices))
         return checks
 
     @staticmethod
@@ -442,8 +443,15 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return checks
 
     @staticmethod
-    def _command_target_communication_checks(manifest: Any, devices: list[Any]) -> list[WorkLineConfigurationCheck]:
+    def _command_target_communication_checks(
+        workline: WorkLine,
+        manifest: Any,
+        devices: list[Any],
+    ) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
+        run_mode = normalize_run_mode(getattr(workline, "run_mode", WorkLineRunMode.AUTO))
+        missing_config_status = _WARN if is_simulation_run_mode(run_mode) else _FAIL
+        missing_config_severity = "WARNING" if is_simulation_run_mode(run_mode) else _BLOCKER
         target_map = WorkLineService._command_target_device_map(manifest, devices)
         for device_id, (device, command_types) in sorted(
             target_map.items(), key=lambda item: str(getattr(item[1][0], "device_code", ""))
@@ -459,12 +467,13 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             checks.append(
                 WorkLineService._check(
                     "COMMAND_TARGET_COMMUNICATION",
-                    _OK if not missing_fields else _FAIL,
-                    "INFO" if not missing_fields else _BLOCKER,
+                    _OK if not missing_fields else missing_config_status,
+                    "INFO" if not missing_fields else missing_config_severity,
                     {
                         "device_id": device_id,
                         "device_code": getattr(device, "device_code", None),
                         "command_types": sorted(command_types),
+                        "run_mode": run_mode,
                         "scheme": WorkLineService._resolve_device_scheme(device),
                         "host": getattr(device, "host", None),
                         "port": getattr(device, "port", None),

@@ -1,6 +1,6 @@
 """Callback ingress response models."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ class CallbackRejectedResponse(BaseModel):
 
     ack: Literal[False] = Field(default=False, description="入口是否接收")
     reason_code: str | None = Field(default=None, description="拒收原因代码")
+    diagnostic: dict[str, Any] | None = Field(default=None, description="拒收诊断信息")
 
 
 class CallbackResultAcceptedResponse(BaseModel):
@@ -27,12 +28,13 @@ class CallbackResultAcceptedResponse(BaseModel):
 class CallbackEventAcceptedResponse(BaseModel):
     """设备事件回调接收响应数据。"""
 
-    status: Literal["submitted", "duplicate"] = Field(description="入口处理状态")
+    status: Literal["submitted", "duplicate", "accepted"] = Field(description="入口处理状态")
     device_code: str = Field(description="设备编码")
     request_id: str | None = Field(default=None, description="入口请求 ID")
     trace_id: str | None = Field(default=None, description="Trace ID")
     event_id: str | None = Field(default=None, description="供应商事件 ID")
     causation_id: str | None = Field(default=None, description="因果事件 ID")
+    diagnostic: dict[str, Any] | None = Field(default=None, description="START 准入诊断信息")
 
 
 class CallbackExternalAcceptedResponse(BaseModel):
@@ -52,8 +54,11 @@ type CallbackEventIngressResponse = ResponseSchemaModel[CallbackEventAcceptedRes
 type CallbackExternalIngressResponse = ResponseSchemaModel[CallbackExternalAcceptedResponse | CallbackRejectedResponse]
 
 
-def build_callback_rejected_response(reason_code: str | None = None) -> CallbackRejectedResponse:
-    return CallbackRejectedResponse(reason_code=reason_code)
+def build_callback_rejected_response(
+    reason_code: str | None = None,
+    diagnostic: dict[str, Any] | None = None,
+) -> CallbackRejectedResponse:
+    return CallbackRejectedResponse(reason_code=reason_code, diagnostic=diagnostic)
 
 
 def build_callback_result_accepted_response(
@@ -73,12 +78,13 @@ def build_callback_result_accepted_response(
 
 def build_callback_event_accepted_response(
     *,
-    status: Literal["submitted", "duplicate"],
+    status: Literal["submitted", "duplicate", "accepted"],
     device_code: str,
     request_id: str | None,
     trace_id: str | None,
     event_id: str | None,
     causation_id: str | None,
+    diagnostic: dict[str, Any] | None = None,
 ) -> CallbackEventAcceptedResponse:
     return CallbackEventAcceptedResponse(
         status=status,
@@ -87,6 +93,7 @@ def build_callback_event_accepted_response(
         trace_id=trace_id,
         event_id=event_id,
         causation_id=causation_id,
+        diagnostic=diagnostic,
     )
 
 

@@ -164,6 +164,12 @@ class WorkLineStartAdmissionService:
                 "START 准入失败: WorkLine 不存在",
                 {"workline_id": workline_id},
             )
+        if self._is_ready(current):
+            return self._ready_idempotent_result(
+                workline_id,
+                source_device_code=source_device_code,
+                checked_devices=[getattr(device, "device_code", None) for device in target_devices],
+            )
         final_guard = await self._guard_startable(db, current)
         if final_guard is not None:
             await self._record_failure(
@@ -421,6 +427,9 @@ class WorkLineStartAdmissionService:
                 {"workline_id": workline_id},
             )
 
+        if self._is_ready(current):
+            return self._ready_idempotent_result(workline_id)
+
         final_guard = await self._guard_startable(db, current)
         if final_guard is not None:
             diagnostic = {"workline_id": workline_id, "runtime_status": self._runtime_status(current)}
@@ -461,7 +470,17 @@ class WorkLineStartAdmissionService:
             if not isinstance(device_code, str):
                 continue
             record = status_by_device_code.get(device_code)
-            state = record.get("state") if isinstance(record, dict) else None
+            if record is None:
+                return self._rejected(
+                    getattr(device, "work_line_id", None),
+                    "START_ADMISSION_DEVICE_STATUS_MISSING",
+                    f"START 准入失败: ECS status 未返回设备 {device_code}",
+                    {
+                        "device_code": device_code,
+                        "target_url": target_urls.get(device_code),
+                    },
+                )
+            state = record.get("state")
             state_dict = state if isinstance(state, dict) else {}
             mode = state_dict.get("mode", record.get("mode"))
             status = state_dict.get("status", state_dict.get("device_status", record.get("status")))
@@ -555,6 +574,36 @@ class WorkLineStartAdmissionService:
     def _diagnostic_device_code(diagnostic: dict[str, Any]) -> str | None:
         value = diagnostic.get("device_code")
         return value if isinstance(value, str) and value else None
+
+    @classmethod
+    def _is_ready(cls, workline: Any) -> bool:
+        return cls._runtime_status(workline) == _READY.value
+
+    @classmethod
+    def _ready_idempotent_result(
+        cls,
+        workline_id: int,
+        *,
+        source_device_code: str | None = None,
+        checked_devices: list[Any] | None = None,
+    ) -> StartAdmissionResult:
+        diagnostic: dict[str, Any] = {
+            "workline_id": workline_id,
+            "runtime_status": _READY.value,
+            "idempotent": True,
+        }
+        if source_device_code is not None:
+            diagnostic["source_device_code"] = source_device_code
+        if checked_devices is not None:
+            diagnostic["checked_devices"] = checked_devices
+        return StartAdmissionResult(
+            accepted=True,
+            http_status=200,
+            reason_code=None,
+            message="START 准入已完成",
+            workline_id=workline_id,
+            diagnostic=diagnostic,
+        )
 
     @staticmethod
     def _target_failure_diagnostic(

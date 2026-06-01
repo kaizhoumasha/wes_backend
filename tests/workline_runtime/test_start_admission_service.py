@@ -263,6 +263,38 @@ async def test_start_admission_refuses_ready_when_final_cas_drifts(
     assert workline.start_admission_status == "FAILED"
 
 
+@pytest.mark.asyncio
+async def test_start_admission_treats_ready_final_drift_as_idempotent_success(db_session) -> None:
+    """并发 START 已将 WorkLine 写为 READY 时，后续 final recheck 不应覆盖成功投影。"""
+
+    workline = _make_workline()
+    devices = await _persist_workline_with_devices(db_session, workline)
+
+    async def drifting_fetcher(
+        target: StartAdmissionStatusTarget,
+        timeout_seconds: float,
+    ) -> StartAdmissionStatusFetchResult:
+        workline.runtime_status = WorkLineRuntimeStatus.READY
+        workline.start_admission_status = "SUCCESS"
+        workline.start_admission_message = "START 准入通过"
+        workline.start_admission_failed_device_code = None
+        await db_session.commit()
+        return StartAdmissionStatusFetchResult(status_code=200, payload=_idle_payload(devices))
+
+    service = WorkLineStartAdmissionService(status_fetcher=drifting_fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-ready-drift")
+
+    await db_session.refresh(workline)
+    assert result.accepted is True
+    assert result.http_status == 200
+    assert result.reason_code is None
+    assert result.diagnostic["runtime_status"] == WorkLineRuntimeStatus.READY.value
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.start_admission_status == "SUCCESS"
+    assert workline.start_admission_failed_device_code is None
+
+
 @pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
 @pytest.mark.asyncio
 async def test_start_admission_probe_failure_rechecks_guard_before_recording_ecs_failure(
