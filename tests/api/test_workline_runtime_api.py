@@ -653,10 +653,12 @@ class TestRuntimeQueryService:
         assert summary.failed_session_count == 0
 
     def test_build_workline_summary_exposes_safety_projection(self) -> None:
+        from src.app.workline.models.runtime import RuntimeWorklineDetailResponse
         from src.app.workline.models.safety import WorkLineRuntimeStatus
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         stopped_at = timezone.now_for_db()
+        start_admission_checked_at = timezone.now_for_db()
         service = RuntimeQueryService()
         workline = cast(
             "WorkLine",
@@ -675,6 +677,12 @@ class TestRuntimeQueryService:
                 stopped_at=stopped_at,
                 stopped_reason="ESTOP_PRESSED",
                 resumed_at=None,
+                start_admission_status="FAILED",
+                start_admission_message="设备未就绪",
+                start_admission_failed_device_code="PLC-01",
+                start_admission_checked_at=start_admission_checked_at,
+                last_start_request_id="req-start-001",
+                last_start_trace_id="trace-start-001",
             ),
         )
 
@@ -685,6 +693,15 @@ class TestRuntimeQueryService:
         assert summary.stopped_at == stopped_at
         assert summary.stopped_reason == "ESTOP_PRESSED"
         assert summary.resumed_at is None
+        assert summary.start_admission_status == "FAILED"
+        assert summary.start_admission_message == "设备未就绪"
+        assert summary.start_admission_failed_device_code == "PLC-01"
+        assert summary.start_admission_checked_at == start_admission_checked_at
+        assert summary.last_start_request_id == "req-start-001"
+        assert summary.last_start_trace_id == "trace-start-001"
+
+        detail = RuntimeWorklineDetailResponse(summary=summary)
+        assert detail.model_dump()["summary"]["start_admission_status"] == "FAILED"
 
     def test_build_workline_summary_requires_persisted_workline(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
