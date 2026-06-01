@@ -710,9 +710,10 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
 
 @pytest.mark.asyncio
 async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_values() -> None:
+    events = RecordingStateEventRepo()
     occupancies = RecordingBinCellOccupancyRepo()
     service = ResourceProjectionService(
-        state_event_repo=RecordingStateEventRepo(),
+        state_event_repo=events,
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
         bin_cell_occupancy_repo=occupancies,
         snapshot_service=RecordingResourceSnapshotService(),
@@ -744,6 +745,8 @@ async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_value
     assert occupancies.created[0]["used_depth_mm"] == Decimal("0.10")
     assert occupancies.created[0]["capacity_depth_mm"] == Decimal("0.30")
     assert occupancies.created[0]["remaining_depth_mm"] == Decimal("0.20")
+    assert events.created[0]["payload_json"]["cell_capacity_depth_mm"] == "0.30"
+    assert not isinstance(events.created[0]["payload_json"]["cell_capacity_depth_mm"], (Decimal, float))
     assert all(
         not isinstance(occupancies.created[0][key], float)
         for key in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm")
@@ -1006,9 +1009,15 @@ async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_r
     evidence = runtime_holds.created[0]["evidence"]
     assert evidence["active_bin_code"] == "BIN-001"
     assert evidence["active_bin_cell_index"] == "4"
-    assert evidence["incoming_reel_thickness"] == 2.5
-    assert evidence["remaining_depth_mm"] == 2.0
+    assert evidence["incoming_reel_thickness"] == "2.5"
+    assert evidence["remaining_depth_mm"] == "2.0"
+    assert evidence["capacity_depth_mm"] == "5.0"
+    assert evidence["used_depth_mm"] == "3.0"
     assert evidence["requires_reallocation"] is True
+    assert all(
+        not isinstance(evidence[key], (Decimal, float))
+        for key in ("incoming_reel_thickness", "remaining_depth_mm", "capacity_depth_mm", "used_depth_mm")
+    )
 
 
 @pytest.mark.asyncio

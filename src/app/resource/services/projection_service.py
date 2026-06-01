@@ -138,6 +138,11 @@ def _non_negative_decimal(value: Any) -> Decimal | None:
     return parsed
 
 
+def _json_depth_text(value: Any) -> str | None:
+    parsed = _non_negative_decimal(value)
+    return str(parsed) if parsed is not None else None
+
+
 def _occupancy_status_value(value: Any) -> str:
     raw = getattr(value, "value", value)
     return str(raw or "").upper()
@@ -618,7 +623,7 @@ class ResourceProjectionService:
                     "wms_inventory_id": wms_inventory_id,
                     "reel_diameter": reel_diameter,
                     "reel_thickness": reel_thickness,
-                    "cell_capacity_depth_mm": cell_capacity_depth_mm,
+                    "cell_capacity_depth_mm": _json_depth_text(cell_capacity_depth_mm),
                 },
                 "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
@@ -1291,10 +1296,10 @@ class ResourceProjectionService:
             return None
 
         return {
-            "incoming_reel_thickness": incoming_depth,
-            "remaining_depth_mm": remaining_depth,
-            "capacity_depth_mm": capacity_depth,
-            "used_depth_mm": used_depth,
+            "incoming_reel_thickness": _json_depth_text(incoming_depth),
+            "remaining_depth_mm": _json_depth_text(remaining_depth),
+            "capacity_depth_mm": _json_depth_text(capacity_depth),
+            "used_depth_mm": _json_depth_text(used_depth),
             "requires_reallocation": True,
         }
 
