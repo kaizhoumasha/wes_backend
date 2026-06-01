@@ -16,9 +16,15 @@ class FakeAckResponse:
     status_code = 200
     text = ""
 
+    def json(self) -> dict:
+        return {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+
 
 class CapturingAsyncClient:
     requests: ClassVar[list[dict]] = []
+    status_response: ClassVar[object] = FakeAckResponse()
+    status_side_effect: ClassVar[Exception | None] = None
+    post_side_effect: ClassVar[Exception | None] = None
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -29,9 +35,29 @@ class CapturingAsyncClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
 
-    async def post(self, url: str, *, json: dict):
-        self.requests.append({"url": url, "json": json})
+    async def get(self, url: str, **kwargs):
+        self.requests.append({"method": "GET", "url": url, "timeout": kwargs.get("timeout")})
+        if self.status_side_effect is not None:
+            raise self.status_side_effect
+        return self.status_response
+
+    async def post(self, url: str, *, json: dict, **kwargs):
+        self.requests.append({"method": "POST", "url": url, "json": json, "timeout": kwargs.get("timeout")})
+        if self.post_side_effect is not None:
+            raise self.post_side_effect
         return FakeAckResponse()
+
+
+class FakeStatusResponse:
+    def __init__(self, payload: object, *, status_code: int = 200, text: str = "") -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def json(self) -> object:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
 
 
 class NullCommandRepository:
@@ -54,6 +80,11 @@ async def test_dispatch_returns_false_on_missing_config() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_adds_top_level_device_code_to_command_body(monkeypatch) -> None:
     CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
     monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(
         gateway_module,
@@ -103,6 +134,12 @@ async def test_dispatch_adds_top_level_device_code_to_command_body(monkeypatch) 
     assert success is True
     assert CapturingAsyncClient.requests == [
         {
+            "method": "GET",
+            "url": "http://mock_ecs:8010/api/v1/device/status?device_code=RS-CONVEYOR-01",
+            "timeout": 2.0,
+        },
+        {
+            "method": "POST",
             "url": "http://mock_ecs:8010/api/v1/device/command",
             "json": {
                 "command_code": "CMD-GW-001",
@@ -110,5 +147,116 @@ async def test_dispatch_adds_top_level_device_code_to_command_body(monkeypatch) 
                 "params": {"slot": "A01"},
                 "device_code": "RS-CONVEYOR-01",
             },
-        }
+            "timeout": 10.0,
+        },
     ]
+
+
+def _dispatchable_device() -> object:
+    return type(
+        "Device",
+        (),
+        {
+            "id": 100,
+            "device_code": "RS-CONVEYOR-01",
+            "host": "mock_ecs",
+            "port": 8010,
+            "protocol": "HTTP",
+            "callback_path": "/api/v1/device/command",
+            "device_status": DeviceStatus.IDLE,
+            "current_command_id": None,
+            "maintenance_mode": False,
+            "capabilities_json": {"supports_command_types": ["MOVE_FORWARD"]},
+        },
+    )()
+
+
+@pytest.mark.parametrize(
+    ("status_response", "side_effect"),
+    [
+        (FakeStatusResponse({}, status_code=503, text="not ready"), None),
+        (FakeStatusResponse(ValueError("bad json")), None),
+        (FakeStatusResponse({"state": {"mode": "MANUAL", "status": "IDLE", "current_command_id": None}}), None),
+        (FakeStatusResponse({"state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": None}}), None),
+        (FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-BUSY"}}), None),
+        (
+            FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}),
+            httpx.TimeoutException("status timeout"),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_dispatch_realtime_status_failure_never_posts_command(
+    monkeypatch,
+    status_response: FakeStatusResponse,
+    side_effect: Exception | None,
+) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = status_response
+    CapturingAsyncClient.status_side_effect = side_effect
+    CapturingAsyncClient.post_side_effect = None
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(
+        gateway_module,
+        "_get_device_for_command_dispatch",
+        AsyncMock(return_value=_dispatchable_device()),
+    )
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-STATUS",
+            "payload_json": {"command_code": "CMD-GW-STATUS", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is False
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
+    assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_command_post_timeout_after_realtime_status_uses_ack_timeout(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = httpx.TimeoutException("ack timeout")
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(
+        gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=_dispatchable_device())
+    )
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-ACK-TIMEOUT",
+            "payload_json": {"command_code": "CMD-GW-ACK-TIMEOUT", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    with pytest.raises(RuntimeError, match="OUTBOX_ACK_TIMEOUT"):
+        await gateway.dispatch(db, outbox)
+
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
+    assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
+    assert CapturingAsyncClient.requests[1]["timeout"] == 10.0
