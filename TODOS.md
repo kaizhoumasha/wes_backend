@@ -60,7 +60,7 @@
 - 建立 Workline inbox/outbox worker 吞吐基准
 - 评估 Celery worker concurrency 与队列隔离策略
 - 评估 batch limit 对延迟、锁竞争和重试的影响
-- 评估设备 HTTP client 复用、超时和连接池策略
+- 评估设备 HTTP client 复用、超时和连接池策略，覆盖实时 status GET + command POST 双 HTTP 路径
 - 明确不得在共享 `AsyncSession` 内引入 batch-internal `asyncio.gather`
 
 **Dependencies**: Workline task decomposition 代码稳定后，采集真实或接近真实的任务量、设备 ACK 延迟和 outbox 重试数据。
