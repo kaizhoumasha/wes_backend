@@ -187,6 +187,7 @@ async def test_resolve_runtime_hold_continue(db_session) -> None:
 
     await db_session.refresh(hold)
     assert response["data"]["status"] == RuntimeHoldStatus.RESOLVED.value
+    assert response["data"]["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
     assert hold.status == RuntimeHoldStatus.RESOLVED
 
 

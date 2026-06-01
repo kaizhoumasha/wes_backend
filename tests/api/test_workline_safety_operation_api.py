@@ -54,6 +54,7 @@ class _SafetyServiceClearStub:
             recovery_check_json=kwargs["checks"],
             cleared_at=None,
             cleared_by=kwargs["operator_id"],
+            release_message="已解除冻结，等待现场 START",
         )
 
 
@@ -454,3 +455,4 @@ async def test_clear_workline_estop_uses_authenticated_user_id(
     assert response["code"] == "1000"
     assert service.operator_id == 88
     assert response["data"]["cleared_by"] == 88
+    assert response["data"]["release_message"] == "已解除冻结，等待现场 START"

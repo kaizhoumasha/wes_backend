@@ -101,6 +101,7 @@ def _safety_incident_response(incident: Any) -> dict[str, Any]:
         "recovery_check_json": incident.recovery_check_json,
         "cleared_at": incident.cleared_at.isoformat() if incident.cleared_at else None,
         "cleared_by": incident.cleared_by,
+        "release_message": getattr(incident, "release_message", "已解除冻结，等待现场 START"),
     }
 
 

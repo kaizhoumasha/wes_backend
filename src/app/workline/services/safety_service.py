@@ -288,7 +288,7 @@ class WorkLineSafetyService:
         reason: str | None = None,
         operator_id: int | None = None,
     ) -> WorklineSafetyIncident:
-        """人工确认 checklist 后恢复 WorkLine 到 READY。"""
+        """人工确认 checklist 后解除冻结，WorkLine 回到 STOPPED 等待现场 START。"""
 
         if not checks or not all(checks.values()):
             raise ValueError("急停恢复 checklist 必须全部确认")

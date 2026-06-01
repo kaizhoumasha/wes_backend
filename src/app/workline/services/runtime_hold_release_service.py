@@ -141,7 +141,7 @@ class ReturnToNgReleaseContext:
 
 
 class RuntimeHoldReleaseService:
-    """Runtime Hold 解除服务，是 WorkLine 恢复 READY 的唯一业务入口。"""
+    """Runtime Hold 解除服务，是 WorkLine 回到 STOPPED 等待 START 的唯一业务入口。"""
 
     def __init__(
         self,
@@ -309,9 +309,9 @@ class RuntimeHoldReleaseService:
             release_workline_scope=release_workline_scope,
         )
         if release_workline_scope:
-            workline.runtime_status = WorkLineRuntimeStatus.READY
-            workline.resumed_at = now
-            workline.stopped_reason = None
+            workline.runtime_status = WorkLineRuntimeStatus.STOPPED
+            workline.resumed_at = None
+            workline.stopped_reason = "RECOVERY_CLEARED_WAITING_START"
         else:
             self._project_remaining_hold_status(workline, remaining_holds)
 
