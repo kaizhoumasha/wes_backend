@@ -24,7 +24,11 @@ from src.workline_plugins.rough_sorter.contract import (
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_creates_required_topology(db_session) -> None:
+async def test_sync_test_workline_devices_creates_required_topology(db_session, monkeypatch) -> None:
+    monkeypatch.delenv("MOCK_ECS_URL", raising=False)
+    monkeypatch.delenv("MOCK_ECS_HOST", raising=False)
+    monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
+
     result = await sync_test_workline_devices(db_session)
 
     assert result["summary"]["worklines"]["created"] == 1
@@ -50,8 +54,50 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session) 
     ]
     assert conveyor.capabilities_json["supports_command_types"] == [ACTION_MOVE_FORWARD]
     assert output_arm.capabilities_json["supports_command_types"] == [ACTION_PUT_TO_BIN]
+    assert {device.host for device in devices} == {"localhost"}
+    assert {device.port for device in devices} == {8010}
+    assert {device.callback_path for device in devices} == {"/api/v1/device/command"}
     assert conveyor.upstream_device_id == input_arm.id
     assert output_arm.upstream_device_id == conveyor.id
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_defaults_device_connection_to_localhost(db_session, monkeypatch) -> None:
+    monkeypatch.delenv("MOCK_ECS_URL", raising=False)
+    monkeypatch.delenv("MOCK_ECS_HOST", raising=False)
+    monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
+
+    await sync_test_workline_devices(db_session)
+
+    devices = (await db_session.execute(select(Device))).scalars().all()
+    assert {device.host for device in devices} == {"localhost"}
+    assert {device.port for device in devices} == {8010}
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_uses_mock_ecs_env_connection(db_session, monkeypatch) -> None:
+    monkeypatch.delenv("MOCK_ECS_URL", raising=False)
+    monkeypatch.setenv("MOCK_ECS_HOST", "mock_ecs")
+    monkeypatch.setenv("MOCK_ECS_PORT", "8010")
+
+    await sync_test_workline_devices(db_session)
+
+    devices = (await db_session.execute(select(Device))).scalars().all()
+    assert {device.host for device in devices} == {"mock_ecs"}
+    assert {device.port for device in devices} == {8010}
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_prefers_mock_ecs_url(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("MOCK_ECS_URL", "http://mock_ecs:8010")
+    monkeypatch.setenv("MOCK_ECS_HOST", "localhost")
+    monkeypatch.setenv("MOCK_ECS_PORT", "9999")
+
+    await sync_test_workline_devices(db_session)
+
+    devices = (await db_session.execute(select(Device))).scalars().all()
+    assert {device.host for device in devices} == {"mock_ecs"}
+    assert {device.port for device in devices} == {8010}
 
 
 @pytest.mark.asyncio

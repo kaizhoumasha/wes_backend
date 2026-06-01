@@ -8,7 +8,7 @@
 FROM python:3.13-slim
 
 LABEL maintainer="WES Backend Team"
-LABEL description="Mock 设备服务（摄像头、机械臂）用于 E2E 测试"
+LABEL description="Mock 外部系统服务（ECS、WMS）用于 E2E 测试"
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir \
 # 复制 mock 服务代码
 WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
+COPY src/workline_runtime/sandbox_catalog.py /app/src/workline_runtime/sandbox_catalog.py
 
 # 创建非 root 用户
 RUN useradd -m -u 1000 mockuser && \
@@ -41,4 +42,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 WORKDIR /app/tests/mock
 
 # 默认命令（可被 docker-compose 覆盖）
-CMD ["python", "-m", "uvicorn", "camera_mock_server:app", "--host", "0.0.0.0", "--port", "8003"]
+CMD ["python", "-m", "uvicorn", "ecs_mock_server:app", "--host", "0.0.0.0", "--port", "8010"]

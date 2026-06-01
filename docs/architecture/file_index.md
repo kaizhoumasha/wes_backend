@@ -504,7 +504,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `e2e/__init__.py` | E2E 测试模块导出 | 🔧 架构核心 |
-| `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用摄像头传感器 API） | 🔄 常用功能 |
+| `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用 ECS Mock 事件 API） | 🔄 常用功能 |
 
 #### 🎭 Mock 设备服务
 
@@ -513,24 +513,17 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `mock/` | E2E 测试 Mock 设备服务 | 🔧 架构核心 |
 | `mock/Dockerfile` | Mock 服务 Docker 镜像构建 | 🔧 架构核心 |
 | `mock/__init__.py` | Mock 服务模块导出 | 🔧 架构核心 |
-| `mock/camera_mock_server.py` | 摄像头 Mock 服务（含传感器模拟 API） | 🔧 架构核心 |
-| `mock/robot_arm_mock_server.py` | 机械臂 Mock 服务（接收指令、回调结果） | 🔧 架构核心 |
-| `mock/README.md` | Mock 服务使用文档（含传感器 API 说明） | 📖 必读文档 |
+| `mock/ecs_mock_catalog.py` | ECS Mock 多设备目录、能力和默认回调数据 | 🔧 架构核心 |
+| `mock/ecs_mock_server.py` | ECS Mock 单服务多设备协议入口（端口 8010） | 🔧 架构核心 |
+| `mock/wms_mock_server.py` | WMS Mock 服务（主数据、库存、预约释放） | 🔧 架构核心 |
 
 **Mock 服务 API 端点**：
 
-**摄像头 Mock (端口 8003)**：
-- `GET /api/v1/device/status` - 设备状态查询
-- `POST /api/v1/sensor/trigger` - 手动触发传感器检测物料到达
-- `POST /api/v1/sensor/auto/start` - 启动自动触发
-- `POST /api/v1/sensor/auto/stop` - 停止自动触发
-- `GET /api/v1/sensor/status` - 获取传感器状态
-- `GET /api/v1/sensor/events` - 获取事件历史记录
-
-**机械臂 Mock (端口 8004)**：
-- `GET /api/v1/device/status` - 设备状态查询
-- `POST /api/v1/device/command` - 接收设备指令
-- `POST /api/v1/device/cancel` - 取消执行指令
+**ECS Mock (端口 8010)**：
+- `POST /api/v1/device/command` - 接收 WES 下发命令，顶层必须包含 `device_code`
+- `GET /api/v1/device/status?device_code=...` - 查询单设备状态；不传 `device_code` 返回全部设备
+- `POST /api/v1/mock/event` - 手动上报设备事件，替代旧 `/api/v1/sensor/trigger`
+- `POST /api/v1/mock/devices/{device_code}/scenario` - 设置 `success`、`fail`、`timeout` 故障注入场景
 
 ---
 

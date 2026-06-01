@@ -1,7 +1,22 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from src.workline_runtime.sandbox_catalog import mock_wms_inventory_seed, rough_sorter_scan_completed_payload
 from tests.mock import wms_mock_server
+
+
+def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> None:
+    source = Path(wms_mock_server.__file__).read_text()
+
+    assert "from src.workline_runtime.sandbox_catalog import" not in source
+    assert "spec_from_file_location" in source
+
+
+def test_wms_mock_dockerfile_copies_shared_catalog_dependency() -> None:
+    dockerfile = Path(__file__).resolve().parents[2] / "tests" / "mock" / "Dockerfile"
+
+    assert "COPY src/workline_runtime/sandbox_catalog.py" in dockerfile.read_text()
 
 
 def test_wms_mock_release_reservation_matches_typed_port_contract() -> None:

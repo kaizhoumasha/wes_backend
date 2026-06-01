@@ -12,6 +12,7 @@ WMS Mock 服务
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
 import sys
@@ -28,7 +29,22 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.workline_runtime.sandbox_catalog import mock_wms_inventory_seed, mock_wms_materials_seed
+
+def _load_sandbox_catalog() -> Any:
+    """按文件加载共享 catalog，避免导入完整后端运行时包。"""
+
+    catalog_path = project_root / "src" / "workline_runtime" / "sandbox_catalog.py"
+    spec = importlib.util.spec_from_file_location("wes_mock_sandbox_catalog", catalog_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 WMS mock catalog: {catalog_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_sandbox_catalog = _load_sandbox_catalog()
+mock_wms_inventory_seed = _sandbox_catalog.mock_wms_inventory_seed
+mock_wms_materials_seed = _sandbox_catalog.mock_wms_materials_seed
 
 logging.basicConfig(
     level=logging.INFO,

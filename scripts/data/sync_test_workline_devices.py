@@ -4,10 +4,12 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -34,6 +36,9 @@ from src.workline_plugins.rough_sorter.contract import (
 )
 
 TEST_ROUGH_SORTER_LINE_CODE = "WL-ROUGH-SORTER-TEST"
+DEFAULT_MOCK_ECS_HOST = "localhost"
+DEFAULT_MOCK_ECS_PORT = 8010
+MOCK_ECS_COMMAND_PATH = "/api/v1/device/command"
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,14 @@ class TestDeviceSeed:
     sort_order: int
     capabilities_json: dict[str, Any]
     upstream_device_code: str | None = None
+
+
+@dataclass(frozen=True)
+class MockEcsConnection:
+    """测试设备连接到 ECS Mock 的地址配置。"""
+
+    host: str
+    port: int
 
 
 TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
@@ -90,6 +103,23 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
         },
     ),
 )
+
+
+def _mock_ecs_connection_from_env() -> MockEcsConnection:
+    mock_ecs_url = os.getenv("MOCK_ECS_URL")
+    if mock_ecs_url:
+        parsed = urlparse(mock_ecs_url)
+        if not parsed.hostname:
+            raise ValueError("MOCK_ECS_URL 必须包含可解析的主机名")
+        default_port = 443 if parsed.scheme == "https" else 80
+        return MockEcsConnection(host=parsed.hostname, port=parsed.port or default_port)
+
+    raw_port = os.getenv("MOCK_ECS_PORT")
+    port = int(raw_port) if raw_port else DEFAULT_MOCK_ECS_PORT
+    return MockEcsConnection(
+        host=os.getenv("MOCK_ECS_HOST", DEFAULT_MOCK_ECS_HOST),
+        port=port,
+    )
 
 
 def _set_attrs(entity: Any, values: dict[str, Any]) -> bool:
@@ -179,6 +209,8 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
     states: dict[str, str] = {}
     devices_by_code: dict[str, Device] = {}
 
+    mock_ecs_connection = _mock_ecs_connection_from_env()
+
     for seed in TEST_ROUGH_SORTER_DEVICES:
         synced_values = {
             "device_code": seed.device_code,
@@ -200,11 +232,11 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
         }
         create_values = {
             **synced_values,
-            "host": seed.device_code,
-            "port": 8080,
+            "host": mock_ecs_connection.host,
+            "port": mock_ecs_connection.port,
             "protocol": DeviceProtocol.HTTP,
             "timeout": 300000,
-            "callback_path": "/api/v1/device/command",
+            "callback_path": MOCK_ECS_COMMAND_PATH,
         }
 
         device = await _get_device_by_code(db, seed.device_code)

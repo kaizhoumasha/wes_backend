@@ -48,7 +48,7 @@ class DeviceSimulator:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
+        base_url: str = "http://localhost:8010",
         api_key: str | None = None,
         config: SimulationConfig | None = None,
     ):
@@ -56,7 +56,7 @@ class DeviceSimulator:
         初始化设备模拟器
 
         Args:
-            base_url: API 基础URL
+            base_url: ECS Mock 基础URL
             api_key: API密钥（如需要）
             config: 模拟配置
         """
@@ -97,7 +97,7 @@ class DeviceSimulator:
             barcode = self._generate_barcode()
 
         payload = {
-            "device_code": "ARM01",  # 进料机械臂（扫码设备）
+            "device_code": "RS-INPUT-ARM-01",  # 进料机械臂（扫码设备）
             "event_type": "SCAN_COMPLETED",
             "timestamp": int(time.time() * 1000),
             "data": {
@@ -112,9 +112,9 @@ class DeviceSimulator:
             },
         }
 
-        # 使用 callback 统一入口（根据 device_code 自动路由到绑定的 WorkLine）
+        # 通过 ECS Mock 的手动事件入口上报，再由 Mock 负责签名回调 WES。
         response = await self.http_client.post(
-            "/api/v1/callback/event",
+            "/api/v1/mock/event",
             json=payload,
         )
 
@@ -161,7 +161,7 @@ class DeviceSimulator:
             inspection_result = self._get_inspection_result()
 
         payload = {
-            "device_code": "ARM01",  # 进料机械臂（扫码+检测）
+            "device_code": "RS-INPUT-ARM-01",  # 进料机械臂（扫码+检测）
             "event_type": "SCAN_COMPLETED",  # 简化插件使用统一事件类型
             "timestamp": int(time.time() * 1000),
             "data": {
@@ -177,10 +177,7 @@ class DeviceSimulator:
             },
         }
 
-        response = await self.http_client.post(
-            "/api/v1/callback/event",
-            json=payload,
-        )
+        response = await self.http_client.post("/api/v1/mock/event", json=payload)
 
         return response.json()
 
@@ -215,32 +212,32 @@ class DeviceSimulator:
         Returns:
             API 响应
         """
-        # 构建 CallbackResult 格式的 payload
-        # 注意：WES 期望字段名为 command_code，不是 command_type
+        device_code = self._get_device_code(command_code)
+        scenario = "fail" if result == "FAILED" else "success"
+        await self.http_client.post(f"/api/v1/mock/devices/{device_code}/scenario", json={"scenario": scenario})
+
         payload = {
-            "device_code": self._get_device_code(command_code),
+            "device_code": device_code,
             "command_code": command_code,
-            "result": result,
-            "finish_time": int(time.time() * 1000),
+            "task_type": command_code,
+            "params": {},
+            "timestamp": int(time.time() * 1000),
         }
         if error_code:
-            payload["error_detail"] = {"code": error_code, "message": error_code}
+            payload["params"]["error_code"] = error_code
 
-        # 使用 callback 统一入口
-        response = await self.http_client.post(
-            "/api/v1/callback/result",
-            json=payload,
-        )
+        response = await self.http_client.post("/api/v1/device/command", json=payload)
 
         return response.json()
 
     def _get_device_code(self, command_type: str) -> str:
         """根据命令类型获取设备代码（与 WorkLine 绑定的设备一致）"""
         device_map = {
-            "PICK_AND_PUT": "ARM01",  # 进料机械臂
-            "MOVE_FORWARD": "PIPELINE01",  # 粗分机流水线
-            "OUTPUT": "ARM02",  # 出料机械臂
-            "PICK_NG": "ARM01",  # NG 处理使用进料机械臂
+            "PICK_AND_PUT": "RS-INPUT-ARM-01",  # 进料机械臂
+            "MOVE_FORWARD": "RS-CONVEYOR-01",  # 粗分机流水线
+            "OUTPUT": "RS-OUTPUT-ARM-01",  # 出料机械臂
+            "PUT_TO_BIN": "RS-OUTPUT-ARM-01",  # 出料机械臂
+            "PICK_NG": "RS-INPUT-ARM-01",  # NG 处理使用进料机械臂
         }
         return device_map.get(command_type, "UNKNOWN")
 
@@ -385,7 +382,7 @@ class DeviceSimulator:
 
 
 async def create_simulator(
-    base_url: str = "http://localhost:8000",
+    base_url: str = "http://localhost:8010",
     api_key: str | None = None,
 ) -> DeviceSimulator:
     """创建设备模拟器"""

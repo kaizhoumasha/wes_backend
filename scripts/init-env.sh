@@ -177,6 +177,12 @@ while IFS= read -r line; do
         elif [[ "$line" =~ ^REDIS_HOST= ]]; then
             # 宿主机无法解析 Docker 容器主机名，需要替换为 localhost
             echo "REDIS_HOST=localhost"
+        elif [[ "$line" =~ ^MOCK_ECS_HOST= ]]; then
+            # 宿主机直跑 WES/Celery 时无法解析 Docker Compose 服务名
+            echo "MOCK_ECS_HOST=localhost"
+        elif [[ "$line" =~ ^MOCK_ECS_URL= ]]; then
+            # 宿主机直跑联调脚本时应访问端口映射后的本地 ECS Mock
+            echo "MOCK_ECS_URL=http://localhost:8010"
         else
             # 其他配置直接复制（包括数据库和 Redis 密码）
             echo "$line"

@@ -4,7 +4,7 @@ E2E 测试：流水线料盘搬运流程
 测试流程：
 1. 初始化数据库连接
 2. 设置测试数据（设备和用户）
-3. 通过摄像头传感器 API 触发料盘到达事件
+3. 通过 ECS Mock 事件 API 触发料盘到达事件
 4. Celery 异步处理事件
 5. 创建并下发搬运指令到机械臂
 6. 验证数据库状态
@@ -13,8 +13,7 @@ E2E 测试：流水线料盘搬运流程
 - WES 服务运行在 http://localhost:8001
 - Redis 运行在 localhost:6379
 - Celery Worker 正在运行
-- 摄像头 Mock 服务运行在 http://localhost:8003（含传感器模拟）
-- 机械臂 Mock 服务运行在 http://localhost:8004
+- ECS Mock 服务运行在 http://localhost:8010
 
 运行方式：
     pytest tests/e2e/test_conveyor_robot_arm.py -v -s
@@ -27,6 +26,7 @@ import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -51,8 +51,7 @@ if TYPE_CHECKING:
 # ============================================
 
 WES_BASE_URL = os.getenv("WES_BASE_URL", "http://localhost:8001")
-MOCK_CAMERA_URL = "http://localhost:8003"
-MOCK_ROBOT_ARM_URL = "http://localhost:8004"
+MOCK_ECS_URL = os.getenv("MOCK_ECS_URL", "http://localhost:8010")
 
 POSTGRES_USER = os.getenv("POSTGRES_USER", "wes_user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
@@ -118,6 +117,18 @@ async def db() -> AsyncGenerator[AsyncSession]:
 # ============================================
 
 
+def _mock_ecs_device_connection() -> dict[str, int | str]:
+    """从 Mock ECS URL 推导 WES 下发命令使用的设备通信地址。"""
+
+    parsed = urlparse(MOCK_ECS_URL)
+    scheme = parsed.scheme or "http"
+    default_port = 443 if scheme == "https" else 80
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or default_port,
+    }
+
+
 async def setup_test_data(db: AsyncSession):
     """设置测试数据（设备和用户）"""
     # 导入所有需要的模型（确保关系解析）
@@ -127,12 +138,17 @@ async def setup_test_data(db: AsyncSession):
     # 1. 删除现有测试数据
     await db.execute(delete(Device).where(Device.device_code.in_(["CAMERA-CONVEYOR-01", "ROBOT-ARM-01"])))
 
+    mock_ecs_connection = _mock_ecs_device_connection()
+
     # 2. 创建输送线设备（包含传感器，模拟摄像头功能）
-    # 注意：device_code 必须与 Mock Camera 服务的 device_id 一致
+    # 注意：device_code 必须与 ECS Mock catalog 一致
     conveyor = Device(
         device_code="CAMERA-CONVEYOR-01",
         device_name="输送线识别点",
-        device_type="CONVEYOR",
+        device_role="CAMERA",
+        host=mock_ecs_connection["host"],
+        port=mock_ecs_connection["port"],
+        callback_path="/api/v1/device/command",
     )
     db.add(conveyor)
 
@@ -140,7 +156,10 @@ async def setup_test_data(db: AsyncSession):
     robot = Device(
         device_code="ROBOT-ARM-01",
         device_name="搬运机械臂",
-        device_type="ROBOTIC_ARM",
+        device_role="ROBOT_ARM",
+        host=mock_ecs_connection["host"],
+        port=mock_ecs_connection["port"],
+        callback_path="/api/v1/device/command",
     )
     db.add(robot)
 
@@ -148,12 +167,16 @@ async def setup_test_data(db: AsyncSession):
     print("✅ 测试设备已创建")
 
 
-async def trigger_camera_sensor(barcode: str, location: str) -> dict:
-    """通过摄像头传感器 API 触发料盘到达事件"""
+async def trigger_ecs_event(barcode: str, location: str) -> dict:
+    """通过 ECS Mock API 触发料盘到达事件"""
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{MOCK_CAMERA_URL}/api/v1/sensor/trigger",
-            json={"barcode": barcode, "location": location},
+            f"{MOCK_ECS_URL}/api/v1/mock/event",
+            json={
+                "device_code": "CAMERA-CONVEYOR-01",
+                "event_type": "MATERIAL_ARRIVED",
+                "data": {"barcode": barcode, "location": location},
+            },
         )
         response.raise_for_status()
         return response.json()
@@ -262,7 +285,7 @@ async def test_full_conveyor_workflow(db):
 
     测试步骤：
     1. 设置测试数据
-    2. 通过摄像头传感器 API 触发料盘到达事件
+    2. 通过 ECS Mock API 触发料盘到达事件
     3. 等待事件记录
     4. 等待 Celery 任务创建指令
     5. 等待指令发送到机械臂
@@ -277,13 +300,12 @@ async def test_full_conveyor_workflow(db):
     print("\n[Step 1] 设置测试数据...")
     await setup_test_data(db)
 
-    # Step 2: 通过摄像头传感器 API 触发料盘到达事件
-    print("\n[Step 2] 通过摄像头传感器 API 触发料盘到达事件...")
-    sensor_response = await trigger_camera_sensor(TEST_BARCODE, TEST_LOCATION)
-    assert sensor_response["event_type"] == "MATERIAL_ARRIVED"
-    assert sensor_response["barcode"] == TEST_BARCODE
-    assert sensor_response["location"] == TEST_LOCATION
-    print(f"✅ 传感器已触发: event_id={sensor_response['event_id']}, barcode={TEST_BARCODE}")
+    # Step 2: 通过 ECS Mock API 触发料盘到达事件
+    print("\n[Step 2] 通过 ECS Mock API 触发料盘到达事件...")
+    sensor_response = await trigger_ecs_event(TEST_BARCODE, TEST_LOCATION)
+    assert sensor_response["code"] == 200
+    assert sensor_response["data"]["device_code"] == "CAMERA-CONVEYOR-01"
+    print(f"✅ ECS 事件已提交: barcode={TEST_BARCODE}")
 
     # Step 3: 等待事件记录
     print("\n[Step 3] 等待设备事件进入 Inbox...")
@@ -359,20 +381,11 @@ async def test_sensor_auto_trigger(db):
     await setup_test_data(db)
 
     # Step 2: 启动自动触发
-    print("\n[Step 2] 启动传感器自动触发...")
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{MOCK_CAMERA_URL}/api/v1/sensor/auto/start",
-            json={
-                "interval_seconds": 5,
-                "max_triggers": 3,
-                "location": TEST_LOCATION,
-            },
-        )
-        response.raise_for_status()
-        start_result = response.json()
-        assert start_result["status"] == "started"
-        print(f"✅ 自动触发已启动: {start_result['config']}")
+    print("\n[Step 2] 连续提交 ECS Mock 事件...")
+    for index in range(3):
+        response = await trigger_ecs_event(f"{TEST_BARCODE}-{index + 1}", TEST_LOCATION)
+        assert response["code"] == 200
+    print("✅ 已提交 3 个 ECS Mock 事件")
 
     # Step 3: 等待所有事件和指令创建
     print("\n[Step 3] 等待所有事件和指令创建...")
@@ -402,30 +415,17 @@ async def test_sensor_auto_trigger(db):
     assert len(commands) == 3
     print(f"✅ 共创建了 {len(commands)} 条指令")
 
-    # Step 4: 停止自动触发（如果还在运行）
-    print("\n[Step 4] 停止自动触发...")
+    # Step 4: 验证 ECS Mock 设备状态
+    print("\n[Step 4] 验证 ECS Mock 设备状态...")
     async with httpx.AsyncClient() as client:
-        response = await client.post(f"{MOCK_CAMERA_URL}/api/v1/sensor/auto/stop")
-        # 如果已经自动停止（400错误），这是正常情况
-        if response.status_code == 400:
-            print("✅ 自动触发已自动完成（达到最大触发次数）")
-        else:
-            response.raise_for_status()
-            stop_result = response.json()
-            assert stop_result["status"] == "stopped"
-            print(f"✅ 自动触发已停止: total_triggers={stop_result['trigger_count']}")
-
-    # Step 5: 验证传感器状态
-    print("\n[Step 5] 验证传感器状态...")
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{MOCK_CAMERA_URL}/api/v1/sensor/status")
+        response = await client.get(
+            f"{MOCK_ECS_URL}/api/v1/device/status", params={"device_code": "CAMERA-CONVEYOR-01"}
+        )
         response.raise_for_status()
         status = response.json()
-        assert not status["is_auto_triggering"]
-        assert status["trigger_count"] >= 3
-        print(
-            f"✅ 传感器状态正确: is_auto_triggering={status['is_auto_triggering']}, trigger_count={status['trigger_count']}"
-        )
+        assert status["state"]["device_code"] == "CAMERA-CONVEYOR-01"
+        assert status["state"]["is_online"] is True
+        print("✅ ECS Mock 摄像头状态正常")
 
     print("\n" + "=" * 60)
     print("传感器自动触发测试通过!")
@@ -454,27 +454,17 @@ async def test_sensor_events_history(db):
     print("\n[Step 2] 触发多个传感器事件...")
     barcodes = ["PKG-001", "PKG-002", "PKG-003"]
     for barcode in barcodes:
-        await trigger_camera_sensor(barcode, TEST_LOCATION)
+        await trigger_ecs_event(barcode, TEST_LOCATION)
         await asyncio.sleep(0.5)  # 避免时间戳重复
     print(f"✅ 已触发 {len(barcodes)} 个事件")
 
-    # Step 3: 查询事件历史
-    print("\n[Step 3] 查询传感器事件历史...")
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{MOCK_CAMERA_URL}/api/v1/sensor/events?limit=10")
-        response.raise_for_status()
-        events = response.json()
-        assert len(events) >= 3
-        print(f"✅ 事件历史记录: 共 {len(events)} 条")
-
-    # Step 4: 验证事件内容
-    print("\n[Step 4] 验证事件内容...")
-    latest_events = events[-3:]
-    for i, event in enumerate(latest_events):
-        assert event["event_type"] == "MATERIAL_ARRIVED"
-        assert event["barcode"] == barcodes[i]
-        assert event["location"] == TEST_LOCATION
-        print(f"✅ 事件 {i + 1}: barcode={event['barcode']}, event_id={event['event_id']}")
+    # Step 3: 验证事件进入 WES Inbox
+    print("\n[Step 3] 验证事件进入 WES Inbox...")
+    event = await get_latest_inbox_event(db)
+    assert event is not None
+    assert event["device_code"] == "CAMERA-CONVEYOR-01"
+    assert event["event_type"] == "MATERIAL_ARRIVED"
+    print(f"✅ 最新事件已入 Inbox: inbox_id={event['id']}")
 
     print("\n" + "=" * 60)
     print("传感器事件历史记录测试通过!")
@@ -498,8 +488,7 @@ async def test_sensor_events_history(db):
    uv run celery -A src.celery_app.app worker --loglevel=info --pool=solo
 
 4. 启动 Mock 服务
-   uv run python tests/mock/camera_mock_server.py
-   uv run python tests/mock/robot_arm_mock_server.py
+   uv run python tests/mock/ecs_mock_server.py
 
 运行测试：
     pytest tests/e2e/test_conveyor_robot_arm.py -v -s
