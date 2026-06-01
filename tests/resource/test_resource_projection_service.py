@@ -18,6 +18,7 @@ from src.app.resource.models import (
     ResourceSourceSystem,
     ResourceStateEvent,
     ResourceStateEventType,
+    ResourceType,
 )
 from src.app.resource.services import ResourceProjectionStatus
 from src.app.resource.services.projection_service import ResourceProjectionService
@@ -179,12 +180,19 @@ class RecordingBinMaterialMountRepo:
         self.active_by_material_identity = active_by_material_identity
         self.material_identity_lookups: list[str] = []
         self.created: list[dict[str, Any]] = []
+        self.saved: list[dict[str, Any]] = []
 
     async def get_active_by_bin_cell(
         self, _db: object, *, bin_code: str, bin_cell_index: str
     ) -> BinMaterialMount | None:
         assert (bin_code, bin_cell_index) == ("BIN-001", "4")
         return self.active_by_cell
+
+    async def list_active_by_bin_cell(
+        self, _db: object, *, bin_code: str, bin_cell_index: str
+    ) -> list[BinMaterialMount]:
+        assert (bin_code, bin_cell_index) == ("BIN-001", "4")
+        return [self.active_by_cell] if self.active_by_cell is not None else []
 
     async def get_active_by_pkg_code(self, _db: object, pkg_code: str) -> BinMaterialMount | None:
         assert pkg_code == "PKG-001"
@@ -207,6 +215,10 @@ class RecordingBinMaterialMountRepo:
     async def create(self, _db: object, data: dict[str, Any]) -> BinMaterialMount:
         self.created.append(data)
         return BinMaterialMount(**data)
+
+    async def save(self, _db: object, mount: BinMaterialMount) -> BinMaterialMount:
+        self.saved.append(mount.model_dump())
+        return mount
 
 
 class RecordingBinCellOccupancyRepo:
@@ -751,6 +763,252 @@ async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_value
         not isinstance(occupancies.created[0][key], float)
         for key in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm")
     )
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_updates_occupancy() -> None:
+    mounts = RecordingBinMaterialMountRepo(
+        active_by_cell=_mount(
+            cell_stack_position=2,
+            pkg_code="PKG-TOP",
+            wms_inventory_id="INV-TOP",
+            reel_thickness="0.10",
+            source_version="7",
+        )
+    )
+    occupancy = _occupancy(
+        reel_count=2,
+        used_depth_mm=Decimal("0.20"),
+        capacity_depth_mm=Decimal("0.30"),
+        remaining_depth_mm=Decimal("0.10"),
+    )
+    occupancies = RecordingBinCellOccupancyRepo(active_by_cell=occupancy)
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        source_version="8",
+        trace_id="trace-unmount",
+        session_id="2001",
+        workline_session_id=2001,
+        workline_id=1001,
+        reel_thickness="0.10",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert mounts.saved[0]["mount_status"] == BinMaterialMountStatus.REMOVED
+    assert mounts.saved[0]["ended_at"] == datetime(2026, 5, 18, 9, 10, 0)
+    assert occupancies.saved[0]["reel_count"] == 1
+    assert occupancies.saved[0]["used_depth_mm"] == Decimal("0.10")
+    assert occupancies.saved[0]["remaining_depth_mm"] == Decimal("0.20")
+    assert occupancies.saved[0]["occupancy_status"] == "OCCUPIED"
+    assert occupancies.saved[0]["ended_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_duplicate_event_does_not_double_decrement() -> None:
+    existing_event = ResourceStateEvent(
+        event_code="WES_RUNTIME:CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        event_type=ResourceStateEventType.MATERIAL_UNMOUNTED.value,
+        resource_type=ResourceType.MATERIAL.value,
+        resource_code="PKG-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        payload_json={},
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        received_at=datetime(2026, 5, 18, 9, 10, 1),
+    )
+    mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP"))
+    occupancies = RecordingBinCellOccupancyRepo(active_by_cell=_occupancy(reel_count=1))
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(existing_event),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=occupancies,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id=None,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.DUPLICATE
+    assert mounts.saved == []
+    assert occupancies.saved == []
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_missing_top_mount_creates_reconciliation_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(active_by_cell=None),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-MISSING",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISSING:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        session_id="2001",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_ACTIVE_MOUNT_MISSING"
+    assert runtime_holds.created[0]["source_reason"] == "MATERIAL_UNMOUNTED_ACTIVE_MOUNT_MISSING"
+    assert runtime_holds.created[0]["evidence"]["source_session_id"] == 2001
+    assert runtime_holds.created[0]["evidence"]["source_event_id"] == "CMD-UNMOUNT-MISSING"
+    assert runtime_holds.created[0]["evidence"]["bin_code"] == "BIN-001"
+    assert runtime_holds.created[0]["evidence"]["bin_cell_index"] == "4"
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_identity_mismatch_creates_reconciliation_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    mounts = RecordingBinMaterialMountRepo(
+        active_by_cell=_mount(
+            material_identity_key="MAT:DIFFERENT:122625:8904936031",
+            pkg_code="PKG-DIFFERENT",
+            wms_inventory_id="INV-DIFFERENT",
+        )
+    )
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-MISMATCH",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISMATCH:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        session_id="2001",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH"
+    evidence = runtime_holds.created[0]["evidence"]
+    assert evidence["expected_material_identity_key"] == "MAT:620100L00-011-G:122625:8904936031"
+    assert evidence["active_material_identity_key"] == "MAT:DIFFERENT:122625:8904936031"
+    assert evidence["active_pkg_code"] == "PKG-DIFFERENT"
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_source_version_mismatch_creates_reconciliation_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP", source_version="9"))
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id=None,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-STALE",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-STALE:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        source_version="8",
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_SOURCE_VERSION_STALE"
+    evidence = runtime_holds.created[0]["evidence"]
+    assert evidence["source_version"] == "8"
+    assert evidence["active_source_version"] == "9"
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_inconsistent_occupancy_creates_reconciliation_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP", bin_cell_occupancy_id=9901))
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy(id=7701)),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id=None,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-INCONSISTENT",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-INCONSISTENT:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT"
+    evidence = runtime_holds.created[0]["evidence"]
+    assert evidence["active_occupancy_id"] == 7701
+    assert evidence["mount_occupancy_id"] == 9901
 
 
 @pytest.mark.asyncio

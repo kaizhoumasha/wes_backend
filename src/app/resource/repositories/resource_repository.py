@@ -452,6 +452,14 @@ class BinMaterialMountRepository(BaseRepository[BinMaterialMount]):
         )
         return list(result.scalars().all())
 
+    async def save(self, db: AsyncSession, mount: BinMaterialMount) -> BinMaterialMount:
+        """保存已变更的物料格位明细。"""
+
+        db.add(mount)
+        await db.flush()
+        await db.refresh(mount)
+        return mount
+
 
 class BinCellOccupancyRepository(BaseRepository[BinCellOccupancy]):
     """料箱格位聚合占用 Repository。"""
