@@ -187,8 +187,11 @@ async def test_start_admission_rejects_ecs_response_failures_without_ready(
     assert result.accepted is False
     assert result.http_status == 409
     assert result.reason_code == reason_code
+    assert result.diagnostic["device_code"] == "RS-CONV-01"
+    assert result.diagnostic["device_codes"] == ("RS-CONV-01", "RS-IN-01", "RS-OUT-01")
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert workline.start_admission_status == "FAILED"
+    assert workline.start_admission_failed_device_code == "RS-CONV-01"
 
 
 @pytest.mark.asyncio
@@ -211,7 +214,10 @@ async def test_start_admission_rejects_ecs_timeout_without_ready(db_session) -> 
     assert result.accepted is False
     assert result.http_status == 409
     assert result.reason_code == "START_ADMISSION_ECS_TIMEOUT"
+    assert result.diagnostic["device_code"] == "RS-CONV-01"
+    assert result.diagnostic["device_codes"] == ("RS-CONV-01", "RS-IN-01", "RS-OUT-01")
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
+    assert workline.start_admission_failed_device_code == "RS-CONV-01"
 
 
 def test_start_admission_runtime_config_defaults_and_clamps() -> None:
@@ -255,3 +261,71 @@ async def test_start_admission_refuses_ready_when_final_cas_drifts(
     assert result.reason_code == "START_ADMISSION_STATE_CHANGED"
     assert workline.runtime_status == drift_status
     assert workline.start_admission_status == "FAILED"
+
+
+@pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
+@pytest.mark.asyncio
+async def test_start_admission_probe_failure_rechecks_guard_before_recording_ecs_failure(
+    db_session,
+    drift_status: WorkLineRuntimeStatus,
+) -> None:
+    """ECS probe 失败后 final guard 漂移时，应记录 guard failure 而不是覆盖为 ECS failure。"""
+
+    workline = _make_workline()
+    await _persist_workline_with_devices(db_session, workline)
+
+    async def drifting_fetcher(
+        target: StartAdmissionStatusTarget,
+        timeout_seconds: float,
+    ) -> StartAdmissionStatusFetchResult:
+        workline.runtime_status = drift_status
+        await db_session.commit()
+        return StartAdmissionStatusFetchResult(status_code=503, payload={"error": "ecs down"})
+
+    service = WorkLineStartAdmissionService(status_fetcher=drifting_fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-probe-drift")
+
+    await db_session.refresh(workline)
+    assert result.accepted is False
+    assert result.reason_code == "START_ADMISSION_STATE_CHANGED"
+    assert result.diagnostic["runtime_status"] == drift_status.value
+    assert workline.runtime_status == drift_status
+    assert workline.start_admission_status == "FAILED"
+    assert "不是 STOPPED" in (workline.start_admission_message or "")
+    assert workline.start_admission_failed_device_code is None
+
+
+@pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
+@pytest.mark.asyncio
+async def test_start_admission_status_failure_rechecks_guard_before_recording_device_failure(
+    db_session,
+    drift_status: WorkLineRuntimeStatus,
+) -> None:
+    """设备非 IDLE 后 final guard 漂移时，应记录 guard failure 而不是覆盖为设备状态 failure。"""
+
+    workline = _make_workline()
+    devices = await _persist_workline_with_devices(db_session, workline)
+    payload = _idle_payload(devices)
+    payload["devices"][1]["state"]["status"] = "RUNNING"
+
+    async def drifting_fetcher(
+        target: StartAdmissionStatusTarget,
+        timeout_seconds: float,
+    ) -> StartAdmissionStatusFetchResult:
+        workline.runtime_status = drift_status
+        await db_session.commit()
+        return StartAdmissionStatusFetchResult(status_code=200, payload=payload)
+
+    service = WorkLineStartAdmissionService(status_fetcher=drifting_fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-status-drift")
+
+    await db_session.refresh(workline)
+    assert result.accepted is False
+    assert result.reason_code == "START_ADMISSION_STATE_CHANGED"
+    assert result.diagnostic["runtime_status"] == drift_status.value
+    assert workline.runtime_status == drift_status
+    assert workline.start_admission_status == "FAILED"
+    assert "不是 STOPPED" in (workline.start_admission_message or "")
+    assert workline.start_admission_failed_device_code is None

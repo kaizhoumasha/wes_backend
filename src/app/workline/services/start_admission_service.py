@@ -138,31 +138,23 @@ class WorkLineStartAdmissionService:
             batch_concurrency=batch_concurrency,
         )
         if probe_result is not None:
-            current = await workline_repository.get_for_update(db, workline_id)
-            if current is not None:
-                await self._record_failure(
-                    db,
-                    current,
-                    message=probe_result.message,
-                    diagnostic=probe_result.diagnostic,
-                    request_id=request_id,
-                    trace_id=trace_id,
-                )
-            return probe_result
+            return await self._record_post_probe_failure(
+                db,
+                workline_id,
+                probe_result,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
 
         status_result = self._validate_required_device_status(target_devices, targets, status_by_device_code)
         if status_result is not None:
-            current = await workline_repository.get_for_update(db, workline_id)
-            if current is not None:
-                await self._record_failure(
-                    db,
-                    current,
-                    message=status_result.message,
-                    diagnostic=status_result.diagnostic,
-                    request_id=request_id,
-                    trace_id=trace_id,
-                )
-            return status_result
+            return await self._record_post_probe_failure(
+                db,
+                workline_id,
+                status_result,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
 
         current = await workline_repository.get_for_update(db, workline_id)
         if current is None:
@@ -343,28 +335,28 @@ class WorkLineStartAdmissionService:
                         None,
                         "START_ADMISSION_ECS_TIMEOUT",
                         f"START 准入失败: ECS status 查询超时: {target.url}",
-                        {"target_url": target.url, "error": str(exc)},
+                        self._target_failure_diagnostic(target, {"error": str(exc)}),
                     )
                 except httpx.HTTPError as exc:
                     return self._rejected(
                         None,
                         "START_ADMISSION_ECS_HTTP_ERROR",
                         f"START 准入失败: ECS status 查询失败: {target.url}",
-                        {"target_url": target.url, "error": str(exc)},
+                        self._target_failure_diagnostic(target, {"error": str(exc)}),
                     )
                 except ValueError as exc:
                     return self._rejected(
                         None,
                         "START_ADMISSION_ECS_BAD_JSON",
                         "START 准入失败: ECS status 响应格式无效",
-                        {"target_url": target.url, "error": str(exc)},
+                        self._target_failure_diagnostic(target, {"error": str(exc)}),
                     )
                 if not 200 <= response.status_code < 300:
                     return self._rejected(
                         None,
                         "START_ADMISSION_ECS_HTTP_ERROR",
                         f"START 准入失败: ECS status 返回非 2xx: {response.status_code}",
-                        {"target_url": target.url, "status_code": response.status_code},
+                        self._target_failure_diagnostic(target, {"status_code": response.status_code}),
                     )
                 records = self._extract_status_records(response.payload)
                 if records is None:
@@ -372,7 +364,7 @@ class WorkLineStartAdmissionService:
                         None,
                         "START_ADMISSION_ECS_BAD_JSON",
                         "START 准入失败: ECS status 响应格式无效",
-                        {"target_url": target.url},
+                        self._target_failure_diagnostic(target),
                     )
                 for record in records:
                     device_code = record.get("device_code")
@@ -381,14 +373,14 @@ class WorkLineStartAdmissionService:
                             None,
                             "START_ADMISSION_ECS_BAD_JSON",
                             "START 准入失败: ECS status 响应缺少 device_code",
-                            {"target_url": target.url, "record": record},
+                            self._target_failure_diagnostic(target, {"record": record}),
                         )
                     if device_code in status_by_device_code:
                         return self._rejected(
                             None,
                             "START_ADMISSION_ECS_BAD_JSON",
                             "START 准入失败: ECS status 响应存在重复 device_code",
-                            {"target_url": target.url, "device_code": device_code},
+                            self._target_failure_diagnostic(target, {"device_code": device_code}),
                         )
                     status_by_device_code[device_code] = record
                 return None
@@ -405,11 +397,57 @@ class WorkLineStartAdmissionService:
                             None,
                             "START_ADMISSION_DEVICE_STATUS_MISSING",
                             f"START 准入失败: ECS status 未返回设备 {device_code}",
-                            {"target_url": target.url, "device_code": device_code},
+                            self._target_failure_diagnostic(target, {"device_code": device_code}),
                         ),
                         status_by_device_code,
                     )
         return None, status_by_device_code
+
+    async def _record_post_probe_failure(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        failure: StartAdmissionResult,
+        *,
+        request_id: str | None,
+        trace_id: str | None,
+    ) -> StartAdmissionResult:
+        current = await workline_repository.get_for_update(db, workline_id)
+        if current is None:
+            return self._rejected(
+                workline_id,
+                "START_ADMISSION_WORKLINE_NOT_FOUND",
+                "START 准入失败: WorkLine 不存在",
+                {"workline_id": workline_id},
+            )
+
+        final_guard = await self._guard_startable(db, current)
+        if final_guard is not None:
+            diagnostic = {"workline_id": workline_id, "runtime_status": self._runtime_status(current)}
+            await self._record_failure(
+                db,
+                current,
+                message=final_guard,
+                diagnostic=diagnostic,
+                request_id=request_id,
+                trace_id=trace_id,
+            )
+            return self._rejected(
+                workline_id,
+                "START_ADMISSION_STATE_CHANGED",
+                final_guard,
+                diagnostic,
+            )
+
+        await self._record_failure(
+            db,
+            current,
+            message=failure.message,
+            diagnostic=failure.diagnostic,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+        return failure
 
     def _validate_required_device_status(
         self,
@@ -517,6 +555,22 @@ class WorkLineStartAdmissionService:
     def _diagnostic_device_code(diagnostic: dict[str, Any]) -> str | None:
         value = diagnostic.get("device_code")
         return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _target_failure_diagnostic(
+        target: StartAdmissionStatusTarget,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        diagnostic: dict[str, Any] = {
+            "target_url": target.url,
+            "device_codes": target.device_codes,
+            "device_code": target.device_codes[0] if target.device_codes else None,
+        }
+        if extra:
+            diagnostic.update(extra)
+            if "device_code" not in extra and target.device_codes:
+                diagnostic["device_code"] = target.device_codes[0]
+        return diagnostic
 
     @staticmethod
     def _runtime_status(workline: Any) -> str | None:
