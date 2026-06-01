@@ -2,7 +2,13 @@ import pytest
 
 from src.workline_runtime.plugin_base import WorklinePlugin, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
-from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS, assert_not_reserved_runtime_event
+from src.workline_runtime.runtime_events import (
+    RESERVED_RUNTIME_EVENTS,
+    assert_not_reserved_runtime_event,
+    is_platform_control_event,
+    is_platform_safety_event,
+    is_production_event,
+)
 
 
 def _business_key(_payload: dict[str, object]) -> str | None:
@@ -11,6 +17,20 @@ def _business_key(_payload: dict[str, object]) -> str | None:
 
 def test_estop_is_reserved_runtime_event() -> None:
     assert "ESTOP_PRESSED" in RESERVED_RUNTIME_EVENTS
+
+
+def test_platform_runtime_event_taxonomy_separates_control_safety_and_production_events() -> None:
+    assert is_platform_control_event("WORKLINE_START_REQUESTED") is True
+    assert is_platform_safety_event("WORKLINE_START_REQUESTED") is False
+    assert is_production_event("WORKLINE_START_REQUESTED") is False
+
+    assert is_platform_control_event("ESTOP_PRESSED") is False
+    assert is_platform_safety_event("ESTOP_PRESSED") is True
+    assert is_production_event("ESTOP_PRESSED") is False
+
+    assert is_platform_control_event("SCAN_COMPLETED") is False
+    assert is_platform_safety_event("SCAN_COMPLETED") is False
+    assert is_production_event("SCAN_COMPLETED") is True
 
 
 def test_runtime_event_helper_rejects_estop_with_actionable_message() -> None:

@@ -11,6 +11,7 @@ class CallbackRejectedResponse(BaseModel):
     """Callback 入口拒收响应数据。"""
 
     ack: Literal[False] = Field(default=False, description="入口是否接收")
+    reason_code: str | None = Field(default=None, description="拒收原因代码")
 
 
 class CallbackResultAcceptedResponse(BaseModel):
@@ -51,8 +52,8 @@ type CallbackEventIngressResponse = ResponseSchemaModel[CallbackEventAcceptedRes
 type CallbackExternalIngressResponse = ResponseSchemaModel[CallbackExternalAcceptedResponse | CallbackRejectedResponse]
 
 
-def build_callback_rejected_response() -> CallbackRejectedResponse:
-    return CallbackRejectedResponse()
+def build_callback_rejected_response(reason_code: str | None = None) -> CallbackRejectedResponse:
+    return CallbackRejectedResponse(reason_code=reason_code)
 
 
 def build_callback_result_accepted_response(

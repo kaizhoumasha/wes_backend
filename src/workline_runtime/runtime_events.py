@@ -7,7 +7,26 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+PLATFORM_CONTROL_EVENTS = frozenset({"WORKLINE_START_REQUESTED"})
 RESERVED_RUNTIME_EVENTS = frozenset({"ESTOP_PRESSED"})
+
+
+def is_platform_control_event(event_type: str) -> bool:
+    """判断事件是否为平台控制事件。"""
+
+    return event_type in PLATFORM_CONTROL_EVENTS
+
+
+def is_platform_safety_event(event_type: str) -> bool:
+    """判断事件是否为平台安全事件。"""
+
+    return event_type in RESERVED_RUNTIME_EVENTS
+
+
+def is_production_event(event_type: str) -> bool:
+    """判断事件是否为普通生产事件。"""
+
+    return not is_platform_control_event(event_type) and not is_platform_safety_event(event_type)
 
 
 def assert_not_reserved_runtime_event(
@@ -42,7 +61,11 @@ def assert_no_reserved_runtime_events(
 
 
 __all__ = [
+    "PLATFORM_CONTROL_EVENTS",
     "RESERVED_RUNTIME_EVENTS",
     "assert_no_reserved_runtime_events",
     "assert_not_reserved_runtime_event",
+    "is_platform_control_event",
+    "is_platform_safety_event",
+    "is_production_event",
 ]

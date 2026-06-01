@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -41,6 +42,7 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_event,
 )
 from src.workline_runtime.plugin_sdk import canonicalize_event_type
+from src.workline_runtime.runtime_events import is_production_event
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import JsonDict, resolve_first_str
 
@@ -84,7 +86,18 @@ _FAILURE_STAGE_COMMAND_LOOKUP = "COMMAND_LOOKUP"
 _FAILURE_STAGE_CAPABILITY_VALIDATE = "CAPABILITY_VALIDATE"
 _FAILURE_STAGE_CONFIG_VALIDATE = "CONFIG_VALIDATE"
 _FAILURE_STAGE_CONTRACT_VALIDATE = "CONTRACT_VALIDATE"
+_FAILURE_STAGE_WORKLINE_GUARD = "WORKLINE_GUARD"
 _FAILURE_STAGE_ORCHESTRATION = "ORCHESTRATION"
+_WORKLINE_NOT_ACCEPTING_WORK_REASON_CODE = "WORKLINE_NOT_ACCEPTING_WORK"
+_WORKLINE_NOT_ACCEPTING_PRODUCTION_STATUSES = frozenset({"STOPPED", "RECONCILING", "ESTOPPED"})
+
+
+@dataclass(frozen=True)
+class CallbackEventIngressDecision:
+    """设备事件入站响应与真实 HTTP 状态。"""
+
+    body: CallbackEventIngressResponse
+    http_status: int = 200
 
 
 def _resolve_ctx_error_response_status(ctx_error: JsonDict) -> int:
@@ -173,6 +186,18 @@ def _has_workline_binding(value: object) -> bool:
     return isinstance(value, int) and value > 0
 
 
+def _optional_enum_str(value: object) -> str | None:
+    enum_value = getattr(value, "value", value)
+    return enum_value if isinstance(enum_value, str) and enum_value else None
+
+
+def _is_workline_accepting_production_events(workline: object) -> bool:
+    runtime_status = _optional_enum_str(getattr(workline, "runtime_status", None))
+    if runtime_status is None:
+        return True
+    return runtime_status not in _WORKLINE_NOT_ACCEPTING_PRODUCTION_STATUSES
+
+
 def _build_callback_log_payload(
     request: Request,
     *,
@@ -252,6 +277,17 @@ def _build_contract_fail(message: str) -> CallbackRejectedIngressResponse:
             code=ClientErrorCode.VALIDATION_ERROR,
             message=message,
             data=build_callback_rejected_response(),
+        ),
+    )
+
+
+def _build_conflict_fail(message: str, *, reason_code: str) -> CallbackRejectedIngressResponse:
+    return cast(
+        "CallbackRejectedIngressResponse",
+        response_builder.fail(
+            code=ResourceErrorCode.CONFLICT,
+            message=message,
+            data=build_callback_rejected_response(reason_code=reason_code),
         ),
     )
 
@@ -494,6 +530,47 @@ async def _handle_event_validation_failure(
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
         ),
+    )
+
+
+async def _handle_event_workline_guard_rejection(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    request_id: str | None,
+    event_data: JsonDict,
+    device_code: str,
+    runtime_status: str | None,
+    response_time_ms: int,
+) -> CallbackEventIngressDecision:
+    message = "WorkLine 当前运行态不接收生产事件"
+    if runtime_status:
+        message = f"{message}: {runtime_status}"
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type="event",
+        subject_code=device_code,
+        request_body=event_data,
+        request_id=request_id,
+        trace_id=_resolve_callback_trace_id(event_data),
+        event_id=_resolve_callback_event_id(event_data),
+        causation_id=_resolve_callback_causation_id(event_data),
+        response_status=409,
+        response_time_ms=response_time_ms,
+        success=False,
+        record_audit=True,
+        audit_title="设备事件上报",
+        error_message=message,
+        ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+        failure_stage=_FAILURE_STAGE_WORKLINE_GUARD,
+    )
+    return CallbackEventIngressDecision(
+        body=cast(
+            "CallbackEventIngressResponse",
+            _build_conflict_fail(message, reason_code=_WORKLINE_NOT_ACCEPTING_WORK_REASON_CODE),
+        ),
+        http_status=409,
     )
 
 
@@ -897,21 +974,23 @@ async def handle_callback_event(
     request_id: str | None,
     start_time: float,
     enqueue_processing: Callable[[], None],
-) -> CallbackEventIngressResponse:
+) -> CallbackEventIngressDecision:
     event_data: JsonDict = {}
 
     try:
         event_data = await _read_request_json(request)
     except Exception as exc:
         logger.error(f"设备事件上报解析失败: {exc}")
-        return await _handle_event_validation_failure(
-            db,
-            request,
-            request_id=request_id,
-            event_data=event_data,
-            message=f"事件上报报文格式错误: {exc}",
-            response_time_ms=_response_time_ms(start_time),
-            failure_stage=_FAILURE_STAGE_REQUEST_PARSE,
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
+                db,
+                request,
+                request_id=request_id,
+                event_data=event_data,
+                message=f"事件上报报文格式错误: {exc}",
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_REQUEST_PARSE,
+            )
         )
 
     try:
@@ -931,14 +1010,16 @@ async def handle_callback_event(
             callback_type="event",
             payload=event_data,
         )
-        return await _handle_event_validation_failure(
-            db,
-            request,
-            request_id=request_id,
-            event_data=event_data,
-            message=message,
-            response_time_ms=_response_time_ms(start_time),
-            failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
+                db,
+                request,
+                request_id=request_id,
+                event_data=event_data,
+                message=message,
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+            )
         )
 
     device_code = normalized_event_request.device_code
@@ -947,21 +1028,22 @@ async def handle_callback_event(
     # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
-        return cast(
-            "CallbackEventIngressResponse",
-            await _handle_device_context_failure(
-                db,
-                request,
-                callback_type="event",
-                subject_code=device_code,
-                request_body=event_data,
-                request_id=request_id,
-                response_time_ms=_response_time_ms(start_time),
-                error=ctx_error,
-                audit_title="设备事件上报",
-            ),
+        return CallbackEventIngressDecision(
+            body=cast(
+                "CallbackEventIngressResponse",
+                await _handle_device_context_failure(
+                    db,
+                    request,
+                    callback_type="event",
+                    subject_code=device_code,
+                    request_body=event_data,
+                    request_id=request_id,
+                    response_time_ms=_response_time_ms(start_time),
+                    error=ctx_error,
+                    audit_title="设备事件上报",
+                ),
+            )
         )
-
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
@@ -978,65 +1060,83 @@ async def handle_callback_event(
             callback_type="event",
             payload=event_data,
         )
-        return await _handle_event_validation_failure(
-            db,
-            request,
-            request_id=request_id,
-            event_data=event_data,
-            message=f"事件上报契约校验失败: {exc}",
-            response_time_ms=_response_time_ms(start_time),
-            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
-        )
-
-    try:
-        capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
-    except (TypeError, ValidationError, ValueError) as exc:
-        message = f"设备能力配置无效: {exc}"
-        logger.error(f"设备事件上报能力配置校验失败: {exc}")
-        await _record_callback_diagnostic(
-            db,
-            error_code=ErrorCode.CONFIG_INVALID,
-            message=message,
-            request_id=request_id,
-            callback_type="event",
-            payload=event_data,
-            device=device,
-            workline=workline,
-            canonical_event_type=canonical_event_type,
-        )
-        return await _handle_event_validation_failure(
-            db,
-            request,
-            request_id=request_id,
-            event_data=event_data,
-            message=message,
-            response_time_ms=_response_time_ms(start_time),
-            failure_stage=_FAILURE_STAGE_CONFIG_VALIDATE,
-        )
-
-    try:
-        if not capabilities.supports_event(canonical_event_type):
-            message = f"设备 {device_code} 未声明支持事件: {canonical_event_type}"
-            await _record_callback_diagnostic(
-                db,
-                error_code=ErrorCode.CONFIG_INVALID,
-                message=message,
-                request_id=request_id,
-                callback_type="event",
-                payload=event_data,
-                device=device,
-                workline=workline,
-                canonical_event_type=canonical_event_type,
-            )
-            return await _handle_event_validation_failure(
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
                 db,
                 request,
                 request_id=request_id,
                 event_data=event_data,
-                message=message,
+                message=f"事件上报契约校验失败: {exc}",
                 response_time_ms=_response_time_ms(start_time),
-                failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
+                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
             )
+        )
+
+    try:
+        if is_production_event(canonical_event_type):
+            if not _is_workline_accepting_production_events(workline):
+                return await _handle_event_workline_guard_rejection(
+                    db,
+                    request,
+                    request_id=request_id,
+                    event_data=event_data,
+                    device_code=device_code,
+                    runtime_status=_optional_enum_str(getattr(workline, "runtime_status", None)),
+                    response_time_ms=_response_time_ms(start_time),
+                )
+
+            try:
+                capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
+            except (TypeError, ValidationError, ValueError) as exc:
+                message = f"设备能力配置无效: {exc}"
+                logger.error(f"设备事件上报能力配置校验失败: {exc}")
+                await _record_callback_diagnostic(
+                    db,
+                    error_code=ErrorCode.CONFIG_INVALID,
+                    message=message,
+                    request_id=request_id,
+                    callback_type="event",
+                    payload=event_data,
+                    device=device,
+                    workline=workline,
+                    canonical_event_type=canonical_event_type,
+                )
+                return CallbackEventIngressDecision(
+                    body=await _handle_event_validation_failure(
+                        db,
+                        request,
+                        request_id=request_id,
+                        event_data=event_data,
+                        message=message,
+                        response_time_ms=_response_time_ms(start_time),
+                        failure_stage=_FAILURE_STAGE_CONFIG_VALIDATE,
+                    )
+                )
+
+            if not capabilities.supports_event(canonical_event_type):
+                message = f"设备 {device_code} 未声明支持事件: {canonical_event_type}"
+                await _record_callback_diagnostic(
+                    db,
+                    error_code=ErrorCode.CONFIG_INVALID,
+                    message=message,
+                    request_id=request_id,
+                    callback_type="event",
+                    payload=event_data,
+                    device=device,
+                    workline=workline,
+                    canonical_event_type=canonical_event_type,
+                )
+                return CallbackEventIngressDecision(
+                    body=await _handle_event_validation_failure(
+                        db,
+                        request,
+                        request_id=request_id,
+                        event_data=event_data,
+                        message=message,
+                        response_time_ms=_response_time_ms(start_time),
+                        failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
+                    )
+                )
 
         # ctx_error 为 None 时，ctx_result 必有值
         is_workline_event = ctx_result.is_workline_bound  # type: ignore[union-attr]
@@ -1078,17 +1178,19 @@ async def handle_callback_event(
             ingress_outcome=_INGRESS_OUTCOME_DUPLICATE if is_duplicate else _INGRESS_OUTCOME_ACCEPTED,
         )
         logger.info(f"设备事件已提交处理: {normalized_event_request.device_code} (request_id={request_id})")
-        return cast(
-            "CallbackEventIngressResponse",
-            response_builder.success(
-                message="Event received",
-                data=build_callback_event_accepted_response(
-                    status="duplicate" if is_duplicate else "submitted",
-                    device_code=normalized_event_request.device_code,
-                    request_id=request_id,
-                    trace_id=outcome.trace_id,
-                    event_id=_resolve_callback_event_id(event_data),
-                    causation_id=_resolve_callback_causation_id(event_data),
+        return CallbackEventIngressDecision(
+            body=cast(
+                "CallbackEventIngressResponse",
+                response_builder.success(
+                    message="Event received",
+                    data=build_callback_event_accepted_response(
+                        status="duplicate" if is_duplicate else "submitted",
+                        device_code=normalized_event_request.device_code,
+                        request_id=request_id,
+                        trace_id=outcome.trace_id,
+                        event_id=_resolve_callback_event_id(event_data),
+                        causation_id=_resolve_callback_causation_id(event_data),
+                    ),
                 ),
             ),
         )
@@ -1269,6 +1371,24 @@ class CallbackIngressService:
         start_time: float,
         enqueue_processing: Callable[[], None],
     ) -> CallbackEventIngressResponse:
+        decision = await self.handle_event_decision(
+            request,
+            db,
+            request_id=request_id,
+            start_time=start_time,
+            enqueue_processing=enqueue_processing,
+        )
+        return decision.body
+
+    async def handle_event_decision(
+        self,
+        request: Request,
+        db: AsyncSessionDep,
+        *,
+        request_id: str | None,
+        start_time: float,
+        enqueue_processing: Callable[[], None],
+    ) -> CallbackEventIngressDecision:
         return await handle_callback_event(
             request,
             db,
