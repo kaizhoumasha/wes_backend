@@ -221,6 +221,9 @@ class WorkLineStartAdmissionService:
                 "START 准入失败: WorkLine 不存在",
                 {"workline_id": workline_id},
             )
+        if self._is_ready(workline):
+            return self._ready_idempotent_result(workline_id)
+
         guard_message = await self._guard_startable(db, workline)
         if guard_message is not None:
             await self._record_failure(

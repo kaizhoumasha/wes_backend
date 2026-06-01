@@ -295,6 +295,35 @@ async def test_start_admission_treats_ready_final_drift_as_idempotent_success(db
     assert workline.start_admission_failed_device_code is None
 
 
+@pytest.mark.asyncio
+async def test_start_admission_treats_already_ready_snapshot_as_idempotent_success(db_session) -> None:
+    """START 已成功写为 READY 后，重复 START 不应覆盖成功投影。"""
+
+    workline = _make_workline(
+        runtime_status=WorkLineRuntimeStatus.READY,
+        start_admission_status="SUCCESS",
+        start_admission_message="START 准入通过",
+        start_admission_failed_device_code=None,
+    )
+    devices = await _persist_workline_with_devices(db_session, workline)
+    fetcher = RecordingStatusFetcher(_idle_payload(devices), status_code=500)
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-repeat-ready")
+
+    await db_session.refresh(workline)
+    assert result.accepted is True
+    assert result.http_status == 200
+    assert result.reason_code is None
+    assert result.diagnostic["runtime_status"] == WorkLineRuntimeStatus.READY.value
+    assert result.diagnostic["idempotent"] is True
+    assert fetcher.calls == []
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.start_admission_status == "SUCCESS"
+    assert workline.start_admission_message == "START 准入通过"
+    assert workline.start_admission_failed_device_code is None
+
+
 @pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
 @pytest.mark.asyncio
 async def test_start_admission_probe_failure_rechecks_guard_before_recording_ecs_failure(
