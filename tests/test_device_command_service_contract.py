@@ -1,7 +1,8 @@
+import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,11 +29,21 @@ class FakeCommand:
         *,
         id: int = 1,
         command_code: str = "CMD-TEST-001",
+        device_id: int = 100,
+        task_type: str = "MOVE_FORWARD",
+        priority: int = 5,
+        timeout_ms: int = 30000,
+        params: dict[str, Any] | None = None,
         status: CommandStatus = CommandStatus.PENDING,
         retry_count: int = 0,
     ) -> None:
         self.id = id
         self.command_code = command_code
+        self.device_id = device_id
+        self.task_type = task_type
+        self.priority = priority
+        self.timeout_ms = timeout_ms
+        self.params = params or {}
         self.status = status
         self.retry_count = retry_count
 
@@ -71,6 +82,33 @@ class NullUpdateRepo(FakeRepo):
     async def update(self, _db: object, id: int, data: dict[str, Any]) -> FakeCommand | None:
         self.update_calls.append((id, dict(data)))
         return None
+
+
+class FakeAckResponse:
+    status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {"code": 200, "message": "Accepted", "trace_id": "TRACE-ACK"}
+
+
+class CapturingAsyncClient:
+    requests: ClassVar[list[dict[str, Any]]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "CapturingAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    async def post(self, url: str, *, json: dict[str, Any]) -> FakeAckResponse:
+        self.requests.append({"url": url, "json": json})
+        return FakeAckResponse()
 
 
 def test_command_request_accepts_plugin_defined_task_type() -> None:
@@ -193,3 +231,83 @@ async def test_error_detail_string_is_normalized_to_json_object() -> None:
     assert repo.update_calls
     update_data = repo.update_calls[0][1]
     assert update_data["error_detail"] == {"message": "network timeout"}
+
+
+@pytest.mark.asyncio
+async def test_send_command_body_contains_top_level_device_code_and_uses_device_callback_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    device_repository_module = importlib.import_module("src.app.device.repositories.device_repository")
+
+    CapturingAsyncClient.requests.clear()
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    device = SimpleNamespace(
+        id=100,
+        device_code="RS-CONVEYOR-01",
+        host="mock_ecs",
+        port=8010,
+        protocol="HTTP",
+        callback_path="/api/v1/device/command",
+    )
+    monkeypatch.setattr(device_repository_module.device_repository, "get_by_id", AsyncMock(return_value=device))
+    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+
+    monkeypatch.setattr(
+        workline_runtime_reconciliation_service,
+        "activate_execution_deadline_after_ack",
+        AsyncMock(return_value=None),
+    )
+
+    command = FakeCommand(
+        device_id=100,
+        command_code="CMD-ECS-SVC",
+        task_type="MOVE_FORWARD",
+        params={"slot": "A01"},
+    )
+    repo = FakeRepo(command)
+    service = DeviceCommandService()
+    service.repo = repo  # type: ignore[assignment]
+    service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
+
+    db = SimpleNamespace(commit=AsyncMock())
+    ack = await service.send_command(cast("Any", db), command.command_code)
+
+    assert ack.code == 200
+    assert CapturingAsyncClient.requests == [
+        {
+            "url": "http://mock_ecs:8010/api/v1/device/command",
+            "json": {
+                "device_code": "RS-CONVEYOR-01",
+                "command_code": "CMD-ECS-SVC",
+                "task_type": "MOVE_FORWARD",
+                "priority": 5,
+                "timeout": 30000,
+                "params": {"slot": "A01"},
+                "timestamp": CapturingAsyncClient.requests[0]["json"]["timestamp"],
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_device_url_does_not_use_removed_single_device_mock_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device_repository_module = importlib.import_module("src.app.device.repositories.device_repository")
+
+    service = DeviceCommandService()
+    device = SimpleNamespace(
+        id=100,
+        device_code="ROBOT-ARM-01",
+        host=None,
+        port=None,
+        protocol="HTTP",
+        callback_path=None,
+    )
+    monkeypatch.setattr(device_repository_module.device_repository, "get_by_id", AsyncMock(return_value=device))
+
+    endpoint = await service._get_device_url(cast("Any", SimpleNamespace()), 100)
+
+    assert endpoint == "http://ROBOT-ARM-01:8080"

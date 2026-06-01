@@ -127,12 +127,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command:
             raise NotFoundException(f"指令不存在: {command_code}")
 
-        # 2. 获取设备 URL
-        if not device_url:
-            device_url = await self._get_device_url(db, command.device_id)
+        # 2. 获取设备命令端点与设备编码
+        device_endpoint, device_code = await self._get_device_command_endpoint(db, command.device_id, device_url)
 
         # 3. 构建请求体（白皮书 3.1.1 格式）
         request_body: dict[str, Any] = {
+            "device_code": device_code,
             "command_code": command.command_code,
             "task_type": self._task_type_value(command.task_type),
             "priority": command.priority,
@@ -142,7 +142,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         }
 
         # 4. 发送 HTTP 请求
-        url = f"{device_url}/api/v1/device/command"
+        url = device_endpoint
         logger.info(f"发送指令到设备: {url} -> {command_code}")
 
         try:
@@ -310,15 +310,39 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             return str(task_type.value)
         return str(task_type)
 
-    async def _get_device_url(self, db: AsyncSession, device_id: int) -> str:
-        """
-        获取设备 URL
-
-        TODO: 从 Device 表查询设备的 base_url
-        """
+    async def _get_device_command_endpoint(
+        self,
+        db: AsyncSession,
+        device_id: int,
+        device_url: str | None = None,
+    ) -> tuple[str, str]:
+        """获取设备命令端点和顶层 device_code。"""
         from src.app.device.repositories.device_repository import device_repository
 
         device = await device_repository.get_by_id(db, device_id)
+        device_code = str(getattr(device, "device_code", device_id)) if device else str(device_id)
+
+        if device_url:
+            return f"{device_url.rstrip('/')}/api/v1/device/command", device_code
+
+        base_url = await self._get_device_url(db, device_id, device=device)
+        callback_path = "/api/v1/device/command"
+        if device:
+            raw_callback_path = getattr(device, "callback_path", None)
+            if raw_callback_path:
+                callback_path = str(raw_callback_path)
+                if not callback_path.startswith("/"):
+                    callback_path = f"/{callback_path}"
+        return f"{base_url}{callback_path}", device_code
+
+    async def _get_device_url(self, db: AsyncSession, device_id: int, device: Any | None = None) -> str:
+        """
+        获取设备基础 URL。
+        """
+        from src.app.device.repositories.device_repository import device_repository
+
+        if device is None:
+            device = await device_repository.get_by_id(db, device_id)
         if not device:
             logger.warning(f"设备不存在，使用兜底 URL: device_id={device_id}")
             return f"http://{device_id}:8080"
@@ -330,15 +354,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
                 scheme = "http"
             port = device.port or (443 if scheme == "https" else 80)
             return f"{scheme}://{device.host}:{port}"
-
-        # E2E 测试环境 Mock 服务 URL 映射（按设备编码）
-        mock_device_urls = {
-            "ROBOT-ARM-01": "http://wes_mock_robot_arm_test:8004",
-            "CONVEYOR-CAMERA-01": "http://wes_mock_camera_test:8003",
-            "CAMERA-CONVEYOR-01": "http://wes_mock_camera_test:8003",
-        }
-        if device.device_code in mock_device_urls:
-            return mock_device_urls[device.device_code]
 
         # 默认 URL 格式（按设备编码）
         return f"http://{device.device_code}:8080"

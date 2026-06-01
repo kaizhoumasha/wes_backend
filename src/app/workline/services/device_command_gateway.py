@@ -388,6 +388,7 @@ class DeviceCommandGateway:
                 return False
 
             payload = payload_dict(getattr(outbox, "payload_json", None))
+            payload["device_code"] = coerce_string_value(getattr(device, "device_code", None), outbox.target_code)
             from src.app.device.models.command import CommandStatus
             from src.app.device.repositories.command_repository import DeviceCommandRepository
 

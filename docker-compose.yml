@@ -6,6 +6,7 @@
 # 使用方法:
 #   开发环境:   docker compose --profile dev up -d
 #   测试环境:   docker compose --profile test up -d
+#   开发/E2E/SMT Mock: docker compose --profile dev up -d 或 --profile e2e/smt up -d
 #   生产环境:   docker-compose --profile prod up -d
 #   仅 Celery:  docker-compose --profile celery up -d
 #   仅 API:     docker-compose --profile api up -d
@@ -56,7 +57,7 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（测试/E2E 环境可通过 .env.test 指向 mock_wms）
+      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
       WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
 
       # 日志配置
@@ -138,7 +139,7 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（测试/E2E 环境可通过 .env.test 指向 mock_wms）
+      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
       WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
 
       # 日志配置
@@ -514,145 +515,38 @@ services:
       - api
 
   # ============================================
-  # Mock 服务 - 摄像头设备模拟
+  # ECS Mock 服务 - 单服务多设备模拟
+  # 注意：本机 dev profile 需要启动设备 Mock，供 WorkLine 设备命令联调使用。
   # ============================================
-  mock_camera:
+  mock_ecs:
     build:
       context: .
       dockerfile: tests/mock/Dockerfile
-    image: wes-mock:camera
-    container_name: wes_mock_camera_${ENV:-test}
+    image: wes-mock:ecs
+    container_name: wes_mock_ecs_${ENV:-test}
     restart: ${RESTART_POLICY:-unless-stopped}
     ports:
-      - "${MOCK_CAMERA_PORT:-8003}:8003"
+      - "${MOCK_ECS_PORT:-8010}:8010"
     working_dir: /app/tests/mock
     command: >
       python -m uvicorn
-      camera_mock_server:app
+      ecs_mock_server:app
       --host 0.0.0.0
-      --port 8003
-      --log-level info
-      --reload
-    volumes:
-      # 开发环境挂载 mock 服务源码（支持热更新）
-      - ./tests/mock:/app/tests/mock:rw
-    environment:
-      # 服务配置
-      APP_HOST: 0.0.0.0
-      APP_PORT: 8003
-      # WES 事件回调地址（使用 host.docker.internal 访问主机 API）
-      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
-      # 传感器配置
-      SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL: ${SENSOR_AUTO_TRIGGER_DEFAULT_INTERVAL:-10}
-      SENSOR_BARCODE_PREFIX: ${SENSOR_BARCODE_PREFIX:-PKG}
-      # 日志配置
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/api/v1/device/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    networks:
-      - wesp9-network
-    deploy:
-      resources:
-        limits:
-          cpus: ${MOCK_CPU_LIMIT:-0.25}
-          memory: ${MOCK_MEMORY_LIMIT:-128M}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "${LOG_MAX_SIZE:-10m}"
-        max-file: "${LOG_MAX_FILES:-3}"
-    profiles:
-      - test
-      - e2e
-
-  # ============================================
-  # Mock 服务 - 机械臂设备模拟
-  # ============================================
-  mock_robot_arm:
-    build:
-      context: .
-      dockerfile: tests/mock/Dockerfile
-    image: wes-mock:robot_arm
-    container_name: wes_mock_robot_arm_${ENV:-test}
-    restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
-      - "${MOCK_ROBOT_ARM_PORT:-8004}:8004"
-    working_dir: /app/tests/mock
-    command: >
-      python -m uvicorn
-      robot_arm_mock_server:app
-      --host 0.0.0.0
-      --port 8004
-      --log-level info
-      --reload
-    volumes:
-      # 开发环境挂载 mock 服务源码（支持热更新）
-      - ./tests/mock:/app/tests/mock:rw
-    environment:
-      # 服务配置
-      APP_HOST: 0.0.0.0
-      APP_PORT: 8004
-      # WES 回调地址（使用 host.docker.internal 访问主机 API）
-      WES_CALLBACK_URL: ${WES_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
-      # 日志配置
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/api/v1/device/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    networks:
-      - wesp9-network
-    deploy:
-      resources:
-        limits:
-          cpus: ${MOCK_CPU_LIMIT:-0.25}
-          memory: ${MOCK_MEMORY_LIMIT:-128M}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "${LOG_MAX_SIZE:-10m}"
-        max-file: "${LOG_MAX_FILES:-3}"
-    profiles:
-      - test
-      - e2e
-
-  # ============================================
-  # SMT 粗分机 Mock 服务 - 流水线
-  # ============================================
-  mock_smt_pipeline:
-    build:
-      context: .
-      dockerfile: tests/mock/Dockerfile
-    image: wes-mock:smt-pipeline
-    container_name: wes_mock_smt_pipeline_${ENV:-test}
-    restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
-      - "${MOCK_SMT_PIPELINE_PORT:-8005}:8005"
-    working_dir: /app/tests/mock
-    command: >
-      python -m uvicorn
-      smt_classifier.pipeline_mock:app
-      --host 0.0.0.0
-      --port 8005
+      --port 8010
       --log-level info
       --reload
     volumes:
       - ./tests/mock:/app/tests/mock:rw
     environment:
-      DEVICE_CODE: PIPELINE01
+      MOCK_ECS_HOST: ${MOCK_ECS_HOST:-mock_ecs}
+      MOCK_ECS_PORT: ${MOCK_ECS_PORT:-8010}
       WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
       WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
       API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
       API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8005/api/v1/device/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:8010/api/v1/device/status"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -670,118 +564,14 @@ services:
         max-size: "${LOG_MAX_SIZE:-10m}"
         max-file: "${LOG_MAX_FILES:-3}"
     profiles:
-      - test
-      - e2e
-      - smt
-
-  # ============================================
-  # SMT 粗分机 Mock 服务 - 进料机械臂 (ARM01)
-  # ============================================
-  mock_smt_arm01:
-    build:
-      context: .
-      dockerfile: tests/mock/Dockerfile
-    image: wes-mock:smt-arm
-    container_name: wes_mock_smt_arm01_${ENV:-test}
-    restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
-      - "${MOCK_SMT_ARM01_PORT:-8006}:8006"
-    working_dir: /app/tests/mock
-    command: >
-      python -m uvicorn
-      smt_classifier.arm_mock:app
-      --host 0.0.0.0
-      --port 8006
-      --log-level info
-      --reload
-    volumes:
-      - ./tests/mock:/app/tests/mock:rw
-    environment:
-      DEVICE_CODE: ARM01
-      DEVICE_PORT: "8006"
-      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
-      WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
-      API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
-      API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8006/api/v1/device/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    networks:
-      - wesp9-network
-    deploy:
-      resources:
-        limits:
-          cpus: ${MOCK_CPU_LIMIT:-0.25}
-          memory: ${MOCK_MEMORY_LIMIT:-128M}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "${LOG_MAX_SIZE:-10m}"
-        max-file: "${LOG_MAX_FILES:-3}"
-    profiles:
-      - test
-      - e2e
-      - smt
-
-  # ============================================
-  # SMT 粗分机 Mock 服务 - 出料机械臂 (ARM02)
-  # ============================================
-  mock_smt_arm02:
-    build:
-      context: .
-      dockerfile: tests/mock/Dockerfile
-    image: wes-mock:smt-arm
-    container_name: wes_mock_smt_arm02_${ENV:-test}
-    restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
-      - "${MOCK_SMT_ARM02_PORT:-8007}:8007"
-    working_dir: /app/tests/mock
-    command: >
-      python -m uvicorn
-      smt_classifier.arm_mock:app
-      --host 0.0.0.0
-      --port 8007
-      --log-level info
-      --reload
-    volumes:
-      - ./tests/mock:/app/tests/mock:rw
-    environment:
-      DEVICE_CODE: ARM02
-      DEVICE_PORT: "8007"
-      WES_EVENT_CALLBACK_URL: ${WES_EVENT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/event}
-      WES_RESULT_CALLBACK_URL: ${WES_RESULT_CALLBACK_URL:-http://host.docker.internal:8001/api/v1/callback/result}
-      API_APP_ID: ${API_APP_ID:-app_Gqnvr3dpjGwlrjtO}
-      API_APP_SECRET: ${API_APP_SECRET:-sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8007/api/v1/device/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    networks:
-      - wesp9-network
-    deploy:
-      resources:
-        limits:
-          cpus: ${MOCK_CPU_LIMIT:-0.25}
-          memory: ${MOCK_MEMORY_LIMIT:-128M}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "${LOG_MAX_SIZE:-10m}"
-        max-file: "${LOG_MAX_FILES:-3}"
-    profiles:
+      - dev
       - test
       - e2e
       - smt
 
   # ============================================
   # WMS Mock 服务 - 模拟上位系统主数据
+  # 注意：本机通用 test profile 不启动 WMS Mock；开发/E2E/SMT 联调场景显式启用。
   # ============================================
   mock_wms:
     build:
@@ -823,7 +613,7 @@ services:
         max-size: "${LOG_MAX_SIZE:-10m}"
         max-file: "${LOG_MAX_FILES:-3}"
     profiles:
-      - test
+      - dev
       - e2e
       - smt
 

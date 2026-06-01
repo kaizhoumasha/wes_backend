@@ -1,13 +1,15 @@
-"""同步测试环境 WorkLine 与 Device 基础数据。"""
+"""同步开发环境 WorkLine 与 Device 基础数据。"""
 
 # ruff: noqa: E402
 
 import argparse
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -25,6 +27,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
+    EVENT_ROUGH_SORTER_STORAGE_RETRY,
     EVENT_SCAN_COMPLETED,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
@@ -34,11 +37,14 @@ from src.workline_plugins.rough_sorter.contract import (
 )
 
 TEST_ROUGH_SORTER_LINE_CODE = "WL-ROUGH-SORTER-TEST"
+DEFAULT_MOCK_ECS_HOST = "localhost"
+DEFAULT_MOCK_ECS_PORT = 8010
+MOCK_ECS_COMMAND_PATH = "/api/v1/device/command"
 
 
 @dataclass(frozen=True)
 class TestDeviceSeed:
-    """测试环境设备基础信息种子。"""
+    """开发环境设备基础信息种子。"""
 
     device_code: str
     device_name: str
@@ -49,6 +55,14 @@ class TestDeviceSeed:
     upstream_device_code: str | None = None
 
 
+@dataclass(frozen=True)
+class MockEcsConnection:
+    """测试设备连接到 ECS Mock 的地址配置。"""
+
+    host: str
+    port: int
+
+
 TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
     TestDeviceSeed(
         device_code="RS-INPUT-ARM-01",
@@ -57,7 +71,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
         role_index=1,
         sort_order=10,
         capabilities_json={
-            "supports_event_types": [EVENT_SCAN_COMPLETED],
+            "supports_event_types": [EVENT_SCAN_COMPLETED, EVENT_ROUGH_SORTER_STORAGE_RETRY],
             "supports_command_types": [ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG],
             "supports_ack_response": True,
             "supports_result_callback": True,
@@ -92,6 +106,23 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
 )
 
 
+def _mock_ecs_connection_from_env() -> MockEcsConnection:
+    mock_ecs_url = os.getenv("MOCK_ECS_URL")
+    if mock_ecs_url:
+        parsed = urlparse(mock_ecs_url)
+        if not parsed.hostname:
+            raise ValueError("MOCK_ECS_URL 必须包含可解析的主机名")
+        default_port = 443 if parsed.scheme == "https" else 80
+        return MockEcsConnection(host=parsed.hostname, port=parsed.port or default_port)
+
+    raw_port = os.getenv("MOCK_ECS_PORT")
+    port = int(raw_port) if raw_port else DEFAULT_MOCK_ECS_PORT
+    return MockEcsConnection(
+        host=os.getenv("MOCK_ECS_HOST", DEFAULT_MOCK_ECS_HOST),
+        port=port,
+    )
+
+
 def _set_attrs(entity: Any, values: dict[str, Any]) -> bool:
     changed = False
     for field_name, value in values.items():
@@ -121,41 +152,25 @@ async def _get_device_by_code(db: AsyncSession, device_code: str) -> Device | No
     return result.scalar_one_or_none()
 
 
-async def _has_existing_workline_or_device_data(db: AsyncSession) -> bool:
-    """检查 testing 库是否已有 WorkLine 或 Device 数据。
-
-    testing 部署脚本只负责空库初始化；一旦测试库已有任何 WorkLine 或 Device，
-    现场联调人员可能已经修改运行模式、通信配置或拓扑，不再自动创建、修复或补齐。
-    """
-
-    workline_count = await db.scalar(
-        select(func.count()).select_from(WorkLine).where(WorkLine.is_deleted.is_(False))  # type: ignore[arg-type]
-    )
-    device_count = await db.scalar(
-        select(func.count()).select_from(Device).where(Device.is_deleted.is_(False))  # type: ignore[arg-type]
-    )
-    return int(workline_count or 0) > 0 or int(device_count or 0) > 0
-
-
 async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
     values = {
         "line_code": TEST_ROUGH_SORTER_LINE_CODE,
         "line_name": "测试粗分机作业线",
         "line_type": LineType.AUTO,
-        "zone_name": "测试库",
+        "zone_name": "开发库",
         "plugin_key": ROUGH_SORTER_PLUGIN_KEY,
         "contract_version": ROUGH_SORTER_CONTRACT_VERSION,
-        "config": {"seed_source": "jenkins-testing"},
+        "config": {"seed_source": "local-dev"},
         "runtime_config_json": {
             "run_mode": WorkLineRunMode.SIMULATION.value,
             "sandbox_enabled": True,
         },
         "run_mode": WorkLineRunMode.SIMULATION,
         "diagnostic_profile": {
-            "owner": "WES 测试环境",
-            "seed_source": "jenkins-testing",
+            "owner": "WES 开发环境",
+            "seed_source": "local-dev",
         },
-        "description": "Jenkins testing 部署自动同步的粗分机基础作业线",
+        "description": "本地开发环境自动同步的粗分机基础作业线",
         "is_active": True,
     }
 
@@ -179,12 +194,14 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
     states: dict[str, str] = {}
     devices_by_code: dict[str, Device] = {}
 
+    mock_ecs_connection = _mock_ecs_connection_from_env()
+
     for seed in TEST_ROUGH_SORTER_DEVICES:
         synced_values = {
             "device_code": seed.device_code,
             "device_name": seed.device_name,
             "work_line_id": workline_id,
-            "description": "Jenkins testing 部署自动同步的粗分机基础设备",
+            "description": "本地开发环境自动同步的粗分机基础设备",
             "is_active": True,
             "sort_order": seed.sort_order,
             "device_role": seed.device_role,
@@ -194,17 +211,17 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
             "max_concurrent_tasks": 1,
             "idempotency_ttl": 3600,
             "diagnostic_profile": {
-                "owner": "WES 测试环境",
-                "seed_source": "jenkins-testing",
+                "owner": "WES 开发环境",
+                "seed_source": "local-dev",
             },
         }
         create_values = {
             **synced_values,
-            "host": seed.device_code,
-            "port": 8080,
+            "host": mock_ecs_connection.host,
+            "port": mock_ecs_connection.port,
             "protocol": DeviceProtocol.HTTP,
             "timeout": 300000,
-            "callback_path": "/api/v1/device/command",
+            "callback_path": MOCK_ECS_COMMAND_PATH,
         }
 
         device = await _get_device_by_code(db, seed.device_code)
@@ -251,32 +268,7 @@ def _summarize(states: list[str]) -> dict[str, int]:
 
 
 async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -> dict[str, Any]:
-    """仅在 testing 空库时初始化粗分机 WorkLine 与 Device 基础信息。"""
-
-    if await _has_existing_workline_or_device_data(db):
-        existing_workline = await _get_workline_by_code(db, TEST_ROUGH_SORTER_LINE_CODE)
-        if commit:
-            await db.commit()
-        else:
-            await db.flush()
-
-        workline_count_result = await db.execute(select(func.count()).select_from(WorkLine))
-        device_count_result = await db.execute(select(func.count()).select_from(Device))
-        device_states = {seed.device_code: "unchanged" for seed in TEST_ROUGH_SORTER_DEVICES}
-        return {
-            "workline": {
-                "line_code": TEST_ROUGH_SORTER_LINE_CODE,
-                "state": "unchanged",
-                "id": existing_workline.id if existing_workline is not None else None,
-            },
-            "devices": device_states,
-            "summary": {
-                "worklines": _summarize(["unchanged"]),
-                "devices": _summarize(list(device_states.values())),
-                "total_worklines": int(workline_count_result.scalar_one() or 0),
-                "total_devices": int(device_count_result.scalar_one() or 0),
-            },
-        }
+    """按粗分机 line_code/device_code 幂等同步本地开发基础信息。"""
 
     workline, workline_state = await _upsert_test_workline(db)
     device_states = await _upsert_test_devices(db, workline)
@@ -329,7 +321,7 @@ def main() -> None:
     args = _parse_args()
     result = asyncio.run(_run(dry_run=args.dry_run))
     dry_run_label = " (dry-run)" if args.dry_run else ""
-    print(f"✅ testing WorkLine/Device 基础数据同步完成{dry_run_label}: {result['summary']}")
+    print(f"✅ dev WorkLine/Device 基础数据同步完成{dry_run_label}: {result['summary']}")
 
 
 if __name__ == "__main__":
