@@ -820,6 +820,7 @@ class ResourceProjectionService:
             pkg_code=pkg_code,
             wms_inventory_id=wms_inventory_id,
             source_version=source_version,
+            reel_thickness=reel_thickness,
         )
         if conflict is not None:
             runtime_hold = await self._create_material_unmount_reconciliation_hold(
@@ -1376,6 +1377,7 @@ class ResourceProjectionService:
         pkg_code: str | None,
         wms_inventory_id: str | None,
         source_version: str | None,
+        reel_thickness: str | None,
     ) -> dict[str, Any] | None:
         conflict: dict[str, Any] | None = None
         if active_mount is None:
@@ -1395,19 +1397,17 @@ class ResourceProjectionService:
                 "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
                 "message": "源料格 top mount 物料身份与出账事实不一致",
             }
-        elif (
-            pkg_code is not None
-            and (active_pkg_code := _optional_text(getattr(active_mount, "pkg_code", None))) is not None
-            and active_pkg_code != pkg_code
+        elif pkg_code is not None and (
+            (active_pkg_code := _optional_text(getattr(active_mount, "pkg_code", None))) is None
+            or active_pkg_code != pkg_code
         ):
             conflict = {
                 "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
                 "message": "源料格 top mount PKG 与出账事实不一致",
             }
-        elif (
-            wms_inventory_id is not None
-            and (active_wms_inventory_id := _optional_text(getattr(active_mount, "wms_inventory_id", None))) is not None
-            and active_wms_inventory_id != wms_inventory_id
+        elif wms_inventory_id is not None and (
+            (active_wms_inventory_id := _optional_text(getattr(active_mount, "wms_inventory_id", None))) is None
+            or active_wms_inventory_id != wms_inventory_id
         ):
             conflict = {
                 "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
@@ -1437,6 +1437,20 @@ class ResourceProjectionService:
                 "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
                 "message": "源料格 active 聚合占用数量异常",
                 "evidence": {"active_reel_count": getattr(active_cell, "reel_count", None)},
+            }
+        elif (
+            outgoing_depth := _non_negative_decimal(reel_thickness)
+            or _non_negative_decimal(getattr(active_mount, "reel_thickness", None))
+        ) is not None and outgoing_depth > (
+            _non_negative_decimal(getattr(active_cell, "used_depth_mm", None)) or Decimal("0")
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
+                "message": "源料格 active 已用深度小于出账料盘厚度",
+                "evidence": {
+                    "active_used_depth_mm": _json_depth_text(getattr(active_cell, "used_depth_mm", None)),
+                    "outgoing_reel_thickness": _json_depth_text(outgoing_depth),
+                },
             }
         return conflict
 

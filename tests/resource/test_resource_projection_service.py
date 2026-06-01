@@ -941,6 +941,41 @@ async def test_record_material_unmounted_identity_mismatch_creates_reconciliatio
 
 
 @pytest.mark.asyncio
+async def test_record_material_unmounted_missing_active_pkg_when_expected_creates_reconciliation_hold() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code=None, wms_inventory_id=None))
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-MISSING-PKG",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISSING-PKG:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH"
+    assert mounts.saved == []
+    assert runtime_holds.created[0]["evidence"]["expected_pkg_code"] == "PKG-TOP"
+    assert runtime_holds.created[0]["evidence"]["active_pkg_code"] is None
+
+
+@pytest.mark.asyncio
 async def test_record_material_unmounted_source_version_mismatch_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP", source_version="9"))
@@ -1009,6 +1044,53 @@ async def test_record_material_unmounted_inconsistent_occupancy_creates_reconcil
     evidence = runtime_holds.created[0]["evidence"]
     assert evidence["active_occupancy_id"] == 7701
     assert evidence["mount_occupancy_id"] == 9901
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_used_depth_less_than_outgoing_depth_reconciles() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    mounts = RecordingBinMaterialMountRepo(
+        active_by_cell=_mount(pkg_code="PKG-TOP", reel_thickness="0.10", bin_cell_occupancy_id=7701)
+    )
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=mounts,
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(
+            active_by_cell=_occupancy(
+                id=7701,
+                reel_count=1,
+                used_depth_mm=Decimal("0.05"),
+                capacity_depth_mm=Decimal("0.30"),
+                remaining_depth_mm=Decimal("0.25"),
+            )
+        ),
+        runtime_hold_creator=runtime_holds,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id=None,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-DEPTH",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-DEPTH:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        workline_id=1001,
+        reel_thickness="0.10",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT"
+    assert mounts.saved == []
+    evidence = runtime_holds.created[0]["evidence"]
+    assert evidence["active_used_depth_mm"] == "0.05"
+    assert evidence["outgoing_reel_thickness"] == "0.10"
 
 
 @pytest.mark.asyncio
