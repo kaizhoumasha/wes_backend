@@ -103,6 +103,38 @@ def test_ecs_mock_rejects_unknown_device_code() -> None:
     assert CapturingAsyncClient.requests == []
 
 
+def test_ecs_mock_status_returns_single_device_runtime_contract() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status", params={"device_code": "RS-CONVEYOR-01"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["device"]["device_code"] == "RS-CONVEYOR-01"
+    assert body["state"]["device_code"] == "RS-CONVEYOR-01"
+    assert body["state"]["mode"] == "AUTO"
+    assert body["state"]["status"] == "IDLE"
+    assert body["state"]["current_command_id"] is None
+
+
+def test_ecs_mock_status_returns_all_device_runtime_contracts() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status")
+
+    assert response.status_code == 200
+    states = response.json()["devices"]
+    assert {item["device"]["device_code"] for item in states} == set(ecs_mock_server.MOCK_ECS_DEVICES)
+    assert all(item["state"]["mode"] == "AUTO" for item in states)
+    assert all("current_command_id" in item["state"] for item in states)
+
+
+def test_ecs_mock_status_rejects_unknown_device_code_with_contract_error() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status", params={"device_code": "UNKNOWN"})
+
+    assert response.status_code == 400
+    assert "Unknown device_code" in response.json()["detail"]
+
+
 def test_ecs_mock_rejects_command_for_event_only_device(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
 

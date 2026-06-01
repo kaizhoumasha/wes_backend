@@ -145,9 +145,10 @@ class DeviceRuntimeState(BaseModel):
     """Mock 设备运行态。"""
 
     device_code: str
+    mode: str = "AUTO"
     status: str = "IDLE"
     is_online: bool = True
-    current_command_code: str | None = None
+    current_command_id: str | None = None
     scenario: ScenarioName = "success"
     updated_at: int
 
@@ -261,7 +262,7 @@ async def _finish_command(payload: DeviceCommandPayload) -> None:
         if scenario != "success" and state.scenario == scenario:
             state.scenario = "success"
         state.status = "IDLE"
-        state.current_command_code = None
+        state.current_command_id = None
         state.updated_at = _now_ms()
 
 
@@ -294,9 +295,11 @@ async def receive_command(payload: DeviceCommandPayload, background_tasks: Backg
         raise HTTPException(status_code=503, detail="Device Busy")
 
     state.status = "RUNNING"
-    state.current_command_code = payload.command_code
+    state.current_command_id = payload.command_code
     state.updated_at = _now_ms()
-    command_history.append(payload.model_dump())
+    command_record = payload.model_dump()
+    command_record["current_command_id"] = payload.command_code
+    command_history.append(command_record)
     background_tasks.add_task(_finish_command, payload)
     return DeviceCommandAck(code=200, message="Accepted", trace_id=f"ECS-MOCK-{payload.command_code}")
 

@@ -41,7 +41,8 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert workline.is_active is True
     assert workline.plugin_key == ROUGH_SORTER_PLUGIN_KEY
     assert workline.contract_version == ROUGH_SORTER_CONTRACT_VERSION
-    assert workline.run_mode == WorkLineRunMode.SIMULATION
+    assert workline.run_mode == WorkLineRunMode.AUTO
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
 
     devices = (await db_session.execute(select(Device).order_by(Device.sort_order.asc()))).scalars().all()
     assert [device.device_role for device in devices] == [ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM]
@@ -58,15 +59,16 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     ]
     assert conveyor.capabilities_json["supports_command_types"] == [ACTION_MOVE_FORWARD]
     assert output_arm.capabilities_json["supports_command_types"] == [ACTION_PUT_TO_BIN]
-    assert {device.host for device in devices} == {"localhost"}
+    assert {device.host for device in devices} == {"mock_ecs"}
     assert {device.port for device in devices} == {8010}
     assert {device.callback_path for device in devices} == {"/api/v1/device/command"}
+    assert {device.capabilities_json["status_path"] for device in devices} == {"/api/v1/device/status"}
     assert conveyor.upstream_device_id == input_arm.id
     assert output_arm.upstream_device_id == conveyor.id
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_defaults_device_connection_to_localhost(db_session, monkeypatch) -> None:
+async def test_sync_test_workline_devices_defaults_device_connection_to_mock_ecs(db_session, monkeypatch) -> None:
     monkeypatch.delenv("MOCK_ECS_URL", raising=False)
     monkeypatch.delenv("MOCK_ECS_HOST", raising=False)
     monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
@@ -74,7 +76,7 @@ async def test_sync_test_workline_devices_defaults_device_connection_to_localhos
     await sync_test_workline_devices(db_session)
 
     devices = (await db_session.execute(select(Device))).scalars().all()
-    assert {device.host for device in devices} == {"localhost"}
+    assert {device.host for device in devices} == {"mock_ecs"}
     assert {device.port for device in devices} == {8010}
 
 
@@ -139,11 +141,12 @@ async def test_sync_test_workline_devices_refreshes_existing_seed_rows_without_t
         await db_session.execute(select(Device).where(Device.device_code == "RS-INPUT-ARM-01"))
     ).scalar_one()
     assert refreshed_workline.line_name == "测试粗分机作业线"
-    assert refreshed_workline.run_mode == WorkLineRunMode.SIMULATION
+    assert refreshed_workline.run_mode == WorkLineRunMode.AUTO
     assert refreshed_device.capabilities_json["supports_event_types"] == [
         EVENT_SCAN_COMPLETED,
         EVENT_ROUGH_SORTER_STORAGE_RETRY,
     ]
+    assert refreshed_device.capabilities_json["status_path"] == "/api/v1/device/status"
     assert refreshed_device.device_status == DeviceStatus.ERROR
     assert refreshed_device.error_code == "TEST_RUNTIME_STATE"
     assert refreshed_device.host == "10.150.94.122"
