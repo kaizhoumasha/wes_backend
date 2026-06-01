@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
 from src.app.workline.models import (
     DeviceRoleRequirementOption,
@@ -336,6 +337,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks.extend(self._role_requirement_checks(manifest, topology))
         checks.extend(self._event_source_checks(manifest, topology))
         checks.extend(self._command_target_checks(manifest, topology))
+        checks.extend(self._command_target_communication_checks(manifest, devices))
         return checks
 
     @staticmethod
@@ -438,6 +440,86 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             )
         return checks
+
+    @staticmethod
+    def _command_target_communication_checks(manifest: Any, devices: list[Any]) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        target_map = WorkLineService._command_target_device_map(manifest, devices)
+        for device_id, (device, command_types) in sorted(
+            target_map.items(), key=lambda item: str(getattr(item[1][0], "device_code", ""))
+        ):
+            status_path = WorkLineService._resolve_device_status_path(device)
+            missing_fields = []
+            if not getattr(device, "host", None):
+                missing_fields.append("host")
+            if not getattr(device, "port", None):
+                missing_fields.append("port")
+            if not status_path:
+                missing_fields.append("status_path")
+            checks.append(
+                WorkLineService._check(
+                    "COMMAND_TARGET_COMMUNICATION",
+                    _OK if not missing_fields else _FAIL,
+                    "INFO" if not missing_fields else _BLOCKER,
+                    {
+                        "device_id": device_id,
+                        "device_code": getattr(device, "device_code", None),
+                        "command_types": sorted(command_types),
+                        "scheme": WorkLineService._resolve_device_scheme(device),
+                        "host": getattr(device, "host", None),
+                        "port": getattr(device, "port", None),
+                        "status_path": status_path,
+                        "missing_fields": missing_fields,
+                    },
+                )
+            )
+        return checks
+
+    @staticmethod
+    def _command_target_device_map(manifest: Any, devices: list[Any]) -> dict[int, tuple[Any, set[str]]]:
+        target_map: dict[int, tuple[Any, set[str]]] = {}
+        for command_type, roles in manifest.command_target_roles.items():
+            role_set = set(roles)
+            for device in devices:
+                device_id = getattr(device, "id", None)
+                if not isinstance(device_id, int):
+                    continue
+                if getattr(device, "device_role", None) not in role_set:
+                    continue
+                if not WorkLineService._device_supports_command(device, command_type):
+                    continue
+                _, command_types = target_map.setdefault(device_id, (device, set()))
+                command_types.add(command_type)
+        return target_map
+
+    @staticmethod
+    def _device_supports_command(device: Any, command_type: str) -> bool:
+        capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
+        return capabilities.supports_command(command_type)
+
+    @staticmethod
+    def _resolve_device_scheme(device: Any) -> str:
+        protocol = getattr(device, "protocol", "HTTP")
+        protocol_value = getattr(protocol, "value", protocol)
+        return str(protocol_value or "HTTP").lower()
+
+    @staticmethod
+    def _resolve_device_status_path(device: Any) -> str | None:
+        capabilities = getattr(device, "capabilities_json", None)
+        if isinstance(capabilities, dict):
+            for key in ("status_path", "device_status_path"):
+                value = capabilities.get(key)
+                if isinstance(value, str) and value.strip():
+                    return WorkLineService._normalize_status_path(value)
+        callback_path = getattr(device, "callback_path", None)
+        if isinstance(callback_path, str) and callback_path.strip():
+            return WorkLineService._normalize_status_path(callback_path)
+        return None
+
+    @staticmethod
+    def _normalize_status_path(value: str) -> str:
+        path = value.strip()
+        return path if path.startswith("/") else f"/{path}"
 
     @staticmethod
     def _validate_plugin_key(plugin_key: object) -> None:

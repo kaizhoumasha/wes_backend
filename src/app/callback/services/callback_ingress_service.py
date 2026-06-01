@@ -28,7 +28,11 @@ from src.app.device.services import device_command_service, device_context_servi
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services.callback_normalizer import wms_execution_callback_normalizer
-from src.app.workline.services import inbox_service, workline_diagnostic_service, workline_service  # noqa: F401
+from src.app.workline.services import (
+    inbox_service,
+    workline_diagnostic_service,
+)
+from src.app.workline.services.start_admission_service import start_admission_service
 from src.core.client_ip import resolve_client_ip
 from src.core.logger import logger
 from src.core.response import response_builder
@@ -289,6 +293,14 @@ def _build_conflict_fail(message: str, *, reason_code: str) -> CallbackRejectedI
             message=message,
             data=build_callback_rejected_response(reason_code=reason_code),
         ),
+    )
+
+
+def _build_start_admission_conflict_fail(message: str, *, reason_code: str, diagnostic: JsonDict) -> JsonDict:
+    return response_builder.fail(
+        code=ResourceErrorCode.CONFLICT,
+        message=message,
+        data={"ack": False, "reason_code": reason_code, "diagnostic": diagnostic},
     )
 
 
@@ -569,6 +581,72 @@ async def _handle_event_workline_guard_rejection(
         body=cast(
             "CallbackEventIngressResponse",
             _build_conflict_fail(message, reason_code=_WORKLINE_NOT_ACCEPTING_WORK_REASON_CODE),
+        ),
+        http_status=409,
+    )
+
+
+async def _handle_event_start_admission(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    request_id: str | None,
+    event_data: JsonDict,
+    device_code: str,
+    response_time_ms: int,
+) -> CallbackEventIngressDecision:
+    admission = await start_admission_service.admit_start_for_device(
+        db,
+        device_code=device_code,
+        request_id=request_id,
+        trace_id=_resolve_callback_trace_id(event_data),
+    )
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type="event",
+        subject_code=device_code,
+        request_body=event_data,
+        request_id=request_id,
+        trace_id=_resolve_callback_trace_id(event_data),
+        event_id=_resolve_callback_event_id(event_data),
+        causation_id=_resolve_callback_causation_id(event_data),
+        response_status=admission.http_status,
+        response_time_ms=response_time_ms,
+        success=admission.accepted,
+        record_audit=True,
+        audit_title="设备事件上报",
+        error_message=None if admission.accepted else admission.message,
+        ingress_outcome=_INGRESS_OUTCOME_ACCEPTED if admission.accepted else _INGRESS_OUTCOME_REJECTED,
+        failure_stage=None if admission.accepted else _FAILURE_STAGE_WORKLINE_GUARD,
+    )
+    if admission.accepted:
+        return CallbackEventIngressDecision(
+            body=cast(
+                "CallbackEventIngressResponse",
+                response_builder.success(
+                    message="START accepted",
+                    data={
+                        "status": "accepted",
+                        "device_code": device_code,
+                        "request_id": request_id,
+                        "trace_id": _resolve_callback_trace_id(event_data),
+                        "event_id": _resolve_callback_event_id(event_data),
+                        "causation_id": _resolve_callback_causation_id(event_data),
+                        "diagnostic": admission.diagnostic,
+                    },
+                ),
+            ),
+            http_status=200,
+        )
+    return CallbackEventIngressDecision(
+        body=cast(
+            "CallbackEventIngressResponse",
+            _build_start_admission_conflict_fail(
+                admission.message,
+                reason_code=admission.reason_code or "START_ADMISSION_FAILED",
+                diagnostic=admission.diagnostic,
+            ),
         ),
         http_status=409,
     )
@@ -967,7 +1045,7 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
         raise
 
 
-async def handle_callback_event(
+async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返回，便于 failure_stage 精确归因
     request: Request,
     db: AsyncSessionDep,
     *,
@@ -1073,6 +1151,16 @@ async def handle_callback_event(
         )
 
     try:
+        if canonical_event_type == "WORKLINE_START_REQUESTED":
+            return await _handle_event_start_admission(
+                db,
+                request,
+                request_id=request_id,
+                event_data=event_data,
+                device_code=device_code,
+                response_time_ms=_response_time_ms(start_time),
+            )
+
         if is_production_event(canonical_event_type):
             if not _is_workline_accepting_production_events(workline):
                 return await _handle_event_workline_guard_rejection(

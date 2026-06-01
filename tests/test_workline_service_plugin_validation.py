@@ -50,6 +50,8 @@ def make_device(device_id: int, role: str) -> SimpleNamespace:
         sort_order=device_id,
         upstream_device_id=None,
         capabilities_json={},
+        host="mock-ecs",
+        port=8010,
     )
 
 
@@ -495,6 +497,48 @@ async def test_configuration_status_reports_missing_plugin_and_role_blockers(db_
 
 
 @pytest.mark.asyncio
+async def test_configuration_status_reports_incomplete_command_target_communication(db_session) -> None:
+    """命令目标设备缺少 host/port/status_path 时，配置状态应直接命名 affected device。"""
+
+    workline = WorkLine(
+        line_code="WL-ROUGH-COMM-CHECK",
+        line_name="粗分机通信检查",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    for index, role in enumerate((ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM), start=1):
+        db_session.add(
+            Device(
+                device_code=f"ROUGH-COMM-DEV-{index}",
+                device_name=f"粗分机通信设备{index}",
+                work_line_id=workline.id,
+                device_role=role,
+                role_index=1,
+                capabilities_json={} if role == ROLE_CONVEYOR else {"status_path": "/api/v1/device/status"},
+                host=None if role == ROLE_CONVEYOR else "mock-ecs",
+                port=None if role == ROLE_CONVEYOR else 8010,
+            )
+        )
+    await db_session.commit()
+
+    service = WorkLineService()
+    status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    communication_checks = [
+        check for check in status.checks if check.code == "COMMAND_TARGET_COMMUNICATION" and check.status == "FAIL"
+    ]
+    assert status.can_activate is False
+    assert communication_checks
+    assert communication_checks[0].context["device_code"] == "ROUGH-COMM-DEV-2"
+    assert set(communication_checks[0].context["missing_fields"]) == {"host", "port", "status_path"}
+
+
+@pytest.mark.asyncio
 async def test_activate_succeeds_only_after_configuration_checks_pass(db_session) -> None:
     """activate 复用配置预检，角色完整后才允许启用。"""
 
@@ -521,7 +565,9 @@ async def test_activate_succeeds_only_after_configuration_checks_pass(db_session
                 work_line_id=workline.id,
                 device_role=role,
                 role_index=1,
-                capabilities_json={},
+                capabilities_json={"status_path": "/api/v1/device/status"},
+                host="mock-ecs",
+                port=8010,
             )
         )
     await db_session.commit()
@@ -556,7 +602,9 @@ async def test_activate_locks_workline_before_configuration_checks(db_session) -
                 work_line_id=workline.id,
                 device_role=role,
                 role_index=1,
-                capabilities_json={},
+                capabilities_json={"status_path": "/api/v1/device/status"},
+                host="mock-ecs",
+                port=8010,
             )
         )
     await db_session.commit()
