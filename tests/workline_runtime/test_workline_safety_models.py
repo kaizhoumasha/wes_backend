@@ -40,6 +40,10 @@ def test_workline_stopped_start_admission_migration_uses_varchar_enum_constraint
 
     assert len(migration_paths) == 1
     migration_text = migration_paths[0].read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+    downgrade_body = migration_text.split("def downgrade() -> None:", maxsplit=1)[1]
 
     assert 'UPGRADE_RUNTIME_STATUS_VALUES = ("STOPPED", "READY", "RECONCILING", "ESTOPPED")' in migration_text
     assert "return sa.Enum(" in migration_text
@@ -52,3 +56,6 @@ def test_workline_stopped_start_admission_migration_uses_varchar_enum_constraint
     assert "start_admission_checked_at" in migration_text
     assert "last_start_request_id" in migration_text
     assert "last_start_trace_id" in migration_text
+    assert "SET runtime_status = 'STOPPED' WHERE runtime_status = 'READY'" not in upgrade_body
+    assert "SET runtime_status = 'READY' WHERE runtime_status = 'STOPPED'" not in downgrade_body
+    assert "Cannot downgrade workline STOPPED runtime_status while STOPPED rows exist" in downgrade_body

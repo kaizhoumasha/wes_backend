@@ -96,7 +96,6 @@ def upgrade() -> None:
         server_default="STOPPED",
         existing_nullable=False,
     )
-    op.execute("UPDATE wes_biz.work_lines SET runtime_status = 'STOPPED' WHERE runtime_status = 'READY'")
 
 
 def downgrade() -> None:
@@ -110,7 +109,18 @@ def downgrade() -> None:
         server_default="READY",
         existing_nullable=False,
     )
-    op.execute("UPDATE wes_biz.work_lines SET runtime_status = 'READY' WHERE runtime_status = 'STOPPED'")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM wes_biz.work_lines WHERE runtime_status = 'STOPPED'
+            ) THEN
+                RAISE EXCEPTION 'Cannot downgrade workline STOPPED runtime_status while STOPPED rows exist';
+            END IF;
+        END $$;
+        """
+    )
     _drop_runtime_status_constraint()
     op.create_check_constraint(
         RUNTIME_STATUS_CONSTRAINT,
