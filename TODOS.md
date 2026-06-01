@@ -1,5 +1,28 @@
 # TODOS
 
+## P1 - SMT 分拣入库完整 CTU/WMS/NG 对账链路
+
+**What**: 在 SMT 分拣入库 P0 本地闭环落地后，补齐完整 CTU/WMS/NG 对账链路。
+
+**Why**: P0 只保证一盘料在 WES 本地有可信最终去向；目标箱回写失败、NG evidence 被 WMS 消费、Session 结算对账和 WMS 版本冲突解除仍需要独立闭环，才能把本地事实变成跨系统最终事实。
+
+**Context**: `docs/superpowers/specs/2026-06-01-smt-sorting-inbound-workline-design.md` 将首版拆为 foundation PR + plugin PR，完整 CTU/WMS/NG 外部对账明确不阻塞 P0，但必须后续追踪。
+
+**Scope**:
+- 目标箱回写失败后的自动重试、冻结、人工解除和恢复条件
+- NG evidence 消费、幂等对账键和 WMS 侧确认/拒绝语义
+- Session 结算对账材料、目标箱版本冲突处理和 RuntimeHold 关联
+- typed WMS port、endpoint registry、mock WMS 和集成测试
+- 运维可追踪证据：trace_id、request_id、WMS confirmation version、业务拒绝原因
+
+**Dependencies**: SMT 分拣入库 P0 本地闭环、`NgReturnItem` 冲突语义、WMS typed port/evidence 基础能力稳定。
+
+**Effort**: L (human: 3-5 days / CC: ~1 day after P0 is stable)
+
+**Priority**: P1
+
+---
+
 ## P2 - WorkLine 角色优先设备绑定向导
 
 **What**: 为 WorkLine 配置台补充按插件角色引导绑定设备的向导，优先按 manifest 角色和能力缺口组织现场配置。
