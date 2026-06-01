@@ -7,20 +7,28 @@ import hashlib
 import hmac
 import logging
 import os
+import sys
 import time
 from datetime import UTC, datetime
-from typing import Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from uvicorn import Config, Server
 
 try:
     from tests.mock.ecs_mock_catalog import MOCK_ECS_DEVICES, default_success_data
 except ModuleNotFoundError:  # Docker 内以 /app/tests/mock 为工作目录直接加载模块。
     from ecs_mock_catalog import MOCK_ECS_DEVICES, default_success_data
+
+DOCKER_APP_ROOT = Path(__file__).resolve().parents[2]
+if str(DOCKER_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(DOCKER_APP_ROOT))
+
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +67,72 @@ class DeviceCommandAck(BaseModel):
     trace_id: str | None = None
 
 
-class MockEventRequest(BaseModel):
-    """手动上报设备事件。"""
+ROUGH_SORTER_SCAN_COMPLETED_DATA: dict[str, Any] = rough_sorter_scan_completed_payload()["data"]
 
-    device_code: str = Field(min_length=1)
-    event_type: str = Field(min_length=1)
-    data: dict[str, Any] = Field(default_factory=dict)
-    timestamp: int | None = None
+ROUGH_SORTER_STORAGE_RETRY_DATA: dict[str, Any] = {
+    "PkgID": "PKG-CAP001-LOT-A-001",
+    "business_key": "PKG-CAP001-LOT-A-001",
+    "rack_operation": {
+        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        "status": "ARRIVED",
+    },
+    "active_bin_rack": {
+        "rack_id": "RACK-CALLBACK",
+        "rack_kind": "SINGLE_LAYER",
+        "cells": [
+            {
+                "bin_code": "BIN-001",
+                "bin_cell_index": "4",
+                "bin_cell_location": "BIN-001-4",
+            }
+        ],
+    },
+    "idempotency_key": "rough-sorter-storage-retry:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION:321",
+}
+
+
+class MockEventRequest(BaseModel):
+    """设备事件真实 callback payload。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_code: str = Field(min_length=1, description="设备编码")
+    event_type: str = Field(min_length=1, description="事件类型")
+    timestamp: int | None = Field(
+        default=None,
+        description="事件时间戳（Unix 时间戳，毫秒）。Swagger 调试可不传，Mock 会按发送时刻自动补齐",
+    )
+    data: dict[str, Any] | None = Field(default=None, description="事件负载数据")
+    trace_id: str | None = Field(default=None, description="统一 Trace ID")
+    event_id: str | None = Field(default=None, description="供应商事件 ID")
+    causation_id: str | None = Field(default=None, description="因果事件 ID")
+
+
+MockEventRequestBody = Annotated[
+    MockEventRequest,
+    Body(
+        openapi_examples={
+            "rough_sorter_scan_completed": {
+                "summary": "粗分机扫码完成",
+                "description": "触发粗分机入料扫码事件，默认使用 CAP001 / LOT-A / PKG-CAP001-LOT-A-001。",
+                "value": {
+                    "device_code": "RS-INPUT-ARM-01",
+                    "event_type": "SCAN_COMPLETED",
+                    "data": ROUGH_SORTER_SCAN_COMPLETED_DATA,
+                },
+            },
+            "rough_sorter_storage_retry": {
+                "summary": "粗分机货架到位重试",
+                "description": "触发粗分机 WAITING_RACK 阶段后的内部重试事件。",
+                "value": {
+                    "device_code": "RS-INPUT-ARM-01",
+                    "event_type": "ROUGH_SORTER_STORAGE_RETRY",
+                    "data": ROUGH_SORTER_STORAGE_RETRY_DATA,
+                },
+            },
+        },
+    ),
+]
 
 
 class ScenarioRequest(BaseModel):
@@ -141,6 +208,23 @@ async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         return response.json()
 
 
+async def _post_event_callback_for_debug(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    parsed_url = urlparse(url)
+    headers = _build_api_auth_headers("POST", parsed_url.path)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+
+    try:
+        response_body: Any = response.json()
+    except ValueError:
+        response_body = {"raw": response.text}
+
+    return {
+        "http_status": response.status_code,
+        "body": response_body,
+    }
+
+
 async def _finish_command(payload: DeviceCommandPayload) -> None:
     state = _get_state_or_400(payload.device_code)
     scenario = state.scenario
@@ -181,13 +265,7 @@ async def _finish_command(payload: DeviceCommandPayload) -> None:
         state.updated_at = _now_ms()
 
 
-async def _report_event(payload: MockEventRequest) -> None:
-    event_payload = {
-        "device_code": payload.device_code,
-        "event_type": payload.event_type,
-        "timestamp": payload.timestamp or _now_ms(),
-        "data": payload.data,
-    }
+async def _report_event(event_payload: dict[str, Any]) -> None:
     await _post_callback(WES_EVENT_CALLBACK_URL, event_payload)
     event_history.append(event_payload)
 
@@ -240,19 +318,60 @@ async def get_device_status(device_code: str | None = None) -> dict[str, Any]:
     }
 
 
-@app.post("/api/v1/mock/event")
-async def report_mock_event(payload: MockEventRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    """手动上报设备事件，替代旧 sensor trigger API。"""
+@app.get("/api/v1/mock/commands")
+async def list_mock_commands(
+    device_code: str | None = None,
+    task_type: str | None = None,
+    command_code: str | None = None,
+    limit: int = Query(default=20, ge=1, le=200),
+) -> dict[str, Any]:
+    """查询 ECS Mock 已接收的 WES 设备命令，供 Swagger 调试确认后续下发。"""
 
-    _ = _get_state_or_400(payload.device_code)
-    device = MOCK_ECS_DEVICES[payload.device_code]
-    if payload.event_type not in device.supported_events:
+    commands = command_history
+    if device_code:
+        commands = [command for command in commands if command.get("device_code") == device_code]
+    if task_type:
+        commands = [command for command in commands if command.get("task_type") == task_type]
+    if command_code:
+        commands = [command for command in commands if command.get("command_code") == command_code]
+
+    return {
+        "code": 200,
+        "message": "OK",
+        "data": {
+            "total": len(commands),
+            "commands": list(reversed(commands[-limit:])),
+        },
+    }
+
+
+@app.post("/api/v1/mock/event")
+async def report_mock_event(payload: MockEventRequestBody) -> dict[str, Any]:
+    """按真实 callback payload 手动上报设备事件，供 Swagger UI 调试工作线流程。"""
+
+    event_payload = payload.model_dump(exclude_none=True)
+    event_payload.setdefault("timestamp", _now_ms())
+    _ = _get_state_or_400(event_payload["device_code"])
+    device = MOCK_ECS_DEVICES[event_payload["device_code"]]
+    if event_payload["event_type"] not in device.supported_events:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported event_type for {payload.device_code}: {payload.event_type}",
+            detail=f"Unsupported event_type for {event_payload['device_code']}: {event_payload['event_type']}",
         )
-    background_tasks.add_task(_report_event, payload)
-    return {"code": 200, "message": "Event accepted", "data": {"device_code": payload.device_code}}
+    delivery = await _post_event_callback_for_debug(WES_EVENT_CALLBACK_URL, event_payload)
+    event_history.append(event_payload)
+    delivered = 200 <= delivery["http_status"] < 300
+    return {
+        "code": 200 if delivered else 502,
+        "message": "Event delivered" if delivered else "WES callback failed",
+        "data": {
+            "device_code": event_payload["device_code"],
+            "event_type": event_payload["event_type"],
+            "timestamp": event_payload["timestamp"],
+            "wes_http_status": delivery["http_status"],
+            "wes_response": delivery["body"],
+        },
+    }
 
 
 @app.post("/api/v1/mock/devices/{device_code}/scenario")

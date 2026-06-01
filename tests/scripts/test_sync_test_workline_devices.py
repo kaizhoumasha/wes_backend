@@ -14,6 +14,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_PUT_TO_BIN,
+    EVENT_ROUGH_SORTER_STORAGE_RETRY,
     EVENT_SCAN_COMPLETED,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
@@ -47,7 +48,10 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert {device.device_status for device in devices} == {DeviceStatus.IDLE}
 
     input_arm, conveyor, output_arm = devices
-    assert input_arm.capabilities_json["supports_event_types"] == [EVENT_SCAN_COMPLETED]
+    assert input_arm.capabilities_json["supports_event_types"] == [
+        EVENT_SCAN_COMPLETED,
+        EVENT_ROUGH_SORTER_STORAGE_RETRY,
+    ]
     assert input_arm.capabilities_json["supports_command_types"] == [
         ACTION_PICK_AND_PUT,
         ACTION_MOVE_TO_NG,
@@ -101,7 +105,9 @@ async def test_sync_test_workline_devices_prefers_mock_ecs_url(db_session, monke
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_does_not_modify_existing_rows(db_session) -> None:
+async def test_sync_test_workline_devices_refreshes_existing_seed_rows_without_touching_runtime_state(
+    db_session,
+) -> None:
     await sync_test_workline_devices(db_session)
 
     workline = (
@@ -123,22 +129,25 @@ async def test_sync_test_workline_devices_does_not_modify_existing_rows(db_sessi
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
     assert workline_count == 1
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
-    assert result["summary"]["worklines"]["unchanged"] == 1
-    assert set(result["devices"].values()) == {"unchanged"}
+    assert result["summary"]["worklines"]["updated"] == 1
+    assert result["devices"]["RS-INPUT-ARM-01"] == "updated"
 
-    preserved_workline = (
+    refreshed_workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
     ).scalar_one()
-    repaired_device = (
+    refreshed_device = (
         await db_session.execute(select(Device).where(Device.device_code == "RS-INPUT-ARM-01"))
     ).scalar_one()
-    assert preserved_workline.line_name == "被测试修改的名称"
-    assert preserved_workline.run_mode == WorkLineRunMode.AUTO
-    assert repaired_device.capabilities_json == {"supports_command_types": ["TEST"]}
-    assert repaired_device.device_status == DeviceStatus.ERROR
-    assert repaired_device.error_code == "TEST_RUNTIME_STATE"
-    assert repaired_device.host == "10.150.94.122"
-    assert repaired_device.port == 8006
+    assert refreshed_workline.line_name == "测试粗分机作业线"
+    assert refreshed_workline.run_mode == WorkLineRunMode.SIMULATION
+    assert refreshed_device.capabilities_json["supports_event_types"] == [
+        EVENT_SCAN_COMPLETED,
+        EVENT_ROUGH_SORTER_STORAGE_RETRY,
+    ]
+    assert refreshed_device.device_status == DeviceStatus.ERROR
+    assert refreshed_device.error_code == "TEST_RUNTIME_STATE"
+    assert refreshed_device.host == "10.150.94.122"
+    assert refreshed_device.port == 8006
 
 
 @pytest.mark.asyncio
@@ -163,7 +172,7 @@ async def test_sync_test_workline_devices_preserves_existing_device_communicatio
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_does_not_add_missing_devices_when_seed_data_exists(db_session) -> None:
+async def test_sync_test_workline_devices_adds_missing_devices_when_seed_data_exists(db_session) -> None:
     await sync_test_workline_devices(db_session)
 
     missing_device = (
@@ -175,29 +184,29 @@ async def test_sync_test_workline_devices_does_not_add_missing_devices_when_seed
     result = await sync_test_workline_devices(db_session)
 
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
-    missing_after_sync = (
+    added_after_sync = (
         await db_session.execute(select(Device).where(Device.device_code == "RS-OUTPUT-ARM-01"))
     ).scalar_one_or_none()
-    assert device_count == len(TEST_ROUGH_SORTER_DEVICES) - 1
-    assert missing_after_sync is None
-    assert result["devices"]["RS-OUTPUT-ARM-01"] == "unchanged"
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert added_after_sync is not None
+    assert result["devices"]["RS-OUTPUT-ARM-01"] == "created"
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_does_not_seed_when_any_workline_data_exists(db_session) -> None:
+async def test_sync_test_workline_devices_seeds_rough_sorter_when_unrelated_workline_exists(db_session) -> None:
     db_session.add(
         WorkLine(
             line_code="WL-EXISTING-MANUAL",
             line_name="已有人工测试线",
             line_type=LineType.AUTO,
-            zone_name="测试库",
+            zone_name="开发库",
             plugin_key="manual-test",
             contract_version="manual",
             config={},
             runtime_config_json={},
             run_mode=WorkLineRunMode.AUTO,
             diagnostic_profile={},
-            description="人工创建的测试数据",
+            description="人工创建的开发数据",
             is_active=True,
             runtime_status=WorkLineRuntimeStatus.READY,
         )
@@ -210,7 +219,7 @@ async def test_sync_test_workline_devices_does_not_seed_when_any_workline_data_e
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
     ).scalar_one_or_none()
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
-    assert seeded_workline is None
-    assert device_count == 0
-    assert result["summary"]["worklines"]["unchanged"] == 1
-    assert set(result["devices"].values()) == {"unchanged"}
+    assert seeded_workline is not None
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert result["summary"]["worklines"]["created"] == 1
+    assert set(result["devices"].values()) == {"created"}

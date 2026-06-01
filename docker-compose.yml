@@ -6,6 +6,7 @@
 # 使用方法:
 #   开发环境:   docker compose --profile dev up -d
 #   测试环境:   docker compose --profile test up -d
+#   开发/E2E/SMT Mock: docker compose --profile dev up -d 或 --profile e2e/smt up -d
 #   生产环境:   docker-compose --profile prod up -d
 #   仅 Celery:  docker-compose --profile celery up -d
 #   仅 API:     docker-compose --profile api up -d
@@ -56,7 +57,7 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（测试/E2E 环境可通过 .env.test 指向 mock_wms）
+      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
       WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
 
       # 日志配置
@@ -138,7 +139,7 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（测试/E2E 环境可通过 .env.test 指向 mock_wms）
+      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
       WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
 
       # 日志配置
@@ -515,6 +516,7 @@ services:
 
   # ============================================
   # ECS Mock 服务 - 单服务多设备模拟
+  # 注意：本机 dev profile 需要启动设备 Mock，供 WorkLine 设备命令联调使用。
   # ============================================
   mock_ecs:
     build:
@@ -562,12 +564,14 @@ services:
         max-size: "${LOG_MAX_SIZE:-10m}"
         max-file: "${LOG_MAX_FILES:-3}"
     profiles:
+      - dev
       - test
       - e2e
       - smt
 
   # ============================================
   # WMS Mock 服务 - 模拟上位系统主数据
+  # 注意：本机通用 test profile 不启动 WMS Mock；开发/E2E/SMT 联调场景显式启用。
   # ============================================
   mock_wms:
     build:
@@ -609,7 +613,7 @@ services:
         max-size: "${LOG_MAX_SIZE:-10m}"
         max-file: "${LOG_MAX_FILES:-3}"
     profiles:
-      - test
+      - dev
       - e2e
       - smt
 

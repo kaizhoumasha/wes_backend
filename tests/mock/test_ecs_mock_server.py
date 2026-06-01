@@ -3,6 +3,7 @@ from typing import ClassVar
 
 from fastapi.testclient import TestClient
 
+from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 from tests.mock import ecs_mock_server
 
 
@@ -24,6 +25,9 @@ class CapturingAsyncClient:
 
 
 class FakeResponse:
+    status_code = 200
+    text = '{"code": 200, "message": "OK"}'
+
     def raise_for_status(self) -> None:
         return None
 
@@ -139,22 +143,198 @@ def test_ecs_mock_pick_and_put_success_callback_contains_measurement(monkeypatch
     assert callback_data["measurement_result"] == "OK"
 
 
-def test_ecs_mock_rejects_event_for_command_only_device(monkeypatch) -> None:
+def test_ecs_mock_lists_received_commands_latest_first(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        first = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-FIRST",
+                "task_type": "PICK_AND_PUT",
+                "params": {"business_key": "PKG-001"},
+            },
+        )
+        second = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-CONVEYOR-01",
+                "command_code": "CMD-ECS-SECOND",
+                "task_type": "MOVE_FORWARD",
+                "params": {"business_key": "PKG-001"},
+            },
+        )
+        response = client.get("/api/v1/mock/commands")
+        filtered = client.get("/api/v1/mock/commands", params={"device_code": "RS-CONVEYOR-01"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 2
+    assert [command["command_code"] for command in data["commands"]] == [
+        "CMD-ECS-SECOND",
+        "CMD-ECS-FIRST",
+    ]
+    assert filtered.json()["data"]["total"] == 1
+    assert filtered.json()["data"]["commands"][0]["task_type"] == "MOVE_FORWARD"
+
+
+def test_ecs_mock_event_scan_completed_callbacks_real_payload(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    payload = {
+        "device_code": "RS-INPUT-ARM-01",
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": 1780296263000,
+        "data": rough_sorter_scan_completed_payload()["data"],
+    }
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/event",
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    response_data = response.json()["data"]
+    assert response_data["wes_http_status"] == 200
+    assert response_data["wes_response"] == {"code": 200, "message": "OK"}
+    callback_payload = CapturingAsyncClient.requests[0]["json"]
+    assert callback_payload == payload
+    assert callback_payload["data"] == rough_sorter_scan_completed_payload()["data"]
+    assert callback_payload["data"]["HHPN"] == "CAP001"
+    assert callback_payload["data"]["LotCode"] == "LOT-A"
+    assert callback_payload["data"]["PkgID"] == "PKG-CAP001-LOT-A-001"
+
+
+def test_ecs_mock_event_accepts_custom_real_payload_data(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    before_ms = ecs_mock_server._now_ms()
 
     with TestClient(ecs_mock_server.app) as client:
         response = client.post(
             "/api/v1/mock/event",
             json={
-                "device_code": "RS-CONVEYOR-01",
+                "device_code": "RS-INPUT-ARM-01",
                 "event_type": "SCAN_COMPLETED",
-                "data": {"barcode": "PKG-001"},
+                "data": {
+                    **rough_sorter_scan_completed_payload()["data"],
+                    "PkgID": "PKG-CUSTOM-001",
+                    "location": "CUSTOM-INLET",
+                },
             },
         )
 
-    assert response.status_code == 400
-    assert "Unsupported event_type" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["message"] == "Event delivered"
+    callback_payload = CapturingAsyncClient.requests[0]["json"]
+    assert response.json()["data"]["wes_http_status"] == 200
+    assert before_ms <= callback_payload["timestamp"] <= ecs_mock_server._now_ms()
+    callback_data = callback_payload["data"]
+    assert callback_data["PkgID"] == "PKG-CUSTOM-001"
+    assert callback_data["location"] == "CUSTOM-INLET"
+    assert callback_data["HHPN"] == "CAP001"
+
+
+def test_ecs_mock_event_storage_retry_callbacks_real_payload(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    payload = {
+        "device_code": "RS-INPUT-ARM-01",
+        "event_type": "ROUGH_SORTER_STORAGE_RETRY",
+        "data": ecs_mock_server.ROUGH_SORTER_STORAGE_RETRY_DATA,
+    }
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/event",
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["wes_http_status"] == 200
+    callback_payload = CapturingAsyncClient.requests[0]["json"]
+    assert callback_payload["device_code"] == "RS-INPUT-ARM-01"
+    assert callback_payload["event_type"] == "ROUGH_SORTER_STORAGE_RETRY"
+    assert isinstance(callback_payload["timestamp"], int)
+    assert callback_payload["data"]["rack_operation"]["status"] == "ARRIVED"
+    assert callback_payload["data"]["active_bin_rack"]["rack_id"] == "RACK-CALLBACK"
+
+
+def test_ecs_mock_event_openapi_exposes_real_callback_payload_examples() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    content = response.json()["paths"]["/api/v1/mock/event"]["post"]["requestBody"]["content"]["application/json"]
+    assert set(content["examples"]) == {
+        "rough_sorter_scan_completed",
+        "rough_sorter_storage_retry",
+    }
+    scan_example = content["examples"]["rough_sorter_scan_completed"]["value"]
+    assert scan_example["device_code"] == "RS-INPUT-ARM-01"
+    assert scan_example["event_type"] == "SCAN_COMPLETED"
+    assert scan_example["data"] == rough_sorter_scan_completed_payload()["data"]
+    assert "timestamp" not in scan_example
+    assert "preset" not in scan_example
+    assert "data_overrides" not in scan_example
+
+    retry_example = content["examples"]["rough_sorter_storage_retry"]["value"]
+    assert retry_example["device_code"] == "RS-INPUT-ARM-01"
+    assert retry_example["event_type"] == "ROUGH_SORTER_STORAGE_RETRY"
+    assert retry_example["data"]["idempotency_key"]
+    assert "timestamp" not in retry_example
+    assert "preset" not in retry_example
+    assert "data_overrides" not in retry_example
+
+
+def test_ecs_mock_event_rejects_preset_payload() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/event",
+            json={
+                "preset": "rough_sorter.scan_completed",
+            },
+        )
+
+    assert response.status_code == 422
     assert CapturingAsyncClient.requests == []
+
+
+def test_ecs_mock_event_returns_wes_callback_failure(monkeypatch) -> None:
+    class RejectingAsyncClient(CapturingAsyncClient):
+        async def post(self, url: str, *, json: dict, headers: dict | None = None):
+            self.requests.append({"url": url, "json": json, "headers": headers or {}})
+            return RejectingResponse()
+
+    class RejectingResponse:
+        status_code = 400
+        text = '{"code": "DEVICE_EVENT_REJECTED", "message": "unsupported event"}'
+
+        def json(self) -> dict:
+            return {"code": "DEVICE_EVENT_REJECTED", "message": "unsupported event"}
+
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", RejectingAsyncClient)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/event",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "event_type": "SCAN_COMPLETED",
+                "data": rough_sorter_scan_completed_payload()["data"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["code"] == 502
+    assert response.json()["message"] == "WES callback failed"
+    assert response.json()["data"]["wes_http_status"] == 400
+    assert response.json()["data"]["wes_response"] == {
+        "code": "DEVICE_EVENT_REJECTED",
+        "message": "unsupported event",
+    }
 
 
 def test_ecs_mock_callbacks_failed_result_for_fail_scenario(monkeypatch) -> None:

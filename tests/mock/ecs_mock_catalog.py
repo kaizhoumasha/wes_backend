@@ -40,7 +40,7 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
         device_type="ROBOTIC_ARM",
         role="ROUGH_SORTER_INPUT_ARM",
         supported_commands=("PICK_AND_PUT", "MOVE_TO_NG", "PICK_NG"),
-        supported_events=("SCAN_COMPLETED",),
+        supported_events=("SCAN_COMPLETED", "ROUGH_SORTER_STORAGE_RETRY"),
     ),
     "RS-CONVEYOR-01": MockEcsDevice(
         device_code="RS-CONVEYOR-01",

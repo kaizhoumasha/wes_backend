@@ -80,7 +80,7 @@ class DeviceSimulator:
         self,
         workline_id: int,
         barcode: str | None = None,
-        location: str = "LOC01",
+        location: str = "ARM01",
     ) -> dict[str, Any]:
         """
         发送扫码事件
@@ -162,10 +162,10 @@ class DeviceSimulator:
 
         payload = {
             "device_code": "RS-INPUT-ARM-01",  # 进料机械臂（扫码+检测）
-            "event_type": "SCAN_COMPLETED",  # 简化插件使用统一事件类型
+            "event_type": "SCAN_COMPLETED",  # 检测模拟仍复用扫码完成入口事件
             "timestamp": int(time.time() * 1000),
             "data": {
-                "location": "LOC01",  # 检测位置
+                "location": "ARM01",  # 检测位置
                 "LotCode": barcode,
                 "DateCode": "20260409",
                 "Qty": "100",
