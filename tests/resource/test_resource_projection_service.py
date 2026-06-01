@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -705,6 +706,48 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
             "captured_at": datetime(2026, 5, 18, 9, 5, 0),
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_values() -> None:
+    occupancies = RecordingBinCellOccupancyRepo()
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_occupancy_repo=occupancies,
+        snapshot_service=RecordingResourceSnapshotService(),
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        SimpleNamespace(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-DECIMAL",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-DECIMAL:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-decimal",
+        session_id="2001",
+        workline_session_id=2001,
+        reel_thickness="0.10",
+        cell_capacity_depth_mm=Decimal("0.30"),
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert occupancies.created[0]["used_depth_mm"] == Decimal("0.10")
+    assert occupancies.created[0]["capacity_depth_mm"] == Decimal("0.30")
+    assert occupancies.created[0]["remaining_depth_mm"] == Decimal("0.20")
+    assert all(
+        not isinstance(occupancies.created[0][key], float)
+        for key in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm")
+    )
 
 
 @pytest.mark.asyncio

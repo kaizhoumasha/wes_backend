@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
@@ -125,14 +126,16 @@ def _normalized_text_list(values: Any) -> list[str]:
     return result
 
 
-def _positive_float(value: Any) -> float | None:
+def _non_negative_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        parsed = float(str(value).strip())
-    except (TypeError, ValueError):
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
         return None
-    return parsed if parsed >= 0 else None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
 
 
 def _occupancy_status_value(value: Any) -> str:
@@ -570,7 +573,7 @@ class ResourceProjectionService:
         qty_snapshot: float | None = None,
         reel_diameter: str | None = None,
         reel_thickness: str | None = None,
-        cell_capacity_depth_mm: float | None = None,
+        cell_capacity_depth_mm: Any | None = None,
         trace_id: str | None = None,
         session_id: str | None = None,
         workline_id: int | None = None,
@@ -1195,7 +1198,7 @@ class ResourceProjectionService:
         bin_code: str,
         bin_cell_index: str,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
     ) -> dict[str, Any] | None:
         if active_cell is not None:
             active_identity_key = getattr(active_cell, "material_identity_key", None)
@@ -1267,17 +1270,17 @@ class ResourceProjectionService:
         active_cell: Any,
         *,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
     ) -> dict[str, Any] | None:
-        incoming_depth = _positive_float(reel_thickness)
+        incoming_depth = _non_negative_decimal(reel_thickness)
         if incoming_depth is None or incoming_depth == 0:
             return None
 
-        active_capacity = _positive_float(getattr(active_cell, "capacity_depth_mm", None))
-        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+        active_capacity = _non_negative_decimal(getattr(active_cell, "capacity_depth_mm", None))
+        incoming_capacity = _non_negative_decimal(cell_capacity_depth_mm)
         capacity_depth = active_capacity if active_capacity is not None else incoming_capacity
-        used_depth = _positive_float(getattr(active_cell, "used_depth_mm", None))
-        remaining_depth = _positive_float(getattr(active_cell, "remaining_depth_mm", None))
+        used_depth = _non_negative_decimal(getattr(active_cell, "used_depth_mm", None))
+        remaining_depth = _non_negative_decimal(getattr(active_cell, "remaining_depth_mm", None))
 
         if remaining_depth is None:
             if capacity_depth is None or used_depth is None:
@@ -1321,7 +1324,7 @@ class ResourceProjectionService:
         lot_code: str | None,
         date_code: str | None,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
         source_system: ResourceSourceSystem,
         source_event_id: str,
         source_version: str | None,
@@ -1329,8 +1332,8 @@ class ResourceProjectionService:
         session_id: str | None,
         occurred_at_for_db: datetime,
     ) -> Any:
-        incoming_depth = _positive_float(reel_thickness) or 0.0
-        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+        incoming_depth = _non_negative_decimal(reel_thickness) or Decimal("0")
+        incoming_capacity = _non_negative_decimal(cell_capacity_depth_mm)
 
         if active_cell is None:
             used_depth = incoming_depth
@@ -1364,12 +1367,14 @@ class ResourceProjectionService:
 
         active_cell.reel_count = int(getattr(active_cell, "reel_count", 0) or 0) + 1
         active_cell.material_identity_key = material_identity_key
-        active_cell.used_depth_mm = float(getattr(active_cell, "used_depth_mm", 0.0) or 0.0) + incoming_depth
+        active_cell.used_depth_mm = (
+            _non_negative_decimal(getattr(active_cell, "used_depth_mm", None)) or Decimal("0")
+        ) + incoming_depth
         if incoming_capacity is not None:
             active_cell.capacity_depth_mm = incoming_capacity
         active_cell.remaining_depth_mm = self._remaining_depth(
-            capacity_depth=_positive_float(getattr(active_cell, "capacity_depth_mm", None)),
-            used_depth=float(active_cell.used_depth_mm),
+            capacity_depth=_non_negative_decimal(getattr(active_cell, "capacity_depth_mm", None)),
+            used_depth=active_cell.used_depth_mm,
         )
         active_cell.occupancy_status = self._occupancy_status(active_cell.remaining_depth_mm)
         active_cell.source_system = source_system
@@ -1399,12 +1404,12 @@ class ResourceProjectionService:
                 active_identity.append(occupancy)
         return active_identity
 
-    def _remaining_depth(self, *, capacity_depth: float | None, used_depth: float) -> float | None:
+    def _remaining_depth(self, *, capacity_depth: Decimal | None, used_depth: Decimal) -> Decimal | None:
         if capacity_depth is None:
             return None
-        return max(capacity_depth - used_depth, 0.0)
+        return max(capacity_depth - used_depth, Decimal("0"))
 
-    def _occupancy_status(self, remaining_depth: float | None) -> str:
+    def _occupancy_status(self, remaining_depth: Decimal | None) -> str:
         if remaining_depth is not None and remaining_depth <= 0:
             return BinCellOccupancyStatus.FULL.value
         return BinCellOccupancyStatus.OCCUPIED.value
@@ -1421,7 +1426,7 @@ class ResourceProjectionService:
         begin_nested = getattr(db, "begin_nested", None)
         if callable(begin_nested):
             # 唯一索引竞争必须回滚到 savepoint，避免污染外层事实写入事务。
-            async with begin_nested():
+            async with cast("Any", begin_nested)():
                 return await self.bin_placement_repo.create(db, placement_data)
         return await self.bin_placement_repo.create(db, placement_data)
 
