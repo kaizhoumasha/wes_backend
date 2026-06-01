@@ -341,12 +341,19 @@ class WorkLineSafetyService:
             hold_version=hold.version,
             latest_evidence_hash=self.runtime_hold_release_service.build_latest_evidence_hash(hold),
         )
-        await self.runtime_hold_release_service.resolve_hold(
+        release_result = await self.runtime_hold_release_service.resolve_hold(
             db,
             cast("int", hold.id),
             release_request,
             operator_id or 0,
             allow_safety_estop=True,
+        )
+        release_evidence = dict(incident.release_evidence_json or {})
+        release_evidence["workline_runtime_status"] = release_result.get("workline_runtime_status")
+        release_evidence["released_outbox_count"] = release_result.get("released_outbox_count")
+        incident.release_evidence_json = _bounded_safety_json(
+            release_evidence,
+            max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
         await db.flush()
         return incident

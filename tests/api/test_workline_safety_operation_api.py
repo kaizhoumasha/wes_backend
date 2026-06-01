@@ -54,7 +54,7 @@ class _SafetyServiceClearStub:
             recovery_check_json=kwargs["checks"],
             cleared_at=None,
             cleared_by=kwargs["operator_id"],
-            release_message="已解除冻结，等待现场 START",
+            release_evidence_json={"workline_runtime_status": "STOPPED"},
         )
 
 
@@ -200,6 +200,7 @@ async def test_simulate_workline_estop_returns_incident_and_commits(
     assert response["data"]["workline_id"] == 12
     assert response["data"]["event_type"] == "ESTOP_PRESSED"
     assert response["data"]["reason"] == "沙箱验证"
+    assert "release_message" not in response["data"]
 
 
 @pytest.mark.asyncio
@@ -455,4 +456,5 @@ async def test_clear_workline_estop_uses_authenticated_user_id(
     assert response["code"] == "1000"
     assert service.operator_id == 88
     assert response["data"]["cleared_by"] == 88
+    assert response["data"]["workline_runtime_status"] == "STOPPED"
     assert response["data"]["release_message"] == "已解除冻结，等待现场 START"
