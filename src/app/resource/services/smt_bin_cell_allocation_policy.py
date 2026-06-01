@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -20,9 +21,24 @@ class SmtBinCellAllocationResult:
     target_bin_code: str | None = None
     target_cell_index: str | None = None
     source_snapshot_version: str | None = None
+    allocation_snapshot_version: str | None = None
     reason_code: str | None = None
     message: str | None = None
     capacity_evidence: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """兼容 Task 1 旧字段，并提供更明确的分配快照版本字段。"""
+
+        if self.source_snapshot_version is None and self.allocation_snapshot_version is not None:
+            object.__setattr__(self, "source_snapshot_version", self.allocation_snapshot_version)
+        elif self.allocation_snapshot_version is None and self.source_snapshot_version is not None:
+            object.__setattr__(self, "allocation_snapshot_version", self.source_snapshot_version)
+        elif (
+            self.source_snapshot_version is not None
+            and self.allocation_snapshot_version is not None
+            and self.source_snapshot_version != self.allocation_snapshot_version
+        ):
+            raise ValueError("source_snapshot_version must equal allocation_snapshot_version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +62,7 @@ class SmtBinCellAllocationPolicy:
 
     OCCUPIED_STATUSES: frozenset[str] = frozenset({"OCCUPIED", "IN_USE"})
     EMPTY_STATUSES: frozenset[str] = frozenset({"EMPTY", "EMPTY_VERIFIED", "AVAILABLE"})
+    PLAIN_DECIMAL_PATTERN = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 
     def allocate(
         self,
@@ -67,7 +84,7 @@ class SmtBinCellAllocationPolicy:
                 capacity_evidence={"reel_thickness_mm": self._source_text(reel_thickness_mm)},
             )
 
-        cells = self._snapshot_cells(active_snapshot)
+        cells = sorted(self._snapshot_cells(active_snapshot), key=self._cell_sort_key)
         parsed_depths: dict[int, _CellDepth] = {}
         for cell in cells:
             depth = self._cell_depth(cell)
@@ -224,8 +241,8 @@ class SmtBinCellAllocationPolicy:
         return parsed
 
     def _decimal_value(self, value: Any) -> _DepthValue | None:
-        source = self._source_text(value)
-        if not source:
+        source = self._decimal_source_text(value)
+        if source is None:
             return None
         try:
             decimal_value = Decimal(source)
@@ -236,14 +253,24 @@ class SmtBinCellAllocationPolicy:
         return _DepthValue(value=decimal_value, source=source)
 
     def _snapshot_cells(self, active_snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        raw_cells = (
-            active_snapshot.get("cells") or active_snapshot.get("bin_cells") or active_snapshot.get("cell_snapshots")
-        )
+        raw_cells = self._authoritative_cells_value(active_snapshot)
         if not isinstance(raw_cells, Sequence) or isinstance(raw_cells, (str, bytes)):
             return []
         return [
             cast("Mapping[str, Any]", cell) for cell in cast("Sequence[Any]", raw_cells) if isinstance(cell, Mapping)
         ]
+
+    def _authoritative_cells_value(self, active_snapshot: Mapping[str, Any]) -> Any:
+        for key in ("cells", "bin_cells", "cell_snapshots"):
+            if key in active_snapshot:
+                return active_snapshot[key]
+        return []
+
+    def _cell_sort_key(self, cell: Mapping[str, Any]) -> tuple[str, str]:
+        return (
+            self._target_bin_code(cell) or "",
+            self._target_cell_index(cell) or self._text_or_none(cell.get("bin_cell_location")) or "",
+        )
 
     def _is_occupied(self, cell: Mapping[str, Any]) -> bool:
         return self._cell_status(cell) in self.OCCUPIED_STATUSES
@@ -268,6 +295,21 @@ class SmtBinCellAllocationPolicy:
         if value is None:
             return ""
         return str(value).strip()
+
+    def _decimal_source_text(self, value: Any) -> str | None:
+        if isinstance(value, (bool, float)):
+            return None
+        if isinstance(value, Decimal):
+            source = format(value, "f")
+        elif isinstance(value, int):
+            source = str(value)
+        elif isinstance(value, str):
+            source = value.strip()
+        else:
+            return None
+        if not source or not self.PLAIN_DECIMAL_PATTERN.fullmatch(source):
+            return None
+        return source
 
     def _decimal_text(self, value: Decimal) -> str:
         return format(value, "f")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from decimal import Decimal
 
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
 
@@ -31,6 +32,7 @@ def test_compatible_cell_with_enough_decimal_depth_wins_before_empty_cell() -> N
     assert result.target_bin_code == "BIN-B"
     assert result.target_cell_index == "2"
     assert result.source_snapshot_version == "snap-20260601-001"
+    assert result.allocation_snapshot_version == "snap-20260601-001"
     assert result.capacity_evidence == {
         "selection_reason": "compatible-material",
         "cell_status": "OCCUPIED",
@@ -117,6 +119,35 @@ def test_reel_thickness_missing_invalid_zero_or_negative_is_rejected() -> None:
         assert result.capacity_evidence["reel_thickness_mm"] == str(reel_thickness or "")
 
 
+def test_reel_thickness_rejects_float_bool_non_finite_and_exponent_strings() -> None:
+    policy = SmtBinCellAllocationPolicy()
+    rejected_values = (0.1 + 0.2, True, False, "NaN", "Infinity", "-Infinity", "1e-3")
+
+    for reel_thickness in rejected_values:
+        result = policy.allocate(
+            active_snapshot={"cells": [_cell("BIN-A", "1", status="EMPTY")]},
+            material_identity_key=MATERIAL_IDENTITY_KEY,
+            reel_thickness_mm=reel_thickness,
+        )
+
+        assert result.kind == "REJECTED"
+        assert result.reason_code == "INVALID_REEL_THICKNESS"
+        assert result.capacity_evidence["reel_thickness_mm"] == str(reel_thickness)
+
+
+def test_reel_thickness_accepts_decimal_int_and_plain_decimal_string() -> None:
+    policy = SmtBinCellAllocationPolicy()
+    for reel_thickness in (Decimal("1.25"), 1, "1.250"):
+        result = policy.allocate(
+            active_snapshot={"cells": [_cell("BIN-A", "1", status="EMPTY", capacity_depth_mm="2", used_depth_mm="0")]},
+            material_identity_key=MATERIAL_IDENTITY_KEY,
+            reel_thickness_mm=reel_thickness,
+        )
+
+        assert result.kind == "ALLOCATED"
+        assert result.target_bin_code == "BIN-A"
+
+
 def test_capacity_or_used_depth_missing_invalid_or_negative_is_rejected() -> None:
     policy = SmtBinCellAllocationPolicy()
     invalid_cells = [
@@ -139,6 +170,27 @@ def test_capacity_or_used_depth_missing_invalid_or_negative_is_rejected() -> Non
         assert result.reason_code == "INVALID_CELL_DEPTH"
         assert result.target_bin_code == "BIN-A"
         assert result.target_cell_index == "1"
+
+
+def test_capacity_or_used_depth_rejects_float_bool_non_finite_and_exponent_strings() -> None:
+    policy = SmtBinCellAllocationPolicy()
+    invalid_depths = (0.1 + 0.2, True, False, "NaN", "Infinity", "-Infinity", "1e-3")
+
+    for invalid_depth in invalid_depths:
+        for depth_key in ("capacity_depth_mm", "used_depth_mm"):
+            cell = _cell("BIN-A", "1", status="EMPTY", capacity_depth_mm="5", used_depth_mm="0")
+            cell[depth_key] = invalid_depth
+
+            result = policy.allocate(
+                active_snapshot={"cells": [cell]},
+                material_identity_key=MATERIAL_IDENTITY_KEY,
+                reel_thickness_mm="1",
+            )
+
+            assert result.kind == "REJECTED"
+            assert result.reason_code == "INVALID_CELL_DEPTH"
+            assert result.target_bin_code == "BIN-A"
+            assert result.target_cell_index == "1"
 
 
 def test_used_depth_greater_than_total_depth_returns_projection_inconsistent_reason() -> None:
@@ -165,6 +217,45 @@ def test_used_depth_greater_than_total_depth_returns_projection_inconsistent_rea
     assert result.target_cell_index == "1"
     assert result.capacity_evidence["capacity_depth_mm"] == "5.00"
     assert result.capacity_evidence["used_depth_mm"] == "5.01"
+
+
+def test_empty_cells_key_is_authoritative_and_does_not_fallback_to_bin_cells() -> None:
+    result = SmtBinCellAllocationPolicy().allocate(
+        active_snapshot={
+            "cells": [],
+            "bin_cells": [_cell("BIN-A", "1", status="EMPTY", capacity_depth_mm="10", used_depth_mm="0")],
+        },
+        material_identity_key=MATERIAL_IDENTITY_KEY,
+        reel_thickness_mm="1",
+    )
+
+    assert result.kind == "REJECTED"
+    assert result.reason_code == "NO_CAPACITY"
+    assert result.target_bin_code is None
+    assert result.target_cell_index is None
+    assert result.capacity_evidence["empty_cells_checked"] == "0"
+
+
+def test_equal_candidates_are_selected_by_stable_bin_and_cell_sort_order() -> None:
+    policy = SmtBinCellAllocationPolicy()
+    cell_a = _cell("BIN-A", "1", status="EMPTY", capacity_depth_mm="10", used_depth_mm="0")
+    cell_b = _cell("BIN-B", "2", status="EMPTY", capacity_depth_mm="10", used_depth_mm="0")
+
+    forward = policy.allocate(
+        active_snapshot={"cells": [cell_b, cell_a]},
+        material_identity_key=MATERIAL_IDENTITY_KEY,
+        reel_thickness_mm="1",
+    )
+    reverse = policy.allocate(
+        active_snapshot={"cells": [cell_a, cell_b]},
+        material_identity_key=MATERIAL_IDENTITY_KEY,
+        reel_thickness_mm="1",
+    )
+
+    assert forward.kind == "ALLOCATED"
+    assert reverse.kind == "ALLOCATED"
+    assert forward.target_bin_code == reverse.target_bin_code == "BIN-A"
+    assert forward.target_cell_index == reverse.target_cell_index == "1"
 
 
 def test_policy_constructor_and_allocate_signature_do_not_accept_persistence_dependencies() -> None:
