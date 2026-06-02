@@ -13,7 +13,7 @@
 
 import time
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from src.app.callback.models import (
     CallbackEventIngressResponse,
@@ -75,14 +75,17 @@ async def callback_result(
 async def callback_event(
     request: Request,
     db: AsyncSessionDep,
+    response: Response,
 ) -> CallbackEventIngressResponse:
-    return await callback_ingress_service.handle_event(
+    decision = await callback_ingress_service.handle_event_decision(
         request,
         db,
         request_id=get_request_id(),
         start_time=time.time(),
         enqueue_processing=_enqueue_workline_processing,
     )
+    response.status_code = decision.http_status
+    return decision.body
 
 
 @router.post(

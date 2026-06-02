@@ -91,6 +91,7 @@ class _InboxDiagnosticSnapshot:
     session_id: int | None
     device_id: int | None
     command_id: int | None
+    attempt_count: int
     payload_json: dict[str, Any]
 
 
@@ -143,6 +144,7 @@ def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
         session_id=optional_int(getattr(inbox, "session_id", None)),
         device_id=optional_int(getattr(inbox, "device_id", None)),
         command_id=optional_int(getattr(inbox, "command_id", None)),
+        attempt_count=int(getattr(inbox, "attempt_count", 0)),
         payload_json=dict(payload_dict(getattr(inbox, "payload_json", None))),
     )
 
@@ -1327,8 +1329,15 @@ class InboxBatchProcessor:
                 try:
                     inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
-                        _ = await inbox_service.mark_as_failed(
-                            db, inbox_pk, str(e), processor_token=processor_token, auto_commit=False
+                        attempt_count = getattr(diagnostic_inbox, "attempt_count", 0)
+                        delay_seconds = min(600, 10 * (2**attempt_count))
+                        _ = await inbox_service.park_for_retry(
+                            db,
+                            inbox_pk,
+                            str(e),
+                            processor_token=processor_token,
+                            auto_commit=False,
+                            delay_seconds=delay_seconds,
                         )
                         await db.commit()
                 except Exception as mark_error:

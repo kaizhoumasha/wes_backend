@@ -797,3 +797,32 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
     assert result["success"] == 1
     injected_write_back.write_back.assert_awaited_once()
     default_write_back.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_batch_workline_safety_blocked(mock_db, mock_inbox_service):
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.attempt_count = 2
+    inbox.payload_json = {"event_type": "SOME_EVENT"}
+    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.repo.get_by_id.return_value = inbox
+
+    from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+
+    with patch(
+        "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
+    ) as mock_load:
+        mock_load.side_effect = WorkLineSafetyBlocked("Workline is stopped")
+
+        with patch(
+            "src.app.workline.services.inbox_batch_processor._record_diagnostic", new_callable=AsyncMock
+        ) as mock_record_diag:
+            processor = _processor_for_db(mock_db)
+            result = await processor.process_batch(mock_db, limit=1)
+
+            assert result["failed"] == 1
+            mock_inbox_service.park_for_retry.assert_awaited_once_with(
+                mock_db, 1, "Workline is stopped", processor_token=ANY, auto_commit=False, delay_seconds=40
+            )
+            mock_record_diag.assert_awaited_once()

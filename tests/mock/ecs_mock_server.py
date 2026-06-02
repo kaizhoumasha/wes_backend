@@ -28,6 +28,7 @@ DOCKER_APP_ROOT = Path(__file__).resolve().parents[2]
 if str(DOCKER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(DOCKER_APP_ROOT))
 
+from src.workline_runtime.runtime_events import is_platform_control_event
 from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,10 @@ class DeviceRuntimeState(BaseModel):
     """Mock 设备运行态。"""
 
     device_code: str
+    mode: str = "AUTO"
     status: str = "IDLE"
     is_online: bool = True
-    current_command_code: str | None = None
+    current_command_id: str | None = None
     scenario: ScenarioName = "success"
     updated_at: int
 
@@ -261,7 +263,7 @@ async def _finish_command(payload: DeviceCommandPayload) -> None:
         if scenario != "success" and state.scenario == scenario:
             state.scenario = "success"
         state.status = "IDLE"
-        state.current_command_code = None
+        state.current_command_id = None
         state.updated_at = _now_ms()
 
 
@@ -294,9 +296,11 @@ async def receive_command(payload: DeviceCommandPayload, background_tasks: Backg
         raise HTTPException(status_code=503, detail="Device Busy")
 
     state.status = "RUNNING"
-    state.current_command_code = payload.command_code
+    state.current_command_id = payload.command_code
     state.updated_at = _now_ms()
-    command_history.append(payload.model_dump())
+    command_record = payload.model_dump()
+    command_record["current_command_id"] = payload.command_code
+    command_history.append(command_record)
     background_tasks.add_task(_finish_command, payload)
     return DeviceCommandAck(code=200, message="Accepted", trace_id=f"ECS-MOCK-{payload.command_code}")
 
@@ -353,7 +357,10 @@ async def report_mock_event(payload: MockEventRequestBody) -> dict[str, Any]:
     event_payload.setdefault("timestamp", _now_ms())
     _ = _get_state_or_400(event_payload["device_code"])
     device = MOCK_ECS_DEVICES[event_payload["device_code"]]
-    if event_payload["event_type"] not in device.supported_events:
+    if (
+        not is_platform_control_event(event_payload["event_type"])
+        and event_payload["event_type"] not in device.supported_events
+    ):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported event_type for {event_payload['device_code']}: {event_payload['event_type']}",

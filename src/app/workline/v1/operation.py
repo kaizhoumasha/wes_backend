@@ -104,6 +104,15 @@ def _safety_incident_response(incident: Any) -> dict[str, Any]:
     }
 
 
+def _clear_estop_response(incident: Any) -> dict[str, Any]:
+    data = _safety_incident_response(incident)
+    release_evidence = getattr(incident, "release_evidence_json", None)
+    if isinstance(release_evidence, dict):
+        data["workline_runtime_status"] = release_evidence.get("workline_runtime_status")
+    data["release_message"] = "已解除冻结，等待现场 START"
+    return data
+
+
 def _operation_error_response(exc: Exception) -> dict[str, Any]:
     message = str(exc)
     if "不存在" in message or "NOT_FOUND" in message:
@@ -377,7 +386,7 @@ async def clear_workline_estop(
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     return cast(
         "ResponseSchemaModel[dict[str, Any]]",
-        response_builder.success(data=_safety_incident_response(incident)),
+        response_builder.success(data=_clear_estop_response(incident)),
     )
 
 

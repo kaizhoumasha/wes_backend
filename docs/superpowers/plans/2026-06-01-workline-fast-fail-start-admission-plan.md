@@ -12,9 +12,11 @@
 
 ## Scope Check
 
-本 SPEC 横跨后端 runtime、callback ingress、device dispatch、dev mock、前端 runtime UI 和 `TODOS.md` follow-up。用户已选择单一总 PLAN，因为这些变更需要同批交付才能避免后端语义切换后前端仍显示“稳定/已恢复接收”。
+本 SPEC 横跨后端 runtime、callback ingress、device dispatch、dev mock、前端 runtime UI 和 `TODOS.md` follow-up。这些属于同一个平台级运行时合同，需要在本计划内同批验收，避免后端语义切换后前端仍显示“稳定/已恢复接收”。
 
-执行时可以分 lane，但不要把功能拆成多个不一致的 PR：后端 `STOPPED/START/409/status` 合同和前端 STOPPED/START 展示必须一起验收。
+本计划是平台级 WorkLine runtime 计划，独立于 SMT 分拣入库插件 P0 计划执行。执行时可以分 lane，但不要把本计划内部的后端 `STOPPED/START/409/status` 合同和前端 STOPPED/START 展示拆成不同验收批次。
+
+与 SMT 分拣入库 P0 的关系见 [2026-06-01-workline-fast-fail-and-smt-sorting-plan-dependencies.md](2026-06-01-workline-fast-fail-and-smt-sorting-plan-dependencies.md)。SMT 分拣入库 P0 可以先做 resource foundation 的只读设计和测试准备，但涉及实际设备命令、生产事件入口、插件沙箱联调前，必须等本计划的 `STOPPED/START/status` 运行时合同合并。
 
 ## Implementation Guardrails
 

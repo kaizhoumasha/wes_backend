@@ -152,7 +152,8 @@ async def test_continue_resolves_hold_without_ng_item(db_session) -> None:
     assert hold.version == 1
     assert await _ng_item_count(db_session, cast("int", hold.id)) == 0
     assert session.status == SessionStatus.COMPLETED
-    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert result["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
 
 
 async def test_continue_for_command_backed_hold_replays_command_result_instead_of_terminalizing_session(
@@ -549,7 +550,8 @@ async def test_failed_resolution_resolves_active_hold_for_already_failed_session
     await db_session.refresh(session)
     assert result["status"] == RuntimeHoldStatus.RESOLVED.value
     assert hold.status == RuntimeHoldStatus.RESOLVED
-    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert result["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert session.status == SessionStatus.FAILED
     assert session.failure_domain == "SAFETY"
     assert session.failure_code == "WORKLINE_ESTOPPED"
@@ -805,7 +807,7 @@ async def test_safety_estop_hold_requires_clear_estop_entrypoint(db_session) -> 
         await service.resolve_hold(db_session, cast("int", hold.id), _continue_request(service, hold), 42)
 
 
-async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -> None:
+async def test_last_blocking_hold_resolved_keeps_outbox_parked_until_start(db_session) -> None:
     service = RuntimeHoldReleaseService()
     workline = await _create_workline(db_session, code="WL-HOLD-OUTBOX")
     session = await _create_session(db_session, workline, code="S-HOLD-OUTBOX")
@@ -831,13 +833,14 @@ async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -
 
     await db_session.refresh(workline)
     await db_session.refresh(outbox)
-    assert result["released_outbox_count"] == 1
-    assert workline.runtime_status == WorkLineRuntimeStatus.READY
-    assert outbox.status == SystemOutboxStatus.NEW
+    assert result["released_outbox_count"] == 0
+    assert result["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
+    assert outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
     assert outbox.blocked_by_runtime_hold_id is None
     assert outbox.blocked_by_reconciliation_session_id is None
-    assert outbox.blocked_workline_id is None
-    assert outbox.blocked_reason is None
+    assert outbox.blocked_workline_id == workline.id
+    assert outbox.blocked_reason == "WORKLINE_STOPPED_WAITING_START"
 
 
 async def test_repeated_resolved_hold_rejects_without_second_ng_item(db_session) -> None:

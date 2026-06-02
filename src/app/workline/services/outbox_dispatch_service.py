@@ -379,10 +379,15 @@ class OutboxDispatchService:
                     logger.info(f"Outbox {outbox_pk} 派发成功 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 else:
                     trace_extra = _outbox_trace_extra(outbox, trace=trace)
+                    failure_reason = string_value(
+                        getattr(outbox, "_dispatch_failure_reason", None),
+                        default="Dispatch failed",
+                    )
+                    failure_code = string_value(getattr(outbox, "_dispatch_failure_error_code", None), default="")
                     failed_outbox = await outbox_repo.mark_as_failed(
                         db,
                         outbox_pk,
-                        "Dispatch failed",
+                        failure_reason,
                         self.MAX_RETRIES,
                     )
                     if dispatch_attempt is not None:
@@ -390,7 +395,7 @@ class OutboxDispatchService:
                             db,
                             attempt=dispatch_attempt,
                             success=False,
-                            error_message="Dispatch failed",
+                            error_message=failure_reason,
                             auto_commit=False,
                         )
                     if failed_outbox is None:
@@ -406,15 +411,19 @@ class OutboxDispatchService:
                         db,
                         inbox=None,
                         outbox=outbox,
-                        error_code=_dispatch_failure_diagnostic_code(failed_outbox),
-                        message="Dispatch failed",
+                        error_code=(
+                            ErrorCode.OUTBOX_DISPATCH_FAILED
+                            if failure_code == "DEVICE_STATUS_PRECHECK_FAILED"
+                            else _dispatch_failure_diagnostic_code(failed_outbox)
+                        ),
+                        message=failure_reason,
                         extra=trace_extra,
                     )
                     await _mark_device_command_failed_if_dispatch_exhausted(
                         db,
                         outbox=outbox,
                         failed_outbox=failed_outbox,
-                        error_message="Dispatch failed",
+                        error_message=failure_reason,
                     )
                     await db.commit()
                     result["failed"] += 1

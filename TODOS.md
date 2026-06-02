@@ -77,13 +77,15 @@
 
 **Why**: 本次拆分选择单 batch 内顺序处理，以保护事务边界、fencing 语义和共享 `AsyncSession` 安全；吞吐优化需要在职责边界稳定后用基准数据驱动。
 
-**Context**: `docs/superpowers/plans/2026-05-27-workline-task-decomposition.md` Task 7 延后项。
+**Context**: `docs/superpowers/plans/2026-05-27-workline-task-decomposition.md` Task 7 延后项；`docs/superpowers/plans/2026-06-01-workline-fast-fail-start-admission-plan.md` 已引入 START 准入批量 status、command 前单设备 status 预检和操作级 HTTP client。
 
 **Scope**:
 - 建立 Workline inbox/outbox worker 吞吐基准
 - 评估 Celery worker concurrency 与队列隔离策略
 - 评估 batch limit 对延迟、锁竞争和重试的影响
 - 评估设备 HTTP client 复用、超时和连接池策略，覆盖实时 status GET + command POST 双 HTTP 路径
+- 对比 START 准入 ECS batch status 延迟、bounded probe concurrency 与 command dispatch 单设备 status GET 延迟
+- 对比当前 operation-scoped `httpx.AsyncClient` 与未来全局 client pool 的连接复用、超时隔离、故障扩散和资源回收成本
 - 明确不得在共享 `AsyncSession` 内引入 batch-internal `asyncio.gather`
 
 **Dependencies**: Workline task decomposition 代码稳定后，采集真实或接近真实的任务量、设备 ACK 延迟和 outbox 重试数据。

@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -11,6 +12,9 @@ from src.workline_runtime.enums import FailureDomain
 from src.workline_runtime.utils import payload_dict
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
+_DEFAULT_DEVICE_STATUS_PATH = "/api/v1/device/status"
+_DEFAULT_DEVICE_STATUS_TIMEOUT_SECONDS = 2.0
+_DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS = 10.0
 
 
 class _DeviceCommandGovernanceError(RuntimeError):
@@ -117,10 +121,25 @@ def _resolve_device_command_path(device: Any) -> str:
     return callback_path
 
 
+def _resolve_device_status_path(device: Any) -> str:
+    """设备命令派发前实时状态检查固定使用 ECS 标准状态路径。"""
+
+    return _DEFAULT_DEVICE_STATUS_PATH
+
+
 def _resolve_device_protocol_scheme(device: Any) -> str:
     raw_protocol = getattr(device, "protocol", None)
     scheme = str(raw_protocol).lower() if raw_protocol else "http"
     return scheme if scheme in {"http", "https"} else "http"
+
+
+def _resolve_device_status_timeout_seconds(device: Any) -> float:
+    capabilities = getattr(device, "capabilities_json", None)
+    raw = capabilities if isinstance(capabilities, dict) else {}
+    value = raw.get("device_status_timeout_seconds", _DEFAULT_DEVICE_STATUS_TIMEOUT_SECONDS)
+    if not isinstance(value, int | float):
+        value = _DEFAULT_DEVICE_STATUS_TIMEOUT_SECONDS
+    return float(min(max(value, 1.0), 5.0))
 
 
 def _enforce_device_command_governance(
@@ -284,7 +303,7 @@ async def _mark_outbox_blocked_by_workline_state(
     outbox_id: int,
     safety_error: Exception,
 ) -> str:
-    """按 WorkLine 运行态阻断 outbox；RECONCILING 进入 parked 队列，ESTOP 保持本地失败。"""
+    """按运行态阻断 outbox；RECONCILING 和 STOPPED 进入 parked，ESTOP 保持本地失败。"""
 
     reason = str(safety_error)
     if "WORKLINE_RECONCILING" in reason:
@@ -295,6 +314,10 @@ async def _mark_outbox_blocked_by_workline_state(
             outbox=outbox,
             reason="CALLBACK_DEADLINE_EXPIRED",
         )
+        return "blocked_resource"
+
+    if "WORKLINE_STOPPED" in reason:
+        _ = await outbox_repo.mark_as_blocked_by_workline_stopped(db, outbox_id)
         return "blocked_resource"
 
     _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_id)
@@ -312,6 +335,75 @@ def _is_same_session_current_command(*, outbox: Any, command: Any | None, device
         and outbox_session_id is not None
         and command_session_id == outbox_session_id
     )
+
+
+def _build_device_status_url(device: Any, *, device_code: str) -> str:
+    scheme = _resolve_device_protocol_scheme(device)
+    status_path = _resolve_device_status_path(device)
+    return f"{scheme}://{device.host}:{device.port}{status_path}?device_code={quote(device_code)}"
+
+
+def _extract_device_status_state(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    state = payload.get("state")
+    if isinstance(state, dict):
+        return state
+    device = payload.get("device")
+    if isinstance(device, dict):
+        nested_state = device.get("state")
+        if isinstance(nested_state, dict):
+            return nested_state
+    return payload
+
+
+async def _ensure_realtime_device_status_ready(
+    client: Any, device: Any, *, device_code: str, command_code: str | None = None
+) -> bool:
+    """真实命令 POST 前查询 ECS 实时状态，避免对非空闲设备产生物理副作用。"""
+
+    status_url = _build_device_status_url(device, device_code=device_code)
+    timeout_seconds = _resolve_device_status_timeout_seconds(device)
+    try:
+        response = await client.get(status_url, timeout=timeout_seconds)
+    except Exception as exc:
+        logger.warning(f"设备实时状态查询失败: device_code={device_code}, url={status_url}, error={exc}")
+        return False
+
+    if response.status_code != 200:
+        response_body = getattr(response, "text", "").strip()
+        if response_body:
+            logger.warning(f"设备实时状态查询失败: HTTP {response.status_code}, body={response_body}")
+        else:
+            logger.warning(f"设备实时状态查询失败: HTTP {response.status_code}")
+        return False
+
+    try:
+        state = _extract_device_status_state(response.json())
+    except Exception as exc:
+        logger.warning(f"设备实时状态响应 JSON 解析失败: device_code={device_code}, error={exc}")
+        return False
+
+    mode = state.get("mode")
+    status = state.get("status", state.get("device_status"))
+    current_command_id = state.get("current_command_id")
+    if mode != "AUTO" or status != "IDLE" or current_command_id is not None:
+        if current_command_id and current_command_id == command_code:
+            _raise_device_command_governance_error(
+                domain="ORCHESTRATION",
+                code="DEVICE_BUSY",
+                message=f"设备实时状态已接受该命令但本地未确认: device_code={device_code}, current_command_id={current_command_id}",
+                device_code=device_code,
+            )
+
+        _raise_device_command_governance_error(
+            domain="ORCHESTRATION",
+            code="DEVICE_BUSY",
+            message=f"设备实时状态不允许派发: device_code={device_code}, mode={mode}, status={status}, current_command_id={current_command_id}",
+            device_code=device_code,
+        )
+
+    return True
 
 
 class DeviceCommandGateway:
@@ -414,10 +506,18 @@ class DeviceCommandGateway:
             scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
-            logger.info(f"发送设备指令参数: {_build_device_command_log_envelope(outbox, payload, endpoint=url)}")
-            timeout = 10.0
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, json=payload)
+            ack_timeout = _DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS
+            async with httpx.AsyncClient() as client:
+                ready = await _ensure_realtime_device_status_ready(
+                    client=client, device=device, device_code=payload["device_code"], command_code=command_code
+                )
+                if not ready:
+                    outbox._dispatch_failure_reason = "DEVICE_STATUS_PRECHECK_FAILED"
+                    outbox._dispatch_failure_error_code = "DEVICE_STATUS_PRECHECK_FAILED"
+                    return False
+
+                logger.info(f"发送设备指令参数: {_build_device_command_log_envelope(outbox, payload, endpoint=url)}")
+                response = await client.post(url, json=payload, timeout=ack_timeout)
                 if response.status_code == 200:
                     from src.app.device.services import device_service
                     from src.app.workline.services.runtime_reconciliation_service import (

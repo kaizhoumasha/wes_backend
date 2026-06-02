@@ -782,11 +782,15 @@ async def test_cleanup_workline_deletes_sandbox_runtime_graph_and_resets_runtime
     assert auto_hold.reopened_from_hold_id is None
 
     refreshed_workline = await db_session.get(WorkLine, graph["simulation_workline_id"])
-    assert refreshed_workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert refreshed_workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert refreshed_workline.active_safety_incident_id is None
     assert refreshed_workline.stopped_at is None
     assert refreshed_workline.stopped_reason is None
-    assert refreshed_workline.resumed_at is not None
+    assert refreshed_workline.resumed_at is None
+    assert refreshed_workline.start_admission_status is None
+    assert refreshed_workline.start_admission_message is None
+    assert refreshed_workline.start_admission_failed_device_code is None
+    assert refreshed_workline.start_admission_checked_at is None
 
     sandbox_device = await db_session.get(Device, graph["sandbox_device_id"])
     assert sandbox_device.current_command_id is None

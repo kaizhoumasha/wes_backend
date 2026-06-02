@@ -411,6 +411,37 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             )
         return await self._update_inbox(db, inbox_id, **data, auto_commit=auto_commit)
 
+    async def park_for_retry(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        error_message: str,
+        *,
+        processor_token: str | None = None,
+        auto_commit: bool = True,
+        delay_seconds: int = 10,
+    ) -> WorklineInbox:
+        """
+        因安全状态阻塞，暂时挂起消息（不增加重试次数）。
+        这样不会耗尽 attempt_count 导致消息进入 DEAD_LETTER。
+        """
+        data = {
+            "status": InboxStatus.RETRY,
+            "error_message": error_message,
+            "next_retry_at": timezone.now_for_db() + timedelta(seconds=delay_seconds),
+            "processed_at": timezone.now_for_db(),
+            "processor_token": None,  # nosec B105
+        }
+        if processor_token is not None:
+            return await self._update_processing_inbox(
+                db,
+                inbox_id,
+                processor_token=processor_token,
+                data=data,
+                auto_commit=auto_commit,
+            )
+        return await self._update_inbox(db, inbox_id, **data, auto_commit=auto_commit)
+
     async def mark_as_dead_letter(
         self,
         db: AsyncSession,

@@ -2,7 +2,13 @@ import pytest
 
 from src.workline_runtime.plugin_base import WorklinePlugin, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
-from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS, assert_not_reserved_runtime_event
+from src.workline_runtime.runtime_events import (
+    RESERVED_RUNTIME_EVENTS,
+    assert_not_reserved_runtime_event,
+    is_platform_control_event,
+    is_platform_safety_event,
+    is_production_event,
+)
 
 
 def _business_key(_payload: dict[str, object]) -> str | None:
@@ -13,9 +19,28 @@ def test_estop_is_reserved_runtime_event() -> None:
     assert "ESTOP_PRESSED" in RESERVED_RUNTIME_EVENTS
 
 
+def test_platform_runtime_event_taxonomy_separates_control_safety_and_production_events() -> None:
+    assert is_platform_control_event("WORKLINE_START_REQUESTED") is True
+    assert is_platform_safety_event("WORKLINE_START_REQUESTED") is False
+    assert is_production_event("WORKLINE_START_REQUESTED") is False
+
+    assert is_platform_control_event("ESTOP_PRESSED") is False
+    assert is_platform_safety_event("ESTOP_PRESSED") is True
+    assert is_production_event("ESTOP_PRESSED") is False
+
+    assert is_platform_control_event("SCAN_COMPLETED") is False
+    assert is_platform_safety_event("SCAN_COMPLETED") is False
+    assert is_production_event("SCAN_COMPLETED") is True
+
+
 def test_runtime_event_helper_rejects_estop_with_actionable_message() -> None:
     with pytest.raises(ValueError, match="ESTOP_PRESSED 是平台保留安全事件"):
         assert_not_reserved_runtime_event("ESTOP_PRESSED", owner="test")
+
+
+def test_runtime_event_helper_rejects_platform_control_start_with_actionable_message() -> None:
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
+        assert_not_reserved_runtime_event("WORKLINE_START_REQUESTED", owner="test")
 
 
 def test_manifest_rejects_reserved_supported_event() -> None:
@@ -26,6 +51,17 @@ def test_manifest_rejects_reserved_supported_event() -> None:
             required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
             business_key_resolver=_business_key,
             supported_events=frozenset({"ESTOP_PRESSED"}),
+        )
+
+
+def test_manifest_rejects_platform_control_supported_event() -> None:
+    with pytest.raises(ValueError, match="supported_events"):
+        WorklinePluginManifest(
+            plugin_key="bad",
+            contract_version="1.0",
+            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
+            business_key_resolver=_business_key,
+            supported_events=frozenset({"WORKLINE_START_REQUESTED"}),
         )
 
 
@@ -40,6 +76,17 @@ def test_manifest_rejects_reserved_event_source_role() -> None:
         )
 
 
+def test_manifest_rejects_platform_control_event_source_role() -> None:
+    with pytest.raises(ValueError, match="event_source_roles"):
+        WorklinePluginManifest(
+            plugin_key="bad",
+            contract_version="1.0",
+            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
+            business_key_resolver=_business_key,
+            event_source_roles={"WORKLINE_START_REQUESTED": "SCANNER"},
+        )
+
+
 def test_on_event_rejects_reserved_event() -> None:
     with pytest.raises(ValueError, match="@on_event"):
 
@@ -49,4 +96,16 @@ def test_on_event_rejects_reserved_event() -> None:
 
             @on_event("ESTOP_PRESSED")
             async def handle_estop(self, ctx, event):
+                raise AssertionError("should not register")
+
+
+def test_on_event_rejects_platform_control_event() -> None:
+    with pytest.raises(ValueError, match="@on_event"):
+
+        class BadPlugin(WorklinePlugin):
+            plugin_key = "bad"
+            contract_version = "1.0"
+
+            @on_event("WORKLINE_START_REQUESTED")
+            async def handle_start(self, ctx, event):
                 raise AssertionError("should not register")

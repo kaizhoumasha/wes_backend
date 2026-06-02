@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, Column, text
+from sqlalchemy import JSON, Column, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -131,7 +131,7 @@ class WorkLine(
     __schema__ = SchemaType.BIZ.value  # 业务数据表
 
     runtime_status: WorkLineRuntimeStatus = Field(
-        default=WorkLineRuntimeStatus.READY,
+        default=WorkLineRuntimeStatus.STOPPED,
         index=True,
         sa_type=cast(
             "Any",
@@ -142,6 +142,7 @@ class WorkLine(
                 length=50,
             ),
         ),
+        sa_column_kwargs={"server_default": WorkLineRuntimeStatus.STOPPED.value},
         description="WorkLine 运行安全状态",
     )
     active_safety_incident_id: int | None = Field(
@@ -152,6 +153,35 @@ class WorkLine(
     stopped_at: datetime | None = Field(default=None, index=True, description="进入急停冻结的时间")
     stopped_reason: str | None = Field(default=None, max_length=200, description="进入急停冻结的原因")
     resumed_at: datetime | None = Field(default=None, index=True, description="恢复 READY 的时间")
+    start_admission_status: str | None = Field(
+        default=None,
+        max_length=50,
+        description="最近一次 START 准入检查状态",
+    )
+    start_admission_message: str | None = Field(
+        default=None,
+        sa_column=Column(Text),
+        description="最近一次 START 准入检查说明",
+    )
+    start_admission_failed_device_code: str | None = Field(
+        default=None,
+        max_length=100,
+        description="最近一次 START 准入失败设备编码",
+    )
+    start_admission_checked_at: datetime | None = Field(
+        default=None,
+        description="最近一次 START 准入检查时间",
+    )
+    last_start_request_id: str | None = Field(
+        default=None,
+        max_length=100,
+        description="最近一次 START 请求 ID",
+    )
+    last_start_trace_id: str | None = Field(
+        default=None,
+        max_length=100,
+        description="最近一次 START Trace ID",
+    )
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
 
     @property

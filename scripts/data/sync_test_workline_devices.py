@@ -37,9 +37,10 @@ from src.workline_plugins.rough_sorter.contract import (
 )
 
 TEST_ROUGH_SORTER_LINE_CODE = "WL-ROUGH-SORTER-TEST"
-DEFAULT_MOCK_ECS_HOST = "localhost"
+DEFAULT_MOCK_ECS_HOST = "mock_ecs"
 DEFAULT_MOCK_ECS_PORT = 8010
 MOCK_ECS_COMMAND_PATH = "/api/v1/device/command"
+MOCK_ECS_STATUS_PATH = "/api/v1/device/status"
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
             "supports_command_types": [ACTION_PICK_AND_PUT, ACTION_MOVE_TO_NG],
             "supports_ack_response": True,
             "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
         },
     ),
     TestDeviceSeed(
@@ -88,6 +90,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
             "supports_command_types": [ACTION_MOVE_FORWARD],
             "supports_ack_response": True,
             "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
         },
     ),
     TestDeviceSeed(
@@ -101,6 +104,7 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
             "supports_command_types": [ACTION_PUT_TO_BIN],
             "supports_ack_response": True,
             "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
         },
     ),
 )
@@ -162,10 +166,11 @@ async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
         "contract_version": ROUGH_SORTER_CONTRACT_VERSION,
         "config": {"seed_source": "local-dev"},
         "runtime_config_json": {
-            "run_mode": WorkLineRunMode.SIMULATION.value,
-            "sandbox_enabled": True,
+            "run_mode": WorkLineRunMode.AUTO.value,
+            "sandbox_enabled": False,
+            "device_status_timeout_seconds": 2.0,
         },
-        "run_mode": WorkLineRunMode.SIMULATION,
+        "run_mode": WorkLineRunMode.AUTO,
         "diagnostic_profile": {
             "owner": "WES 开发环境",
             "seed_source": "local-dev",
@@ -176,7 +181,7 @@ async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
 
     workline = await _get_workline_by_code(db, TEST_ROUGH_SORTER_LINE_CODE)
     if workline is None:
-        workline = WorkLine(**values, runtime_status=WorkLineRuntimeStatus.READY)
+        workline = WorkLine(**values, runtime_status=WorkLineRuntimeStatus.STOPPED)
         db.add(workline)
         await db.flush()
         return workline, "created"

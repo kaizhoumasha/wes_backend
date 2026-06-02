@@ -164,7 +164,7 @@ async def test_assert_accepting_work_blocks_estopped_workline(db_session) -> Non
         await workline_safety_service.assert_accepting_work(db_session, workline_id=cast("int", workline.id))
 
 
-async def test_clear_estop_requires_checklist_and_restores_ready(db_session) -> None:
+async def test_clear_estop_requires_checklist_and_returns_stopped(db_session) -> None:
     workline = WorkLine(
         line_code="WL-ESTOP-003",
         line_name="恢复线",
@@ -214,9 +214,11 @@ async def test_clear_estop_requires_checklist_and_restores_ready(db_session) -> 
     assert incident.release_evidence_json == {
         "released_device_count": 1,
         "released_device_error_code": "WORKLINE_ESTOPPED",
+        "released_outbox_count": 0,
+        "workline_runtime_status": WorkLineRuntimeStatus.STOPPED.value,
     }
     assert incident.cleared_by == 42
-    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert workline.active_safety_incident_id is None
     assert device.device_status == DeviceStatus.IDLE
     assert device.error_code is None

@@ -18,6 +18,7 @@ from src.database.schema_conf import SchemaType
 class WorkLineRuntimeStatus(str, Enum):
     """WorkLine v1 运行安全状态。"""
 
+    STOPPED = "STOPPED"
     READY = "READY"
     RECONCILING = "RECONCILING"
     ESTOPPED = "ESTOPPED"

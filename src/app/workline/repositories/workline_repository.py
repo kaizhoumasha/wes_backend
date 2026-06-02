@@ -38,11 +38,13 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         self,
         db: AsyncSession,
         workline_id: int,
+        *,
+        populate_existing: bool = False,
     ) -> WorkLine | None:
         """根据 ID 查询并锁定 WorkLine，用于安全状态切换。"""
 
         columns = cast("Any", WorkLine).__table__.c
-        result = await db.execute(
+        statement = (
             select(WorkLine)
             .where(
                 columns.id == workline_id,
@@ -50,6 +52,9 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             )
             .with_for_update()
         )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def get_unfinished_workload_summary(
