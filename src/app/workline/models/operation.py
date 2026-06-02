@@ -20,6 +20,13 @@ class SandboxEventRequest(BaseModel):
     timestamp: datetime | None = Field(default=None, description="事件时间戳（默认当前时间）")
 
 
+class SandboxWorklineStartRequest(BaseModel):
+    """沙箱 WorkLine START 请求。"""
+
+    device_code: str = Field(min_length=1, max_length=100, description="触发 START 的设备编码")
+    trace_id: str | None = Field(default=None, max_length=200, description="Trace ID（可选，自动生成）")
+
+
 class SandboxCleanupRequest(BaseModel):
     """沙箱工作线清理请求。"""
 
@@ -159,4 +166,5 @@ __all__ = [
     "SandboxResultRequest",
     "SandboxResultTemplate",
     "SandboxTemplatesResponse",
+    "SandboxWorklineStartRequest",
 ]

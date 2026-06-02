@@ -7,6 +7,7 @@ import pytest
 
 from src.app.workline.models.operation import DebugDataCleanupResponse, SandboxCleanupResponse
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.app.workline.services.start_admission_service import StartAdmissionResult
 from src.app.workline.v1 import operation as operation_api
 
 
@@ -14,6 +15,16 @@ def test_sandbox_process_route_is_removed() -> None:
     route_paths = {getattr(route, "path", None) for route in operation_api.router.routes}
 
     assert "/sandbox/process" not in route_paths
+
+
+class _StartAdmissionServiceStub:
+    def __init__(self, result: StartAdmissionResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    async def admit_start(self, _db: Any, workline_id: int, **kwargs: Any) -> StartAdmissionResult:
+        self.calls.append({"workline_id": workline_id, **kwargs})
+        return self.result
 
 
 class _SafetyServiceStub:
@@ -177,6 +188,98 @@ class _DbStub:
 def _response_data(response: dict[str, Any]) -> dict[str, Any]:
     data = response["data"]
     return data.model_dump() if hasattr(data, "model_dump") else data
+
+
+def test_sandbox_workline_start_route_uses_user_update_permission() -> None:
+    route = next(
+        route
+        for route in operation_api.router.routes
+        if getattr(route, "path", None) == "/sandbox/worklines/{workline_id}/start"
+    )
+    permissions = [
+        getattr(getattr(dependency, "dependency", None), "permission_required", None)
+        for dependency in getattr(route, "dependencies", [])
+    ]
+
+    assert permissions == ["biz:workline:update"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_workline_start_returns_accepted_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _StartAdmissionServiceStub(
+        StartAdmissionResult(
+            accepted=True,
+            http_status=200,
+            reason_code=None,
+            message="START 准入通过",
+            workline_id=45,
+            diagnostic={"checked_devices": ["ARM03"]},
+        )
+    )
+    monkeypatch.setattr(operation_api, "start_admission_service", service)
+
+    response = await operation_api.start_sandbox_workline(
+        workline_id=45,
+        payload=operation_api.SandboxWorklineStartRequest(
+            device_code="ARM03",
+            trace_id="sandbox:start:trace-1",
+        ),
+        db=_DbStub(),  # type: ignore[arg-type]
+    )
+
+    data = _response_data(response)
+    assert response["code"] == "1000"
+    assert data["status"] == "accepted"
+    assert data["device_code"] == "ARM03"
+    assert data["trace_id"] == "sandbox:start:trace-1"
+    assert data["diagnostic"] == {"checked_devices": ["ARM03"]}
+    assert service.calls == [
+        {
+            "workline_id": 45,
+            "source_device_code": "ARM03",
+            "request_id": "sandbox:start:trace-1",
+            "trace_id": "sandbox:start:trace-1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_workline_start_returns_rejection_as_success_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _StartAdmissionServiceStub(
+        StartAdmissionResult(
+            accepted=False,
+            http_status=409,
+            reason_code="START_ADMISSION_DEVICE_NOT_IDLE",
+            message="START 准入失败: 设备 RS-CONV-01 非空闲",
+            workline_id=45,
+            diagnostic={"device_code": "RS-CONV-01", "status": "RUNNING"},
+        )
+    )
+    monkeypatch.setattr(operation_api, "start_admission_service", service)
+
+    response = await operation_api.start_sandbox_workline(
+        workline_id=45,
+        payload=operation_api.SandboxWorklineStartRequest(
+            device_code="RS-CONV-01",
+            trace_id="sandbox:start:trace-rejected",
+        ),
+        db=_DbStub(),  # type: ignore[arg-type]
+    )
+
+    data = _response_data(response)
+    assert response["code"] == "1000"
+    assert data["ack"] is False
+    assert data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
+    assert data["diagnostic"] == {
+        "device_code": "RS-CONV-01",
+        "status": "RUNNING",
+        "message": "START 准入失败: 设备 RS-CONV-01 非空闲",
+        "workline_id": 45,
+    }
 
 
 @pytest.mark.asyncio
