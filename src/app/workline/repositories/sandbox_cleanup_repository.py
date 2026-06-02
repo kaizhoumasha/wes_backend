@@ -19,7 +19,6 @@ from src.app.workline.models.runtime_hold import NgReturnItem, RuntimeHold
 from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident
 from src.app.workline.models.session import RunMode, WorklineSession
 from src.app.workline.models.timeline import WorklineTimeline
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,11 +211,17 @@ class SandboxCleanupRepository:
             update(WorkLine)
             .where(columns.id == workline_id)
             .values(
-                runtime_status=WorkLineRuntimeStatus.READY,
+                runtime_status=WorkLineRuntimeStatus.STOPPED,
                 active_safety_incident_id=None,
                 stopped_at=None,
                 stopped_reason=None,
-                resumed_at=timezone.now_for_db(),
+                resumed_at=None,
+                start_admission_status=None,
+                start_admission_message=None,
+                start_admission_failed_device_code=None,
+                start_admission_checked_at=None,
+                last_start_request_id=None,
+                last_start_trace_id=None,
             )
         )
 

@@ -222,7 +222,7 @@ class TestCallbackEventIdempotency:
             response1 = await callback_event(
                 request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
                 db=db_session,
-                **{"response": Response()},  # noqa: PIE804
+                response=Response(),
             )
 
             mock_create_inbox.side_effect = ValueError("设备事件已存在（幂等键重复）: duplicate")
@@ -230,7 +230,7 @@ class TestCallbackEventIdempotency:
             response2 = await callback_event(
                 request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
                 db=db_session,
-                **{"response": Response()},  # noqa: PIE804
+                response=Response(),
             )
 
         assert response1["code"] == "1000"

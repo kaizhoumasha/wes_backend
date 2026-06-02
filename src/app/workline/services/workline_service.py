@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import parse_device_capabilities
@@ -32,12 +33,14 @@ from src.workline_runtime.run_mode import (
     is_simulation_run_mode,
     normalize_run_mode,
 )
+from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 from src.workline_runtime.topology import WorklineTopologyView
 
 _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
 _OK = "PASS"
 _WARN = "WARN"
+_DEFAULT_DEVICE_STATUS_PATH = "/api/v1/device/status"
 _ACTIVE_CONFIGURATION_FIELDS = frozenset(
     {
         "line_code",
@@ -444,40 +447,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return checks
 
     @staticmethod
-    def _command_target_capability_config_checks(
-        manifest: Any,
-        devices: list[Any],
-    ) -> list[WorkLineConfigurationCheck]:
-        checks: list[WorkLineConfigurationCheck] = []
-        checked_device_ids: set[int] = set()
-        for roles in manifest.command_target_roles.values():
-            role_set = set(roles)
-            for device in devices:
-                device_id = getattr(device, "id", None)
-                if not isinstance(device_id, int) or device_id in checked_device_ids:
-                    continue
-                if getattr(device, "device_role", None) not in role_set:
-                    continue
-                try:
-                    _ = parse_device_capabilities(getattr(device, "capabilities_json", None))
-                except (TypeError, ValueError) as exc:
-                    checks.append(
-                        WorkLineService._check(
-                            "COMMAND_TARGET_CAPABILITY_CONFIG",
-                            _FAIL,
-                            _BLOCKER,
-                            {
-                                "device_id": device_id,
-                                "device_code": getattr(device, "device_code", None),
-                                "field": "capabilities_json",
-                                "message": str(exc),
-                            },
-                        )
-                    )
-                checked_device_ids.add(device_id)
-        return checks
-
-    @staticmethod
     def _command_target_communication_checks(
         workline: WorkLine,
         manifest: Any,
@@ -520,6 +489,36 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return checks
 
     @staticmethod
+    def _command_target_capability_config_checks(manifest: Any, devices: list[Any]) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        for command_type, roles in manifest.command_target_roles.items():
+            role_set = set(roles)
+            for device in devices:
+                device_id = getattr(device, "id", None)
+                if not isinstance(device_id, int):
+                    continue
+                if getattr(device, "device_role", None) not in role_set:
+                    continue
+                try:
+                    _ = parse_device_capabilities(getattr(device, "capabilities_json", None))
+                except (TypeError, ValidationError, ValueError) as exc:
+                    checks.append(
+                        WorkLineService._check(
+                            "COMMAND_TARGET_CAPABILITY_CONFIG",
+                            _FAIL,
+                            _BLOCKER,
+                            {
+                                "device_id": device_id,
+                                "device_code": getattr(device, "device_code", None),
+                                "device_role": getattr(device, "device_role", None),
+                                "command_type": command_type,
+                                "capabilities_error": str(exc),
+                            },
+                        )
+                    )
+        return checks
+
+    @staticmethod
     def _command_target_device_map(manifest: Any, devices: list[Any]) -> dict[int, tuple[Any, set[str]]]:
         target_map: dict[int, tuple[Any, set[str]]] = {}
         for command_type, roles in manifest.command_target_roles.items():
@@ -540,7 +539,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _device_supports_command(device: Any, command_type: str) -> bool:
         try:
             capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
-        except (TypeError, ValueError):
+        except (TypeError, ValidationError, ValueError):
             return False
         return capabilities.supports_command(command_type)
 
@@ -559,7 +558,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 value = capabilities.get(key)
                 if isinstance(value, str) and value.strip():
                     return WorkLineService._normalize_status_path(value)
-        return None
+        return _DEFAULT_DEVICE_STATUS_PATH
 
     @staticmethod
     def _normalize_status_path(value: str) -> str:
@@ -647,6 +646,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         event_mapping = runtime_config.get("event_type_mapping")
         if event_mapping is not None and not isinstance(event_mapping, dict):
             raise TypeError("runtime_config_json.event_type_mapping 必须为对象")
+        if isinstance(event_mapping, dict):
+            for source_event_type, mapped_event_type in event_mapping.items():
+                if isinstance(mapped_event_type, str) and mapped_event_type:
+                    assert_not_reserved_runtime_event(
+                        mapped_event_type,
+                        owner="runtime_config_json.event_type_mapping",
+                        declaration_surface=f"{source_event_type} 的映射目标",
+                    )
 
 
 # 创建单例

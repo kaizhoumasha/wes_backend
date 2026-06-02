@@ -199,6 +199,27 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         await db.flush()
         return outbox
 
+    async def mark_as_blocked_by_workline_stopped(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        blocked_workline_id: int | None = None,
+    ) -> SystemOutbox | None:
+        outbox = await self._get_active_for_block(db, outbox_id)
+        if outbox is None:
+            return None
+        outbox.status = SystemOutboxStatus.BLOCKED_RESOURCE
+        outbox.blocked_by_runtime_hold_id = None
+        outbox.blocked_by_reconciliation_session_id = None
+        outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
+        outbox.blocked_reason = "WORKLINE_STOPPED_WAITING_START"
+        outbox.last_error = "WORKLINE_STOPPED_WAITING_START"
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
     async def block_by_runtime_hold(
         self,
         db: AsyncSession,
@@ -356,6 +377,36 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if release_workline_scope:
             released_count += await self.release_blocked_by_workline(db, workline_id)
         return released_count
+
+    async def park_blocked_by_runtime_hold_until_start(
+        self,
+        db: AsyncSession,
+        *,
+        runtime_hold_id: int,
+        workline_id: int,
+    ) -> int:
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
+                columns.blocked_by_runtime_hold_id == runtime_hold_id,
+                columns.workline_id == workline_id,
+            )
+            .with_for_update()
+        )
+        outboxes = list(result.scalars().all())
+        now = timezone.now_for_db()
+        for outbox in outboxes:
+            outbox.blocked_by_runtime_hold_id = None
+            outbox.blocked_by_reconciliation_session_id = None
+            outbox.blocked_workline_id = workline_id
+            outbox.blocked_reason = "WORKLINE_STOPPED_WAITING_START"
+            outbox.last_error = "WORKLINE_STOPPED_WAITING_START"
+            outbox.next_retry_at = None
+            outbox.finished_at = now
+        await db.flush()
+        return len(outboxes)
 
     async def release_blocked_by_workline(self, db: AsyncSession, workline_id: int) -> int:
         columns = cast("Any", SystemOutbox).__table__.c

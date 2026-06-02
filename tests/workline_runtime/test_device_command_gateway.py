@@ -183,7 +183,7 @@ def _dispatchable_device() -> object:
     ],
 )
 @pytest.mark.asyncio
-async def test_dispatch_realtime_status_failure_never_posts_command(
+async def test_dispatch_realtime_status_communication_failure_never_posts_command(
     monkeypatch,
     status_response: FakeStatusResponse,
     side_effect: Exception | None,
@@ -231,8 +231,9 @@ async def test_dispatch_realtime_status_failure_never_posts_command(
     ],
 )
 @pytest.mark.asyncio
-async def test_dispatch_realtime_busy_status_raises_device_busy(
-    monkeypatch, status_response: FakeStatusResponse
+async def test_dispatch_realtime_status_busy_raises_governance_error(
+    monkeypatch,
+    status_response: FakeStatusResponse,
 ) -> None:
     CapturingAsyncClient.requests.clear()
     CapturingAsyncClient.status_response = status_response
@@ -268,6 +269,7 @@ async def test_dispatch_realtime_busy_status_raises_device_busy(
     assert exc_info.value.device_id == 100
     assert exc_info.value.device_code == "RS-CONVEYOR-01"
     assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
+    assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
 
 
 @pytest.mark.asyncio
@@ -342,4 +344,45 @@ async def test_dispatch_command_post_timeout_after_realtime_status_uses_ack_time
 
     assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
     assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
+    assert CapturingAsyncClient.requests[1]["timeout"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_url_encodes_device_code_with_special_characters(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    device = _dispatchable_device()
+    # The outbox target_code or device_code contains special characters
+    device.device_code = "AGV & 01 #B"
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=device))
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "AGV & 01 #B",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-URL-ENCODE",
+            "payload_json": {"command_code": "CMD-URL-ENCODE", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert CapturingAsyncClient.requests[0]["method"] == "GET"
+    # Ensure it is properly URL-encoded (%20, %26, %23)
+    assert CapturingAsyncClient.requests[0]["url"] == (
+        "http://mock_ecs:8010/api/v1/device/status?device_code=AGV%20%26%2001%20%23B"
+    )
     assert CapturingAsyncClient.requests[1]["timeout"] == 10.0

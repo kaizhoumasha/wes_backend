@@ -11,13 +11,15 @@ import httpx
 
 from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
-from src.app.sys.repositories import system_outbox_repository
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.session_repository import workline_session_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.workline_service import WorkLineService, workline_service
+from src.core.logger import logger
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_workline_plugin_definition
 
@@ -75,10 +77,12 @@ class WorkLineStartAdmissionService:
         self,
         *,
         status_fetcher: StatusFetcher | None = None,
-        outbox_repo: Any | None = None,
+        outbox_repo: SystemOutboxRepository | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self.status_fetcher = status_fetcher or self._fetch_status
         self.outbox_repo = outbox_repo or system_outbox_repository
+        self._queue_gateway = queue_gateway
 
     async def admit_start_for_device(
         self,
@@ -159,7 +163,7 @@ class WorkLineStartAdmissionService:
                 trace_id=trace_id,
             )
 
-        current = await workline_repository.get_for_update(db, workline_id)
+        current = await workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             return self._rejected(
                 workline_id,
@@ -379,8 +383,8 @@ class WorkLineStartAdmissionService:
                         self._target_failure_diagnostic(target),
                     )
                 for record in records:
-                    device_code = self._resolve_status_record_device_code(record)
-                    if not isinstance(device_code, str) or not device_code:
+                    device_code = self._record_device_code(record)
+                    if device_code is None:
                         return self._rejected(
                             None,
                             "START_ADMISSION_ECS_BAD_JSON",
@@ -415,6 +419,16 @@ class WorkLineStartAdmissionService:
                     )
         return None, status_by_device_code
 
+    @staticmethod
+    def _record_device_code(record: dict[str, Any]) -> str | None:
+        for source in (record, record.get("device"), record.get("state")):
+            if not isinstance(source, dict):
+                continue
+            device_code = source.get("device_code")
+            if isinstance(device_code, str) and device_code:
+                return device_code
+        return None
+
     async def _record_post_probe_failure(
         self,
         db: AsyncSession,
@@ -424,7 +438,7 @@ class WorkLineStartAdmissionService:
         request_id: str | None,
         trace_id: str | None,
     ) -> StartAdmissionResult:
-        current = await workline_repository.get_for_update(db, workline_id)
+        current = await workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             return self._rejected(
                 workline_id,
@@ -524,8 +538,13 @@ class WorkLineStartAdmissionService:
         workline.start_admission_checked_at = now
         workline.last_start_request_id = request_id
         workline.last_start_trace_id = trace_id
-        await self.outbox_repo.release_parked_after_workline_start(db, workline.id)
+        released_outbox_count = await self.outbox_repo.release_blocked_by_workline(db, workline.id)
         await db.commit()
+        if released_outbox_count > 0:
+            try:
+                self._queue_gateway.enqueue_outbox(limit=50)
+            except Exception as exc:
+                logger.warning(f"START 准入已释放 Outbox，但即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 
     async def _record_failure(
         self,
@@ -568,16 +587,6 @@ class WorkLineStartAdmissionService:
         if not all(isinstance(item, dict) for item in records):
             return None
         return list(records)
-
-    @staticmethod
-    def _resolve_status_record_device_code(record: dict[str, Any]) -> str | None:
-        for source in (record, record.get("device"), record.get("state")):
-            if not isinstance(source, dict):
-                continue
-            device_code = source.get("device_code")
-            if isinstance(device_code, str) and device_code:
-                return device_code
-        return None
 
     @staticmethod
     def _first_check_device_code(checks: list[Any]) -> str | None:
@@ -681,7 +690,8 @@ class WorkLineStartAdmissionService:
     ) -> StartAdmissionStatusFetchResult:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.get(target.url)
-        return StartAdmissionStatusFetchResult(status_code=response.status_code, payload=response.json())
+        payload = response.json() if 200 <= response.status_code < 300 else None
+        return StartAdmissionStatusFetchResult(status_code=response.status_code, payload=payload)
 
 
 start_admission_service = WorkLineStartAdmissionService()

@@ -423,83 +423,48 @@ class TestOutboxDispatchService:
         dispatch_single.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dispatch_blocks_outbox_when_realtime_status_reports_device_busy(
-        self,
-        mock_db,
-        mock_outbox_repo,
-        mock_device_repo,
-    ):
-        """实时 status 显示设备忙时，outbox 应暂停等待释放，不消耗失败重试。"""
+    async def test_dispatch_parks_outbox_when_workline_stopped(self, mock_db, mock_outbox_repo):
+        """WorkLine 处于 STOPPED 态时，待派发 outbox 进入 BLOCKED_RESOURCE 停放区。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 
         outbox = MockOutbox(
-            outbox_id=31,
-            workline_id=45,
+            outbox_id=3,
+            workline_id=7,
             dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
             target_type=SystemOutboxTargetType.DEVICE,
-            target_code="ARM03",
-            payload_json={"command_code": "CMD-DEVICE-BUSY-PRECHECK", "task_type": "PICK_AND_PUT"},
+            target_code="ROBOT_002",
+            payload_json={"command_code": "CMD-BLOCKED-002"},
         )
         mock_outbox_repo.get_pending_messages.return_value = [outbox]
         mock_outbox_repo.mark_as_dispatching.return_value = outbox
-        mock_device_repo.get_by_device_code = AsyncMock(
-            return_value=_mock_device_record(
-                id=39,
-                device_code="ARM03",
-                callback_path=None,
-                capabilities_json={"supports_command_types": ["PICK_AND_PUT"]},
-                maintenance_mode=False,
-                device_status=DeviceStatus.IDLE,
-                current_command_id=None,
-            )
-        )
-        attempt_service = SimpleNamespace(
-            create_attempt=AsyncMock(return_value=SimpleNamespace(id=88)),
-            finalize_attempt_record=AsyncMock(return_value=None),
-        )
+
         safety_service = MagicMock()
-        safety_service.assert_accepting_work = AsyncMock(return_value=None)
+        safety_service.assert_accepting_work = AsyncMock(side_effect=WorkLineSafetyBlocked("WORKLINE_STOPPED"))
+        mock_outbox_repo.mark_as_blocked_by_workline_stopped = AsyncMock(return_value=outbox)
 
         with (
             patch(
                 "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
             ),
-            patch("src.app.device.repositories.device_repository.device_repository", mock_device_repo),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch(
-                "src.app.workline.services.dispatch_attempt_service.workline_dispatch_attempt_service",
-                attempt_service,
-            ),
-            patch("httpx.AsyncClient") as mock_client,
+                "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._dispatch_single",
+                new=AsyncMock(),
+            ) as dispatch_single,
         ):
-            status_response = MagicMock(status_code=200, text="")
-            status_response.json.return_value = {
-                "state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": "OTHER-COMMAND"}
-            }
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=status_response)
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock()
             result = await OutboxDispatchService().dispatch(mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
         assert result["failed"] == 0
         assert result["skipped"] == 1
-        mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
-        mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once_with(
-            mock_db,
-            31,
-            blocked_device_id=39,
-            blocked_workline_id=45,
-            reason="DEVICE_BUSY",
-            last_error="设备 ARM03 实时状态忙，拒绝命令派发: mode=AUTO, status=RUNNING, current_command_id=OTHER-COMMAND",
-        )
+        mock_outbox_repo.mark_as_blocked_by_workline_stopped.assert_awaited_once_with(mock_db, 3)
+        mock_outbox_repo.mark_as_blocked_by_workline_estop.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
-        attempt_service.finalize_attempt_record.assert_awaited_once()
-        assert attempt_service.finalize_attempt_record.await_args.kwargs["response"] == {
-            "result": "blocked_resource",
-            "reason": "DEVICE_BUSY",
-        }
+        dispatch_single.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_repairs_orphaned_device_busy_dispatching_when_device_is_idle(

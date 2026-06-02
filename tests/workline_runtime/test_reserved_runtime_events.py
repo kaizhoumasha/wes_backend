@@ -38,6 +38,11 @@ def test_runtime_event_helper_rejects_estop_with_actionable_message() -> None:
         assert_not_reserved_runtime_event("ESTOP_PRESSED", owner="test")
 
 
+def test_runtime_event_helper_rejects_platform_control_start_with_actionable_message() -> None:
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
+        assert_not_reserved_runtime_event("WORKLINE_START_REQUESTED", owner="test")
+
+
 def test_manifest_rejects_reserved_supported_event() -> None:
     with pytest.raises(ValueError, match="supported_events"):
         WorklinePluginManifest(
@@ -46,6 +51,17 @@ def test_manifest_rejects_reserved_supported_event() -> None:
             required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
             business_key_resolver=_business_key,
             supported_events=frozenset({"ESTOP_PRESSED"}),
+        )
+
+
+def test_manifest_rejects_platform_control_supported_event() -> None:
+    with pytest.raises(ValueError, match="supported_events"):
+        WorklinePluginManifest(
+            plugin_key="bad",
+            contract_version="1.0",
+            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
+            business_key_resolver=_business_key,
+            supported_events=frozenset({"WORKLINE_START_REQUESTED"}),
         )
 
 
@@ -60,6 +76,17 @@ def test_manifest_rejects_reserved_event_source_role() -> None:
         )
 
 
+def test_manifest_rejects_platform_control_event_source_role() -> None:
+    with pytest.raises(ValueError, match="event_source_roles"):
+        WorklinePluginManifest(
+            plugin_key="bad",
+            contract_version="1.0",
+            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
+            business_key_resolver=_business_key,
+            event_source_roles={"WORKLINE_START_REQUESTED": "SCANNER"},
+        )
+
+
 def test_on_event_rejects_reserved_event() -> None:
     with pytest.raises(ValueError, match="@on_event"):
 
@@ -69,4 +96,16 @@ def test_on_event_rejects_reserved_event() -> None:
 
             @on_event("ESTOP_PRESSED")
             async def handle_estop(self, ctx, event):
+                raise AssertionError("should not register")
+
+
+def test_on_event_rejects_platform_control_event() -> None:
+    with pytest.raises(ValueError, match="@on_event"):
+
+        class BadPlugin(WorklinePlugin):
+            plugin_key = "bad"
+            contract_version = "1.0"
+
+            @on_event("WORKLINE_START_REQUESTED")
+            async def handle_start(self, ctx, event):
                 raise AssertionError("should not register")

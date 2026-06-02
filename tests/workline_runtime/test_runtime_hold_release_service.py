@@ -837,10 +837,10 @@ async def test_last_blocking_hold_resolved_keeps_outbox_parked_until_start(db_se
     assert result["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
-    assert outbox.blocked_by_runtime_hold_id == hold.id
-    assert outbox.blocked_by_reconciliation_session_id == session.id
+    assert outbox.blocked_by_runtime_hold_id is None
+    assert outbox.blocked_by_reconciliation_session_id is None
     assert outbox.blocked_workline_id == workline.id
-    assert outbox.blocked_reason == "RUNTIME_HOLD"
+    assert outbox.blocked_reason == "WORKLINE_STOPPED_WAITING_START"
 
 
 async def test_repeated_resolved_hold_rejects_without_second_ng_item(db_session) -> None:

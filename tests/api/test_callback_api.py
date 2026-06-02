@@ -1549,6 +1549,77 @@ class TestCallbackEventAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_callback_event_rejects_mapping_to_platform_start(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        http_response = Response()
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
+                            workline=SimpleNamespace(
+                                plugin_key="test_workline_plugin",
+                                contract_version="1.0",
+                                is_active=True,
+                                runtime_status="STOPPED",
+                                runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}},
+                            ),
+                            plugin_key="test_workline_plugin",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.start_admission_service.admit_start_for_device",
+                new=AsyncMock(),
+            ) as mock_admit_start,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-start-mapping-001"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(
+                    body=create_event_payload(event_type="SCAN_FINISH"),
+                    path="/api/v1/callback/event",
+                ),
+                db=db_session,
+                response=http_response,
+            )
+
+        assert response["code"] == "2004"
+        data = _response_data(response)
+        assert data["ack"] is False
+        mock_admit_start.assert_not_awaited()
+        mock_create_inbox.assert_not_awaited()
+        mock_enqueue.assert_not_called()
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_callback_event_rejects_invalid_capability_config(
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
@@ -1835,6 +1906,82 @@ class TestCallbackEventAPI:
         mock_enqueue.assert_not_called()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_start_admission_response_time_includes_admission_duration(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.app.workline.services.start_admission_service import StartAdmissionResult
+
+        current_time = {"value": 100.01}
+
+        async def slow_admit_start(*_args: object, **_kwargs: object) -> StartAdmissionResult:
+            current_time["value"] = 102.5
+            return StartAdmissionResult(
+                accepted=True,
+                http_status=200,
+                reason_code=None,
+                message="START 准入通过",
+                workline_id=1,
+                diagnostic={},
+            )
+
+        monkeypatch.setattr(callback_ingress_module.time, "time", lambda: current_time["value"])
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(
+                                capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
+                            ),
+                            workline=SimpleNamespace(
+                                plugin_key="test_workline_plugin",
+                                contract_version="1.0",
+                                is_active=True,
+                                runtime_status="STOPPED",
+                            ),
+                            plugin_key="test_workline_plugin",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.start_admission_service.admit_start_for_device",
+                new=AsyncMock(side_effect=slow_admit_start),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+        ):
+            decision = await callback_ingress_module.handle_callback_event(
+                build_request(
+                    body=create_event_payload(event_type="WORKLINE_START_REQUESTED"),
+                    path="/api/v1/callback/event",
+                ),
+                db_session,
+                request_id="req-start-slow",
+                start_time=100.0,
+                enqueue_processing=lambda: None,
+            )
+
+        assert decision.http_status == 200
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["response_time_ms"] == 2500
 
     @pytest.mark.asyncio
     async def test_callback_event_rejects_start_when_admission_fails(
