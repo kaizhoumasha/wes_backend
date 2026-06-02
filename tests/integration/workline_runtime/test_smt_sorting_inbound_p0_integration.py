@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from src.workline_plugins.smt_sorting_inbound.constants import COMMAND_SOURCE_PICK, EVENT_WORKING_BIN_SCAN
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_WORKING_BIN_SCAN,
+)
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
@@ -58,6 +62,23 @@ def _scan_inbox(data: dict[str, Any]) -> WorklineInbox:
                 "device_code": "SORT-SCAN-PLATFORM",
                 "event_type": EVENT_WORKING_BIN_SCAN,
                 "data": data,
+            },
+        ),
+    )
+
+
+def _target_place_inbox() -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=4003,
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-TARGET-PLACE-SMOKE",
+                "device_code": "SORT-TARGET-ARM",
+                "task_type": COMMAND_TARGET_PLACE,
+                "result": "SUCCESS",
+                "data": {},
             },
         ),
     )
@@ -155,7 +176,18 @@ async def test_scan_smoke_allocates_pending_target_placement_from_active_snapsho
         ),
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
     session_context = _apply_context(session_context, intents[0].context_patch)
     assert session_context["sorting"]["pending_target_placement"]["target_bin_code"] == "TGT-BIN-01"
     assert session_context["sorting"]["pending_target_placement"]["target_cell_code"] == "B02"
+
+    target_intents = await plugin.on_command_result(_ctx(session_context), _target_place_inbox())
+
+    assert [intent.kind for intent in target_intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
+    assert target_intents[0].action == "MATERIAL_MOUNTED"
+    session_context = _apply_context(session_context, target_intents[1].context_patch)
+    assert "current_material" not in session_context["sorting"]
+    assert "pending_target_placement" not in session_context["sorting"]

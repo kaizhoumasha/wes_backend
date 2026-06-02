@@ -18,6 +18,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     PHASE_WAITING_SCAN,
+    PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
     ROLE_SORTING_NG_ARM,
@@ -160,6 +161,27 @@ def _working_bin_scan_inbox(data: dict[str, Any] | None = None) -> WorklineInbox
     )
 
 
+def _target_place_result_inbox(
+    *,
+    result: str = "SUCCESS",
+    data: dict[str, Any] | None = None,
+) -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=2003,
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-TARGET-PLACE-001",
+                "device_code": "SORT-TARGET-ARM",
+                "task_type": COMMAND_TARGET_PLACE,
+                "result": result,
+                "data": data or {},
+            },
+        ),
+    )
+
+
 def _sorting_context_with_current_material() -> dict[str, Any]:
     return {
         "sorting": {
@@ -175,6 +197,22 @@ def _sorting_context_with_current_material() -> dict[str, Any]:
             },
         }
     }
+
+
+def _sorting_context_with_pending_target() -> dict[str, Any]:
+    context = _sorting_context_with_current_material()
+    sorting = context["sorting"]
+    sorting["business_phase"] = PHASE_WAITING_TARGET_PLACE
+    sorting["current_material"]["pkg_code"] = "PKG-001"
+    sorting["pending_target_placement"] = {
+        "target_bin_code": "TGT-BIN-01",
+        "target_cell_code": "B02",
+        "material_identity_key": "mid:pkg-001",
+        "reel_thickness_mm": "7.125",
+        "allocation_snapshot_version": "snap-target-001",
+        "capacity_evidence": {"remaining_depth_mm": "30.500"},
+    }
+    return context
 
 
 class RecordingAllocationPolicy:
@@ -324,7 +362,7 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
 
     intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
     assert policy.calls == [
         {
             "active_snapshot": snapshot,
@@ -346,6 +384,10 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
         },
     }
     assert sorting_patch["business_phase"] == PHASE_WAITING_TARGET_PLACE
+    assert intents[1].action == COMMAND_TARGET_PLACE
+    assert intents[1].device_role == ROLE_SORTING_TARGET_ARM
+    assert intents[1].payload_json["target_bin_code"] == "TGT-BIN-01"
+    assert intents[1].payload_json["target_cell_code"] == "B02"
 
 
 @pytest.mark.asyncio
@@ -401,3 +443,67 @@ async def test_working_bin_scan_projection_inconsistent_blocks_target_cell() -> 
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "SORTING_TARGET_CELL_RECONCILING"
+
+
+@pytest.mark.asyncio
+async def test_target_place_success_requires_pending_target_placement() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_current_material()), _target_place_result_inbox()
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_PENDING_TARGET_MISSING"
+
+
+@pytest.mark.asyncio
+async def test_target_place_success_mounts_material_and_releases_scan_platform() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(_ctx(_sorting_context_with_pending_target()), _target_place_result_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    mounted_intent = intents[0]
+    assert mounted_intent.action == "MATERIAL_MOUNTED"
+    assert mounted_intent.payload_json["bin_code"] == "TGT-BIN-01"
+    assert mounted_intent.payload_json["bin_cell_index"] == "B02"
+    assert mounted_intent.payload_json["material_identity_key"] == "mid:pkg-001"
+    assert mounted_intent.payload_json["pkg_code"] == "PKG-001"
+    assert mounted_intent.payload_json["reel_thickness"] == "7.125"
+
+    sorting_patch = intents[1].context_patch["sorting"]
+    assert "pending_target_placement" not in sorting_patch
+    assert "current_material" not in sorting_patch
+    assert sorting_patch["stations"]["scan_platform"] == "EMPTY"
+    assert sorting_patch["business_phase"] == PHASE_WAITING_SOURCE_PICK
+
+
+@pytest.mark.asyncio
+async def test_target_place_failure_with_known_location_enters_manual_suspend() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_pending_target()),
+        _target_place_result_inbox(
+            result="FAILED",
+            data={"target_bin_code": "TGT-BIN-01", "target_cell_code": "B02", "error_message": "gripper alarm"},
+        ),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_PLACE_FAILED"
+    assert intents[0].payload_json["target_location_known"] is True
+
+
+@pytest.mark.asyncio
+async def test_target_place_failure_with_unknown_location_enters_reconciliation() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_pending_target()),
+        _target_place_result_inbox(result="FAILED", data={"target_location_known": False}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_PLACE_LOCATION_UNKNOWN"

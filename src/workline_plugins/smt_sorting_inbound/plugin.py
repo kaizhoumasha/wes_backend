@@ -122,6 +122,18 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
         return await self._flow_service.handle_working_bin_scan(ctx, inbox)
 
+    @on_command(COMMAND_TARGET_PLACE, result="SUCCESS")
+    async def handle_target_place_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """目标机械臂放盘成功后，触发目标格入账。"""
+
+        return await self._flow_service.handle_target_place_success(ctx, inbox)
+
+    @on_command(COMMAND_TARGET_PLACE, result="FAILED")
+    async def handle_target_place_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """目标机械臂放盘失败后，保留证据并停止自动流转。"""
+
+        return await self._flow_service.handle_target_place_failed(ctx, inbox)
+
 
 __all__ = [
     "COMMAND_TARGET_ROLES",

@@ -11,9 +11,12 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.resource.services.material_identity import material_identity_keys_match
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
 from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_TARGET_PLACE,
     PHASE_WAITING_SCAN,
+    PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
+    ROLE_SORTING_TARGET_ARM,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
@@ -170,7 +173,91 @@ class SmtSortingInboundFlowService:
             expected_thickness=expected_thickness,
             allocation=allocation,
         )
-        return [RuntimeIntent.update_context(context_patch)]
+        return [
+            RuntimeIntent.update_context(context_patch),
+            RuntimeIntent.command(
+                device_role=ROLE_SORTING_TARGET_ARM,
+                action=COMMAND_TARGET_PLACE,
+                payload=self._target_place_command_payload(context_patch["sorting"]),
+            ),
+        ]
+
+    async def handle_target_place_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """目标端放盘成功后，投影入账并释放扫码平台。"""
+
+        try:
+            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
+        except SortingInboundContextError as exc:
+            return self._block("SORTING_CONTEXT_INVALID", str(exc))
+
+        pending_target = _dict_copy(sorting_context.sorting.get("pending_target_placement"))
+        current_material = _dict_copy(sorting_context.sorting.get("current_material"))
+        if not pending_target:
+            return self._block("SORTING_PENDING_TARGET_MISSING", "目标放盘成功回调缺少 pending target placement")
+        if not current_material:
+            return self._block("SORTING_CURRENT_MATERIAL_MISSING", "目标放盘成功回调缺少当前物料上下文")
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        source_event_id = self._source_event_id(payload_json, inbox)
+        mounted_payload = self._target_mounted_payload(
+            pending_target=pending_target,
+            current_material=current_material,
+            source_event_id=source_event_id,
+        )
+        idempotency_key = (
+            f"MATERIAL_MOUNTED:{source_event_id}:{mounted_payload.get('pkg_code') or mounted_payload['material_identity_key']}:"
+            f"{mounted_payload['bin_code']}:{mounted_payload['bin_cell_index']}"
+        )
+        return [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={key: value for key, value in mounted_payload.items() if value is not None},
+                idempotency_key=idempotency_key,
+            ),
+            RuntimeIntent.update_context(self._target_success_context_patch(ctx)),
+        ]
+
+    async def handle_target_place_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """目标端放盘失败后，按物理位置确定性进入人工处理或对账。"""
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        data = _payload_data(payload_json)
+        target_location_known = data.get("target_location_known")
+        if target_location_known is False:
+            return self._block(
+                "SORTING_TARGET_PLACE_LOCATION_UNKNOWN",
+                "目标放盘失败且物理位置未知，需进入对账处理",
+                payload={"target_location_known": False, "error_detail": data},
+            )
+
+        try:
+            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
+            pending_target = _dict_copy(sorting_context.sorting.get("pending_target_placement"))
+        except SortingInboundContextError:
+            pending_target = {}
+        location_known = bool(
+            (
+                _payload_text(payload_json, data, "target_bin_code")
+                and _payload_text(payload_json, data, "target_cell_code")
+            )
+            or pending_target
+        )
+        if not location_known:
+            return self._block(
+                "SORTING_TARGET_PLACE_LOCATION_UNKNOWN",
+                "目标放盘失败且缺少可确认位置，需进入对账处理",
+                payload={"target_location_known": False, "error_detail": data},
+            )
+
+        return self._block(
+            "SORTING_TARGET_PLACE_FAILED",
+            _payload_text(payload_json, data, "error_message", "message") or "目标放盘失败，需人工确认",
+            payload={
+                "target_location_known": True,
+                "pending_target_placement": pending_target,
+                "error_detail": data,
+            },
+        )
 
     def _source_pick_context_patch(self, ctx: PluginContext, source_payload: dict[str, Any]) -> dict[str, Any]:
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
@@ -271,6 +358,51 @@ class SmtSortingInboundFlowService:
                 "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
             },
         )
+
+    def _target_place_command_payload(self, sorting: Mapping[str, Any]) -> dict[str, Any]:
+        pending_target = _dict_copy(sorting.get("pending_target_placement"))
+        current_material = _dict_copy(sorting.get("current_material"))
+        return {
+            "target_bin_code": pending_target.get("target_bin_code"),
+            "target_cell_code": pending_target.get("target_cell_code"),
+            "material_identity_key": pending_target.get("material_identity_key"),
+            "pkg_code": current_material.get("pkg_code")
+            or _dict_copy(current_material.get("scan_evidence")).get("pkg_code")
+            or _dict_copy(current_material.get("evidence")).get("pkg_code"),
+            "reel_thickness": pending_target.get("reel_thickness_mm"),
+        }
+
+    def _target_mounted_payload(
+        self,
+        *,
+        pending_target: dict[str, Any],
+        current_material: dict[str, Any],
+        source_event_id: str,
+    ) -> dict[str, Any]:
+        capacity_evidence = _dict_copy(pending_target.get("capacity_evidence"))
+        return {
+            "bin_code": pending_target.get("target_bin_code"),
+            "bin_cell_index": pending_target.get("target_cell_code"),
+            "bin_cell_code": pending_target.get("target_cell_code"),
+            "material_identity_key": pending_target.get("material_identity_key"),
+            "pkg_code": current_material.get("pkg_code")
+            or _dict_copy(current_material.get("scan_evidence")).get("pkg_code")
+            or _dict_copy(current_material.get("evidence")).get("pkg_code"),
+            "reel_thickness": pending_target.get("reel_thickness_mm"),
+            "cell_capacity_depth_mm": capacity_evidence.get("capacity_depth_mm"),
+            "source_version": pending_target.get("allocation_snapshot_version"),
+            "source_event_id": source_event_id,
+        }
+
+    def _target_success_context_patch(self, ctx: PluginContext) -> dict[str, Any]:
+        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+        scratch_session = SimpleNamespace(context_json=root_context)
+        sorting_context = SortingInboundContext.load_for_automatic(scratch_session)
+        sorting_context.clear_pending_target_placement()
+        sorting_context.close_current_material()
+        sorting_context.clear_allocation_rejection()
+        sorting_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=PHASE_WAITING_SOURCE_PICK)
+        return {"sorting": _dict_copy(scratch_session.context_json.get("sorting"))}
 
     async def _active_target_snapshot(
         self,
