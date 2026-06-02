@@ -1,7 +1,11 @@
-"""跨计划 WorkLine 沙箱 smoke。
+"""跨计划 WorkLine 沙箱 stitching smoke。
 
 覆盖 STOPPED guard、START 准入、SMT Sorting P0 插件 intent、命令网关 realtime status
 以及本地 NG 收敛的跨计划合同。
+
+本测试使用 pytest + SQLite + service/plugin/gateway stitching，不启动完整 runtime
+orchestrator/effect applier。后续需要补一条 orchestrator/effect 层 thin smoke，覆盖
+intent -> outbox/resource fact 持久化的真实衔接。
 """
 
 from __future__ import annotations
@@ -147,7 +151,9 @@ def _ctx(session_context: dict[str, Any]) -> PluginContext:
     )
 
 
-def _apply_context(session_context: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+def _merge_plugin_context_patch_for_smoke(session_context: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """仅用于本 smoke 串联插件返回；不模拟 runtime effect applier 的完整 patch 语义。"""
+
     session_context.update(patch)
     return session_context
 
@@ -332,27 +338,6 @@ async def test_cross_plan_sandbox_smoke(
     http_response = Response()
     with (
         patch(
-            "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
-            new=AsyncMock(
-                return_value=(
-                    SimpleNamespace(
-                        device=SimpleNamespace(capabilities_json={"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
-                        workline=SimpleNamespace(
-                            plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
-                            contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
-                            is_active=True,
-                            runtime_status="STOPPED",
-                        ),
-                        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
-                        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
-                        work_line_id=workline.id,
-                        is_workline_bound=True,
-                    ),
-                    None,
-                )
-            ),
-        ),
-        patch(
             "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
             new=AsyncMock(),
         ) as mock_create_inbox,
@@ -378,6 +363,8 @@ async def test_cross_plan_sandbox_smoke(
     assert _response_data(cast("JsonDict", response))["reason_code"] == "WORKLINE_NOT_ACCEPTING_WORK"
     mock_create_inbox.assert_not_awaited()
     mock_enqueue.assert_not_called()
+    await db_session.refresh(workline)
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     inboxes = (await db_session.execute(select(WorklineInbox))).scalars().all()
     assert inboxes == []
 
@@ -422,7 +409,7 @@ async def test_cross_plan_sandbox_smoke(
         RuntimeIntentKind.UPDATE_CONTEXT,
     ]
     assert source_intents[0].action == "MATERIAL_UNMOUNTED"
-    session_context = _apply_context(session_context, source_intents[1].context_patch)
+    session_context = _merge_plugin_context_patch_for_smoke(session_context, source_intents[1].context_patch)
     assert session_context["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
 
     replay_intents = await plugin.on_command_result(_ctx(session_context), _source_pick_result(source_data))
@@ -455,7 +442,7 @@ async def test_cross_plan_sandbox_smoke(
     )
 
     assert [intent.kind for intent in scan_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    session_context = _apply_context(session_context, scan_intents[0].context_patch)
+    session_context = _merge_plugin_context_patch_for_smoke(session_context, scan_intents[0].context_patch)
     pending_target = session_context["sorting"]["pending_target_placement"]
     assert pending_target["target_bin_code"] == "TGT-BIN-01"
     assert pending_target["target_cell_code"] == "B02"
@@ -492,6 +479,11 @@ async def test_cross_plan_sandbox_smoke(
         "http://mock-ecs:8010/api/v1/device/status?device_code=SORT-TARGET-ARM"
     )
     assert CapturingAsyncClient.requests[1]["url"] == "http://mock-ecs:8010/api/v1/device/command"
+    post_payload = CapturingAsyncClient.requests[1]["json"]
+    assert post_payload["command_code"] == "CMD-TARGET-PLACE-SMOKE"
+    assert post_payload["task_type"] == COMMAND_TARGET_PLACE
+    assert post_payload["target_bin_code"] == "TGT-BIN-01"
+    assert post_payload["target_cell_code"] == "B02"
 
     # 6. 目标端成功产出 MATERIAL_MOUNTED，并关闭 current_material/pending_target_placement。
     target_intents = await plugin.on_command_result(_ctx(session_context), _target_place_result())
@@ -501,7 +493,7 @@ async def test_cross_plan_sandbox_smoke(
         RuntimeIntentKind.UPDATE_CONTEXT,
     ]
     assert target_intents[0].action == "MATERIAL_MOUNTED"
-    session_context = _apply_context(session_context, target_intents[1].context_patch)
+    session_context = _merge_plugin_context_patch_for_smoke(session_context, target_intents[1].context_patch)
     assert "current_material" not in session_context["sorting"]
     assert "pending_target_placement" not in session_context["sorting"]
 
@@ -530,7 +522,7 @@ async def test_cross_plan_sandbox_smoke(
         RuntimeIntentKind.MARK_NG,
         RuntimeIntentKind.COMMAND,
     ]
-    ng_context = _apply_context(ng_context, ng_scan_intents[0].context_patch)
+    ng_context = _merge_plugin_context_patch_for_smoke(ng_context, ng_scan_intents[0].context_patch)
     assert ng_scan_intents[0].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
     assert ng_scan_intents[1].reason_code == "LOCAL_SORTING_NG"
     assert ng_scan_intents[2].action == COMMAND_NG_PLACE
@@ -538,7 +530,7 @@ async def test_cross_plan_sandbox_smoke(
     ng_place_intents = await plugin.on_command_result(_ctx(ng_context), _ng_place_result())
 
     assert [intent.kind for intent in ng_place_intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
-    ng_context = _apply_context(ng_context, ng_place_intents[0].context_patch)
+    ng_context = _merge_plugin_context_patch_for_smoke(ng_context, ng_place_intents[0].context_patch)
     assert ng_place_intents[0].context_patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in ng_context["sorting"]
     assert ng_context["sorting"]["stations"]["scan_platform"] == "EMPTY"
