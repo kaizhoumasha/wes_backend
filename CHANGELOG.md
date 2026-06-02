@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.4.5.0] - 2026-06-02
+
+### Added
+
+- 新增跨计划 WorkLine 沙箱 smoke，验证 STOPPED guard、START 准入、SMT Sorting P0 intent、命令派发前实时设备状态检查、本地 NG 和 Session 完成合同串联可用。
+
+### Changed
+
+- 同步 WorkLine Fast-Fail 与 SMT 分拣入库计划依赖状态，明确已完成后端 stitching smoke，并保留 runtime orchestrator/effect 层与 `NG_MATERIAL_CONFLICT` 后续验收项。
+- 更新 SMT 分拣入库设计验证计划，标记跨计划 smoke 覆盖范围和仍需补齐的验收边界。
+
 ## [0.4.4.0] - 2026-06-02
 
 ### Added
