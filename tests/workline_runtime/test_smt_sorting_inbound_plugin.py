@@ -14,6 +14,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     EVENT_NG_PLACE_RESULT,
+    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_RESULT,
     EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
@@ -73,6 +74,7 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
         EVENT_TARGET_PLACE_RESULT: (ROLE_SORTING_TARGET_ARM,),
         EVENT_NG_PLACE_RESULT: (ROLE_SORTING_NG_ARM,),
         EVENT_WORKING_BIN_SCAN: (ROLE_SORTING_SCAN_PLATFORM,),
+        EVENT_SESSION_COMPLETE_REQUESTED: (ROLE_SORTING_WORKSTATION,),
     }
 
 
@@ -156,6 +158,22 @@ def _working_bin_scan_inbox(data: dict[str, Any] | None = None) -> WorklineInbox
                     "reel_thickness": "7.125",
                     **(data or {}),
                 },
+            },
+        ),
+    )
+
+
+def _session_complete_inbox() -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=2005,
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_id": "COMPLETE-EVENT-001",
+                "device_code": "SORT-WORKSTATION",
+                "event_type": EVENT_SESSION_COMPLETE_REQUESTED,
+                "data": {},
             },
         ),
     )
@@ -401,6 +419,7 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
             "reel_thickness_mm": "7.125",
         }
     ]
+    assert len(plugin._flow_service._active_snapshot_provider.calls) == 1
     sorting_patch = intents[0].context_patch["sorting"]
     assert sorting_patch["pending_target_placement"] == {
         "target_bin_code": "TGT-BIN-01",
@@ -605,3 +624,41 @@ async def test_ng_place_failure_with_unknown_location_enters_reconciliation() ->
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "SORTING_NG_PLACE_LOCATION_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_session_completion_blocks_when_current_material_is_open() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _session_complete_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_CURRENT_MATERIAL_OPEN"
+
+
+@pytest.mark.asyncio
+async def test_session_completion_blocks_when_pending_target_exists() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(_sorting_context_with_pending_target()), _session_complete_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_PENDING_TARGET_OPEN"
+
+
+@pytest.mark.asyncio
+async def test_session_completion_allows_closed_target_or_local_ng_context() -> None:
+    plugin = SmtSortingInboundPlugin()
+    closed_context = {
+        "sorting": {
+            "context_schema_version": 1,
+            "stations": {"scan_platform": "EMPTY"},
+            "business_phase": PHASE_WAITING_SOURCE_PICK,
+        },
+        "ng_reason": "LOCAL_SORTING_NG",
+    }
+
+    intents = await plugin.on_device_event(_ctx(closed_context), _session_complete_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.COMPLETE]
+    assert intents[0].context_patch["sorting"]["business_phase"] == "COMPLETED"

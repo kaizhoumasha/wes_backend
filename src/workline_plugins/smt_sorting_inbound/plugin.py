@@ -9,6 +9,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     EVENT_NG_PLACE_RESULT,
+    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_RESULT,
     EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
@@ -44,6 +45,7 @@ EVENT_SOURCE_ROLES: dict[str, str] = {
     EVENT_TARGET_PLACE_RESULT: ROLE_SORTING_TARGET_ARM,
     EVENT_NG_PLACE_RESULT: ROLE_SORTING_NG_ARM,
     EVENT_WORKING_BIN_SCAN: ROLE_SORTING_SCAN_PLATFORM,
+    EVENT_SESSION_COMPLETE_REQUESTED: ROLE_SORTING_WORKSTATION,
 }
 
 
@@ -159,6 +161,12 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         """NG 机械臂放置失败后，阻断自动流转。"""
 
         return await self._flow_service.handle_ng_place_failed(ctx, inbox)
+
+    @on_event(EVENT_SESSION_COMPLETE_REQUESTED)
+    async def handle_session_complete_requested(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """人工/工作站请求完成 Session 前，检查本地闭环状态。"""
+
+        return await self._flow_service.handle_session_complete_requested(ctx, inbox)
 
 
 __all__ = [

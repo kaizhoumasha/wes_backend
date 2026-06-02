@@ -14,6 +14,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_TARGET_PLACE,
     NG_REASON_LOCAL_SORTING_NG,
+    PHASE_COMPLETED,
     PHASE_WAITING_NG_PLACE,
     PHASE_WAITING_SCAN,
     PHASE_WAITING_SOURCE_PICK,
@@ -328,6 +329,24 @@ class SmtSortingInboundFlowService:
             _payload_text(payload_json, data, "error_message", "message") or "NG 放置失败，需人工确认",
             payload={"ng_location_known": True, "error_detail": data},
         )
+
+    async def handle_session_complete_requested(self, ctx: PluginContext, _inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """Session 完成前确认所有在途物料均已闭环。"""
+
+        try:
+            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
+        except SortingInboundContextError as exc:
+            return self._block("SORTING_CONTEXT_INVALID", str(exc))
+        if _dict_copy(sorting_context.sorting.get("pending_target_placement")):
+            return self._block("SORTING_PENDING_TARGET_OPEN", "目标放盘尚未闭环，拒绝完成 Session")
+        if _dict_copy(sorting_context.sorting.get("current_material")):
+            return self._block("SORTING_CURRENT_MATERIAL_OPEN", "当前物料尚未关闭，拒绝完成 Session")
+
+        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+        scratch_session = SimpleNamespace(context_json=root_context)
+        scratch_context = SortingInboundContext.load_for_automatic(scratch_session)
+        scratch_context.set_station_state(business_phase=PHASE_COMPLETED)
+        return [RuntimeIntent.complete({"sorting": _dict_copy(scratch_session.context_json.get("sorting"))})]
 
     def _source_pick_context_patch(self, ctx: PluginContext, source_payload: dict[str, Any]) -> dict[str, Any]:
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
