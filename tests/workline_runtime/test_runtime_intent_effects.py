@@ -216,15 +216,16 @@ async def test_complete_intent_turns_ng_material_conflict_into_runtime_hold(
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     emit_timeline = AsyncMock()
     created_holds: list[dict[str, Any]] = []
+    long_identity = f"test-material:{'X' * 300}"
 
     async def raise_conflict(*_args: Any, **_kwargs: Any) -> None:
         raise NgMaterialConflictError(
-            material_identity_key="test-material:ITEM-6",
+            material_identity_key=long_identity,
             existing_item=SimpleNamespace(id=8801, created_from_runtime_hold_id=9901),
             evidence={
                 "reason_code": "NG_MATERIAL_CONFLICT",
-                "material_identity_key": "test-material:ITEM-6",
-                "new_source_event_id": "sandbox:result:CMD-NG-ITEM-OTHER",
+                "material_identity_key": long_identity,
+                "new_source_command_id": 8802,
             },
         )
 
@@ -241,7 +242,9 @@ async def test_complete_intent_turns_ng_material_conflict_into_runtime_hold(
     assert session.status == "MANUAL_HOLD"
     assert session.context_json["ng_material_conflict"]["reason_code"] == "NG_MATERIAL_CONFLICT"
     assert created_holds[0]["source_reason"] == "NG_MATERIAL_CONFLICT"
-    assert created_holds[0]["evidence"]["material_identity_key"] == "test-material:ITEM-6"
+    assert created_holds[0]["evidence"]["material_identity_key"] == long_identity
+    assert created_holds[0]["source_event_id"].startswith("ng-material-conflict:123:8802:")
+    assert len(created_holds[0]["source_event_id"]) < 80
     emit_timeline.assert_awaited_once()
 
 

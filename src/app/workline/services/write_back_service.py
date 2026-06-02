@@ -1,5 +1,6 @@
 import uuid
 from enum import Enum
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
@@ -596,8 +597,11 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         )
     except NgMaterialConflictError as exc:
         evidence = dict(exc.evidence)
-        source_event_id = string_value(
-            evidence.get("new_source_event_id") or f"{exc.reason_code}:{exc.material_identity_key}"
+        source_event_id = _ng_material_conflict_source_event_id(
+            exc=exc,
+            evidence=evidence,
+            session=session,
+            inbox=ctx["inbox"],
         )
         hold = await runtime_hold_creation_service.create_for_resource_reconciliation(
             ctx["db"],
@@ -689,6 +693,26 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
         status=TimelineStatus.PENDING,
     )
     return True
+
+
+def _ng_material_conflict_source_event_id(
+    *,
+    exc: Any,
+    evidence: dict[str, Any],
+    session: Any,
+    inbox: Any,
+) -> str:
+    source_event_id = string_value(evidence.get("new_source_event_id"))
+    if source_event_id:
+        return source_event_id
+    command_or_inbox_id = (
+        evidence.get("new_source_command_id")
+        or getattr(session, "awaiting_command_id", None)
+        or getattr(inbox, "id", None)
+        or "unknown"
+    )
+    identity_hash = sha256(string_value(exc.material_identity_key).encode("utf-8")).hexdigest()[:16]
+    return f"ng-material-conflict:{getattr(session, 'id', 'unknown')}:{command_or_inbox_id}:{identity_hash}"
 
 
 def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
