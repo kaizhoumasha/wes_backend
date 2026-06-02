@@ -138,6 +138,28 @@ class SortingInboundContext:
 
         self._pop_sorting_value("pending_target_placement")
 
+    def record_allocation_rejection(
+        self,
+        *,
+        reason_code: str,
+        message: str | None = None,
+        capacity_evidence: Mapping[str, Any] | None = None,
+    ) -> None:
+        """记录分格拒绝证据，供换箱或人工处理继续使用。"""
+
+        rejection = {
+            "reason_code": _require_text("reason_code", reason_code),
+            "capacity_evidence": _json_safe(dict(capacity_evidence or {})),
+        }
+        if message:
+            rejection["message"] = message
+        self._set_sorting_value("allocation_rejection", rejection)
+
+    def clear_allocation_rejection(self) -> None:
+        """清理上一次分格拒绝证据。"""
+
+        self._pop_sorting_value("allocation_rejection")
+
     def set_active_target_bin(self, target_bin_code: str) -> None:
         """记录当前目标料箱。"""
 

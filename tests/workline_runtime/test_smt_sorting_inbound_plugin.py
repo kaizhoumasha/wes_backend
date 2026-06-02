@@ -18,6 +18,8 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     PHASE_WAITING_SCAN,
+    PHASE_WAITING_TARGET_BIN_SWITCH,
+    PHASE_WAITING_TARGET_PLACE,
     ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
@@ -26,6 +28,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     ROLE_SORTING_WORKSTATION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
+from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
@@ -136,6 +139,115 @@ def _source_pick_success_inbox(data: dict[str, Any] | None = None) -> WorklineIn
     )
 
 
+def _working_bin_scan_inbox(data: dict[str, Any] | None = None) -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=2002,
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_id": "SCAN-EVENT-001",
+                "device_code": "SORT-SCAN-PLATFORM",
+                "event_type": EVENT_WORKING_BIN_SCAN,
+                "data": {
+                    "material_identity_key": "mid:pkg-001",
+                    "pkg_code": "PKG-001",
+                    "reel_thickness": "7.125",
+                    **(data or {}),
+                },
+            },
+        ),
+    )
+
+
+def _sorting_context_with_current_material() -> dict[str, Any]:
+    return {
+        "sorting": {
+            "context_schema_version": 1,
+            "stations": {"scan_platform": "OCCUPIED"},
+            "active_target_bin_code": "TGT-BIN-01",
+            "business_phase": PHASE_WAITING_SCAN,
+            "current_material": {
+                "source_bin_code": "SRC-BIN-01",
+                "source_cell_code": "A01",
+                "material_identity_key": "mid:pkg-001",
+                "reel_thickness_mm": "7.125",
+            },
+        }
+    }
+
+
+class RecordingAllocationPolicy:
+    def __init__(self, result: Any) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    def allocate(
+        self,
+        *,
+        active_snapshot: dict[str, Any],
+        material_identity_key: str,
+        reel_thickness_mm: Any,
+    ) -> Any:
+        self.calls.append(
+            {
+                "active_snapshot": active_snapshot,
+                "material_identity_key": material_identity_key,
+                "reel_thickness_mm": reel_thickness_mm,
+            }
+        )
+        return self.result
+
+
+class FakeActiveRackSnapshotProvider:
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        self.snapshot = snapshot
+        self.calls: list[dict[str, Any] | None] = []
+
+    async def active_bin_rack(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls.append(context)
+        return self.snapshot
+
+
+def _allocated_result() -> SimpleNamespace:
+    return SimpleNamespace(
+        kind="ALLOCATED",
+        target_bin_code="TGT-BIN-01",
+        target_cell_index="B02",
+        allocation_snapshot_version="snap-target-001",
+        reason_code=None,
+        message=None,
+        capacity_evidence={
+            "selection_reason": "compatible-material",
+            "remaining_depth_mm": "30.500",
+            "projected_used_depth_mm": "17.125",
+        },
+    )
+
+
+def _rejected_result(reason_code: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        kind="REJECTED",
+        target_bin_code="TGT-BIN-01",
+        target_cell_index="B02",
+        allocation_snapshot_version="snap-target-001",
+        reason_code=reason_code,
+        message=f"{reason_code} message",
+        capacity_evidence={"reason_code": reason_code},
+    )
+
+
+def _plugin_with_policy_and_snapshot(
+    policy: RecordingAllocationPolicy, snapshot: dict[str, Any]
+) -> SmtSortingInboundPlugin:
+    return SmtSortingInboundPlugin(
+        flow_service=SmtSortingInboundFlowService(
+            allocation_policy=policy,
+            active_snapshot_provider=FakeActiveRackSnapshotProvider(snapshot),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_source_pick_success_emits_unmounted_fact_before_opening_current_material() -> None:
     plugin = SmtSortingInboundPlugin()
@@ -202,3 +314,90 @@ async def test_source_pick_success_does_not_unmount_again_when_current_material_
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "SORTING_CURRENT_MATERIAL_OPEN"
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_placement() -> None:
+    snapshot = {"snapshot_version": "snap-target-001", "cells": []}
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = _plugin_with_policy_and_snapshot(policy, snapshot)
+
+    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert policy.calls == [
+        {
+            "active_snapshot": snapshot,
+            "material_identity_key": "mid:pkg-001",
+            "reel_thickness_mm": "7.125",
+        }
+    ]
+    sorting_patch = intents[0].context_patch["sorting"]
+    assert sorting_patch["pending_target_placement"] == {
+        "target_bin_code": "TGT-BIN-01",
+        "target_cell_code": "B02",
+        "material_identity_key": "mid:pkg-001",
+        "reel_thickness_mm": "7.125",
+        "allocation_snapshot_version": "snap-target-001",
+        "capacity_evidence": {
+            "selection_reason": "compatible-material",
+            "remaining_depth_mm": "30.500",
+            "projected_used_depth_mm": "17.125",
+        },
+    }
+    assert sorting_patch["business_phase"] == PHASE_WAITING_TARGET_PLACE
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_uses_actual_thickness_when_same_identity_reports_mismatch() -> None:
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+
+    intents = await plugin.on_device_event(
+        _ctx(_sorting_context_with_current_material()),
+        _working_bin_scan_inbox({"reel_thickness": "7.250"}),
+    )
+
+    assert policy.calls[0]["reel_thickness_mm"] == "7.250"
+    sorting_patch = intents[0].context_patch["sorting"]
+    assert sorting_patch["current_material"]["reel_thickness_mm"] == "7.250"
+    assert sorting_patch["current_material"]["scan_evidence"]["expected_reel_thickness_mm"] == "7.125"
+    assert sorting_patch["pending_target_placement"]["reel_thickness_mm"] == "7.250"
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_no_capacity_waits_for_target_bin_switch_without_new_source_pick() -> None:
+    policy = RecordingAllocationPolicy(_rejected_result("NO_CAPACITY"))
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+
+    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    sorting_patch = intents[0].context_patch["sorting"]
+    assert sorting_patch["business_phase"] == PHASE_WAITING_TARGET_BIN_SWITCH
+    assert "pending_target_placement" not in sorting_patch
+    assert sorting_patch["allocation_rejection"]["reason_code"] == "NO_CAPACITY"
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_missing_or_invalid_thickness_blocks_automatic_placement() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(
+        _ctx(_sorting_context_with_current_material()),
+        _working_bin_scan_inbox({"reel_thickness": ""}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_REEL_THICKNESS_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_projection_inconsistent_blocks_target_cell() -> None:
+    policy = RecordingAllocationPolicy(_rejected_result("PROJECTION_INCONSISTENT"))
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+
+    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_CELL_RECONCILING"

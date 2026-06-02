@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from src.workline_plugins.smt_sorting_inbound.constants import COMMAND_SOURCE_PICK
+from src.workline_plugins.smt_sorting_inbound.constants import COMMAND_SOURCE_PICK, EVENT_WORKING_BIN_SCAN
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
@@ -41,6 +41,22 @@ def _command_inbox(data: dict[str, Any]) -> WorklineInbox:
                 "device_code": "SORT-SOURCE-ARM",
                 "task_type": COMMAND_SOURCE_PICK,
                 "result": "SUCCESS",
+                "data": data,
+            },
+        ),
+    )
+
+
+def _scan_inbox(data: dict[str, Any]) -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=4002,
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_id": "SCAN-EVENT-SMOKE",
+                "device_code": "SORT-SCAN-PLATFORM",
+                "event_type": EVENT_WORKING_BIN_SCAN,
                 "data": data,
             },
         ),
@@ -97,3 +113,49 @@ async def test_source_pick_smoke_unmounts_source_and_opens_current_material_once
 
     assert [intent.kind for intent in replay_intents] == [RuntimeIntentKind.BLOCK]
     assert replay_intents[0].reason_code == "SORTING_CURRENT_MATERIAL_OPEN"
+
+
+@pytest.mark.asyncio
+async def test_scan_smoke_allocates_pending_target_placement_from_active_snapshot() -> None:
+    plugin = SmtSortingInboundPlugin()
+    session_context: dict[str, Any] = {
+        "sorting": {
+            "context_schema_version": 1,
+            "stations": {"scan_platform": "OCCUPIED"},
+            "business_phase": "WAITING_SCAN",
+            "current_material": {
+                "source_bin_code": "SRC-BIN-01",
+                "source_cell_code": "A01",
+                "material_identity_key": "mid:pkg-001",
+                "reel_thickness_mm": "7.125",
+            },
+            "active_target_bin": {
+                "snapshot_version": "snap-target-001",
+                "cells": [
+                    {
+                        "bin_code": "TGT-BIN-01",
+                        "bin_cell_index": "B02",
+                        "status": "EMPTY",
+                        "capacity_depth_mm": "30.500",
+                        "used_depth_mm": "0",
+                    }
+                ],
+            },
+        }
+    }
+
+    intents = await plugin.on_device_event(
+        _ctx(session_context),
+        _scan_inbox(
+            {
+                "material_identity_key": "mid:pkg-001",
+                "pkg_code": "PKG-001",
+                "reel_thickness": "7.125",
+            }
+        ),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    session_context = _apply_context(session_context, intents[0].context_patch)
+    assert session_context["sorting"]["pending_target_placement"]["target_bin_code"] == "TGT-BIN-01"
+    assert session_context["sorting"]["pending_target_placement"]["target_cell_code"] == "B02"

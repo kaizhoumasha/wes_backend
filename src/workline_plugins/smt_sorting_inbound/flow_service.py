@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-from src.workline_plugins.smt_sorting_inbound.constants import PHASE_WAITING_SCAN
+from src.app.resource.services.material_identity import material_identity_keys_match
+from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    PHASE_WAITING_SCAN,
+    PHASE_WAITING_TARGET_BIN_SWITCH,
+    PHASE_WAITING_TARGET_PLACE,
+)
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
@@ -44,6 +52,15 @@ def _payload_text(payload_json: Mapping[str, Any], data: Mapping[str, Any], *fie
 
 class SmtSortingInboundFlowService:
     """分拣入库插件 P0 flow 编排。"""
+
+    def __init__(
+        self,
+        *,
+        allocation_policy: Any | None = None,
+        active_snapshot_provider: Any | None = None,
+    ) -> None:
+        self._allocation_policy = allocation_policy or SmtBinCellAllocationPolicy()
+        self._active_snapshot_provider = active_snapshot_provider
 
     async def handle_source_pick_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """源端取盘成功后出账源格，并打开当前物料上下文。"""
@@ -93,6 +110,68 @@ class SmtSortingInboundFlowService:
             RuntimeIntent.update_context(context_patch),
         ]
 
+    async def handle_working_bin_scan(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """扫码平台完成物料识别后，分配目标料格并写入 pending placement。"""
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        try:
+            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
+        except SortingInboundContextError as exc:
+            return self._block("SORTING_CONTEXT_INVALID", str(exc))
+
+        current_material = _dict_copy(sorting_context.sorting.get("current_material"))
+        if not current_material:
+            return self._block("SORTING_CURRENT_MATERIAL_MISSING", "扫码完成时缺少当前物料上下文")
+
+        data = _payload_data(payload_json)
+        expected_identity_key = _non_empty_str(current_material.get("material_identity_key"))
+        actual_identity_key = _payload_text(payload_json, data, "material_identity_key") or expected_identity_key
+        if expected_identity_key is None or actual_identity_key is None:
+            return self._block("SORTING_MATERIAL_IDENTITY_MISSING", "扫码完成时缺少物料身份键")
+        if not material_identity_keys_match(expected_identity_key, actual_identity_key):
+            return self._block(
+                "SORTING_SCAN_IDENTITY_MISMATCH",
+                "扫码物料身份与源格出账物料身份不一致",
+                payload={
+                    "expected_material_identity_key": expected_identity_key,
+                    "actual_material_identity_key": actual_identity_key,
+                },
+            )
+
+        expected_thickness = _non_empty_str(current_material.get("reel_thickness_mm"))
+        scan_thickness_was_provided = _payload_has_any(payload_json, data, "reel_thickness", "reel_thickness_mm")
+        scan_thickness = _payload_text(payload_json, data, "reel_thickness", "reel_thickness_mm")
+        actual_thickness = scan_thickness if scan_thickness_was_provided else expected_thickness
+        actual_thickness_text = _positive_decimal_text(actual_thickness)
+        if actual_thickness_text is None:
+            return self._block(
+                "SORTING_REEL_THICKNESS_INVALID",
+                "扫码完成时料盘厚度缺失或不是正 Decimal",
+                payload={"reel_thickness": actual_thickness},
+            )
+        actual_thickness = actual_thickness_text
+
+        active_snapshot = await self._active_target_snapshot(ctx, sorting_context.sorting)
+        if active_snapshot is None:
+            return self._block("SORTING_TARGET_SNAPSHOT_MISSING", "缺少 active target bin 快照，无法自动分格")
+
+        allocation = self._allocation_policy.allocate(
+            active_snapshot=active_snapshot,
+            material_identity_key=actual_identity_key,
+            reel_thickness_mm=actual_thickness,
+        )
+        if getattr(allocation, "kind", None) != "ALLOCATED":
+            return self._allocation_rejection_intents(ctx, current_material, actual_thickness, allocation)
+
+        context_patch = self._allocation_context_patch(
+            ctx,
+            actual_identity_key=actual_identity_key,
+            actual_thickness=actual_thickness,
+            expected_thickness=expected_thickness,
+            allocation=allocation,
+        )
+        return [RuntimeIntent.update_context(context_patch)]
+
     def _source_pick_context_patch(self, ctx: PluginContext, source_payload: dict[str, Any]) -> dict[str, Any]:
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
         scratch_session = SimpleNamespace(context_json=root_context)
@@ -113,6 +192,110 @@ class SmtSortingInboundFlowService:
         )
         sorting_context.set_station_state(scan_platform=_SCAN_PLATFORM_OCCUPIED, business_phase=PHASE_WAITING_SCAN)
         return {"sorting": _dict_copy(scratch_session.context_json.get("sorting"))}
+
+    def _allocation_context_patch(
+        self,
+        ctx: PluginContext,
+        *,
+        actual_identity_key: str,
+        actual_thickness: str,
+        expected_thickness: str | None,
+        allocation: Any,
+    ) -> dict[str, Any]:
+        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+        scratch_session = SimpleNamespace(context_json=root_context)
+        sorting_context = SortingInboundContext.load_for_automatic(scratch_session)
+        sorting_context.update_current_material(
+            material_identity_key=actual_identity_key,
+            reel_thickness_mm=actual_thickness,
+            scan_evidence={
+                "expected_reel_thickness_mm": expected_thickness,
+                "actual_reel_thickness_mm": actual_thickness,
+            },
+        )
+        target_bin_code = _non_empty_str(getattr(allocation, "target_bin_code", None))
+        target_cell_index = _non_empty_str(getattr(allocation, "target_cell_index", None))
+        if target_bin_code is None or target_cell_index is None:
+            raise SortingInboundContextError("allocation missing target bin/cell")
+        sorting_context.write_pending_target_placement(
+            target_bin_code=target_bin_code,
+            target_cell_code=target_cell_index,
+            material_identity_key=actual_identity_key,
+            reel_thickness_mm=actual_thickness,
+            allocation_snapshot_version=getattr(allocation, "allocation_snapshot_version", None),
+            capacity_evidence=_dict_copy(getattr(allocation, "capacity_evidence", None)),
+        )
+        sorting_context.clear_allocation_rejection()
+        sorting_context.set_station_state(business_phase=PHASE_WAITING_TARGET_PLACE)
+        return {"sorting": _dict_copy(scratch_session.context_json.get("sorting"))}
+
+    def _allocation_rejection_intents(
+        self,
+        ctx: PluginContext,
+        current_material: dict[str, Any],
+        actual_thickness: str,
+        allocation: Any,
+    ) -> list[RuntimeIntent]:
+        reason_code = _non_empty_str(getattr(allocation, "reason_code", None)) or "UNKNOWN"
+        if reason_code == "NO_CAPACITY":
+            root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+            scratch_session = SimpleNamespace(context_json=root_context)
+            sorting_context = SortingInboundContext.load_for_automatic(scratch_session)
+            sorting_context.update_current_material(reel_thickness_mm=actual_thickness)
+            sorting_context.clear_pending_target_placement()
+            sorting_context.record_allocation_rejection(
+                reason_code=reason_code,
+                message=_non_empty_str(getattr(allocation, "message", None)),
+                capacity_evidence=_dict_copy(getattr(allocation, "capacity_evidence", None)),
+            )
+            sorting_context.set_station_state(business_phase=PHASE_WAITING_TARGET_BIN_SWITCH)
+            return [RuntimeIntent.update_context({"sorting": _dict_copy(scratch_session.context_json.get("sorting"))})]
+
+        if reason_code == "PROJECTION_INCONSISTENT":
+            return self._block(
+                "SORTING_TARGET_CELL_RECONCILING",
+                "目标料格投影不一致，拒绝自动放盘",
+                payload={
+                    "current_material": current_material,
+                    "allocation_reason_code": reason_code,
+                    "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
+                },
+            )
+
+        return self._block(
+            "SORTING_TARGET_ALLOCATION_REJECTED",
+            _non_empty_str(getattr(allocation, "message", None)) or "目标料格分配失败",
+            payload={
+                "current_material": current_material,
+                "allocation_reason_code": reason_code,
+                "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
+            },
+        )
+
+    async def _active_target_snapshot(
+        self,
+        ctx: PluginContext,
+        sorting: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        provider = self._active_snapshot_provider or getattr(
+            getattr(ctx, "services", None), "active_rack_snapshot_provider", None
+        )
+        if provider is not None:
+            snapshot = provider.active_bin_rack(
+                context={
+                    "active_target_bin_code": sorting.get("active_target_bin_code"),
+                    "current_material": _dict_copy(sorting.get("current_material")),
+                }
+            )
+            if inspect.isawaitable(snapshot):
+                snapshot = await snapshot
+            if isinstance(snapshot, Mapping):
+                return dict(cast("Mapping[str, Any]", snapshot))
+
+        embedded_snapshot = sorting.get("active_target_bin")
+        if isinstance(embedded_snapshot, Mapping):
+            return dict(cast("Mapping[str, Any]", embedded_snapshot))
+        return None
 
     def _source_pick_payload(
         self,
@@ -151,6 +334,22 @@ class SmtSortingInboundFlowService:
                 payload=payload,
             )
         ]
+
+
+def _positive_decimal_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        decimal_value = Decimal(value)
+    except InvalidOperation:
+        return None
+    if not decimal_value.is_finite() or decimal_value <= 0:
+        return None
+    return value
+
+
+def _payload_has_any(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> bool:
+    return any(field_name in data or field_name in payload_json for field_name in field_names)
 
 
 __all__ = ["SmtSortingInboundFlowService"]

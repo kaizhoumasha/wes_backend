@@ -23,7 +23,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
-from src.workline_runtime.plugin_base import WorklinePlugin, on_command
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 
 if TYPE_CHECKING:
@@ -115,6 +115,12 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         """源端机械臂取盘成功后，触发源格出账和扫码平台占用。"""
 
         return await self._flow_service.handle_source_pick_success(ctx, inbox)
+
+    @on_event(EVENT_WORKING_BIN_SCAN)
+    async def handle_working_bin_scan(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """扫码平台完成物料识别后，分配目标料格。"""
+
+        return await self._flow_service.handle_working_bin_scan(ctx, inbox)
 
 
 __all__ = [
