@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from src.app.device.models import Device
+from src.app.device.models import Device, DeviceProtocol
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.safety import WorkLineRuntimeStatus
@@ -149,6 +149,31 @@ async def test_start_admission_happy_path_sets_ready_and_records_success(db_sess
     assert target.url == "http://mock-ecs:8010/api/v1/device/status"
     assert target.device_codes == ("RS-CONV-01", "RS-IN-01", "RS-OUT-01")
     assert timeout_seconds == 2.0
+
+
+@pytest.mark.asyncio
+async def test_start_admission_status_probe_uses_http_for_non_http_device_protocol(db_session) -> None:
+    """TCP/MQTT/MODBUS 设备的 ECS status 探活仍应使用 httpx 支持的 HTTP scheme。"""
+
+    workline = _make_workline(stopped_reason="MANUAL_STOP")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    for device in devices:
+        device.protocol = DeviceProtocol.TCP
+    await db_session.commit()
+    fetcher = RecordingStatusFetcher(_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(
+        db_session,
+        "RS-IN-01",
+        request_id="req-start-tcp-status",
+        trace_id="trace-start-tcp-status",
+    )
+
+    assert result.accepted is True
+    assert len(fetcher.calls) == 1
+    target, _ = fetcher.calls[0]
+    assert target.url == "http://mock-ecs:8010/api/v1/device/status"
 
 
 @pytest.mark.parametrize("device_code_source", ["device", "state"])

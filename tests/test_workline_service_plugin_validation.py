@@ -29,6 +29,11 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_OUTPUT_ARM,
 )
 from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
@@ -125,6 +130,61 @@ def test_smt_sorting_inbound_plugin_assignment_accepts_required_roles() -> None:
             make_device(6, ROLE_SORTING_WORKSTATION),
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_smt_sorting_inbound_configuration_status_does_not_require_event_capability_for_command_results(
+    db_session,
+) -> None:
+    """SMT 命令结果经 callback/result 分发，不应作为设备事件能力 blocker。"""
+
+    workline = WorkLine(
+        line_code="WL-SMT-COMMAND-RESULT-EVENTS",
+        line_name="SMT 命令结果能力校验",
+        line_type=LineType.AUTO,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    device_specs = (
+        (
+            ROLE_SORTING_SOURCE_ARM,
+            {"supports_command_types": [COMMAND_SOURCE_PICK], "supports_event_types": ["ARM_READY"]},
+        ),
+        (
+            ROLE_SORTING_TARGET_ARM,
+            {"supports_command_types": [COMMAND_TARGET_PLACE], "supports_event_types": ["ARM_READY"]},
+        ),
+        (ROLE_SORTING_NG_ARM, {"supports_command_types": [COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]}),
+        (ROLE_SORTING_SCAN_PLATFORM, {"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
+        (ROLE_SORTING_NG_STATION, {}),
+        (ROLE_SORTING_WORKSTATION, {"supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED]}),
+    )
+    for index, (role, capabilities_json) in enumerate(device_specs, start=1):
+        db_session.add(
+            Device(
+                device_code=f"SMT-CMD-RESULT-DEV-{index}",
+                device_name=f"SMT 命令结果设备{index}",
+                work_line_id=workline.id,
+                device_role=role,
+                role_index=1,
+                capabilities_json={**capabilities_json, "status_path": "/api/v1/device/status"},
+                host="mock-ecs",
+                port=8010,
+            )
+        )
+    await db_session.commit()
+
+    status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    failed_event_checks = [
+        check for check in status.checks if check.code == "EVENT_SOURCE_CAPABILITY" and check.status == "FAIL"
+    ]
+    assert status.can_activate is True
+    assert failed_event_checks == []
 
 
 def test_smt_sorting_inbound_plugin_assignment_rejects_missing_required_role() -> None:
