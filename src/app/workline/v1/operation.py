@@ -6,6 +6,12 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, status
 
+from src.app.callback.models.ingress_response import (
+    CallbackEventAcceptedResponse,
+    CallbackRejectedResponse,
+    build_callback_event_accepted_response,
+    build_callback_rejected_response,
+)
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.operation import (
     DebugDataCleanupRequest,
@@ -20,6 +26,7 @@ from src.app.workline.models.operation import (
     SandboxExternalCallbackRequest,
     SandboxResultRequest,
     SandboxTemplatesResponse,
+    SandboxWorklineStartRequest,
 )
 from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runtime annotation
     ClearWorkLineEstopRequest,
@@ -29,6 +36,7 @@ from src.app.workline.services import (
     WorkLineSafetyBlocked,
     debug_data_cleanup_service,
     sandbox_cleanup_service,
+    start_admission_service,
     workline_operation_service,
     workline_safety_service,
 )
@@ -111,6 +119,35 @@ def _clear_estop_response(incident: Any) -> dict[str, Any]:
         data["workline_runtime_status"] = release_evidence.get("workline_runtime_status")
     data["release_message"] = "已解除冻结，等待现场 START"
     return data
+
+
+def _sandbox_start_response(
+    *,
+    workline_id: int,
+    device_code: str,
+    trace_id: str,
+    admission: Any,
+) -> CallbackEventAcceptedResponse | CallbackRejectedResponse:
+    if bool(getattr(admission, "accepted", False)):
+        return build_callback_event_accepted_response(
+            status="accepted",
+            device_code=device_code,
+            request_id=trace_id,
+            trace_id=trace_id,
+            event_id=trace_id,
+            causation_id=None,
+            diagnostic=getattr(admission, "diagnostic", None),
+        )
+
+    diagnostic = dict(getattr(admission, "diagnostic", None) or {})
+    message = getattr(admission, "message", None)
+    if isinstance(message, str) and message:
+        diagnostic.setdefault("message", message)
+    diagnostic.setdefault("workline_id", workline_id)
+    return build_callback_rejected_response(
+        reason_code=getattr(admission, "reason_code", None) or "START_ADMISSION_FAILED",
+        diagnostic=diagnostic,
+    )
 
 
 def _operation_error_response(exc: Exception) -> dict[str, Any]:
@@ -355,6 +392,42 @@ async def simulate_workline_estop(
     return cast(
         "ResponseSchemaModel[dict[str, Any]]",
         response_builder.success(data=_safety_incident_response(incident)),
+    )
+
+
+@router.post(
+    "/sandbox/worklines/{workline_id}/start",
+    summary="[biz:workline:update] 沙箱模拟现场硬件 START",
+    response_model=ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+)
+async def start_sandbox_workline(
+    workline_id: int,
+    payload: SandboxWorklineStartRequest,
+    db: AsyncSessionDep,
+) -> ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]:
+    trace_id = payload.trace_id or f"sandbox:start:{workline_id}"
+    admission = await start_admission_service.admit_start(
+        db,
+        workline_id,
+        source_device_code=payload.device_code,
+        request_id=trace_id,
+        trace_id=trace_id,
+    )
+    if bool(getattr(admission, "accepted", False)):
+        await publish_deferred_sse_events(db)
+    return cast(
+        "ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]",
+        response_builder.success(
+            message=getattr(admission, "message", "START 准入完成"),
+            data=_sandbox_start_response(
+                workline_id=workline_id,
+                device_code=payload.device_code,
+                trace_id=trace_id,
+                admission=admission,
+            ),
+        ),
     )
 
 
