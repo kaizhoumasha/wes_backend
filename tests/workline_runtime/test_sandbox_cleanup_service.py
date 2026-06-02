@@ -24,7 +24,7 @@ from src.app.workline.models.timeline import (
     TimelineStatus,
     WorklineTimeline,
 )
-from src.app.workline.services import SandboxCleanupService, sandbox_cleanup_service
+from src.app.workline.services import RuntimeQueryService, SandboxCleanupService, sandbox_cleanup_service
 from src.utils.timezone import timezone
 
 
@@ -67,7 +67,82 @@ async def _create_executable_cleanup_graph(db_session):
         device_status=DeviceStatus.RUNNING,
         error_code=None,
     )
-    db_session.add_all([sandbox_device, auto_device])
+    error_orphan_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-ERROR-ORPHAN",
+        device_name="沙箱清理残留异常设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.ERROR,
+        error_code="SANDBOX_LEFTOVER_ERROR",
+        current_command_id=None,
+    )
+    running_orphan_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-RUNNING-ORPHAN",
+        device_name="沙箱清理残留运行设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.RUNNING,
+        error_code=None,
+        current_command_id=None,
+    )
+    running_unselected_command_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-RUNNING-UNSELECTED-COMMAND",
+        device_name="沙箱清理运行非候选命令设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.RUNNING,
+        error_code=None,
+    )
+    # 故意构造历史脏投影，验证 cleanup 会把非保留态 selected-command 设备完整归一化。
+    idle_command_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-IDLE-COMMAND",
+        device_name="沙箱清理空闲残留命令设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.IDLE,
+        error_code="SHOULD_BE_CLEARED",
+        maintenance_mode=True,
+    )
+    # 非候选命令设备的脏投影必须保留，防止 cleanup 越界清理其它运行态。
+    idle_unselected_command_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-IDLE-UNSELECTED-COMMAND",
+        device_name="沙箱清理空闲非候选命令设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.IDLE,
+        error_code="NON_SELECTED_SHOULD_STAY",
+        maintenance_mode=True,
+    )
+    maintenance_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-MAINTENANCE",
+        device_name="沙箱清理维护设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.MAINTENANCE,
+        maintenance_mode=True,
+        error_code="MAINTENANCE",
+    )
+    offline_device = Device(
+        device_code="DEV-SANDBOX-CLEANUP-OFFLINE",
+        device_name="沙箱清理离线设备",
+        work_line_id=simulation_workline.id,
+        device_role="ROBOT_ARM",
+        device_status=DeviceStatus.OFFLINE,
+        error_code="HEARTBEAT_TIMEOUT",
+    )
+    db_session.add_all(
+        [
+            sandbox_device,
+            auto_device,
+            error_orphan_device,
+            running_orphan_device,
+            running_unselected_command_device,
+            idle_command_device,
+            idle_unselected_command_device,
+            maintenance_device,
+            offline_device,
+        ]
+    )
     await db_session.flush()
 
     sandbox_session = WorklineSession(
@@ -160,7 +235,82 @@ async def _create_executable_cleanup_graph(db_session):
         status=CommandStatus.PENDING,
         trace_id=auto_session.trace_id,
     )
-    db_session.add_all([sandbox_command, auto_command])
+    maintenance_command = DeviceCommand(
+        command_code="CMD-SANDBOX-CLEANUP-MAINTENANCE",
+        device_id=maintenance_device.id,
+        workline_id=simulation_workline.id,
+        session_id=sandbox_session.session_code,
+        session_id_int=sandbox_session.id,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={},
+        status=CommandStatus.PENDING,
+        trace_id=sandbox_session.trace_id,
+    )
+    idle_command = DeviceCommand(
+        command_code="CMD-SANDBOX-CLEANUP-IDLE",
+        device_id=idle_command_device.id,
+        workline_id=simulation_workline.id,
+        session_id=sandbox_session.session_code,
+        session_id_int=sandbox_session.id,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={},
+        status=CommandStatus.PENDING,
+        trace_id=sandbox_session.trace_id,
+    )
+    idle_unselected_command = DeviceCommand(
+        command_code="CMD-SANDBOX-CLEANUP-IDLE-UNSELECTED",
+        device_id=idle_unselected_command_device.id,
+        workline_id=simulation_workline.id,
+        session_id="non-sandbox-unselected-session",
+        session_id_int=None,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={},
+        status=CommandStatus.PENDING,
+        trace_id="trace-non-sandbox-unselected-command",
+    )
+    running_unselected_command = DeviceCommand(
+        command_code="CMD-SANDBOX-CLEANUP-RUNNING-UNSELECTED",
+        device_id=running_unselected_command_device.id,
+        workline_id=simulation_workline.id,
+        session_id="non-sandbox-running-unselected-session",
+        session_id_int=None,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={},
+        status=CommandStatus.PENDING,
+        trace_id="trace-non-sandbox-running-unselected-command",
+    )
+    offline_command = DeviceCommand(
+        command_code="CMD-SANDBOX-CLEANUP-OFFLINE",
+        device_id=offline_device.id,
+        workline_id=simulation_workline.id,
+        session_id=sandbox_session.session_code,
+        session_id_int=sandbox_session.id,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={},
+        status=CommandStatus.PENDING,
+        trace_id=sandbox_session.trace_id,
+    )
+    db_session.add_all(
+        [
+            sandbox_command,
+            auto_command,
+            maintenance_command,
+            idle_command,
+            idle_unselected_command,
+            running_unselected_command,
+            offline_command,
+        ]
+    )
     await db_session.flush()
 
     command_linked_inbox = WorklineInbox(
@@ -179,6 +329,11 @@ async def _create_executable_cleanup_graph(db_session):
 
     sandbox_device.current_command_id = sandbox_command.id
     auto_device.current_command_id = auto_command.id
+    maintenance_device.current_command_id = maintenance_command.id
+    idle_command_device.current_command_id = idle_command.id
+    idle_unselected_command_device.current_command_id = idle_unselected_command.id
+    running_unselected_command_device.current_command_id = running_unselected_command.id
+    offline_device.current_command_id = offline_command.id
     sandbox_session.awaiting_command_id = sandbox_command.id
     auto_session.awaiting_command_id = auto_command.id
 
@@ -332,6 +487,19 @@ async def _create_executable_cleanup_graph(db_session):
         "auto_workline_id": auto_workline.id,
         "sandbox_device_id": sandbox_device.id,
         "auto_device_id": auto_device.id,
+        "error_orphan_device_id": error_orphan_device.id,
+        "running_orphan_device_id": running_orphan_device.id,
+        "running_unselected_command_device_id": running_unselected_command_device.id,
+        "idle_command_device_id": idle_command_device.id,
+        "idle_unselected_command_device_id": idle_unselected_command_device.id,
+        "maintenance_device_id": maintenance_device.id,
+        "offline_device_id": offline_device.id,
+        "idle_command_id": idle_command.id,
+        "idle_unselected_command_id": idle_unselected_command.id,
+        "running_unselected_command_id": running_unselected_command.id,
+        "maintenance_command_id": maintenance_command.id,
+        "offline_command_id": offline_command.id,
+        "extra_sandbox_command_ids": [maintenance_command.id, idle_command.id, offline_command.id],
         "sandbox_ids": {
             WorklineSession: sandbox_session.id,
             WorklineInbox: sandbox_inbox.id,
@@ -764,7 +932,7 @@ async def test_cleanup_workline_deletes_sandbox_runtime_graph_and_resets_runtime
     assert result.counts["sessions"] == 1
     assert result.counts["inboxes"] == 2
     assert result.counts["outboxes"] == 1
-    assert result.counts["commands"] == 1
+    assert result.counts["commands"] == 4
     assert result.counts["runtime_holds"] == 2
     assert result.counts["safety_incidents"] == 2
 
@@ -796,6 +964,54 @@ async def test_cleanup_workline_deletes_sandbox_runtime_graph_and_resets_runtime
     assert sandbox_device.current_command_id is None
     assert sandbox_device.device_status == DeviceStatus.IDLE
     assert sandbox_device.error_code is None
+
+    error_orphan_device = await db_session.get(Device, graph["error_orphan_device_id"])
+    assert error_orphan_device.current_command_id is None
+    assert error_orphan_device.device_status == DeviceStatus.IDLE
+    assert error_orphan_device.error_code is None
+
+    running_orphan_device = await db_session.get(Device, graph["running_orphan_device_id"])
+    assert running_orphan_device.current_command_id is None
+    assert running_orphan_device.device_status == DeviceStatus.IDLE
+    assert running_orphan_device.error_code is None
+
+    running_unselected_command_device = await db_session.get(Device, graph["running_unselected_command_device_id"])
+    running_unselected_command_id = graph["running_unselected_command_id"]
+    assert running_unselected_command_device.current_command_id == running_unselected_command_id
+    assert running_unselected_command_device.device_status == DeviceStatus.RUNNING
+    assert running_unselected_command_device.error_code is None
+    assert await db_session.get(DeviceCommand, running_unselected_command_id) is not None
+
+    idle_command_device = await db_session.get(Device, graph["idle_command_device_id"])
+    assert idle_command_device.current_command_id is None
+    assert idle_command_device.device_status == DeviceStatus.IDLE
+    assert idle_command_device.error_code is None
+    assert idle_command_device.maintenance_mode is False
+
+    idle_unselected_command_device = await db_session.get(Device, graph["idle_unselected_command_device_id"])
+    idle_unselected_command_id = graph["idle_unselected_command_id"]
+    assert idle_unselected_command_device.current_command_id == idle_unselected_command_id
+    assert idle_unselected_command_device.device_status == DeviceStatus.IDLE
+    assert idle_unselected_command_device.error_code == "NON_SELECTED_SHOULD_STAY"
+    assert idle_unselected_command_device.maintenance_mode is True
+    assert await db_session.get(DeviceCommand, idle_unselected_command_id) is not None
+
+    maintenance_device = await db_session.get(Device, graph["maintenance_device_id"])
+    assert maintenance_device.current_command_id is None
+    assert maintenance_device.device_status == DeviceStatus.MAINTENANCE
+    assert maintenance_device.error_code == "MAINTENANCE"
+    assert maintenance_device.maintenance_mode is True
+
+    offline_device = await db_session.get(Device, graph["offline_device_id"])
+    assert offline_device.current_command_id is None
+    assert offline_device.device_status == DeviceStatus.OFFLINE
+    assert offline_device.error_code == "HEARTBEAT_TIMEOUT"
+
+    for command_id in graph["extra_sandbox_command_ids"]:
+        assert await db_session.get(DeviceCommand, command_id) is None
+
+    detail = await RuntimeQueryService().get_workline_detail(db_session, simulation_workline_id)
+    assert detail.summary.error_device_count == 0
 
     auto_device = await db_session.get(Device, graph["auto_device_id"])
     auto_command_id = graph["auto_ids"][DeviceCommand]

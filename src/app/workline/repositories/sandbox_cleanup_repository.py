@@ -39,6 +39,8 @@ COUNT_KEYS = (
     "safety_incidents",
 )
 ID_CHUNK_SIZE = 500
+_SANDBOX_RESETTABLE_DEVICE_STATUSES = (DeviceStatus.ERROR, DeviceStatus.RUNNING)
+_SANDBOX_PRESERVED_DEVICE_STATUSES = (DeviceStatus.MAINTENANCE, DeviceStatus.OFFLINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,16 @@ class SandboxCleanupRepository:
                 .values(awaiting_command_id=None)
             )
 
+        await self._clear_deleted_command_device_refs(db, workline_id=workline_id, selection=selection)
+        await self._reset_sandbox_bound_device_runtime_state(db, workline_id=workline_id)
+
+    async def _clear_deleted_command_device_refs(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        selection: SandboxCleanupSelection,
+    ) -> None:
         device_columns = cast("Any", Device).__table__.c
         for command_ids in self._chunks(selection.commands):
             await db.execute(
@@ -192,13 +204,42 @@ class SandboxCleanupRepository:
                 .where(
                     device_columns.work_line_id == workline_id,
                     device_columns.current_command_id.in_(command_ids),
+                    device_columns.device_status.notin_(_SANDBOX_PRESERVED_DEVICE_STATUSES),
                 )
                 .values(
                     current_command_id=None,
                     device_status=DeviceStatus.IDLE,
                     error_code=None,
+                    maintenance_mode=False,
                 )
             )
+            await db.execute(
+                update(Device)
+                .where(
+                    device_columns.work_line_id == workline_id,
+                    device_columns.current_command_id.in_(command_ids),
+                    device_columns.device_status.in_(_SANDBOX_PRESERVED_DEVICE_STATUSES),
+                )
+                .values(current_command_id=None)
+            )
+
+    async def _reset_sandbox_bound_device_runtime_state(self, db: AsyncSession, *, workline_id: int) -> None:
+        device_columns = cast("Any", Device).__table__.c
+        await db.execute(
+            update(Device)
+            .where(
+                device_columns.work_line_id == workline_id,
+                device_columns.device_status.notin_(_SANDBOX_PRESERVED_DEVICE_STATUSES),
+                device_columns.device_status.in_(_SANDBOX_RESETTABLE_DEVICE_STATUSES),
+                device_columns.current_command_id.is_(None),
+            )
+            .values(
+                current_command_id=None,
+                device_status=DeviceStatus.IDLE,
+                error_code=None,
+                maintenance_mode=False,
+            )
+        )
 
     async def _delete_by_ids(self, db: AsyncSession, model: type[Any], ids: list[int]) -> None:
         columns = cast("Any", model).__table__.c
