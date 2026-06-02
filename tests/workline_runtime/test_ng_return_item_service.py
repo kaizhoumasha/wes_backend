@@ -252,6 +252,11 @@ async def test_record_scan_ng_completion_conflict_is_structured_for_different_so
     assert conflict.evidence["new_source_session_id"] == other_session.id
     assert conflict.evidence["new_source_command_id"] == other_inbox.command_id
     assert conflict.evidence["new_source_event_id"] == other_inbox.event_id
+    assert conflict.evidence["expected_material_identity_key"] == "test-material:ITEM-6"
+    assert conflict.evidence["actual_material_identity_key"] == "test-material:ITEM-6"
+    assert conflict.evidence["scan_event_type"] == "SCAN_COMPLETED"
+    assert conflict.evidence["scan_event_payload"]["data"]["item_id"] == "ITEM-6"
+    assert conflict.evidence["command_result_payload"]["command_code"] == "CMD-NG-ITEM-OTHER"
 
 
 async def test_record_scan_ng_completion_uses_session_identity_when_material_identity_is_missing(db_session) -> None:

@@ -576,22 +576,65 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
 
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
-    from src.app.workline.services.ng_return_item_service import ng_return_item_service
+    from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
+    from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 
     if not getattr(ctx["orch_result"], "complete", False):
         return False
     session = ctx["session"]
-    _ = await ng_return_item_service.record_completed_ng_flow(
-        ctx["db"],
-        session=session,
-        workline=ctx["workline"],
-        inbox=ctx["inbox"],
-        transition=getattr(ctx["orch_result"], "transition", None),
-        occurred_at=ctx["now"],
-    )
+    try:
+        _ = await ng_return_item_service.record_completed_ng_flow(
+            ctx["db"],
+            session=session,
+            workline=ctx["workline"],
+            inbox=ctx["inbox"],
+            transition=getattr(ctx["orch_result"], "transition", None),
+            occurred_at=ctx["now"],
+        )
+    except NgMaterialConflictError as exc:
+        evidence = dict(exc.evidence)
+        source_event_id = string_value(
+            evidence.get("new_source_event_id") or f"{exc.reason_code}:{exc.material_identity_key}"
+        )
+        hold = await runtime_hold_creation_service.create_for_resource_reconciliation(
+            ctx["db"],
+            workline_id=resolve_required_pk(ctx["workline"], "workline"),
+            session_id=resolve_required_pk(session, "session"),
+            trace_id=ctx.get("trace_id")
+            or getattr(ctx["inbox"], "trace_id", None)
+            or getattr(session, "trace_id", None),
+            plugin_key=getattr(session, "plugin_key", None) or getattr(ctx["workline"], "plugin_key", None),
+            contract_version=getattr(session, "contract_version", None)
+            or getattr(ctx["workline"], "contract_version", None),
+            source_reason=exc.reason_code,
+            source_event_id=source_event_id,
+            evidence=evidence,
+        )
+        session_context = _session_context(session)
+        session_context["ng_material_conflict"] = {
+            "reason_code": exc.reason_code,
+            "material_identity_key": exc.material_identity_key,
+            "runtime_hold_id": getattr(hold, "id", None),
+            "evidence": evidence,
+        }
+        _set_session_context(session, session_context)
+        workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
+        await _emit_timeline(
+            ctx,
+            stage=TimelineStage.MANUAL,
+            action_type=TimelineActionType.MANUAL_HOLD,
+            payload=session_context["ng_material_conflict"],
+            from_status=ctx["current_status"],
+            to_status=session.status,
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            related_inbox_id=_timeline_inbox_id(ctx),
+            status=TimelineStatus.PENDING,
+            message="NG 物料已存在不同来源回流项，进入人工处理",
+        )
+        return True
     workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
     await WorklineSessionRepository().persist_completed(
         ctx["db"],

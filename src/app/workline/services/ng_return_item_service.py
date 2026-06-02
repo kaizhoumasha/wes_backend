@@ -232,6 +232,9 @@ class NgReturnItemService:
         source_command_id: int | None,
         material_identity_json: dict[str, Any],
     ) -> NgMaterialConflictError:
+        session_context = as_dict(getattr(session, "context_json", None))
+        scan_event_payload = self._source_payload(session_context)
+        command_result_payload = as_dict(getattr(inbox, "payload_json", None))
         evidence = {
             "reason_code": NgMaterialConflictError.reason_code,
             "material_identity_key": material_identity_key,
@@ -246,7 +249,10 @@ class NgReturnItemService:
             "new_trace_id": _as_non_empty_str(getattr(inbox, "trace_id", None))
             or _as_non_empty_str(getattr(session, "trace_id", None)),
             "expected_material_identity_key": existing_item.material_identity_key,
-            "actual_material_identity_key": material_identity_key,
+            "actual_material_identity_key": material_identity_json.get("idempotency_key") or material_identity_key,
+            "scan_event_type": scan_event_payload.get("event_type"),
+            "scan_event_payload": scan_event_payload,
+            "command_result_payload": command_result_payload,
             "new_material_identity_json": material_identity_json,
         }
         return NgMaterialConflictError(
