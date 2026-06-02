@@ -33,6 +33,7 @@ from src.workline_runtime.run_mode import (
     is_simulation_run_mode,
     normalize_run_mode,
 )
+from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 from src.workline_runtime.topology import WorklineTopologyView
 
 _BLOCKER = "BLOCKER"
@@ -644,6 +645,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         event_mapping = runtime_config.get("event_type_mapping")
         if event_mapping is not None and not isinstance(event_mapping, dict):
             raise TypeError("runtime_config_json.event_type_mapping 必须为对象")
+        if isinstance(event_mapping, dict):
+            for source_event_type, mapped_event_type in event_mapping.items():
+                if isinstance(mapped_event_type, str) and mapped_event_type:
+                    assert_not_reserved_runtime_event(
+                        mapped_event_type,
+                        owner="runtime_config_json.event_type_mapping",
+                        declaration_surface=f"{source_event_type} 的映射目标",
+                    )
 
 
 # 创建单例

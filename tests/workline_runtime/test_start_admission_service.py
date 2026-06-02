@@ -6,6 +6,7 @@ import importlib
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.device.models import Device
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
@@ -431,6 +432,40 @@ async def test_start_admission_refuses_ready_when_final_cas_drifts(
     assert result.http_status == 409
     assert result.reason_code == "START_ADMISSION_STATE_CHANGED"
     assert workline.runtime_status == drift_status
+    assert workline.start_admission_status == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_start_admission_refreshes_final_lock_after_external_session_drift(db_session, db_engine) -> None:
+    """status probe 期间其它事务提交安全状态变化时，final guard 必须读取 DB 新值。"""
+
+    workline = _make_workline()
+    devices = await _persist_workline_with_devices(db_session, workline)
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def drifting_fetcher(
+        target: StartAdmissionStatusTarget,
+        timeout_seconds: float,
+    ) -> StartAdmissionStatusFetchResult:
+        async with session_factory() as drift_session:
+            current = await drift_session.get(WorkLine, workline.id)
+            assert current is not None
+            current.runtime_status = WorkLineRuntimeStatus.ESTOPPED
+            current.stopped_reason = "ESTOP_DURING_START_PROBE"
+            await drift_session.commit()
+        return StartAdmissionStatusFetchResult(status_code=200, payload=_idle_payload(devices))
+
+    service = WorkLineStartAdmissionService(status_fetcher=drifting_fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-external-drift")
+
+    await db_session.refresh(workline)
+    assert result.accepted is False
+    assert result.http_status == 409
+    assert result.reason_code == "START_ADMISSION_STATE_CHANGED"
+    assert result.diagnostic["runtime_status"] == WorkLineRuntimeStatus.ESTOPPED.value
+    assert workline.runtime_status == WorkLineRuntimeStatus.ESTOPPED
+    assert workline.stopped_reason == "ESTOP_DURING_START_PROBE"
     assert workline.start_admission_status == "FAILED"
 
 

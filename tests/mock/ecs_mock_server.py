@@ -28,6 +28,7 @@ DOCKER_APP_ROOT = Path(__file__).resolve().parents[2]
 if str(DOCKER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(DOCKER_APP_ROOT))
 
+from src.workline_runtime.runtime_events import is_platform_control_event
 from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
 logger = logging.getLogger(__name__)
@@ -356,7 +357,10 @@ async def report_mock_event(payload: MockEventRequestBody) -> dict[str, Any]:
     event_payload.setdefault("timestamp", _now_ms())
     _ = _get_state_or_400(event_payload["device_code"])
     device = MOCK_ECS_DEVICES[event_payload["device_code"]]
-    if event_payload["event_type"] not in device.supported_events:
+    if (
+        not is_platform_control_event(event_payload["event_type"])
+        and event_payload["event_type"] not in device.supported_events
+    ):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported event_type for {event_payload['device_code']}: {event_payload['event_type']}",

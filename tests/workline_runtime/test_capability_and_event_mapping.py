@@ -55,3 +55,17 @@ def test_schema_validators_reject_invalid_shapes(payload: dict, expected_message
 
     with pytest.raises(TypeError, match=expected_message):
         WorkLineService._validate_runtime_config(payload)
+
+
+def test_runtime_config_rejects_reserved_mapping_target() -> None:
+    payload = {"runtime_config_json": {"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}}}
+
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
+        WorkLineService._validate_runtime_config(payload)
+
+
+def test_canonicalize_event_type_rejects_reserved_mapping_target() -> None:
+    workline = SimpleNamespace(runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}})
+
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
+        canonicalize_event_type("SCAN_FINISH", workline=workline)

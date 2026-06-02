@@ -46,7 +46,7 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_event,
 )
 from src.workline_runtime.plugin_sdk import canonicalize_event_type
-from src.workline_runtime.runtime_events import is_production_event
+from src.workline_runtime.runtime_events import is_platform_control_event, is_production_event
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import JsonDict, resolve_first_str
 
@@ -1152,7 +1152,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
         )
 
     try:
-        if canonical_event_type == "WORKLINE_START_REQUESTED":
+        if normalized_event_request.event_type == "WORKLINE_START_REQUESTED":
             return await _handle_event_start_admission(
                 db,
                 request,
@@ -1160,6 +1160,32 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
                 event_data=event_data,
                 device_code=device_code,
                 start_time=start_time,
+            )
+
+        if is_platform_control_event(canonical_event_type):
+            message = f"事件上报契约校验失败: {canonical_event_type} 是平台保留控制事件，不能作为事件映射目标"
+            logger.error(message)
+            await _record_callback_diagnostic(
+                db,
+                error_code=ErrorCode.CONFIG_INVALID,
+                message=message,
+                request_id=request_id,
+                callback_type="event",
+                payload=event_data,
+                device=device,
+                workline=workline,
+                canonical_event_type=canonical_event_type,
+            )
+            return CallbackEventIngressDecision(
+                body=await _handle_event_validation_failure(
+                    db,
+                    request,
+                    request_id=request_id,
+                    event_data=event_data,
+                    message=message,
+                    response_time_ms=_response_time_ms(start_time),
+                    failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+                )
             )
 
         if is_production_event(canonical_event_type):

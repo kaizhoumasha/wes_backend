@@ -163,7 +163,7 @@ class WorkLineStartAdmissionService:
                 trace_id=trace_id,
             )
 
-        current = await workline_repository.get_for_update(db, workline_id)
+        current = await workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             return self._rejected(
                 workline_id,
@@ -438,7 +438,7 @@ class WorkLineStartAdmissionService:
         request_id: str | None,
         trace_id: str | None,
     ) -> StartAdmissionResult:
-        current = await workline_repository.get_for_update(db, workline_id)
+        current = await workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             return self._rejected(
                 workline_id,

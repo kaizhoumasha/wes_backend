@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -302,7 +303,7 @@ async def _mark_outbox_blocked_by_workline_state(
     outbox_id: int,
     safety_error: Exception,
 ) -> str:
-    """按 WorkLine 运行态阻断 outbox；RECONCILING 进入 parked 队列，ESTOP 保持本地失败。"""
+    """按运行态阻断 outbox；RECONCILING 和 STOPPED 进入 parked，ESTOP 保持本地失败。"""
 
     reason = str(safety_error)
     if "WORKLINE_RECONCILING" in reason:
@@ -313,6 +314,10 @@ async def _mark_outbox_blocked_by_workline_state(
             outbox=outbox,
             reason="CALLBACK_DEADLINE_EXPIRED",
         )
+        return "blocked_resource"
+
+    if "WORKLINE_STOPPED" in reason:
+        _ = await outbox_repo.mark_as_blocked_by_workline_stopped(db, outbox_id)
         return "blocked_resource"
 
     _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_id)
@@ -335,7 +340,7 @@ def _is_same_session_current_command(*, outbox: Any, command: Any | None, device
 def _build_device_status_url(device: Any, *, device_code: str) -> str:
     scheme = _resolve_device_protocol_scheme(device)
     status_path = _resolve_device_status_path(device)
-    return f"{scheme}://{device.host}:{device.port}{status_path}?device_code={device_code}"
+    return f"{scheme}://{device.host}:{device.port}{status_path}?device_code={quote(device_code)}"
 
 
 def _extract_device_status_state(payload: Any) -> dict[str, Any]:

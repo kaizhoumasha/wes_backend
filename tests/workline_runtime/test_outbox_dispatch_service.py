@@ -423,6 +423,50 @@ class TestOutboxDispatchService:
         dispatch_single.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_dispatch_parks_outbox_when_workline_stopped(self, mock_db, mock_outbox_repo):
+        """WorkLine 处于 STOPPED 态时，待派发 outbox 进入 BLOCKED_RESOURCE 停放区。"""
+        from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+
+        outbox = MockOutbox(
+            outbox_id=3,
+            workline_id=7,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
+            target_code="ROBOT_002",
+            payload_json={"command_code": "CMD-BLOCKED-002"},
+        )
+        mock_outbox_repo.get_pending_messages.return_value = [outbox]
+        mock_outbox_repo.mark_as_dispatching.return_value = outbox
+
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(side_effect=WorkLineSafetyBlocked("WORKLINE_STOPPED"))
+        mock_outbox_repo.mark_as_blocked_by_workline_stopped = AsyncMock(return_value=outbox)
+
+        with (
+            patch(
+                "src.app.sys.repositories.SystemOutboxRepository",
+                return_value=mock_outbox_repo,
+            ),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
+            patch(
+                "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._dispatch_single",
+                new=AsyncMock(),
+            ) as dispatch_single,
+        ):
+            result = await OutboxDispatchService().dispatch(mock_db)
+
+        assert result["dispatched"] == 1
+        assert result["success"] == 0
+        assert result["failed"] == 0
+        assert result["skipped"] == 1
+        mock_outbox_repo.mark_as_blocked_by_workline_stopped.assert_awaited_once_with(mock_db, 3)
+        mock_outbox_repo.mark_as_blocked_by_workline_estop.assert_not_awaited()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
+        dispatch_single.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_dispatch_repairs_orphaned_device_busy_dispatching_when_device_is_idle(
         self,
         mock_db,

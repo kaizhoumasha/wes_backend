@@ -1327,8 +1327,8 @@ class InboxBatchProcessor:
                 try:
                     inbox_pk = diagnostic_inbox.id
                     if inbox_pk is not None:
-                        _ = await inbox_service.mark_as_failed(
-                            db, inbox_pk, str(e), processor_token=processor_token, auto_commit=False
+                        _ = await inbox_service.park_for_retry(
+                            db, inbox_pk, str(e), processor_token=processor_token, auto_commit=False, delay_seconds=10
                         )
                         await db.commit()
                 except Exception as mark_error:

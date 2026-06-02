@@ -294,6 +294,27 @@ def test_ecs_mock_event_storage_retry_callbacks_real_payload(monkeypatch) -> Non
     assert callback_payload["data"]["active_bin_rack"]["rack_id"] == "RACK-CALLBACK"
 
 
+def test_ecs_mock_event_allows_platform_start_control_event(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/event",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "event_type": "WORKLINE_START_REQUESTED",
+                "data": {"operator": "debug"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Event delivered"
+    callback_payload = CapturingAsyncClient.requests[0]["json"]
+    assert callback_payload["device_code"] == "RS-INPUT-ARM-01"
+    assert callback_payload["event_type"] == "WORKLINE_START_REQUESTED"
+    assert callback_payload["data"] == {"operator": "debug"}
+
+
 def test_ecs_mock_event_openapi_exposes_real_callback_payload_examples() -> None:
     with TestClient(ecs_mock_server.app) as client:
         response = client.get("/openapi.json")
