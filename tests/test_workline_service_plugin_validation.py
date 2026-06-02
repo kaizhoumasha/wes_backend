@@ -27,6 +27,16 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    ROLE_SORTING_NG_ARM,
+    ROLE_SORTING_NG_STATION,
+    ROLE_SORTING_SCAN_PLATFORM,
+    ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
+    ROLE_SORTING_WORKSTATION,
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
 
 
 def make_workline() -> WorkLine:
@@ -70,15 +80,19 @@ def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
     assert workline.plugin_definition is None
 
 
-def test_workline_service_lists_rough_sorter_plugin_option() -> None:
-    """粗分机插件注册后，插件下拉选项应暴露新合同版本。"""
+def test_workline_service_lists_registered_plugin_options() -> None:
+    """插件注册后，插件下拉选项应暴露合同版本。"""
 
     service = WorkLineService()
 
     options = service.list_plugin_options()
+    options_by_key = {option.plugin_key: option for option in options}
 
-    assert [option.plugin_key for option in options] == ["rough_sorter"]
-    assert options[0].default_contract_version == "rough_sorter.v1"
+    assert [option.plugin_key for option in options] == [SMT_SORTING_INBOUND_PLUGIN_KEY, "rough_sorter"]
+    assert options_by_key["rough_sorter"].default_contract_version == "rough_sorter.v1"
+    assert options_by_key[SMT_SORTING_INBOUND_PLUGIN_KEY].default_contract_version == (
+        SMT_SORTING_INBOUND_CONTRACT_VERSION
+    )
 
 
 def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
@@ -93,6 +107,40 @@ def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
             make_device(3, ROLE_OUTPUT_ARM),
         ],
     )
+
+
+def test_smt_sorting_inbound_plugin_assignment_accepts_required_roles() -> None:
+    """SMT 分拣入库插件绑定必须具备 P0 全部设备角色。"""
+
+    validate_workline_plugin_assignment(
+        SMT_SORTING_INBOUND_PLUGIN_KEY,
+        make_workline(),
+        [
+            make_device(1, ROLE_SORTING_SOURCE_ARM),
+            make_device(2, ROLE_SORTING_TARGET_ARM),
+            make_device(3, ROLE_SORTING_NG_ARM),
+            make_device(4, ROLE_SORTING_SCAN_PLATFORM),
+            make_device(5, ROLE_SORTING_NG_STATION),
+            make_device(6, ROLE_SORTING_WORKSTATION),
+        ],
+    )
+
+
+def test_smt_sorting_inbound_plugin_assignment_rejects_missing_required_role() -> None:
+    """缺少扫码平台时，SMT 分拣入库插件绑定应失败。"""
+
+    with pytest.raises(BadRequestException, match=ROLE_SORTING_SCAN_PLATFORM):
+        validate_workline_plugin_assignment(
+            SMT_SORTING_INBOUND_PLUGIN_KEY,
+            make_workline(),
+            [
+                make_device(1, ROLE_SORTING_SOURCE_ARM),
+                make_device(2, ROLE_SORTING_TARGET_ARM),
+                make_device(3, ROLE_SORTING_NG_ARM),
+                make_device(5, ROLE_SORTING_NG_STATION),
+                make_device(6, ROLE_SORTING_WORKSTATION),
+            ],
+        )
 
 
 def test_rough_sorter_plugin_assignment_rejects_missing_required_role() -> None:
