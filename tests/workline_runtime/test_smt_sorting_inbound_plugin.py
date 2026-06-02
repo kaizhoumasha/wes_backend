@@ -70,12 +70,12 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
         COMMAND_NG_PLACE: (ROLE_SORTING_NG_ARM,),
     }
     assert manifest.event_source_roles == {
-        EVENT_SOURCE_PICK_RESULT: (ROLE_SORTING_SOURCE_ARM,),
-        EVENT_TARGET_PLACE_RESULT: (ROLE_SORTING_TARGET_ARM,),
-        EVENT_NG_PLACE_RESULT: (ROLE_SORTING_NG_ARM,),
         EVENT_WORKING_BIN_SCAN: (ROLE_SORTING_SCAN_PLATFORM,),
         EVENT_SESSION_COMPLETE_REQUESTED: (ROLE_SORTING_WORKSTATION,),
     }
+    assert EVENT_SOURCE_PICK_RESULT not in manifest.event_source_roles
+    assert EVENT_TARGET_PLACE_RESULT not in manifest.event_source_roles
+    assert EVENT_NG_PLACE_RESULT not in manifest.event_source_roles
 
 
 def test_smt_sorting_inbound_manifest_keeps_platform_start_out_of_business_events() -> None:
