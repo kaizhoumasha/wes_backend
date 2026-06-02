@@ -45,16 +45,26 @@
 
 ## 跨计划验收
 
+状态：已补充后端 `pytest + SQLite + service/plugin/gateway stitching smoke`：
+`tests/integration/workline_runtime/test_cross_plan_sandbox_smoke.py`。该 smoke 覆盖 `STOPPED -> START -> READY`
+后串联 SMT Sorting 源端取盘、扫码分格、目标放盘、命令派发前 realtime status guard、本地 NG 和 Session 完成。
+
 必须同时满足：
 
-- WorkLine 初始为 `STOPPED`，普通 SMT Sorting 生产事件返回 HTTP 409，且不创建 inbox。
-- ECS/mock 发送 `WORKLINE_START_REQUESTED`，START 准入成功后 WorkLine 进入 `READY`。
-- SMT Sorting 源端取盘命令下发前，`DeviceCommandGateway` 完成 realtime status GET。
-- 源端取盘成功后，resource 投影出现一次 `MATERIAL_UNMOUNTED`，源格只扣减一次。
-- 扫码成功后，Session context 写入 `pending_target_placement`，目标端命令使用该落点。
-- 目标端成功后，resource 投影出现 `MATERIAL_MOUNTED`，`current_material` 关闭。
-- 源端快照不一致时进入本地 NG，创建或命中 `NgReturnItem`，不触发该盘目标箱 WMS 物料变化。
-- 任一 `NG_MATERIAL_CONFLICT` 会阻止 Session 完成，直到人工或对账解除。
+- [x] WorkLine 初始为 `STOPPED`，普通 SMT Sorting 生产事件返回 HTTP 409，且不创建 inbox。
+- [x] ECS/mock 发送 `WORKLINE_START_REQUESTED`，START 准入成功后 WorkLine 进入 `READY`。
+- [x] SMT Sorting 目标端命令下发前，`DeviceCommandGateway` 完成 realtime status GET。
+- [x] 源端取盘成功后，插件 intent 产出一次 `MATERIAL_UNMOUNTED`，重复上报不会重复出账。
+- [x] 扫码成功后，Session context 写入 `pending_target_placement`，目标端命令使用该落点。
+- [x] 目标端成功后，插件 intent 产出 `MATERIAL_MOUNTED`，`current_material` 关闭。
+- [x] 源端快照不一致时进入本地 NG，插件 intent/context 记录 `LOCAL_SORTING_NG`，不触发该盘目标箱 WMS 物料变化。
+- [ ] 任一 `NG_MATERIAL_CONFLICT` 会阻止 Session 完成，直到人工或对账解除。
+
+剩余跟踪：
+
+- [ ] 补一条 runtime orchestrator/effect 层 thin smoke，覆盖 `intent -> outbox/resource fact/session context`
+      持久化的真实衔接。
+- [ ] 补 `NG_MATERIAL_CONFLICT` 阻止 Session 完成的跨计划 smoke；当前 smoke 已覆盖本地 NG success 分支。
 
 ## 冲突与回滚边界
 
