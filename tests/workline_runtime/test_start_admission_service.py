@@ -7,8 +7,10 @@ from typing import Any
 import pytest
 
 from src.app.device.models import Device
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.models.session import WorklineSession
 from src.app.workline.services.start_admission_service import (
     StartAdmissionStatusFetchResult,
     StartAdmissionStatusTarget,
@@ -100,6 +102,23 @@ def _idle_payload(devices: list[Device]) -> dict[str, Any]:
     }
 
 
+def _nested_idle_payload(devices: list[Device], *, device_code_source: str = "device") -> dict[str, Any]:
+    return {
+        "devices": [
+            {
+                "device": {"device_code": device.device_code} if device_code_source == "device" else {},
+                "state": {
+                    "device_code": device.device_code if device_code_source == "state" else None,
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "current_command_id": None,
+                },
+            }
+            for device in devices
+        ]
+    }
+
+
 @pytest.mark.asyncio
 async def test_start_admission_happy_path_sets_ready_and_records_success(db_session) -> None:
     """STOPPED 且所有 ECS 设备 AUTO/IDLE 时，START 准入写入 READY。"""
@@ -130,6 +149,98 @@ async def test_start_admission_happy_path_sets_ready_and_records_success(db_sess
     assert target.url == "http://mock-ecs:8010/api/v1/device/status"
     assert target.device_codes == ("RS-CONV-01", "RS-IN-01", "RS-OUT-01")
     assert timeout_seconds == 2.0
+
+
+@pytest.mark.parametrize("device_code_source", ["device", "state"])
+@pytest.mark.asyncio
+async def test_start_admission_accepts_nested_ecs_status_device_code(db_session, device_code_source: str) -> None:
+    """START 准入应兼容 ECS status 批量契约中的嵌套 device_code。"""
+
+    workline = _make_workline(stopped_reason="MANUAL_STOP")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    fetcher = RecordingStatusFetcher(_nested_idle_payload(devices, device_code_source=device_code_source))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(
+        db_session,
+        "RS-IN-01",
+        request_id="req-start-nested-status",
+        trace_id="trace-start-nested-status",
+    )
+
+    await db_session.refresh(workline)
+    assert result.accepted is True
+    assert result.http_status == 200
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.start_admission_status == "SUCCESS"
+    assert len(fetcher.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_admission_success_releases_parked_recovery_outboxes(db_session) -> None:
+    """START 准入成功后释放恢复窗口 parked outbox，避免 STOPPED 窗口提前派发。"""
+
+    workline = _make_workline(stopped_reason="RECOVERY_CLEARED_WAITING_START")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    session = WorklineSession(
+        session_code="S-START-RELEASE-OUTBOX",
+        workline_id=workline.id,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+    )
+    db_session.add(session)
+    await db_session.flush()
+    runtime_hold_outbox = SystemOutbox(
+        session_id=session.id,
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:START-RELEASE-HOLD",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="RS-IN-01",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_by_runtime_hold_id=321,
+        blocked_by_reconciliation_session_id=session.id,
+        blocked_workline_id=workline.id,
+        blocked_reason="RUNTIME_HOLD",
+        last_error="RUNTIME_HOLD",
+    )
+    reconciliation_only_outbox = SystemOutbox(
+        session_id=session.id,
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:START-RELEASE-RECONCILIATION",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="RS-CONV-01",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_by_reconciliation_session_id=session.id,
+        blocked_workline_id=workline.id,
+        blocked_reason="CALLBACK_DEADLINE_EXPIRED",
+        last_error="CALLBACK_DEADLINE_EXPIRED",
+    )
+    db_session.add_all([runtime_hold_outbox, reconciliation_only_outbox])
+    await db_session.commit()
+
+    fetcher = RecordingStatusFetcher(_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(
+        db_session,
+        "RS-IN-01",
+        request_id="req-start-release-outbox",
+        trace_id="trace-start-release-outbox",
+    )
+
+    await db_session.refresh(workline)
+    await db_session.refresh(runtime_hold_outbox)
+    await db_session.refresh(reconciliation_only_outbox)
+    assert result.accepted is True
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    for outbox in (runtime_hold_outbox, reconciliation_only_outbox):
+        assert outbox.status == SystemOutboxStatus.NEW
+        assert outbox.blocked_by_runtime_hold_id is None
+        assert outbox.blocked_by_reconciliation_session_id is None
+        assert outbox.blocked_workline_id is None
+        assert outbox.blocked_reason is None
 
 
 @pytest.mark.asyncio

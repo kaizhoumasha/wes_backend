@@ -10,6 +10,15 @@ from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, N
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, NgReturnItemService
 from src.utils.timezone import timezone
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    NG_REASON_LOCAL_SORTING_NG,
+    PHASE_WAITING_SOURCE_PICK,
+    ROLE_SORTING_NG_ARM,
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SORTING_CONTEXT_SCHEMA_VERSION,
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
@@ -161,6 +170,106 @@ async def _create_second_scan_ng_source(
     return session, inbox
 
 
+async def _create_smt_local_ng_fixture(db_session):
+    workline = WorkLine(
+        line_code="WL-SMT-NG-ITEM",
+        line_name="WL-SMT-NG-ITEM",
+        line_type=LineType.AUTO,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    )
+    db_session.add(workline)
+    await db_session.flush()
+
+    device = Device(
+        device_code="SMT-NG-ARM-01",
+        device_name="SMT NG ARM",
+        work_line_id=workline.id,
+        device_role=ROLE_SORTING_NG_ARM,
+        role_index=1,
+    )
+    db_session.add(device)
+    await db_session.flush()
+
+    current_material = {
+        "source_bin_code": "SRC-BIN-01",
+        "source_cell_code": "A01",
+        "material_identity_key": "mid:pkg-001",
+        "actual_material_identity_key": "mid:actual-other",
+        "pkg_code": "PKG-001",
+        "reel_thickness_mm": "7.125",
+        "ng_status": "MOVING_TO_NG",
+    }
+    ng_command_payload = {
+        "command_code": "CMD-SMT-NG-ITEM",
+        "device_code": device.device_code,
+        "command_type": COMMAND_NG_PLACE,
+        "result": "SUCCESS",
+        "data": {"ng_location": "NG-01"},
+    }
+    session = WorklineSession(
+        session_code="SES-SMT-NG-ITEM",
+        workline_id=cast("int", workline.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "stations": {"scan_platform": "EMPTY"},
+                "business_phase": PHASE_WAITING_SOURCE_PICK,
+            },
+            "ng_reason": NG_REASON_LOCAL_SORTING_NG,
+            "pick_place_reason": NG_REASON_LOCAL_SORTING_NG,
+            "scan_ng_reason_code": NG_REASON_LOCAL_SORTING_NG,
+            "scan_ng_reason_message": "本地 NG 放置成功",
+            "source_payload": {
+                "ng_command_payload": ng_command_payload,
+                "current_material": current_material,
+            },
+        },
+        trace_id="trace-smt-ng-item",
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    command = DeviceCommand(
+        command_code="CMD-SMT-NG-ITEM",
+        device_id=cast("int", device.id),
+        workline_id=cast("int", workline.id),
+        session_id=session.session_code,
+        session_id_int=cast("int", session.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        task_type=COMMAND_NG_PLACE,
+        params={
+            "material_identity_key": "mid:actual-other",
+            "pkg_code": "PKG-001",
+            "ng_reason_code": NG_REASON_LOCAL_SORTING_NG,
+        },
+        status=CommandStatus.COMPLETED,
+        trace_id=session.trace_id,
+    )
+    db_session.add(command)
+    await db_session.flush()
+
+    inbox = WorklineInbox(
+        kind=InboxKind.COMMAND_RESULT,
+        source_system=SourceSystem.MANUAL,
+        source_message_id="sandbox:result:smt-ng-item",
+        workline_id=cast("int", workline.id),
+        device_id=cast("int", device.id),
+        command_id=cast("int", command.id),
+        session_id=cast("int", session.id),
+        trace_id=session.trace_id,
+        event_id="sandbox:result:CMD-SMT-NG-ITEM",
+        payload_json=ng_command_payload,
+    )
+    db_session.add(inbox)
+    await db_session.flush()
+    return workline, session, inbox
+
+
 async def test_record_scan_ng_completion_creates_material_ng_item(db_session) -> None:
     service = NgReturnItemService()
     workline, session, inbox = await _create_scan_ng_fixture(db_session)
@@ -189,6 +298,52 @@ async def test_record_scan_ng_completion_creates_material_ng_item(db_session) ->
     assert item.status == NgReturnItemStatus.WAITING_REWORK
     assert item.physical_handoff_evidence_json["source"] == "WORKFLOW_SCAN_NG"
     assert item.physical_handoff_evidence_json["source_inbox_id"] == inbox.id
+
+
+async def test_record_smt_local_ng_completion_without_legacy_transition_creates_material_ng_item(db_session) -> None:
+    service = NgReturnItemService()
+    workline, session, inbox = await _create_smt_local_ng_fixture(db_session)
+
+    item = await service.record_completed_ng_flow(
+        db_session,
+        session=session,
+        workline=workline,
+        inbox=inbox,
+        transition=None,
+        occurred_at=timezone.now_for_db(),
+    )
+
+    assert item is not None
+    assert item.source_workline_id == workline.id
+    assert item.source_session_id == session.id
+    assert item.source_command_id == inbox.command_id
+    assert item.source_event_id == inbox.event_id
+    assert item.material_identity_key == f"workflow-ng:{SMT_SORTING_INBOUND_PLUGIN_KEY}:session:{session.id}"
+    assert item.material_identity_json["resolution_status"] == "MISSING"
+    assert item.material_identity_json["fallback_source"] == "SESSION"
+    assert item.created_from_runtime_hold_id is None
+    assert item.ng_reason_source == NgReasonSource.PLUGIN
+    assert item.ng_reason_code == NG_REASON_LOCAL_SORTING_NG
+    assert item.ng_reason_label == "本地分拣 NG"
+    assert item.status == NgReturnItemStatus.WAITING_REWORK
+    assert item.physical_handoff_evidence_json["source"] == "WORKFLOW_SCAN_NG"
+    assert item.physical_handoff_evidence_json["source_inbox_id"] == inbox.id
+
+
+async def test_record_ng_completion_without_transition_or_handoff_evidence_is_ignored(db_session) -> None:
+    service = NgReturnItemService()
+    workline, session, inbox = await _create_scan_ng_fixture(db_session)
+
+    item = await service.record_completed_ng_flow(
+        db_session,
+        session=session,
+        workline=workline,
+        inbox=inbox,
+        transition=None,
+        occurred_at=timezone.now_for_db(),
+    )
+
+    assert item is None
 
 
 async def test_record_scan_ng_completion_is_idempotent_for_same_session_and_command(db_session) -> None:

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import text
 
 from src.app.device.models import Device
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -585,6 +586,103 @@ async def test_configuration_status_reports_incomplete_command_target_communicat
     assert communication_checks[0].severity == "BLOCKER"
     assert communication_checks[0].context["device_code"] == "ROUGH-COMM-DEV-2"
     assert set(communication_checks[0].context["missing_fields"]) == {"host", "port", "status_path"}
+
+
+@pytest.mark.asyncio
+async def test_configuration_status_does_not_treat_callback_path_as_status_path(db_session) -> None:
+    """命令 callback_path 只用于下发命令，不能替代 START status endpoint。"""
+
+    workline = WorkLine(
+        line_code="WL-ROUGH-CALLBACK-NO-STATUS",
+        line_name="粗分机命令回调未配置 status",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    for index, role in enumerate((ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM), start=1):
+        db_session.add(
+            Device(
+                device_code=f"ROUGH-CALLBACK-DEV-{index}",
+                device_name=f"粗分机命令回调设备{index}",
+                work_line_id=workline.id,
+                device_role=role,
+                role_index=1,
+                capabilities_json={},
+                host="mock-ecs",
+                port=8010,
+                callback_path="/api/v1/device/command",
+            )
+        )
+    await db_session.commit()
+
+    service = WorkLineService()
+    status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    communication_checks = [
+        check for check in status.checks if check.code == "COMMAND_TARGET_COMMUNICATION" and check.status == "FAIL"
+    ]
+    assert status.can_activate is False
+    assert {check.context["device_code"] for check in communication_checks} == {
+        "ROUGH-CALLBACK-DEV-1",
+        "ROUGH-CALLBACK-DEV-2",
+        "ROUGH-CALLBACK-DEV-3",
+    }
+    assert all(check.context["missing_fields"] == ["status_path"] for check in communication_checks)
+    assert all(check.context["status_path"] is None for check in communication_checks)
+
+
+@pytest.mark.asyncio
+async def test_configuration_status_reports_malformed_command_target_capabilities(db_session) -> None:
+    """命令目标设备能力配置损坏时，配置预检应返回 blocker 而不是抛出 500。"""
+
+    workline = WorkLine(
+        line_code="WL-ROUGH-BAD-CAPABILITY",
+        line_name="粗分机损坏能力配置",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    bad_device_id = None
+    for index, role in enumerate((ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM), start=1):
+        device = Device(
+            device_code=f"ROUGH-BAD-CAP-DEV-{index}",
+            device_name=f"粗分机损坏能力设备{index}",
+            work_line_id=workline.id,
+            device_role=role,
+            role_index=1,
+            capabilities_json={"status_path": "/api/v1/device/status"},
+            host="mock-ecs",
+            port=8010,
+        )
+        db_session.add(device)
+        await db_session.flush()
+        if role == ROLE_CONVEYOR:
+            bad_device_id = device.id
+    await db_session.execute(
+        text("UPDATE wes_biz.devices SET capabilities_json = :capabilities_json WHERE id = :device_id"),
+        {"capabilities_json": "[]", "device_id": bad_device_id},
+    )
+    await db_session.commit()
+
+    service = WorkLineService()
+    status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    invalid_checks = [
+        check for check in status.checks if check.code == "COMMAND_TARGET_CAPABILITY_CONFIG" and check.status == "FAIL"
+    ]
+    assert status.can_activate is False
+    assert invalid_checks
+    assert invalid_checks[0].severity == "BLOCKER"
+    assert invalid_checks[0].context["device_code"] == "ROUGH-BAD-CAP-DEV-2"
+    assert invalid_checks[0].context["field"] == "capabilities_json"
 
 
 @pytest.mark.asyncio

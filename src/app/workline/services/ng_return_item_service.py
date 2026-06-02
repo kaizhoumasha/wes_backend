@@ -169,12 +169,25 @@ class NgReturnItemService:
             raise
 
     def _is_completed_ng_flow(self, *, session_context: dict[str, Any], transition: str | None) -> bool:
-        if transition != "pick_ng":
+        if not self._has_ng_reason(session_context):
             return False
+
+        if transition == "pick_ng":
+            return True
+
+        return self._has_local_ng_handoff_evidence(session_context)
+
+    def _has_ng_reason(self, session_context: dict[str, Any]) -> bool:
         return bool(
             _as_non_empty_str(session_context.get("ng_reason"))
             or _as_non_empty_str(session_context.get("pick_place_reason"))
             or _as_non_empty_str(session_context.get("scan_ng_reason_code"))
+        )
+
+    def _has_local_ng_handoff_evidence(self, session_context: dict[str, Any]) -> bool:
+        source_payload = as_dict(session_context.get("source_payload"))
+        return bool(
+            as_dict(source_payload.get("current_material")) and as_dict(source_payload.get("ng_command_payload"))
         )
 
     def _source_payload(self, session_context: dict[str, Any]) -> dict[str, Any]:

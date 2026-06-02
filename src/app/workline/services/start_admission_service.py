@@ -11,6 +11,7 @@ import httpx
 
 from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
+from src.app.sys.repositories import system_outbox_repository
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
@@ -74,8 +75,10 @@ class WorkLineStartAdmissionService:
         self,
         *,
         status_fetcher: StatusFetcher | None = None,
+        outbox_repo: Any | None = None,
     ) -> None:
         self.status_fetcher = status_fetcher or self._fetch_status
+        self.outbox_repo = outbox_repo or system_outbox_repository
 
     async def admit_start_for_device(
         self,
@@ -376,7 +379,7 @@ class WorkLineStartAdmissionService:
                         self._target_failure_diagnostic(target),
                     )
                 for record in records:
-                    device_code = record.get("device_code")
+                    device_code = self._resolve_status_record_device_code(record)
                     if not isinstance(device_code, str) or not device_code:
                         return self._rejected(
                             None,
@@ -521,6 +524,7 @@ class WorkLineStartAdmissionService:
         workline.start_admission_checked_at = now
         workline.last_start_request_id = request_id
         workline.last_start_trace_id = trace_id
+        await self.outbox_repo.release_parked_after_workline_start(db, workline.id)
         await db.commit()
 
     async def _record_failure(
@@ -564,6 +568,16 @@ class WorkLineStartAdmissionService:
         if not all(isinstance(item, dict) for item in records):
             return None
         return list(records)
+
+    @staticmethod
+    def _resolve_status_record_device_code(record: dict[str, Any]) -> str | None:
+        for source in (record, record.get("device"), record.get("state")):
+            if not isinstance(source, dict):
+                continue
+            device_code = source.get("device_code")
+            if isinstance(device_code, str) and device_code:
+                return device_code
+        return None
 
     @staticmethod
     def _first_check_device_code(checks: list[Any]) -> str | None:

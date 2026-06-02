@@ -338,6 +338,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks.extend(self._role_requirement_checks(manifest, topology))
         checks.extend(self._event_source_checks(manifest, topology))
         checks.extend(self._command_target_checks(manifest, topology))
+        checks.extend(self._command_target_capability_config_checks(manifest, devices))
         checks.extend(self._command_target_communication_checks(workline, manifest, devices))
         return checks
 
@@ -443,6 +444,40 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return checks
 
     @staticmethod
+    def _command_target_capability_config_checks(
+        manifest: Any,
+        devices: list[Any],
+    ) -> list[WorkLineConfigurationCheck]:
+        checks: list[WorkLineConfigurationCheck] = []
+        checked_device_ids: set[int] = set()
+        for roles in manifest.command_target_roles.values():
+            role_set = set(roles)
+            for device in devices:
+                device_id = getattr(device, "id", None)
+                if not isinstance(device_id, int) or device_id in checked_device_ids:
+                    continue
+                if getattr(device, "device_role", None) not in role_set:
+                    continue
+                try:
+                    _ = parse_device_capabilities(getattr(device, "capabilities_json", None))
+                except (TypeError, ValueError) as exc:
+                    checks.append(
+                        WorkLineService._check(
+                            "COMMAND_TARGET_CAPABILITY_CONFIG",
+                            _FAIL,
+                            _BLOCKER,
+                            {
+                                "device_id": device_id,
+                                "device_code": getattr(device, "device_code", None),
+                                "field": "capabilities_json",
+                                "message": str(exc),
+                            },
+                        )
+                    )
+                checked_device_ids.add(device_id)
+        return checks
+
+    @staticmethod
     def _command_target_communication_checks(
         workline: WorkLine,
         manifest: Any,
@@ -503,7 +538,10 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     @staticmethod
     def _device_supports_command(device: Any, command_type: str) -> bool:
-        capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
+        try:
+            capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
+        except (TypeError, ValueError):
+            return False
         return capabilities.supports_command(command_type)
 
     @staticmethod
@@ -520,9 +558,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 value = capabilities.get(key)
                 if isinstance(value, str) and value.strip():
                     return WorkLineService._normalize_status_path(value)
-        callback_path = getattr(device, "callback_path", None)
-        if isinstance(callback_path, str) and callback_path.strip():
-            return WorkLineService._normalize_status_path(callback_path)
         return None
 
     @staticmethod
