@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from src.app.device.models.device import DeviceStatus
-from src.app.workline.services.device_command_gateway import DeviceCommandGateway
+from src.app.workline.services.device_command_gateway import DeviceCommandGateway, _DeviceCommandGovernanceError
 
 command_repository_module = importlib.import_module("src.app.device.repositories.command_repository")
 gateway_module = importlib.import_module("src.app.workline.services.device_command_gateway")
@@ -262,16 +262,18 @@ async def test_dispatch_realtime_status_busy_raises_governance_error(
         },
     )()
 
-    with pytest.raises(gateway_module._DeviceCommandGovernanceError) as exc_info:
+    with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
         await gateway.dispatch(db, outbox)
 
     assert exc_info.value.code == "DEVICE_BUSY"
+    assert exc_info.value.device_id == 100
+    assert exc_info.value.device_code == "RS-CONVEYOR-01"
     assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
     assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
 
 
 @pytest.mark.asyncio
-async def test_dispatch_realtime_status_uses_standard_path_not_capability_override(monkeypatch) -> None:
+async def test_dispatch_realtime_status_uses_capability_override(monkeypatch) -> None:
     CapturingAsyncClient.requests.clear()
     CapturingAsyncClient.status_response = FakeStatusResponse(
         {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
@@ -305,9 +307,7 @@ async def test_dispatch_realtime_status_uses_standard_path_not_capability_overri
     success = await gateway.dispatch(db, outbox)
 
     assert success is True
-    assert CapturingAsyncClient.requests[0]["url"] == (
-        "http://mock_ecs:8010/api/v1/device/status?device_code=RS-CONVEYOR-01"
-    )
+    assert CapturingAsyncClient.requests[0]["url"] == ("http://mock_ecs:8010/vendor/status?device_code=RS-CONVEYOR-01")
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -127,6 +128,27 @@ class RecordingBinCellOccupancyRepo:
                 used_depth_mm=40.0,
                 capacity_depth_mm=60.0,
                 remaining_depth_mm=20.0,
+                occupancy_status="OCCUPIED",
+            )
+        ]
+
+
+class RecordingDecimalBinCellOccupancyRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
+        return [
+            SimpleNamespace(
+                id=7701,
+                bin_code="BIN-ACTIVE-C",
+                bin_cell_index="7",
+                material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+                material_code="620100L00-011-G",
+                lot_code="8904936031",
+                date_code="122625",
+                reel_count=2,
+                used_depth_mm=Decimal("40.10"),
+                capacity_depth_mm=Decimal("60.30"),
+                remaining_depth_mm=Decimal("20.20"),
                 occupancy_status="OCCUPIED",
             )
         ]
@@ -373,6 +395,33 @@ async def test_get_active_bin_rack_restores_snapshot_from_projection_and_last_se
     ]
     cell_d = next(cell for cell in cells if cell["bin_id"] == "BIN-ACTIVE-D")
     assert cell_d["status"] == "EMPTY"
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_preserves_decimal_depth_values() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingDecimalBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is not None
+    cell_c = next(cell for cell in snapshot["cells"] if cell["bin_id"] == "BIN-ACTIVE-C")
+    assert cell_c["used_depth_mm"] == Decimal("40.10")
+    assert cell_c["capacity_depth_mm"] == Decimal("60.30")
+    assert cell_c["remaining_depth_mm"] == Decimal("20.20")
+    assert all(
+        not isinstance(cell_c[key], float) for key in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm")
+    )
 
 
 @pytest.mark.asyncio

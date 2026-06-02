@@ -547,7 +547,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _resolve_device_scheme(device: Any) -> str:
         protocol = getattr(device, "protocol", "HTTP")
         protocol_value = getattr(protocol, "value", protocol)
-        return str(protocol_value or "HTTP").lower()
+        scheme = str(protocol_value or "HTTP").lower()
+        return scheme if scheme in {"http", "https"} else "http"
 
     @staticmethod
     def _resolve_device_status_path(device: Any) -> str | None:

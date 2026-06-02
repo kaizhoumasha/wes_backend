@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
@@ -125,14 +126,21 @@ def _normalized_text_list(values: Any) -> list[str]:
     return result
 
 
-def _positive_float(value: Any) -> float | None:
+def _non_negative_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        parsed = float(str(value).strip())
-    except (TypeError, ValueError):
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
         return None
-    return parsed if parsed >= 0 else None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _json_depth_text(value: Any) -> str | None:
+    parsed = _non_negative_decimal(value)
+    return str(parsed) if parsed is not None else None
 
 
 def _occupancy_status_value(value: Any) -> str:
@@ -570,7 +578,7 @@ class ResourceProjectionService:
         qty_snapshot: float | None = None,
         reel_diameter: str | None = None,
         reel_thickness: str | None = None,
-        cell_capacity_depth_mm: float | None = None,
+        cell_capacity_depth_mm: Any | None = None,
         trace_id: str | None = None,
         session_id: str | None = None,
         workline_id: int | None = None,
@@ -615,7 +623,7 @@ class ResourceProjectionService:
                     "wms_inventory_id": wms_inventory_id,
                     "reel_diameter": reel_diameter,
                     "reel_thickness": reel_thickness,
-                    "cell_capacity_depth_mm": cell_capacity_depth_mm,
+                    "cell_capacity_depth_mm": _json_depth_text(cell_capacity_depth_mm),
                 },
                 "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
@@ -728,6 +736,158 @@ class ResourceProjectionService:
             },
         )
         _ = await self.snapshot_service.record_material_mounted_snapshot(db, **snapshot_kwargs)
+        return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
+    async def record_material_unmounted_from_bin_cell(
+        self,
+        db: AsyncSession,
+        *,
+        bin_code: str,
+        bin_cell_code: str | None = None,
+        bin_cell_index: str,
+        material_identity_key: str,
+        pkg_code: str | None = None,
+        wms_inventory_id: str | None = None,
+        source_system: ResourceSourceSystem,
+        source_event_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        source_version: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        workline_id: int | None = None,
+        workline_session_id: int | None = None,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
+        reel_thickness: str | None = None,
+    ) -> ResourceProjectionResult:
+        """记录物料从源料格出账事实，并关闭 top active mount。"""
+
+        existing_event = await self._get_duplicate_event(db, idempotency_key=idempotency_key)
+        if existing_event is not None:
+            return ResourceProjectionResult(status=ResourceProjectionStatus.DUPLICATE, event=existing_event)
+
+        occurred_at_for_db = _db_time(occurred_at)
+        event = await self.state_event_repo.create(
+            db,
+            {
+                "event_code": self._event_code(
+                    event_type=ResourceStateEventType.MATERIAL_UNMOUNTED,
+                    source_system=source_system,
+                    source_event_id=source_event_id,
+                    resource_code=pkg_code or material_identity_key,
+                ),
+                "idempotency_key": idempotency_key,
+                "event_type": ResourceStateEventType.MATERIAL_UNMOUNTED.value,
+                "resource_type": ResourceType.MATERIAL.value,
+                "resource_code": pkg_code or material_identity_key,
+                "source_system": source_system,
+                "source_event_id": source_event_id,
+                "source_version": source_version,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "payload_json": {
+                    "bin_code": bin_code,
+                    "bin_cell_code": bin_cell_code,
+                    "bin_cell_index": bin_cell_index,
+                    "material_identity_key": material_identity_key,
+                    "pkg_code": pkg_code,
+                    "wms_inventory_id": wms_inventory_id,
+                    "reel_thickness": reel_thickness,
+                    "source_session_id": workline_session_id,
+                    "source_command_id": source_event_id,
+                },
+                "occurred_at": occurred_at_for_db,
+                "received_at": timezone.now_for_db(),
+            },
+        )
+
+        active_mounts = await self.bin_material_mount_repo.list_active_by_bin_cell(
+            db,
+            bin_code=bin_code,
+            bin_cell_index=bin_cell_index,
+        )
+        active_mount = active_mounts[0] if active_mounts else None
+        active_cell = await self.bin_cell_occupancy_repo.get_active_by_bin_cell(
+            db,
+            bin_code=bin_code,
+            bin_cell_index=bin_cell_index,
+        )
+        conflict = self._material_unmount_conflict(
+            active_mount=active_mount,
+            active_cell=active_cell,
+            material_identity_key=material_identity_key,
+            pkg_code=pkg_code,
+            wms_inventory_id=wms_inventory_id,
+            source_version=source_version,
+            reel_thickness=reel_thickness,
+        )
+        if conflict is not None:
+            runtime_hold = await self._create_material_unmount_reconciliation_hold(
+                db,
+                reason_code=conflict["reason_code"],
+                message=conflict["message"],
+                bin_code=bin_code,
+                bin_cell_index=bin_cell_index,
+                material_identity_key=material_identity_key,
+                pkg_code=pkg_code,
+                wms_inventory_id=wms_inventory_id,
+                active_mount=active_mount,
+                active_cell=active_cell,
+                source_event_id=source_event_id,
+                source_version=source_version,
+                trace_id=trace_id,
+                session_id=workline_session_id,
+                workline_id=workline_id,
+                plugin_key=plugin_key,
+                contract_version=contract_version,
+                evidence=conflict.get("evidence"),
+            )
+            return ResourceProjectionResult(
+                status=ResourceProjectionStatus.RECONCILING,
+                event=event,
+                runtime_hold=runtime_hold,
+                reason_code=conflict["reason_code"],
+                message=conflict["message"],
+            )
+
+        active_mount = cast("Any", active_mount)
+        active_cell = cast("Any", active_cell)
+        active_mount.ended_at = occurred_at_for_db
+        active_mount.mount_status = BinMaterialMountStatus.REMOVED
+        active_mount.source_system = source_system
+        active_mount.source_event_id = source_event_id
+        active_mount.source_version = source_version
+        active_mount.trace_id = trace_id
+        active_mount.session_id = session_id
+        _ = await self.bin_material_mount_repo.save(db, active_mount)
+
+        outgoing_depth = _non_negative_decimal(reel_thickness) or _non_negative_decimal(
+            getattr(active_mount, "reel_thickness", None)
+        )
+        current_used_depth = _non_negative_decimal(getattr(active_cell, "used_depth_mm", None)) or Decimal("0")
+        active_cell.reel_count = max(int(getattr(active_cell, "reel_count", 0) or 0) - 1, 0)
+        if outgoing_depth is not None:
+            active_cell.used_depth_mm = max(current_used_depth - outgoing_depth, Decimal("0"))
+        else:
+            active_cell.used_depth_mm = current_used_depth
+        active_cell.remaining_depth_mm = self._remaining_depth(
+            capacity_depth=_non_negative_decimal(getattr(active_cell, "capacity_depth_mm", None)),
+            used_depth=active_cell.used_depth_mm,
+        )
+        active_cell.occupancy_status = (
+            BinCellOccupancyStatus.REMOVED.value
+            if active_cell.reel_count == 0
+            else self._occupancy_status(active_cell.remaining_depth_mm)
+        )
+        active_cell.ended_at = occurred_at_for_db if active_cell.reel_count == 0 else None
+        active_cell.source_system = source_system
+        active_cell.source_event_id = source_event_id
+        active_cell.source_version = source_version
+        active_cell.trace_id = trace_id
+        active_cell.session_id = session_id
+        _ = await self.bin_cell_occupancy_repo.save(db, active_cell)
+
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_bin_arrived_at_position(
@@ -1182,7 +1342,117 @@ class ResourceProjectionService:
                 contract_version=getattr(workline, "contract_version", None),
             )
 
+        if fact_type == ResourceStateEventType.MATERIAL_UNMOUNTED.value:
+            return await self.record_material_unmounted_from_bin_cell(
+                db,
+                bin_code=str(payload_json["bin_code"]),
+                bin_cell_code=payload_json.get("bin_cell_code"),
+                bin_cell_index=str(payload_json["bin_cell_index"]),
+                material_identity_key=str(payload_json["material_identity_key"]),
+                pkg_code=payload_json.get("pkg_code"),
+                wms_inventory_id=payload_json.get("wms_inventory_id"),
+                source_system=source_system,
+                source_event_id=source_event_id,
+                idempotency_key=idempotency_key
+                or f"MATERIAL_UNMOUNTED:{source_event_id}:{payload_json.get('pkg_code')}:{payload_json['bin_code']}:{payload_json['bin_cell_index']}",
+                occurred_at=occurred_at,
+                source_version=payload_json.get("source_version"),
+                reel_thickness=payload_json.get("reel_thickness"),
+                trace_id=trace_id,
+                session_id=session_id,
+                workline_id=workline_id,
+                workline_session_id=getattr(session, "id", None),
+                plugin_key=getattr(workline, "plugin_key", None),
+                contract_version=getattr(workline, "contract_version", None),
+            )
+
         raise ValueError(f"unsupported resource fact type: {fact_type}")
+
+    def _material_unmount_conflict(
+        self,
+        *,
+        active_mount: Any | None,
+        active_cell: Any | None,
+        material_identity_key: str,
+        pkg_code: str | None,
+        wms_inventory_id: str | None,
+        source_version: str | None,
+        reel_thickness: str | None,
+    ) -> dict[str, Any] | None:
+        conflict: dict[str, Any] | None = None
+        if active_mount is None:
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_ACTIVE_MOUNT_MISSING",
+                "message": "源料格没有可出账的 active top mount",
+            }
+        elif active_cell is None:
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
+                "message": "源料格缺少 active 聚合占用",
+            }
+        elif not material_identity_keys_match(
+            getattr(active_mount, "material_identity_key", None), material_identity_key
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
+                "message": "源料格 top mount 物料身份与出账事实不一致",
+            }
+        elif pkg_code is not None and (
+            (active_pkg_code := _optional_text(getattr(active_mount, "pkg_code", None))) is None
+            or active_pkg_code != pkg_code
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
+                "message": "源料格 top mount PKG 与出账事实不一致",
+            }
+        elif wms_inventory_id is not None and (
+            (active_wms_inventory_id := _optional_text(getattr(active_mount, "wms_inventory_id", None))) is None
+            or active_wms_inventory_id != wms_inventory_id
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_IDENTITY_MISMATCH",
+                "message": "源料格 top mount WMS 库存与出账事实不一致",
+            }
+        elif _source_version_is_older(source_version, getattr(active_mount, "source_version", None)):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_SOURCE_VERSION_STALE",
+                "message": "物料出账来源版本早于 active top mount 版本",
+                "evidence": {"active_source_version": getattr(active_mount, "source_version", None)},
+            }
+        elif (
+            (mount_occupancy_id := getattr(active_mount, "bin_cell_occupancy_id", None)) is not None
+            and (active_occupancy_id := getattr(active_cell, "id", None)) is not None
+            and mount_occupancy_id != active_occupancy_id
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
+                "message": "源料格 top mount 与 active 聚合占用不一致",
+                "evidence": {
+                    "active_occupancy_id": active_occupancy_id,
+                    "mount_occupancy_id": mount_occupancy_id,
+                },
+            }
+        elif int(getattr(active_cell, "reel_count", 0) or 0) <= 0:
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
+                "message": "源料格 active 聚合占用数量异常",
+                "evidence": {"active_reel_count": getattr(active_cell, "reel_count", None)},
+            }
+        elif (
+            outgoing_depth := _non_negative_decimal(reel_thickness)
+            or _non_negative_decimal(getattr(active_mount, "reel_thickness", None))
+        ) is not None and outgoing_depth > (
+            _non_negative_decimal(getattr(active_cell, "used_depth_mm", None)) or Decimal("0")
+        ):
+            conflict = {
+                "reason_code": "MATERIAL_UNMOUNTED_OCCUPANCY_INCONSISTENT",
+                "message": "源料格 active 已用深度小于出账料盘厚度",
+                "evidence": {
+                    "active_used_depth_mm": _json_depth_text(getattr(active_cell, "used_depth_mm", None)),
+                    "outgoing_reel_thickness": _json_depth_text(outgoing_depth),
+                },
+            }
+        return conflict
 
     async def _first_material_mount_conflict(
         self,
@@ -1195,7 +1465,7 @@ class ResourceProjectionService:
         bin_code: str,
         bin_cell_index: str,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
     ) -> dict[str, Any] | None:
         if active_cell is not None:
             active_identity_key = getattr(active_cell, "material_identity_key", None)
@@ -1267,17 +1537,17 @@ class ResourceProjectionService:
         active_cell: Any,
         *,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
     ) -> dict[str, Any] | None:
-        incoming_depth = _positive_float(reel_thickness)
+        incoming_depth = _non_negative_decimal(reel_thickness)
         if incoming_depth is None or incoming_depth == 0:
             return None
 
-        active_capacity = _positive_float(getattr(active_cell, "capacity_depth_mm", None))
-        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+        active_capacity = _non_negative_decimal(getattr(active_cell, "capacity_depth_mm", None))
+        incoming_capacity = _non_negative_decimal(cell_capacity_depth_mm)
         capacity_depth = active_capacity if active_capacity is not None else incoming_capacity
-        used_depth = _positive_float(getattr(active_cell, "used_depth_mm", None))
-        remaining_depth = _positive_float(getattr(active_cell, "remaining_depth_mm", None))
+        used_depth = _non_negative_decimal(getattr(active_cell, "used_depth_mm", None))
+        remaining_depth = _non_negative_decimal(getattr(active_cell, "remaining_depth_mm", None))
 
         if remaining_depth is None:
             if capacity_depth is None or used_depth is None:
@@ -1288,10 +1558,10 @@ class ResourceProjectionService:
             return None
 
         return {
-            "incoming_reel_thickness": incoming_depth,
-            "remaining_depth_mm": remaining_depth,
-            "capacity_depth_mm": capacity_depth,
-            "used_depth_mm": used_depth,
+            "incoming_reel_thickness": _json_depth_text(incoming_depth),
+            "remaining_depth_mm": _json_depth_text(remaining_depth),
+            "capacity_depth_mm": _json_depth_text(capacity_depth),
+            "used_depth_mm": _json_depth_text(used_depth),
             "requires_reallocation": True,
         }
 
@@ -1321,7 +1591,7 @@ class ResourceProjectionService:
         lot_code: str | None,
         date_code: str | None,
         reel_thickness: str | None,
-        cell_capacity_depth_mm: float | None,
+        cell_capacity_depth_mm: Any | None,
         source_system: ResourceSourceSystem,
         source_event_id: str,
         source_version: str | None,
@@ -1329,8 +1599,8 @@ class ResourceProjectionService:
         session_id: str | None,
         occurred_at_for_db: datetime,
     ) -> Any:
-        incoming_depth = _positive_float(reel_thickness) or 0.0
-        incoming_capacity = _positive_float(cell_capacity_depth_mm)
+        incoming_depth = _non_negative_decimal(reel_thickness) or Decimal("0")
+        incoming_capacity = _non_negative_decimal(cell_capacity_depth_mm)
 
         if active_cell is None:
             used_depth = incoming_depth
@@ -1364,12 +1634,14 @@ class ResourceProjectionService:
 
         active_cell.reel_count = int(getattr(active_cell, "reel_count", 0) or 0) + 1
         active_cell.material_identity_key = material_identity_key
-        active_cell.used_depth_mm = float(getattr(active_cell, "used_depth_mm", 0.0) or 0.0) + incoming_depth
+        active_cell.used_depth_mm = (
+            _non_negative_decimal(getattr(active_cell, "used_depth_mm", None)) or Decimal("0")
+        ) + incoming_depth
         if incoming_capacity is not None:
             active_cell.capacity_depth_mm = incoming_capacity
         active_cell.remaining_depth_mm = self._remaining_depth(
-            capacity_depth=_positive_float(getattr(active_cell, "capacity_depth_mm", None)),
-            used_depth=float(active_cell.used_depth_mm),
+            capacity_depth=_non_negative_decimal(getattr(active_cell, "capacity_depth_mm", None)),
+            used_depth=active_cell.used_depth_mm,
         )
         active_cell.occupancy_status = self._occupancy_status(active_cell.remaining_depth_mm)
         active_cell.source_system = source_system
@@ -1399,12 +1671,12 @@ class ResourceProjectionService:
                 active_identity.append(occupancy)
         return active_identity
 
-    def _remaining_depth(self, *, capacity_depth: float | None, used_depth: float) -> float | None:
+    def _remaining_depth(self, *, capacity_depth: Decimal | None, used_depth: Decimal) -> Decimal | None:
         if capacity_depth is None:
             return None
-        return max(capacity_depth - used_depth, 0.0)
+        return max(capacity_depth - used_depth, Decimal("0"))
 
-    def _occupancy_status(self, remaining_depth: float | None) -> str:
+    def _occupancy_status(self, remaining_depth: Decimal | None) -> str:
         if remaining_depth is not None and remaining_depth <= 0:
             return BinCellOccupancyStatus.FULL.value
         return BinCellOccupancyStatus.OCCUPIED.value
@@ -1421,7 +1693,7 @@ class ResourceProjectionService:
         begin_nested = getattr(db, "begin_nested", None)
         if callable(begin_nested):
             # 唯一索引竞争必须回滚到 savepoint，避免污染外层事实写入事务。
-            async with begin_nested():
+            async with cast("Any", begin_nested)():
                 return await self.bin_placement_repo.create(db, placement_data)
         return await self.bin_placement_repo.create(db, placement_data)
 
@@ -1593,6 +1865,77 @@ class ResourceProjectionService:
             source_reason=conflict["reason_code"],
             source_event_id=source_event_id,
             evidence=evidence,
+        )
+
+    async def _create_material_unmount_reconciliation_hold(
+        self,
+        db: AsyncSession,
+        *,
+        reason_code: str,
+        message: str,
+        bin_code: str,
+        bin_cell_index: str,
+        material_identity_key: str,
+        pkg_code: str | None,
+        wms_inventory_id: str | None,
+        active_mount: Any | None,
+        active_cell: Any | None,
+        source_event_id: str,
+        source_version: str | None,
+        trace_id: str | None,
+        session_id: int | None,
+        workline_id: int | None,
+        plugin_key: str | None,
+        contract_version: str | None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Any | None:
+        if workline_id is None:
+            return None
+        hold_evidence = {
+            "resource_type": ResourceType.MATERIAL.value,
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "source_session_id": session_id,
+            "source_event_id": source_event_id,
+            "source_command_id": source_event_id,
+            "source_version": source_version,
+            "expected_material_identity_key": material_identity_key,
+            "expected_pkg_code": pkg_code,
+            "expected_wms_inventory_id": wms_inventory_id,
+            "message": message,
+        }
+        if active_mount is not None:
+            hold_evidence.update(
+                {
+                    "active_mount_id": getattr(active_mount, "id", None),
+                    "active_material_identity_key": getattr(active_mount, "material_identity_key", None),
+                    "active_pkg_code": getattr(active_mount, "pkg_code", None),
+                    "active_wms_inventory_id": getattr(active_mount, "wms_inventory_id", None),
+                    "active_cell_stack_position": getattr(active_mount, "cell_stack_position", None),
+                    "active_source_event_id": getattr(active_mount, "source_event_id", None),
+                    "active_source_version": getattr(active_mount, "source_version", None),
+                }
+            )
+        if active_cell is not None:
+            hold_evidence.update(
+                {
+                    "active_occupancy_id": getattr(active_cell, "id", None),
+                    "active_reel_count": getattr(active_cell, "reel_count", None),
+                    "active_used_depth_mm": _json_depth_text(getattr(active_cell, "used_depth_mm", None)),
+                    "active_remaining_depth_mm": _json_depth_text(getattr(active_cell, "remaining_depth_mm", None)),
+                }
+            )
+        hold_evidence.update(evidence or {})
+        return await self.runtime_hold_creator.create_for_resource_reconciliation(
+            db,
+            workline_id=workline_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            source_reason=reason_code,
+            source_event_id=source_event_id,
+            evidence=hold_evidence,
         )
 
     async def _create_rack_bin_mount_conflict_hold(

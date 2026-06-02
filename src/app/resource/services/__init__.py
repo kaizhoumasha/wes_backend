@@ -40,6 +40,11 @@ from .resource_service import (
     rack_type_service,
     resource_state_event_service,
 )
+from .smt_bin_cell_allocation_policy import (
+    SmtBinCellAllocationKind,
+    SmtBinCellAllocationPolicy,
+    SmtBinCellAllocationResult,
+)
 from .smt_rack_bin_scheduling_service import (
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingDecisionKind,
@@ -70,6 +75,9 @@ __all__ = [
     "ResourceStateEventService",
     "SmtActiveRackSnapshotProvider",
     "SmtActiveRackSnapshotService",
+    "SmtBinCellAllocationKind",
+    "SmtBinCellAllocationPolicy",
+    "SmtBinCellAllocationResult",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",

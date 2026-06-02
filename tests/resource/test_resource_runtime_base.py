@@ -2,6 +2,7 @@
 
 from typing import Any, cast
 
+from sqlalchemy import Numeric
 from sqlmodel import SQLModel
 
 
@@ -91,6 +92,18 @@ def test_second_stage_resource_fact_and_projection_tables_are_registered() -> No
     assert BinCellOccupancy.__table__.c.reel_count.nullable is False
     assert BinMaterialMount.__table__.c.cell_stack_position.nullable is False
     assert BinMaterialMount.__table__.c.material_identity_key.nullable is False
+
+
+def test_bin_cell_occupancy_depth_columns_use_numeric_decimal_contract() -> None:
+    """P0 容量计算的核心深度字段必须使用数据库 Numeric，避免 float 近似。"""
+
+    from src.app.resource.models import BinCellOccupancy
+
+    for column_name in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm"):
+        column_type = BinCellOccupancy.__table__.c[column_name].type
+
+        assert isinstance(column_type, Numeric), column_name
+        assert column_type.asdecimal is True
 
 
 def test_phase_b_removed_resource_tables_are_not_registered() -> None:

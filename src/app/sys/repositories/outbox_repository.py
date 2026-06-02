@@ -420,6 +420,17 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             ),
         )
 
+    async def release_parked_after_workline_start(self, db: AsyncSession, workline_id: int) -> int:
+        columns = cast("Any", SystemOutbox).__table__.c
+        return await self._release_blocked(
+            db,
+            columns.workline_id == workline_id,
+            or_(
+                columns.blocked_workline_id == workline_id,
+                columns.blocked_by_reconciliation_session_id.isnot(None),
+            ),
+        )
+
     async def release_blocked_by_device(
         self,
         db: AsyncSession,

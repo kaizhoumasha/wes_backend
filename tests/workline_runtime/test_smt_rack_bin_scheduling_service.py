@@ -1,10 +1,12 @@
 """SMT 货架/料箱调度领域服务测试。"""
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from src.app.resource.services import (
+    SmtBinCellAllocationResult,
     SmtRackBinSchedulingDecision,
     SmtRackBinSchedulingService,
     smt_rack_bin_scheduling_service,
@@ -21,6 +23,28 @@ SIX_IN_ONE = {
     "LotCode": "8904936031",
     "PkgID": "SVYU00125TP4LCR02_2",
 }
+
+
+class RecordingAllocationPolicy:
+    def __init__(self, result: SmtBinCellAllocationResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    def allocate(
+        self,
+        *,
+        active_snapshot: dict[str, Any],
+        material_identity_key: str,
+        reel_thickness_mm: Any,
+    ) -> SmtBinCellAllocationResult:
+        self.calls.append(
+            {
+                "active_snapshot": active_snapshot,
+                "material_identity_key": material_identity_key,
+                "reel_thickness_mm": reel_thickness_mm,
+            }
+        )
+        return self.result
 
 
 def _cell(
@@ -197,6 +221,41 @@ def test_plan_allocation_same_dc_lc_skips_occupied_cell_with_different_vendor_id
     assert decision.kind == "ALLOCATED"
     assert decision.bin_location is not None
     assert decision.bin_location["bin_cell_index"] == "3"
+
+
+def test_plan_allocation_delegates_material_and_capacity_selection_to_shared_policy() -> None:
+    """粗分机只负责货架包装，兼容格/空格/容量选择由共享策略返回。"""
+
+    policy = RecordingAllocationPolicy(
+        SmtBinCellAllocationResult(
+            kind="ALLOCATED",
+            target_bin_code="BIN-001",
+            target_cell_index="3",
+            capacity_evidence={"selection_reason": "spy-policy"},
+        )
+    )
+    service = SmtRackBinSchedulingService(allocation_policy=policy)
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(
+            cells=_with_required_rack_bins(
+                [
+                    _cell("2", status="OCCUPIED", date_code="122625", lot_code="8904936031"),
+                    _cell("3", status="EMPTY"),
+                ]
+            )
+        )
+        | {"reel_thickness": "2.5"},
+    )
+
+    assert decision.kind == "ALLOCATED"
+    assert decision.bin_location is not None
+    assert decision.bin_location["bin_cell_index"] == "3"
+    assert len(policy.calls) == 1
+    assert policy.calls[0]["material_identity_key"] == "MAT:620100L00-011-G:CC0402JRNPO9BN220:122625:8904936031"
+    assert policy.calls[0]["reel_thickness_mm"] == "2.5"
+    assert policy.calls[0]["active_snapshot"]["rack_id"] == "RACK-001"
 
 
 def test_plan_allocation_same_identity_ignores_stale_vendor_snapshot_field() -> None:
@@ -833,6 +892,33 @@ def test_plan_allocation_missing_rack_operation_target_uses_default_endpoint_cod
     assert decision.rack_operation_request is not None
     assert decision.rack_operation_request.target_code == "WMS_RCS_RACK_OPERATION"
     assert decision.rack_operation_request.payload["target_code"] == "WMS_RCS_RACK_OPERATION"
+
+
+def test_plan_allocation_policy_no_capacity_keeps_rough_sorter_rack_operation_contract() -> None:
+    """共享策略判定无容量后，粗分机仍负责换架 operation 和既有原因码。"""
+
+    policy = RecordingAllocationPolicy(
+        SmtBinCellAllocationResult(
+            kind="REJECTED",
+            reason_code="NO_CAPACITY",
+            message="当前快照无同物料且容量足够的料格，也无容量足够的空格",
+            capacity_evidence={"compatible_cells_checked": "1", "empty_cells_checked": "0"},
+        )
+    )
+    service = SmtRackBinSchedulingService(allocation_policy=policy)
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=_context(cells=_full_rack_cells("NHW-1CLJ-0096"), rack_id="NHW-1CLJ-0096") | {"reel_thickness": "2.5"},
+    )
+
+    assert len(policy.calls) == 1
+    assert decision.kind == "RACK_OPERATION_REQUIRED"
+    assert decision.reason_code == "NO_COMPATIBLE_OR_EMPTY_CELL"
+    assert decision.message == "当前料架无同 DC/LC 兼容格位，也无可用空格"
+    assert decision.rack_operation_request is not None
+    assert decision.rack_operation_request.payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
+    assert decision.rack_operation_request.payload["current_rack_snapshot"]["rack_id"] == "NHW-1CLJ-0096"
 
 
 def test_plan_allocation_pending_rack_operation_blocks_duplicate_request() -> None:

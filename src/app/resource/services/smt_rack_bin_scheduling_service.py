@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, cast
 
 from src.app.resource.services.material_identity import material_identity_keys_match
+from src.app.resource.services.smt_bin_cell_allocation_policy import (
+    SmtBinCellAllocationPolicy,
+    SmtBinCellAllocationResult,
+)
 
 SmtRackBinSchedulingDecisionKind = Literal[
     "ALLOCATED",
@@ -138,6 +142,10 @@ class SmtRackBinSchedulingService:
     DEFAULT_MOVE_OUT_TARGET_POSITION_ROLE: ClassVar[str] = "SMT_EMPTY_RACK_AREA"
     REQUIRED_MATERIAL_FIELDS: ClassVar[tuple[str, ...]] = ("DateCode", "LotCode", "PkgID")
     REQUIRED_LOCATION_FIELDS: ClassVar[tuple[str, ...]] = ("bin_id", "bin_type", "bin_cell_location")
+    LEGACY_UNKNOWN_DEPTH_CAPACITY_MM: ClassVar[str] = "999999"
+
+    def __init__(self, *, allocation_policy: Any | None = None) -> None:
+        self.allocation_policy = allocation_policy or SmtBinCellAllocationPolicy()
 
     def allocate(self, barcode: str) -> dict[str, Any]:
         """按物料业务键分配目标料箱位置。
@@ -212,19 +220,19 @@ class SmtRackBinSchedulingService:
         reel_size_kind = cast("SmtReelSizeKind", reel_size_kind)
 
         cells = self._rack_cells(active_rack_map)
-        reel_thickness = self._reel_thickness(scheduling_context)
-        compatible_cell = self._find_compatible_occupied_cell(
-            cells,
-            material,
-            reel_size_kind,
-            reel_thickness=reel_thickness,
+        allocation_result = self.allocation_policy.allocate(
+            active_snapshot=self._allocation_policy_snapshot(
+                active_rack=active_rack_map,
+                cells=cells,
+                material=material,
+                reel_size_kind=reel_size_kind,
+            ),
+            material_identity_key=self._material_identity_key(material) or "",
+            reel_thickness_mm=self._policy_reel_thickness_text(scheduling_context),
         )
-        if compatible_cell is not None:
-            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(compatible_cell, active_rack_map))
-
-        empty_cell = self._find_first_empty_cell(cells, reel_size_kind, reel_thickness=reel_thickness)
-        if empty_cell is not None:
-            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(empty_cell, active_rack_map))
+        allocated_cell = self._allocated_policy_cell(allocation_result, cells)
+        if allocated_cell is not None:
+            return SmtRackBinSchedulingDecision(bin_location=self._bin_location(allocated_cell, active_rack_map))
 
         return self._rack_operation_decision(
             context=scheduling_context,
@@ -233,6 +241,128 @@ class SmtRackBinSchedulingService:
             reason_code="NO_COMPATIBLE_OR_EMPTY_CELL",
             message="当前料架无同 DC/LC 兼容格位，也无可用空格",
         )
+
+    def _allocation_policy_snapshot(
+        self,
+        *,
+        active_rack: Mapping[str, Any],
+        cells: Sequence[Mapping[str, Any]],
+        material: Mapping[str, Any],
+        reel_size_kind: SmtReelSizeKind,
+    ) -> dict[str, Any]:
+        return {
+            "snapshot_version": self._text_or_none(active_rack.get("snapshot_version")),
+            "rack_id": self._text_or_none(active_rack.get("rack_id") or active_rack.get("rack_code")),
+            "cells": [
+                policy_cell
+                for cell in cells
+                if (
+                    policy_cell := self._allocation_policy_cell(
+                        cell,
+                        material=material,
+                        reel_size_kind=reel_size_kind,
+                    )
+                )
+                is not None
+            ],
+        }
+
+    def _allocation_policy_cell(
+        self,
+        cell: Mapping[str, Any],
+        *,
+        material: Mapping[str, Any],
+        reel_size_kind: SmtReelSizeKind,
+    ) -> dict[str, Any] | None:
+        if not self._is_schedulable_cell(cell):
+            return None
+        if not self._is_cell_compatible_with_reel(cell, reel_size_kind):
+            return None
+
+        status = self._cell_status(cell)
+        if status not in self.EMPTY_CELL_STATUSES and status not in {"OCCUPIED", "IN_USE"}:
+            return None
+
+        normalized = self.normalize_bin_location(cell)
+        if normalized is None:
+            return None
+
+        capacity_depth, used_depth = self._policy_depth_contract(cell)
+        policy_cell: dict[str, Any] = {
+            "bin_code": normalized["bin_id"],
+            "bin_cell_index": normalized["bin_cell_index"],
+            "status": status,
+            "capacity_depth_mm": capacity_depth,
+            "used_depth_mm": used_depth,
+            "allocation_priority": str(self._allocation_priority(normalized, reel_size_kind=reel_size_kind)),
+        }
+        material_identity_key = self._text_or_none(cell.get("material_identity_key"))
+        if self._cell_matches_material(cell, material):
+            material_identity_key = self._material_identity_key(material) or material_identity_key
+        if material_identity_key is not None:
+            policy_cell["material_identity_key"] = material_identity_key
+        return policy_cell
+
+    def _allocation_priority(self, normalized_cell: Mapping[str, Any], *, reel_size_kind: SmtReelSizeKind) -> int:
+        bin_type = normalized_cell["bin_type"]
+        suffix = self._cell_suffix(normalized_cell)
+        for group_index, (preferred_bin_type, preferred_suffixes) in enumerate(
+            self._empty_cell_priority(reel_size_kind)
+        ):
+            if bin_type == preferred_bin_type and suffix in preferred_suffixes:
+                return group_index
+        return len(self._empty_cell_priority(reel_size_kind))
+
+    def _policy_depth_contract(self, cell: Mapping[str, Any]) -> tuple[str, str]:
+        capacity_raw = self._first_present(cell, "capacity_depth_mm", "max_depth_mm")
+        used_raw = self._first_present(cell, "used_depth_mm", "stack_depth_mm")
+        remaining_raw = self._first_present(cell, "remaining_depth_mm", "remaining_depth", "available_depth_mm")
+
+        capacity_value = self._positive_float(capacity_raw)
+        used_value = self._positive_float(used_raw)
+        remaining_value = self._positive_float(remaining_raw)
+
+        if used_value is None:
+            used_value = 0.0
+        if capacity_value is None:
+            if remaining_value is not None:
+                capacity_value = used_value + remaining_value
+            else:
+                capacity_value = float(self.LEGACY_UNKNOWN_DEPTH_CAPACITY_MM)
+
+        return self._policy_depth_text(capacity_raw, capacity_value), self._policy_depth_text(used_raw, used_value)
+
+    def _policy_depth_text(self, raw_value: Any, fallback_value: float) -> str:
+        raw_text = self._text_or_none(raw_value)
+        if raw_text is not None and self._positive_float(raw_text) is not None:
+            return raw_text
+        return str(fallback_value).removesuffix(".0")
+
+    def _policy_reel_thickness_text(self, context: Mapping[str, Any]) -> str:
+        raw_value = context.get("reel_thickness") or context.get("thickness_mm")
+        reel_thickness = self._positive_float(raw_value)
+        if raw_value is not None and reel_thickness is not None and reel_thickness > 0:
+            return str(raw_value).strip()
+        # 兼容旧 WMS/RCS 快照缺少厚度的调度路径；真实 Decimal 容量判断由后续投影兜底。
+        return "1"
+
+    def _allocated_policy_cell(
+        self,
+        allocation_result: SmtBinCellAllocationResult,
+        cells: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any] | None:
+        if allocation_result.kind != "ALLOCATED":
+            return None
+        for cell in cells:
+            normalized = self.normalize_bin_location(cell)
+            if normalized is None:
+                continue
+            if (
+                normalized["bin_id"] == allocation_result.target_bin_code
+                and normalized["bin_cell_index"] == allocation_result.target_cell_index
+            ):
+                return cell
+        return None
 
     def _material_from_context(self, context: Mapping[str, Any]) -> dict[str, Any]:
         six_in_one = context.get("six_in_one")

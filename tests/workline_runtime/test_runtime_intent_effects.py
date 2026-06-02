@@ -10,7 +10,8 @@ import pytest
 from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.inbox_service import DuplicateInboxError
-from src.app.workline.services.ng_return_item_service import ng_return_item_service
+from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
+from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import (
@@ -204,6 +205,47 @@ async def test_complete_intent_persists_session_completion(monkeypatch: pytest.M
 
     assert session.status == "COMPLETED"
     db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_intent_turns_ng_material_conflict_into_runtime_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    created_holds: list[dict[str, Any]] = []
+    long_identity = f"test-material:{'X' * 300}"
+
+    async def raise_conflict(*_args: Any, **_kwargs: Any) -> None:
+        raise NgMaterialConflictError(
+            material_identity_key=long_identity,
+            existing_item=SimpleNamespace(id=8801, created_from_runtime_hold_id=9901),
+            evidence={
+                "reason_code": "NG_MATERIAL_CONFLICT",
+                "material_identity_key": long_identity,
+                "new_source_command_id": 8802,
+            },
+        )
+
+    async def create_hold(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        created_holds.append(kwargs)
+        return SimpleNamespace(id=7701, **kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", raise_conflict)
+    monkeypatch.setattr(runtime_hold_creation_service, "create_for_resource_reconciliation", create_hold)
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_moved": True})])
+
+    assert session.status == "MANUAL_HOLD"
+    assert session.context_json["ng_material_conflict"]["reason_code"] == "NG_MATERIAL_CONFLICT"
+    assert created_holds[0]["source_reason"] == "NG_MATERIAL_CONFLICT"
+    assert created_holds[0]["evidence"]["material_identity_key"] == long_identity
+    assert created_holds[0]["source_event_id"].startswith("ng-material-conflict:123:8802:")
+    assert len(created_holds[0]["source_event_id"]) < 80
+    emit_timeline.assert_awaited_once()
 
 
 @pytest.mark.asyncio

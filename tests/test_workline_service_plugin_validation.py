@@ -28,6 +28,21 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_WORKING_BIN_SCAN,
+    ROLE_SORTING_NG_ARM,
+    ROLE_SORTING_NG_STATION,
+    ROLE_SORTING_SCAN_PLATFORM,
+    ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
+    ROLE_SORTING_WORKSTATION,
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
 
 
 def make_workline() -> WorkLine:
@@ -71,15 +86,19 @@ def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
     assert workline.plugin_definition is None
 
 
-def test_workline_service_lists_rough_sorter_plugin_option() -> None:
-    """粗分机插件注册后，插件下拉选项应暴露新合同版本。"""
+def test_workline_service_lists_registered_plugin_options() -> None:
+    """插件注册后，插件下拉选项应暴露合同版本。"""
 
     service = WorkLineService()
 
     options = service.list_plugin_options()
+    options_by_key = {option.plugin_key: option for option in options}
 
-    assert [option.plugin_key for option in options] == ["rough_sorter"]
-    assert options[0].default_contract_version == "rough_sorter.v1"
+    assert [option.plugin_key for option in options] == [SMT_SORTING_INBOUND_PLUGIN_KEY, "rough_sorter"]
+    assert options_by_key["rough_sorter"].default_contract_version == "rough_sorter.v1"
+    assert options_by_key[SMT_SORTING_INBOUND_PLUGIN_KEY].default_contract_version == (
+        SMT_SORTING_INBOUND_CONTRACT_VERSION
+    )
 
 
 def test_workline_service_status_path_defaults_to_standard_endpoint_not_callback_path() -> None:
@@ -105,6 +124,95 @@ def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
             make_device(3, ROLE_OUTPUT_ARM),
         ],
     )
+
+
+def test_smt_sorting_inbound_plugin_assignment_accepts_required_roles() -> None:
+    """SMT 分拣入库插件绑定必须具备 P0 全部设备角色。"""
+
+    validate_workline_plugin_assignment(
+        SMT_SORTING_INBOUND_PLUGIN_KEY,
+        make_workline(),
+        [
+            make_device(1, ROLE_SORTING_SOURCE_ARM),
+            make_device(2, ROLE_SORTING_TARGET_ARM),
+            make_device(3, ROLE_SORTING_NG_ARM),
+            make_device(4, ROLE_SORTING_SCAN_PLATFORM),
+            make_device(5, ROLE_SORTING_NG_STATION),
+            make_device(6, ROLE_SORTING_WORKSTATION),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_smt_sorting_inbound_configuration_status_does_not_require_event_capability_for_command_results(
+    db_session,
+) -> None:
+    """SMT 命令结果经 callback/result 分发，不应作为设备事件能力 blocker。"""
+
+    workline = WorkLine(
+        line_code="WL-SMT-COMMAND-RESULT-EVENTS",
+        line_name="SMT 命令结果能力校验",
+        line_type=LineType.AUTO,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    device_specs = (
+        (
+            ROLE_SORTING_SOURCE_ARM,
+            {"supports_command_types": [COMMAND_SOURCE_PICK], "supports_event_types": ["ARM_READY"]},
+        ),
+        (
+            ROLE_SORTING_TARGET_ARM,
+            {"supports_command_types": [COMMAND_TARGET_PLACE], "supports_event_types": ["ARM_READY"]},
+        ),
+        (ROLE_SORTING_NG_ARM, {"supports_command_types": [COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]}),
+        (ROLE_SORTING_SCAN_PLATFORM, {"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
+        (ROLE_SORTING_NG_STATION, {}),
+        (ROLE_SORTING_WORKSTATION, {"supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED]}),
+    )
+    for index, (role, capabilities_json) in enumerate(device_specs, start=1):
+        db_session.add(
+            Device(
+                device_code=f"SMT-CMD-RESULT-DEV-{index}",
+                device_name=f"SMT 命令结果设备{index}",
+                work_line_id=workline.id,
+                device_role=role,
+                role_index=1,
+                capabilities_json={**capabilities_json, "status_path": "/api/v1/device/status"},
+                host="mock-ecs",
+                port=8010,
+            )
+        )
+    await db_session.commit()
+
+    status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    failed_event_checks = [
+        check for check in status.checks if check.code == "EVENT_SOURCE_CAPABILITY" and check.status == "FAIL"
+    ]
+    assert status.can_activate is True
+    assert failed_event_checks == []
+
+
+def test_smt_sorting_inbound_plugin_assignment_rejects_missing_required_role() -> None:
+    """缺少扫码平台时，SMT 分拣入库插件绑定应失败。"""
+
+    with pytest.raises(BadRequestException, match=ROLE_SORTING_SCAN_PLATFORM):
+        validate_workline_plugin_assignment(
+            SMT_SORTING_INBOUND_PLUGIN_KEY,
+            make_workline(),
+            [
+                make_device(1, ROLE_SORTING_SOURCE_ARM),
+                make_device(2, ROLE_SORTING_TARGET_ARM),
+                make_device(3, ROLE_SORTING_NG_ARM),
+                make_device(5, ROLE_SORTING_NG_STATION),
+                make_device(6, ROLE_SORTING_WORKSTATION),
+            ],
+        )
 
 
 def test_rough_sorter_plugin_assignment_rejects_missing_required_role() -> None:

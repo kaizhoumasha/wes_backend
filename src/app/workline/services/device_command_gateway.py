@@ -122,7 +122,15 @@ def _resolve_device_command_path(device: Any) -> str:
 
 
 def _resolve_device_status_path(device: Any) -> str:
-    """设备命令派发前实时状态检查固定使用 ECS 标准状态路径。"""
+    """优先使用设备 capabilities 中的配置状态路径，未配置时回退默认状态路径。"""
+
+    capabilities = getattr(device, "capabilities_json", None)
+    if isinstance(capabilities, dict):
+        for key in ("status_path", "device_status_path"):
+            value = capabilities.get(key)
+            if isinstance(value, str) and value.strip():
+                path = value.strip()
+                return path if path.startswith("/") else f"/{path}"
 
     return _DEFAULT_DEVICE_STATUS_PATH
 
@@ -388,18 +396,29 @@ async def _ensure_realtime_device_status_ready(
     status = state.get("status", state.get("device_status"))
     current_command_id = state.get("current_command_id")
     if mode != "AUTO" or status != "IDLE" or current_command_id is not None:
+        device_id = resolve_entity_id(device)
         if current_command_id and current_command_id == command_code:
             _raise_device_command_governance_error(
-                domain="ORCHESTRATION",
+                domain=FailureDomain.ORCHESTRATION.value,
                 code="DEVICE_BUSY",
                 message=f"设备实时状态已接受该命令但本地未确认: device_code={device_code}, current_command_id={current_command_id}",
+                device_id=device_id,
                 device_code=device_code,
             )
 
+        message = (
+            f"设备 {device_code} 实时状态忙，拒绝命令派发: "
+            f"mode={mode}, status={status}, current_command_id={current_command_id}"
+        )
+        logger.warning(
+            "设备实时状态不允许派发: "
+            f"device_code={device_code}, mode={mode}, status={status}, current_command_id={current_command_id}"
+        )
         _raise_device_command_governance_error(
-            domain="ORCHESTRATION",
+            domain=FailureDomain.ORCHESTRATION.value,
             code="DEVICE_BUSY",
-            message=f"设备实时状态不允许派发: device_code={device_code}, mode={mode}, status={status}, current_command_id={current_command_id}",
+            message=message,
+            device_id=device_id,
             device_code=device_code,
         )
 

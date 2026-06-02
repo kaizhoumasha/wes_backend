@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 - SQLModel 字段解析需要运行时类型
+from decimal import Decimal
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from sqlalchemy import JSON, Column, Index
+from sqlalchemy import JSON, Column, Index, Numeric
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -589,9 +590,24 @@ class BinCellOccupancyBase(BaseMixin):
     lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
     date_code: str | None = Field(default=None, max_length=80, description="Date Code")
     reel_count: int = Field(default=0, ge=0, description="当前格位内 active 料盘数量")
-    used_depth_mm: float = Field(default=0.0, ge=0, description="当前格位已使用深度")
-    capacity_depth_mm: float | None = Field(default=None, ge=0, description="当前格位可用总深度")
-    remaining_depth_mm: float | None = Field(default=None, ge=0, description="当前格位剩余深度")
+    used_depth_mm: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        sa_column=Column(Numeric(12, 3), nullable=False),
+        description="当前格位已使用深度",
+    )
+    capacity_depth_mm: Decimal | None = Field(
+        default=None,
+        ge=0,
+        sa_column=Column(Numeric(12, 3), nullable=True),
+        description="当前格位可用总深度",
+    )
+    remaining_depth_mm: Decimal | None = Field(
+        default=None,
+        ge=0,
+        sa_column=Column(Numeric(12, 3), nullable=True),
+        description="当前格位剩余深度",
+    )
     occupancy_status: BinCellOccupancyStatus = Field(
         default=BinCellOccupancyStatus.UNKNOWN,
         sa_type=cast("Any", SQLAEnum(BinCellOccupancyStatus, native_enum=False, create_constraint=True, length=50)),
