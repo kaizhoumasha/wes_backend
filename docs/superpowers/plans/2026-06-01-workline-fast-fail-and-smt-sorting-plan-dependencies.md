@@ -58,13 +58,18 @@
 - [x] 扫码成功后，Session context 写入 `pending_target_placement`，目标端命令使用该落点。
 - [x] 目标端成功后，插件 intent 产出 `MATERIAL_MOUNTED`，`current_material` 关闭。
 - [x] 源端快照不一致时进入本地 NG，插件 intent/context 记录 `LOCAL_SORTING_NG`，不触发该盘目标箱 WMS 物料变化。
-- [ ] 任一 `NG_MATERIAL_CONFLICT` 会阻止 Session 完成，直到人工或对账解除。
+- [x] 任一 `NG_MATERIAL_CONFLICT` 会阻止 Session 完成，直到人工或对账解除。
 
 剩余跟踪：
 
-- [ ] 补一条 runtime orchestrator/effect 层 thin smoke，覆盖 `intent -> outbox/resource fact/session context`
+- [x] 补一条 runtime orchestrator/effect 层 thin smoke，覆盖 `intent -> outbox/resource fact/session context`
       持久化的真实衔接。
-- [ ] 补 `NG_MATERIAL_CONFLICT` 阻止 Session 完成的跨计划 smoke；当前 smoke 已覆盖本地 NG success 分支。
+- [x] 补 `NG_MATERIAL_CONFLICT` 阻止 Session 完成的跨计划 smoke；当前 effect 层单测已覆盖 hold/manual-hold
+      语义，跨计划 stitching smoke 仍只覆盖本地 NG success 分支。
+  - 2026-06-03 verification: `tests/integration/workline_runtime/test_cross_plan_sandbox_smoke.py`
+    已补 `test_cross_plan_runtime_effect_stitching_persists_context_resource_fact_and_outbox` 和
+    `test_cross_plan_ng_material_conflict_blocks_session_completion`，覆盖 effect 层真实衔接、
+    真实 RuntimeHold 落库和跨计划 completion guard。
 
 ## 冲突与回滚边界
 

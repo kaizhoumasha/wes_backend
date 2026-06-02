@@ -611,6 +611,7 @@ class ResourceProjectionService:
                 "source_version": source_version,
                 "trace_id": trace_id,
                 "session_id": session_id,
+                "workline_id": workline_id,
                 "payload_json": {
                     "bin_code": bin_code,
                     "bin_cell_code": bin_cell_code,
@@ -786,6 +787,7 @@ class ResourceProjectionService:
                 "source_version": source_version,
                 "trace_id": trace_id,
                 "session_id": session_id,
+                "workline_id": workline_id,
                 "payload_json": {
                     "bin_code": bin_code,
                     "bin_cell_code": bin_cell_code,
