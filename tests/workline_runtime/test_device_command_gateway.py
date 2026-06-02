@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from src.app.device.models.device import DeviceStatus
-from src.app.workline.services.device_command_gateway import DeviceCommandGateway
+from src.app.workline.services.device_command_gateway import DeviceCommandGateway, _DeviceCommandGovernanceError
 
 command_repository_module = importlib.import_module("src.app.device.repositories.command_repository")
 gateway_module = importlib.import_module("src.app.workline.services.device_command_gateway")
@@ -176,9 +176,6 @@ def _dispatchable_device() -> object:
     [
         (FakeStatusResponse({}, status_code=503, text="not ready"), None),
         (FakeStatusResponse(ValueError("bad json")), None),
-        (FakeStatusResponse({"state": {"mode": "MANUAL", "status": "IDLE", "current_command_id": None}}), None),
-        (FakeStatusResponse({"state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": None}}), None),
-        (FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-BUSY"}}), None),
         (
             FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}),
             httpx.TimeoutException("status timeout"),
@@ -225,8 +222,56 @@ async def test_dispatch_realtime_status_failure_never_posts_command(
     assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
 
 
+@pytest.mark.parametrize(
+    "status_response",
+    [
+        FakeStatusResponse({"state": {"mode": "MANUAL", "status": "IDLE", "current_command_id": None}}),
+        FakeStatusResponse({"state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": None}}),
+        FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-BUSY"}}),
+    ],
+)
 @pytest.mark.asyncio
-async def test_dispatch_realtime_status_uses_standard_path_not_capability_override(monkeypatch) -> None:
+async def test_dispatch_realtime_busy_status_raises_device_busy(
+    monkeypatch, status_response: FakeStatusResponse
+) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = status_response
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(
+        gateway_module,
+        "_get_device_for_command_dispatch",
+        AsyncMock(return_value=_dispatchable_device()),
+    )
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-STATUS",
+            "payload_json": {"command_code": "CMD-GW-STATUS", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+        await gateway.dispatch(db, outbox)
+
+    assert exc_info.value.code == "DEVICE_BUSY"
+    assert exc_info.value.device_id == 100
+    assert exc_info.value.device_code == "RS-CONVEYOR-01"
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_realtime_status_uses_capability_override(monkeypatch) -> None:
     CapturingAsyncClient.requests.clear()
     CapturingAsyncClient.status_response = FakeStatusResponse(
         {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
@@ -260,9 +305,7 @@ async def test_dispatch_realtime_status_uses_standard_path_not_capability_overri
     success = await gateway.dispatch(db, outbox)
 
     assert success is True
-    assert CapturingAsyncClient.requests[0]["url"] == (
-        "http://mock_ecs:8010/api/v1/device/status?device_code=RS-CONVEYOR-01"
-    )
+    assert CapturingAsyncClient.requests[0]["url"] == ("http://mock_ecs:8010/vendor/status?device_code=RS-CONVEYOR-01")
 
 
 @pytest.mark.asyncio
