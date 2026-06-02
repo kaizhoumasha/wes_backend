@@ -1,16 +1,14 @@
 """跨计划 WorkLine 沙箱 stitching smoke。
 
-覆盖 STOPPED guard、START 准入、SMT Sorting P0 插件 intent、命令网关 realtime status
-以及本地 NG 收敛的跨计划合同。
-
-本测试使用 pytest + SQLite + service/plugin/gateway stitching，不启动完整 runtime
-orchestrator/effect applier。后续需要补一条 orchestrator/effect 层 thin smoke，覆盖
-intent -> outbox/resource fact 持久化的真实衔接。
+覆盖 STOPPED guard、START 准入、SMT Sorting P0 插件 intent、RuntimeIntent effect、
+命令网关 realtime status 以及本地 NG 收敛的跨计划合同。
 """
 
 from __future__ import annotations
 
 import importlib
+from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,11 +18,25 @@ import pytest
 from fastapi import Request, Response
 from sqlalchemy import select
 
-from src.app.device.models import Device, DeviceProtocol
+from src.app.device.models import CommandStatus, Device, DeviceProtocol
+from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import DeviceStatus
+from src.app.resource.models import (
+    BinCellOccupancy,
+    BinCellOccupancyStatus,
+    BinMaterialMount,
+    BinMaterialMountStatus,
+    ResourceSourceSystem,
+    ResourceStateEvent,
+    ResourceStateEventType,
+)
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, NgReturnItemStatus, RuntimeHold
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.models.session import SessionStatus, WorklineSession
+from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.device_command_gateway import DeviceCommandGateway
 from src.app.workline.services.start_admission_service import (
     StartAdmissionStatusFetchResult,
@@ -38,6 +50,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
+    NG_REASON_LOCAL_SORTING_NG,
     PHASE_WAITING_SCAN,
     ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
@@ -49,7 +62,10 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
+from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -322,6 +338,41 @@ def _response_data(response: JsonDict) -> JsonDict:
     return cast("JsonDict", data)
 
 
+def _effect_ctx(
+    *,
+    db_session: AsyncSession,
+    session: WorklineSession,
+    workline: WorkLine,
+    inbox: WorklineInbox,
+    devices: list[Device],
+) -> dict[str, Any]:
+    devices_by_role: dict[str, list[Device]] = {}
+    inbox_device_code = (inbox.payload_json or {}).get("device_code")
+    source_device = next(
+        (device for device in devices if device.device_code == inbox_device_code),
+        devices[0] if devices else None,
+    )
+    for device in devices:
+        devices_by_role.setdefault(str(device.device_role), []).append(device)
+    return {
+        "db": db_session,
+        "session": session,
+        "workline": workline,
+        "inbox": inbox,
+        "devices_by_role": devices_by_role,
+        "source_device": source_device,
+        "orch_result": OrchestratorResult(success=True, intents=[]),
+        "current_status": session.status.value if hasattr(session.status, "value") else str(session.status),
+        "trace_id": session.trace_id,
+        "trace": TraceContext.from_runtime(session=session, workline=workline, inbox=inbox, trace_id=session.trace_id),
+        "session_ctx": dict(session.context_json or {}),
+        "now": datetime(2026, 1, 1, 0, 2, 0),
+        "awaiting_command_id": None,
+        "awaiting_command_code": None,
+        "next_timeline_seq_no": None,
+    }
+
+
 @pytest.mark.asyncio
 async def test_cross_plan_sandbox_smoke(
     db_session: AsyncSession,
@@ -501,7 +552,7 @@ async def test_cross_plan_sandbox_smoke(
     ng_context: dict[str, Any] = {
         "sorting": {
             "context_schema_version": 1,
-            "stations": {"scan_platform": "OCCUPIED"},
+            "stations": {"scan_platform": "EMPTY"},
             "business_phase": PHASE_WAITING_SCAN,
             "current_material": {
                 "source_bin_code": "SRC-BIN-01",
@@ -556,3 +607,351 @@ async def test_cross_plan_sandbox_smoke(
     manifest = SmtSortingInboundPlugin.manifest
     assert "WORKLINE_START_REQUESTED" not in manifest.supported_events
     assert "WORKLINE_START_REQUESTED" not in manifest.event_source_roles
+
+
+@pytest.mark.asyncio
+async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fact_and_outbox(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件 intent 必须通过 effect 层真实衔接到 context、resource fact、command/outbox。"""
+
+    workline = _workline(line_code="WL-CROSS-PLAN-EFFECT", runtime_status=WorkLineRuntimeStatus.READY)
+    devices = await _persist_workline_with_devices(db_session, workline)
+    source_occupancy = BinCellOccupancy(
+        bin_code="SRC-BIN-01",
+        bin_cell_code="A01",
+        bin_cell_index="A01",
+        material_identity_key="mid:pkg-001",
+        reel_count=1,
+        used_depth_mm=Decimal("7.125"),
+        capacity_depth_mm=Decimal("30.500"),
+        remaining_depth_mm=Decimal("23.375"),
+        occupancy_status=BinCellOccupancyStatus.OCCUPIED,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="SOURCE-SNAPSHOT-SMOKE",
+        source_version="12",
+        trace_id="trace-cross-plan-effect",
+        started_at=datetime(2026, 1, 1, 0, 0, 0),
+    )
+    db_session.add(source_occupancy)
+    await db_session.flush()
+    source_mount = BinMaterialMount(
+        bin_cell_occupancy_id=source_occupancy.id,
+        cell_stack_position=1,
+        bin_code="SRC-BIN-01",
+        bin_cell_code="A01",
+        bin_cell_index="A01",
+        material_identity_key="mid:pkg-001",
+        pkg_code="PKG-001",
+        wms_inventory_id="WMS-001",
+        reel_thickness="7.125",
+        mount_status=BinMaterialMountStatus.OCCUPIED,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="SOURCE-SNAPSHOT-SMOKE",
+        source_version="12",
+        trace_id="trace-cross-plan-effect",
+        started_at=datetime(2026, 1, 1, 0, 0, 0),
+    )
+    db_session.add(source_mount)
+    session = WorklineSession(
+        session_code="SESSION-CROSS-PLAN-EFFECT",
+        workline_id=workline.id,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+        status=SessionStatus.RUNNING,
+        trace_id="trace-cross-plan-effect",
+        context_json={
+            "sorting": {
+                "context_schema_version": 1,
+                "stations": {"scan_platform": "EMPTY"},
+                "business_phase": PHASE_WAITING_SCAN,
+                "active_target_bin": {
+                    "snapshot_version": "snap-target-effect",
+                    "cells": [
+                        {
+                            "bin_code": "TGT-BIN-01",
+                            "bin_cell_index": "B02",
+                            "status": "EMPTY",
+                            "capacity_depth_mm": "30.500",
+                            "used_depth_mm": "0",
+                        }
+                    ],
+                },
+            }
+        },
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    source_inbox = _source_pick_result(
+        {
+            "bin_code": "SRC-BIN-01",
+            "bin_cell_index": "A01",
+            "bin_cell_code": "A01",
+            "material_identity_key": "mid:pkg-001",
+            "pkg_code": "PKG-001",
+            "wms_inventory_id": "WMS-001",
+            "reel_thickness": "7.125",
+            "source_version": "12",
+        }
+    )
+    source_inbox.workline_id = workline.id
+    source_inbox.session_id = session.id
+    source_inbox.trace_id = session.trace_id
+    db_session.add(source_inbox)
+    await db_session.flush()
+    await db_session.refresh(session)
+    await db_session.refresh(source_inbox)
+
+    plugin = SmtSortingInboundPlugin()
+    source_plugin_ctx = _ctx(dict(session.context_json or {}))
+    source_plugin_ctx.session = session
+    source_intents = await plugin.on_command_result(source_plugin_ctx, source_inbox)
+
+    assert [intent.kind for intent in source_intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
+    assert source_intents[0].action == ResourceStateEventType.MATERIAL_UNMOUNTED.value
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier().apply(
+        _effect_ctx(db_session=db_session, session=session, workline=workline, inbox=source_inbox, devices=devices),
+        source_intents,
+    )
+    await db_session.flush()
+    await db_session.refresh(session)
+    await db_session.refresh(source_occupancy)
+    await db_session.refresh(source_mount)
+
+    assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
+    assert source_mount.mount_status == BinMaterialMountStatus.REMOVED
+    assert source_mount.ended_at is not None
+    assert source_occupancy.reel_count == 0
+    assert source_occupancy.used_depth_mm == Decimal("0.000")
+    assert source_occupancy.remaining_depth_mm == Decimal("30.500")
+    assert source_occupancy.occupancy_status == BinCellOccupancyStatus.REMOVED
+    assert source_occupancy.ended_at is not None
+
+    expected_idempotency_key = source_intents[0].idempotency_key
+    resource_event = (
+        await db_session.execute(
+            select(ResourceStateEvent).where(ResourceStateEvent.idempotency_key == expected_idempotency_key)
+        )
+    ).scalar_one()
+    assert resource_event.event_type == ResourceStateEventType.MATERIAL_UNMOUNTED
+    assert resource_event.idempotency_key == expected_idempotency_key
+    assert resource_event.trace_id == "trace-cross-plan-effect"
+    assert resource_event.session_id == str(session.id)
+    assert resource_event.workline_id == workline.id
+
+    scan_inbox = _scan_event(
+        {
+            "material_identity_key": "mid:pkg-001",
+            "pkg_code": "PKG-001",
+            "reel_thickness": "7.125",
+        }
+    )
+    scan_inbox.workline_id = workline.id
+    scan_inbox.session_id = session.id
+    scan_inbox.trace_id = session.trace_id
+    db_session.add(scan_inbox)
+    await db_session.commit()
+    await db_session.refresh(session)
+    await db_session.refresh(scan_inbox)
+
+    plugin_ctx = _ctx(dict(session.context_json or {}))
+    plugin_ctx.session = session
+    scan_intents = await plugin.on_device_event(plugin_ctx, scan_inbox)
+
+    assert [intent.kind for intent in scan_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+
+    await RuntimeIntentEffectApplier().apply(
+        _effect_ctx(db_session=db_session, session=session, workline=workline, inbox=scan_inbox, devices=devices),
+        scan_intents,
+    )
+    await db_session.commit()
+    await db_session.refresh(session)
+
+    assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+    assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
+    assert session.context_json["sorting"]["pending_target_placement"]["target_cell_code"] == "B02"
+    assert session.awaiting_command_id is not None
+
+    command = await db_session.get(DeviceCommand, session.awaiting_command_id)
+    assert command is not None
+    assert command.task_type == COMMAND_TARGET_PLACE
+    assert command.trace_id == "trace-cross-plan-effect"
+    assert command.session_id_int == session.id
+
+    outboxes = (
+        (
+            await db_session.execute(
+                select(SystemOutbox).where(
+                    SystemOutbox.dispatch_key == f"device-command:{command.command_code}",
+                    SystemOutbox.session_id == session.id,
+                    SystemOutbox.workline_id == workline.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(outboxes) == 1
+    assert outboxes[0].dispatch_key == f"device-command:{command.command_code}"
+    assert outboxes[0].target_code == "SORT-TARGET-ARM"
+    assert outboxes[0].payload_json["task_type"] == COMMAND_TARGET_PLACE
+
+
+@pytest.mark.asyncio
+async def test_cross_plan_ng_material_conflict_blocks_session_completion(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """跨计划 smoke 覆盖 NG_MATERIAL_CONFLICT 阻止 Session 完成。"""
+
+    workline = _workline(line_code="WL-CROSS-PLAN-NG-CONFLICT", runtime_status=WorkLineRuntimeStatus.READY)
+    devices = await _persist_workline_with_devices(db_session, workline)
+    session = WorklineSession(
+        session_code="SESSION-CROSS-PLAN-NG-CONFLICT",
+        workline_id=workline.id,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+        status=SessionStatus.RUNNING,
+        trace_id="trace-cross-plan-ng-conflict",
+        context_json={
+            "sorting": {
+                "context_schema_version": 1,
+                "stations": {"scan_platform": "EMPTY"},
+            }
+        },
+    )
+    inbox = WorklineInbox(
+        kind="DEVICE_EVENT",
+        source_system="DEVICE",
+        workline_id=workline.id,
+        trace_id="trace-cross-plan-ng-conflict",
+        event_id="COMPLETE-EVENT-NG-CONFLICT",
+        payload_json={
+            "event_id": "COMPLETE-EVENT-NG-CONFLICT",
+            "device_code": "SORT-WORKSTATION",
+            "event_type": EVENT_SESSION_COMPLETE_REQUESTED,
+            "data": {},
+        },
+    )
+    db_session.add(session)
+    await db_session.flush()
+    inbox.session_id = session.id
+    ng_device = next(device for device in devices if device.device_code == "SORT-NG-ARM")
+    existing_command = DeviceCommand(
+        command_code="CMD-SMT-NG-CONFLICT-EXISTING",
+        device_id=ng_device.id,
+        workline_id=workline.id,
+        session_id=session.session_code,
+        session_id_int=session.id,
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        task_type=COMMAND_NG_PLACE,
+        params={"material_identity_key": "mid:pkg-001", "ng_location": "NG-01"},
+        status=CommandStatus.COMPLETED,
+        trace_id=session.trace_id,
+    )
+    db_session.add(existing_command)
+    await db_session.flush()
+    session.context_json = {
+        "sorting": {
+            "context_schema_version": 1,
+            "stations": {"scan_platform": "EMPTY"},
+        },
+        "ng_reason": NG_REASON_LOCAL_SORTING_NG,
+        "pick_place_reason": NG_REASON_LOCAL_SORTING_NG,
+        "scan_ng_reason_code": NG_REASON_LOCAL_SORTING_NG,
+        "scan_ng_reason_message": "本地 NG 放置成功",
+        "source_payload": {
+            "current_material": {
+                "source_bin_code": "SRC-BIN-01",
+                "source_cell_code": "A01",
+                "material_identity_key": "mid:pkg-001",
+                "actual_material_identity_key": "mid:actual-other",
+                "pkg_code": "PKG-001",
+                "reel_thickness_mm": "7.125",
+                "ng_status": "MOVING_TO_NG",
+            },
+            "ng_command_payload": {
+                "command_code": "CMD-SMT-NG-CONFLICT",
+                "device_code": "SORT-NG-ARM",
+                "command_type": COMMAND_NG_PLACE,
+                "result": "SUCCESS",
+                "data": {"ng_location": "NG-01"},
+            },
+        },
+    }
+    material_identity_key = f"workflow-ng:{SMT_SORTING_INBOUND_PLUGIN_KEY}:session:{session.id}"
+    existing_ng_item = NgReturnItem(
+        source_workline_id=workline.id,
+        source_session_id=session.id,
+        source_command_id=existing_command.id,
+        source_event_id="EXISTING-NG-ITEM",
+        material_identity_key=material_identity_key,
+        material_identity_json={
+            "resolution_status": "MISSING",
+            "idempotency_key": material_identity_key,
+            "fallback_identity": True,
+            "fallback_source": "SESSION",
+        },
+        physical_handoff_evidence_json={"source": "WORKFLOW_SCAN_NG"},
+        ng_reason_source=NgReasonSource.PLUGIN,
+        ng_reason_code=NG_REASON_LOCAL_SORTING_NG,
+        ng_reason_label="本地分拣 NG",
+        created_from_runtime_hold_id=None,
+        status=NgReturnItemStatus.WAITING_REWORK,
+    )
+    db_session.add(existing_ng_item)
+    db_session.add(inbox)
+    await db_session.commit()
+    await db_session.refresh(session)
+    await db_session.refresh(inbox)
+    await db_session.refresh(existing_ng_item)
+
+    complete_intents = await SmtSortingInboundPlugin().on_device_event(_ctx(dict(session.context_json or {})), inbox)
+
+    assert [intent.kind for intent in complete_intents] == [RuntimeIntentKind.COMPLETE]
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier().apply(
+        _effect_ctx(db_session=db_session, session=session, workline=workline, inbox=inbox, devices=[]),
+        complete_intents,
+    )
+    await db_session.flush()
+    await db_session.refresh(session)
+    await db_session.refresh(workline)
+
+    runtime_hold = (
+        await db_session.execute(select(RuntimeHold).where(RuntimeHold.source_reason == "NG_MATERIAL_CONFLICT"))
+    ).scalar_one()
+
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.context_json["ng_material_conflict"]["reason_code"] == "NG_MATERIAL_CONFLICT"
+    assert session.context_json["ng_material_conflict"]["material_identity_key"] == material_identity_key
+    assert session.context_json["ng_material_conflict"]["runtime_hold_id"] == runtime_hold.id
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_reason == "NG_MATERIAL_CONFLICT"
+    assert runtime_hold.source_kind == "RESOURCE_RECONCILIATION"
+    assert runtime_hold.source_reason == "NG_MATERIAL_CONFLICT"
+    assert (
+        runtime_hold.source_idempotency_key == "resource-reconciliation:NG_MATERIAL_CONFLICT:COMPLETE-EVENT-NG-CONFLICT"
+    )
+    assert runtime_hold.session_id == session.id
+    assert runtime_hold.workline_id == workline.id
+    evidence = runtime_hold.evidence_snapshot_json
+    assert evidence["reason_code"] == "NG_MATERIAL_CONFLICT"
+    assert evidence["material_identity_key"] == material_identity_key
+    assert evidence["existing_ng_return_item_id"] == existing_ng_item.id
+    assert evidence["existing_source_session_id"] == session.id
+    assert evidence["existing_source_command_id"] == existing_command.id
+    assert evidence["new_source_session_id"] == session.id
+    assert evidence["new_source_command_id"] is None
+    assert evidence["new_source_event_id"] == "COMPLETE-EVENT-NG-CONFLICT"
+    assert evidence["source_event_id"] == "COMPLETE-EVENT-NG-CONFLICT"

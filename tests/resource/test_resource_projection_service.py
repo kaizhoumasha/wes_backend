@@ -683,6 +683,7 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
         trace_id="trace-001",
         session_id="2001",
         workline_session_id=2001,
+        workline_id=1001,
         reel_thickness="2.5",
         cell_capacity_depth_mm=10.0,
     )
@@ -700,6 +701,7 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
     assert mounts.created[0]["wms_inventory_id"] == "INV-001"
     assert mounts.created[0]["mount_status"] == BinMaterialMountStatus.OCCUPIED.value
     assert events.created[0]["event_type"] == "MATERIAL_MOUNTED"
+    assert events.created[0]["workline_id"] == 1001
     assert snapshots.material_calls == [
         {
             "bin_code": "BIN-001",
@@ -782,9 +784,10 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
         capacity_depth_mm=Decimal("0.30"),
         remaining_depth_mm=Decimal("0.10"),
     )
+    events = RecordingStateEventRepo()
     occupancies = RecordingBinCellOccupancyRepo(active_by_cell=occupancy)
     service = ResourceProjectionService(
-        state_event_repo=RecordingStateEventRepo(),
+        state_event_repo=events,
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
     )
@@ -817,6 +820,7 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
     assert occupancies.saved[0]["remaining_depth_mm"] == Decimal("0.20")
     assert occupancies.saved[0]["occupancy_status"] == "OCCUPIED"
     assert occupancies.saved[0]["ended_at"] is None
+    assert events.created[0]["workline_id"] == 1001
 
 
 @pytest.mark.asyncio
