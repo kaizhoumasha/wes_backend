@@ -11,11 +11,15 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.resource.services.material_identity import material_identity_keys_match
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
 from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
     COMMAND_TARGET_PLACE,
+    NG_REASON_LOCAL_SORTING_NG,
+    PHASE_WAITING_NG_PLACE,
     PHASE_WAITING_SCAN,
     PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
+    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_TARGET_ARM,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
@@ -132,14 +136,29 @@ class SmtSortingInboundFlowService:
         if expected_identity_key is None or actual_identity_key is None:
             return self._block("SORTING_MATERIAL_IDENTITY_MISSING", "扫码完成时缺少物料身份键")
         if not material_identity_keys_match(expected_identity_key, actual_identity_key):
-            return self._block(
-                "SORTING_SCAN_IDENTITY_MISMATCH",
-                "扫码物料身份与源格出账物料身份不一致",
-                payload={
+            context_patch = self._local_ng_context_patch(
+                ctx,
+                actual_identity_key=actual_identity_key,
+                reason_message="扫码物料身份与源格出账物料身份不一致",
+                evidence={
                     "expected_material_identity_key": expected_identity_key,
                     "actual_material_identity_key": actual_identity_key,
+                    "scan_event_payload": payload_json,
                 },
             )
+            return [
+                RuntimeIntent.update_context(context_patch),
+                RuntimeIntent.mark_ng(
+                    reason_code=NG_REASON_LOCAL_SORTING_NG,
+                    message="扫码物料身份与源格出账物料身份不一致",
+                    payload=context_patch,
+                ),
+                RuntimeIntent.command(
+                    device_role=ROLE_SORTING_NG_ARM,
+                    action=COMMAND_NG_PLACE,
+                    payload=self._ng_place_command_payload(context_patch["sorting"]),
+                ),
+            ]
 
         expected_thickness = _non_empty_str(current_material.get("reel_thickness_mm"))
         scan_thickness_was_provided = _payload_has_any(payload_json, data, "reel_thickness", "reel_thickness_mm")
@@ -259,6 +278,57 @@ class SmtSortingInboundFlowService:
             },
         )
 
+    async def handle_ng_place_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """本地 NG 放置成功后，关闭当前物料并保留 NG 回流上下文。"""
+
+        try:
+            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
+        except SortingInboundContextError as exc:
+            return self._block("SORTING_CONTEXT_INVALID", str(exc))
+        current_material = _dict_copy(sorting_context.sorting.get("current_material"))
+        if not current_material:
+            return self._block("SORTING_CURRENT_MATERIAL_MISSING", "NG 放置成功回调缺少当前物料上下文")
+
+        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+        scratch_session = SimpleNamespace(context_json=root_context)
+        scratch_context = SortingInboundContext.load_for_automatic(scratch_session)
+        scratch_context.clear_pending_target_placement()
+        scratch_context.close_current_material()
+        scratch_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=PHASE_WAITING_SOURCE_PICK)
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        patch = self._ng_root_patch(
+            sorting=_dict_copy(scratch_session.context_json.get("sorting")),
+            reason_message="本地 NG 放置成功",
+            evidence={"ng_command_payload": payload_json, "current_material": current_material},
+        )
+        return [RuntimeIntent.update_context(patch)]
+
+    async def handle_ng_place_failed(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """本地 NG 放置失败后，按物理位置确定性进入人工处理或对账。"""
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        data = _payload_data(payload_json)
+        if data.get("ng_location_known") is False:
+            return self._block(
+                "SORTING_NG_PLACE_LOCATION_UNKNOWN",
+                "NG 放置失败且物理位置未知，需进入对账处理",
+                payload={"ng_location_known": False, "error_detail": data},
+            )
+
+        location_known = bool(_payload_text(payload_json, data, "ng_location_code", "ng_location"))
+        if not location_known:
+            return self._block(
+                "SORTING_NG_PLACE_LOCATION_UNKNOWN",
+                "NG 放置失败且缺少可确认 NG 位置，需进入对账处理",
+                payload={"ng_location_known": False, "error_detail": data},
+            )
+
+        return self._block(
+            "SORTING_NG_PLACE_FAILED",
+            _payload_text(payload_json, data, "error_message", "message") or "NG 放置失败，需人工确认",
+            payload={"ng_location_known": True, "error_detail": data},
+        )
+
     def _source_pick_context_patch(self, ctx: PluginContext, source_payload: dict[str, Any]) -> dict[str, Any]:
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
         scratch_session = SimpleNamespace(context_json=root_context)
@@ -370,6 +440,55 @@ class SmtSortingInboundFlowService:
             or _dict_copy(current_material.get("scan_evidence")).get("pkg_code")
             or _dict_copy(current_material.get("evidence")).get("pkg_code"),
             "reel_thickness": pending_target.get("reel_thickness_mm"),
+        }
+
+    def _ng_place_command_payload(self, sorting: Mapping[str, Any]) -> dict[str, Any]:
+        current_material = _dict_copy(sorting.get("current_material"))
+        return {
+            "material_identity_key": current_material.get("actual_material_identity_key")
+            or current_material.get("material_identity_key"),
+            "pkg_code": current_material.get("pkg_code")
+            or _dict_copy(current_material.get("scan_evidence")).get("pkg_code")
+            or _dict_copy(current_material.get("evidence")).get("pkg_code"),
+            "ng_reason_code": NG_REASON_LOCAL_SORTING_NG,
+            "ng_location": "NG-01",
+        }
+
+    def _local_ng_context_patch(
+        self,
+        ctx: PluginContext,
+        *,
+        actual_identity_key: str,
+        reason_message: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
+        scratch_session = SimpleNamespace(context_json=root_context)
+        sorting_context = SortingInboundContext.load_for_automatic(scratch_session)
+        sorting_context.update_current_material(
+            actual_material_identity_key=actual_identity_key,
+            ng_status="MOVING_TO_NG",
+            ng_reason_code=NG_REASON_LOCAL_SORTING_NG,
+            ng_evidence=evidence,
+        )
+        sorting_context.clear_pending_target_placement()
+        sorting_context.set_station_state(business_phase=PHASE_WAITING_NG_PLACE)
+        return self._ng_root_patch(
+            sorting=_dict_copy(scratch_session.context_json.get("sorting")),
+            reason_message=reason_message,
+            evidence=evidence,
+        )
+
+    def _ng_root_patch(
+        self, *, sorting: dict[str, Any], reason_message: str, evidence: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "sorting": sorting,
+            "ng_reason": NG_REASON_LOCAL_SORTING_NG,
+            "pick_place_reason": NG_REASON_LOCAL_SORTING_NG,
+            "scan_ng_reason_code": NG_REASON_LOCAL_SORTING_NG,
+            "scan_ng_reason_message": reason_message,
+            "source_payload": evidence,
         }
 
     def _target_mounted_payload(

@@ -182,6 +182,27 @@ def _target_place_result_inbox(
     )
 
 
+def _ng_place_result_inbox(
+    *,
+    result: str = "SUCCESS",
+    data: dict[str, Any] | None = None,
+) -> WorklineInbox:
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=2004,
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-NG-PLACE-001",
+                "device_code": "SORT-NG-ARM",
+                "task_type": COMMAND_NG_PLACE,
+                "result": result,
+                "data": data or {},
+            },
+        ),
+    )
+
+
 def _sorting_context_with_current_material() -> dict[str, Any]:
     return {
         "sorting": {
@@ -212,6 +233,16 @@ def _sorting_context_with_pending_target() -> dict[str, Any]:
         "allocation_snapshot_version": "snap-target-001",
         "capacity_evidence": {"remaining_depth_mm": "30.500"},
     }
+    return context
+
+
+def _sorting_context_with_ng_current_material() -> dict[str, Any]:
+    context = _sorting_context_with_current_material()
+    sorting = context["sorting"]
+    sorting["business_phase"] = "WAITING_NG_PLACE"
+    sorting["current_material"]["pkg_code"] = "PKG-001"
+    sorting["current_material"]["ng_status"] = "MOVING_TO_NG"
+    sorting["current_material"]["actual_material_identity_key"] = "mid:actual-other"
     return context
 
 
@@ -446,6 +477,30 @@ async def test_working_bin_scan_projection_inconsistent_blocks_target_cell() -> 
 
 
 @pytest.mark.asyncio
+async def test_working_bin_scan_identity_mismatch_sends_reel_to_local_ng() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(
+        _ctx(_sorting_context_with_current_material()),
+        _working_bin_scan_inbox({"material_identity_key": "mid:actual-other"}),
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.MARK_NG,
+        RuntimeIntentKind.COMMAND,
+    ]
+    sorting_patch = intents[0].context_patch["sorting"]
+    assert "pending_target_placement" not in sorting_patch
+    assert sorting_patch["current_material"]["ng_status"] == "MOVING_TO_NG"
+    assert sorting_patch["current_material"]["actual_material_identity_key"] == "mid:actual-other"
+    assert intents[0].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
+    assert intents[1].reason_code == "LOCAL_SORTING_NG"
+    assert intents[2].action == COMMAND_NG_PLACE
+    assert intents[2].device_role == ROLE_SORTING_NG_ARM
+
+
+@pytest.mark.asyncio
 async def test_target_place_success_requires_pending_target_placement() -> None:
     plugin = SmtSortingInboundPlugin()
 
@@ -507,3 +562,46 @@ async def test_target_place_failure_with_unknown_location_enters_reconciliation(
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "SORTING_TARGET_PLACE_LOCATION_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_ng_place_success_closes_material_and_keeps_ng_return_context() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_ng_current_material()), _ng_place_result_inbox()
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    patch = intents[0].context_patch
+    assert patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
+    assert patch["ng_reason"] == "LOCAL_SORTING_NG"
+    assert "current_material" not in patch["sorting"]
+    assert patch["sorting"]["stations"]["scan_platform"] == "EMPTY"
+
+
+@pytest.mark.asyncio
+async def test_ng_place_failure_with_known_location_enters_manual_suspend() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_ng_current_material()),
+        _ng_place_result_inbox(result="FAILED", data={"ng_location_code": "NG-01", "error_message": "ng arm alarm"}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_NG_PLACE_FAILED"
+    assert intents[0].payload_json["ng_location_known"] is True
+
+
+@pytest.mark.asyncio
+async def test_ng_place_failure_with_unknown_location_enters_reconciliation() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_ng_current_material()),
+        _ng_place_result_inbox(result="FAILED", data={"ng_location_known": False}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_NG_PLACE_LOCATION_UNKNOWN"
