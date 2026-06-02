@@ -1039,6 +1039,9 @@ P0 集成测试：
 
 ### 沙箱验证方向
 
+- 已补充跨计划 stitching smoke：`tests/integration/workline_runtime/test_cross_plan_sandbox_smoke.py`，
+  覆盖 `STOPPED -> START -> READY`、源端取盘、扫码分格、目标放盘、命令前 realtime status guard、
+  本地 NG 和 Session completion。该 smoke 不启动完整 runtime orchestrator/effect applier。
 - 构造两个 Station 上不同源料格。
 - 构造一个目标箱已有兼容格。
 - 构造一个目标箱无兼容格但有空格且厚度足够。
@@ -1069,3 +1072,5 @@ P0 集成测试：
 ## 后续 TODO
 
 - 拆分完整 CTU/WMS/NG 对账 SPEC：覆盖目标箱回写失败后的自动恢复、NG evidence 消费、Session 结算对账和 WMS 版本冲突人工解除流程。
+- 补 runtime orchestrator/effect 层 thin smoke：覆盖 SMT Sorting plugin intent 到 outbox、resource fact
+  和 session context 持久化的真实衔接，避免 stitching smoke 漏掉 effect applier 回归。
