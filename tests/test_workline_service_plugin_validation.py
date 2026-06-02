@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import update
 
 from src.app.device.models import Device
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -79,6 +80,17 @@ def test_workline_service_lists_rough_sorter_plugin_option() -> None:
 
     assert [option.plugin_key for option in options] == ["rough_sorter"]
     assert options[0].default_contract_version == "rough_sorter.v1"
+
+
+def test_workline_service_status_path_defaults_to_standard_endpoint_not_callback_path() -> None:
+    """START/status 预检不能把命令 callback_path 当成设备 status endpoint。"""
+
+    device = SimpleNamespace(
+        capabilities_json={},
+        callback_path="/api/v1/device/command",
+    )
+
+    assert WorkLineService._resolve_device_status_path(device) == "/api/v1/device/status"
 
 
 def test_rough_sorter_plugin_assignment_accepts_required_roles() -> None:
@@ -498,7 +510,7 @@ async def test_configuration_status_reports_missing_plugin_and_role_blockers(db_
 
 @pytest.mark.asyncio
 async def test_configuration_status_reports_incomplete_command_target_communication(db_session) -> None:
-    """命令目标设备缺少 host/port/status_path 时，配置状态应直接命名 affected device。"""
+    """命令目标设备缺少 host/port 时，配置状态应直接命名 affected device。"""
 
     workline = WorkLine(
         line_code="WL-ROUGH-COMM-CHECK",
@@ -536,7 +548,56 @@ async def test_configuration_status_reports_incomplete_command_target_communicat
     assert communication_checks
     assert communication_checks[0].severity == "BLOCKER"
     assert communication_checks[0].context["device_code"] == "ROUGH-COMM-DEV-2"
-    assert set(communication_checks[0].context["missing_fields"]) == {"host", "port", "status_path"}
+    assert set(communication_checks[0].context["missing_fields"]) == {"host", "port"}
+    assert communication_checks[0].context["status_path"] == "/api/v1/device/status"
+
+
+@pytest.mark.asyncio
+async def test_configuration_status_reports_invalid_command_target_capabilities_as_blocker(db_session) -> None:
+    """命令目标设备能力配置无效时，配置状态应返回 blocker 而不是抛运行时异常。"""
+
+    workline = WorkLine(
+        line_code="WL-ROUGH-CAPABILITY-BAD",
+        line_name="粗分机能力配置错误",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v1",
+    )
+    db_session.add(workline)
+    await db_session.commit()
+    await db_session.refresh(workline)
+
+    devices: list[Device] = []
+    for index, role in enumerate((ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM), start=1):
+        device = Device(
+            device_code=f"ROUGH-CAP-BAD-DEV-{index}",
+            device_name=f"粗分机能力配置设备{index}",
+            work_line_id=workline.id,
+            device_role=role,
+            role_index=1,
+            capabilities_json={},
+            host="mock-ecs",
+            port=8010,
+        )
+        devices.append(device)
+        db_session.add(device)
+    await db_session.commit()
+    await db_session.execute(
+        update(Device).where(Device.id == devices[0].id).values(capabilities_json="not-a-dict")  # type: ignore[arg-type]
+    )
+    await db_session.commit()
+
+    service = WorkLineService()
+    status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    capability_checks = [
+        check for check in status.checks if check.code == "COMMAND_TARGET_CAPABILITY_CONFIG" and check.status == "FAIL"
+    ]
+    assert status.can_activate is False
+    assert capability_checks
+    assert capability_checks[0].severity == "BLOCKER"
+    assert capability_checks[0].context["device_code"] == "ROUGH-CAP-BAD-DEV-1"
+    assert capability_checks[0].context["capabilities_error"] == "Input should be a valid dictionary"
 
 
 @pytest.mark.asyncio

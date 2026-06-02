@@ -302,17 +302,23 @@ class RuntimeHoldReleaseService:
         remaining_holds = await self.runtime_hold_repo.get_active_blocking_by_workline(db, hold.workline_id)
         remaining_active_blocking_holds = len(remaining_holds)
         release_workline_scope = remaining_active_blocking_holds == 0
-        released_outbox_count = await self.outbox_repo.release_blocked_by_runtime_hold_or_workline(
-            db,
-            runtime_hold_id=cast("int", hold.id),
-            workline_id=hold.workline_id,
-            release_workline_scope=release_workline_scope,
-        )
         if release_workline_scope:
+            await self.outbox_repo.park_blocked_by_runtime_hold_until_start(
+                db,
+                runtime_hold_id=cast("int", hold.id),
+                workline_id=hold.workline_id,
+            )
+            released_outbox_count = 0
             workline.runtime_status = WorkLineRuntimeStatus.STOPPED
             workline.resumed_at = None
             workline.stopped_reason = "RECOVERY_CLEARED_WAITING_START"
         else:
+            released_outbox_count = await self.outbox_repo.release_blocked_by_runtime_hold_or_workline(
+                db,
+                runtime_hold_id=cast("int", hold.id),
+                workline_id=hold.workline_id,
+                release_workline_scope=False,
+            )
             self._project_remaining_hold_status(workline, remaining_holds)
 
         await db.flush()

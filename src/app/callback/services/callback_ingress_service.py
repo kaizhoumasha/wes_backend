@@ -593,7 +593,7 @@ async def _handle_event_start_admission(
     request_id: str | None,
     event_data: JsonDict,
     device_code: str,
-    response_time_ms: int,
+    start_time: float,
 ) -> CallbackEventIngressDecision:
     admission = await start_admission_service.admit_start_for_device(
         db,
@@ -601,6 +601,7 @@ async def _handle_event_start_admission(
         request_id=request_id,
         trace_id=_resolve_callback_trace_id(event_data),
     )
+    response_time_ms = _response_time_ms(start_time)
     await _log_callback_outcome(
         db,
         request,
@@ -1158,7 +1159,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
                 request_id=request_id,
                 event_data=event_data,
                 device_code=device_code,
-                response_time_ms=_response_time_ms(start_time),
+                start_time=start_time,
             )
 
         if is_production_event(canonical_event_type):

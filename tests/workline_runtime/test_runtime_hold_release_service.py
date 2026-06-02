@@ -807,7 +807,7 @@ async def test_safety_estop_hold_requires_clear_estop_entrypoint(db_session) -> 
         await service.resolve_hold(db_session, cast("int", hold.id), _continue_request(service, hold), 42)
 
 
-async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -> None:
+async def test_last_blocking_hold_resolved_keeps_outbox_parked_until_start(db_session) -> None:
     service = RuntimeHoldReleaseService()
     workline = await _create_workline(db_session, code="WL-HOLD-OUTBOX")
     session = await _create_session(db_session, workline, code="S-HOLD-OUTBOX")
@@ -833,14 +833,14 @@ async def test_last_blocking_hold_resolved_releases_blocked_outbox(db_session) -
 
     await db_session.refresh(workline)
     await db_session.refresh(outbox)
-    assert result["released_outbox_count"] == 1
+    assert result["released_outbox_count"] == 0
     assert result["workline_runtime_status"] == WorkLineRuntimeStatus.STOPPED.value
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
-    assert outbox.status == SystemOutboxStatus.NEW
+    assert outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
     assert outbox.blocked_by_runtime_hold_id is None
     assert outbox.blocked_by_reconciliation_session_id is None
-    assert outbox.blocked_workline_id is None
-    assert outbox.blocked_reason is None
+    assert outbox.blocked_workline_id == workline.id
+    assert outbox.blocked_reason == "WORKLINE_STOPPED_WAITING_START"
 
 
 async def test_repeated_resolved_hold_rejects_without_second_ng_item(db_session) -> None:

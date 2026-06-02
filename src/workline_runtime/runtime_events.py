@@ -37,10 +37,12 @@ def assert_not_reserved_runtime_event(
 ) -> None:
     """禁止插件把平台保留事件声明为普通业务事件。"""
 
+    surface = f"（{declaration_surface}）" if declaration_surface else ""
+    if event_type in PLATFORM_CONTROL_EVENTS:
+        raise ValueError(f"{event_type} 是平台保留控制事件，不能由 {owner}{surface} 声明或处理")
     if event_type not in RESERVED_RUNTIME_EVENTS:
         return
 
-    surface = f"（{declaration_surface}）" if declaration_surface else ""
     raise ValueError(f"{event_type} 是平台保留安全事件，不能由 {owner}{surface} 声明或处理")
 
 

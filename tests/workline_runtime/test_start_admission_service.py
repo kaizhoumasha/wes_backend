@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 import pytest
 
 from src.app.device.models import Device
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.services.start_admission_service import (
@@ -14,11 +16,14 @@ from src.app.workline.services.start_admission_service import (
     StartAdmissionStatusTarget,
     WorkLineStartAdmissionService,
 )
+from src.core.task_queue_gateway import DISPATCH_SYSTEM_OUTBOX_TASK
 from src.workline_plugins.rough_sorter.contract import (
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
+
+start_admission_module = importlib.import_module("src.app.workline.services.start_admission_service")
 
 
 class RecordingStatusFetcher:
@@ -100,6 +105,23 @@ def _idle_payload(devices: list[Device]) -> dict[str, Any]:
     }
 
 
+def _mock_ecs_idle_payload(devices: list[Device]) -> dict[str, Any]:
+    return {
+        "devices": [
+            {
+                "device": {"device_code": device.device_code},
+                "state": {
+                    "device_code": device.device_code,
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "current_command_id": None,
+                },
+            }
+            for device in devices
+        ]
+    }
+
+
 @pytest.mark.asyncio
 async def test_start_admission_happy_path_sets_ready_and_records_success(db_session) -> None:
     """STOPPED 且所有 ECS 设备 AUTO/IDLE 时，START 准入写入 READY。"""
@@ -130,6 +152,116 @@ async def test_start_admission_happy_path_sets_ready_and_records_success(db_sess
     assert target.url == "http://mock-ecs:8010/api/v1/device/status"
     assert target.device_codes == ("RS-CONV-01", "RS-IN-01", "RS-OUT-01")
     assert timeout_seconds == 2.0
+
+
+@pytest.mark.asyncio
+async def test_start_admission_accepts_mock_ecs_batch_status_shape(db_session) -> None:
+    """START 准入接受 mock ECS 批量 status 的 device/state 嵌套契约。"""
+
+    workline = _make_workline(stopped_reason="MANUAL_STOP")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    fetcher = RecordingStatusFetcher(_mock_ecs_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(
+        db_session,
+        "RS-IN-01",
+        request_id="req-start-mock-shape",
+        trace_id="trace-start-mock-shape",
+    )
+
+    await db_session.refresh(workline)
+    assert result.accepted is True
+    assert result.http_status == 200
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.start_admission_status == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_start_admission_success_releases_and_enqueues_workline_parked_outbox(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """START 准入通过后，才释放并即时派发 WorkLine 级停放的 outbox。"""
+
+    workline = _make_workline(stopped_reason="RECOVERY_CLEARED_WAITING_START")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    outbox = SystemOutbox(
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:START-RELEASES-PARKED",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="RS-IN-01",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_workline_id=workline.id,
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        last_error="WORKLINE_STOPPED_WAITING_START",
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+    enqueued: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_send_task(_self: object, task_name: str, *, kwargs: dict[str, Any]) -> None:
+        enqueued.append((task_name, kwargs))
+
+    monkeypatch.setattr("src.core.task_queue_gateway.CeleryTaskQueueGateway._send_task", fake_send_task)
+    fetcher = RecordingStatusFetcher(_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-release")
+
+    await db_session.refresh(workline)
+    await db_session.refresh(outbox)
+    assert result.accepted is True
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert outbox.status == SystemOutboxStatus.NEW
+    assert outbox.blocked_workline_id is None
+    assert outbox.blocked_reason is None
+    assert outbox.last_error is None
+    assert enqueued == [(DISPATCH_SYSTEM_OUTBOX_TASK, {"limit": 50})]
+
+
+@pytest.mark.asyncio
+async def test_start_admission_success_ignores_enqueue_failure_after_releasing_outbox(db_session) -> None:
+    """START 已提交成功后，即时派发触发失败不应覆盖 START 接受语义。"""
+
+    class FailingQueueGateway:
+        def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
+            _ = limit
+
+        def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
+            _ = (outbox_id, limit)
+            raise RuntimeError("redis unavailable")
+
+        def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None:
+            _ = (target_code, payload)
+
+    workline = _make_workline(stopped_reason="RECOVERY_CLEARED_WAITING_START")
+    devices = await _persist_workline_with_devices(db_session, workline)
+    outbox = SystemOutbox(
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:START-QUEUE-FAILURE",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="RS-IN-01",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_workline_id=workline.id,
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        last_error="WORKLINE_STOPPED_WAITING_START",
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+    fetcher = RecordingStatusFetcher(_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher, queue_gateway=FailingQueueGateway())
+
+    result = await service.admit_start_for_device(db_session, "RS-IN-01", request_id="req-start-queue-failure")
+
+    await db_session.refresh(workline)
+    await db_session.refresh(outbox)
+    assert result.accepted is True
+    assert result.http_status == 200
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert outbox.status == SystemOutboxStatus.NEW
 
 
 @pytest.mark.asyncio
@@ -230,6 +362,45 @@ def test_start_admission_runtime_config_defaults_and_clamps() -> None:
     assert service.resolve_batch_concurrency({}) == 4
     assert service.resolve_batch_concurrency({"device_status_batch_concurrency": 0}) == 1
     assert service.resolve_batch_concurrency({"device_status_batch_concurrency": 99}) == 8
+
+
+@pytest.mark.asyncio
+async def test_fetch_status_preserves_non_2xx_status_when_body_is_not_json(monkeypatch) -> None:
+    """ECS 非 2xx 响应即使不是 JSON，也要保留 status_code 供上层分类为 HTTP_ERROR。"""
+
+    class NonJsonResponse:
+        status_code = 503
+
+        def json(self) -> Any:
+            raise ValueError("not json")
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> NonJsonResponse:
+            assert url == "http://mock-ecs:8010/api/v1/device/status"
+            return NonJsonResponse()
+
+    monkeypatch.setattr(start_admission_module.httpx, "AsyncClient", FakeAsyncClient)
+    target = StartAdmissionStatusTarget(
+        scheme="http",
+        host="mock-ecs",
+        port=8010,
+        status_path="/api/v1/device/status",
+        device_codes=("RS-IN-01",),
+    )
+
+    result = await WorkLineStartAdmissionService._fetch_status(target, 2.0)
+
+    assert result.status_code == 503
+    assert result.payload is None
 
 
 @pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
