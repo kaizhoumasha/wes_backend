@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
@@ -22,8 +22,14 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
-from src.workline_runtime.plugin_base import WorklinePlugin
+from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+
+if TYPE_CHECKING:
+    from src.app.workline.models import WorklineInbox
+    from src.workline_runtime.plugin_context import PluginContext
+    from src.workline_runtime.runtime_intent import RuntimeIntent
 
 COMMAND_TARGET_ROLES: dict[str, str] = {
     COMMAND_SOURCE_PICK: ROLE_SORTING_SOURCE_ARM,
@@ -75,7 +81,7 @@ def classify_sorting_inbound_result(payload_json: dict[str, Any]) -> str | None:
 class SmtSortingInboundPlugin(WorklinePlugin):
     """SMT 分拣入库插件。
 
-    Task 7 只声明 manifest/role 合同；业务 handler 在后续 flow task 中接入。
+    manifest 声明角色/事件/命令合同，具体 P0 业务编排委托给 flow service。
     """
 
     plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
@@ -100,6 +106,15 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         event_source_roles=EVENT_SOURCE_ROLES,
         command_target_roles=COMMAND_TARGET_ROLES,
     )
+
+    def __init__(self, flow_service: SmtSortingInboundFlowService | None = None) -> None:
+        self._flow_service = flow_service or SmtSortingInboundFlowService()
+
+    @on_command(COMMAND_SOURCE_PICK, result="SUCCESS")
+    async def handle_source_pick_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """源端机械臂取盘成功后，触发源格出账和扫码平台占用。"""
+
+        return await self._flow_service.handle_source_pick_success(ctx, inbox)
 
 
 __all__ = [
