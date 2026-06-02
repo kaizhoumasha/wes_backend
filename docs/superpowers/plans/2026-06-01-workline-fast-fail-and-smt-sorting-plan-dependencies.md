@@ -4,8 +4,8 @@
 
 ## 计划清单
 
-1. [Workline Fast-Fail START Admission Implementation Plan](2026-06-01-workline-fast-fail-start-admission-plan.md)
-2. [SMT Sorting Inbound WorkLine P0 Implementation Plan](2026-06-01-smt-sorting-inbound-workline-p0-plan.md)
+1. [Workline Fast-Fail START Admission Implementation Plan](../archive/plans/2026-06-01-workline-fast-fail-start-admission-plan.md)
+2. [SMT Sorting Inbound WorkLine P0 Implementation Plan](../archive/plans/2026-06-01-smt-sorting-inbound-workline-p0-plan.md)
 
 ## 总体依赖
 
@@ -59,6 +59,8 @@
 - [x] 目标端成功后，插件 intent 产出 `MATERIAL_MOUNTED`，`current_material` 关闭。
 - [x] 源端快照不一致时进入本地 NG，插件 intent/context 记录 `LOCAL_SORTING_NG`，不触发该盘目标箱 WMS 物料变化。
 - [x] 任一 `NG_MATERIAL_CONFLICT` 会阻止 Session 完成，直到人工或对账解除。
+  - 2026-06-02 verification: `tests/workline_runtime/test_runtime_intent_effects.py::test_complete_intent_turns_ng_material_conflict_into_runtime_hold`
+    覆盖 `COMPLETE` intent 遇到 `NG_MATERIAL_CONFLICT` 后转 `MANUAL_HOLD` 并创建 runtime hold。
 
 剩余跟踪：
 

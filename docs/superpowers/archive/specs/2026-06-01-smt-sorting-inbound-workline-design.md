@@ -1074,3 +1074,6 @@ P0 集成测试：
 - 拆分完整 CTU/WMS/NG 对账 SPEC：覆盖目标箱回写失败后的自动恢复、NG evidence 消费、Session 结算对账和 WMS 版本冲突人工解除流程。
 - 补 runtime orchestrator/effect 层 thin smoke：覆盖 SMT Sorting plugin intent 到 outbox、resource fact
   和 session context 持久化的真实衔接，避免 stitching smoke 漏掉 effect applier 回归。
+- 完成跨计划沙箱验收：`STOPPED -> WORKLINE_START_REQUESTED -> READY -> SMT Sorting P0 event -> command -> resource projection -> local NG/target close`。
+- 前端 STOPPED/START 合同合并后，再验收普通生产 Event composer 在非 `READY` 下禁用、`WORKLINE_START_REQUESTED` 不出现在普通生产模板中。
+- 后续 review 需要关注 `f87e48f` 未按 Foundation PR / Plugin PR 拆分带来的回滚边界风险。

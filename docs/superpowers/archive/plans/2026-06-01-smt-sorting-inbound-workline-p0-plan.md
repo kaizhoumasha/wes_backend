@@ -10,6 +10,28 @@
 
 ---
 
+## 实施验证状态
+
+日期：2026-06-02。
+
+结论：SMT 分拣入库 P0 后端本地状态闭环已在 `wes_backend` 当前 `develop` 验证通过。完整 CTU/WMS/NG 对账仍按 SPEC 非目标和 TODO 延后；平台级前端 STOPPED/START 合同已在前端 worktree 落地但尚未合并，跨计划端到端沙箱验收仍不能关闭。
+
+已合并实现提交：`f87e48f v0.4.4.0 feat: SMT 分拣入库基础流`。
+
+已验证通过：
+
+- P0 相关聚焦 suite 已包含在后端 383 passed 命令中，覆盖 shared allocation policy、粗分机 delegation、Decimal/Numeric 深度、`MATERIAL_UNMOUNTED`、`NG_MATERIAL_CONFLICT`、`SortingInboundContext`、插件 manifest/roles、源端取盘、扫码分格、目标放盘、本地 NG、completion guard 和 P0 integration smoke。
+- 相关回归：`uv run pytest tests/workline_runtime/test_plugin_manifest_and_topology.py tests/workline_runtime/test_runtime_intent_effects.py -q`，54 passed。
+- 质量门禁：相关 runtime/callback/resource/plugin/test 路径 `uv run ruff check ...` 通过，`uv run ruff format --check ...` 显示 264 files already formatted。
+- 迁移 smoke：`./scripts/migrate.sh upgrade` 通过。
+
+流程偏差 / 风险：
+
+- 原计划要求 Foundation PR 和 Plugin PR 可独立 review、独立回滚；实际落地为单个提交 `f87e48f`，功能可验收，但回滚边界不如计划理想。
+- 未复核历史 RED/TDD 失败态输出和实施前 `gitnexus_impact` 记录；本次只验证当前 HEAD 行为和质量门禁。
+- GitNexus 从计划前提交到当前 HEAD 的 compare 为 critical 风险，属于跨 runtime/resource/plugin 大改后的预期风险；仍建议后续做独立 code review 和联调 QA。
+- 前端 STOPPED/START 合同依赖分支 `../worktrees/wes_frontend/feature-workline-stopped-start-contract`，当前 HEAD `d9bb38a`，需合并后再执行跨计划沙箱 smoke。
+
 ## Scope Check
 
 本计划只覆盖 [SMT 分拣入库复合 WorkLine 设计](../specs/2026-06-01-smt-sorting-inbound-workline-design.md) 的 P0 本地状态闭环。完整 CTU/WMS/NG 对账、WMS typed port、目标箱回写生产闭环、多扫码平台、多目标机械臂、跨 WorkLine reservation 和 resource 域全量 float 清理均不在本计划内。
@@ -403,12 +425,12 @@ Expected: commit contains NG conflict structure only.
 
 ## Foundation PR Acceptance
 
-- [ ] Shared policy is pure, Decimal-based, and covered by unit tests.
-- [ ] Rough sorter uses shared policy without losing existing rack operation behavior.
-- [ ] `BinCellOccupancy` core depth fields are Numeric/Decimal.
-- [ ] `MATERIAL_UNMOUNTED` handles LIFO source out账 and idempotency.
-- [ ] `NG_MATERIAL_CONFLICT` is structured and test-covered.
-- [ ] Focused tests pass:
+- [x] Shared policy is pure, Decimal-based, and covered by unit tests.
+- [x] Rough sorter uses shared policy without losing existing rack operation behavior.
+- [x] `BinCellOccupancy` core depth fields are Numeric/Decimal.
+- [x] `MATERIAL_UNMOUNTED` handles LIFO source out账 and idempotency.
+- [x] `NG_MATERIAL_CONFLICT` is structured and test-covered.
+- [x] Focused tests pass:
 
 ```bash
 uv run pytest tests/resource/test_smt_bin_cell_allocation_policy.py tests/workline_runtime/test_smt_rack_bin_scheduling_service.py tests/resource/test_resource_projection_service.py tests/workline_runtime/test_ng_return_item_service.py -q
@@ -873,16 +895,17 @@ Expected: affected flows match resource projection, SMT rack/bin allocation, NG 
 ## Final Acceptance Checklist
 
 - [ ] Foundation PR and Plugin PR can be reviewed and rolled back independently.
-- [ ] Shared allocation policy is pure and used by rough sorter and sorting inbound.
-- [ ] Core bin cell depth calculations use Decimal/Numeric.
-- [ ] Source pick writes `MATERIAL_UNMOUNTED` and opens `current_material`.
-- [ ] Scan allocation writes `pending_target_placement` before target command.
-- [ ] Target success writes `MATERIAL_MOUNTED` and closes current material.
-- [ ] Local NG success writes `NgReturnItem` and closes current material without WMS realtime wait.
-- [ ] `NG_MATERIAL_CONFLICT` blocks completion through structured hold/reconciliation/manual hold.
-- [ ] Session completion rejects dangling `current_material` and `pending_target_placement`.
-- [ ] Candidate selection avoids source/target N+1 query patterns.
-- [ ] Plugin declares role mappings and does not hard-code physical device codes.
+  - 2026-06-02 verification: implementation landed as single commit `f87e48f`; 功能已验收，但计划的 PR/rollback 切分未满足。
+- [x] Shared allocation policy is pure and used by rough sorter and sorting inbound.
+- [x] Core bin cell depth calculations use Decimal/Numeric.
+- [x] Source pick writes `MATERIAL_UNMOUNTED` and opens `current_material`.
+- [x] Scan allocation writes `pending_target_placement` before target command.
+- [x] Target success writes `MATERIAL_MOUNTED` and closes current material.
+- [x] Local NG success writes `NgReturnItem` and closes current material without WMS realtime wait.
+- [x] `NG_MATERIAL_CONFLICT` blocks completion through structured hold/reconciliation/manual hold.
+- [x] Session completion rejects dangling `current_material` and `pending_target_placement`.
+- [x] Candidate selection avoids source/target N+1 query patterns.
+- [x] Plugin declares role mappings and does not hard-code physical device codes.
 
 ## Self-Review
 

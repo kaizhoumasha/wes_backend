@@ -247,13 +247,16 @@ Swagger 调试流程：
 
 前端代码位于 `../wes_frontend`。本计划按全栈同批交付处理：后端 API 合同与前端 STOPPED/START 展示、禁用和模板过滤必须在同一批变更中完成，避免后端语义切换后前端继续显示“稳定”或“已恢复接收”。
 
+### 2026-06-02 实施后验证结论
+
+- 后端 STOPPED/START/409/status guard/mock/TODO 范围已在 `wes_backend` 当前 `develop` 通过聚焦测试、ruff、迁移 smoke 和架构红线检查。
+- 前端合同已在 `../worktrees/wes_frontend/feature-workline-stopped-start-contract` 落地，HEAD `d9bb38a`。
+- 前端验证通过：STOPPED runtime display/verdict/overview health、`WORKLINE_START_REQUESTED` 普通模板过滤、非 READY replay Event guard、`start_admission_*` UI、clear/resolve 后“等待 START”文案、START API body/rejected data test、`pnpm test` 399 passed、`type:check`、`contract:verify`、`lint`、`git diff --check`。
+- 前端分支尚未合并到 `../wes_frontend develop`，跨计划端到端沙箱验收仍需在合并后执行；因此 SPEC 可关闭实现缺口，但不能关闭最终联调验收。
+
 ### 当前前端缺口
 
-- `src/constants/runtime-safety.ts` 只有 `ESTOPPED` / `RECONCILING`，没有 `STOPPED`。
-- `src/utils/runtime-display.ts` 不识别 `STOPPED`，工作线风险标签会落到“稳定”或普通 info 语义。
-- `src/utils/runtime-safety.ts` 的 `getWorklineRuntimeVerdict()` 只把 `ESTOPPED`、`RECONCILING`、active incident 或 safety evidence 视为阻断状态，没有“等待现场硬件 START”的 verdict。
-- `src/views/runtime/worklines/WorklineMonitorPage.vue` 和 `src/views/runtime/sandbox/SandboxWorkbenchPage.vue` 的 clear-estop 文案仍是“恢复接收 / 已恢复接收新流程”，与 clear 后回到 `STOPPED` 的新语义冲突。
-- `src/components/runtime/sandbox/SandboxEventComposer.vue` 已禁止普通 sandbox 发送 `ESTOP_PRESSED`，但尚未禁止 `WORKLINE_START_REQUESTED` 作为普通生产 Event 被发送。
+- 无已知前端实现缺口。剩余项是前端分支 PR review、合并和跨计划端到端沙箱 smoke。
 
 ### 后端必须暴露的最小运行态合同
 
@@ -445,35 +448,35 @@ Critical silent gaps after this review: 0. Every listed failure mode has planned
 
 ### Implementation Tasks
 
-- [ ] **T1 (P1, human: ~3h / CC: ~30min)** — WorkLine state — add `STOPPED` runtime status, migration, schema contract, defaults, and reset semantics.
+- [x] **T1 (P1, human: ~3h / CC: ~30min)** — WorkLine state — add `STOPPED` runtime status, migration, schema contract, defaults, and reset semantics.
   - Surfaced by: Architecture/Test Review — default READY is semantically wrong for unstarted lines.
   - Files: `src/app/workline/models/`, runtime reset/query services, migrations, dev seed scripts.
   - Verify: model/service/migration tests plus dev seed tests.
-- [ ] **T2 (P1, human: ~3h / CC: ~25min)** — Event taxonomy and callback 409 — centralize platform event classification and return real HTTP 409 with numeric code + `data.reason_code`.
+- [x] **T2 (P1, human: ~3h / CC: ~25min)** — Event taxonomy and callback 409 — centralize platform event classification and return real HTTP 409 with numeric code + `data.reason_code`.
   - Surfaced by: Code Quality/Test Review — START/ESTOP strings and response contracts must not diverge.
   - Files: `src/workline_runtime/runtime_events.py`, callback API/service modules.
   - Verify: callback route tests for START, ESTOP, production guard, numeric response body.
-- [ ] **T3 (P1, human: ~5h / CC: ~45min)** — START admission — implement shared communication precheck, WorkLine snapshot fields, grouped batch status, bounded concurrency, timeout clamp, and two-stage CAS.
+- [x] **T3 (P1, human: ~5h / CC: ~45min)** — START admission — implement shared communication precheck, WorkLine snapshot fields, grouped batch status, bounded concurrency, timeout clamp, and two-stage CAS.
   - Surfaced by: Architecture/Performance Review — START must be race-safe and fast without holding DB locks over HTTP.
   - Files: `src/app/workline/services/`, WorkLine model/runtime summary, callback orchestration boundary.
   - Verify: START admission matrix, CAS drift tests, API summary/detail tests.
-- [ ] **T4 (P1, human: ~3h / CC: ~25min)** — Recovery transitions — make clear-estop and runtime hold resolve return `STOPPED`.
+- [x] **T4 (P1, human: ~3h / CC: ~25min)** — Recovery transitions — make clear-estop and runtime hold resolve return `STOPPED`.
   - Surfaced by: Architecture Review — READY only comes from hardware START admission.
   - Files: workline safety and runtime hold release services.
   - Verify: safety service and hold release tests.
-- [ ] **T5 (P1, human: ~4h / CC: ~35min)** — Device dispatch status — add single-device realtime status GET before command POST with operation-scoped client and independent timeout.
+- [x] **T5 (P1, human: ~4h / CC: ~35min)** — Device dispatch status — add single-device realtime status GET before command POST with operation-scoped client and independent timeout.
   - Surfaced by: Performance/Test Review — command must not POST after realtime status failure.
   - Files: device command gateway and outbox dispatch tests.
   - Verify: full status failure matrix, success POST, ACK timeout regression.
-- [ ] **T6 (P1, human: ~3h / CC: ~30min)** — Dev mock — upgrade `mock_ecs` to batch/single status contract and real START-to-command debug flow.
+- [x] **T6 (P1, human: ~3h / CC: ~30min)** — Dev mock — upgrade `mock_ecs` to batch/single status contract and real START-to-command debug flow.
   - Surfaced by: Scope Challenge — Swagger/mock must show real command history after START.
   - Files: mock ECS server/tests and dev sync scripts.
-  - Verify: mock tests and dev sync script tests.
-- [ ] **T7 (P1, human: ~4h / CC: ~40min, frontend repo)** — Frontend STOPPED contract — update DecisionStrip hierarchy, warning tone, START state table, recovery copy, composer disabling, dev/mock START entry, and a11y/responsive behavior.
+  - Verify: mock tests and dev sync script tests pass; single Swagger-style `START -> READY -> SCAN_COMPLETED -> command history` smoke remains a final follow-up.
+- [x] **T7 (P1, human: ~4h / CC: ~40min, frontend repo)** — Frontend STOPPED contract — update DecisionStrip hierarchy, warning tone, START state table, recovery copy, composer disabling, dev/mock START entry, and a11y/responsive behavior.
   - Surfaced by: Scope and Design Review — full-stack same batch prevents stale UI semantics and makes STOPPED readable as “waiting START, not fault”.
   - Files: frontend runtime constants/utils/views/composer.
-  - Verify: frontend unit tests plus monitor/sandbox smoke test for desktop and narrow viewport.
-- [ ] **T8 (P2, human: ~20min / CC: ~5min)** — TODO follow-up — update existing Workline HTTP benchmark TODO with ECS batch status and client strategy details.
+  - Verify: frontend unit tests, `type:check`, `contract:verify`, `lint`, `git diff --check`; monitor/sandbox smoke remains follow-up after merge.
+- [x] **T8 (P2, human: ~20min / CC: ~5min)** — TODO follow-up — update existing Workline HTTP benchmark TODO with ECS batch status and client strategy details.
   - Surfaced by: TODO decision — future benchmark must include START recovery path, not only command POST.
   - Files: `TODOS.md`.
   - Verify: documentation review only.

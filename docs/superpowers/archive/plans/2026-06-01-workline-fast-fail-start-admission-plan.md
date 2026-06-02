@@ -10,6 +10,37 @@
 
 ---
 
+## 实施验证状态
+
+日期：2026-06-02。
+
+结论：后端 runtime/callback/device/mock/TODO 范围已在 `wes_backend` 当前 `develop` 验证通过；前端 STOPPED/START 合同已在 `../worktrees/wes_frontend/feature-workline-stopped-start-contract` 落地并通过前端聚焦测试、类型检查、契约同步、lint 和 diff 检查。本计划实现范围可进入 PR/code review；跨计划端到端沙箱验收仍需在前端分支合并后关闭。
+
+已合并实现提交：`ba78685 v0.4.3.0 feat: WorkLine START 准入与快速阻断恢复 (#22)`。
+
+前端实现分支：`feature/workline-stopped-start-contract`，HEAD `d9bb38a fix(runtime): 禁止非READY重放Event`。
+
+已验证通过：
+
+- 后端聚焦 suite：`uv run pytest tests/workline_runtime/test_workline_safety_models.py tests/workline_runtime/test_master_data_runtime_properties.py tests/api/test_workline_runtime_api.py tests/workline_runtime/test_reserved_runtime_events.py tests/api/test_callback_api.py tests/workline_runtime/test_start_admission_service.py tests/workline_runtime/test_workline_safety_service.py tests/workline_runtime/test_runtime_hold_release_service.py tests/workline_runtime/test_device_command_gateway.py tests/mock/test_ecs_mock_server.py tests/scripts/test_sync_test_workline_devices.py ... -q`，383 passed。
+- 架构红线：`grep -r "from sqlalchemy import select" src/app/*/v1/` 和 `grep -r "db.execute(" src/app/*/v1/` 均无命中。
+- 质量门禁：相关 runtime/callback/resource/plugin/test 路径 `uv run ruff check ...` 通过，`uv run ruff format --check ...` 显示 264 files already formatted。
+- 迁移 smoke：`./scripts/migrate.sh upgrade` 通过。
+- Mock/集成补充：`tests/integration/workline_runtime/test_rough_sorter_physical_flow_integration.py -q` 通过；`tests/workline_runtime/test_plugin_manifest_and_topology.py tests/workline_runtime/test_runtime_intent_effects.py -q` 54 passed。
+- 前端聚焦 suite：`pnpm test tests/unit/runtime/worklineSafetyDisplay.test.ts tests/unit/components/runtime/decisionStrip.test.ts tests/unit/components/runtime/sandboxEventComposer.test.ts tests/unit/views/runtime/sandboxWorkbenchCleanup.test.ts tests/unit/components/runtime/sandboxActionListFailure.test.ts tests/unit/api/runtime.test.ts`，6 files / 39 tests passed。
+- 前端全量 suite：`pnpm test`，58 files / 399 tests passed。
+- 前端质量门禁：`pnpm type:check`、`pnpm contract:verify`、`pnpm lint`、`git diff --check` 均通过。
+- GitNexus 当前未提交变更检测：`npx gitnexus detect-changes --scope all --repo wes_backend` 返回 2 files / 0 affected processes / low，当前只剩 AGENTS/CLAUDE 索引数字变更。
+
+未完成 / 风险：
+
+- 前端 Task 7 已实现但尚未合并到前端 `develop`；合并前不要关闭跨仓端到端验收。
+- 尚未完成单条本地 smoke：`STOPPED -> WORKLINE_START_REQUESTED -> READY -> 生产 Event -> command history`。
+- 前端契约生成同步带出 `BinCellOccupancyResponse` depth 字段类型变化，应在前端 PR 中说明其来源为后端 OpenAPI 同步副作用。
+- 前端 callback generated method 仍无 body 参数，`WORKLINE_START_REQUESTED` 使用手写 `apiClient.Post('/api/v1/callback/event', body)` 兜底；已由 API 单测覆盖请求体。
+- GitNexus 实现范围回看：`npx gitnexus detect-changes --scope compare --base-ref e320f33 --repo wes_backend` 返回 78 files / 60 affected processes / risk critical。该风险符合平台级运行时改动规模，后续仍应做独立 code review 和端到端 QA。
+- 未复核历史 RED/TDD 失败态输出和实施前 `gitnexus_impact` 记录；本次只验证当前 HEAD 行为和质量门禁。
+
 ## Scope Check
 
 本 SPEC 横跨后端 runtime、callback ingress、device dispatch、dev mock、前端 runtime UI 和 `TODOS.md` follow-up。这些属于同一个平台级运行时合同，需要在本计划内同批验收，避免后端语义切换后前端仍显示“稳定/已恢复接收”。
@@ -717,19 +748,23 @@ Expected: commit contains backend implementation, tests, migration, docs, and TO
 
 ## Final Acceptance Checklist
 
-- [ ] `STOPPED` is the default runtime state for new/dev worklines.
-- [ ] Production events on non-READY return real HTTP 409 and do not create inbox rows.
-- [ ] START event succeeds only after shared config precheck and ECS status admission.
-- [ ] START admission does not hold DB lock while waiting for ECS HTTP.
-- [ ] START batch status uses ECS endpoint grouping and bounded concurrency.
-- [ ] Command dispatch performs realtime single-device status before POST.
-- [ ] Status GET failures never create physical action uncertainty.
-- [ ] clear-estop and runtime hold resolve return `STOPPED`, not `READY`.
+- [x] `STOPPED` is the default runtime state for new/dev worklines.
+- [x] Production events on non-READY return real HTTP 409 and do not create inbox rows.
+- [x] START event succeeds only after shared config precheck and ECS status admission.
+- [x] START admission does not hold DB lock while waiting for ECS HTTP.
+- [x] START batch status uses ECS endpoint grouping and bounded concurrency.
+- [x] Command dispatch performs realtime single-device status before POST.
+- [x] Status GET failures never create physical action uncertainty.
+- [x] clear-estop and runtime hold resolve return `STOPPED`, not `READY`.
 - [ ] Dev mock validates `START -> READY -> SCAN_COMPLETED -> command history`.
-- [ ] Frontend STOPPED is warning, visible, accessible, and not confused with fault or stable READY.
-- [ ] `WORKLINE_START_REQUESTED` is absent from normal production Event templates.
-- [ ] `TODOS.md` captures deferred benchmark/client-pool follow-up.
+  - 2026-06-02 verification: mock status/START event/command history pieces are covered by tests, but no single local smoke proved the complete Swagger chain in one run.
+- [x] Frontend STOPPED is warning, visible, accessible, and not confused with fault or stable READY.
+  - 2026-06-02 verification: frontend branch `feature/workline-stopped-start-contract` shows STOPPED warning, overview health warning classification, `aria-live="polite"`, 44px START target, and clear/resolve copy “已解除冻结，等待现场硬件 START” with unit coverage.
+- [x] `WORKLINE_START_REQUESTED` is absent from normal production Event templates.
+  - 2026-06-02 verification: backend plugin/callback reserved-event guard is covered; frontend composer filters `WORKLINE_START_REQUESTED` through `RESERVED_RUNTIME_EVENT_TYPES`; sandbox replay Event is also blocked while non-READY.
+- [x] `TODOS.md` captures deferred benchmark/client-pool follow-up.
 - [ ] `gitnexus_detect_changes()` scope matches expected modules.
+  - 2026-06-02 verification: current unstaged scope is low, but implementation compare from `e320f33` is critical due to broad runtime changes; keep open until review/QA sign-off.
 
 ## Self-Review
 
