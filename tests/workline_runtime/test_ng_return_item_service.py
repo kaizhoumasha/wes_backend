@@ -8,7 +8,7 @@ from src.app.workline.models import LineType, WorkLine
 from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, NgReturnItemStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
-from src.app.workline.services.ng_return_item_service import NgReturnItemService
+from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, NgReturnItemService
 from src.utils.timezone import timezone
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
@@ -107,6 +107,60 @@ async def _create_scan_ng_fixture(db_session):
     return workline, session, inbox
 
 
+async def _create_second_scan_ng_source(
+    db_session, workline: WorkLine, source_session: WorklineSession, source_inbox: WorklineInbox
+):
+    session = WorklineSession(
+        session_code="SES-NG-ITEM-OTHER",
+        workline_id=cast("int", workline.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        context_json=dict(source_session.context_json),
+        trace_id="trace-ng-item-other",
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    command = DeviceCommand(
+        command_code="CMD-NG-ITEM-OTHER",
+        device_id=cast("int", source_inbox.device_id),
+        workline_id=cast("int", workline.id),
+        session_id=session.session_code,
+        session_id_int=cast("int", session.id),
+        plugin_key=workline.plugin_key,
+        contract_version=workline.contract_version,
+        task_type="PICK_AND_PUT",
+        params={"barcode": "ITEM-6", "source_type": "INPUT_PLATFORM", "target_type": "NG_PLATFORM"},
+        status=CommandStatus.COMPLETED,
+        trace_id=session.trace_id,
+    )
+    db_session.add(command)
+    await db_session.flush()
+
+    inbox = WorklineInbox(
+        kind=InboxKind.COMMAND_RESULT,
+        source_system=SourceSystem.MANUAL,
+        source_message_id="sandbox:result:ng-item-other",
+        workline_id=cast("int", workline.id),
+        device_id=source_inbox.device_id,
+        command_id=cast("int", command.id),
+        session_id=cast("int", session.id),
+        trace_id=session.trace_id,
+        event_id="sandbox:result:CMD-NG-ITEM-OTHER",
+        payload_json={
+            "command_code": command.command_code,
+            "device_code": "ARM03-NG-ITEM",
+            "command_type": "PICK_AND_PUT",
+            "result": "SUCCESS",
+            "data": {"actual_qty": 1},
+        },
+    )
+    db_session.add(inbox)
+    await db_session.flush()
+    return session, inbox
+
+
 async def test_record_scan_ng_completion_creates_material_ng_item(db_session) -> None:
     service = NgReturnItemService()
     workline, session, inbox = await _create_scan_ng_fixture(db_session)
@@ -163,6 +217,41 @@ async def test_record_scan_ng_completion_is_idempotent_for_same_session_and_comm
     assert second is not None
     assert second.id == first.id
     assert len(rows) == 1
+
+
+async def test_record_scan_ng_completion_conflict_is_structured_for_different_source(db_session) -> None:
+    service = NgReturnItemService()
+    workline, session, inbox = await _create_scan_ng_fixture(db_session)
+    existing = await service.record_completed_ng_flow(
+        db_session,
+        session=session,
+        workline=workline,
+        inbox=inbox,
+        transition="pick_ng",
+        occurred_at=timezone.now_for_db(),
+    )
+    other_session, other_inbox = await _create_second_scan_ng_source(db_session, workline, session, inbox)
+
+    with pytest.raises(NgMaterialConflictError) as exc_info:
+        await service.record_completed_ng_flow(
+            db_session,
+            session=other_session,
+            workline=workline,
+            inbox=other_inbox,
+            transition="pick_ng",
+            occurred_at=timezone.now_for_db(),
+        )
+
+    assert existing is not None
+    conflict = exc_info.value
+    assert conflict.reason_code == "NG_MATERIAL_CONFLICT"
+    assert conflict.material_identity_key == "test-material:ITEM-6"
+    assert conflict.existing_item_id == existing.id
+    assert conflict.evidence["existing_source_session_id"] == session.id
+    assert conflict.evidence["existing_source_command_id"] == inbox.command_id
+    assert conflict.evidence["new_source_session_id"] == other_session.id
+    assert conflict.evidence["new_source_command_id"] == other_inbox.command_id
+    assert conflict.evidence["new_source_event_id"] == other_inbox.event_id
 
 
 async def test_record_scan_ng_completion_uses_session_identity_when_material_identity_is_missing(db_session) -> None:

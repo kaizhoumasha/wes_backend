@@ -13,7 +13,7 @@ from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_d
 from .inbox_batch_processor import InboxBatchProcessor
 from .inbox_service import WorklineInboxService, inbox_service
 from .integration_debug_service import IntegrationDebugService, integration_debug_service
-from .ng_return_item_service import NgReturnItemService, ng_return_item_service
+from .ng_return_item_service import NgMaterialConflictError, NgReturnItemService, ng_return_item_service
 from .operation_service import WorklineOperationService, workline_operation_service
 from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service
 from .rack_position_service import WorklineRackPositionService, workline_rack_position_service
@@ -46,6 +46,7 @@ __all__ = [
     "DeviceCommandGateway",
     "InboxBatchProcessor",
     "IntegrationDebugService",
+    "NgMaterialConflictError",
     "NgReturnItemService",
     "OrchestratorWriteBackService",
     "OutboxDispatchService",

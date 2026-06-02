@@ -28,6 +28,25 @@ def _as_non_empty_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+class NgMaterialConflictError(ValueError):
+    """同一物料已有不同来源 active NG 回流项。"""
+
+    reason_code = "NG_MATERIAL_CONFLICT"
+
+    def __init__(
+        self,
+        *,
+        material_identity_key: str,
+        existing_item: NgReturnItem,
+        evidence: dict[str, Any],
+    ) -> None:
+        super().__init__(f"material already has active NG return item: {material_identity_key}")
+        self.material_identity_key = material_identity_key
+        self.existing_item_id = existing_item.id
+        self.existing_runtime_hold_id = existing_item.created_from_runtime_hold_id
+        self.evidence = evidence
+
+
 class NgReturnItemService:
     """Creates NG material queue items from workflow-owned NG outcomes."""
 
@@ -89,7 +108,14 @@ class NgReturnItemService:
         if existing_item is not None:
             if self._is_same_source(existing_item, session=session, source_command_id=source_command_id):
                 return existing_item
-            raise ValueError(f"material already has active NG return item: {material_identity_key}")
+            raise self._material_conflict_error(
+                existing_item=existing_item,
+                material_identity_key=material_identity_key,
+                session=session,
+                inbox=inbox,
+                source_command_id=source_command_id,
+                material_identity_json=material_identity_json,
+            )
 
         reason = self._resolve_ng_reason(definition.manifest.list_ng_reasons(), session_context)
         evidence = self._build_evidence(
@@ -131,7 +157,16 @@ class NgReturnItemService:
                 source_command_id=source_command_id,
             ):
                 return existing_item
-            raise ValueError(f"material already has active NG return item: {material_identity_key}") from None
+            if existing_item is not None:
+                raise self._material_conflict_error(
+                    existing_item=existing_item,
+                    material_identity_key=material_identity_key,
+                    session=session,
+                    inbox=inbox,
+                    source_command_id=source_command_id,
+                    material_identity_json=material_identity_json,
+                ) from None
+            raise
 
     def _is_completed_ng_flow(self, *, session_context: dict[str, Any], transition: str | None) -> bool:
         if transition != "pick_ng":
@@ -187,6 +222,39 @@ class NgReturnItemService:
     def _is_same_source(self, item: NgReturnItem, *, session: Any, source_command_id: int | None) -> bool:
         return item.source_session_id == getattr(session, "id", None) and item.source_command_id == source_command_id
 
+    def _material_conflict_error(
+        self,
+        *,
+        existing_item: NgReturnItem,
+        material_identity_key: str,
+        session: Any,
+        inbox: Any,
+        source_command_id: int | None,
+        material_identity_json: dict[str, Any],
+    ) -> NgMaterialConflictError:
+        evidence = {
+            "reason_code": NgMaterialConflictError.reason_code,
+            "material_identity_key": material_identity_key,
+            "existing_ng_return_item_id": existing_item.id,
+            "existing_runtime_hold_id": existing_item.created_from_runtime_hold_id,
+            "existing_source_session_id": existing_item.source_session_id,
+            "existing_source_command_id": existing_item.source_command_id,
+            "existing_source_event_id": existing_item.source_event_id,
+            "new_source_session_id": getattr(session, "id", None),
+            "new_source_command_id": source_command_id,
+            "new_source_event_id": _as_non_empty_str(getattr(inbox, "event_id", None)),
+            "new_trace_id": _as_non_empty_str(getattr(inbox, "trace_id", None))
+            or _as_non_empty_str(getattr(session, "trace_id", None)),
+            "expected_material_identity_key": existing_item.material_identity_key,
+            "actual_material_identity_key": material_identity_key,
+            "new_material_identity_json": material_identity_json,
+        }
+        return NgMaterialConflictError(
+            material_identity_key=material_identity_key,
+            existing_item=existing_item,
+            evidence=evidence,
+        )
+
     def _build_evidence(
         self,
         *,
@@ -215,4 +283,4 @@ class NgReturnItemService:
 ng_return_item_service = NgReturnItemService()
 
 
-__all__ = ["NgReturnItemService", "ng_return_item_service"]
+__all__ = ["NgMaterialConflictError", "NgReturnItemService", "ng_return_item_service"]
