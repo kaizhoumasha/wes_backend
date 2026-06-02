@@ -357,7 +357,9 @@ def _extract_device_status_state(payload: Any) -> dict[str, Any]:
     return payload
 
 
-async def _ensure_realtime_device_status_ready(client: Any, device: Any, *, device_code: str) -> bool:
+async def _ensure_realtime_device_status_ready(
+    client: Any, device: Any, *, device_code: str, command_code: str | None = None
+) -> bool:
     """真实命令 POST 前查询 ECS 实时状态，避免对非空闲设备产生物理副作用。"""
 
     status_url = _build_device_status_url(device, device_code=device_code)
@@ -386,11 +388,21 @@ async def _ensure_realtime_device_status_ready(client: Any, device: Any, *, devi
     status = state.get("status", state.get("device_status"))
     current_command_id = state.get("current_command_id")
     if mode != "AUTO" or status != "IDLE" or current_command_id is not None:
-        logger.warning(
-            "设备实时状态不允许派发: "
-            f"device_code={device_code}, mode={mode}, status={status}, current_command_id={current_command_id}"
+        if current_command_id and current_command_id == command_code:
+            _raise_device_command_governance_error(
+                domain="ORCHESTRATION",
+                code="DEVICE_BUSY",
+                message=f"设备实时状态已接受该命令但本地未确认: device_code={device_code}, current_command_id={current_command_id}",
+                device_code=device_code,
+            )
+
+        _raise_device_command_governance_error(
+            domain="ORCHESTRATION",
+            code="DEVICE_BUSY",
+            message=f"设备实时状态不允许派发: device_code={device_code}, mode={mode}, status={status}, current_command_id={current_command_id}",
+            device_code=device_code,
         )
-        return False
+
     return True
 
 
@@ -496,11 +508,10 @@ class DeviceCommandGateway:
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
             ack_timeout = _DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS
             async with httpx.AsyncClient() as client:
-                if not await _ensure_realtime_device_status_ready(
-                    client,
-                    device,
-                    device_code=payload["device_code"],
-                ):
+                ready = await _ensure_realtime_device_status_ready(
+                    client=client, device=device, device_code=payload["device_code"], command_code=command_code
+                )
+                if not ready:
                     outbox._dispatch_failure_reason = "DEVICE_STATUS_PRECHECK_FAILED"
                     outbox._dispatch_failure_error_code = "DEVICE_STATUS_PRECHECK_FAILED"
                     return False
