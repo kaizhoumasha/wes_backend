@@ -411,6 +411,32 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             detail=detail,
         )
 
+    async def update_resource_wait_detail(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        expected_reason: str,
+        detail: dict[str, Any],
+        last_error: str | None = None,
+    ) -> SystemOutbox | None:
+        """仅更新资源等待诊断，不递增 blocked_check_count。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+        if outbox is None:
+            return None
+        if outbox.status != SystemOutboxStatus.BLOCKED_RESOURCE or outbox.blocked_reason != expected_reason:
+            return None
+        if expected_reason not in self.DEVICE_RESOURCE_WAIT_REASONS:
+            return None
+        outbox.blocked_detail_json = dict(detail)
+        if last_error is not None:
+            outbox.last_error = last_error
+        await db.flush()
+        return outbox
+
     async def block_for_resource_wait(
         self,
         db: AsyncSession,
@@ -611,6 +637,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._release_blocked(
             db,
             columns.workline_id == workline_id,
+            columns.blocked_reason.notin_(self.DEVICE_RESOURCE_WAIT_REASONS),
             columns.blocked_by_runtime_hold_id.is_(None),
             or_(
                 columns.blocked_workline_id == workline_id,
@@ -623,6 +650,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._release_blocked(
             db,
             columns.workline_id == workline_id,
+            columns.blocked_reason.notin_(self.DEVICE_RESOURCE_WAIT_REASONS),
             or_(
                 columns.blocked_workline_id == workline_id,
                 columns.blocked_by_reconciliation_session_id.isnot(None),

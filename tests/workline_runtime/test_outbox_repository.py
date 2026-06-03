@@ -1234,6 +1234,164 @@ async def test_release_blocked_by_reconciliation_session_requeues_only_owner_blo
 
 
 @pytest.mark.asyncio
+async def test_release_blocked_by_workline_keeps_device_resource_wait_outbox(db_session) -> None:
+    session = WorklineSession(
+        session_code="session-workline-release-resource-wait",
+        workline_id=45,
+        plugin_key="test_workline_plugin",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.MANUAL_HOLD,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    now = timezone.now_for_db()
+
+    device_busy = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:device-busy-workline-release",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ARM01",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=3,
+        last_error="设备 ARM01 正在执行任务",
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_BUSY",
+        blocked_at=now - timedelta(seconds=20),
+        last_blocked_check_at=now - timedelta(seconds=10),
+        blocked_check_count=2,
+        blocked_detail_json={"device_code": "ARM01", "last_probe_result": "BUSY"},
+    )
+    status_wait = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:status-wait-workline-release",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ARM02",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=4,
+        last_error="设备 ARM02 实时状态查询返回 HTTP 503，等待下次预检",
+        blocked_device_id=8,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_at=now - timedelta(seconds=30),
+        last_blocked_check_at=now - timedelta(seconds=5),
+        blocked_check_count=5,
+        blocked_detail_json={"device_code": "ARM02", "error_kind": "http_status"},
+    )
+    workline_blocked = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:workline-blocked-release",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ARM03",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=2,
+        last_error="WORKLINE_STOPPED_WAITING_START",
+        blocked_workline_id=45,
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        blocked_at=now - timedelta(seconds=40),
+        last_blocked_check_at=now - timedelta(seconds=15),
+        blocked_check_count=6,
+        blocked_detail_json={"reason": "workline stopped"},
+    )
+    db_session.add_all([device_busy, status_wait, workline_blocked])
+    await db_session.flush()
+
+    released = await SystemOutboxRepository().release_blocked_by_workline(db_session, 45)
+
+    assert released == 1
+    assert workline_blocked.status == SystemOutboxStatus.NEW
+    assert workline_blocked.attempt_count == 0
+    assert device_busy.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert device_busy.attempt_count == 3
+    assert device_busy.last_error == "设备 ARM01 正在执行任务"
+    assert device_busy.blocked_reason == "DEVICE_BUSY"
+    assert device_busy.blocked_at == now - timedelta(seconds=20)
+    assert device_busy.last_blocked_check_at == now - timedelta(seconds=10)
+    assert device_busy.blocked_check_count == 2
+    assert device_busy.blocked_detail_json == {"device_code": "ARM01", "last_probe_result": "BUSY"}
+    assert status_wait.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert status_wait.attempt_count == 4
+    assert status_wait.last_error == "设备 ARM02 实时状态查询返回 HTTP 503，等待下次预检"
+    assert status_wait.blocked_reason == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert status_wait.blocked_at == now - timedelta(seconds=30)
+    assert status_wait.last_blocked_check_at == now - timedelta(seconds=5)
+    assert status_wait.blocked_check_count == 5
+    assert status_wait.blocked_detail_json == {"device_code": "ARM02", "error_kind": "http_status"}
+
+
+@pytest.mark.asyncio
+async def test_release_parked_after_workline_start_keeps_device_resource_wait_outbox(db_session) -> None:
+    session = WorklineSession(
+        session_code="session-start-release-resource-wait",
+        workline_id=45,
+        plugin_key="test_workline_plugin",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.MANUAL_HOLD,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    now = timezone.now_for_db()
+
+    status_wait = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:status-wait-start-release",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ARM02",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=4,
+        last_error="设备 ARM02 实时状态查询返回 HTTP 503，等待下次预检",
+        blocked_device_id=8,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_at=now - timedelta(seconds=30),
+        last_blocked_check_at=now - timedelta(seconds=5),
+        blocked_check_count=5,
+        blocked_detail_json={"device_code": "ARM02", "error_kind": "http_status"},
+    )
+    workline_blocked = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:workline-blocked-start-release",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ARM03",
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=2,
+        last_error="WORKLINE_STOPPED_WAITING_START",
+        blocked_workline_id=45,
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        blocked_at=now - timedelta(seconds=40),
+        last_blocked_check_at=now - timedelta(seconds=15),
+        blocked_check_count=6,
+        blocked_detail_json={"reason": "workline stopped"},
+    )
+    db_session.add_all([status_wait, workline_blocked])
+    await db_session.flush()
+
+    released = await SystemOutboxRepository().release_parked_after_workline_start(db_session, 45)
+
+    assert released == 1
+    assert workline_blocked.status == SystemOutboxStatus.NEW
+    assert workline_blocked.attempt_count == 0
+    assert status_wait.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert status_wait.attempt_count == 4
+    assert status_wait.last_error == "设备 ARM02 实时状态查询返回 HTTP 503，等待下次预检"
+    assert status_wait.blocked_reason == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert status_wait.blocked_at == now - timedelta(seconds=30)
+    assert status_wait.last_blocked_check_at == now - timedelta(seconds=5)
+    assert status_wait.blocked_check_count == 5
+    assert status_wait.blocked_detail_json == {"device_code": "ARM02", "error_kind": "http_status"}
+
+
+@pytest.mark.asyncio
 async def test_release_blocked_by_device_requeues_only_device_busy_outbox(db_session) -> None:
     session = WorklineSession(
         session_code="session-device-busy-release",

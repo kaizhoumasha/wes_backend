@@ -23,7 +23,9 @@ from src.workline_runtime.diagnostics.codes import ErrorCode
 
 
 def _mock_device_record(**overrides: object) -> SimpleNamespace:
-    return SimpleNamespace(host="127.0.0.1", port=8006, timeout=10000, protocol="HTTP", **overrides)
+    data = {"host": "127.0.0.1", "port": 8006, "timeout": 10000, "protocol": "HTTP"}
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 def _mock_command_record(**overrides: object) -> SimpleNamespace:
@@ -257,6 +259,7 @@ class TestOutboxDispatchService:
         repo.mark_as_dispatching = AsyncMock(return_value=MagicMock())
         repo.mark_as_blocked_by_workline_estop = AsyncMock(return_value=MagicMock())
         repo.mark_as_blocked_by_device_busy = AsyncMock(return_value=MagicMock())
+        repo.update_resource_wait_detail = AsyncMock(return_value=MagicMock())
         repo.mark_as_sent = AsyncMock(return_value=MagicMock())
         repo.mark_as_failed = AsyncMock(return_value=MagicMock())
         return repo
@@ -441,6 +444,7 @@ class TestOutboxDispatchService:
         assert call.args == (mock_db, 11)
         assert call.kwargs["reason"] == "DEVICE_BUSY"
         assert call.kwargs["detail"]["device_code"] == "SCANNER_001"
+        assert call.kwargs["detail"]["last_probe_result"] == "BUSY"
         assert call.kwargs["detail"]["observed_status"] == "RUNNING"
         assert call.kwargs["detail"]["observed_current_command_id"] == "CMD-RUNNING-001"
 
@@ -491,6 +495,7 @@ class TestOutboxDispatchService:
         assert attempt_call["response"]["result"] == "blocked_resource"
         assert attempt_call["response"]["reason"] == "DEVICE_BUSY"
         assert "detail" in attempt_call["response"]
+        assert attempt_call["response"]["detail"]["last_probe_result"] == "BUSY"
         assert attempt_call["response"]["detail"]["observed_status"] == "RUNNING"
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args.kwargs
         assert block_call["detail"] == attempt_call["response"]["detail"]
@@ -524,11 +529,22 @@ class TestOutboxDispatchService:
         mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
         mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.return_value = blocked_head
         mock_outbox_repo.get_pending_messages.return_value = [later_same_device]
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(return_value=None)
+        attempt_service = SimpleNamespace(
+            create_attempt=AsyncMock(return_value=SimpleNamespace(id=91)),
+            finalize_attempt_record=AsyncMock(return_value=None),
+        )
 
         with (
             patch(
                 "src.app.sys.repositories.SystemOutboxRepository",
                 return_value=mock_outbox_repo,
+            ),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+            patch(
+                "src.app.workline.services.dispatch_attempt_service.workline_dispatch_attempt_service",
+                attempt_service,
             ),
             patch(
                 "src.app.device.repositories.device_repository.device_repository",
@@ -559,6 +575,83 @@ class TestOutboxDispatchService:
         mock_outbox_repo.mark_as_dispatching.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         assert mock_client.return_value.__aenter__.return_value.post.await_count == 1
+        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=45)
+        attempt_service.create_attempt.assert_awaited_once_with(mock_db, outbox=blocked_head, auto_commit=False)
+        attempt_service.finalize_attempt_record.assert_awaited_once()
+        attempt_call = attempt_service.finalize_attempt_record.await_args.kwargs
+        assert attempt_call["attempt"].id == 91
+        assert attempt_call["success"] is True
+        assert attempt_call["response"] == {"result": "sent", "outbox_finalization": "sent"}
+        assert attempt_call["auto_commit"] is False
+
+    @pytest.mark.asyncio
+    async def test_dispatch_blocked_head_final_guard_blocks_workline_before_side_effect(
+        self,
+        mock_db,
+        mock_outbox_repo,
+        mock_device_repo,
+    ):
+        """blocked 队首 claim 后、POST 前必须复用 WorkLine final guard 和 attempt 账本。"""
+        from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+        from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+
+        blocked_head = MockOutbox(
+            outbox_id=41,
+            status=SystemOutboxStatus.BLOCKED_RESOURCE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_code="ARM01",
+            workline_id=45,
+            payload_json={"command_code": "CMD-HEAD-SAFETY-001", "task_type": "PICK_AND_PUT"},
+        )
+        blocked_head.blocked_reason = "DEVICE_BUSY"
+        mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
+        mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.return_value = blocked_head
+        mock_outbox_repo.get_pending_messages.return_value = []
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(side_effect=WorkLineSafetyBlocked("WORKLINE_RECONCILING"))
+        runtime_service = SimpleNamespace(park_outbox_for_reconciliation=AsyncMock(return_value=blocked_head))
+        attempt_service = SimpleNamespace(
+            create_attempt=AsyncMock(return_value=SimpleNamespace(id=92)),
+            finalize_attempt_record=AsyncMock(return_value=None),
+        )
+
+        with (
+            patch("src.app.sys.repositories.SystemOutboxRepository", return_value=mock_outbox_repo),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
+            patch(
+                "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
+                runtime_service,
+            ),
+            patch(
+                "src.app.workline.services.dispatch_attempt_service.workline_dispatch_attempt_service",
+                attempt_service,
+            ),
+            patch("src.app.device.repositories.device_repository.device_repository", mock_device_repo),
+            patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
+            patch("httpx.AsyncClient") as mock_client,
+        ):
+            _configure_status_ok(mock_client)
+            client = mock_client.return_value.__aenter__.return_value
+            client.post = AsyncMock()
+            result = await OutboxDispatchService().dispatch(mock_db, limit=5)
+
+        assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+        client.post.assert_not_awaited()
+        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=45)
+        runtime_service.park_outbox_for_reconciliation.assert_awaited_once_with(
+            mock_db,
+            outbox=blocked_head,
+            reason="CALLBACK_DEADLINE_EXPIRED",
+        )
+        attempt_service.create_attempt.assert_awaited_once_with(mock_db, outbox=blocked_head, auto_commit=False)
+        attempt_service.finalize_attempt_record.assert_awaited_once()
+        attempt_call = attempt_service.finalize_attempt_record.await_args.kwargs
+        assert attempt_call["attempt"].id == 92
+        assert attempt_call["success"] is False
+        assert attempt_call["error_message"] == "WORKLINE_RECONCILING"
+        assert attempt_call["auto_commit"] is False
+        mock_outbox_repo.mark_as_sent.assert_not_awaited()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_keeps_blocked_head_when_ecs_still_busy(
@@ -646,6 +739,7 @@ class TestOutboxDispatchService:
             return blocked_head
 
         mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=fake_mark_blocked)
+        mock_outbox_repo.update_resource_wait_detail = AsyncMock()
 
         with (
             patch("src.app.sys.repositories.SystemOutboxRepository", return_value=mock_outbox_repo),
@@ -661,11 +755,135 @@ class TestOutboxDispatchService:
         record.assert_not_awaited()
         assert blocked_head.blocked_reason == "DEVICE_STATUS_PRECHECK_WAIT"
         assert blocked_head.blocked_check_count == DEVICE_STATUS_PRECHECK_MAX_CHECK_COUNT - 1
-        assert blocked_head.blocked_detail_json.get("last_probe_result") != "escalated"
+        assert blocked_head.blocked_detail_json["last_probe_result"] == "STATUS_WAIT"
         assert "diagnostic_key" not in blocked_head.blocked_detail_json
         waited_seconds = (datetime.now(UTC).replace(tzinfo=None) - blocked_head.blocked_at).total_seconds()
         assert waited_seconds < DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blocked_head_missing_device_config_updates_status_wait_metadata(
+        self,
+        mock_db,
+        mock_outbox_repo,
+    ):
+        """blocked probe 缺通信配置时，应写入 status wait 观测并递增检查次数。"""
+        from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+
+        blocked_head = MockOutbox(
+            outbox_id=42,
+            status=SystemOutboxStatus.BLOCKED_RESOURCE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_code="ARM-MISSING-CONFIG",
+            workline_id=45,
+            payload_json={"command_code": "CMD-MISSING-CONFIG-001", "task_type": "PICK_AND_PUT"},
+        )
+        blocked_head.blocked_reason = "DEVICE_STATUS_PRECHECK_WAIT"
+        blocked_head.blocked_device_id = 18
+        blocked_head.blocked_check_count = 3
+        mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
+        mock_outbox_repo.get_pending_messages.return_value = []
+        device_repo = MagicMock()
+        device_repo.get_by_device_code = AsyncMock(return_value=_mock_device_record(id=18, host=None, port=None))
+
+        async def fake_mark_blocked(_db, _outbox_id, **kwargs):
+            blocked_head.blocked_reason = kwargs["reason"]
+            blocked_head.last_error = kwargs["last_error"]
+            blocked_head.blocked_detail_json = kwargs["detail"]
+            blocked_head.blocked_check_count += 1
+            blocked_head.last_blocked_check_at = datetime.now(UTC).replace(tzinfo=None)
+            return blocked_head
+
+        async def fake_update_detail(_db, _outbox_id, **kwargs):
+            blocked_head.last_error = kwargs["last_error"]
+            blocked_head.blocked_detail_json = kwargs["detail"]
+            return blocked_head
+
+        mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=fake_mark_blocked)
+        mock_outbox_repo.update_resource_wait_detail = AsyncMock(side_effect=fake_update_detail)
+
+        with (
+            patch("src.app.sys.repositories.SystemOutboxRepository", return_value=mock_outbox_repo),
+            patch("src.app.device.repositories.device_repository.device_repository", device_repo),
+            patch("httpx.AsyncClient") as mock_client,
+        ):
+            result = await OutboxDispatchService().dispatch(mock_db)
+
+        assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+        mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
+        mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.assert_not_awaited()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
+        mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
+        block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
+        assert block_call.args == (mock_db, 42)
+        assert block_call.kwargs["blocked_device_id"] == 18
+        assert block_call.kwargs["blocked_workline_id"] == 45
+        assert block_call.kwargs["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"
+        assert "通信配置不完整" in block_call.kwargs["last_error"]
+        assert block_call.kwargs["detail"]["device_code"] == "ARM-MISSING-CONFIG"
+        assert block_call.kwargs["detail"]["error_kind"] == "missing_device_config"
+        assert blocked_head.blocked_check_count == 4
+        assert blocked_head.last_blocked_check_at is not None
+
+    @pytest.mark.asyncio
+    async def test_blocked_head_probe_exception_updates_observation_without_claim(
+        self,
+        mock_db,
+        mock_outbox_repo,
+    ):
+        """blocked probe 异常未 claim 时，应保留资源等待并持久化失败观测。"""
+        from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
+
+        blocked_head = MockOutbox(
+            outbox_id=43,
+            status=SystemOutboxStatus.BLOCKED_RESOURCE,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_code="ARM-PROBE-ERROR",
+            workline_id=45,
+            payload_json={"command_code": "CMD-PROBE-ERROR-001", "task_type": "PICK_AND_PUT"},
+        )
+        blocked_head.blocked_reason = "DEVICE_STATUS_PRECHECK_WAIT"
+        blocked_head.blocked_device_id = 18
+        blocked_head.blocked_check_count = 2
+        mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
+        mock_outbox_repo.get_pending_messages.return_value = []
+
+        async def fake_mark_blocked(_db, _outbox_id, **kwargs):
+            blocked_head.blocked_reason = kwargs["reason"]
+            blocked_head.last_error = kwargs["last_error"]
+            blocked_head.blocked_detail_json = kwargs["detail"]
+            blocked_head.blocked_check_count += 1
+            blocked_head.last_blocked_check_at = datetime.now(UTC).replace(tzinfo=None)
+            return blocked_head
+
+        async def fake_update_detail(_db, _outbox_id, **kwargs):
+            blocked_head.last_error = kwargs["last_error"]
+            blocked_head.blocked_detail_json = kwargs["detail"]
+            return blocked_head
+
+        mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=fake_mark_blocked)
+        mock_outbox_repo.update_resource_wait_detail = AsyncMock(side_effect=fake_update_detail)
+
+        with (
+            patch("src.app.sys.repositories.SystemOutboxRepository", return_value=mock_outbox_repo),
+            patch(
+                "src.app.workline.services.outbox_dispatch_service.OutboxDispatchService._probe_blocked_resource_head_ready",
+                new=AsyncMock(side_effect=RuntimeError("status probe exploded")),
+            ),
+        ):
+            result = await OutboxDispatchService().dispatch(mock_db)
+
+        assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+        mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.assert_not_awaited()
+        mock_outbox_repo.mark_as_failed.assert_not_awaited()
+        mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
+        block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
+        assert block_call.args == (mock_db, 43)
+        assert block_call.kwargs["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"
+        assert block_call.kwargs["last_error"] == "status probe exploded"
+        assert block_call.kwargs["detail"]["last_probe_result"] == "exception"
+        assert block_call.kwargs["detail"]["error_kind"] == "probe_exception"
+        assert blocked_head.blocked_check_count == 3
 
     @pytest.mark.asyncio
     async def test_status_precheck_wait_over_ttl_escalates_runtime_diagnostic(
@@ -693,7 +911,7 @@ class TestOutboxDispatchService:
         blocked_head.blocked_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
             seconds=DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS + 1
         )
-        blocked_head.blocked_check_count = 30
+        blocked_head.blocked_check_count = 29
         mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
         mock_outbox_repo.get_pending_messages.return_value = []
 
@@ -705,7 +923,13 @@ class TestOutboxDispatchService:
             blocked_head.last_blocked_check_at = datetime.now(UTC).replace(tzinfo=None)
             return blocked_head
 
+        async def fake_update_detail(_db, _outbox_id, **kwargs):
+            blocked_head.last_error = kwargs["last_error"]
+            blocked_head.blocked_detail_json = kwargs["detail"]
+            return blocked_head
+
         mock_outbox_repo.mark_as_blocked_by_device_busy = AsyncMock(side_effect=fake_mark_blocked)
+        mock_outbox_repo.update_resource_wait_detail = AsyncMock(side_effect=fake_update_detail)
 
         with (
             patch("src.app.sys.repositories.SystemOutboxRepository", return_value=mock_outbox_repo),
@@ -728,11 +952,14 @@ class TestOutboxDispatchService:
         assert diagnostic_kwargs["trace_id"] == "outbox-resource-wait:38:DEVICE_STATUS_PRECHECK_WAIT"
         assert diagnostic_kwargs["extra"]["diagnostic_key"] == "outbox-resource-wait:38:DEVICE_STATUS_PRECHECK_WAIT"
         assert blocked_head.blocked_reason == "DEVICE_STATUS_PRECHECK_WAIT"
+        assert blocked_head.blocked_check_count == 31
         assert blocked_head.blocked_detail_json["last_probe_result"] == "escalated"
         assert (
             blocked_head.blocked_detail_json["diagnostic_key"] == "outbox-resource-wait:38:DEVICE_STATUS_PRECHECK_WAIT"
         )
         assert "escalated_at" in blocked_head.blocked_detail_json
+        assert mock_outbox_repo.mark_as_blocked_by_device_busy.await_count == 2
+        assert mock_outbox_repo.update_resource_wait_detail.await_count == 1
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -758,6 +985,8 @@ class TestOutboxDispatchService:
         mock_outbox_repo.get_probeable_blocked_device_heads.return_value = [blocked_head]
         mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.return_value = blocked_head
         mock_outbox_repo.get_pending_messages.return_value = []
+        safety_service = MagicMock()
+        safety_service.assert_accepting_work = AsyncMock(return_value=None)
 
         ready_response = MagicMock(status_code=200, text="")
         ready_response.json.return_value = {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
@@ -775,6 +1004,7 @@ class TestOutboxDispatchService:
                 "src.app.device.repositories.device_repository.device_repository",
                 mock_device_repo,
             ),
+            patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
             patch("httpx.AsyncClient") as mock_client,
         ):
             client = mock_client.return_value.__aenter__.return_value
@@ -792,6 +1022,7 @@ class TestOutboxDispatchService:
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
         assert block_call.args == (mock_db, 34)
         assert block_call.kwargs["reason"] == "DEVICE_BUSY"
+        assert block_call.kwargs["detail"]["last_probe_result"] == "BUSY"
         assert block_call.kwargs["detail"]["observed_status"] == "RUNNING"
         assert block_call.kwargs["detail"]["observed_current_command_id"] == "CMD-OTHER-001"
 

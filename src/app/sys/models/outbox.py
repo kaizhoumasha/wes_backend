@@ -153,8 +153,8 @@ class SystemOutboxBase(BaseMixin):
     blocked_device_id: int | None = Field(default=None, index=True, description="阻断相关设备 ID")
     blocked_workline_id: int | None = Field(default=None, index=True, description="阻断相关工作线 ID")
     blocked_reason: str | None = Field(default=None, max_length=100, description="阻断原因")
-    blocked_at: datetime | None = Field(default=None, index=True, description="资源等待起始时间")
-    last_blocked_check_at: datetime | None = Field(default=None, index=True, description="最近一次资源等待探测时间")
+    blocked_at: datetime | None = Field(default=None, description="资源等待起始时间")
+    last_blocked_check_at: datetime | None = Field(default=None, description="最近一次资源等待探测时间")
     blocked_check_count: int = Field(default=0, ge=0, description="资源等待探测次数")
     blocked_detail_json: dict[str, Any] = Field(
         default_factory=dict,
