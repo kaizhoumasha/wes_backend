@@ -19,7 +19,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
+from src.app.resource.models import RackKind
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.utils.device_cache import workline_device_cache
 from src.workline_plugins.rough_sorter.contract import (
@@ -54,6 +56,22 @@ class TestDeviceSeed:
     sort_order: int
     capabilities_json: dict[str, Any]
     upstream_device_code: str | None = None
+
+
+@dataclass(frozen=True)
+class TestRackPositionSeed:
+    """开发环境工作线货架停靠位基础信息种子。"""
+
+    position_code: str
+    position_name: str
+    position_role: WorklineRackPositionRole
+    allowed_rack_kind: RackKind
+    capacity: int
+    logic_location_code: str
+    external_location_code: str
+    device_role: str | None
+    priority: int
+    metadata_json: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -109,6 +127,21 @@ TEST_ROUGH_SORTER_DEVICES: tuple[TestDeviceSeed, ...] = (
     ),
 )
 
+TEST_ROUGH_SORTER_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
+    TestRackPositionSeed(
+        position_code="SINGLE_LAYER_A",
+        position_name="测试粗分机单层货架工作位 A",
+        position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code="WL-ROUGH-SORTER-TEST:SINGLE_LAYER_A",
+        external_location_code="SINGLE_LAYER_A",
+        device_role=ROLE_OUTPUT_ARM,
+        priority=100,
+        metadata_json={"seed_source": "local-dev"},
+    ),
+)
+
 
 def _mock_ecs_connection_from_env() -> MockEcsConnection:
     mock_ecs_url = os.getenv("MOCK_ECS_URL")
@@ -151,6 +184,21 @@ async def _get_device_by_code(db: AsyncSession, device_code: str) -> Device | No
         select(Device).where(
             Device.device_code == device_code,  # type: ignore[arg-type]
             Device.is_deleted.is_(False),  # type: ignore[arg-type]
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_rack_position_by_code(
+    db: AsyncSession,
+    *,
+    workline_code: str,
+    position_code: str,
+) -> WorklineRackPosition | None:
+    result = await db.execute(
+        select(WorklineRackPosition).where(
+            WorklineRackPosition.workline_code == workline_code,  # type: ignore[arg-type]
+            WorklineRackPosition.position_code == position_code,  # type: ignore[arg-type]
         )
     )
     return result.scalar_one_or_none()
@@ -264,6 +312,45 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
     return states
 
 
+async def _upsert_test_rack_positions(db: AsyncSession, workline: WorkLine) -> dict[str, str]:
+    workline_id = workline.id
+    if workline_id is None:
+        raise RuntimeError("测试 WorkLine 缺少主键，无法同步货架停靠位")
+
+    states: dict[str, str] = {}
+    for seed in TEST_ROUGH_SORTER_RACK_POSITIONS:
+        values = {
+            "workline_id": workline_id,
+            "workline_code": TEST_ROUGH_SORTER_LINE_CODE,
+            "position_code": seed.position_code,
+            "position_name": seed.position_name,
+            "position_role": seed.position_role,
+            "allowed_rack_kind": seed.allowed_rack_kind,
+            "capacity": seed.capacity,
+            "logic_location_code": seed.logic_location_code,
+            "external_location_code": seed.external_location_code,
+            "device_role": seed.device_role,
+            "priority": seed.priority,
+            "enabled": True,
+            "metadata_json": seed.metadata_json,
+        }
+        position = await _get_rack_position_by_code(
+            db,
+            workline_code=TEST_ROUGH_SORTER_LINE_CODE,
+            position_code=seed.position_code,
+        )
+        if position is None:
+            db.add(WorklineRackPosition(**values))
+            await db.flush()
+            states[seed.position_code] = "created"
+            continue
+
+        changed = _set_attrs(position, values)
+        await db.flush()
+        states[seed.position_code] = "updated" if changed else "unchanged"
+    return states
+
+
 def _summarize(states: list[str]) -> dict[str, int]:
     return {
         "created": states.count("created"),
@@ -277,6 +364,7 @@ async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -
 
     workline, workline_state = await _upsert_test_workline(db)
     device_states = await _upsert_test_devices(db, workline)
+    rack_position_states = await _upsert_test_rack_positions(db, workline)
     if commit:
         await db.commit()
     else:
@@ -291,9 +379,11 @@ async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -
             "id": workline.id,
         },
         "devices": device_states,
+        "rack_positions": rack_position_states,
         "summary": {
             "worklines": _summarize([workline_state]),
             "devices": _summarize(list(device_states.values())),
+            "rack_positions": _summarize(list(rack_position_states.values())),
             "total_worklines": int(workline_count_result.scalar_one() or 0),
             "total_devices": int(device_count_result.scalar_one() or 0),
         },

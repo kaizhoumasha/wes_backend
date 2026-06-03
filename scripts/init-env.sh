@@ -186,12 +186,18 @@ while IFS= read -r line; do
         elif [[ "$line" =~ ^WMS_SYNC_BASE_URL=http://mock_wms:8011/ ]]; then
             # 宿主机直跑 WES/Celery 时无法解析 Docker Compose 服务名
             echo "WMS_SYNC_BASE_URL=http://localhost:8011${line#WMS_SYNC_BASE_URL=http://mock_wms:8011}"
+        elif [[ "$line" =~ ^WMS_RCS_RACK_OPERATION_URL=http://mock_wms:8011/ ]]; then
+            # 宿主机直跑 WES/Celery 时无法解析 Docker Compose 服务名
+            echo "WMS_RCS_RACK_OPERATION_URL=http://localhost:8011${line#WMS_RCS_RACK_OPERATION_URL=http://mock_wms:8011}"
         elif [[ "$line" =~ ^WES_EVENT_CALLBACK_URL=http://api:8001/ ]]; then
             # 宿主机直跑 Mock ECS 时应访问端口映射后的本地 WES API
             echo "WES_EVENT_CALLBACK_URL=http://localhost:8001${line#WES_EVENT_CALLBACK_URL=http://api:8001}"
         elif [[ "$line" =~ ^WES_RESULT_CALLBACK_URL=http://api:8001/ ]]; then
             # 宿主机直跑 Mock ECS 时应访问端口映射后的本地 WES API
             echo "WES_RESULT_CALLBACK_URL=http://localhost:8001${line#WES_RESULT_CALLBACK_URL=http://api:8001}"
+        elif [[ "$line" =~ ^WES_EXTERNAL_CALLBACK_URL=http://api:8001/ ]]; then
+            # 宿主机直跑 Mock WMS 时应访问端口映射后的本地 WES API
+            echo "WES_EXTERNAL_CALLBACK_URL=http://localhost:8001${line#WES_EXTERNAL_CALLBACK_URL=http://api:8001}"
         else
             # 其他配置直接复制（包括数据库和 Redis 密码）
             echo "$line"

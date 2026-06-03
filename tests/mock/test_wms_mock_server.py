@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -71,3 +72,83 @@ def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no(
     assert unknown_sku_response.json()["data"]["items"] == []
     assert unknown_lot_response.status_code == 200
     assert unknown_lot_response.json()["data"]["items"] == []
+
+
+def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> None:
+    mock_post_callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            "/api/wms/rack-operation",
+            json={
+                "request_id": "rack-operation:op-001:1:ALLOCATE_AND_MOVE_RACK",
+                "dispatch_key": "rack-operation:op-001:1:ALLOCATE_AND_MOVE_RACK",
+                "callback_type": "WMS_RACK_ARRIVED",
+                "operation_key": "op-001",
+                "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+                "sequence_no": 1,
+                "task_type": "ALLOCATE_AND_MOVE_RACK",
+                "workline_code": "WL-ROUGH-SORTER-TEST",
+                "rack_kind": "SINGLE_LAYER",
+                "target_position_code": "SINGLE_LAYER_A",
+                "trace_id": "trace-rack-001",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["accepted"] is True
+    mock_post_callback.assert_awaited_once()
+    callback_payload = mock_post_callback.await_args.args[1]
+    assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
+    assert callback_payload["dispatch_key"] == "rack-operation:op-001:1:ALLOCATE_AND_MOVE_RACK"
+    assert callback_payload["source_event_id"].startswith("wms-mock:rack-operation:")
+    assert callback_payload["source_system"] == "WMS"
+    assert callback_payload["active_bin_rack"]["rack_code"] == "RACK-001"
+    assert {cell["rack_slot_code"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"A", "B", "C", "D"}
+    assert len(callback_payload["active_bin_rack"]["cells"]) == 24
+    assert {cell["bin_type"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"6格箱"}
+    assert {mount["rack_slot_code"] for mount in callback_payload["bin_mounts"]} == {"A", "B", "C", "D"}
+    assert callback_payload["bin_mounts"][0]["bin_code"] == "BIN-001"
+
+
+def test_wms_mock_rack_operation_source_event_id_keeps_wes_idempotency_key_short() -> None:
+    dispatch_key = (
+        "rack-operation:external:smt_rack_bin:rough-sorter-mock-scan-1780455233:RACK_OPERATION:1:ALLOCATE_AND_MOVE_RACK"
+    )
+
+    callback_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": dispatch_key,
+            "dispatch_key": dispatch_key,
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "external:smt_rack_bin:rough-sorter-mock-scan-1780455233:RACK_OPERATION",
+            "trace_id": "rough-sorter-mock-scan-1780455233",
+        }
+    )
+
+    idempotency_key = (
+        f"external_http:{callback_payload['callback_type']}:{callback_payload['trace_id']}:"
+        f"source_event:{callback_payload['source_event_id']}"
+    )
+    assert len(callback_payload["source_event_id"]) <= 200
+    assert len(idempotency_key) <= 200
+
+
+def test_wms_mock_rack_operation_task_result_includes_required_status() -> None:
+    callback_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-002:2:MOVE_RACK",
+            "dispatch_key": "rack-operation:op-002:2:MOVE_RACK",
+            "callback_type": "WMS_RACK_TASK_RESULT",
+            "operation_key": "op-002",
+            "sequence_no": 2,
+            "task_type": "MOVE_RACK",
+            "workline_code": "WL-ROUGH-SORTER-TEST",
+            "trace_id": "trace-rack-002",
+        }
+    )
+
+    assert callback_payload["callback_type"] == "WMS_RACK_TASK_RESULT"
+    assert callback_payload["status"] == "SUCCESS"
+    assert callback_payload["task_status"] == "SUCCESS"
+    assert callback_payload["result"] == "SUCCESS"

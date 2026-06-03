@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from math import isfinite
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +69,14 @@ def _as_rack_kind(value: Any) -> RackKind:
 
 
 def _db_time(value: Any) -> Any:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not isfinite(value):
+            return timezone.now_for_db()
+        try:
+            timestamp = value / 1000 if abs(value) >= 10_000_000_000 else value
+            return timezone.to_db_datetime(timestamp) or timezone.now_for_db()
+        except (OSError, OverflowError, ValueError):
+            return timezone.now_for_db()
     return timezone.to_db_datetime(value) or timezone.now_for_db()
 
 

@@ -79,7 +79,20 @@ async def _record_diagnostic(db: Any, **kwargs: Any) -> None:
     """记录诊断日志并尽力持久化诊断卡片。"""
     from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 
-    event = _log_diagnostic(**kwargs)
+    try:
+        event = _log_diagnostic(**kwargs)
+    except Exception as exc:
+        fallback_context = {
+            "error_code": getattr(kwargs.get("error_code"), "value", kwargs.get("error_code")),
+            "message": kwargs.get("message"),
+            "trace_id": kwargs.get("trace_id")
+            or getattr(kwargs.get("inbox"), "trace_id", None)
+            or getattr(kwargs.get("session"), "trace_id", None),
+            "inbox_id": getattr(kwargs.get("inbox"), "id", None),
+            "outbox_id": getattr(kwargs.get("outbox"), "id", None),
+        }
+        logger.opt(exception=True).warning("工作线诊断构造失败: {}; fallback_context={}", exc, fallback_context)
+        return
     try:
         _ = await workline_diagnostic_service.record_event(
             db,

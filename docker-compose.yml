@@ -57,8 +57,9 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
-      WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
+      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
+      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-http://wms/api}
+      WMS_RCS_RACK_OPERATION_URL: ${CONTAINER_WMS_RCS_RACK_OPERATION_URL:-http://wms-rcs/api/wes/rack-operation}
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -139,8 +140,9 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
 
-      # WMS 同步接口配置（开发/E2E 环境可通过环境文件指向 mock_wms）
-      WMS_SYNC_BASE_URL: ${WMS_SYNC_BASE_URL:-http://wms/api}
+      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
+      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-http://wms/api}
+      WMS_RCS_RACK_OPERATION_URL: ${CONTAINER_WMS_RCS_RACK_OPERATION_URL:-http://wms-rcs/api/wes/rack-operation}
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -594,6 +596,7 @@ services:
       - ./tests/mock:/app/tests/mock:rw
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WES_EXTERNAL_CALLBACK_URL: ${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8011/"]
       interval: 30s

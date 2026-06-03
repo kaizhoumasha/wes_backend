@@ -457,6 +457,97 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
 
 
 @pytest.mark.asyncio
+async def test_record_rack_arrived_accepts_millisecond_timestamp() -> None:
+    events = RecordingStateEventRepo()
+    placements = RecordingRackPlacementRepo()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-ms-001",
+        idempotency_key="RACK_ARRIVED:wms-event-ms-001:RACK-001",
+        occurred_at=1780457720161,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert events.created[0]["occurred_at"] == datetime(2026, 6, 3, 3, 35, 20, 161000)
+    assert placements.created[0]["started_at"] == datetime(2026, 6, 3, 3, 35, 20, 161000)
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_falls_back_for_invalid_numeric_timestamp(monkeypatch) -> None:
+    fallback_now = datetime(2026, 6, 3, 4, 0, 0)
+    monkeypatch.setattr(
+        "src.app.resource.services.projection_service.timezone.now_for_db",
+        lambda: fallback_now,
+    )
+    events = RecordingStateEventRepo()
+    placements = RecordingRackPlacementRepo()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-invalid-time-001",
+        idempotency_key="RACK_ARRIVED:wms-event-invalid-time-001:RACK-001",
+        occurred_at=float("inf"),
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert events.created[0]["occurred_at"] == fallback_now
+    assert placements.created[0]["started_at"] == fallback_now
+
+
+@pytest.mark.asyncio
+async def test_record_rack_arrived_falls_back_for_huge_integer_timestamp(monkeypatch) -> None:
+    fallback_now = datetime(2026, 6, 3, 4, 5, 0)
+    monkeypatch.setattr(
+        "src.app.resource.services.projection_service.timezone.now_for_db",
+        lambda: fallback_now,
+    )
+    events = RecordingStateEventRepo()
+    placements = RecordingRackPlacementRepo()
+    service = ResourceProjectionService(
+        state_event_repo=events,
+        rack_placement_repo=placements,
+        rack_position_service=RecordingRackPositionService(),
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-huge-time-001",
+        idempotency_key="RACK_ARRIVED:wms-event-huge-time-001:RACK-001",
+        occurred_at=10**1000,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert events.created[0]["occurred_at"] == fallback_now
+    assert placements.created[0]["started_at"] == fallback_now
+
+
+@pytest.mark.asyncio
 async def test_record_rack_arrived_allows_second_rack_when_position_capacity_two() -> None:
     placements = RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()])
     service = ResourceProjectionService(

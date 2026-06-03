@@ -12,6 +12,7 @@ WMS Mock 服务
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import logging
 import os
@@ -21,7 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+import httpx
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 from uvicorn import Config, Server
 
@@ -97,6 +99,19 @@ MOCK_RACKS = {
 }
 
 MOCK_INVENTORY = mock_wms_inventory_seed()
+WES_EXTERNAL_CALLBACK_URL = os.getenv(
+    "WES_EXTERNAL_CALLBACK_URL",
+    "http://localhost:8001/api/v1/callback/external",
+)
+RACK_STATUS_CALLBACK_TYPES = {
+    "WMS_RACK_TASK_RESULT",
+    "RCS_RACK_TASK_RESULT",
+    "WMS_RACK_TASK_PROGRESS",
+    "RCS_RACK_TASK_PROGRESS",
+    "WMS_RACK_EXCHANGE_PROGRESS",
+    "RCS_RACK_EXCHANGE_PROGRESS",
+}
+RACK_STATUS_FIELDS = ("task_status", "status", "result", "external_status")
 
 MOCK_GRNS = {
     "GRN.0001": {
@@ -166,6 +181,97 @@ async def simulate_failure(request: SimulateFailureRequest):
     return {"message": f"Next request will return {request.status} after {request.delay}s"}
 
 
+def _now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+
+
+async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=payload)
+        return {
+            "delivered": 200 <= response.status_code < 300,
+            "status_code": response.status_code,
+            "response_text": response.text,
+        }
+    except Exception as exc:
+        logger.error("WMS Mock 回调 WES 失败: %s", exc)
+        return {"delivered": False, "error": str(exc)}
+
+
+def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
+    operation_key = str(payload.get("operation_key") or "")
+    rack_kind = payload.get("rack_kind") or "SINGLE_LAYER"
+    target_position_code = payload.get("target_position_code") or "SINGLE_LAYER_A"
+    callback_type = str(payload.get("callback_type") or "WMS_RACK_ARRIVED")
+    timestamp = _now_ms()
+    rack_code = str(payload.get("rack_code") or "RACK-001")
+    source_key = dispatch_key or operation_key or repr(sorted(payload.items()))
+    source_event_hash = hashlib.sha256(source_key.encode()).hexdigest()[:16]
+    bin_mounts = [
+        {"rack_code": rack_code, "rack_slot_code": slot_code, "bin_code": f"BIN-00{index}"}
+        for index, slot_code in enumerate(("A", "B", "C", "D"), start=1)
+    ]
+    cells = [
+        {
+            "rack_slot_code": mount["rack_slot_code"],
+            "rack_slot_location_code": f"{rack_code}-1{mount['rack_slot_code']}-0",
+            "bin_code": mount["bin_code"],
+            "bin_id": mount["bin_code"],
+            "bin_type": "6格箱",
+            "bin_orientation_code": f"{mount['bin_code']}-A",
+            "bin_cell_index": str(cell_index),
+            "bin_cell_location": f"{mount['bin_code']}-{cell_index}",
+            "capacity_depth_mm": 20.0,
+            "used_depth_mm": 0.0,
+            "status": "EMPTY",
+        }
+        for mount in bin_mounts
+        for cell_index in range(1, 7)
+    ]
+    callback_payload = {
+        **payload,
+        "callback_type": callback_type,
+        "dispatch_key": dispatch_key,
+        "request_id": str(payload.get("request_id") or dispatch_key),
+        "operation_key": operation_key,
+        "source_system": "WMS",
+        "source_event_id": payload.get("source_event_id") or f"wms-mock:rack-operation:{source_event_hash}",
+        "source_version": "mock-wms.v1",
+        "occurred_at": timestamp,
+        "timestamp": timestamp,
+        "signature": "mock-signature",
+        "rack_code": rack_code,
+        "rack_kind": rack_kind,
+        "position_code": target_position_code,
+        "target_position_code": target_position_code,
+        "active_bin_rack": {
+            "rack_id": rack_code,
+            "rack_code": rack_code,
+            "rack_kind": rack_kind,
+            "rack_type": rack_kind,
+            "cells": cells,
+        },
+        "bin_mounts": bin_mounts,
+    }
+    if callback_type in RACK_STATUS_CALLBACK_TYPES and not any(
+        str(callback_payload.get(field) or "").strip() for field in RACK_STATUS_FIELDS
+    ):
+        callback_payload["status"] = "SUCCESS"
+        callback_payload["task_status"] = "SUCCESS"
+        callback_payload["result"] = "SUCCESS"
+    return callback_payload
+
+
+async def _report_rack_operation_arrived(payload: dict[str, Any]) -> None:
+    callback_payload = _rack_operation_callback_payload(payload)
+    delivery = await _post_callback(WES_EXTERNAL_CALLBACK_URL, callback_payload)
+    logger.info("WMS Mock rack operation callback delivery: %s", delivery)
+
+
 # --- 主数据查询接口 (WMS Master Data) ---
 
 
@@ -211,6 +317,19 @@ async def get_racks(type: str | None = None):
     if type:
         data = [r for r in data if r["rack_type"] == type]
     return {"code": 200, "data": data}
+
+
+@app.post("/api/wms/rack-operation", summary="接收货架操作请求并回调 WES")
+async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    background_tasks.add_task(_report_rack_operation_arrived, dict(payload))
+    return {
+        "code": 200,
+        "data": {
+            "accepted": True,
+            "dispatch_key": payload.get("dispatch_key"),
+            "operation_key": payload.get("operation_key"),
+        },
+    }
 
 
 @app.get("/api/wms/grn/{grn_id}")

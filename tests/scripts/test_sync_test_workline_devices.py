@@ -4,10 +4,13 @@ from sqlalchemy import func, select
 from scripts.data.sync_test_workline_devices import (
     TEST_ROUGH_SORTER_DEVICES,
     TEST_ROUGH_SORTER_LINE_CODE,
+    TEST_ROUGH_SORTER_RACK_POSITIONS,
     sync_test_workline_devices,
 )
 from src.app.device.models import Device, DeviceStatus
+from src.app.resource.models import RackKind
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
@@ -34,6 +37,7 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
 
     assert result["summary"]["worklines"]["created"] == 1
     assert result["summary"]["devices"]["created"] == len(TEST_ROUGH_SORTER_DEVICES)
+    assert result["summary"]["rack_positions"]["created"] == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
 
     workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
@@ -65,6 +69,17 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert {device.capabilities_json["status_path"] for device in devices} == {"/api/v1/device/status"}
     assert conveyor.upstream_device_id == input_arm.id
     assert output_arm.upstream_device_id == conveyor.id
+
+    rack_positions = (await db_session.execute(select(WorklineRackPosition))).scalars().all()
+    assert len(rack_positions) == 1
+    rack_position = rack_positions[0]
+    assert rack_position.workline_id == workline.id
+    assert rack_position.workline_code == TEST_ROUGH_SORTER_LINE_CODE
+    assert rack_position.position_code == "SINGLE_LAYER_A"
+    assert rack_position.position_role == WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK
+    assert rack_position.allowed_rack_kind == RackKind.SINGLE_LAYER
+    assert rack_position.capacity == 1
+    assert rack_position.enabled is True
 
 
 @pytest.mark.asyncio
@@ -129,10 +144,13 @@ async def test_sync_test_workline_devices_refreshes_existing_seed_rows_without_t
 
     workline_count = await db_session.scalar(select(func.count()).select_from(WorkLine))
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
+    rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert workline_count == 1
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
     assert result["summary"]["worklines"]["updated"] == 1
     assert result["devices"]["RS-INPUT-ARM-01"] == "updated"
+    assert result["rack_positions"]["SINGLE_LAYER_A"] == "unchanged"
 
     refreshed_workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
@@ -222,7 +240,9 @@ async def test_sync_test_workline_devices_seeds_rough_sorter_when_unrelated_work
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
     ).scalar_one_or_none()
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
+    rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert seeded_workline is not None
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
     assert result["summary"]["worklines"]["created"] == 1
     assert set(result["devices"].values()) == {"created"}

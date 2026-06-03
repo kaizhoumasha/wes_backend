@@ -115,3 +115,23 @@ async def test_runtime_record_diagnostic_persists_card_after_logging() -> None:
     event = await_args.kwargs["event"]
     assert event.context.trace_id == "trace-runtime-001"
     assert event.context.inbox_id == 11
+
+
+@pytest.mark.asyncio
+async def test_runtime_record_diagnostic_swallow_log_construction_failure() -> None:
+    from src.app.workline import diagnostic_support
+
+    with (
+        patch.object(diagnostic_support, "_log_diagnostic", side_effect=RuntimeError("expired orm object")),
+        patch(
+            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.record_event",
+            new=AsyncMock(),
+        ) as mock_record,
+    ):
+        await diagnostic_support._record_diagnostic(
+            object(),
+            error_code=ErrorCode.UNKNOWN,
+            message="original failure",
+        )
+
+    mock_record.assert_not_awaited()
