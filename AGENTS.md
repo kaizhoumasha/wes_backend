@@ -4,6 +4,35 @@
 
 ---
 
+## AI Tool Entry Points
+
+本仓库同时维护三个 AI 工具入口，职责必须保持清晰，避免规则分叉：
+
+| 工具 | 入口文件 | 职责 |
+| --- | --- | --- |
+| Codex / 通用 Agent | `AGENTS.md` | 项目规则主真源，所有跨工具硬约束以本文为准 |
+| Claude Code | `CLAUDE.md` | Claude/GStack/Skill routing 专用行为层，项目硬规则继承本文 |
+| AGY / Antigravity / Gemini | `GEMINI.md` + `.agents/rules/` | 轻量入口和 workspace rules，项目硬规则继承本文 |
+
+同步原则：
+
+- 不要在 `CLAUDE.md`、`GEMINI.md` 或 `.agents/rules/` 中维护一份独立的项目事实。
+- 项目架构、命令、分支、GitNexus、RTK、质量门禁等硬规则更新时，先更新 `AGENTS.md`。
+- 平台入口文件只补充“该工具如何执行这些规则”的差异，例如 Claude skills、AGY workspace rules。
+- 如果入口文件之间冲突，以用户当前指令优先，其次遵循对应工具入口；项目级事实以 `AGENTS.md` 为准。
+
+### Non-Negotiable Project Rules
+
+所有 AI 工具都必须遵守：
+
+- 使用中文进行沟通、文档和 Commit Comment。
+- 遵守分层架构：API → Service → Repository → Database。
+- 修改函数、类、方法前运行 GitNexus impact analysis；HIGH/CRITICAL 风险必须先告知用户。
+- Commit 前运行 GitNexus detect changes，确认变更范围符合预期。
+- 项目命令使用 `uv run ...`，不要依赖其它 shell 已激活环境。
+- 日常分支以 `develop` 为 base；仅在确需并行隔离时使用 worktree。
+- 保留有价值注释，代码行为变化时同步更新注释。
+
 ## 🚨 Critical Architecture Rules
 
 ### Layered Architecture
@@ -186,9 +215,10 @@ Use `uv` locally.
 
 使用 worktree 时，每个 worktree 必须维护自己的本地运行状态。不要复用其它 worktree 的 `.venv`、`.env`、`.pytest_cache` 或其它本地临时文件。
 
-- 主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_backend`
-- Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
-- 新建 worktree 必须放在上述根目录下，不要放进主仓库内部，也不要散落在 `/Users/kaizhou/SynologyDrive/works` 顶层。
+- 后端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_backend`
+- 前端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_frontend`
+- 后端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
+- 前端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend`
 - Worktree 目录名使用 branch slug：把分支名里的 `/` 替换成 `-`，例如 `feature/handling-core` → `feature-handling-core`。
 - 创建示例：`mkdir -p ../worktrees/wes_backend && git worktree add ../worktrees/wes_backend/<branch-slug> -b <branch> develop`
 - 进入 worktree 后先运行 `./scripts/init-env.sh dev`。
@@ -261,7 +291,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (24152 symbols, 40053 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (24921 symbols, 45568 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

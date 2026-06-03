@@ -2,6 +2,28 @@
 
 P9 WES Backend 快速开发框架指南 - 基于 FastAPI + SQLModel + SQLAlchemy 2.0
 
+## Claude Entry Point
+
+`AGENTS.md` 是本仓库项目规则主真源；Claude Code 必须先遵守 `AGENTS.md` 中的架构、命令、分支、GitNexus、RTK、质量门禁和中文沟通规则。
+
+本文件只补充 Claude Code 专用行为层：
+
+- Karpathy 风格的编码行为约束。
+- GStack skill routing 和 Claude 使用方式。
+- Claude 在长任务中的计划、验证、技能调用习惯。
+
+如果本文与 `AGENTS.md` 的项目事实冲突，以用户当前指令优先，其次以 `AGENTS.md` 为项目事实准绳；本文只决定 Claude 如何执行。
+
+## Non-Negotiable Project Rules
+
+- 使用中文进行沟通、文档和 Commit Comment。
+- 遵守分层架构：API → Service → Repository → Database。
+- 修改函数、类、方法前运行 GitNexus impact analysis；HIGH/CRITICAL 风险必须先告知用户。
+- Commit 前运行 GitNexus detect changes，确认变更范围符合预期。
+- 项目命令使用 `uv run ...`，不要依赖其它 shell 已激活环境。
+- 日常分支以 `develop` 为 base；仅在确需并行隔离时使用 worktree。
+- 保留有价值注释，代码行为变化时同步更新注释。
+
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ## 1. Think Before Coding
@@ -129,15 +151,28 @@ uv run pytest --cov=src       # 测试和覆盖率
 - 新增 Alembic 迁移必须通过 Alembic revision generator 创建，例如 `uv run alembic revision -m "<message>"`，或使用仓库已有的等价 wrapper。
 - 不要手写模板化 `revision` ID。先让 Alembic 自动生成随机 revision ID，再编辑生成出来的迁移文件内容。
 
-## Worktree 开发流程
 
-使用 git worktree 时，每个 worktree 都必须维护自己的本地运行环境，避免分支之间相互污染。
+## 分支与 Worktree 流程
+默认使用普通 Git Flow 分支。日常单任务开发从 `develop` 切 `feature/*`、`fix/*`、`chore/*` 等分支即可，不默认使用 worktree。
 
-**必须遵守**：
-- 每个 worktree 单独维护 `.venv`
-- 每个 worktree 单独维护 `.env`
-- 不要复用其他 worktree 的虚拟环境
-- 项目命令统一使用 `uv run ...`
+基础分支统一使用 `develop`。创建功能/修复分支前先更新 `develop`，PR 默认以 `develop` 为 base；除发布、回滚、生产补丁等特殊流程外，不从 `main` 直接拉日常开发分支。
+
+仅在确实需要并行隔离时使用 git worktree：长线重构、保留当前现场处理紧急修复、AI agent 执行大计划、PR review 期间继续其他工作，或需要并行运行两套本地环境。
+
+使用 worktree 时，每个 worktree 必须维护自己的本地运行状态。不要复用其它 worktree 的 `.venv`、`.env`、`.pytest_cache` 或其它本地临时文件。
+
+- 后端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_backend`
+- 前端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_frontend`
+- 后端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
+- 前端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend`
+- Worktree 目录名使用 branch slug：把分支名里的 `/` 替换成 `-`，例如 `feature/handling-core` → `feature-handling-core`。
+- 创建示例：`mkdir -p ../worktrees/wes_backend && git worktree add ../worktrees/wes_backend/<branch-slug> -b <branch> develop`
+- 进入 worktree 后先运行 `./scripts/init-env.sh dev`。
+- 在该 worktree 内运行 `uv sync --dev`，创建或刷新自己的 `.venv`。
+- 如需启用提交门禁，在该 worktree 内运行 `./scripts/install-git-hooks.sh`。
+- 所有项目命令使用 `uv run ...`，不要依赖其它 shell 中已激活的环境。
+- 如果切换分支后 `pyproject.toml`、`uv.lock` 或环境 profile 文件发生变化，重新运行 `./scripts/init-env.sh dev` 和 `uv sync --dev`。
+- worktree 不再需要时，使用 `git worktree remove <path>` 删除，然后执行 `git worktree prune`。
 
 **推荐流程**：
 
@@ -420,7 +455,7 @@ serena list_dir . --recursive --skip-ignored
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (24152 symbols, 40053 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (24921 symbols, 45568 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
