@@ -3,8 +3,26 @@
 该目录只描述 Mock 支持的外部 ECS 协议能力，不依赖插件运行时代码。
 """
 
+import importlib.util
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+
+def _load_sandbox_catalog() -> Any:
+    """按文件加载共享 catalog，避免 Docker 直接导入时依赖 src 包路径。"""
+
+    catalog_path = Path(__file__).resolve().parents[2] / "src" / "workline_runtime" / "sandbox_catalog.py"
+    spec = importlib.util.spec_from_file_location("wes_mock_sandbox_catalog_for_ecs", catalog_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 ECS mock catalog: {catalog_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_sandbox_catalog = _load_sandbox_catalog()
+mock_rough_sorter_reel_measurement = _sandbox_catalog.mock_rough_sorter_reel_measurement
 
 
 @dataclass(frozen=True)
@@ -68,11 +86,20 @@ def default_success_data(device_code: str, task_type: str, params: dict[str, Any
         "accepted_params": params,
     }
     if device_code == "RS-INPUT-ARM-01" and task_type == "PICK_AND_PUT":
+        six_in_one = params.get("six_in_one")
+        if isinstance(six_in_one, dict):
+            sku = str(six_in_one.get("HHPN") or "")
+            lot_no = str(six_in_one.get("LotCode") or "")
+        elif "six_in_one" in params:
+            sku = ""
+            lot_no = ""
+        else:
+            sku = None
+            lot_no = None
         data.update(
-            {
-                "reel_diameter": "178.0",
-                "reel_thickness": "15.0",
-                "measurement_result": "OK",
-            }
+            mock_rough_sorter_reel_measurement(
+                sku,
+                lot_no,
+            )
         )
     return data

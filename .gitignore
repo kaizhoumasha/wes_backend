@@ -238,3 +238,4 @@ sessions/**
 .zread/*
 .claude/skills/*
 .antigravitycli/*
+.playwright-cli/

@@ -1,4 +1,6 @@
+import builtins
 import importlib
+import importlib.util
 from typing import ClassVar
 
 from fastapi.testclient import TestClient
@@ -38,6 +40,34 @@ class FakeResponse:
 def setup_function() -> None:
     CapturingAsyncClient.requests.clear()
     ecs_mock_server.reset_mock_state()
+
+
+def test_ecs_mock_catalog_loads_shared_catalog_without_src_package(monkeypatch) -> None:
+    module_path = ecs_mock_server.DOCKER_APP_ROOT / "tests" / "mock" / "ecs_mock_catalog.py"
+    spec = importlib.util.spec_from_file_location("isolated_ecs_mock_catalog", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+
+    original_import = builtins.__import__
+
+    def import_without_src(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src" or name.startswith("src."):
+            raise ModuleNotFoundError("No module named 'src'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_src)
+    monkeypatch.syspath_prepend(str(module_path.parent))
+    isolated_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated_module)
+
+    data = isolated_module.default_success_data(
+        "RS-INPUT-ARM-01",
+        "PICK_AND_PUT",
+        {"six_in_one": {"HHPN": "IC001", "LotCode": "LOT-I"}},
+    )
+
+    assert data["reel_diameter"] == "330.0"
+    assert data["reel_thickness"] == "24.0"
 
 
 def test_ecs_mock_default_callbacks_target_localhost(monkeypatch) -> None:
@@ -173,6 +203,163 @@ def test_ecs_mock_pick_and_put_success_callback_contains_measurement(monkeypatch
     assert callback_data["reel_diameter"] == "178.0"
     assert callback_data["reel_thickness"] == "15.0"
     assert callback_data["measurement_result"] == "OK"
+
+
+def test_ecs_mock_pick_and_put_measurement_depends_on_command_material(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-PICK-IC",
+                "task_type": "PICK_AND_PUT",
+                "params": {
+                    "business_key": "PKG-IC001-LOT-I-001",
+                    "six_in_one": {
+                        "HHPN": "IC001",
+                        "MfrPN": "V0003-IC-QFN",
+                        "Qty": "1200",
+                        "DateCode": "20260411",
+                        "LotCode": "LOT-I",
+                        "PkgID": "PKG-IC001-LOT-I-001",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    callback_data = CapturingAsyncClient.requests[0]["json"]["data"]
+    assert callback_data["reel_diameter"] == "330.0"
+    assert callback_data["reel_thickness"] == "24.0"
+    assert callback_data["measurement_result"] == "OK"
+
+
+def test_ecs_mock_pick_and_put_returns_ng_for_unknown_material(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-PICK-UNKNOWN",
+                "task_type": "PICK_AND_PUT",
+                "params": {
+                    "business_key": "PKG-UNKNOWN-LOT-X-001",
+                    "six_in_one": {
+                        "HHPN": "UNKNOWN",
+                        "MfrPN": "V9999-UNKNOWN",
+                        "Qty": "1200",
+                        "DateCode": "20260411",
+                        "LotCode": "LOT-X",
+                        "PkgID": "PKG-UNKNOWN-LOT-X-001",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    callback_data = CapturingAsyncClient.requests[0]["json"]["data"]
+    assert callback_data["measurement_result"] == "NG"
+    assert callback_data["measurement_error_code"] == "MATERIAL_NOT_SUPPORTED"
+    assert "reel_diameter" not in callback_data
+    assert "reel_thickness" not in callback_data
+
+
+def test_ecs_mock_pick_and_put_returns_ng_for_known_material_unknown_lot(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-PICK-BAD-LOT",
+                "task_type": "PICK_AND_PUT",
+                "params": {
+                    "business_key": "PKG-IC001-LOT-X-001",
+                    "six_in_one": {
+                        "HHPN": "IC001",
+                        "MfrPN": "V0003-IC-QFN",
+                        "Qty": "1200",
+                        "DateCode": "20260411",
+                        "LotCode": "LOT-X",
+                        "PkgID": "PKG-IC001-LOT-X-001",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    callback_data = CapturingAsyncClient.requests[0]["json"]["data"]
+    assert callback_data["measurement_result"] == "NG"
+    assert callback_data["measurement_error_code"] == "MATERIAL_INVENTORY_NOT_ALLOWED"
+    assert "reel_diameter" not in callback_data
+    assert "reel_thickness" not in callback_data
+
+
+def test_ecs_mock_pick_and_put_returns_ng_for_explicit_empty_material_fields(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-PICK-EMPTY-LOT",
+                "task_type": "PICK_AND_PUT",
+                "params": {
+                    "business_key": "PKG-CAP001-EMPTY-LOT-001",
+                    "six_in_one": {
+                        "HHPN": "CAP001",
+                        "MfrPN": "V0001-CAP-0402",
+                        "Qty": "100",
+                        "DateCode": "20260409",
+                        "LotCode": "",
+                        "PkgID": "PKG-CAP001-EMPTY-LOT-001",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    callback_data = CapturingAsyncClient.requests[0]["json"]["data"]
+    assert callback_data["measurement_result"] == "NG"
+    assert callback_data["measurement_error_code"] == "MATERIAL_INVENTORY_NOT_ALLOWED"
+    assert "reel_diameter" not in callback_data
+    assert "reel_thickness" not in callback_data
+
+
+def test_ecs_mock_pick_and_put_returns_ng_for_explicit_null_six_in_one(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-INPUT-ARM-01",
+                "command_code": "CMD-ECS-PICK-NULL-SIX-IN-ONE",
+                "task_type": "PICK_AND_PUT",
+                "params": {
+                    "business_key": "PKG-NULL-SIX-IN-ONE-001",
+                    "six_in_one": None,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    callback_data = CapturingAsyncClient.requests[0]["json"]["data"]
+    assert callback_data["measurement_result"] == "NG"
+    assert callback_data["measurement_error_code"] == "MATERIAL_NOT_SUPPORTED"
+    assert "reel_diameter" not in callback_data
+    assert "reel_thickness" not in callback_data
 
 
 def test_ecs_mock_lists_received_commands_latest_first(monkeypatch) -> None:

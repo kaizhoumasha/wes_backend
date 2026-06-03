@@ -56,6 +56,24 @@ def test_wms_mock_inventory_query_matches_known_sku_and_lot_no() -> None:
     assert response.json()["data"]["items"] == [inventory]
 
 
+def test_wms_mock_inventory_query_matches_additional_catalog_products() -> None:
+    inventory = mock_wms_inventory_seed()
+    with TestClient(wms_mock_server.app) as client:
+        resistor_response = client.post(
+            "/api/wms/inventory/query",
+            json={"sku": "RES001", "lot_no": "LOT-R"},
+        )
+        ic_response = client.get(
+            "/api/wms/inventory/query",
+            params={"sku": "IC001", "lot_no": "LOT-I"},
+        )
+
+    assert resistor_response.status_code == 200
+    assert resistor_response.json()["data"]["items"] == [inventory[("RES001", "LOT-R")]]
+    assert ic_response.status_code == 200
+    assert ic_response.json()["data"]["items"] == [inventory[("IC001", "LOT-I")]]
+
+
 def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no() -> None:
     payload_data = rough_sorter_scan_completed_payload()["data"]
     with TestClient(wms_mock_server.app) as client:

@@ -24,7 +24,9 @@ _MOCK_WMS_MATERIALS: dict[str, dict[str, Any]] = {
         "material_name": "电容 0402",
         "vendor": "V0001",
         "standard_dims": "7inch",
+        "standard_reel_diameter": 178.0,
         "standard_thickness": 15.0,
+        "standard_reel_thickness": 15.0,
         "is_msd": False,
         "is_high_value": False,
         "is_precious": False,
@@ -33,7 +35,75 @@ _MOCK_WMS_MATERIALS: dict[str, dict[str, Any]] = {
         "material_type": "ELECTRONIC",
         "lc_cycle": 30,
         "floor_life": 168,
-    }
+    },
+    "RES001": {
+        "material_id": "RES001",
+        "material_name": "电阻 0603",
+        "vendor": "V0002",
+        "standard_dims": "7inch",
+        "standard_reel_diameter": 180.0,
+        "standard_thickness": 12.0,
+        "standard_reel_thickness": 12.0,
+        "is_msd": False,
+        "is_high_value": False,
+        "is_precious": False,
+        "is_pcb": False,
+        "is_irregular": False,
+        "material_type": "ELECTRONIC",
+        "lc_cycle": 30,
+        "floor_life": 168,
+    },
+    "IC001": {
+        "material_id": "IC001",
+        "material_name": "IC QFN",
+        "vendor": "V0003",
+        "standard_dims": "13inch",
+        "standard_reel_diameter": 330.0,
+        "standard_thickness": 24.0,
+        "standard_reel_thickness": 24.0,
+        "is_msd": True,
+        "is_high_value": True,
+        "is_precious": False,
+        "is_pcb": False,
+        "is_irregular": False,
+        "material_type": "ELECTRONIC",
+        "lc_cycle": 14,
+        "floor_life": 72,
+    },
+    "LED001": {
+        "material_id": "LED001",
+        "material_name": "LED 2835",
+        "vendor": "V0004",
+        "standard_dims": "7inch",
+        "standard_reel_diameter": 178.0,
+        "standard_thickness": 18.0,
+        "standard_reel_thickness": 18.0,
+        "is_msd": False,
+        "is_high_value": False,
+        "is_precious": False,
+        "is_pcb": False,
+        "is_irregular": False,
+        "material_type": "ELECTRONIC",
+        "lc_cycle": 21,
+        "floor_life": 120,
+    },
+    "PCB001": {
+        "material_id": "PCB001",
+        "material_name": "小型 PCB 载盘",
+        "vendor": "V0005",
+        "standard_dims": "tray",
+        "standard_reel_diameter": 260.0,
+        "standard_thickness": 30.0,
+        "standard_reel_thickness": 30.0,
+        "is_msd": False,
+        "is_high_value": True,
+        "is_precious": False,
+        "is_pcb": True,
+        "is_irregular": True,
+        "material_type": "PCB",
+        "lc_cycle": 7,
+        "floor_life": 48,
+    },
 }
 
 _MOCK_WMS_INVENTORY: dict[tuple[str, str], dict[str, Any]] = {
@@ -45,7 +115,43 @@ _MOCK_WMS_INVENTORY: dict[tuple[str, str], dict[str, Any]] = {
         "total_qty": Decimal("50000"),
         "available_qty": Decimal("50000"),
         "reserved_qty": Decimal("0"),
-    }
+    },
+    ("RES001", "LOT-R"): {
+        "sku": "RES001",
+        "lot_no": "LOT-R",
+        "warehouse_code": None,
+        "owner_code": None,
+        "total_qty": Decimal("30000"),
+        "available_qty": Decimal("30000"),
+        "reserved_qty": Decimal("0"),
+    },
+    ("IC001", "LOT-I"): {
+        "sku": "IC001",
+        "lot_no": "LOT-I",
+        "warehouse_code": None,
+        "owner_code": None,
+        "total_qty": Decimal("12000"),
+        "available_qty": Decimal("12000"),
+        "reserved_qty": Decimal("0"),
+    },
+    ("LED001", "LOT-L"): {
+        "sku": "LED001",
+        "lot_no": "LOT-L",
+        "warehouse_code": None,
+        "owner_code": None,
+        "total_qty": Decimal("24000"),
+        "available_qty": Decimal("24000"),
+        "reserved_qty": Decimal("0"),
+    },
+    ("PCB001", "LOT-P"): {
+        "sku": "PCB001",
+        "lot_no": "LOT-P",
+        "warehouse_code": None,
+        "owner_code": None,
+        "total_qty": Decimal("6000"),
+        "available_qty": Decimal("6000"),
+        "reserved_qty": Decimal("0"),
+    },
 }
 
 
@@ -96,12 +202,41 @@ def mock_wms_inventory_seed() -> dict[tuple[str, str], dict[str, Any]]:
 
     return {
         key: {
-            field_name: int(value) if isinstance(value, Decimal) else value
+            field_name: _json_ready_inventory_value(value) if isinstance(value, Decimal) else value
             for field_name, value in row.items()
             if field_name not in {"warehouse_code", "owner_code"} or value is not None
         }
         for key, row in _MOCK_WMS_INVENTORY.items()
     }
+
+
+def mock_rough_sorter_reel_measurement(sku: str | None, lot_no: str | None = None) -> dict[str, str]:
+    """按共享 mock catalog 和 WMS 库存返回粗分机测量值。"""
+
+    material_sku = "CAP001" if sku is None else sku
+    material_lot_no = "LOT-A" if lot_no is None else lot_no
+    material = _MOCK_WMS_MATERIALS.get(material_sku)
+    if material is None:
+        return {
+            "measurement_result": "NG",
+            "measurement_error_code": "MATERIAL_NOT_SUPPORTED",
+        }
+    if (material_sku, material_lot_no) not in _MOCK_WMS_INVENTORY:
+        return {
+            "measurement_result": "NG",
+            "measurement_error_code": "MATERIAL_INVENTORY_NOT_ALLOWED",
+        }
+    return {
+        "reel_diameter": str(float(material["standard_reel_diameter"])),
+        "reel_thickness": str(float(material["standard_reel_thickness"])),
+        "measurement_result": "OK",
+    }
+
+
+def _json_ready_inventory_value(value: Decimal) -> int:
+    if value != value.to_integral_value():
+        raise ValueError(f"Mock WMS 库存数量必须是整数: {value}")
+    return int(value)
 
 
 def _matches_optional_dimension(row_value: Any, requested_value: str | None) -> bool:
@@ -111,6 +246,7 @@ def _matches_optional_dimension(row_value: Any, requested_value: str | None) -> 
 
 
 __all__ = [
+    "mock_rough_sorter_reel_measurement",
     "mock_wms_inventory_seed",
     "mock_wms_materials_seed",
     "query_sandbox_wms_inventory_rows",
