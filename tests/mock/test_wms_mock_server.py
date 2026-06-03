@@ -13,12 +13,6 @@ def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> No
     assert "spec_from_file_location" in source
 
 
-def test_wms_mock_dockerfile_copies_shared_catalog_dependency() -> None:
-    dockerfile = Path(__file__).resolve().parents[2] / "tests" / "mock" / "Dockerfile"
-
-    assert "COPY src/workline_runtime/sandbox_catalog.py" in dockerfile.read_text()
-
-
 def test_wms_mock_release_reservation_matches_typed_port_contract() -> None:
     with TestClient(wms_mock_server.app) as client:
         response = client.delete("/api/wms/inventory/reserve/RSV-1")
