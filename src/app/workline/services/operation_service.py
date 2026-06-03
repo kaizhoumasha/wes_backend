@@ -985,7 +985,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             error_code="SANDBOX_RESULT_FAILED" if not sandbox_success else None,
             auto_commit=False,
         )
-        released_outboxes = 0
         device_status = getattr(getattr(updated_device, "device_status", None), "value", None) or getattr(
             updated_device,
             "device_status",
@@ -996,7 +995,8 @@ class WorklineOperationService(BaseService[Any, Any]):
             and device_status == "IDLE"
             and getattr(updated_device, "current_command_id", None) is None
         ):
-            released_outboxes = await self.outbox_repo.release_blocked_by_device(db, device_id=device_id)
+            # 本地设备投影仅用于诊断；blocked outbox 放行必须由下一轮 ECS admission probe 决定。
+            pass
 
         inbox = await self.inbox_repo.create(
             db,
@@ -1019,8 +1019,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise RuntimeError(f"创建沙箱 Result 失败: command_code={command_code}")
         if auto_commit:
             await self._commit_mutation(db)
-            if released_outboxes:
-                self._enqueue_outbox_dispatch()
         return inbox
 
     DEFAULT_EVENT_PAYLOAD_TEMPLATES = _DEFAULT_EVENT_PAYLOAD_TEMPLATES

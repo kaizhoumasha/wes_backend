@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.workline.services.trace_query_service import TraceQueryService
+from src.utils.timezone import timezone
 
 
 class _ResultStub:
@@ -165,6 +167,81 @@ def outbox_obj() -> SimpleNamespace:
         status="SENT",
         created_at=1,
     )
+
+
+def test_trace_outbox_includes_resource_wait_diagnostics() -> None:
+    from src.app.workline.services.trace_response_builder import build_trace_response
+    from src.workline_runtime.trace_context import TraceContext
+
+    blocked_at = timezone.now_for_db() - timedelta(seconds=15)
+    last_check_at = timezone.now_for_db() - timedelta(seconds=5)
+    outbox = SimpleNamespace(
+        id=45,
+        session_id=11,
+        workline_id=22,
+        dispatch_key="dispatch-blocked",
+        dispatch_type="DEVICE_COMMAND",
+        target_type="DEVICE",
+        target_code="ARM-01",
+        status="BLOCKED_RESOURCE",
+        attempt_count=1,
+        next_retry_at=None,
+        last_error="设备 ARM-01 实时状态查询返回 HTTP 503，等待下次预检",
+        blocked_by_runtime_hold_id=None,
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=77,
+        blocked_workline_id=22,
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_at=blocked_at,
+        last_blocked_check_at=last_check_at,
+        blocked_check_count=3,
+        blocked_detail_json={
+            "device_code": "ARM-01",
+            "http_status": 503,
+            "last_probe_result": "STATUS_WAIT",
+            "raw_vendor_response": {"large": "should-not-leak"},
+        },
+        created_at=blocked_at,
+        sent_at=None,
+        finished_at=last_check_at,
+        payload_json={"command_code": "CMD-BLOCKED-001"},
+        blocked_location_code="SHOULD-NOT-EXIST",
+        blocked_owner_session_id=999,
+    )
+    result = SimpleNamespace(
+        trace=TraceContext.from_request(trace_id="trace-blocked"),
+        callback_logs=[],
+        inboxes=[],
+        session=None,
+        sessions=[],
+        commands=[],
+        outboxes=[outbox],
+        dispatch_attempts=[],
+        timelines=[],
+        diagnostics=[],
+        resource_state_events=[],
+        rack_bin_mounts=[],
+        rack_releases=[],
+        rack_release_bin_snapshots=[],
+        wms_writeback_evidence=[],
+        runtime_holds=[],
+    )
+
+    response = build_trace_response(result)
+    item = response.outboxes[0]
+    data = item.model_dump()
+
+    assert item.blocked_at == blocked_at
+    assert item.last_blocked_check_at == last_check_at
+    assert item.blocked_wait_seconds is not None and item.blocked_wait_seconds >= 14
+    assert item.blocked_check_count == 3
+    assert item.blocked_detail_json == {
+        "device_code": "ARM-01",
+        "http_status": 503,
+        "last_probe_result": "STATUS_WAIT",
+    }
+    assert "blocked_location_code" not in data
+    assert "blocked_owner_session_id" not in data
 
 
 @pytest.fixture

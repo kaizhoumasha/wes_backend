@@ -176,14 +176,19 @@ def _dispatchable_device() -> object:
     [
         (FakeStatusResponse({}, status_code=503, text="not ready"), None),
         (FakeStatusResponse(ValueError("bad json")), None),
+        (FakeStatusResponse({"state": {"status": "IDLE"}}), None),
         (
             FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}),
             httpx.TimeoutException("status timeout"),
         ),
+        (
+            FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}),
+            httpx.ConnectError("status connection failed"),
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_dispatch_realtime_status_communication_failure_never_posts_command(
+async def test_realtime_status_unavailable_raises_precheck_wait_error(
     monkeypatch,
     status_response: FakeStatusResponse,
     side_effect: Exception | None,
@@ -215,25 +220,50 @@ async def test_dispatch_realtime_status_communication_failure_never_posts_comman
         },
     )()
 
-    success = await gateway.dispatch(db, outbox)
+    with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+        await gateway.dispatch(db, outbox)
 
-    assert success is False
+    assert exc_info.value.code == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert exc_info.value.device_id == 100
+    assert exc_info.value.device_code == "RS-CONVEYOR-01"
     assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
     assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
+    detail = exc_info.value.detail
+    assert detail["device_code"] == "RS-CONVEYOR-01"
+    assert detail["status_url"] == "http://mock_ecs:8010/api/v1/device/status?device_code=RS-CONVEYOR-01"
+    assert "error_kind" in detail
 
 
 @pytest.mark.parametrize(
-    "status_response",
+    ("status_response", "expected_mode", "expected_status", "expected_current_command_id"),
     [
-        FakeStatusResponse({"state": {"mode": "MANUAL", "status": "IDLE", "current_command_id": None}}),
-        FakeStatusResponse({"state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": None}}),
-        FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-BUSY"}}),
+        (
+            FakeStatusResponse({"state": {"mode": "MANUAL", "status": "IDLE", "current_command_id": None}}),
+            "MANUAL",
+            "IDLE",
+            None,
+        ),
+        (
+            FakeStatusResponse({"state": {"mode": "AUTO", "status": "RUNNING", "current_command_id": None}}),
+            "AUTO",
+            "RUNNING",
+            None,
+        ),
+        (
+            FakeStatusResponse({"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-OTHER"}}),
+            "AUTO",
+            "IDLE",
+            "CMD-OTHER",
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_dispatch_realtime_status_busy_raises_governance_error(
+async def test_realtime_status_busy_raises_device_busy_governance_error(
     monkeypatch,
     status_response: FakeStatusResponse,
+    expected_mode: str,
+    expected_status: str,
+    expected_current_command_id: str | None,
 ) -> None:
     CapturingAsyncClient.requests.clear()
     CapturingAsyncClient.status_response = status_response
@@ -268,8 +298,92 @@ async def test_dispatch_realtime_status_busy_raises_governance_error(
     assert exc_info.value.code == "DEVICE_BUSY"
     assert exc_info.value.device_id == 100
     assert exc_info.value.device_code == "RS-CONVEYOR-01"
+    detail = exc_info.value.detail
+    assert detail["device_code"] == "RS-CONVEYOR-01"
+    assert detail["observed_mode"] == expected_mode
+    assert detail["observed_status"] == expected_status
+    assert detail["observed_current_command_id"] == expected_current_command_id
+    assert f"mode={expected_mode}" in str(exc_info.value)
+    assert f"status={expected_status}" in str(exc_info.value)
+    assert f"current_command_id={expected_current_command_id}" in str(exc_info.value)
     assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
     assert CapturingAsyncClient.requests[0]["timeout"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_realtime_status_same_command_busy_uses_governance_error_without_post(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": "CMD-GW-STATUS"}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(
+        gateway_module,
+        "_get_device_for_command_dispatch",
+        AsyncMock(return_value=_dispatchable_device()),
+    )
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-STATUS",
+            "payload_json": {"command_code": "CMD-GW-STATUS", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+        await gateway.dispatch(db, outbox)
+
+    assert exc_info.value.code == "DEVICE_BUSY"
+    assert exc_info.value.detail["observed_current_command_id"] == "CMD-GW-STATUS"
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_realtime_status_ready_allows_command_dispatch(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(
+        gateway_module,
+        "_get_device_for_command_dispatch",
+        AsyncMock(return_value=_dispatchable_device()),
+    )
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-READY",
+            "payload_json": {"command_code": "CMD-GW-READY", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
 
 
 @pytest.mark.asyncio

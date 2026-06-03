@@ -19,7 +19,25 @@ from src.app.workline.models.runtime import (
     TraceTimelineItem,
 )
 from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
+from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value, optional_enum_str
+
+_RESOURCE_WAIT_DETAIL_KEYS = {
+    "device_code",
+    "status_url",
+    "observed_mode",
+    "observed_status",
+    "observed_current_command_id",
+    "http_status",
+    "error_kind",
+    "error_message",
+    "last_probe_result",
+    "ttl_seconds",
+    "max_check_count",
+    "escalated_at",
+    "diagnostic_key",
+    "waited_seconds",
+}
 
 
 def _status_str(value: Any) -> str:
@@ -34,6 +52,18 @@ def _resource_evidence_dict(item: Any) -> dict[str, Any]:
     else:
         return {}
     return {key: enum_value(value) for key, value in payload.items() if not key.startswith("_")}
+
+
+def _resource_wait_detail_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in _RESOURCE_WAIT_DETAIL_KEYS if key in value}
+
+
+def _blocked_wait_seconds(blocked_at: Any) -> int | None:
+    if blocked_at is None:
+        return None
+    return max(int((timezone.now_for_db() - blocked_at).total_seconds()), 0)
 
 
 def _build_trace_summary(result: Any) -> TraceOverviewSummary:
@@ -173,6 +203,7 @@ def _build_command_item(item: Any) -> TraceCommandItem:
 
 
 def _build_outbox_item(item: Any) -> TraceOutboxItem:
+    blocked_at = getattr(item, "blocked_at", None)
     return TraceOutboxItem(
         id=item.id,
         session_id=item.session_id,
@@ -190,6 +221,11 @@ def _build_outbox_item(item: Any) -> TraceOutboxItem:
         blocked_device_id=getattr(item, "blocked_device_id", None),
         blocked_workline_id=getattr(item, "blocked_workline_id", None),
         blocked_reason=getattr(item, "blocked_reason", None),
+        blocked_at=blocked_at,
+        last_blocked_check_at=getattr(item, "last_blocked_check_at", None),
+        blocked_wait_seconds=_blocked_wait_seconds(blocked_at),
+        blocked_check_count=getattr(item, "blocked_check_count", None),
+        blocked_detail_json=_resource_wait_detail_summary(getattr(item, "blocked_detail_json", None)),
         created_at=item.created_at,
         sent_at=item.sent_at,
         finished_at=item.finished_at,

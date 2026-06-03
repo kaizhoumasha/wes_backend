@@ -42,7 +42,12 @@ from src.app.workline.models.runtime import (
     TraceQueryRequest,
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
-from src.app.workline.services.trace_response_builder import build_trace_response, build_trace_timeline_item
+from src.app.workline.services.trace_response_builder import (
+    _blocked_wait_seconds,
+    _resource_wait_detail_summary,
+    build_trace_response,
+    build_trace_timeline_item,
+)
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_enum_str
@@ -91,6 +96,7 @@ class _DeviceIdentity:
 class _BlockedOutboxProjection:
     count_by_device_id: dict[int, int]
     command_codes_by_device_id: dict[int, set[str]]
+    summary_by_device_id: dict[int, dict[str, Any]]
 
 
 def _status_str(value: Any) -> str:
@@ -437,6 +443,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 device,
                 open_command_count=open_command_map.get(device.id or 0, 0),
                 blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
+                blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device.id or 0),
                 active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
             )
             for device in devices
@@ -484,6 +491,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 open_command_map.get(device.id or 0, 0),
                 callback_time_map.get(device.device_code),
                 blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
+                blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device.id or 0),
                 active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
             )
             for device in devices
@@ -521,6 +529,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             open_command_map.get(device_id, 0),
             callback_time_map.get(device.device_code),
             blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device_id, 0),
+            blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device_id),
             active_runtime_hold_ids=active_hold_ids_map.get(device_id, []),
         )
 
@@ -718,7 +727,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
     async def _load_blocked_outbox_projection(self, db: Any, devices: list[Device]) -> _BlockedOutboxProjection:
         device_ids = [item.id for item in devices if item.id is not None]
         if not device_ids:
-            return _BlockedOutboxProjection(count_by_device_id={}, command_codes_by_device_id={})
+            return _BlockedOutboxProjection(
+                count_by_device_id={}, command_codes_by_device_id={}, summary_by_device_id={}
+            )
 
         by_id, by_code = _build_device_identity_maps(devices)
         columns = cast("Any", SystemOutbox).__table__.c
@@ -733,6 +744,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         count_by_device_id: dict[int, int] = defaultdict(int)
         command_codes_by_device_id: dict[int, set[str]] = defaultdict(set)
+        head_by_device_id: dict[int, Any] = {}
         for outbox in result.scalars().all():
             device_id = outbox.blocked_device_id
             if device_id is None:
@@ -741,6 +753,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if device_id is None or device_id not in by_id:
                 continue
             count_by_device_id[device_id] += 1
+            current_head = head_by_device_id.get(device_id)
+            if current_head is None or getattr(outbox, "created_at", None) < getattr(current_head, "created_at", None):
+                head_by_device_id[device_id] = outbox
             payload = _payload_dict(outbox.payload_json)
             command_code = payload.get("command_code")
             if isinstance(command_code, str) and command_code:
@@ -749,6 +764,15 @@ class RuntimeQueryService(BaseService[Any, Any]):
         return _BlockedOutboxProjection(
             count_by_device_id=dict(count_by_device_id),
             command_codes_by_device_id={key: set(value) for key, value in command_codes_by_device_id.items()},
+            summary_by_device_id={
+                device_id: {
+                    "blocked_reason": getattr(outbox, "blocked_reason", None),
+                    "blocked_wait_seconds": _blocked_wait_seconds(getattr(outbox, "blocked_at", None)),
+                    "blocked_check_count": getattr(outbox, "blocked_check_count", None),
+                    "blocked_detail_json": _resource_wait_detail_summary(getattr(outbox, "blocked_detail_json", None)),
+                }
+                for device_id, outbox in head_by_device_id.items()
+            },
         )
 
     async def _load_active_runtime_hold_ids_map(self, db: Any, device_ids: list[int]) -> dict[int, list[int]]:
@@ -1034,9 +1058,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
         *,
         open_command_count: int = 0,
         blocked_outbox_count: int = 0,
+        blocked_outbox_summary: dict[str, Any] | None = None,
         active_runtime_hold_ids: list[int] | None = None,
     ) -> RuntimeWorklineDeviceItem:
         hold_ids = active_runtime_hold_ids or []
+        blocked_summary = blocked_outbox_summary or {}
         return RuntimeWorklineDeviceItem(
             id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
@@ -1050,6 +1076,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             open_command_count=open_command_count,
             pending_command_count=open_command_count,
             blocked_outbox_count=blocked_outbox_count,
+            blocked_reason=blocked_summary.get("blocked_reason"),
+            blocked_wait_seconds=blocked_summary.get("blocked_wait_seconds"),
+            blocked_check_count=blocked_summary.get("blocked_check_count"),
+            blocked_detail_json=blocked_summary.get("blocked_detail_json"),
             open_issue_count=len(hold_ids),
             active_runtime_hold_ids=hold_ids,
             last_heartbeat_at=device.last_heartbeat_at,
@@ -1064,9 +1094,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
         recent_callback_at: Any,
         *,
         blocked_outbox_count: int = 0,
+        blocked_outbox_summary: dict[str, Any] | None = None,
         active_runtime_hold_ids: list[int] | None = None,
     ) -> RuntimeDeviceSummary:
         hold_ids = active_runtime_hold_ids or []
+        blocked_summary = blocked_outbox_summary or {}
         return RuntimeDeviceSummary(
             id=_require_int_id(device.id, "device.id"),
             device_code=device.device_code,
@@ -1082,6 +1114,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             open_command_count=open_command_count,
             pending_command_count=open_command_count,
             blocked_outbox_count=blocked_outbox_count,
+            blocked_reason=blocked_summary.get("blocked_reason"),
+            blocked_wait_seconds=blocked_summary.get("blocked_wait_seconds"),
+            blocked_check_count=blocked_summary.get("blocked_check_count"),
+            blocked_detail_json=blocked_summary.get("blocked_detail_json"),
             open_issue_count=len(hold_ids),
             active_runtime_hold_ids=hold_ids,
             last_heartbeat_at=device.last_heartbeat_at,

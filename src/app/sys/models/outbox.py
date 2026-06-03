@@ -153,6 +153,14 @@ class SystemOutboxBase(BaseMixin):
     blocked_device_id: int | None = Field(default=None, index=True, description="阻断相关设备 ID")
     blocked_workline_id: int | None = Field(default=None, index=True, description="阻断相关工作线 ID")
     blocked_reason: str | None = Field(default=None, max_length=100, description="阻断原因")
+    blocked_at: datetime | None = Field(default=None, index=True, description="资源等待起始时间")
+    last_blocked_check_at: datetime | None = Field(default=None, index=True, description="最近一次资源等待探测时间")
+    blocked_check_count: int = Field(default=0, ge=0, description="资源等待探测次数")
+    blocked_detail_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="资源等待诊断摘要",
+    )
 
 
 class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
@@ -166,6 +174,17 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
         Index("ix_system_outbox_domain_operation", "operation_domain", "operation_key"),
         Index("ix_system_outbox_context_status", "workline_id", "session_id", "status"),
         Index("ix_system_outbox_blocked_release", "blocked_reason", "blocked_device_id", "blocked_workline_id"),
+        Index(
+            "ix_system_outbox_blocked_device_head_probe",
+            "status",
+            "dispatch_type",
+            "blocked_reason",
+            "blocked_device_id",
+            "target_code",
+            "created_at",
+            postgresql_where=text("status = 'BLOCKED_RESOURCE' AND dispatch_type = 'DEVICE_COMMAND'"),
+            sqlite_where=text("status = 'BLOCKED_RESOURCE' AND dispatch_type = 'DEVICE_COMMAND'"),
+        ),
         Index("ix_system_outbox_retention", "status", "finished_at"),
         Index(
             "ix_system_outbox_device_fifo",

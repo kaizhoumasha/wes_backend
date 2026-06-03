@@ -290,9 +290,8 @@ class CallbackOrchestrationService:
         if device_status != "IDLE" or getattr(updated_device, "current_command_id", None) is not None:
             return 0
 
-        from src.app.sys.repositories import SystemOutboxRepository
-
-        return await SystemOutboxRepository().release_blocked_by_device(db, device_id=device_id)
+        # 本地设备投影仅用于诊断；blocked outbox 放行必须由下一轮 ECS admission probe 决定。
+        return 0
 
     async def process_result(
         self,

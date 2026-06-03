@@ -28,6 +28,7 @@ class _DeviceCommandGovernanceError(RuntimeError):
         message: str,
         device_id: int | None = None,
         device_code: str | None = None,
+        detail: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.domain = domain
@@ -35,6 +36,7 @@ class _DeviceCommandGovernanceError(RuntimeError):
         self.message = message
         self.device_id = device_id
         self.device_code = device_code
+        self.detail = detail or {}
 
 
 # ============================================
@@ -70,6 +72,7 @@ def _raise_device_command_governance_error(
     message: str,
     device_id: int | None = None,
     device_code: str | None = None,
+    detail: dict[str, Any] | None = None,
     cause: Exception | None = None,
 ) -> NoReturn:
     error = _DeviceCommandGovernanceError(
@@ -78,6 +81,7 @@ def _raise_device_command_governance_error(
         message=message,
         device_id=device_id,
         device_code=device_code,
+        detail=detail,
     )
     if cause is not None:
         raise error from cause
@@ -365,6 +369,69 @@ def _extract_device_status_state(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _build_device_status_precheck_detail(
+    *,
+    device_code: str,
+    status_url: str,
+    observed_mode: Any = None,
+    observed_status: Any = None,
+    observed_current_command_id: Any = None,
+    http_status: int | None = None,
+    error_kind: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    """构造 ECS status precheck 的最小诊断摘要，供 dispatcher 写入资源等待详情。"""
+
+    detail: dict[str, Any] = {
+        "device_code": device_code,
+        "status_url": status_url,
+        "observed_mode": observed_mode,
+        "observed_status": observed_status,
+        "observed_current_command_id": observed_current_command_id,
+    }
+    optional_values = {
+        "http_status": http_status,
+        "error_kind": error_kind,
+        "error_message": error_message,
+    }
+    detail.update({key: value for key, value in optional_values.items() if value is not None})
+    return detail
+
+
+def _raise_device_status_precheck_wait(
+    *,
+    device: Any,
+    device_code: str,
+    status_url: str,
+    message: str,
+    observed_mode: Any = None,
+    observed_status: Any = None,
+    observed_current_command_id: Any = None,
+    http_status: int | None = None,
+    error_kind: str,
+    error_message: str | None = None,
+    cause: Exception | None = None,
+) -> NoReturn:
+    _raise_device_command_governance_error(
+        domain=FailureDomain.HARDWARE.value,
+        code="DEVICE_STATUS_PRECHECK_WAIT",
+        message=message,
+        device_id=resolve_entity_id(device),
+        device_code=device_code,
+        detail=_build_device_status_precheck_detail(
+            device_code=device_code,
+            status_url=status_url,
+            observed_mode=observed_mode,
+            observed_status=observed_status,
+            observed_current_command_id=observed_current_command_id,
+            http_status=http_status,
+            error_kind=error_kind,
+            error_message=error_message,
+        ),
+        cause=cause,
+    )
+
+
 async def _ensure_realtime_device_status_ready(
     client: Any, device: Any, *, device_code: str, command_code: str | None = None
 ) -> bool:
@@ -376,7 +443,15 @@ async def _ensure_realtime_device_status_ready(
         response = await client.get(status_url, timeout=timeout_seconds)
     except Exception as exc:
         logger.warning(f"设备实时状态查询失败: device_code={device_code}, url={status_url}, error={exc}")
-        return False
+        _raise_device_status_precheck_wait(
+            device=device,
+            device_code=device_code,
+            status_url=status_url,
+            message=f"设备 {device_code} 实时状态查询暂不可用，等待下次预检: error={exc}",
+            error_kind=type(exc).__name__,
+            error_message=str(exc),
+            cause=exc,
+        )
 
     if response.status_code != 200:
         response_body = getattr(response, "text", "").strip()
@@ -384,19 +459,60 @@ async def _ensure_realtime_device_status_ready(
             logger.warning(f"设备实时状态查询失败: HTTP {response.status_code}, body={response_body}")
         else:
             logger.warning(f"设备实时状态查询失败: HTTP {response.status_code}")
-        return False
+        _raise_device_status_precheck_wait(
+            device=device,
+            device_code=device_code,
+            status_url=status_url,
+            message=f"设备 {device_code} 实时状态查询返回 HTTP {response.status_code}，等待下次预检",
+            http_status=response.status_code,
+            error_kind="http_status",
+            error_message=f"HTTP {response.status_code}",
+        )
 
     try:
         state = _extract_device_status_state(response.json())
     except Exception as exc:
         logger.warning(f"设备实时状态响应 JSON 解析失败: device_code={device_code}, error={exc}")
-        return False
+        _raise_device_status_precheck_wait(
+            device=device,
+            device_code=device_code,
+            status_url=status_url,
+            message=f"设备 {device_code} 实时状态响应 JSON 解析失败，等待下次预检: error={exc}",
+            http_status=response.status_code,
+            error_kind="json_parse_error",
+            error_message=str(exc),
+            cause=exc,
+        )
 
     mode = state.get("mode")
     status = state.get("status", state.get("device_status"))
     current_command_id = state.get("current_command_id")
+    if mode is None or status is None or "current_command_id" not in state:
+        _raise_device_status_precheck_wait(
+            device=device,
+            device_code=device_code,
+            status_url=status_url,
+            message=(
+                f"设备 {device_code} 实时状态响应结构无法提取接纳状态，等待下次预检: "
+                f"mode={mode}, status={status}, current_command_id={current_command_id}"
+            ),
+            observed_mode=mode,
+            observed_status=status,
+            observed_current_command_id=current_command_id,
+            http_status=response.status_code,
+            error_kind="invalid_status_shape",
+            error_message="missing mode/status/current_command_id",
+        )
     if mode != "AUTO" or status != "IDLE" or current_command_id is not None:
         device_id = resolve_entity_id(device)
+        detail = _build_device_status_precheck_detail(
+            device_code=device_code,
+            status_url=status_url,
+            observed_mode=mode,
+            observed_status=status,
+            observed_current_command_id=current_command_id,
+            http_status=response.status_code,
+        )
         if current_command_id and current_command_id == command_code:
             _raise_device_command_governance_error(
                 domain=FailureDomain.ORCHESTRATION.value,
@@ -404,6 +520,7 @@ async def _ensure_realtime_device_status_ready(
                 message=f"设备实时状态已接受该命令但本地未确认: device_code={device_code}, current_command_id={current_command_id}",
                 device_id=device_id,
                 device_code=device_code,
+                detail=detail,
             )
 
         message = (
@@ -420,6 +537,7 @@ async def _ensure_realtime_device_status_ready(
             message=message,
             device_id=device_id,
             device_code=device_code,
+            detail=detail,
         )
 
     return True
@@ -527,13 +645,9 @@ class DeviceCommandGateway:
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
             ack_timeout = _DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS
             async with httpx.AsyncClient() as client:
-                ready = await _ensure_realtime_device_status_ready(
+                _ = await _ensure_realtime_device_status_ready(
                     client=client, device=device, device_code=payload["device_code"], command_code=command_code
                 )
-                if not ready:
-                    outbox._dispatch_failure_reason = "DEVICE_STATUS_PRECHECK_FAILED"
-                    outbox._dispatch_failure_error_code = "DEVICE_STATUS_PRECHECK_FAILED"
-                    return False
 
                 logger.info(f"发送设备指令参数: {_build_device_command_log_envelope(outbox, payload, endpoint=url)}")
                 response = await client.post(url, json=payload, timeout=ack_timeout)
