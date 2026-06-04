@@ -54,6 +54,9 @@ from .rack_position import (
     WorklineRackPositionUpdate,
 )
 from .runtime import (
+    DiagnosisEvidenceHealthItemResponse,
+    DiagnosisEvidenceHealthResponse,
+    DiagnosisVerdictResponse,
     DiagnosticCardResponse,
     RuntimeDeviceDetailResponse,
     RuntimeDeviceSummary,
@@ -135,6 +138,9 @@ __all__ = [
     "BinCellReservationStatus",
     "ClearWorkLineEstopRequest",
     "DeviceRoleRequirementOption",
+    "DiagnosisEvidenceHealthItemResponse",
+    "DiagnosisEvidenceHealthResponse",
+    "DiagnosisVerdictResponse",
     "DiagnosticCardResponse",
     "DiagnosticStatus",
     "DispatchAttemptStatus",

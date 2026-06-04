@@ -36,7 +36,11 @@ from src.app.resource.models import (
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.runtime import DiagnosticCardResponse, TraceBlockingPointResponse
+from src.app.workline.models.runtime import (
+    DiagnosisVerdictResponse,
+    DiagnosticCardResponse,
+    TraceBlockingPointResponse,
+)
 from src.app.workline.models.runtime_hold import RuntimeHold
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.repositories import inbox_repository
@@ -45,6 +49,7 @@ from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.core.base_service import BaseService
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 from src.workline_runtime.diagnostics import (
@@ -55,12 +60,18 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_event,
     get_diagnostic_code_definition,
 )
+from src.workline_runtime.diagnostics.codes import ErrorDomain, ProblemClass, Recoverability, Severity
+from src.workline_runtime.diagnostics.models import DiagnosticCard
 from src.workline_runtime.trace_context import TraceContext
 
 # 导入公共工具函数
 from src.workline_runtime.utils import payload_dict
 
+from .diagnosis_verdict_builder import DiagnosisVerdictBuilder, diagnosis_verdict_builder
+
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.workline.models.diagnostic import WorklineDiagnostic
@@ -104,6 +115,13 @@ class TraceQueryResult:
     resource_state_events: list[ResourceStateEvent] = field(default_factory=list)
     rack_bin_mounts: list[RackBinMount] = field(default_factory=list)
     runtime_holds: list[RuntimeHold] = field(default_factory=list)
+    workline_runtime_status: str | None = None
+    workline_start_admission_status: str | None = None
+    workline_start_admission_message: str | None = None
+    workline_start_admission_failed_device_code: str | None = None
+    workline_start_admission_checked_at: datetime | None = None
+    workline_last_start_request_id: str | None = None
+    workline_last_start_trace_id: str | None = None
 
     @property
     def summary(self) -> dict[str, int]:
@@ -161,6 +179,8 @@ class TraceQueryService(BaseService[Any, Any]):
         command_repo: DeviceCommandRepository | None = None,
         inbox_repo: Any | None = None,
         diagnostic_repo: WorklineDiagnosticRepository | None = None,
+        workline_repo: WorkLineRepository | None = None,
+        verdict_builder: DiagnosisVerdictBuilder | None = None,
     ) -> None:
         super().__init__(inbox_repository, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository
@@ -168,6 +188,8 @@ class TraceQueryService(BaseService[Any, Any]):
         self.command_repo = command_repo or device_command_repository
         self.inbox_repo = inbox_repo or inbox_repository
         self.diagnostic_repo = diagnostic_repo or workline_diagnostic_repository
+        self.workline_repo = workline_repo or workline_repository
+        self.verdict_builder = verdict_builder or diagnosis_verdict_builder
 
     async def by_request_id(self, db: AsyncSession, request_id: str) -> TraceQueryResult:
         return await self.query(db, request_id=request_id)
@@ -334,6 +356,14 @@ class TraceQueryService(BaseService[Any, Any]):
                 )
             )
 
+        workline_projection = await self._load_workline_projection(
+            db,
+            session=session,
+            outboxes=outboxes,
+            commands=commands,
+            timelines=timelines,
+        )
+
         return TraceQueryResult(
             trace=trace,
             callback_logs=callback_logs,
@@ -345,6 +375,7 @@ class TraceQueryService(BaseService[Any, Any]):
             dispatch_attempts=dispatch_attempts,
             timelines=timelines,
             diagnostics=diagnostics,
+            **workline_projection,
         )
 
     async def get_blocking_point(self, db: AsyncSession, trace_id: str) -> TraceBlockingPointResponse:
@@ -353,10 +384,64 @@ class TraceQueryService(BaseService[Any, Any]):
         result = await self.by_trace_id(db, trace_id)
         return self._build_blocking_point(result, trace_id=trace_id)
 
+    def build_diagnosis_verdict(self, result: TraceQueryResult) -> DiagnosisVerdictResponse:
+        """返回 trace detail 与 blocking-point 共用的诊断结论。"""
+
+        return self.verdict_builder.build(result)
+
     async def _get_outbox_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
+
+    async def _load_workline_projection(
+        self,
+        db: AsyncSession,
+        *,
+        session: WorklineSession | None,
+        outboxes: list[SystemOutbox],
+        commands: list[DeviceCommand],
+        timelines: list[WorklineTimeline],
+    ) -> dict[str, Any]:
+        workline_id = self._resolve_workline_id(
+            session=session,
+            outboxes=outboxes,
+            commands=commands,
+            timelines=timelines,
+        )
+        if workline_id is None:
+            return {}
+        workline = await self.workline_repo.get_by_id(db, workline_id)
+        if workline is None:
+            return {}
+        return {
+            "workline_runtime_status": optional_enum_str(getattr(workline, "runtime_status", None)),
+            "workline_start_admission_status": coerce_optional_str(getattr(workline, "start_admission_status", None)),
+            "workline_start_admission_message": coerce_optional_str(getattr(workline, "start_admission_message", None)),
+            "workline_start_admission_failed_device_code": coerce_optional_str(
+                getattr(workline, "start_admission_failed_device_code", None)
+            ),
+            "workline_start_admission_checked_at": getattr(workline, "start_admission_checked_at", None),
+            "workline_last_start_request_id": coerce_optional_str(getattr(workline, "last_start_request_id", None)),
+            "workline_last_start_trace_id": coerce_optional_str(getattr(workline, "last_start_trace_id", None)),
+        }
+
+    @staticmethod
+    def _resolve_workline_id(
+        *,
+        session: WorklineSession | None,
+        outboxes: list[SystemOutbox],
+        commands: list[DeviceCommand],
+        timelines: list[WorklineTimeline],
+    ) -> int | None:
+        if session is not None and session.workline_id is not None:
+            return cast("int", session.workline_id)
+        for source in (outboxes, commands, timelines):
+            for item in source:
+                workline_id = getattr(item, "workline_id", None)
+                if workline_id is not None:
+                    return cast("int", workline_id)
+        return None
 
     async def _load_resource_state_events_for_exchange(
         self,
@@ -637,6 +722,17 @@ class TraceQueryService(BaseService[Any, Any]):
 
     def _build_blocking_point(self, result: TraceQueryResult, *, trace_id: str) -> TraceBlockingPointResponse:
         trace = result.trace
+        verdict = self.build_diagnosis_verdict(result)
+        if verdict.state in {"completed_clear", "running", "waiting", "unknown"}:
+            context = build_diagnostic_context(trace=trace, session=result.session)
+            return self._verdict_blocking_response(
+                trace=trace,
+                trace_id=trace_id,
+                verdict=verdict,
+                context=context,
+                evidence={"summary": result.summary},
+            )
+
         failed_outbox = next(
             (item for item in result.outboxes if optional_enum_str(getattr(item, "status", None)) == "FAILED"), None
         )
@@ -653,6 +749,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
                 message=getattr(failed_outbox, "last_error", None) or "Outbox 派发失败",
                 context=context,
+                verdict=verdict,
                 evidence={
                     "outbox": {
                         "id": getattr(failed_outbox, "id", None),
@@ -680,6 +777,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 error_code=ErrorCode.INBOX_RETRY_EXHAUSTED,
                 message=getattr(dead_letter_inbox, "error_message", None) or "Inbox 重试耗尽",
                 context=context,
+                verdict=verdict,
                 evidence={
                     "inbox": {
                         "id": getattr(dead_letter_inbox, "id", None),
@@ -719,6 +817,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 error_code=error_code,
                 message=str(message),
                 context=context,
+                verdict=verdict,
                 evidence={
                     "inbox": {
                         "id": getattr(failed_inbox, "id", None),
@@ -730,7 +829,12 @@ class TraceQueryService(BaseService[Any, Any]):
             )
 
         failed_command = next(
-            (item for item in result.commands if optional_enum_str(getattr(item, "status", None)) == "FAILED"), None
+            (
+                item
+                for item in result.commands
+                if optional_enum_str(getattr(item, "status", None)) in {"FAILED", "TIMEOUT"}
+            ),
+            None,
         )
         if failed_command is not None:
             context = build_diagnostic_context(trace=trace.with_command(failed_command), command=failed_command)
@@ -741,6 +845,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 error_code=ErrorCode.DEVICE_TIMEOUT,
                 message="设备指令失败或超时",
                 context=context,
+                verdict=verdict,
                 evidence={
                     "command": {
                         "command_code": getattr(failed_command, "command_code", None),
@@ -776,12 +881,15 @@ class TraceQueryService(BaseService[Any, Any]):
             return self._blocking_response(
                 trace=trace,
                 trace_id=trace_id,
-                blocking_point="external_wms",
-                error_code=ErrorCode.WMS_TIMEOUT,
+                blocking_point=verdict.blocking_point,
+                error_code=ErrorCode.WMS_TIMEOUT
+                if verdict.blocking_point == "external_wms"
+                else ErrorCode.SESSION_CONTEXT_MISSING,
                 message=getattr(session, "failure_message", None)
                 or getattr(timeline, "message", None)
-                or "WMS 同步调用超时",
+                or "流程进入人工保持",
                 context=context,
+                verdict=verdict,
                 evidence={
                     "session": {
                         "id": getattr(session, "id", None),
@@ -817,6 +925,7 @@ class TraceQueryService(BaseService[Any, Any]):
                 error_code=session_error_code,
                 message=getattr(session, "failure_message", None) or "会话失败",
                 context=context,
+                verdict=verdict,
                 evidence={
                     "session": {
                         "id": getattr(session, "id", None),
@@ -835,6 +944,7 @@ class TraceQueryService(BaseService[Any, Any]):
             error_code=ErrorCode.UNKNOWN,
             message="当前 trace 未发现明确阻塞点",
             context=context,
+            verdict=verdict,
             evidence={"summary": result.summary},
         )
 
@@ -847,6 +957,7 @@ class TraceQueryService(BaseService[Any, Any]):
         error_code: ErrorCode,
         message: str,
         context: DiagnosticContext,
+        verdict: DiagnosisVerdictResponse,
         evidence: dict[str, Any],
     ) -> TraceBlockingPointResponse:
         definition = get_diagnostic_code_definition(error_code)
@@ -861,12 +972,86 @@ class TraceQueryService(BaseService[Any, Any]):
             trace_id=trace.trace_id or trace_id,
             request_id=trace.request_id,
             blocking_point=blocking_point,
+            diagnosis_verdict=verdict,
             owner=definition.owner,
             recoverability=card.recoverability.value,
             operator_action=card.operator_action or definition.operator_action,
             diagnostic_card=DiagnosticCardResponse.model_validate(card.model_dump(mode="json")),
             evidence=evidence,
             next_steps=[],
+        )
+
+    def _verdict_blocking_response(
+        self,
+        *,
+        trace: TraceContext,
+        trace_id: str,
+        verdict: DiagnosisVerdictResponse,
+        context: DiagnosticContext,
+        evidence: dict[str, Any],
+    ) -> TraceBlockingPointResponse:
+        card = self._diagnostic_card_from_verdict(verdict, context)
+        return TraceBlockingPointResponse(
+            trace_id=trace.trace_id or trace_id,
+            request_id=trace.request_id,
+            blocking_point=verdict.blocking_point,
+            diagnosis_verdict=verdict,
+            owner=verdict.owner or "workflow",
+            recoverability=card.recoverability.value,
+            operator_action=verdict.primary_action or "查看诊断证据",
+            diagnostic_card=DiagnosticCardResponse.model_validate(card.model_dump(mode="json")),
+            evidence=evidence,
+            next_steps=[verdict.primary_action] if verdict.primary_action else [],
+        )
+
+    @staticmethod
+    def _diagnostic_card_from_verdict(
+        verdict: DiagnosisVerdictResponse,
+        context: DiagnosticContext,
+    ) -> DiagnosticCard:
+        if verdict.state == "completed_clear":
+            return DiagnosticCard(
+                title="无阻塞点",
+                summary=verdict.summary,
+                error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+                error_domain=ErrorDomain.WORKFLOW,
+                severity=Severity.INFO,
+                recoverability=Recoverability.AUTO_RETRYABLE,
+                problem_class=ProblemClass.SOFTWARE,
+                user_message=verdict.summary,
+                operator_action=verdict.primary_action,
+                technical_summary="流程完成且未发现失败、阻塞或人工保持证据。",
+                next_steps=[verdict.primary_action] if verdict.primary_action else [],
+                context=context,
+            )
+        if verdict.state == "unknown":
+            return DiagnosticCard(
+                title="诊断不足",
+                summary=verdict.summary,
+                error_code=ErrorCode.UNKNOWN,
+                error_domain=ErrorDomain.SYSTEM,
+                severity=Severity.WARNING,
+                recoverability=Recoverability.MANUAL_RETRYABLE,
+                problem_class=ProblemClass.SOFTWARE,
+                user_message="当前证据不足，无法可靠判断运行状态。",
+                operator_action=verdict.primary_action,
+                technical_summary=verdict.evidence_health.summary,
+                next_steps=[verdict.primary_action] if verdict.primary_action else [],
+                context=context,
+            )
+        return DiagnosticCard(
+            title=verdict.title,
+            summary=verdict.summary,
+            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+            error_domain=ErrorDomain.WORKFLOW,
+            severity=Severity.WARNING if verdict.state == "waiting" else Severity.INFO,
+            recoverability=Recoverability.AUTO_RETRYABLE,
+            problem_class=ProblemClass.SOFTWARE,
+            user_message=verdict.summary,
+            operator_action=verdict.primary_action,
+            technical_summary=verdict.evidence_health.summary,
+            next_steps=[verdict.primary_action] if verdict.primary_action else [],
+            context=context,
         )
 
     @staticmethod
@@ -879,15 +1064,15 @@ class TraceQueryService(BaseService[Any, Any]):
         for timeline in result.timelines:
             payload = payload_dict(getattr(timeline, "payload_json", None))
             reason_code = coerce_optional_str(payload.get("reason_code"))
-            if reason_code == "WMS_TIMEOUT":
+            if reason_code:
                 matched_timelines.append((timeline, payload))
         if matched_timelines:
             return matched_timelines[-1]
-        if session_failure_code == "WMS_TIMEOUT":
+        if session_failure_code:
             latest = result.timelines[-1] if result.timelines else SimpleNamespace(payload_json={})
             return cast("WorklineTimeline", latest), {
                 "reason_code": session_failure_code,
-                "target_code": "WMS_INVENTORY",
+                "target_code": "WMS_INVENTORY" if session_failure_code == "WMS_TIMEOUT" else None,
             }
         return None
 

@@ -20,6 +20,7 @@ from src.app.workline.models.runtime import (
     TraceTimelineItem,
 )
 from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
+from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value, optional_enum_str
 
@@ -343,6 +344,7 @@ def build_trace_response(result: Any) -> TraceDetailResponse:
     return TraceDetailResponse(
         trace=TraceContextResponse(**result.trace.as_dict()),
         summary=_build_trace_summary(result),
+        diagnosis_verdict=diagnosis_verdict_builder.build(result),
         session=_build_session_item(session),
         sessions=[item for item in (_build_session_item(session_item) for session_item in sessions) if item],
         callback_logs=[_build_callback_log_item(item) for item in result.callback_logs],

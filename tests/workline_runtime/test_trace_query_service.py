@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.workline.services.trace_query_service import TraceQueryService
+from src.app.workline.services.trace_query_service import TraceQueryResult, TraceQueryService
 from src.utils.timezone import timezone
+from src.workline_runtime.trace_context import TraceContext
 
 
 class _ResultStub:
@@ -27,6 +28,42 @@ class _ResultStub:
 
 def _db_with_execute_results(*results: _ResultStub) -> Any:
     return SimpleNamespace(execute=AsyncMock(side_effect=list(results)))
+
+
+def _diagnosis_item(verdict: Any, key: str) -> Any:
+    return next(item for item in verdict.evidence_health.items if item.key == key)
+
+
+def _session_namespace(**overrides: Any) -> SimpleNamespace:
+    values: dict[str, Any] = {
+        "id": 1,
+        "session_code": "SESSION-1",
+        "trace_id": "trace-1",
+        "workline_id": 22,
+        "plugin_key": "test_workline_plugin",
+        "run_mode": "SIMULATION",
+        "business_key": None,
+        "barcode": None,
+        "status": "RUNNING",
+        "started_at": None,
+        "ended_at": None,
+        "current_wait_type": None,
+        "current_wait_timeout_seconds": None,
+        "waiting_since": None,
+        "deadline_at": None,
+        "awaiting_command_id": None,
+        "failure_domain": None,
+        "failure_code": None,
+        "failure_message": None,
+        "ingress_count": 0,
+        "last_request_id": None,
+        "last_ingress_at": None,
+        "last_inbox_id": None,
+        "context_json": {},
+        "contract_version": "1.0",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.fixture
@@ -109,6 +146,168 @@ def test_build_trace_response_includes_resource_evidence() -> None:
     assert response.resource_evidence.runtime_holds[0]["source_reason"] == (
         "POST_EXCHANGE_RELATIONS_MISSING_BIN_MOUNTS"
     )
+
+
+def test_trace_detail_includes_completed_clear_diagnosis_verdict() -> None:
+    from src.app.workline.services.trace_response_builder import build_trace_response
+
+    session = _session_namespace(
+        id=1,
+        session_code="SEED-ROUGH-SORTER-ACTIVE-RACK-TEMPLATE",
+        trace_id="seed-rough-sorter-resource",
+        status="COMPLETED",
+    )
+    result = TraceQueryResult(
+        trace=TraceContext.from_request(trace_id="seed-rough-sorter-resource").with_session(session),
+        session=session,
+        sessions=[session],
+    )
+
+    response = build_trace_response(result)
+    verdict = response.diagnosis_verdict
+
+    assert verdict.state == "completed_clear"
+    assert verdict.severity == "success"
+    assert verdict.requires_operator_action is False
+    assert verdict.primary_action == "无需现场处置"
+    assert verdict.blocking_point == "none"
+    assert verdict.evidence_health.level == "complete"
+    assert _diagnosis_item(verdict, "session").state == "present"
+    assert _diagnosis_item(verdict, "inbox").state == "not_required"
+
+
+def test_diagnosis_verdict_reports_resource_wait_before_failed_outbox_semantics() -> None:
+    from src.app.workline.services.trace_response_builder import build_trace_response
+
+    outbox = SimpleNamespace(
+        id=45,
+        session_id=11,
+        workline_id=22,
+        dispatch_key="dispatch-blocked",
+        dispatch_type="DEVICE_COMMAND",
+        target_type="DEVICE",
+        target_code="ARM-01",
+        status="BLOCKED_RESOURCE",
+        attempt_count=1,
+        next_retry_at=None,
+        last_error="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_at=timezone.now_for_db(),
+        blocked_wait_seconds=12,
+        blocked_check_count=3,
+        blocked_detail_json={"device_code": "ARM-01", "last_probe_result": "STATUS_WAIT"},
+        created_at=timezone.now_for_db(),
+        sent_at=None,
+        finished_at=None,
+        payload_json={},
+    )
+    result = TraceQueryResult(trace=TraceContext.from_request(trace_id="trace-resource-wait"), outboxes=[outbox])
+
+    verdict = build_trace_response(result).diagnosis_verdict
+
+    assert verdict.state == "waiting"
+    assert verdict.requires_operator_action is False
+    assert verdict.blocking_point == "resource"
+    assert verdict.owner == "device"
+    assert "ARM-01" in (verdict.primary_action or "")
+    assert _diagnosis_item(verdict, "resource_wait").state == "present"
+    assert _diagnosis_item(verdict, "outbox").state == "present"
+
+
+def test_diagnosis_verdict_reports_workline_start_admission_wait() -> None:
+    outbox = SimpleNamespace(
+        id=46,
+        session_id=None,
+        workline_id=22,
+        dispatch_key="dispatch-start-wait",
+        dispatch_type="DEVICE_COMMAND",
+        target_type="DEVICE",
+        target_code="ARM-01",
+        status="BLOCKED_RESOURCE",
+        last_error="WORKLINE_STOPPED_WAITING_START",
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        blocked_detail_json={},
+    )
+    result = TraceQueryResult(
+        trace=TraceContext.from_request(trace_id="trace-admission-wait"),
+        outboxes=[outbox],
+        workline_runtime_status="STOPPED",
+        workline_start_admission_status="CHECKING",
+        workline_start_admission_message="等待 START 准入恢复",
+    )
+
+    verdict = TraceQueryService().build_diagnosis_verdict(result)
+
+    assert verdict.state == "waiting"
+    assert verdict.requires_operator_action is False
+    assert verdict.blocking_point == "admission"
+    assert verdict.owner == "workline"
+    assert "START" in (verdict.primary_action or "")
+    assert _diagnosis_item(verdict, "workline_admission").state == "present"
+
+
+def test_trace_detail_and_blocking_point_share_completed_clear_verdict() -> None:
+    from src.app.workline.services.trace_response_builder import build_trace_response
+
+    session = _session_namespace(
+        id=1,
+        session_code="SESSION-COMPLETED",
+        trace_id="trace-completed",
+        status="COMPLETED",
+    )
+    result = TraceQueryResult(
+        trace=TraceContext.from_request(trace_id="trace-completed").with_session(session),
+        session=session,
+        sessions=[session],
+        workline_runtime_status="STOPPED",
+        workline_start_admission_status="FAILED",
+        workline_start_admission_message="上一次 START 准入失败不应覆盖已完成案件",
+        workline_start_admission_failed_device_code="ARM-01",
+    )
+    service = TraceQueryService()
+
+    detail_verdict = build_trace_response(result).diagnosis_verdict
+    blocking = service._build_blocking_point(result, trace_id="trace-completed")
+
+    assert blocking.diagnosis_verdict == detail_verdict
+    assert blocking.blocking_point == "none"
+    assert blocking.operator_action == "无需现场处置"
+    assert blocking.diagnostic_card.error_code != "UNKNOWN"
+    assert "未发现阻塞点" in blocking.diagnostic_card.summary
+
+
+def test_unknown_verdict_uses_insufficient_diagnosis_wording() -> None:
+    result = TraceQueryResult(trace=TraceContext.from_request(trace_id="trace-unknown"))
+
+    blocking = TraceQueryService()._build_blocking_point(result, trace_id="trace-unknown")
+
+    assert blocking.diagnosis_verdict.state == "unknown"
+    assert blocking.diagnosis_verdict.requires_operator_action is False
+    assert blocking.blocking_point == "unknown"
+    assert blocking.operator_action == "补齐会话、Timeline、Inbox、Command、Outbox 证据后重新诊断"
+    assert blocking.diagnostic_card.title == "诊断不足"
+    assert "诊断不足" in blocking.diagnostic_card.summary
+
+
+def test_session_only_manual_hold_uses_blocked_session_verdict() -> None:
+    session = _session_namespace(
+        status="MANUAL_HOLD",
+        failure_domain="WORKFLOW",
+        failure_code="WMS_UNAVAILABLE",
+        failure_message="WMS 依赖不可用",
+    )
+    result = TraceQueryResult(
+        trace=TraceContext.from_request(trace_id="trace-manual-hold").with_session(session),
+        session=session,
+        sessions=[session],
+    )
+
+    blocking = TraceQueryService()._build_blocking_point(result, trace_id="trace-manual-hold")
+
+    assert blocking.diagnosis_verdict.state == "blocked"
+    assert blocking.diagnosis_verdict.blocking_point == "session"
+    assert blocking.blocking_point == "session"
+    assert blocking.diagnostic_card.error_code != "UNKNOWN"
 
 
 @pytest.fixture
@@ -387,12 +586,30 @@ def service(
     diagnostic_repo = SimpleNamespace(
         get_active_by_trace_id=AsyncMock(return_value=[]),
     )
-    return TraceQueryService(
+    service = TraceQueryService(
         callback_log_repo=cast("Any", callback_repo),
         session_repo=cast("Any", session_repo),
         command_repo=cast("Any", command_repo),
         diagnostic_repo=cast("Any", diagnostic_repo),
     )
+    service.workline_repo = cast(
+        "Any",
+        SimpleNamespace(
+            get_by_id=AsyncMock(
+                return_value=SimpleNamespace(
+                    id=22,
+                    runtime_status="STOPPED",
+                    start_admission_status="FAILED",
+                    start_admission_message="设备 ARM-01 非 AUTO/IDLE，等待 START 准入恢复",
+                    start_admission_failed_device_code="ARM-01",
+                    start_admission_checked_at=timezone.now_for_db(),
+                    last_start_request_id="start-req-1",
+                    last_start_trace_id="start-trace-1",
+                )
+            )
+        ),
+    )
+    return service
 
 
 @pytest.mark.asyncio
@@ -425,7 +642,12 @@ async def test_by_request_id_aggregates_full_chain(
     assert result.summary["timelines"] == 1
     assert any(d.extra.get("source") == "session_snapshot" for d in result.diagnostics)
     assert any(d.extra.get("source") == "timeline" for d in result.diagnostics)
+    assert result.workline_runtime_status == "STOPPED"
+    assert result.workline_start_admission_status == "FAILED"
+    assert result.workline_start_admission_failed_device_code == "ARM-01"
+    assert result.workline_last_start_request_id == "start-req-1"
     assert db.execute.await_count == 5
+    cast("Any", service.workline_repo).get_by_id.assert_awaited_with(db, 22)
 
 
 @pytest.mark.asyncio
@@ -695,6 +917,39 @@ async def test_blocking_point_does_not_mask_non_timeout_manual_hold_as_wms_timeo
 
     assert result.blocking_point != "external_wms"
     assert result.diagnostic_card.error_code != "WMS_TIMEOUT"
+    assert result.blocking_point == "session"
+    assert result.diagnosis_verdict.state == "blocked"
+    assert result.diagnosis_verdict.blocking_point == "session"
+    assert result.diagnostic_card.error_code != "UNKNOWN"
+    assert result.operator_action != "联系技术支持"
+
+
+@pytest.mark.asyncio
+async def test_blocking_point_reports_timeout_command_as_command_failure(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    command_obj.status = "TIMEOUT"
+    command_obj.error_detail = {"message": "device did not respond"}
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.get_blocking_point(db, "trace-1")
+
+    assert result.blocking_point == "command"
+    assert result.diagnosis_verdict.state == "failed"
+    assert result.diagnosis_verdict.blocking_point == "command"
+    assert result.diagnostic_card.error_code == "DEVICE_TIMEOUT"
+    assert result.evidence["command"]["status"] == "TIMEOUT"
 
 
 @pytest.mark.asyncio

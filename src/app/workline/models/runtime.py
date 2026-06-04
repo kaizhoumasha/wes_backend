@@ -305,9 +305,43 @@ class TraceResourceEvidenceResponse(BaseModel):
     runtime_holds: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DiagnosisEvidenceHealthItemResponse(BaseModel):
+    """诊断证据健康明细。"""
+
+    key: str
+    label: str
+    count: int
+    state: str
+    hint: str
+
+
+class DiagnosisEvidenceHealthResponse(BaseModel):
+    """诊断证据健康摘要。"""
+
+    level: str
+    summary: str
+    missing: list[str] = Field(default_factory=list)
+    items: list[DiagnosisEvidenceHealthItemResponse] = Field(default_factory=list)
+
+
+class DiagnosisVerdictResponse(BaseModel):
+    """Trace 统一诊断结论。"""
+
+    state: str
+    severity: str
+    title: str
+    summary: str
+    requires_operator_action: bool
+    primary_action: str | None = None
+    blocking_point: str
+    owner: str | None = None
+    evidence_health: DiagnosisEvidenceHealthResponse
+
+
 class TraceDetailResponse(BaseModel):
     trace: TraceContextResponse
     summary: TraceOverviewSummary
+    diagnosis_verdict: DiagnosisVerdictResponse
     session: TraceSessionItem | None = None
     sessions: list[TraceSessionItem] = Field(default_factory=list)
     callback_logs: list[TraceCallbackLogItem] = Field(default_factory=list)
@@ -339,6 +373,7 @@ class TraceBlockingPointResponse(BaseModel):
     trace_id: str
     request_id: str | None = None
     blocking_point: str
+    diagnosis_verdict: DiagnosisVerdictResponse
     owner: str
     recoverability: str
     operator_action: str
