@@ -1360,12 +1360,12 @@ class TestOutboxDispatchService:
         mock_outbox_repo.get_pending_messages.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_dispatch_repairs_self_blocked_device_busy_outbox(
+    async def test_dispatch_keeps_self_blocked_device_busy_outbox_waiting_for_ecs_probe(
         self,
         mock_db,
         mock_outbox_repo,
     ):
-        """已派发命令占用同一设备时，DEVICE_BUSY 自阻塞应自动恢复为 SENT。"""
+        """同命令本地占用不能绕过 ECS admission 直接完成 blocked outbox。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
         outbox = MockOutbox(
@@ -1381,7 +1381,6 @@ class TestOutboxDispatchService:
         outbox.blocked_reason = "DEVICE_BUSY"
         mock_outbox_repo.get_blocked_device_busy_messages = AsyncMock(return_value=[outbox])
         mock_outbox_repo.get_pending_messages.return_value = []
-        mock_outbox_repo.mark_blocked_device_busy_as_sent = AsyncMock(return_value=outbox)
         command_repo = MagicMock()
         command_repo.get_by_command_code = AsyncMock(
             return_value=_mock_command_record(id=883, device_id=39, session_id_int=555, status=CommandStatus.SENT)
@@ -1410,12 +1409,8 @@ class TestOutboxDispatchService:
             result = await OutboxDispatchService().dispatch(mock_db)
 
         assert result["dispatched"] == 0
-        mock_outbox_repo.get_blocked_device_busy_messages.assert_awaited_once_with(
-            mock_db,
-            limit=50,
-            operation_domains=("WORKLINE", "RACK"),
-        )
-        mock_outbox_repo.mark_blocked_device_busy_as_sent.assert_awaited_once_with(mock_db, 864)
+        mock_outbox_repo.get_blocked_device_busy_messages.assert_not_awaited()
+        assert not hasattr(OutboxDispatchService, "_repair_self_blocked_device_busy_dispatches")
         mock_outbox_repo.get_pending_messages.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1808,11 +1803,14 @@ class TestOutboxDispatchService:
             patch("src.app.workline.services.outbox_dispatch_service._record_diagnostic", new=AsyncMock()),
             patch("httpx.AsyncClient") as mock_client,
         ):
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock()
+            _configure_status_ok(mock_client)
+            post_response = MagicMock(status_code=500, text="ack failed")
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=post_response)
             result = await OutboxDispatchService().dispatch(mock_db)
 
         assert result["failed"] == 1
-        mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
+        mock_client.return_value.__aenter__.return_value.get.assert_awaited_once()
+        mock_client.return_value.__aenter__.return_value.post.assert_awaited_once()
         runtime_service.handle_dispatch_ack_exhausted.assert_awaited_once()
         mock_device_service.mark_command_finished.assert_not_awaited()
 

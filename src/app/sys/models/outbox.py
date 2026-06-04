@@ -158,7 +158,7 @@ class SystemOutboxBase(BaseMixin):
     blocked_check_count: int = Field(default=0, ge=0, description="资源等待探测次数")
     blocked_detail_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False),
         description="资源等待诊断摘要",
     )
 
@@ -176,9 +176,11 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
         Index("ix_system_outbox_blocked_release", "blocked_reason", "blocked_device_id", "blocked_workline_id"),
         Index(
             "ix_system_outbox_blocked_device_head_probe",
+            "operation_domain",
             "status",
             "dispatch_type",
             "blocked_reason",
+            "last_blocked_check_at",
             "blocked_device_id",
             "target_code",
             "created_at",

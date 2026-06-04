@@ -22,6 +22,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     """系统级发件箱数据访问层。"""
 
     DISPATCH_LEASE_SECONDS = 300
+    RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS = 2
     DEVICE_RESOURCE_WAIT_REASONS = ("DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT")
 
     def __init__(self) -> None:
@@ -452,6 +453,14 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if outbox is None:
             return None
         now = timezone.now_for_db()
+        existing_detail = dict(outbox.blocked_detail_json or {})
+        if (
+            outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
+            and outbox.blocked_reason in self.DEVICE_RESOURCE_WAIT_REASONS
+            and outbox.last_blocked_check_at is not None
+            and outbox.last_blocked_check_at > now - timedelta(seconds=self.RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS)
+        ):
+            return None
         outbox.status = SystemOutboxStatus.BLOCKED_RESOURCE
         outbox.blocked_by_reconciliation_session_id = None
         outbox.blocked_device_id = blocked_device_id
@@ -464,21 +473,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             outbox.blocked_at = now
         outbox.last_blocked_check_at = now
         outbox.blocked_check_count = (outbox.blocked_check_count or 0) + 1
-        outbox.blocked_detail_json = dict(detail or {})
-        await db.flush()
-        return outbox
-
-    async def mark_blocked_device_busy_as_sent(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
-        columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
-        outbox = result.scalar_one_or_none()
-        if outbox is None:
-            return None
-        if outbox.status != SystemOutboxStatus.BLOCKED_RESOURCE or outbox.blocked_reason != "DEVICE_BUSY":
-            return None
-        outbox.status = SystemOutboxStatus.SENT
-        outbox.sent_at = outbox.sent_at or timezone.now_for_db()
-        self._clear_block(outbox)
+        next_detail = dict(detail or {})
+        if existing_detail.get("last_probe_result") == "escalated" and existing_detail.get("diagnostic_key"):
+            next_detail.update(
+                {
+                    "last_probe_result": "escalated",
+                    "escalated_at": existing_detail.get("escalated_at"),
+                    "diagnostic_key": existing_detail.get("diagnostic_key"),
+                }
+            )
+        outbox.blocked_detail_json = next_detail
         await db.flush()
         return outbox
 
@@ -664,14 +668,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         device_id: int,
         workline_id: int | None = None,
     ) -> int:
-        columns = cast("Any", SystemOutbox).__table__.c
-        conditions: list[Any] = [
-            columns.blocked_device_id == device_id,
-            columns.blocked_reason == "DEVICE_BUSY",
-        ]
-        if workline_id is not None:
-            conditions.append(columns.workline_id == workline_id)
-        return await self._release_blocked(db, *conditions)
+        _ = (db, device_id, workline_id)
+        return 0
 
     async def get_sandbox_pending_messages(
         self,

@@ -47,7 +47,16 @@ def upgrade() -> None:
     op.create_index(
         "ix_system_outbox_blocked_device_head_probe",
         TABLE_NAME,
-        ["status", "dispatch_type", "blocked_reason", "blocked_device_id", "target_code", "created_at"],
+        [
+            "operation_domain",
+            "status",
+            "dispatch_type",
+            "blocked_reason",
+            "last_blocked_check_at",
+            "blocked_device_id",
+            "target_code",
+            "created_at",
+        ],
         schema=SCHEMA,
         postgresql_where=_BLOCKED_DEVICE_HEAD_PROBE_WHERE,
         sqlite_where=_BLOCKED_DEVICE_HEAD_PROBE_WHERE,

@@ -10,7 +10,6 @@ from src.app.workline.outbox_dispatch_support import (
 from src.app.workline.services.device_command_gateway import (
     _build_device_command_log_envelope,
     _DeviceCommandGovernanceError,
-    _is_same_session_current_command,
     _mark_device_command_failed_if_dispatch_exhausted,
     _mark_outbox_blocked_by_workline_state,
 )
@@ -346,43 +345,9 @@ async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, 
 
 
 async def _repair_self_blocked_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
-    """恢复同一命令已占用设备运行态却被误标为 DEVICE_BUSY 的 outbox。"""
-    from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.device.repositories.device_repository import device_repository
-
-    getter = getattr(outbox_repo, "get_blocked_device_busy_messages", None)
-    if not callable(getter):
-        return 0
-    blocked_messages = getter(db, limit=limit, operation_domains=("WORKLINE", "RACK"))
-    if not isawaitable(blocked_messages):
-        return 0
-    repaired = 0
-    command_repo = DeviceCommandRepository()
-    for outbox in await blocked_messages:
-        outbox_id = resolve_entity_id(outbox)
-        if outbox_id is None:
-            continue
-        payload = payload_dict(getattr(outbox, "payload_json", None))
-        command_code = string_value(payload.get("command_code"))
-        if not command_code:
-            continue
-        command = await command_repo.get_by_command_code(db, command_code)
-        target_code = string_value(getattr(outbox, "target_code", None))
-        if not target_code:
-            continue
-        device = await device_repository.get_by_device_code(db, target_code)
-        if not _is_dispatched_command(command):
-            continue
-        if not _is_same_session_current_command(outbox=outbox, command=command, device=device):
-            continue
-        marked = await outbox_repo.mark_blocked_device_busy_as_sent(db, outbox_id)
-        if marked is None:
-            continue
-        repaired += 1
-        await db.commit()
-    if repaired:
-        logger.info(f"已恢复 {repaired} 条同命令自阻塞 DEVICE_BUSY outbox")
-    return repaired
+    """禁用本地自阻塞放行；blocked 设备命令只能通过 ECS admission probe 恢复。"""
+    _ = (db, outbox_repo, limit)
+    return 0
 
 
 async def _resolve_device_id_for_target_code(db: Any, target_code: str) -> Any | None:

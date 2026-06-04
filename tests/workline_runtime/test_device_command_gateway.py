@@ -1,4 +1,5 @@
 import importlib
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
@@ -63,6 +64,19 @@ class FakeStatusResponse:
 class NullCommandRepository:
     async def get_by_command_code(self, _db, _command_code):
         return None
+
+
+class SameSessionCommandRepository:
+    async def get_by_command_code(self, _db, _command_code):
+        return SimpleNamespace(
+            id=321,
+            session_id_int=10,
+            status=None,
+            sent_at=None,
+            ack_received_at=None,
+            ack_code=None,
+            ack_message=None,
+        )
 
 
 @pytest.mark.asyncio
@@ -364,6 +378,132 @@ async def test_realtime_status_ready_allows_command_dispatch(monkeypatch) -> Non
         AsyncMock(return_value=_dispatchable_device()),
     )
     monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-READY",
+            "payload_json": {"command_code": "CMD-GW-READY", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
+
+
+@pytest.mark.asyncio
+async def test_realtime_status_ready_ignores_stale_local_occupancy_projection(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    stale_device = _dispatchable_device()
+    stale_device.device_status = DeviceStatus.RUNNING
+    stale_device.current_command_id = 999
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=stale_device))
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-READY",
+            "payload_json": {"command_code": "CMD-GW-READY", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stale_status", "maintenance_mode"),
+    [
+        (DeviceStatus.OFFLINE, False),
+        (DeviceStatus.ERROR, False),
+        (DeviceStatus.MAINTENANCE, False),
+        (DeviceStatus.MAINTENANCE, True),
+    ],
+)
+async def test_realtime_status_ready_ignores_stale_local_runtime_status(
+    monkeypatch, stale_status: DeviceStatus, maintenance_mode: bool
+) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    stale_device = _dispatchable_device()
+    stale_device.device_status = stale_status
+    stale_device.error_code = stale_status.value
+    stale_device.maintenance_mode = maintenance_mode
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=stale_device))
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", NullCommandRepository)
+
+    gateway = DeviceCommandGateway()
+    db = AsyncMock()
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "id": 1,
+            "target_code": "RS-CONVEYOR-01",
+            "target_type": "DEVICE",
+            "dispatch_key": "device-command:CMD-GW-READY",
+            "payload_json": {"command_code": "CMD-GW-READY", "task_type": "MOVE_FORWARD"},
+            "session_id": 10,
+        },
+    )()
+
+    success = await gateway.dispatch(db, outbox)
+
+    assert success is True
+    assert [request["method"] for request in CapturingAsyncClient.requests] == ["GET", "POST"]
+
+
+@pytest.mark.asyncio
+async def test_realtime_status_ready_ignores_same_session_local_command_projection(monkeypatch) -> None:
+    CapturingAsyncClient.requests.clear()
+    CapturingAsyncClient.status_response = FakeStatusResponse(
+        {"state": {"mode": "AUTO", "status": "IDLE", "current_command_id": None}}
+    )
+    CapturingAsyncClient.status_side_effect = None
+    CapturingAsyncClient.post_side_effect = None
+    same_command_device = _dispatchable_device()
+    same_command_device.device_status = DeviceStatus.RUNNING
+    same_command_device.current_command_id = 321
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(gateway_module, "_get_device_for_command_dispatch", AsyncMock(return_value=same_command_device))
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", SameSessionCommandRepository)
+    monkeypatch.setattr("src.app.device.services.device_service.mark_command_dispatched", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "src.app.workline.services.runtime_reconciliation_service."
+        "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+        AsyncMock(return_value=True),
+    )
 
     gateway = DeviceCommandGateway()
     db = AsyncMock()

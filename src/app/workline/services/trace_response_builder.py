@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from src.app.workline.models.runtime import (
     TraceCallbackLogItem,
@@ -38,6 +39,7 @@ _RESOURCE_WAIT_DETAIL_KEYS = {
     "diagnostic_key",
     "waited_seconds",
 }
+_STATUS_URL_QUERY_ALLOWLIST = {"device_code"}
 
 
 def _status_str(value: Any) -> str:
@@ -57,7 +59,14 @@ def _resource_evidence_dict(item: Any) -> dict[str, Any]:
 def _resource_wait_detail_summary(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    return {key: value[key] for key in _RESOURCE_WAIT_DETAIL_KEYS if key in value}
+    summary = {key: value[key] for key in _RESOURCE_WAIT_DETAIL_KEYS if key in value}
+    if isinstance(summary.get("status_url"), str):
+        parsed = urlsplit(summary["status_url"])
+        query = urlencode(
+            [(key, value) for key, value in parse_qsl(parsed.query) if key in _STATUS_URL_QUERY_ALLOWLIST]
+        )
+        summary["status_url"] = f"{parsed.path}?{query}" if query else parsed.path
+    return summary
 
 
 def _blocked_wait_seconds(blocked_at: Any) -> int | None:

@@ -73,41 +73,8 @@ async def test_mark_as_sent_does_not_overwrite_cancelled_outbox() -> None:
     db.flush.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_mark_blocked_device_busy_as_sent_clears_self_block_projection() -> None:
-    outbox = SimpleNamespace(
-        status=SystemOutboxStatus.BLOCKED_RESOURCE,
-        sent_at=object(),
-        next_retry_at=object(),
-        last_error="设备 ARM03 正在执行任务",
-        finished_at=object(),
-        blocked_by_reconciliation_session_id=None,
-        blocked_device_id=39,
-        blocked_workline_id=45,
-        blocked_reason="DEVICE_BUSY",
-        blocked_at=object(),
-        last_blocked_check_at=object(),
-        blocked_check_count=3,
-        blocked_detail_json={"device_code": "ARM03"},
-    )
-    db = _FakeDb(outbox)
-
-    updated = await SystemOutboxRepository().mark_blocked_device_busy_as_sent(db, 864)  # type: ignore[arg-type]
-
-    assert updated is outbox
-    assert outbox.status == SystemOutboxStatus.SENT
-    assert outbox.sent_at is not None
-    assert outbox.next_retry_at is None
-    assert outbox.last_error is None
-    assert outbox.finished_at is None
-    assert outbox.blocked_device_id is None
-    assert outbox.blocked_workline_id is None
-    assert outbox.blocked_reason is None
-    assert outbox.blocked_at is None
-    assert outbox.last_blocked_check_at is None
-    assert outbox.blocked_check_count == 0
-    assert outbox.blocked_detail_json == {}
-    db.flush.assert_awaited_once()
+def test_repository_does_not_expose_device_busy_direct_sent_repair() -> None:
+    assert not hasattr(SystemOutboxRepository(), "mark_blocked_device_busy_as_sent")
 
 
 @pytest.mark.asyncio
@@ -330,6 +297,93 @@ async def test_block_for_resource_wait_preserves_blocked_at_and_increments_check
     assert outbox.blocked_check_count == 2
     assert outbox.blocked_detail_json == {"device_code": "ARM01", "last_probe_result": "BUSY_AGAIN"}
     assert outbox.last_error == "ECS status 仍为 BUSY"
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_block_for_resource_wait_skips_duplicate_probe_inside_interval() -> None:
+    first_check_at = timezone.now_for_db()
+    outbox = SimpleNamespace(
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        workline_id=45,
+        attempt_count=1,
+        finished_at=None,
+        next_retry_at=None,
+        last_error="设备 ARM01 正在执行任务",
+        blocked_at=first_check_at - timedelta(seconds=10),
+        last_blocked_check_at=first_check_at,
+        blocked_check_count=3,
+        blocked_detail_json={"device_code": "ARM01", "last_probe_result": "BUSY"},
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_BUSY",
+    )
+    db = _FakeDb(outbox)
+
+    updated = await SystemOutboxRepository().mark_as_blocked_by_device_busy(  # type: ignore[arg-type]
+        db,
+        1,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        reason="DEVICE_BUSY",
+        last_error="ECS status 仍为 BUSY",
+        detail={"device_code": "ARM01", "last_probe_result": "BUSY_AGAIN"},
+    )
+
+    assert updated is None
+    assert outbox.last_blocked_check_at == first_check_at
+    assert outbox.blocked_check_count == 3
+    assert outbox.blocked_detail_json == {"device_code": "ARM01", "last_probe_result": "BUSY"}
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_block_for_resource_wait_preserves_escalated_diagnostic_summary() -> None:
+    first_blocked_at = timezone.now_for_db() - timedelta(seconds=180)
+    first_check_at = timezone.now_for_db() - timedelta(seconds=5)
+    outbox = SimpleNamespace(
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        workline_id=45,
+        attempt_count=1,
+        finished_at=None,
+        next_retry_at=None,
+        last_error="DEVICE_STATUS_PRECHECK_WAIT_TIMEOUT",
+        blocked_at=first_blocked_at,
+        last_blocked_check_at=first_check_at,
+        blocked_check_count=31,
+        blocked_detail_json={
+            "device_code": "ARM01",
+            "last_probe_result": "escalated",
+            "escalated_at": "2026-06-04T00:00:00+00:00",
+            "diagnostic_key": "outbox-resource-wait:1:DEVICE_STATUS_PRECHECK_WAIT",
+        },
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+    )
+    db = _FakeDb(outbox)
+
+    updated = await SystemOutboxRepository().mark_as_blocked_by_device_busy(  # type: ignore[arg-type]
+        db,
+        1,
+        blocked_device_id=7,
+        blocked_workline_id=45,
+        reason="DEVICE_STATUS_PRECHECK_WAIT",
+        last_error="设备 ARM01 实时状态查询仍不可用",
+        detail={"device_code": "ARM01", "last_probe_result": "STATUS_WAIT", "error_kind": "http_status"},
+    )
+
+    assert updated is outbox
+    assert outbox.blocked_check_count == 32
+    assert outbox.blocked_detail_json == {
+        "device_code": "ARM01",
+        "error_kind": "http_status",
+        "last_probe_result": "escalated",
+        "escalated_at": "2026-06-04T00:00:00+00:00",
+        "diagnostic_key": "outbox-resource-wait:1:DEVICE_STATUS_PRECHECK_WAIT",
+    }
     db.flush.assert_awaited_once()
 
 
@@ -1392,7 +1446,7 @@ async def test_release_parked_after_workline_start_keeps_device_resource_wait_ou
 
 
 @pytest.mark.asyncio
-async def test_release_blocked_by_device_requeues_only_device_busy_outbox(db_session) -> None:
+async def test_release_blocked_by_device_does_not_requeue_resource_wait_outbox(db_session) -> None:
     session = WorklineSession(
         session_code="session-device-busy-release",
         workline_id=45,
@@ -1438,18 +1492,19 @@ async def test_release_blocked_by_device_requeues_only_device_busy_outbox(db_ses
 
     released = await SystemOutboxRepository().release_blocked_by_device(db_session, device_id=7, workline_id=45)
 
-    assert released == 1
-    assert device_blocked.status == SystemOutboxStatus.NEW
-    assert device_blocked.attempt_count == 0
-    assert device_blocked.last_error is None
-    assert device_blocked.blocked_device_id is None
-    assert device_blocked.blocked_workline_id is None
-    assert device_blocked.blocked_reason is None
-    assert device_blocked.blocked_at is None
-    assert device_blocked.last_blocked_check_at is None
-    assert device_blocked.blocked_check_count == 0
-    assert device_blocked.blocked_detail_json == {}
+    assert released == 0
+    assert device_blocked.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert device_blocked.attempt_count == 1
+    assert device_blocked.last_error == "设备 ARM01 正在执行任务"
+    assert device_blocked.blocked_device_id == 7
+    assert device_blocked.blocked_workline_id == 45
+    assert device_blocked.blocked_reason == "DEVICE_BUSY"
+    assert device_blocked.blocked_check_count == 2
+    assert device_blocked.blocked_detail_json == {"device_code": "ARM01", "last_probe_result": "BUSY"}
     assert reconciliation_blocked.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert reconciliation_blocked.blocked_device_id == 7
+    assert reconciliation_blocked.blocked_workline_id == 45
+    assert reconciliation_blocked.blocked_reason == "CALLBACK_DEADLINE_EXPIRED"
 
 
 @pytest.mark.asyncio

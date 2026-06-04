@@ -17,6 +17,7 @@ DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
 WORKLINE_OPERATION_DOMAIN = "WORKLINE"
 RACK_OPERATION_DOMAIN = "RACK"
 ALLOWED_INTERNAL_SIGNALS = frozenset({"core", "handling", "sys", "workline"})
+DEVICE_RESOURCE_WAIT_CODES = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
 
 
 class DispatchResult(TypedDict):
@@ -92,7 +93,25 @@ class SystemOutboxEngine:
                 continue
             await _commit_if_supported(db)
 
-            success = await self.dispatch_single(db, claimed)
+            try:
+                success = await self.dispatch_single(db, claimed)
+            except RuntimeError as exc:
+                error_code = getattr(exc, "code", None)
+                if error_code not in DEVICE_RESOURCE_WAIT_CODES:
+                    raise
+                _ = await self.outbox_repository.mark_as_blocked_by_device_busy(
+                    db,
+                    outbox_id,
+                    blocked_device_id=getattr(exc, "device_id", None),
+                    blocked_workline_id=getattr(claimed, "workline_id", None),
+                    reason=error_code,
+                    last_error=getattr(exc, "message", str(exc)),
+                    detail=dict(getattr(exc, "detail", {}) or {}),
+                )
+                await _commit_if_supported(db)
+                result["skipped"] += 1
+                result["dispatched"] += 1
+                continue
             if success:
                 sent = await self.outbox_repository.mark_as_sent(db, outbox_id)
                 await _commit_if_supported(db)

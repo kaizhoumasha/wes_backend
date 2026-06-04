@@ -197,6 +197,7 @@ def test_trace_outbox_includes_resource_wait_diagnostics() -> None:
         blocked_check_count=3,
         blocked_detail_json={
             "device_code": "ARM-01",
+            "status_url": "http://mock-ecs.internal:8010/api/v1/device/status?api_key=secret&device_code=ARM-01",
             "http_status": 503,
             "last_probe_result": "STATUS_WAIT",
             "raw_vendor_response": {"large": "should-not-leak"},
@@ -237,6 +238,7 @@ def test_trace_outbox_includes_resource_wait_diagnostics() -> None:
     assert item.blocked_check_count == 3
     assert item.blocked_detail_json == {
         "device_code": "ARM-01",
+        "status_url": "/api/v1/device/status?device_code=ARM-01",
         "http_status": 503,
         "last_probe_result": "STATUS_WAIT",
     }

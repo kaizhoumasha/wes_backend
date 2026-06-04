@@ -160,6 +160,8 @@ def _enforce_device_command_governance(
     command_type: str | None,
     stage_label: str,
     allow_busy: bool = False,
+    enforce_local_occupancy: bool = True,
+    enforce_local_runtime_status: bool = True,
 ) -> None:
     """消费设备治理字段，拒绝不允许的命令创建/派发。"""
 
@@ -167,37 +169,44 @@ def _enforce_device_command_governance(
     device_code = coerce_string_value(getattr(device, "device_code", None), "UNKNOWN_DEVICE")
     resolved_command_type = command_type or "UNKNOWN"
 
-    if bool(getattr(device, "maintenance_mode", False)):
-        _raise_device_command_governance_error(
-            domain=FailureDomain.MANUAL_INTERVENTION.value,
-            code="DEVICE_MAINTENANCE_MODE",
-            message=f"设备 {device_code} 处于 maintenance_mode，拒绝{stage_label}: command_type={resolved_command_type}",
-        )
-
     device_status = enum_value(getattr(device, "device_status", DeviceStatus.IDLE)) or DeviceStatus.IDLE.value
-    if device_status == DeviceStatus.MAINTENANCE.value:
-        _raise_device_command_governance_error(
-            domain=FailureDomain.MANUAL_INTERVENTION.value,
-            code="DEVICE_MAINTENANCE_MODE",
-            message=f"设备 {device_code} 处于 MAINTENANCE，拒绝{stage_label}: command_type={resolved_command_type}",
-        )
+    if enforce_local_runtime_status:
+        if bool(getattr(device, "maintenance_mode", False)):
+            _raise_device_command_governance_error(
+                domain=FailureDomain.MANUAL_INTERVENTION.value,
+                code="DEVICE_MAINTENANCE_MODE",
+                message=(
+                    f"设备 {device_code} 处于 maintenance_mode，拒绝{stage_label}: command_type={resolved_command_type}"
+                ),
+            )
 
-    if device_status == DeviceStatus.ERROR.value:
-        _raise_device_command_governance_error(
-            domain=FailureDomain.MANUAL_INTERVENTION.value,
-            code="DEVICE_ERROR_STATE",
-            message=f"设备 {device_code} 处于 ERROR，拒绝{stage_label}: command_type={resolved_command_type}",
-        )
+        if device_status == DeviceStatus.MAINTENANCE.value:
+            _raise_device_command_governance_error(
+                domain=FailureDomain.MANUAL_INTERVENTION.value,
+                code="DEVICE_MAINTENANCE_MODE",
+                message=f"设备 {device_code} 处于 MAINTENANCE，拒绝{stage_label}: command_type={resolved_command_type}",
+            )
 
-    if device_status == DeviceStatus.OFFLINE.value:
-        _raise_device_command_governance_error(
-            domain=FailureDomain.HARDWARE.value,
-            code="DEVICE_OFFLINE",
-            message=f"设备 {device_code} 处于 OFFLINE，拒绝{stage_label}: command_type={resolved_command_type}",
-        )
+        if device_status == DeviceStatus.ERROR.value:
+            _raise_device_command_governance_error(
+                domain=FailureDomain.MANUAL_INTERVENTION.value,
+                code="DEVICE_ERROR_STATE",
+                message=f"设备 {device_code} 处于 ERROR，拒绝{stage_label}: command_type={resolved_command_type}",
+            )
+
+        if device_status == DeviceStatus.OFFLINE.value:
+            _raise_device_command_governance_error(
+                domain=FailureDomain.HARDWARE.value,
+                code="DEVICE_OFFLINE",
+                message=f"设备 {device_code} 处于 OFFLINE，拒绝{stage_label}: command_type={resolved_command_type}",
+            )
 
     current_command_id = getattr(device, "current_command_id", None)
-    if (device_status == DeviceStatus.RUNNING.value or current_command_id is not None) and not allow_busy:
+    if (
+        enforce_local_occupancy
+        and (device_status == DeviceStatus.RUNNING.value or current_command_id is not None)
+        and not allow_busy
+    ):
         _raise_device_command_governance_error(
             domain=FailureDomain.ORCHESTRATION.value,
             code="DEVICE_BUSY",
@@ -631,13 +640,9 @@ class DeviceCommandGateway:
                 command_type=_resolve_command_type_for_governance(payload),
                 stage_label="命令派发",
                 allow_busy=is_same_reserved_command,
+                enforce_local_occupancy=False,
+                enforce_local_runtime_status=False,
             )
-            if is_same_reserved_command:
-                logger.warning(
-                    "设备命令已占用运行态但尚未 ACK，按通信 ACK 重试/耗尽处理: "
-                    f"device_code={outbox.target_code}, command_code={command_code}"
-                )
-                return False
 
             # 确保 scheme 是 http 或 https。
             scheme = _resolve_device_protocol_scheme(device)

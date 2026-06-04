@@ -49,6 +49,7 @@ async def test_runtime_device_projection_includes_resource_wait_summary() -> Non
         blocked_check_count=4,
         blocked_detail_json={
             "device_code": "ARM-01",
+            "status_url": "http://mock-ecs.internal:8010/api/v1/device/status?token=secret&device_code=ARM-01",
             "error_kind": "http_status",
             "http_status": 503,
             "raw_vendor_response": {"large": "should-not-leak"},
@@ -74,6 +75,7 @@ async def test_runtime_device_projection_includes_resource_wait_summary() -> Non
     assert summary.blocked_check_count == 4
     assert summary.blocked_detail_json == {
         "device_code": "ARM-01",
+        "status_url": "/api/v1/device/status?device_code=ARM-01",
         "error_kind": "http_status",
         "http_status": 503,
     }
