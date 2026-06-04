@@ -70,6 +70,32 @@ def _cleared_cell_status(value: Any) -> str:
     return "EMPTY"
 
 
+def _cell_indexes_by_bin(occupancies: Sequence[Any], material_mounts: Sequence[Any]) -> dict[str, tuple[str, ...]]:
+    indexes_by_bin: dict[str, set[str]] = {}
+    for item in (*occupancies, *material_mounts):
+        bin_code = _text_or_none(getattr(item, "bin_code", None))
+        cell_index = _text_or_none(getattr(item, "bin_cell_index", None))
+        if bin_code is not None and cell_index is not None:
+            indexes_by_bin.setdefault(bin_code, set()).add(cell_index)
+    return {bin_code: _inferred_cell_indexes(indexes) for bin_code, indexes in indexes_by_bin.items()}
+
+
+def _inferred_cell_indexes(indexes: set[str]) -> tuple[str, ...]:
+    if "7" in indexes:
+        return ("1", "2", "7")
+    if any(index not in {"1", "2", "7"} for index in indexes):
+        return ("1", "2", "3", "4", "5", "6")
+    return tuple(sorted(indexes))
+
+
+def _bin_type_from_cell_indexes(cell_indexes: Sequence[str]) -> str:
+    if "7" in cell_indexes:
+        return "3格箱"
+    if any(index not in {"1", "2", "7"} for index in cell_indexes):
+        return "6格箱"
+    return "未知料箱"
+
+
 def _cell_index(cell: Mapping[str, Any]) -> str | None:
     value = _text_or_none(cell.get("bin_cell_index"))
     if value is not None:
@@ -176,19 +202,6 @@ class SmtActiveRackSnapshotService:
         if not rack_bin_mounts:
             return None
 
-        base_snapshot = self._active_rack_from_context(runtime_context, rack_code)
-        if base_snapshot is None:
-            base_snapshot = await self._latest_session_active_rack(db, workline=workline, rack_code=rack_code)
-        if base_snapshot is None:
-            return None
-
-        snapshot = dict(cast("Mapping[str, Any]", deepcopy(base_snapshot)))
-        snapshot["rack_code"] = rack_code
-        snapshot.setdefault("rack_id", rack_code)
-        cells = self._cells(snapshot)
-        if not cells or not self._rack_bin_mounts_match_cells(rack_bin_mounts, cells):
-            return None
-
         bin_codes = [_text_or_none(getattr(mount, "bin_code", None)) for mount in rack_bin_mounts]
         active_occupancies = await self.bin_cell_occupancy_repo.list_active_by_bin_codes(
             db,
@@ -202,6 +215,28 @@ class SmtActiveRackSnapshotService:
             db,
             [bin_code for bin_code in bin_codes if bin_code is not None],
         )
+
+        base_snapshot = self._active_rack_from_context(runtime_context, rack_code)
+        if base_snapshot is None:
+            base_snapshot = await self._latest_session_active_rack(db, workline=workline, rack_code=rack_code)
+        if base_snapshot is None:
+            base_snapshot = self._active_rack_from_mount_projection(
+                rack_code,
+                rack_bin_mounts,
+                active_occupancies,
+                active_material_mounts,
+            )
+        if base_snapshot is None:
+            return None
+
+        snapshot = dict(cast("Mapping[str, Any]", deepcopy(base_snapshot)))
+        fact_backed_projection = bool(snapshot.pop("_fact_backed_projection", False))
+        snapshot["rack_code"] = rack_code
+        snapshot.setdefault("rack_id", rack_code)
+        cells = self._cells(snapshot)
+        if not cells or (not fact_backed_projection and not self._rack_bin_mounts_match_cells(rack_bin_mounts, cells)):
+            return None
+
         self._overlay_occupancies(cells, active_occupancies, active_material_mounts)
         self._overlay_active_reservations(cells, active_reservations)
         self._remove_derived_bin_snapshots(snapshot)
@@ -261,6 +296,45 @@ class SmtActiveRackSnapshotService:
         if not isinstance(session_context, Mapping):
             return None
         return self._matching_active_rack(session_context.get("active_bin_rack"), rack_code)
+
+    def _active_rack_from_mount_projection(
+        self,
+        rack_code: str,
+        rack_bin_mounts: Sequence[Any],
+        active_occupancies: Sequence[Any],
+        active_material_mounts: Sequence[Any],
+    ) -> Mapping[str, Any] | None:
+        cells: list[dict[str, Any]] = []
+        cell_indexes_by_bin = _cell_indexes_by_bin(active_occupancies, active_material_mounts)
+        for mount in rack_bin_mounts:
+            slot_code = _text_or_none(getattr(mount, "rack_slot_code", None))
+            bin_code = _text_or_none(getattr(mount, "bin_code", None))
+            if slot_code is None or bin_code is None:
+                return None
+            cell_indexes = cell_indexes_by_bin.get(bin_code)
+            if cell_indexes is None:
+                continue
+            bin_type = _bin_type_from_cell_indexes(cell_indexes)
+            cells.extend(
+                [
+                    {
+                        "rack_id": rack_code,
+                        "rack_code": rack_code,
+                        "rack_slot_code": slot_code,
+                        "rack_slot_location_code": f"{rack_code}-1{slot_code}-0",
+                        "bin_id": bin_code,
+                        "bin_code": bin_code,
+                        "bin_type": bin_type,
+                        "bin_cell_location": f"{bin_code}-{cell_index}",
+                        "bin_cell_index": cell_index,
+                        "status": "EMPTY",
+                    }
+                    for cell_index in cell_indexes
+                ]
+            )
+        if not cells:
+            return None
+        return {"rack_id": rack_code, "rack_code": rack_code, "cells": cells, "_fact_backed_projection": True}
 
     def _matching_active_rack(self, active_rack: Any, rack_code: str) -> Mapping[str, Any] | None:
         if not isinstance(active_rack, Mapping):

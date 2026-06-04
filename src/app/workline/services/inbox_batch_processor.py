@@ -39,7 +39,7 @@ from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorSe
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
-from src.workline_runtime.session_resolver import SessionResolveError
+from src.workline_runtime.session_resolver import SessionResolveError, WorklineEntryAdmissionBlocked
 from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
@@ -93,6 +93,10 @@ class _InboxDiagnosticSnapshot:
     command_id: int | None
     attempt_count: int
     payload_json: dict[str, Any]
+
+    @property
+    def source_system(self) -> None:
+        return None
 
 
 _ENTRY_DEVICE_EVENT_TYPES = frozenset({"SCAN_COMPLETED"})
@@ -1150,6 +1154,8 @@ class InboxBatchProcessor:
                 write_effects_applied = False
                 enqueue_outbox_dispatch = False
                 session_snapshot = _session_write_snapshot(session)
+                sse_workline_id = resolve_entity_id(workline)
+                sse_session_id = resolve_entity_id(session)
 
                 async def _write_callback(
                     write_result: OrchestratorResult,
@@ -1161,6 +1167,8 @@ class InboxBatchProcessor:
                     _command: Any | None = entities["command"],
                     _inbox_pk: int = inbox_pk,
                     _session_snapshot: tuple[Any, Any] = session_snapshot,
+                    _sse_workline_id: int | None = sse_workline_id,
+                    _sse_session_id: int | None = sse_session_id,
                     _processor_token: str = processor_token,
                 ) -> None:
                     nonlocal write_effects_applied, enqueue_outbox_dispatch
@@ -1232,8 +1240,8 @@ class InboxBatchProcessor:
                                 "entity": "session",
                                 "action": "updated",
                                 "keys": {
-                                    "workline_id": getattr(_workline, "id", None),
-                                    "session_id": getattr(_session, "id", None),
+                                    "workline_id": _sse_workline_id,
+                                    "session_id": _sse_session_id,
                                 },
                             },
                         )
@@ -1274,7 +1282,7 @@ class InboxBatchProcessor:
                     )
                     await _record_diagnostic(
                         db,
-                        inbox=inbox,
+                        inbox=diagnostic_inbox,
                         error_code=mapped_error_code,
                         error_domain=mapped_error_domain,
                         problem_class=_problem_class_for_error_domain(mapped_error_domain),
@@ -1291,6 +1299,43 @@ class InboxBatchProcessor:
                     result["failed"] += 1
                     logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
 
+                result["processed"] += 1
+
+            except WorklineEntryAdmissionBlocked as e:
+                logger.warning(f"Inbox {inbox_pk_text} entry admission blocked: {e}")
+                with suppress(Exception):
+                    await db.rollback()
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
+                    error_code=ErrorCode.UNKNOWN,
+                    error_domain=ErrorDomain.WORKFLOW,
+                    message=str(e),
+                    extra={
+                        "reason": "WORKLINE_ENTRY_ADMISSION_BLOCKED",
+                        "workline_id": e.workline_id,
+                        "business_key": e.business_key,
+                        "blocker_session_id": e.blocker_session_id,
+                    },
+                )
+                try:
+                    inbox_pk = diagnostic_inbox.id
+                    if inbox_pk is not None:
+                        attempt_count = getattr(diagnostic_inbox, "attempt_count", 0)
+                        delay_seconds = min(600, 10 * (2**attempt_count))
+                        _ = await inbox_service.park_for_retry(
+                            db,
+                            inbox_pk,
+                            str(e),
+                            processor_token=processor_token,
+                            auto_commit=False,
+                            delay_seconds=delay_seconds,
+                            workline_id=e.workline_id,
+                        )
+                        await db.commit()
+                except Exception as mark_error:
+                    logger.warning(f"Inbox {inbox_pk_text} entry admission blocked 补记失败: {mark_error}")
+                result["failed"] += 1
                 result["processed"] += 1
 
             except SessionResolveError as e:

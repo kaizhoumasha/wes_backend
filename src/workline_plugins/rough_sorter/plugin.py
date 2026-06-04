@@ -309,16 +309,19 @@ class RoughSorterPlugin(WorklinePlugin):
         for index, action in enumerate(action_values, start=1):
             if not isinstance(action, str) or not action:
                 continue
+            work_position_code = payload.get("work_position_code") or "SINGLE_LAYER_A"
             task: dict[str, Any] = {
                 "sequence_no": index,
                 "task_type": action,
                 "rack_kind": payload.get("new_rack_kind") or "SINGLE_LAYER",
-                "target_position_code": payload.get("work_position_code") or "SINGLE_LAYER_A",
-                "target_position_role": payload.get("target_position_role") or "SMT_CLASSIFIER_SINGLE_RACK_WORK",
             }
+            if action != "MOVE_OUT_ACTIVE_RACK":
+                task["target_position_code"] = work_position_code
+                task["target_position_role"] = payload.get("target_position_role") or "SMT_CLASSIFIER_SINGLE_RACK_WORK"
             rack_code = payload.get("single_layer_rack_code") or payload.get("single_layer_rack_id")
             if rack_code is not None and action == "MOVE_OUT_ACTIVE_RACK":
                 task["rack_code"] = rack_code
+                task["source_position_code"] = work_position_code
                 task["target_position_role"] = payload.get("move_out_target_position_role") or "SMT_EMPTY_RACK_AREA"
             tasks.append(task)
         return tasks

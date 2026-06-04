@@ -420,6 +420,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         processor_token: str | None = None,
         auto_commit: bool = True,
         delay_seconds: int = 10,
+        workline_id: int | None = None,
+        device_id: int | None = None,
     ) -> WorklineInbox:
         """
         因安全状态阻塞，暂时挂起消息（不增加重试次数）。
@@ -432,6 +434,10 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "processed_at": timezone.now_for_db(),
             "processor_token": None,  # nosec B105
         }
+        if workline_id is not None:
+            data["workline_id"] = workline_id
+        if device_id is not None:
+            data["device_id"] = device_id
         if processor_token is not None:
             return await self._update_processing_inbox(
                 db,

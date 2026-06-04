@@ -129,6 +129,155 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
     assert callback_payload["bin_mounts"][0]["bin_code"] == "BIN-001"
 
 
+def test_wms_mock_rack_operation_supplies_three_cell_bins_for_13inch_material() -> None:
+    callback_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "dispatch_key": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "op-13inch",
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "sequence_no": 1,
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "workline_code": "WL-ROUGH-SORTER-TEST",
+            "rack_kind": "SINGLE_LAYER",
+            "target_position_code": "SINGLE_LAYER_A",
+            "material": {
+                "HHPN": "IC001",
+                "LotCode": "LOT-I",
+                "DateCode": "20260413",
+                "PkgID": "PKG-IC001-LOT-I-001",
+            },
+        }
+    )
+
+    cells = callback_payload["active_bin_rack"]["cells"]
+    assert callback_payload["rack_code"] == "RACK-3CELL-001"
+    assert callback_payload["active_bin_rack"]["rack_code"] == "RACK-3CELL-001"
+    assert len(cells) == 12
+    assert {cell["bin_type"] for cell in cells} == {"3格箱"}
+    assert {cell["bin_cell_index"] for cell in cells if cell["rack_slot_code"] == "A"} == {"1", "2", "7"}
+    assert {cell["capacity_depth_mm"] for cell in cells if cell["bin_cell_index"] == "7"} == {80.0}
+
+
+def test_wms_mock_rack_operation_uses_distinct_bin_codes_per_rack() -> None:
+    six_cell_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-7inch:1:ALLOCATE_AND_MOVE_RACK",
+            "dispatch_key": "rack-operation:op-7inch:1:ALLOCATE_AND_MOVE_RACK",
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "op-7inch",
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "sequence_no": 1,
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "workline_code": "WL-ROUGH-SORTER-TEST",
+            "rack_kind": "SINGLE_LAYER",
+            "target_position_code": "SINGLE_LAYER_A",
+            "material": {
+                "HHPN": "RES001",
+                "LotCode": "LOT-R",
+                "DateCode": "20260407",
+                "PkgID": "PKG-RES001-LOT-R-001",
+            },
+        }
+    )
+    three_cell_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "dispatch_key": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "op-13inch",
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "sequence_no": 1,
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "workline_code": "WL-ROUGH-SORTER-TEST",
+            "rack_kind": "SINGLE_LAYER",
+            "target_position_code": "SINGLE_LAYER_A",
+            "material": {
+                "HHPN": "IC001",
+                "LotCode": "LOT-I",
+                "DateCode": "20260413",
+                "PkgID": "PKG-IC001-LOT-I-001",
+            },
+        }
+    )
+
+    six_cell_bins = {mount["bin_code"] for mount in six_cell_payload["bin_mounts"]}
+    three_cell_bins = {mount["bin_code"] for mount in three_cell_payload["bin_mounts"]}
+    assert six_cell_payload["rack_code"] == "RACK-001"
+    assert three_cell_payload["rack_code"] == "RACK-3CELL-001"
+    assert six_cell_bins.isdisjoint(three_cell_bins)
+
+
+def test_wms_mock_rack_operation_keeps_rack_bin_cell_physical_constraints() -> None:
+    six_cell_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-physical-7inch:1:ALLOCATE_AND_MOVE_RACK",
+            "dispatch_key": "rack-operation:op-physical-7inch:1:ALLOCATE_AND_MOVE_RACK",
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "op-physical-7inch",
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "rack_code": "RACK-3CELL-001",
+            "material": {
+                "HHPN": "CAP001",
+                "LotCode": "LOT-A",
+                "DateCode": "20260409",
+                "PkgID": "PKG-CAP001-LOT-A-001",
+            },
+        }
+    )
+    three_cell_payload = wms_mock_server._rack_operation_callback_payload(
+        {
+            "request_id": "rack-operation:op-physical-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "dispatch_key": "rack-operation:op-physical-13inch:1:ALLOCATE_AND_MOVE_RACK",
+            "callback_type": "WMS_RACK_ARRIVED",
+            "operation_key": "op-physical-13inch",
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "rack_code": "RACK-001",
+            "material": {
+                "HHPN": "IC001",
+                "LotCode": "LOT-I",
+                "DateCode": "20260413",
+                "PkgID": "PKG-IC001-LOT-I-001",
+            },
+        }
+    )
+
+    assert six_cell_payload["rack_code"] == "RACK-001"
+    assert {cell["bin_type"] for cell in six_cell_payload["active_bin_rack"]["cells"]} == {"6格箱"}
+    assert len(six_cell_payload["bin_mounts"]) == 4
+    assert len(six_cell_payload["active_bin_rack"]["cells"]) == 24
+    for mount in six_cell_payload["bin_mounts"]:
+        slot_cells = [
+            cell
+            for cell in six_cell_payload["active_bin_rack"]["cells"]
+            if cell["rack_slot_code"] == mount["rack_slot_code"]
+        ]
+        assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
+        assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
+
+    assert three_cell_payload["rack_code"] == "RACK-3CELL-001"
+    assert {cell["bin_type"] for cell in three_cell_payload["active_bin_rack"]["cells"]} == {"3格箱"}
+    assert len(three_cell_payload["bin_mounts"]) == 4
+    assert len(three_cell_payload["active_bin_rack"]["cells"]) == 12
+    for mount in three_cell_payload["bin_mounts"]:
+        slot_cells = [
+            cell
+            for cell in three_cell_payload["active_bin_rack"]["cells"]
+            if cell["rack_slot_code"] == mount["rack_slot_code"]
+        ]
+        assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
+        assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
+        assert {cell["capacity_depth_mm"] for cell in slot_cells if cell["bin_cell_index"] == "7"} == {80.0}
+
+
+def test_wms_mock_large_reel_detection_does_not_match_dimension_substrings() -> None:
+    assert wms_mock_server._has_large_reel_size({"reel_diameter": "13inch"}) is True
+    assert wms_mock_server._has_large_reel_size({"reel_diameter": "330.0"}) is True
+    assert wms_mock_server._has_large_reel_size({"reel_diameter": "113mm"}) is False
+    assert wms_mock_server._has_large_reel_size({"reel_diameter": "150mm"}) is False
+
+
 def test_wms_mock_rack_operation_source_event_id_keeps_wes_idempotency_key_short() -> None:
     dispatch_key = (
         "rack-operation:external:smt_rack_bin:rough-sorter-mock-scan-1780455233:RACK_OPERATION:1:ALLOCATE_AND_MOVE_RACK"

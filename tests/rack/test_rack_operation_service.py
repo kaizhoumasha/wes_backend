@@ -671,6 +671,52 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
     assert call["request_json"]["trace_id"] == "trace-dataclass-spec"
 
 
+async def test_request_operation_tasks_preserves_material_context_in_external_outbox_payload() -> None:
+    service, _repo, lifecycle, _placements = _service(active_placements=[], active_count=0)
+    db = FakeDb()
+
+    await service.request_operation_tasks(
+        db,
+        operation_key="op-large-material",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=_session(),
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-large-material",
+        task_specs=[
+            {
+                "sequence_no": 1,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+                "request_json": {
+                    "material": {
+                        "HHPN": "IC001",
+                        "LotCode": "LOT-I",
+                        "DateCode": "20260413",
+                        "PkgID": "PKG-IC001-LOT-I-001",
+                        "reel_diameter": "330.0",
+                        "reel_thickness": "24.0",
+                    },
+                },
+            }
+        ],
+    )
+
+    material = {
+        "HHPN": "IC001",
+        "LotCode": "LOT-I",
+        "DateCode": "20260413",
+        "PkgID": "PKG-IC001-LOT-I-001",
+        "reel_diameter": "330.0",
+        "reel_thickness": "24.0",
+    }
+    assert lifecycle.calls[0]["request_json"]["material"] == material
+    outboxes = [item for item in db.added if isinstance(item, SystemOutbox)]
+    assert outboxes[0].payload_json["material"] == material
+
+
 @pytest.mark.asyncio
 async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_same_operation_key() -> None:
     service, _repo, lifecycle, _placements = _service(active_placements=[_active_rack()])
@@ -707,6 +753,48 @@ async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_sa
     assert session.status == SessionStatus.RUNNING
     assert session.context_json == {"kept": "value"}
     assert session.awaiting_command_id == 99
+
+
+@pytest.mark.asyncio
+async def test_move_out_active_rack_action_aliases_to_move_rack_task() -> None:
+    service, _repo, lifecycle, _placements = _service(active_placements=[_active_rack()], capacity=1)
+    db = FakeDb()
+
+    tasks = await service.request_operation_tasks(
+        db,
+        operation_key="op-move-out-active-alias",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=_session(),
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-move-out-active-alias",
+        task_specs=[
+            {
+                "sequence_no": 1,
+                "task_type": "MOVE_OUT_ACTIVE_RACK",
+                "rack_code": "RACK-OLD",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "source_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": MOVE_OUT_TARGET_POSITION_ROLE,
+            },
+            {
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            },
+        ],
+    )
+
+    assert [task.task_type for task in tasks] == [
+        RackTaskType.MOVE_RACK.value,
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+    ]
+    assert lifecycle.calls[0]["actions_json"]["action"] == "MOVE_OUT_ACTIVE_RACK"
+    assert lifecycle.calls[0]["actions_json"]["task_type"] == RackTaskType.MOVE_RACK.value
+    assert lifecycle.calls[0]["request_json"]["task_type"] == RackTaskType.MOVE_RACK.value
+    assert lifecycle.calls[0]["request_json"]["actions"]["action"] == "MOVE_OUT_ACTIVE_RACK"
 
 
 @pytest.mark.asyncio

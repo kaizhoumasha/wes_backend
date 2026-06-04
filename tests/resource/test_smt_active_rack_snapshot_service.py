@@ -75,6 +75,18 @@ class RecordingPartialRackBinMountRepo:
         ]
 
 
+class RecordingSingleRackBinMountRepo:
+    async def list_active_by_rack_code(self, _db: object, rack_code: str) -> list[SimpleNamespace]:
+        assert rack_code == "RACK-ACTIVE-001"
+        return [SimpleNamespace(rack_slot_code="A", bin_code="BIN-ACTIVE-A")]
+
+
+class RecordingInvalidRackBinMountRepo:
+    async def list_active_by_rack_code(self, _db: object, rack_code: str) -> list[SimpleNamespace]:
+        assert rack_code == "RACK-ACTIVE-001"
+        return [SimpleNamespace(rack_slot_code=None, bin_code="BIN-ACTIVE-A")]
+
+
 class RecordingBinMaterialMountRepo:
     async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
         assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
@@ -170,6 +182,116 @@ class RecordingNoReservationRepo:
     async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
         assert bin_codes
         return []
+
+
+class RecordingAnyNoOccupancyRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
+        return []
+
+
+class RecordingAnyNoMaterialMountRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
+        return []
+
+
+class RecordingFlexibleNoProjectionRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes
+        return []
+
+
+class RecordingLargeCellOccupancyRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
+        return [
+            SimpleNamespace(
+                id=8801,
+                bin_code="BIN-ACTIVE-C",
+                bin_cell_index="7",
+                material_identity_key="MAT:IC001:LOT-I",
+                material_code="IC001",
+                lot_code="LOT-I",
+                date_code="20260413",
+                reel_count=1,
+                used_depth_mm=80.0,
+                capacity_depth_mm=80.0,
+                remaining_depth_mm=0.0,
+                occupancy_status="OCCUPIED",
+            )
+        ]
+
+
+class RecordingLargeCellMaterialMountRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A", "BIN-ACTIVE-B", "BIN-ACTIVE-C", "BIN-ACTIVE-D"]
+        return [
+            SimpleNamespace(
+                bin_cell_occupancy_id=8801,
+                cell_stack_position=1,
+                bin_code="BIN-ACTIVE-C",
+                bin_cell_index="7",
+                pkg_code="PKG-IC001-LOT-I",
+                material_code="IC001",
+                lot_code="LOT-I",
+                qty_snapshot=1,
+                reel_diameter="13inch",
+                reel_thickness="24",
+            )
+        ]
+
+
+class RecordingSingleCellOccupancyRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A"]
+        return [
+            SimpleNamespace(
+                id=9901,
+                bin_code="BIN-ACTIVE-A",
+                bin_cell_index="1",
+                material_identity_key="MAT:RES001:LOT-R",
+                material_code="RES001",
+                lot_code="LOT-R",
+                date_code="20260413",
+                reel_count=1,
+                used_depth_mm=20.0,
+                capacity_depth_mm=80.0,
+                remaining_depth_mm=60.0,
+                occupancy_status="OCCUPIED",
+            )
+        ]
+
+
+class RecordingSingleCellMaterialMountRepo:
+    async def list_active_by_bin_codes(self, _db: object, bin_codes: list[str]) -> list[SimpleNamespace]:
+        assert bin_codes == ["BIN-ACTIVE-A"]
+        return [
+            SimpleNamespace(
+                bin_cell_occupancy_id=9901,
+                cell_stack_position=1,
+                bin_code="BIN-ACTIVE-A",
+                bin_cell_index="1",
+                pkg_code="PKG-RES001-LOT-R",
+                material_code="RES001",
+                lot_code="LOT-R",
+                qty_snapshot=100,
+                reel_diameter="7inch",
+                reel_thickness="12",
+            )
+        ]
+
+
+class RecordingNoTemplateSessionRepo:
+    async def get_latest_active_rack_template_session(
+        self,
+        _db: object,
+        *,
+        workline_id: int,
+        rack_code: str,
+    ) -> None:
+        assert workline_id == 1001
+        assert rack_code == "RACK-ACTIVE-001"
 
 
 class RecordingActiveReservationRepo:
@@ -422,6 +544,107 @@ async def test_get_active_bin_rack_preserves_decimal_depth_values() -> None:
     assert all(
         not isinstance(cell_c[key], float) for key in ("used_depth_mm", "capacity_depth_mm", "remaining_depth_mm")
     )
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_returns_none_for_empty_projection_without_last_session_template() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingAnyNoOccupancyRepo(),
+        bin_material_mount_repo=RecordingAnyNoMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingNoTemplateSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_synthesizes_only_fact_backed_projection_cells() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingSingleRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingSingleCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingSingleCellMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingNoTemplateSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is not None
+    assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+    assert snapshot["rack_id"] == "RACK-ACTIVE-001"
+    assert "bins" not in snapshot
+    assert "bin_snapshots" not in snapshot
+    cells = snapshot["cells"]
+    assert len(cells) == 1
+    cell_a1 = cells[0]
+    assert cell_a1["rack_slot_code"] == "A"
+    assert cell_a1["bin_id"] == "BIN-ACTIVE-A"
+    assert cell_a1["bin_cell_index"] == "1"
+    assert cell_a1["bin_type"] == "未知料箱"
+    assert cell_a1["bin_cell_location"] == "BIN-ACTIVE-A-1"
+    assert cell_a1["status"] == "OCCUPIED"
+    assert cell_a1["HHPN"] == "RES001"
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_synthesizes_large_cell_projection_without_last_session_template() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingLargeCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingLargeCellMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingNoTemplateSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is not None
+    cells = snapshot["cells"]
+    cell_c7 = next(cell for cell in cells if cell["bin_id"] == "BIN-ACTIVE-C" and cell["bin_cell_index"] == "7")
+    assert cell_c7["bin_type"] == "3格箱"
+    assert cell_c7["status"] == "OCCUPIED"
+    assert cell_c7["HHPN"] == "IC001"
+    assert cell_c7["PkgID"] == "PKG-IC001-LOT-I"
+    assert {cell["bin_cell_index"] for cell in cells if cell["bin_id"] == "BIN-ACTIVE-C"} == {"1", "2", "7"}
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_returns_none_when_projection_template_cannot_be_synthesized() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingInvalidRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingFlexibleNoProjectionRepo(),
+        bin_material_mount_repo=RecordingFlexibleNoProjectionRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingNoTemplateSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={},
+    )
+
+    assert snapshot is None
 
 
 @pytest.mark.asyncio

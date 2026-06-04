@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from src.app.workline.models.inbox import InboxStatus
 from src.app.workline.models.integration_debug import (
     IntegrationDebugCaseListResponse,
     IntegrationDebugCaseResponse,
@@ -12,6 +14,7 @@ from src.app.workline.models.integration_debug import (
     IntegrationDebugStageCheck,
 )
 from src.app.workline.models.runtime import TraceQueryRequest
+from src.app.workline.repositories.inbox_repository import WorklineInboxRepository, inbox_repository
 from src.app.workline.services.runtime_query_service import RuntimeQueryService, runtime_query_service
 from src.app.workline.services.trace_query_service import TraceQueryResult, trace_query_service
 from src.app.workline.services.trace_response_builder import build_trace_response
@@ -21,6 +24,11 @@ from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+_ENTRY_ADMISSION_BLOCKED_REASON = "Workline entry admission blocked by busy session"
+_ENTRY_ADMISSION_BLOCKING_CODE = "WORKLINE_ENTRY_ADMISSION_BLOCKED"
+_ENTRY_ADMISSION_DETAIL_PATTERN = re.compile(r"(?P<key>workline_id|business_key|blocker_session_id)=([^,]+)")
 
 
 class _TraceQueryProtocol(Protocol):
@@ -43,9 +51,11 @@ class IntegrationDebugService:
         *,
         trace_query: _TraceQueryProtocol | None = None,
         runtime_query: RuntimeQueryService | None = None,
+        inbox_repo: WorklineInboxRepository | None = None,
     ) -> None:
         self._trace_query = trace_query or trace_query_service
         self._runtime_query = runtime_query or runtime_query_service
+        self._inbox_repo = inbox_repo or inbox_repository
 
     async def latest_cases(
         self,
@@ -66,11 +76,26 @@ class IntegrationDebugService:
                 offset=0,
             ),
         )
+        pending_limit = 0 if status is not None and status != InboxStatus.RETRY.value else limit
+        pending_items = await self._load_pending_entry_admission_cases(
+            db,
+            limit=pending_limit,
+            workline_id=workline_id,
+            device_id=device_id,
+        )
         items: list[IntegrationDebugCaseResponse] = []
         for item in trace_list.items:
             result = await self._trace_query.by_session_id(db, item.session_id)
             items.append(self.build_case(result, include_raw=False))
-        return IntegrationDebugCaseListResponse(total=trace_list.total, items=items)
+
+        total = trace_list.total + await self._count_pending_entry_admission_cases(
+            db,
+            workline_id=workline_id,
+            device_id=device_id,
+            status=status,
+        )
+        visible_items = _merge_trace_and_pending_cases(items, pending_items, limit=limit)
+        return IntegrationDebugCaseListResponse(total=total, items=visible_items)
 
     async def lookup_case(
         self,
@@ -91,6 +116,8 @@ class IntegrationDebugService:
         status = optional_enum_str(getattr(session, "status", None)) or "UNKNOWN"
         detected_wms_block = _wms_timeout_block(result)
         wms_block = detected_wms_block if status == "MANUAL_HOLD" else None
+        detected_resource_block = _resource_reconciliation_block(result)
+        resource_block = detected_resource_block if status == "MANUAL_HOLD" else None
         failed_outbox = next(
             (item for item in result.outboxes if optional_enum_str(getattr(item, "status", None)) == "FAILED"), None
         )
@@ -108,6 +135,18 @@ class IntegrationDebugService:
             definition = get_diagnostic_code_definition(ErrorCode.WMS_TIMEOUT)
             recoverability = definition.recoverability.value
             summary = "设备链路已完成，当前阻塞在 WMS 库存同步超时"
+        elif resource_block is not None:
+            _, resource_payload = resource_block
+            phase = "resource_reconciliation"
+            verdict = "blocked"
+            blocking_domain = "RESOURCE_RECONCILIATION"
+            blocking_code = coerce_optional_str(resource_payload.get("reason_code")) or coerce_optional_str(
+                getattr(session, "failure_code", None)
+            )
+            owner = "runtime"
+            severity = "error"
+            recoverability = "manual_retryable"
+            summary = "资源投影进入调和状态，需处理货架/料箱/物料占用冲突"
         elif failed_outbox is not None:
             phase = "command_dispatched"
             verdict = "failed"
@@ -165,11 +204,52 @@ class IntegrationDebugService:
             severity=severity,
             recoverability=recoverability,
             summary=summary,
-            facts=_facts(result, wms_block=wms_block),
-            stage_checks=_stage_checks(result, phase=phase, verdict=verdict, wms_block=wms_block),
+            facts=_facts(result, wms_block=wms_block, resource_block=resource_block),
+            stage_checks=_stage_checks(
+                result,
+                phase=phase,
+                verdict=verdict,
+                wms_block=wms_block,
+                resource_block=resource_block,
+            ),
             evidence_links=_evidence_links(result),
-            next_actions=_next_actions(result, phase=phase, wms_block=wms_block),
+            next_actions=_next_actions(result, phase=phase, wms_block=wms_block, resource_block=resource_block),
             trace_detail=build_trace_response(result) if include_raw else None,
+        )
+
+    async def _load_pending_entry_admission_cases(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        workline_id: int | None,
+        device_id: int | None,
+    ) -> list[IntegrationDebugCaseResponse]:
+        if limit <= 0:
+            return []
+
+        inboxes = await self._inbox_repo.list_pending_entry_admission_cases(
+            db,
+            limit=limit,
+            workline_id=workline_id,
+            device_id=device_id,
+        )
+        return [_build_pending_entry_admission_case(inbox) for inbox in inboxes]
+
+    async def _count_pending_entry_admission_cases(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None,
+        device_id: int | None,
+        status: str | None,
+    ) -> int:
+        if status is not None and status != InboxStatus.RETRY.value:
+            return 0
+        return await self._inbox_repo.count_pending_entry_admission_cases(
+            db,
+            workline_id=workline_id,
+            device_id=device_id,
         )
 
     async def _lookup_trace_result(
@@ -263,6 +343,115 @@ def _latest_command_code(result: TraceQueryResult) -> str | None:
     return coerce_optional_str(getattr(result.commands[-1], "command_code", None)) or result.trace.command_code
 
 
+def _merge_trace_and_pending_cases(
+    trace_items: list[IntegrationDebugCaseResponse],
+    pending_items: list[IntegrationDebugCaseResponse],
+    *,
+    limit: int,
+) -> list[IntegrationDebugCaseResponse]:
+    if limit <= 0:
+        return []
+    if not pending_items:
+        return trace_items[:limit]
+    if len(trace_items) >= limit:
+        return [*trace_items[: max(limit - 1, 0)], pending_items[0]]
+    return [*trace_items, *pending_items][:limit]
+
+
+def _build_pending_entry_admission_case(inbox: Any) -> IntegrationDebugCaseResponse:
+    payload = payload_dict(getattr(inbox, "payload_json", None))
+    data = payload_dict(payload.get("data"))
+    error_message = coerce_optional_str(getattr(inbox, "error_message", None)) or ""
+    details = _entry_admission_block_details(error_message)
+    blocker_session_id = _optional_int(details.get("blocker_session_id"))
+    workline_id = _optional_int(details.get("workline_id")) or getattr(inbox, "workline_id", None)
+    business_key = details.get("business_key")
+    material_code = coerce_optional_str(data.get("HHPN") or data.get("ProductNo"))
+    lot_code = coerce_optional_str(data.get("LotCode"))
+    pkg_id = coerce_optional_str(data.get("PkgID"))
+    inbox_id = getattr(inbox, "id", None)
+    trace_id = coerce_optional_str(getattr(inbox, "trace_id", None))
+
+    return IntegrationDebugCaseResponse(
+        case_id=f"inbox:{inbox_id}" if inbox_id is not None else f"trace:{trace_id or 'pending-admission'}",
+        session_id=None,
+        session_code=f"PENDING-INBOX-{inbox_id}" if inbox_id is not None else "PENDING-ENTRY-ADMISSION",
+        trace_id=trace_id,
+        request_id=None,
+        command_code=None,
+        status=optional_enum_str(getattr(inbox, "status", None)) or "RETRY",
+        phase="entry_admission",
+        verdict="waiting",
+        blocking_domain="WORKLINE",
+        blocking_code=_ENTRY_ADMISSION_BLOCKING_CODE,
+        owner="runtime",
+        severity="warning",
+        recoverability="auto_retryable",
+        summary="物料已进入回调入口，正在等待当前工作线未完成项释放准入",
+        facts={
+            "inbox_id": inbox_id,
+            "workline_id": workline_id,
+            "device_id": getattr(inbox, "device_id", None),
+            "business_key": business_key,
+            "blocker_session_id": blocker_session_id,
+            "trace_id": trace_id,
+            "event_id": coerce_optional_str(getattr(inbox, "event_id", None)),
+            "event_type": coerce_optional_str(payload.get("event_type") or payload.get("canonical_event_type")),
+            "material_code": material_code,
+            "lot_code": lot_code,
+            "pkg_id": pkg_id,
+            "attempt_count": getattr(inbox, "attempt_count", None),
+            "max_attempts": getattr(inbox, "max_attempts", None),
+            "next_retry_at": getattr(inbox, "next_retry_at", None),
+        },
+        stage_checks=[
+            _stage("callback_event", "回调入口", "ok", 1),
+            _stage("entry_admission", "准入等待", "waiting", 1),
+            _stage("session_created", "Session 创建", "not_started", 0),
+            _stage("terminal_state", "终态", "waiting", 1),
+        ],
+        evidence_links=[
+            IntegrationDebugEvidenceLink(
+                kind="inbox",
+                label="等待准入 Inbox",
+                api_path=f"/api/v1/workline/trace/trace/{trace_id}" if trace_id else None,
+                route_name="RuntimeTraces" if trace_id else None,
+                route_query={"type": "trace", "value": trace_id} if trace_id else {},
+            )
+        ],
+        next_actions=[
+            IntegrationDebugNextAction(
+                kind="inspect_blocker_session",
+                label="查看当前阻塞 Session",
+                description=(
+                    f"等待 Session {blocker_session_id} 结束后，该物料会按重试时间重新准入。"
+                    if blocker_session_id is not None
+                    else "等待当前工作线未完成 Session 结束后，该物料会按重试时间重新准入。"
+                ),
+                route_name="RuntimeCases" if blocker_session_id is not None else None,
+                route_query={"sessionId": blocker_session_id} if blocker_session_id is not None else {},
+            )
+        ],
+        trace_detail=None,
+    )
+
+
+def _entry_admission_block_details(message: str) -> dict[str, str]:
+    details: dict[str, str] = {}
+    for match in _ENTRY_ADMISSION_DETAIL_PATTERN.finditer(message):
+        details[match.group("key")] = match.group(2).strip()
+    return details
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _wms_timeout_block(result: TraceQueryResult) -> tuple[Any, dict[str, Any]] | None:
     session = result.session
     session_failure_code = optional_enum_str(getattr(session, "failure_code", None)) if session is not None else None
@@ -279,9 +468,31 @@ def _wms_timeout_block(result: TraceQueryResult) -> tuple[Any, dict[str, Any]] |
     return None
 
 
-def _facts(result: TraceQueryResult, *, wms_block: tuple[Any, dict[str, Any]] | None) -> dict[str, Any]:
+def _resource_reconciliation_block(result: TraceQueryResult) -> tuple[Any, dict[str, Any]] | None:
+    session = result.session
+    session_failure_domain = (
+        coerce_optional_str(getattr(session, "failure_domain", None)) if session is not None else None
+    )
+    session_failure_code = coerce_optional_str(getattr(session, "failure_code", None)) if session is not None else None
+    if session_failure_domain != "RESOURCE_RECONCILIATION":
+        return None
+    for timeline in reversed(result.timelines):
+        payload = payload_dict(getattr(timeline, "payload_json", None))
+        reason_code = coerce_optional_str(payload.get("reason_code"))
+        if reason_code == session_failure_code:
+            return timeline, payload
+    return None, {"reason_code": session_failure_code}
+
+
+def _facts(
+    result: TraceQueryResult,
+    *,
+    wms_block: tuple[Any, dict[str, Any]] | None,
+    resource_block: tuple[Any, dict[str, Any]] | None,
+) -> dict[str, Any]:
     session = result.session
     _, wms_payload = wms_block or (None, {})
+    _, resource_payload = resource_block or (None, {})
     completed_commands = [
         getattr(command, "command_code", None)
         for command in result.commands
@@ -307,6 +518,8 @@ def _facts(result: TraceQueryResult, *, wms_block: tuple[Any, dict[str, Any]] | 
         "wms_reason_code": wms_payload.get("reason_code"),
         "wms_target_code": wms_payload.get("target_code"),
         "wms_block_scope": wms_payload.get("block_scope"),
+        "resource_reason_code": resource_payload.get("reason_code"),
+        "resource_block_scope": resource_payload.get("block_scope"),
     }
 
 
@@ -316,6 +529,7 @@ def _stage_checks(
     phase: str,
     verdict: str,
     wms_block: tuple[Any, dict[str, Any]] | None,
+    resource_block: tuple[Any, dict[str, Any]] | None,
 ) -> list[IntegrationDebugStageCheck]:
     has_completed_command = any(
         optional_enum_str(getattr(command, "status", None)) == "COMPLETED" for command in result.commands
@@ -382,9 +596,15 @@ def _stage_checks(
             1 if wms_block is not None else 0,
         ),
         _stage(
+            "resource_reconciliation",
+            "资源调和",
+            "blocked" if resource_block is not None else "not_started",
+            1 if resource_block is not None else 0,
+        ),
+        _stage(
             "terminal_state",
             "终态",
-            "waiting" if phase == "external_wms" else verdict,
+            "waiting" if phase in {"external_wms", "resource_reconciliation"} else verdict,
             1 if result.session is not None else 0,
         ),
     ]
@@ -434,6 +654,7 @@ def _next_actions(
     *,
     phase: str,
     wms_block: tuple[Any, dict[str, Any]] | None,
+    resource_block: tuple[Any, dict[str, Any]] | None,
 ) -> list[IntegrationDebugNextAction]:
     if phase == "external_wms":
         _, payload = wms_block or (None, {})
@@ -448,6 +669,23 @@ def _next_actions(
                 kind="open_trace",
                 label="打开 Trace 证据",
                 description="查看 callback、command、timeline 的完整证据链。",
+                route_name="RuntimeTraces",
+                route_query={"type": "trace", "value": result.trace.trace_id},
+            ),
+        ]
+    if phase == "resource_reconciliation":
+        _, payload = resource_block or (None, {})
+        reason_code = coerce_optional_str(payload.get("reason_code")) or "RESOURCE_RECONCILIATION"
+        return [
+            IntegrationDebugNextAction(
+                kind="inspect_resource_hold",
+                label="检查资源调和 Hold",
+                description=f"处理 {reason_code} 对应的货架、料箱或物料 active 投影冲突。",
+            ),
+            IntegrationDebugNextAction(
+                kind="open_trace",
+                label="打开 Trace 证据",
+                description="查看资源事实、runtime hold 和 session 状态的完整证据链。",
                 route_name="RuntimeTraces",
                 route_query={"type": "trace", "value": result.trace.trace_id},
             ),

@@ -18,6 +18,7 @@ from src.app.resource.models import (
     BinPlacement,
     RackBinMount,
     RackPlacement,
+    ResourceSourceSystem,
     ResourceStateEvent,
 )
 from src.app.sys.models import SystemOutbox
@@ -129,17 +130,23 @@ class DebugDataCleanupRepository:
         return await self.collect_for_worklines(db, [workline_id])
 
     async def collect_for_all_worklines(self, db: AsyncSession) -> DebugDataCleanupSelection:
-        return await self.collect_for_worklines(db, await self.get_all_workline_ids_for_update(db))
+        return await self.collect_for_worklines(
+            db,
+            await self.get_all_workline_ids_for_update(db),
+            include_orphans=True,
+        )
 
     async def collect_for_worklines(
         self,
         db: AsyncSession,
         workline_ids: list[int],
+        *,
+        include_orphans: bool = False,
     ) -> DebugDataCleanupSelection:
         """按工作线集合收集所有可关联过程数据。"""
 
         workline_ids = sorted(set(workline_ids))
-        if not workline_ids:
+        if not workline_ids and not include_orphans:
             return self._empty_selection()
 
         workline_codes = await self._collect_strings(db, self._workline_code_stmt(workline_ids))
@@ -149,10 +156,10 @@ class DebugDataCleanupRepository:
         session_keys = sorted({*(str(item_id) for item_id in session_ids), *session_codes})
 
         inbox_ids = await self._collect_ids(db, self._inbox_ids_stmt(workline_ids, session_ids, trace_ids))
+        trace_ids = sorted({*trace_ids, *await self._collect_strings(db, self._inbox_trace_ids_stmt(inbox_ids))})
         outbox_ids = await self._collect_ids(db, self._outbox_ids_stmt(workline_ids, session_ids, trace_ids))
         command_ids = await self._collect_ids(db, self._command_ids_stmt(workline_ids, session_ids, trace_ids))
 
-        trace_ids = sorted({*trace_ids, *await self._collect_strings(db, self._inbox_trace_ids_stmt(inbox_ids))})
         trace_ids = sorted({*trace_ids, *await self._collect_strings(db, self._outbox_trace_ids_stmt(outbox_ids))})
         dispatch_keys = await self._collect_strings(db, self._outbox_dispatch_keys_stmt(outbox_ids))
         inbox_event_ids = await self._collect_strings(db, self._inbox_event_ids_stmt(inbox_ids))
@@ -213,6 +220,29 @@ class DebugDataCleanupRepository:
         )
         bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_keys, trace_ids))
         bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_keys, trace_ids))
+        resource_trace_ids, resource_session_keys = await self._collect_resource_link_keys(
+            db,
+            resource_state_event_ids=resource_state_event_ids,
+            rack_placement_ids=rack_placement_ids,
+            rack_bin_mount_ids=rack_bin_mount_ids,
+            bin_placement_ids=bin_placement_ids,
+            bin_material_mount_ids=bin_material_mount_ids,
+            bin_cell_occupancy_ids=bin_cell_occupancy_ids,
+        )
+        trace_ids = sorted({*trace_ids, *resource_trace_ids})
+        session_keys = sorted({*session_keys, *resource_session_keys})
+        resource_state_event_ids = await self._collect_ids(
+            db, self._resource_state_event_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+        )
+        rack_placement_ids = await self._collect_ids(
+            db, self._rack_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+        )
+        rack_bin_mount_ids = await self._collect_ids(db, self._rack_bin_mount_ids_stmt(session_keys, trace_ids))
+        bin_placement_ids = await self._collect_ids(
+            db, self._bin_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+        )
+        bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_keys, trace_ids))
+        bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_keys, trace_ids))
         bin_content_snapshot_ids = await self._collect_ids(db, self._bin_content_snapshot_ids_stmt(session_ids))
         snapshot_ids = await self._collect_strings(
             db, self._bin_content_snapshot_business_ids_stmt(bin_content_snapshot_ids)
@@ -222,6 +252,47 @@ class DebugDataCleanupRepository:
         )
         callback_log_ids = await self._collect_ids(db, self._callback_log_ids_stmt(trace_ids, inbox_event_ids))
         wms_call_evidence_ids = await self._collect_ids(db, self._wms_call_evidence_ids_stmt(trace_ids, dispatch_keys))
+        if include_orphans:
+            resource_state_event_ids = sorted(
+                {
+                    *resource_state_event_ids,
+                    *await self._collect_ids(
+                        db, self._orphan_process_resource_ids_stmt(ResourceStateEvent, session_keys, trace_ids)
+                    ),
+                }
+            )
+            rack_bin_mount_ids = sorted(
+                {
+                    *rack_bin_mount_ids,
+                    *await self._collect_ids(
+                        db, self._orphan_process_resource_ids_stmt(RackBinMount, session_keys, trace_ids)
+                    ),
+                }
+            )
+            bin_material_mount_ids = sorted(
+                {
+                    *bin_material_mount_ids,
+                    *await self._collect_ids(
+                        db, self._orphan_process_resource_ids_stmt(BinMaterialMount, session_keys, trace_ids)
+                    ),
+                }
+            )
+            bin_cell_occupancy_ids = sorted(
+                {
+                    *bin_cell_occupancy_ids,
+                    *await self._collect_ids(
+                        db, self._orphan_process_resource_ids_stmt(BinCellOccupancy, session_keys, trace_ids)
+                    ),
+                }
+            )
+            callback_log_ids = sorted(
+                {
+                    *callback_log_ids,
+                    *await self._collect_ids(
+                        db, self._orphan_process_callback_log_ids_stmt(trace_ids, inbox_event_ids)
+                    ),
+                }
+            )
 
         return DebugDataCleanupSelection(
             worklines=workline_ids,
@@ -391,6 +462,84 @@ class DebugDataCleanupRepository:
     def _in_condition(self, column: Any, values: list[Any]) -> Any | None:
         return column.in_(values) if values else None
 
+    def _orphan_process_resource_ids_stmt(
+        self,
+        model: type[Any],
+        session_keys: list[str],
+        trace_ids: list[str],
+    ) -> Any:
+        columns = cast("Any", model).__table__.c
+        exclusion_conditions = [
+            self._outside_known_values(columns.trace_id, trace_ids),
+            self._outside_known_values(columns.session_id, session_keys),
+        ]
+        return (
+            select(columns.id)
+            .where(
+                columns.source_system == ResourceSourceSystem.WES_RUNTIME,
+                self._where_any(
+                    columns.trace_id.is_not(None),
+                    columns.session_id.is_not(None),
+                ),
+                *[condition for condition in exclusion_conditions if condition is not None],
+            )
+            .order_by(columns.id)
+        )
+
+    def _orphan_process_callback_log_ids_stmt(self, trace_ids: list[str], event_ids: list[str]) -> Any:
+        columns = cast("Any", self._callback_log_model()).__table__.c
+        exclusion_conditions = [
+            self._outside_known_values(columns.trace_id, trace_ids),
+            self._outside_known_values(columns.event_id, event_ids),
+        ]
+        return (
+            select(columns.id)
+            .where(
+                self._where_any(
+                    columns.trace_id.is_not(None),
+                    columns.event_id.is_not(None),
+                ),
+                *[condition for condition in exclusion_conditions if condition is not None],
+            )
+            .order_by(columns.id)
+        )
+
+    def _outside_known_values(self, column: Any, values: list[Any]) -> Any | None:
+        return or_(column.is_(None), column.not_in(values)) if values else None
+
+    async def _collect_resource_link_keys(
+        self,
+        db: AsyncSession,
+        *,
+        resource_state_event_ids: list[int],
+        rack_placement_ids: list[int],
+        rack_bin_mount_ids: list[int],
+        bin_placement_ids: list[int],
+        bin_material_mount_ids: list[int],
+        bin_cell_occupancy_ids: list[int],
+    ) -> tuple[list[str], list[str]]:
+        trace_ids: set[str] = set()
+        session_keys: set[str] = set()
+        for model, ids in (
+            (ResourceStateEvent, resource_state_event_ids),
+            (RackPlacement, rack_placement_ids),
+            (RackBinMount, rack_bin_mount_ids),
+            (BinPlacement, bin_placement_ids),
+            (BinMaterialMount, bin_material_mount_ids),
+            (BinCellOccupancy, bin_cell_occupancy_ids),
+        ):
+            trace_ids.update(await self._collect_strings(db, self._trace_ids_by_ids_stmt(model, ids)))
+            session_keys.update(await self._collect_strings(db, self._session_ids_by_ids_stmt(model, ids)))
+        return sorted(trace_ids), sorted(session_keys)
+
+    def _trace_ids_by_ids_stmt(self, model: type[Any], ids: list[int]) -> Any | None:
+        columns = cast("Any", model).__table__.c
+        return select(columns.trace_id).where(columns.id.in_(ids)) if ids else None
+
+    def _session_ids_by_ids_stmt(self, model: type[Any], ids: list[int]) -> Any | None:
+        columns = cast("Any", model).__table__.c
+        return select(columns.session_id).where(columns.id.in_(ids)) if ids else None
+
     def _workline_code_stmt(self, workline_ids: list[int]) -> Any:
         columns = cast("Any", WorkLine).__table__.c
         return select(columns.line_code).where(columns.id.in_(workline_ids))
@@ -409,10 +558,14 @@ class DebugDataCleanupRepository:
 
     def _inbox_ids_stmt(self, workline_ids: list[int], session_ids: list[int], trace_ids: list[str]) -> Any | None:
         columns = cast("Any", WorklineInbox).__table__.c
+        blocked_error_conditions = [
+            columns.error_message.ilike(f"%workline_id={workline_id},%") for workline_id in workline_ids
+        ]
         condition = self._where_any(
             self._in_condition(columns.workline_id, workline_ids),
             self._in_condition(columns.session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
+            *blocked_error_conditions,
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 

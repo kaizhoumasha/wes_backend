@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 
 
 DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS = 300
+_RACK_TASK_TYPE_ALIASES = {
+    "MOVE_OUT_ACTIVE_RACK": RackTaskType.MOVE_RACK.value,
+}
 
 
 @dataclass(frozen=True)
@@ -197,7 +200,7 @@ class RackOperationService:
             )
             created_tasks.append(task)
 
-        await self._persist_operation_status(db, operation_key=operation_key)
+        await self.sync_operation_status(db, operation_key=operation_key)
         return created_tasks
 
     async def _get_or_create_operation(
@@ -309,6 +312,9 @@ class RackOperationService:
         return RackOperationStatus.SUCCEEDED.value
 
     async def _persist_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
+        return await self.sync_operation_status(db, operation_key=operation_key)
+
+    async def sync_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
         """在同一事务中回写 RackOperation 派生状态。"""
 
         operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
@@ -380,7 +386,8 @@ class RackOperationService:
         sequence_no = _required_int(task_spec.get("sequence_no"), "task_specs[].sequence_no")
         if sequence_no <= 0:
             raise ValueError("rack operation task_specs sequence_no must be greater than 0")
-        task_type = _rack_task_type(task_spec.get("task_type"))
+        raw_task_type = enum_value(task_spec.get("task_type"))
+        task_type = _rack_task_type(raw_task_type)
         rack_code = coerce_optional_str(task_spec.get("rack_code"))
         rack_kind = coerce_optional_str(task_spec.get("rack_kind"))
         source_position_code = coerce_optional_str(task_spec.get("source_position_code"))
@@ -391,7 +398,9 @@ class RackOperationService:
         raw_actions = task_spec.get("actions_json")
         actions_json = dict(raw_actions) if isinstance(raw_actions, Mapping) else {}
         required = bool(task_spec.get("required", actions_json.get("required", True)))
-        actions_json.setdefault("action", task_type)
+        actions_json.setdefault("action", str(raw_task_type or task_type))
+        if actions_json.get("action") != task_type:
+            actions_json.setdefault("task_type", task_type)
         actions_json["required"] = required
 
         raw_request = task_spec.get("request_json")
@@ -974,6 +983,8 @@ def _rack_kind_value(value: Any) -> str | None:
 
 def _rack_task_type(value: Any) -> str:
     raw_value = enum_value(value)
+    if raw_value in _RACK_TASK_TYPE_ALIASES:
+        return _RACK_TASK_TYPE_ALIASES[raw_value]
     try:
         return RackTaskType(str(raw_value)).value
     except ValueError as exc:

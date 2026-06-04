@@ -128,6 +128,15 @@ class RecordingHandlingOperationService:
         )
 
 
+class RecordingRackOperationStatusService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def sync_operation_status(self, db: Any, *, operation_key: str) -> str:
+        self.calls.append({"db": db, "operation_key": operation_key})
+        return "SUCCEEDED"
+
+
 @pytest.mark.asyncio
 async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, Any]] = []
@@ -281,6 +290,38 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_resource_fact_syncs_waiting_rack_operation_status() -> None:
+    session = _session(
+        context_json={
+            "waiting_rack_operation_key": "rack-operation:trace-runtime",
+            "rack_operation": {"operation_key": "rack-operation:trace-runtime", "status": "PENDING"},
+        }
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService()
+    rack_operation_service = RecordingRackOperationStatusService()
+
+    await RuntimeIntentEffectApplier(
+        resource_projection_service=resource_projection,
+        rack_operation_service=rack_operation_service,
+    ).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="RACK_ARRIVED",
+                payload={"rack_code": "RACK-3CELL-001", "position_code": "SINGLE_LAYER_A"},
+                idempotency_key="RACK_ARRIVED:rack-operation:trace-runtime",
+            )
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
+    assert rack_operation_service.calls == [
+        {"db": ctx["db"], "operation_key": "rack-operation:trace-runtime"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session(context_json={"pkg_id": "PKG-001"})
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
@@ -306,8 +347,50 @@ async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: py
 
     assert resource_projection.calls[0]["fact_type"] == "RACK_ARRIVED"
     assert session.context_json == {"pkg_id": "PKG-001"}
-    assert session.status == "WAITING_DEVICE_RESULT"
+    assert session.status == "MANUAL_HOLD"
+    assert session.failure_code == "RESOURCE_PROJECTION_RECONCILING"
     record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconciling_resource_fact_moves_session_to_manual_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(context_json={"pkg_id": "PKG-001"})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    persist_manual_hold = AsyncMock()
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        persist_manual_hold,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="BIN_MOUNTED",
+                payload={"rack_code": "RACK-3CELL-001", "bin_mounts": []},
+                idempotency_key="BIN_MOUNTED:conflict",
+            ),
+            RuntimeIntent.complete({"material_mounted": True}),
+        ],
+    )
+
+    assert session.status == "MANUAL_HOLD"
+    assert session.current_wait_type is None
+    assert session.failure_domain == "RESOURCE_RECONCILIATION"
+    assert session.failure_code == "RESOURCE_PROJECTION_RECONCILING"
+    assert session.failure_message == "资源事实投影进入调和状态，等待人工处理 RuntimeHold"
+    persist_manual_hold.assert_awaited_once_with(
+        ctx["db"],
+        session_id=session.id,
+        occurred_at=ctx["now"],
+        failure_domain="RESOURCE_RECONCILIATION",
+        failure_code="RESOURCE_PROJECTION_RECONCILING",
+        failure_message="资源事实投影进入调和状态，等待人工处理 RuntimeHold",
+    )
 
 
 @pytest.mark.asyncio
@@ -956,6 +1039,69 @@ async def test_rack_operation_request_stores_operation_wait_fields(
     assert operation_calls[0]["trace_id"] == "trace-runtime"
     assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
     assert session.context_json["rack_operation"]["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_rack_operation_request_carries_material_context_into_task_specs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation_calls: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, _db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append(kwargs)
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type="ALLOCATE_AND_MOVE_RACK",
+                    dispatch_key="rack-operation:rack-operation:trace-runtime:1:ALLOCATE_AND_MOVE_RACK",
+                    actions_json={"required": True},
+                    rack_code=None,
+                )
+            ]
+
+    async def capture_timeline(_ctx: dict[str, Any], **_kwargs: Any) -> None:
+        return None
+
+    material = {
+        "HHPN": "IC001",
+        "LotCode": "LOT-I",
+        "DateCode": "20260413",
+        "PkgID": "PKG-IC001-LOT-I-001",
+        "reel_diameter": "330.0",
+        "reel_thickness": "24.0",
+    }
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="WMS_RCS_RACK_OPERATION",
+                payload={
+                    "material": material,
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                        }
+                    ],
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert operation_calls[0]["task_specs"][0]["request_json"]["material"] == material
 
 
 @pytest.mark.asyncio

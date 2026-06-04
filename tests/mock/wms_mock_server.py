@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import logging
 import os
+import re
 import sys
 
 # 添加项目根目录到 sys.path
@@ -95,7 +96,13 @@ MOCK_RACKS = {
         "rack_type": "SINGLE_LAYER",
         "status": "AVAILABLE",
         "current_location": "KITTING_AREA_LOC_01",
-    }
+    },
+    "RACK-3CELL-001": {
+        "rack_id": "RACK-3CELL-001",
+        "rack_type": "SINGLE_LAYER",
+        "status": "AVAILABLE",
+        "current_location": "KITTING_AREA_LOC_01",
+    },
 }
 
 MOCK_INVENTORY = mock_wms_inventory_seed()
@@ -112,6 +119,22 @@ RACK_STATUS_CALLBACK_TYPES = {
     "RCS_RACK_EXCHANGE_PROGRESS",
 }
 RACK_STATUS_FIELDS = ("task_status", "status", "result", "external_status")
+SEVEN_INCH_BIN_CELL_INDEXES = ("1", "2", "3", "4", "5", "6")
+THREE_CELL_BIN_CELL_INDEXES = ("1", "2", "7")
+THREE_CELL_LARGE_BIN_CELL_INDEX = "7"
+RACK_SLOT_CODES = ("A", "B", "C", "D")
+RACK_PHYSICAL_LAYOUTS = {
+    "RACK-001": {
+        "bin_type": "6格箱",
+        "bin_prefix": "BIN",
+        "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
+    },
+    "RACK-3CELL-001": {
+        "bin_type": "3格箱",
+        "bin_prefix": "BIN-3CELL-001",
+        "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
+    },
+}
 
 MOCK_GRNS = {
     "GRN.0001": {
@@ -208,12 +231,17 @@ def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
     target_position_code = payload.get("target_position_code") or "SINGLE_LAYER_A"
     callback_type = str(payload.get("callback_type") or "WMS_RACK_ARRIVED")
     timestamp = _now_ms()
-    rack_code = str(payload.get("rack_code") or "RACK-001")
     source_key = dispatch_key or operation_key or repr(sorted(payload.items()))
     source_event_hash = hashlib.sha256(source_key.encode()).hexdigest()[:16]
+    required_bin_type = _rack_operation_supplied_bin_type(payload)
+    rack_code = _rack_operation_rack_code(payload, required_bin_type)
+    layout = RACK_PHYSICAL_LAYOUTS[rack_code]
+    bin_type = str(layout["bin_type"])
+    bin_prefix = str(layout["bin_prefix"])
+    cell_indexes = tuple(layout["cell_indexes"])
     bin_mounts = [
-        {"rack_code": rack_code, "rack_slot_code": slot_code, "bin_code": f"BIN-00{index}"}
-        for index, slot_code in enumerate(("A", "B", "C", "D"), start=1)
+        {"rack_code": rack_code, "rack_slot_code": slot_code, "bin_code": f"{bin_prefix}-{index:03d}"}
+        for index, slot_code in enumerate(RACK_SLOT_CODES, start=1)
     ]
     cells = [
         {
@@ -221,16 +249,16 @@ def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "rack_slot_location_code": f"{rack_code}-1{mount['rack_slot_code']}-0",
             "bin_code": mount["bin_code"],
             "bin_id": mount["bin_code"],
-            "bin_type": "6格箱",
+            "bin_type": bin_type,
             "bin_orientation_code": f"{mount['bin_code']}-A",
-            "bin_cell_index": str(cell_index),
+            "bin_cell_index": cell_index,
             "bin_cell_location": f"{mount['bin_code']}-{cell_index}",
-            "capacity_depth_mm": 20.0,
+            "capacity_depth_mm": _rack_operation_cell_capacity_depth(bin_type, cell_index),
             "used_depth_mm": 0.0,
             "status": "EMPTY",
         }
         for mount in bin_mounts
-        for cell_index in range(1, 7)
+        for cell_index in cell_indexes
     ]
     callback_payload = {
         **payload,
@@ -264,6 +292,73 @@ def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
         callback_payload["task_status"] = "SUCCESS"
         callback_payload["result"] = "SUCCESS"
     return callback_payload
+
+
+def _rack_operation_supplied_bin_type(payload: dict[str, Any]) -> str:
+    material = payload.get("material")
+    if isinstance(material, dict) and _is_large_reel_material(material):
+        return "3格箱"
+    return "6格箱"
+
+
+def _rack_operation_default_rack_code(bin_type: str) -> str:
+    if bin_type == "3格箱":
+        return "RACK-3CELL-001"
+    return "RACK-001"
+
+
+def _rack_operation_rack_code(payload: dict[str, Any], required_bin_type: str) -> str:
+    requested_rack_code = str(payload.get("rack_code") or "").strip()
+    if requested_rack_code:
+        layout = RACK_PHYSICAL_LAYOUTS.get(requested_rack_code)
+        if layout is not None and layout["bin_type"] == required_bin_type:
+            return requested_rack_code
+    return _rack_operation_default_rack_code(required_bin_type)
+
+
+def _is_large_reel_material(material: dict[str, Any]) -> bool:
+    if _has_large_reel_size(material):
+        return True
+
+    material_id = (
+        material.get("material_id")
+        or material.get("material_code")
+        or material.get("sku")
+        or material.get("HHPN")
+        or material.get("hhpn")
+    )
+    if material_id is not None:
+        catalog_material = MOCK_MATERIALS.get(str(material_id))
+        if isinstance(catalog_material, dict) and _has_large_reel_size(catalog_material):
+            return True
+
+    return False
+
+
+def _has_large_reel_size(material: dict[str, Any]) -> bool:
+    value = material.get("reel_diameter") or material.get("standard_reel_diameter") or material.get("diameter")
+    if value is None:
+        value = material.get("reel_size") or material.get("standard_dims")
+    if value is None:
+        return False
+
+    text = str(value).strip().lower()
+    inch_match = re.search(r"(?<!\d)(13|15)(?:\.0+)?\s*(?:in|inch|英寸)?(?!\d)", text)
+    if inch_match is not None:
+        return True
+    try:
+        diameter = float(text)
+    except ValueError:
+        return False
+    if 10 <= diameter <= 20:
+        return True
+    return diameter > 220
+
+
+def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float:
+    if bin_type == "3格箱" and cell_index == THREE_CELL_LARGE_BIN_CELL_INDEX:
+        return 80.0
+    return 20.0
 
 
 async def _report_rack_operation_arrived(payload: dict[str, Any]) -> None:

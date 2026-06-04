@@ -66,6 +66,19 @@ class SessionResolveError(ValueError):
     """Session 归属解析失败。"""
 
 
+class WorklineEntryAdmissionBlocked(SessionResolveError):
+    """工作线存在未完成物料，新的入口物料需要等待串行准入。"""
+
+    def __init__(self, *, workline_id: int, business_key: str, blocker_session_id: int | None) -> None:
+        self.workline_id = workline_id
+        self.business_key = business_key
+        self.blocker_session_id = blocker_session_id
+        super().__init__(
+            "Workline entry admission blocked by busy session: "
+            f"workline_id={workline_id}, business_key={business_key}, blocker_session_id={blocker_session_id}"
+        )
+
+
 class SessionIngressMetadata(TypedDict):
     """复用 session 时的 ingress 元数据补丁。"""
 
@@ -134,6 +147,18 @@ async def _lock_device_event_business_key(db: Any, *, workline_id: int, business
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
         {"lock_key": f"workline-session:{workline_id}:{business_key}"},
+    )
+
+
+async def _lock_workline_entry_admission(db: Any, *, workline_id: int) -> None:
+    """串行化同一工作线不同物料的入口准入窗口。"""
+
+    if _dialect_name(db) != "postgresql":
+        return
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"workline-entry-admission:{workline_id}"},
     )
 
 
@@ -255,6 +280,23 @@ def _resolve_workline_contract_version(workline: "WorkLine | None") -> str | Non
     plugin_key = getattr(workline, "plugin_key", None)
     contract_version = get_plugin_contract_version(plugin_key)
     return contract_version if isinstance(contract_version, str) and contract_version else None
+
+
+async def _find_entry_admission_blocker_session(
+    db: AsyncSession,
+    *,
+    workline_id: int,
+    business_key: str,
+    session_repo: WorklineSessionRepository | None = None,
+) -> WorklineSession | None:
+    """查找阻塞新入口物料的工作线未完成会话。"""
+
+    repo = session_repo or workline_session_repository
+    return await repo.get_open_entry_blocker_for_workline(
+        db,
+        workline_id=workline_id,
+        business_key=business_key,
+    )
 
 
 class SessionResolver:
@@ -388,6 +430,20 @@ class SessionResolver:
 
         if latest_session and latest_session.ended_at:
             return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=now)
+
+        await _lock_workline_entry_admission(db, workline_id=workline_id)
+        blocker = await _find_entry_admission_blocker_session(
+            db,
+            workline_id=workline_id,
+            business_key=business_key,
+            session_repo=self.session_repo,
+        )
+        if blocker is not None:
+            raise WorklineEntryAdmissionBlocked(
+                workline_id=workline_id,
+                business_key=business_key,
+                blocker_session_id=getattr(blocker, "id", None),
+            )
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
@@ -660,6 +716,7 @@ session_resolver = SessionResolver()
 __all__ = [
     "SessionResolveError",
     "SessionResolver",
+    "WorklineEntryAdmissionBlocked",
     "reapply_pending_session_ingress_metadata",
     "session_resolver",
 ]

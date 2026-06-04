@@ -171,6 +171,39 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
+    async def get_open_entry_blocker_for_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        business_key: str,
+    ) -> WorklineSession | None:
+        """查询阻塞新入口物料的同工作线未结束会话。
+
+        同 business_key 的入口仍交给重复/迟到事件归档逻辑处理；这里仅阻塞
+        其它物料新建 session，保证工作线串行推进。
+        """
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            "NEW",
+            "RUNNING",
+            "WAITING_DEVICE_RESULT",
+            "WAITING_EXTERNAL",
+            "MANUAL_HOLD",
+        ]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+                or_(columns.business_key.is_(None), columns.business_key != business_key),
+            )
+            .order_by(columns.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_trace_id(
         self,
         db: AsyncSession,

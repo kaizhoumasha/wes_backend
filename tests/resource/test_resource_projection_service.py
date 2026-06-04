@@ -1600,6 +1600,41 @@ async def test_record_bin_mounted_to_rack_conflict_creates_hold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_bin_mounted_to_rack_same_active_mount_is_idempotent() -> None:
+    runtime_holds = RecordingRuntimeHoldCreator()
+    snapshots = RecordingResourceSnapshotService()
+    active_mount = _rack_bin_mount(rack_code="RACK-001", rack_slot_code="A", bin_code="BIN-001")
+    rack_bins = RecordingRackBinMountRepo(active_by_slot=active_mount, active_by_bin=active_mount)
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_bin_mount_repo=rack_bins,
+        runtime_hold_creator=runtime_holds,
+        snapshot_service=snapshots,
+    )
+
+    result = await service.record_bin_mounted_to_rack(
+        SimpleNamespace(),
+        rack_code="RACK-001",
+        bin_mounts=[{"rack_slot_code": "A", "bin_code": "BIN-001"}],
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-MOUNTED-001",
+        idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        session_id="2001",
+        workline_id=1001,
+        workline_session_id=2001,
+        plugin_key="test_workline_plugin",
+        contract_version="1.0",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert rack_bins.created == []
+    assert runtime_holds.created == []
+    assert snapshots.empty_rack_calls[0]["bin_mounts"] == [{"rack_slot_code": "A", "bin_code": "BIN-001"}]
+
+
+@pytest.mark.asyncio
 async def test_record_bin_mounted_to_rack_conflict_on_later_mount_does_not_create_partial_projection() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     rack_bins = RecordingRackBinMountRepo(

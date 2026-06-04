@@ -16,12 +16,19 @@ from src.app.handling.models.operation import (
 )
 from src.app.rack.models import RackOperation, RackTask, RackTaskStatus, RackTaskType
 from src.app.resource.models.resource import (
+    BinCellOccupancy,
+    BinCellOccupancyStatus,
     BinContentSnapshot,
     BinContentSnapshotItem,
+    BinMaterialMount,
+    BinMaterialMountStatus,
+    RackBinMount,
+    RackBinMountStatus,
     ResourceSourceSystem,
     ResourceStateEvent,
     ResourceStateEventType,
     ResourceType,
+    WmsConfirmationStatus,
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.wms_integration.models.evidence import WmsCallEvidence
@@ -61,8 +68,9 @@ async def _create_debug_cleanup_graph(db_session):
         device_name="调试清理设备",
         work_line_id=workline.id,
         device_role="ROBOT_ARM",
-        device_status=DeviceStatus.RUNNING,
-        error_code="DEBUG_BUSY",
+        device_status=DeviceStatus.MAINTENANCE,
+        error_code="MANUAL_MAINTENANCE",
+        maintenance_mode=True,
     )
     db_session.add(device)
     await db_session.flush()
@@ -98,6 +106,20 @@ async def _create_debug_cleanup_graph(db_session):
         trace_id=session.trace_id,
         event_id="event-debug-cleanup-auto",
         payload_json={"source": "test"},
+    )
+    pending_inbox = WorklineInbox(
+        kind=InboxKind.DEVICE_EVENT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id="device:event:debug-cleanup-pending",
+        workline_id=None,
+        session_id=None,
+        trace_id="trace-debug-cleanup-pending",
+        event_id="event-debug-cleanup-pending",
+        payload_json={"source": "test"},
+        status="RETRY",
+        error_message=(
+            f"Workline entry admission blocked by busy session: workline_id={workline.id}, business_key=DEBUG-PENDING"
+        ),
     )
     outbox = SystemOutbox(
         session_id=session.id,
@@ -208,6 +230,49 @@ async def _create_debug_cleanup_graph(db_session):
         occurred_at=timezone.now_for_db(),
         received_at=timezone.now_for_db(),
     )
+    rack_bin_mount = RackBinMount(
+        rack_code="RACK-DEBUG-CLEANUP",
+        rack_slot_code="A",
+        bin_code="BIN-DEBUG-CLEANUP",
+        mount_status=RackBinMountStatus.MOUNTED,
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="resource-rack-bin-mount-debug-cleanup",
+        trace_id=session.trace_id,
+        session_id=str(session.id),
+        started_at=timezone.now_for_db(),
+    )
+    bin_cell_occupancy = BinCellOccupancy(
+        bin_code="BIN-DEBUG-CLEANUP",
+        bin_cell_index="1",
+        material_identity_key="CAP001|LOT-A|DC-A",
+        material_code="CAP001",
+        lot_code="LOT-A",
+        reel_count=1,
+        used_depth_mm=15,
+        capacity_depth_mm=80,
+        remaining_depth_mm=65,
+        occupancy_status=BinCellOccupancyStatus.OCCUPIED,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="resource-bin-cell-occupancy-debug-cleanup",
+        trace_id=session.trace_id,
+        session_id=str(session.id),
+        started_at=timezone.now_for_db(),
+    )
+    bin_material_mount = BinMaterialMount(
+        bin_code="BIN-DEBUG-CLEANUP",
+        bin_cell_index="1",
+        material_identity_key="CAP001|LOT-A|DC-A",
+        pkg_code="PKG-DEBUG-CLEANUP-MOUNT",
+        material_code="CAP001",
+        lot_code="LOT-A",
+        wms_confirmation_status=WmsConfirmationStatus.CONFIRMED,
+        mount_status=BinMaterialMountStatus.OCCUPIED,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="resource-bin-material-mount-debug-cleanup",
+        trace_id=session.trace_id,
+        session_id=str(session.id),
+        started_at=timezone.now_for_db(),
+    )
     snapshot = BinContentSnapshot(
         snapshot_id="debug-cleanup-snapshot",
         bin_code="BIN-DEBUG-CLEANUP",
@@ -231,6 +296,16 @@ async def _create_debug_cleanup_graph(db_session):
         response_status=200,
         response_time_ms=3,
     )
+    pending_callback_log = CallbackLog(
+        callback_type="event",
+        subject_code=device.device_code,
+        request_body={"event_id": pending_inbox.event_id},
+        request_id="req-debug-cleanup-pending",
+        trace_id=pending_inbox.trace_id,
+        event_id=pending_inbox.event_id,
+        response_status=200,
+        response_time_ms=3,
+    )
     wms_evidence = WmsCallEvidence(
         evidence_key="debug-cleanup-wms-evidence",
         operation_name="debug-cleanup",
@@ -241,7 +316,20 @@ async def _create_debug_cleanup_graph(db_session):
         response_snapshot={},
         request_hash="a" * 64,
     )
-    db_session.add_all([resource_event, snapshot, snapshot_item, callback_log, wms_evidence])
+    db_session.add_all(
+        [
+            pending_inbox,
+            resource_event,
+            rack_bin_mount,
+            bin_cell_occupancy,
+            bin_material_mount,
+            snapshot,
+            snapshot_item,
+            callback_log,
+            pending_callback_log,
+            wms_evidence,
+        ]
+    )
     await db_session.flush()
 
     return {
@@ -260,11 +348,16 @@ async def _create_debug_cleanup_graph(db_session):
             HandlingMove: handling_move.id,
             HandlingStep: handling_step.id,
             ResourceStateEvent: resource_event.id,
+            RackBinMount: rack_bin_mount.id,
+            BinMaterialMount: bin_material_mount.id,
+            BinCellOccupancy: bin_cell_occupancy.id,
             BinContentSnapshot: snapshot.id,
             BinContentSnapshotItem: snapshot_item.id,
             CallbackLog: callback_log.id,
             WmsCallEvidence: wms_evidence.id,
         },
+        "pending_inbox_id": pending_inbox.id,
+        "pending_callback_log_id": pending_callback_log.id,
         "other_session_id": other_session.id,
     }
 
@@ -307,7 +400,7 @@ async def test_preview_workline_counts_non_simulation_process_data(db_session) -
     assert result.affected_workline_ids == [graph["workline_id"]]
     assert result.affected_session_ids == [graph["ids"][WorklineSession]]
     assert result.counts["sessions"] == 1
-    assert result.counts["inboxes"] == 1
+    assert result.counts["inboxes"] == 2
     assert result.counts["outboxes"] == 1
     assert result.counts["commands"] == 1
     assert result.counts["rack_operations"] == 1
@@ -318,7 +411,7 @@ async def test_preview_workline_counts_non_simulation_process_data(db_session) -
     assert result.counts["resource_state_events"] == 1
     assert result.counts["bin_content_snapshots"] == 1
     assert result.counts["bin_content_snapshot_items"] == 1
-    assert result.counts["callback_logs"] == 1
+    assert result.counts["callback_logs"] == 2
     assert result.counts["wms_call_evidence"] == 1
 
 
@@ -339,12 +432,15 @@ async def test_cleanup_workline_deletes_process_data_and_preserves_source_data(d
     assert await db_session.get(WorkLine, graph["other_workline_id"]) is not None
     for model, item_id in graph["ids"].items():
         assert await db_session.get(model, item_id) is None
+    assert await db_session.get(WorklineInbox, graph["pending_inbox_id"]) is None
+    assert await db_session.get(CallbackLog, graph["pending_callback_log_id"]) is None
     assert await db_session.get(WorklineSession, graph["other_session_id"]) is not None
 
     device = await db_session.get(Device, graph["device_id"])
     assert device.current_command_id is None
-    assert device.device_status == DeviceStatus.RUNNING
-    assert device.error_code == "DEBUG_BUSY"
+    assert device.device_status == DeviceStatus.MAINTENANCE
+    assert device.error_code == "MANUAL_MAINTENANCE"
+    assert device.maintenance_mode is True
 
     workline = await db_session.get(WorkLine, graph["workline_id"])
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
@@ -386,6 +482,97 @@ async def test_cleanup_all_requires_fixed_confirmation_and_clears_all_worklines(
     assert remaining_sessions == []
     assert await db_session.get(WorkLine, graph["workline_id"]) is not None
     assert await db_session.get(WorkLine, graph["other_workline_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_all_clears_orphan_process_resource_projections(db_session) -> None:
+    orphan_mount = RackBinMount(
+        rack_code="RACK-DEBUG-CLEANUP-ORPHAN",
+        rack_slot_code="A",
+        bin_code="BIN-DEBUG-CLEANUP-ORPHAN",
+        mount_status=RackBinMountStatus.MOUNTED,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="resource-rack-bin-mount-debug-cleanup-orphan",
+        trace_id="trace-debug-cleanup-orphan",
+        session_id="999",
+        started_at=timezone.now_for_db(),
+    )
+    wms_orphan_mount = RackBinMount(
+        rack_code="RACK-DEBUG-CLEANUP-WMS",
+        rack_slot_code="A",
+        bin_code="BIN-DEBUG-CLEANUP-WMS",
+        mount_status=RackBinMountStatus.MOUNTED,
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="resource-rack-bin-mount-debug-cleanup-wms",
+        trace_id="trace-debug-cleanup-wms",
+        session_id="1000",
+        started_at=timezone.now_for_db(),
+    )
+    orphan_callback = CallbackLog(
+        callback_type="event",
+        subject_code="RS-INPUT-ARM-01",
+        request_body={"event_id": "event-debug-cleanup-orphan"},
+        request_id="req-debug-cleanup-orphan",
+        trace_id="trace-debug-cleanup-orphan",
+        event_id="event-debug-cleanup-orphan",
+        response_status=200,
+        response_time_ms=3,
+    )
+    empty_callback = CallbackLog(
+        callback_type="event",
+        subject_code="UNKNOWN",
+        request_body={},
+        request_id="req-debug-cleanup-empty",
+        response_status=200,
+        response_time_ms=3,
+    )
+    db_session.add_all([orphan_mount, wms_orphan_mount, orphan_callback, empty_callback])
+    await db_session.flush()
+    orphan_mount_id = orphan_mount.id
+    wms_orphan_mount_id = wms_orphan_mount.id
+    orphan_callback_id = orphan_callback.id
+    empty_callback_id = empty_callback.id
+
+    result = await debug_data_cleanup_service.cleanup_all(db_session, confirmation="CLEAR-ALL-DEBUG-DATA")
+    db_session.expire_all()
+
+    assert result.counts["rack_bin_mounts"] == 1
+    assert result.counts["callback_logs"] == 1
+    assert await db_session.get(RackBinMount, orphan_mount_id) is None
+    assert await db_session.get(RackBinMount, wms_orphan_mount_id) is not None
+    assert await db_session.get(CallbackLog, orphan_callback_id) is None
+    assert await db_session.get(CallbackLog, empty_callback_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_workline_does_not_match_pending_inbox_for_workline_id_prefix(db_session) -> None:
+    graph = await _create_debug_cleanup_graph(db_session)
+    confusing_inbox = WorklineInbox(
+        kind=InboxKind.DEVICE_EVENT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id="device:event:debug-cleanup-confusing-workline",
+        workline_id=None,
+        session_id=None,
+        trace_id="trace-debug-cleanup-confusing",
+        event_id="event-debug-cleanup-confusing",
+        payload_json={"source": "test"},
+        status="RETRY",
+        error_message=(
+            f"Workline entry admission blocked by busy session: workline_id={graph['workline_id']}0, business_key=X"
+        ),
+    )
+    db_session.add(confusing_inbox)
+    await db_session.flush()
+    confusing_inbox_id = confusing_inbox.id
+
+    _ = await debug_data_cleanup_service.cleanup_workline(
+        db_session,
+        workline_id=graph["workline_id"],
+        confirmation=graph["workline_code"],
+    )
+    db_session.expire_all()
+
+    assert await db_session.get(WorklineInbox, confusing_inbox_id) is not None
 
 
 def test_debug_data_cleanup_service_exports_are_available() -> None:
