@@ -1218,7 +1218,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     assert command.result == "SUCCESS"
     assert command.result_data == {"item_id": "ITEM-001"}
     mock_device_service.mark_command_finished.assert_awaited_once()
-    outbox_repo.release_blocked_by_device.assert_awaited_once_with(db, device_id=7)
+    outbox_repo.release_blocked_by_device.assert_not_awaited()
     assert inbox_repo.created is not None
     result_payload = inbox_repo.created["payload_json"]
     assert result_payload["command_code"] == "CMD-001"

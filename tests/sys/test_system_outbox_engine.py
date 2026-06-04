@@ -9,14 +9,17 @@ import pytest
 
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.services import SystemOutboxEngine as SystemOutboxDispatcher
+from src.app.workline.services.device_command_gateway import _DeviceCommandGovernanceError
 
 
 class FakeSystemOutboxRepository:
     def __init__(self, messages: list[Any]) -> None:
         self.messages = messages
+        self.block_resource_wait_returns_none = False
         self.mark_dispatching_calls: list[int] = []
         self.mark_sent_calls: list[int] = []
         self.mark_failed_calls: list[tuple[int, str, int]] = []
+        self.blocked_resource_calls: list[dict[str, Any]] = []
         self.pending_filters: list[dict[str, Any]] = []
 
     async def get_pending_messages(
@@ -68,6 +71,39 @@ class FakeSystemOutboxRepository:
             if message.id == outbox_id:
                 message.status = SystemOutboxStatus.NEW
                 message.last_error = error
+                return message
+        return None
+
+    async def mark_as_blocked_by_device_busy(
+        self,
+        _db: Any,
+        outbox_id: int,
+        *,
+        blocked_device_id: int | None,
+        blocked_workline_id: int | None = None,
+        reason: str = "DEVICE_BUSY",
+        last_error: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> Any | None:
+        call = {
+            "outbox_id": outbox_id,
+            "blocked_device_id": blocked_device_id,
+            "blocked_workline_id": blocked_workline_id,
+            "reason": reason,
+            "last_error": last_error,
+            "detail": dict(detail or {}),
+        }
+        self.blocked_resource_calls.append(call)
+        if self.block_resource_wait_returns_none:
+            return None
+        for message in self.messages:
+            if message.id == outbox_id:
+                message.status = SystemOutboxStatus.BLOCKED_RESOURCE
+                message.blocked_reason = reason
+                message.blocked_device_id = blocked_device_id
+                message.blocked_workline_id = blocked_workline_id
+                message.last_error = last_error
+                message.blocked_detail_json = dict(detail or {})
                 return message
         return None
 
@@ -223,3 +259,101 @@ async def test_system_outbox_dispatcher_delegates_device_command_to_device_gatew
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_parks_device_command_resource_wait() -> None:
+    message = _outbox(
+        id=6,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        target_code="ARM01",
+        workline_id=45,
+        blocked_detail_json={},
+    )
+    repo = FakeSystemOutboxRepository([message])
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
+        raise _DeviceCommandGovernanceError(
+            domain="ORCHESTRATION",
+            code="DEVICE_BUSY",
+            message="设备 ARM01 实时状态忙，拒绝命令派发",
+            device_id=7,
+            device_code="ARM01",
+            detail={"device_code": "ARM01", "last_probe_result": "BUSY"},
+        )
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=fake_device_dispatcher,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
+
+    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+    assert repo.mark_failed_calls == []
+    assert repo.blocked_resource_calls == [
+        {
+            "outbox_id": 6,
+            "blocked_device_id": 7,
+            "blocked_workline_id": 45,
+            "reason": "DEVICE_BUSY",
+            "last_error": "设备 ARM01 实时状态忙，拒绝命令派发",
+            "detail": {"device_code": "ARM01", "last_probe_result": "BUSY"},
+        }
+    ]
+    assert message.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert message.blocked_reason == "DEVICE_BUSY"
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_reraises_non_resource_wait_runtime_error() -> None:
+    message = _outbox(id=7, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND)
+    repo = FakeSystemOutboxRepository([message])
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
+        raise RuntimeError("device gateway exploded")
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=fake_device_dispatcher,
+    )
+
+    with pytest.raises(RuntimeError, match="device gateway exploded"):
+        await dispatcher.dispatch(db, limit=10)
+
+    assert repo.mark_failed_calls == []
+    assert repo.blocked_resource_calls == []
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_counts_resource_wait_fencing_as_skipped() -> None:
+    message = _outbox(id=8, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND, workline_id=45)
+    repo = FakeSystemOutboxRepository([message])
+    repo.block_resource_wait_returns_none = True
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
+        raise _DeviceCommandGovernanceError(
+            domain="ORCHESTRATION",
+            code="DEVICE_STATUS_PRECHECK_WAIT",
+            message="设备 ARM01 实时状态查询暂不可用",
+            device_id=7,
+            device_code="ARM01",
+            detail={"device_code": "ARM01", "last_probe_result": "STATUS_WAIT"},
+        )
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=fake_device_dispatcher,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
+
+    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+    assert repo.mark_failed_calls == []
+    assert repo.blocked_resource_calls[0]["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"

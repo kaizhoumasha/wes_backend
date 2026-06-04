@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus
 from src.database.base_repository import BaseRepository
@@ -22,6 +22,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     """系统级发件箱数据访问层。"""
 
     DISPATCH_LEASE_SECONDS = 300
+    RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS = 2
+    DEVICE_RESOURCE_WAIT_REASONS = ("DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT")
 
     def __init__(self) -> None:
         super().__init__(SystemOutbox)
@@ -46,24 +48,27 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         """
 
         columns = cast("Any", SystemOutbox).__table__.c
+        current_device = self._device_resolution_alias("current_pending_outbox_device")
         older_outbox = cast("Any", SystemOutbox).__table__.alias("older_device_outbox")
+        older_device = self._device_resolution_alias("older_pending_outbox_device")
         now = timezone.now_for_db()
         active_device_statuses = [
             SystemOutboxStatus.NEW,
             SystemOutboxStatus.DISPATCHING,
             SystemOutboxStatus.BLOCKED_RESOURCE,
         ]
-        same_physical_device = or_(
-            and_(columns.device_id.isnot(None), older_outbox.c.device_id == columns.device_id),
-            and_(
-                columns.device_id.is_(None),
-                older_outbox.c.device_id.is_(None),
-                older_outbox.c.target_code == columns.target_code,
-            ),
+        same_physical_device = self._same_physical_device_predicate(
+            current_columns=columns,
+            current_device=current_device,
+            other_columns=older_outbox.c,
+            other_device=older_device,
+        )
+        older_device_from = older_outbox.outerjoin(
+            older_device, self._device_resolution_join_condition(older_outbox.c, older_device)
         )
         earlier_active_device_outbox_exists = exists(
             select(1)
-            .select_from(older_outbox)
+            .select_from(older_device_from)
             .where(
                 older_outbox.c.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
                 older_outbox.c.status.in_(active_device_statuses),
@@ -75,14 +80,15 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             )
         )
 
-        domain_predicates: list[Any] = []
-        if operation_domains:
-            domain_predicates.append(columns.operation_domain.in_(tuple(operation_domains)))
-        if exclude_operation_domains:
-            domain_predicates.append(columns.operation_domain.not_in(tuple(exclude_operation_domains)))
+        domain_predicates = self._operation_domain_predicates(
+            columns,
+            operation_domains=operation_domains,
+            exclude_operation_domains=exclude_operation_domains,
+        )
 
         result = await db.execute(
             select(SystemOutbox)
+            .outerjoin(current_device, self._device_resolution_join_condition(columns, current_device))
             .where(
                 or_(
                     and_(
@@ -99,6 +105,72 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     columns.dispatch_type != SystemOutboxDispatchType.DEVICE_COMMAND,
                     ~earlier_active_device_outbox_exists,
                 ),
+                *domain_predicates,
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_probeable_blocked_device_heads(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+        *,
+        min_probe_interval_seconds: int = 2,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> list[SystemOutbox]:
+        """获取可重新探测 ECS admission 的 blocked 设备队首 outbox。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        current_device = self._device_resolution_alias("current_blocked_outbox_device")
+        older_outbox = cast("Any", SystemOutbox).__table__.alias("older_blocked_device_outbox")
+        older_device = self._device_resolution_alias("older_blocked_outbox_device")
+        now = timezone.now_for_db()
+        probe_cutoff = now - timedelta(seconds=min_probe_interval_seconds)
+        active_device_statuses = [
+            SystemOutboxStatus.NEW,
+            SystemOutboxStatus.DISPATCHING,
+            SystemOutboxStatus.BLOCKED_RESOURCE,
+        ]
+        same_physical_device = self._same_physical_device_predicate(
+            current_columns=columns,
+            current_device=current_device,
+            other_columns=older_outbox.c,
+            other_device=older_device,
+        )
+        older_device_from = older_outbox.outerjoin(
+            older_device, self._device_resolution_join_condition(older_outbox.c, older_device)
+        )
+        earlier_active_device_outbox_exists = exists(
+            select(1)
+            .select_from(older_device_from)
+            .where(
+                older_outbox.c.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                older_outbox.c.status.in_(active_device_statuses),
+                same_physical_device,
+                or_(
+                    older_outbox.c.created_at < columns.created_at,
+                    and_(older_outbox.c.created_at == columns.created_at, older_outbox.c.id < columns.id),
+                ),
+            )
+        )
+        domain_predicates = self._operation_domain_predicates(
+            columns,
+            operation_domains=operation_domains,
+            exclude_operation_domains=exclude_operation_domains,
+        )
+
+        result = await db.execute(
+            select(SystemOutbox)
+            .outerjoin(current_device, self._device_resolution_join_condition(columns, current_device))
+            .where(
+                columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
+                columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                columns.blocked_reason.in_(self.DEVICE_RESOURCE_WAIT_REASONS),
+                or_(columns.last_blocked_check_at.is_(None), columns.last_blocked_check_at <= probe_cutoff),
+                ~earlier_active_device_outbox_exists,
                 *domain_predicates,
             )
             .order_by(columns.created_at.asc(), columns.id.asc())
@@ -123,6 +195,79 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             return None
 
         outbox.status = SystemOutboxStatus.DISPATCHING
+        outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
+        await db.flush()
+        return outbox
+
+    async def claim_blocked_resource_wait_for_dispatch(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        expected_reason: str,
+        *,
+        min_probe_interval_seconds: int = 2,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> SystemOutbox | None:
+        columns = cast("Any", SystemOutbox).__table__.c
+        current_device = self._device_resolution_alias("claim_blocked_outbox_device")
+        older_outbox = cast("Any", SystemOutbox).__table__.alias("older_claim_blocked_device_outbox")
+        older_device = self._device_resolution_alias("older_claim_blocked_outbox_device")
+        now = timezone.now_for_db()
+        probe_cutoff = now - timedelta(seconds=min_probe_interval_seconds)
+        active_device_statuses = [
+            SystemOutboxStatus.NEW,
+            SystemOutboxStatus.DISPATCHING,
+            SystemOutboxStatus.BLOCKED_RESOURCE,
+        ]
+        same_physical_device = self._same_physical_device_predicate(
+            current_columns=columns,
+            current_device=current_device,
+            other_columns=older_outbox.c,
+            other_device=older_device,
+        )
+        older_device_from = older_outbox.outerjoin(
+            older_device, self._device_resolution_join_condition(older_outbox.c, older_device)
+        )
+        earlier_active_device_outbox_exists = exists(
+            select(1)
+            .select_from(older_device_from)
+            .where(
+                older_outbox.c.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                older_outbox.c.status.in_(active_device_statuses),
+                same_physical_device,
+                or_(
+                    older_outbox.c.created_at < columns.created_at,
+                    and_(older_outbox.c.created_at == columns.created_at, older_outbox.c.id < columns.id),
+                ),
+            )
+        )
+        domain_predicates = self._operation_domain_predicates(
+            columns,
+            operation_domains=operation_domains,
+            exclude_operation_domains=exclude_operation_domains,
+        )
+        result = await db.execute(
+            select(SystemOutbox)
+            .outerjoin(current_device, self._device_resolution_join_condition(columns, current_device))
+            .where(
+                columns.id == outbox_id,
+                columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
+                columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                columns.blocked_reason == expected_reason,
+                columns.blocked_reason.in_(self.DEVICE_RESOURCE_WAIT_REASONS),
+                or_(columns.last_blocked_check_at.is_(None), columns.last_blocked_check_at <= probe_cutoff),
+                ~earlier_active_device_outbox_exists,
+                *domain_predicates,
+            )
+            .with_for_update(of=SystemOutbox)
+        )
+        outbox = result.scalar_one_or_none()
+        if outbox is None:
+            return None
+
+        outbox.status = SystemOutboxStatus.DISPATCHING
+        self._clear_block(outbox)
         outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
         await db.flush()
         return outbox
@@ -255,9 +400,66 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         blocked_workline_id: int | None = None,
         reason: str = "DEVICE_BUSY",
         last_error: str | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> SystemOutbox | None:
-        outbox = await self._get_active_for_block(db, outbox_id)
+        return await self.block_for_resource_wait(
+            db,
+            outbox_id,
+            reason=reason,
+            blocked_device_id=blocked_device_id,
+            blocked_workline_id=blocked_workline_id,
+            last_error=last_error,
+            detail=detail,
+        )
+
+    async def update_resource_wait_detail(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        expected_reason: str,
+        detail: dict[str, Any],
+        last_error: str | None = None,
+    ) -> SystemOutbox | None:
+        """仅更新资源等待诊断，不递增 blocked_check_count。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
         if outbox is None:
+            return None
+        if outbox.status != SystemOutboxStatus.BLOCKED_RESOURCE or outbox.blocked_reason != expected_reason:
+            return None
+        if expected_reason not in self.DEVICE_RESOURCE_WAIT_REASONS:
+            return None
+        outbox.blocked_detail_json = dict(detail)
+        if last_error is not None:
+            outbox.last_error = last_error
+        await db.flush()
+        return outbox
+
+    async def block_for_resource_wait(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        reason: str,
+        blocked_device_id: int | None,
+        blocked_workline_id: int | None = None,
+        last_error: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> SystemOutbox | None:
+        outbox = await self._get_active_for_resource_wait(db, outbox_id, reason=reason)
+        if outbox is None:
+            return None
+        now = timezone.now_for_db()
+        existing_detail = dict(outbox.blocked_detail_json or {})
+        if (
+            outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
+            and outbox.blocked_reason in self.DEVICE_RESOURCE_WAIT_REASONS
+            and outbox.last_blocked_check_at is not None
+            and outbox.last_blocked_check_at > now - timedelta(seconds=self.RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS)
+        ):
             return None
         outbox.status = SystemOutboxStatus.BLOCKED_RESOURCE
         outbox.blocked_by_reconciliation_session_id = None
@@ -266,26 +468,38 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_reason = reason
         outbox.last_error = last_error or reason
         outbox.next_retry_at = None
-        outbox.finished_at = timezone.now_for_db()
+        outbox.finished_at = now
+        if outbox.blocked_at is None:
+            outbox.blocked_at = now
+        outbox.last_blocked_check_at = now
+        outbox.blocked_check_count = (outbox.blocked_check_count or 0) + 1
+        next_detail = dict(detail or {})
+        if existing_detail.get("last_probe_result") == "escalated" and existing_detail.get("diagnostic_key"):
+            next_detail.update(
+                {
+                    "last_probe_result": "escalated",
+                    "escalated_at": existing_detail.get("escalated_at"),
+                    "diagnostic_key": existing_detail.get("diagnostic_key"),
+                }
+            )
+        outbox.blocked_detail_json = next_detail
         await db.flush()
         return outbox
 
-    async def mark_blocked_device_busy_as_sent(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+    async def get_dispatching_device_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+        *,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> list[SystemOutbox]:
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
-        outbox = result.scalar_one_or_none()
-        if outbox is None:
-            return None
-        if outbox.status != SystemOutboxStatus.BLOCKED_RESOURCE or outbox.blocked_reason != "DEVICE_BUSY":
-            return None
-        outbox.status = SystemOutboxStatus.SENT
-        outbox.sent_at = outbox.sent_at or timezone.now_for_db()
-        self._clear_block(outbox)
-        await db.flush()
-        return outbox
-
-    async def get_dispatching_device_messages(self, db: AsyncSession, limit: int = 50) -> list[SystemOutbox]:
-        columns = cast("Any", SystemOutbox).__table__.c
+        domain_predicates = self._operation_domain_predicates(
+            columns,
+            operation_domains=operation_domains,
+            exclude_operation_domains=exclude_operation_domains,
+        )
         result = await db.execute(
             select(SystemOutbox)
             .where(
@@ -293,20 +507,34 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
                 columns.sent_at.is_(None),
                 columns.finished_at.is_(None),
+                *domain_predicates,
             )
             .order_by(columns.created_at.asc(), columns.id.asc())
             .limit(limit)
         )
         return list(result.scalars().all())
 
-    async def get_blocked_device_busy_messages(self, db: AsyncSession, limit: int = 50) -> list[SystemOutbox]:
+    async def get_blocked_device_busy_messages(
+        self,
+        db: AsyncSession,
+        limit: int = 50,
+        *,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> list[SystemOutbox]:
         columns = cast("Any", SystemOutbox).__table__.c
+        domain_predicates = self._operation_domain_predicates(
+            columns,
+            operation_domains=operation_domains,
+            exclude_operation_domains=exclude_operation_domains,
+        )
         result = await db.execute(
             select(SystemOutbox)
             .where(
                 columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
                 columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
                 columns.blocked_reason == "DEVICE_BUSY",
+                *domain_predicates,
             )
             .order_by(columns.created_at.asc(), columns.id.asc())
             .limit(limit)
@@ -413,6 +641,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._release_blocked(
             db,
             columns.workline_id == workline_id,
+            columns.blocked_reason.notin_(self.DEVICE_RESOURCE_WAIT_REASONS),
             columns.blocked_by_runtime_hold_id.is_(None),
             or_(
                 columns.blocked_workline_id == workline_id,
@@ -425,6 +654,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._release_blocked(
             db,
             columns.workline_id == workline_id,
+            columns.blocked_reason.notin_(self.DEVICE_RESOURCE_WAIT_REASONS),
             or_(
                 columns.blocked_workline_id == workline_id,
                 columns.blocked_by_reconciliation_session_id.isnot(None),
@@ -438,14 +668,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         device_id: int,
         workline_id: int | None = None,
     ) -> int:
-        columns = cast("Any", SystemOutbox).__table__.c
-        conditions: list[Any] = [
-            columns.blocked_device_id == device_id,
-            columns.blocked_reason == "DEVICE_BUSY",
-        ]
-        if workline_id is not None:
-            conditions.append(columns.workline_id == workline_id)
-        return await self._release_blocked(db, *conditions)
+        _ = (db, device_id, workline_id)
+        return 0
 
     async def get_sandbox_pending_messages(
         self,
@@ -621,6 +845,28 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             return None
         return outbox
 
+    async def _get_active_for_resource_wait(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        reason: str,
+    ) -> SystemOutbox | None:
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+        if outbox is None:
+            return None
+        if outbox.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.DISPATCHING}:
+            return outbox
+        if (
+            outbox.status == SystemOutboxStatus.BLOCKED_RESOURCE
+            and outbox.blocked_reason in self.DEVICE_RESOURCE_WAIT_REASONS
+            and reason in self.DEVICE_RESOURCE_WAIT_REASONS
+        ):
+            return outbox
+        return None
+
     async def _release_blocked(self, db: AsyncSession, *conditions: Any) -> int:
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
@@ -650,6 +896,57 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_device_id = None
         outbox.blocked_workline_id = None
         outbox.blocked_reason = None
+        outbox.blocked_at = None
+        outbox.last_blocked_check_at = None
+        outbox.blocked_check_count = 0
+        outbox.blocked_detail_json = {}
+
+    @staticmethod
+    def _device_resolution_alias(name: str) -> Any:
+        from src.app.device.models import Device
+
+        return cast("Any", Device).__table__.alias(name)
+
+    @staticmethod
+    def _device_resolution_join_condition(outbox_columns: Any, device_alias: Any) -> Any:
+        return and_(
+            outbox_columns.device_id.is_(None),
+            outbox_columns.target_code == device_alias.c.device_code,
+            device_alias.c.is_deleted.is_(False),
+        )
+
+    @staticmethod
+    def _same_physical_device_predicate(
+        *,
+        current_columns: Any,
+        current_device: Any,
+        other_columns: Any,
+        other_device: Any,
+    ) -> Any:
+        current_device_id = func.coalesce(current_columns.device_id, current_device.c.id)
+        other_device_id = func.coalesce(other_columns.device_id, other_device.c.id)
+        return or_(
+            and_(current_device_id.isnot(None), other_device_id == current_device_id),
+            and_(
+                current_device_id.is_(None),
+                other_device_id.is_(None),
+                other_columns.target_code == current_columns.target_code,
+            ),
+        )
+
+    @staticmethod
+    def _operation_domain_predicates(
+        columns: Any,
+        *,
+        operation_domains: Sequence[str] | None,
+        exclude_operation_domains: Sequence[str] | None,
+    ) -> list[Any]:
+        domain_predicates: list[Any] = []
+        if operation_domains:
+            domain_predicates.append(columns.operation_domain.in_(tuple(operation_domains)))
+        if exclude_operation_domains:
+            domain_predicates.append(columns.operation_domain.not_in(tuple(exclude_operation_domains)))
+        return domain_predicates
 
 
 system_outbox_repository = SystemOutboxRepository()

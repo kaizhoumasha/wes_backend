@@ -226,6 +226,11 @@ class TraceOutboxItem(BaseModel):
     blocked_device_id: int | None = None
     blocked_workline_id: int | None = None
     blocked_reason: str | None = None
+    blocked_at: datetime | None = None
+    last_blocked_check_at: datetime | None = None
+    blocked_wait_seconds: int | None = None
+    blocked_check_count: int | None = None
+    blocked_detail_json: dict[str, Any] | None = None
     created_at: datetime
     sent_at: datetime | None = None
     finished_at: datetime | None = None
@@ -409,6 +414,10 @@ class RuntimeWorklineDeviceItem(BaseModel):
     open_command_count: int = 0
     pending_command_count: int = 0
     blocked_outbox_count: int = 0
+    blocked_reason: str | None = None
+    blocked_wait_seconds: int | None = None
+    blocked_check_count: int | None = None
+    blocked_detail_json: dict[str, Any] | None = None
     open_issue_count: int = 0
     active_runtime_hold_ids: list[int] = Field(default_factory=list)
     last_heartbeat_at: datetime | None = None
@@ -483,6 +492,10 @@ class RuntimeDeviceSummary(BaseModel):
     open_command_count: int = 0
     pending_command_count: int = 0
     blocked_outbox_count: int = 0
+    blocked_reason: str | None = None
+    blocked_wait_seconds: int | None = None
+    blocked_check_count: int | None = None
+    blocked_detail_json: dict[str, Any] | None = None
     open_issue_count: int = 0
     active_runtime_hold_ids: list[int] = Field(default_factory=list)
     last_heartbeat_at: datetime | None = None

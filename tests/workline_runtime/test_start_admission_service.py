@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -553,6 +554,71 @@ async def test_start_admission_treats_already_ready_snapshot_as_idempotent_succe
     assert workline.start_admission_status == "SUCCESS"
     assert workline.start_admission_message == "START 准入通过"
     assert workline.start_admission_failed_device_code is None
+
+
+@pytest.mark.asyncio
+async def test_start_admission_success_keeps_device_resource_wait_outbox_blocked(db_session) -> None:
+    """START 准入成功只释放 WorkLine hold，不释放 ECS resource wait。"""
+
+    workline = _make_workline()
+    devices = await _persist_workline_with_devices(db_session, workline)
+    now = start_admission_module.timezone.now_for_db()
+    resource_wait = SystemOutbox(
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:start-admission-resource-wait",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code=devices[0].device_code,
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=4,
+        last_error="设备实时状态查询返回 HTTP 503，等待下次预检",
+        blocked_device_id=devices[0].id,
+        blocked_workline_id=workline.id,
+        blocked_reason="DEVICE_STATUS_PRECHECK_WAIT",
+        blocked_at=now - timedelta(seconds=30),
+        last_blocked_check_at=now - timedelta(seconds=5),
+        blocked_check_count=5,
+        blocked_detail_json={"device_code": devices[0].device_code, "error_kind": "http_status"},
+    )
+    workline_wait = SystemOutbox(
+        workline_id=workline.id,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="device-command:start-admission-workline-wait",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code=devices[1].device_code,
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        attempt_count=2,
+        last_error="WORKLINE_STOPPED_WAITING_START",
+        blocked_workline_id=workline.id,
+        blocked_reason="WORKLINE_STOPPED_WAITING_START",
+        blocked_at=now - timedelta(seconds=40),
+        last_blocked_check_at=now - timedelta(seconds=20),
+        blocked_check_count=3,
+        blocked_detail_json={"reason": "workline stopped"},
+    )
+    db_session.add_all([resource_wait, workline_wait])
+    await db_session.flush()
+
+    fetcher = RecordingStatusFetcher(_idle_payload(devices))
+    service = WorkLineStartAdmissionService(status_fetcher=fetcher)
+
+    result = await service.admit_start_for_device(db_session, devices[0].device_code, request_id="req-start-resource")
+
+    await db_session.refresh(workline)
+    await db_session.refresh(resource_wait)
+    await db_session.refresh(workline_wait)
+    assert result.accepted is True
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline_wait.status == SystemOutboxStatus.NEW
+    assert workline_wait.attempt_count == 0
+    assert resource_wait.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert resource_wait.attempt_count == 4
+    assert resource_wait.last_error == "设备实时状态查询返回 HTTP 503，等待下次预检"
+    assert resource_wait.blocked_reason == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert resource_wait.blocked_at == now - timedelta(seconds=30)
+    assert resource_wait.last_blocked_check_at == now - timedelta(seconds=5)
+    assert resource_wait.blocked_check_count == 5
+    assert resource_wait.blocked_detail_json == {"device_code": devices[0].device_code, "error_kind": "http_status"}
 
 
 @pytest.mark.parametrize("drift_status", [WorkLineRuntimeStatus.ESTOPPED, WorkLineRuntimeStatus.RECONCILING])
