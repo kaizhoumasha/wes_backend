@@ -1,5 +1,6 @@
 """WorkLine Service 层"""
 
+from collections.abc import Iterable, Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +14,7 @@ from src.app.workline.models import (
     WorkLine,
     WorkLineConfigurationCheck,
     WorkLineConfigurationStatus,
+    WorkLinePluginManifestSummary,
     WorkLinePluginOption,
     WorkLineRunMode,
 )
@@ -72,32 +74,154 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         plugin_key = data.get("plugin_key", getattr(current, "plugin_key", None))
         return plugin_key if isinstance(plugin_key, str) and plugin_key else None
 
+    @staticmethod
+    def _manifest_attr(manifest: object, plugin_key: str, field_name: str) -> Any:
+        if not hasattr(manifest, field_name):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 缺失")
+        return getattr(manifest, field_name)
+
+    @classmethod
+    def _normalize_manifest_string_set(cls, manifest: object, plugin_key: str, field_name: str) -> list[str]:
+        value = cls._manifest_attr(manifest, plugin_key, field_name)
+        if isinstance(value, str | bytes | Mapping) or not isinstance(value, Iterable):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须是字符串集合")  # noqa: TRY004
+
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须只包含非空字符串")
+            normalized.append(item)
+        return sorted(normalized)
+
+    @classmethod
+    def _normalize_manifest_role_map(
+        cls,
+        manifest: object,
+        plugin_key: str,
+        field_name: str,
+    ) -> dict[str, list[str]]:
+        value = cls._manifest_attr(manifest, plugin_key, field_name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须是角色映射")  # noqa: TRY004
+
+        normalized: dict[str, list[str]] = {}
+        for contract_name, roles in value.items():
+            if not isinstance(contract_name, str) or not contract_name:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} key 必须是非空字符串")
+            normalized[contract_name] = cls._normalize_manifest_role_values(
+                plugin_key, field_name, contract_name, roles
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_manifest_role_values(
+        plugin_key: str,
+        field_name: str,
+        contract_name: str,
+        roles: object,
+    ) -> list[str]:
+        if isinstance(roles, str):
+            return [roles]
+        if isinstance(roles, bytes | Mapping) or not isinstance(roles, Iterable):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name}.{contract_name} 必须是角色集合")  # noqa: TRY004
+
+        normalized: list[str] = []
+        for role in roles:
+            if not isinstance(role, str) or not role:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name}.{contract_name} 必须只包含非空角色")
+            normalized.append(role)
+        return sorted(normalized) if isinstance(roles, set | frozenset) else normalized
+
+    @staticmethod
+    def _normalize_requirement_capabilities(requirement: object, plugin_key: str, role: str) -> list[str]:
+        capabilities = getattr(requirement, "capabilities", frozenset())
+        if capabilities is None:
+            return []
+        if isinstance(capabilities, str | bytes | Mapping) or not isinstance(capabilities, Iterable):
+            raise ValueError(  # noqa: TRY004
+                f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.capabilities 必须是字符串集合"
+            )
+
+        normalized: list[str] = []
+        for capability in capabilities:
+            if not isinstance(capability, str) or not capability:
+                raise ValueError(
+                    f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.capabilities 必须只包含非空字符串"
+                )
+            normalized.append(capability)
+        return sorted(normalized)
+
+    @classmethod
+    def _build_device_role_requirement_options(
+        cls,
+        manifest: object,
+        plugin_key: str,
+    ) -> list[DeviceRoleRequirementOption]:
+        required_device_roles = cls._manifest_attr(manifest, plugin_key, "required_device_roles")
+        if not isinstance(required_device_roles, Iterable) or isinstance(required_device_roles, str | bytes):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles 必须是设备角色集合")  # noqa: TRY004
+
+        options: list[DeviceRoleRequirementOption] = []
+        for req in required_device_roles:
+            role = getattr(req, "role", None)
+            if not isinstance(role, str) or not role:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles.role 必须是非空字符串")
+            min_count = getattr(req, "min_count", None)
+            if not isinstance(min_count, int) or min_count < 0:
+                raise ValueError(
+                    f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.min_count 必须是非负整数"
+                )
+            max_count = getattr(req, "max_count", None)
+            if max_count is not None and not isinstance(max_count, int):
+                raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.max_count 必须是整数")
+            options.append(
+                DeviceRoleRequirementOption(
+                    role=role,
+                    min_count=min_count,
+                    max_count=max_count,
+                    capabilities=cls._normalize_requirement_capabilities(req, plugin_key, role),
+                )
+            )
+        return options
+
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从插件注册表导出作业线插件/契约版本选项。"""
 
         options: list[WorkLinePluginOption] = []
         for definition in list_workline_plugin_definitions():
             manifest = definition.manifest
+            plugin_key = definition.plugin_key
             options.append(
                 WorkLinePluginOption(
-                    plugin_key=definition.plugin_key,
-                    label=definition.plugin_key,
+                    plugin_key=plugin_key,
+                    label=plugin_key,
                     contract_versions=[manifest.contract_version],
                     default_contract_version=manifest.contract_version,
-                    required_device_roles=[
-                        DeviceRoleRequirementOption(
-                            role=req.role,
-                            min_count=req.min_count,
-                            max_count=req.max_count,
-                            capabilities=list(req.capabilities) if req.capabilities else [],
-                        )
-                        for req in manifest.required_device_roles
-                    ],
-                    supported_events=sorted(manifest.supported_events),
-                    supported_commands=sorted(manifest.supported_commands),
+                    required_device_roles=self._build_device_role_requirement_options(manifest, plugin_key),
+                    supported_events=self._normalize_manifest_string_set(manifest, plugin_key, "supported_events"),
+                    supported_commands=self._normalize_manifest_string_set(manifest, plugin_key, "supported_commands"),
                 )
             )
         return options
+
+    def get_plugin_manifest_summary(self, plugin_key: str) -> WorkLinePluginManifestSummary | None:
+        """返回单个工作线插件 manifest 摘要。"""
+
+        definition = get_workline_plugin_definition(plugin_key)
+        if definition is None:
+            return None
+
+        manifest = definition.manifest
+        plugin_key = definition.plugin_key
+        return WorkLinePluginManifestSummary(
+            plugin_key=plugin_key,
+            contract_version=manifest.contract_version,
+            required_device_roles=self._build_device_role_requirement_options(manifest, plugin_key),
+            event_source_roles=self._normalize_manifest_role_map(manifest, plugin_key, "event_source_roles"),
+            command_target_roles=self._normalize_manifest_role_map(manifest, plugin_key, "command_target_roles"),
+            supported_events=self._normalize_manifest_string_set(manifest, plugin_key, "supported_events"),
+            supported_commands=self._normalize_manifest_string_set(manifest, plugin_key, "supported_commands"),
+        )
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""

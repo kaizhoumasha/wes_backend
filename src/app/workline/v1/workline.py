@@ -1,6 +1,7 @@
 """WorkLine API 路由"""
 
 from typing import cast
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, Depends, Path, status
 
@@ -8,6 +9,7 @@ from src.app.workline.models import (
     WorkLine,
     WorkLineConfigurationStatus,
     WorkLineCreate,
+    WorkLinePluginManifestSummary,
     WorkLinePluginOption,
     WorkLineResponse,
     WorkLineStateTransitionRequest,
@@ -16,7 +18,13 @@ from src.app.workline.models import (
 from src.app.workline.services import workline_service
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
-from src.core.response import BusinessErrorCode, ResourceErrorCode, ResponseSchemaModel, response_builder
+from src.core.response import (
+    BusinessErrorCode,
+    ClientErrorCode,
+    ResourceErrorCode,
+    ResponseSchemaModel,
+    response_builder,
+)
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 router = APIRouter(tags=["作业线管理"])
@@ -42,6 +50,45 @@ async def list_workline_plugin_options() -> ResponseSchemaModel[list[WorkLinePlu
     return cast(
         "ResponseSchemaModel[list[WorkLinePluginOption]]",
         response_builder.success(data=workline_service.list_plugin_options()),
+    )
+
+
+@router.get(
+    "/plugins/{plugin_key:path}/manifest",
+    summary="[biz:workline:list] 获取单个作业线插件 manifest 摘要",
+    response_model=ResponseSchemaModel[WorkLinePluginManifestSummary],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+)
+async def get_workline_plugin_manifest(
+    plugin_key: str = Path(...),
+) -> ResponseSchemaModel[WorkLinePluginManifestSummary]:
+    """从插件注册表导出单个作业线插件 manifest 摘要。"""
+
+    plugin_key = unquote(plugin_key)
+    try:
+        summary = workline_service.get_plugin_manifest_summary(plugin_key)
+    except (TypeError, ValueError) as exc:
+        return cast(
+            "ResponseSchemaModel[WorkLinePluginManifestSummary]",
+            response_builder.fail(
+                code=ClientErrorCode.VALIDATION_ERROR,
+                message=f"工作线插件 manifest 无效: {plugin_key}: {exc}",
+            ),
+        )
+
+    if summary is None:
+        return cast(
+            "ResponseSchemaModel[WorkLinePluginManifestSummary]",
+            response_builder.fail(
+                code=ResourceErrorCode.NOT_FOUND,
+                message=f"工作线插件不存在: {plugin_key}",
+            ),
+        )
+
+    return cast(
+        "ResponseSchemaModel[WorkLinePluginManifestSummary]",
+        response_builder.success(data=summary),
     )
 
 

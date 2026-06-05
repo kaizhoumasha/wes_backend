@@ -255,6 +255,18 @@ class WorkLinePluginOption(BaseModel):
     supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
 
 
+class WorkLinePluginManifestSummary(BaseModel):
+    """单插件 manifest 摘要。"""
+
+    plugin_key: str = Field(description="工作线执行插件标识")
+    contract_version: str = Field(description="插件契约版本")
+    required_device_roles: list[DeviceRoleRequirementOption] = Field(default_factory=list, description="必需设备角色")
+    event_source_roles: dict[str, list[str]] = Field(default_factory=dict, description="事件来源设备角色映射")
+    command_target_roles: dict[str, list[str]] = Field(default_factory=dict, description="命令目标设备角色映射")
+    supported_events: list[str] = Field(default_factory=list, description="支持的事件")
+    supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
+
+
 class WorkLineConfigurationCheck(BaseModel):
     """作业线启用前结构化检查项。"""
 
