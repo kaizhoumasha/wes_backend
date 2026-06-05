@@ -148,6 +148,26 @@ def test_build_trace_response_includes_resource_evidence() -> None:
     )
 
 
+def test_trace_detail_response_uses_sessions_without_duplicate_session_field() -> None:
+    from src.app.workline.models.runtime import TraceDetailResponse
+    from src.app.workline.services.trace_response_builder import build_trace_response
+
+    session = _session_namespace(id=21, session_code="SESSION-21", trace_id="trace-session-contract")
+    result = TraceQueryResult(
+        trace=TraceContext.from_request(trace_id="trace-session-contract").with_session(session),
+        session=session,
+        sessions=[session],
+    )
+
+    response = build_trace_response(result)
+    payload = response.model_dump(mode="json")
+
+    assert "session" not in TraceDetailResponse.model_fields
+    assert "session" not in payload
+    assert payload["sessions"][0]["id"] == 21
+    assert payload["sessions"][0]["session_code"] == "SESSION-21"
+
+
 def test_trace_detail_includes_completed_clear_diagnosis_verdict() -> None:
     from src.app.workline.services.trace_response_builder import build_trace_response
 
@@ -575,6 +595,7 @@ def service(
     callback_repo = SimpleNamespace(
         get_by_request_id=AsyncMock(return_value=callback_log_1),
         get_by_trace_id=AsyncMock(return_value=[callback_log_1, callback_log_2]),
+        get_summary_by_trace_id=AsyncMock(return_value=[callback_log_1, callback_log_2]),
     )
     session_repo = SimpleNamespace(
         get_by_id=AsyncMock(return_value=session_obj),
@@ -677,6 +698,78 @@ async def test_by_trace_id_uses_trace_anchor(
 
 
 @pytest.mark.asyncio
+async def test_path_query_by_trace_id_loads_slim_runtime_facts_without_dispatch_attempts(
+    service: TraceQueryService,
+    callback_log_1: SimpleNamespace,
+    callback_log_2: SimpleNamespace,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.path_by_trace_id(db, "trace-1")
+
+    assert result.trace.trace_id == "trace-1"
+    assert result.callback_logs == [callback_log_1, callback_log_2]
+    assert result.session is not None and result.session.id == session_obj.id
+    assert result.sessions == [session_obj]
+    assert result.commands == [command_obj]
+    assert result.outboxes == [outbox_obj]
+    assert result.inboxes == [inbox_obj]
+    assert result.timelines == [timeline_obj]
+    assert result.dispatch_attempts == []
+    assert result.resource_state_events == []
+    assert result.rack_bin_mounts == []
+    assert result.runtime_holds == []
+    assert result.workline_start_admission_status == "FAILED"
+    cast("Any", service.callback_log_repo).get_summary_by_trace_id.assert_awaited_once_with(db, "trace-1")
+    cast("Any", service.callback_log_repo).get_by_trace_id.assert_not_awaited()
+    assert db.execute.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_path_query_by_trace_id_loads_commands_and_outboxes_without_session(
+    service: TraceQueryService,
+    callback_log_1: SimpleNamespace,
+    callback_log_2: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    cast("Any", service.session_repo).get_by_trace_id.return_value = None
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.path_by_trace_id(db, "trace-1")
+
+    assert result.trace.trace_id == "trace-1"
+    assert result.callback_logs == [callback_log_1, callback_log_2]
+    assert result.session is None
+    assert result.sessions == []
+    assert result.commands == [command_obj]
+    assert result.outboxes == [outbox_obj]
+    assert result.inboxes == [inbox_obj]
+    assert result.timelines == [timeline_obj]
+    assert result.dispatch_attempts == []
+    assert any(d.extra.get("source") == "command" for d in result.diagnostics)
+    assert any(d.extra.get("source") == "outbox" for d in result.diagnostics)
+    assert db.execute.await_count == 4
+
+
+@pytest.mark.asyncio
 async def test_by_session_id_uses_session_anchor(
     service: TraceQueryService,
     session_obj: SimpleNamespace,
@@ -701,6 +794,37 @@ async def test_by_session_id_uses_session_anchor(
     assert result.commands and result.commands[0].command_code == "CMD-1"
     assert any(d.extra.get("source") == "session_snapshot" for d in result.diagnostics)
     assert db.execute.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_path_query_by_session_id_loads_slim_runtime_facts_without_dispatch_attempts(
+    service: TraceQueryService,
+    session_obj: SimpleNamespace,
+    command_obj: SimpleNamespace,
+    outbox_obj: SimpleNamespace,
+    inbox_obj: SimpleNamespace,
+    timeline_obj: SimpleNamespace,
+) -> None:
+    db = _db_with_execute_results(
+        _ResultStub(rows=[command_obj]),
+        _ResultStub(rows=[outbox_obj]),
+        _ResultStub(rows=[inbox_obj]),
+        _ResultStub(rows=[timeline_obj]),
+    )
+
+    result = await service.path_by_session_id(db, 11)
+
+    assert result.trace.session_id == 11
+    assert result.trace.trace_id == "trace-1"
+    assert result.session is not None and result.session.id == session_obj.id
+    assert result.sessions == [session_obj]
+    assert result.commands == [command_obj]
+    assert result.outboxes == [outbox_obj]
+    assert result.inboxes == [inbox_obj]
+    assert result.timelines == [timeline_obj]
+    assert result.dispatch_attempts == []
+    assert result.summary["dispatch_attempts"] == 0
+    assert db.execute.await_count == 4
 
 
 @pytest.mark.asyncio

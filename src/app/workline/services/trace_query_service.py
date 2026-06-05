@@ -200,6 +200,12 @@ class TraceQueryService(BaseService[Any, Any]):
     async def by_session_id(self, db: AsyncSession, session_id: int) -> TraceQueryResult:
         return await self.query(db, session_id=session_id)
 
+    async def path_by_trace_id(self, db: AsyncSession, trace_id: str) -> TraceQueryResult:
+        return await self.query_path(db, trace_id=trace_id)
+
+    async def path_by_session_id(self, db: AsyncSession, session_id: int) -> TraceQueryResult:
+        return await self.query_path(db, session_id=session_id)
+
     async def by_command_code(self, db: AsyncSession, command_code: str) -> TraceQueryResult:
         return await self.query(db, command_code=command_code)
 
@@ -330,6 +336,8 @@ class TraceQueryService(BaseService[Any, Any]):
             timelines = await self._load_timelines_for_session(db, session)
         elif trace.trace_id:
             trace_id = trace.trace_id
+            commands = await self._load_commands_by_trace_id(db, trace.trace_id, commands)
+            outboxes = await self._load_outboxes_by_trace_id(db, trace.trace_id, outboxes)
             inboxes = await self._load_inboxes_by_trace_id(db, trace.trace_id)
             timelines = await self._load_timelines_by_trace_id(db, trace.trace_id)
             if not commands and trace.command_code:
@@ -373,6 +381,103 @@ class TraceQueryService(BaseService[Any, Any]):
             commands=commands,
             outboxes=outboxes,
             dispatch_attempts=dispatch_attempts,
+            timelines=timelines,
+            diagnostics=diagnostics,
+            **workline_projection,
+        )
+
+    async def query_path(
+        self,
+        db: AsyncSession,
+        *,
+        trace_id: str | None = None,
+        session_id: int | None = None,
+    ) -> TraceQueryResult:
+        trace = TraceContext.from_request(trace_id=trace_id)
+        callback_logs: list[Any] = []
+        session: WorklineSession | None = None
+        sessions: list[WorklineSession] = []
+        commands: list[DeviceCommand] = []
+        outboxes: list[SystemOutbox] = []
+        inboxes: list[WorklineInbox] = []
+        timelines: list[WorklineTimeline] = []
+        diagnostics: list[DiagnosticContext] = []
+
+        if session_id is not None:
+            session = await self.session_repo.get_by_id(db, session_id)
+            if session is not None:
+                trace = trace.with_session(session)
+                session_id = getattr(session, "id", session_id)
+                trace_id = trace.trace_id
+                sessions = _merge_unique_by_id(sessions, [session])
+
+        if session is None and trace.trace_id:
+            session = await self.session_repo.get_by_trace_id(db, trace.trace_id)
+            if session is not None:
+                trace = trace.with_session(session)
+                session_id = getattr(session, "id", session_id)
+                sessions = _merge_unique_by_id(sessions, [session])
+
+        if trace.trace_id:
+            trace_id = trace.trace_id
+            callback_logs = await self.callback_log_repo.get_summary_by_trace_id(db, trace.trace_id)
+            if callback_logs:
+                first_callback = callback_logs[0]
+                trace = trace.with_request_id(getattr(first_callback, "request_id", None))
+                trace = trace.with_trace_id(getattr(first_callback, "trace_id", None))
+                diagnostics.extend(self._diagnostic_from_callbacks(trace, callback_logs))
+
+        if session is not None:
+            trace = trace.with_session(session)
+            if trace.trace_id:
+                trace_id = trace.trace_id
+            commands = await self._load_commands_for_session(db, session, commands)
+            outboxes = await self._load_outboxes_for_session(db, session, outboxes)
+            inboxes = await self._load_inboxes_for_session(db, session, inboxes)
+            timelines = await self._load_timelines_for_session(db, session)
+        elif trace.trace_id:
+            trace_id = trace.trace_id
+            commands = await self._load_commands_by_trace_id(db, trace.trace_id, commands)
+            outboxes = await self._load_outboxes_by_trace_id(db, trace.trace_id, outboxes)
+            inboxes = await self._load_inboxes_by_trace_id(db, trace.trace_id)
+            timelines = await self._load_timelines_by_trace_id(db, trace.trace_id)
+
+        diagnostics.extend(self._diagnostic_for_session(trace, session) if session is not None else [])
+        diagnostics.extend(self._diagnostic_for_inboxes(trace, inboxes))
+        diagnostics.extend(self._diagnostic_for_commands(trace, commands))
+        diagnostics.extend(self._diagnostic_for_outboxes(trace, outboxes))
+        diagnostics.extend(self._diagnostic_for_timelines(trace, timelines))
+        persisted_diagnostics = await self._load_persisted_diagnostics(db, trace_id)
+        diagnostics.extend(self._diagnostic_from_persisted(trace, persisted_diagnostics))
+
+        if not diagnostics:
+            diagnostics.append(
+                build_diagnostic_context(
+                    trace=trace,
+                    session=session,
+                    inbox=inboxes[0] if inboxes else None,
+                    command=commands[0] if commands else None,
+                    outbox=outboxes[0] if outboxes else None,
+                )
+            )
+
+        workline_projection = await self._load_workline_projection(
+            db,
+            session=session,
+            outboxes=outboxes,
+            commands=commands,
+            timelines=timelines,
+        )
+
+        return TraceQueryResult(
+            trace=trace,
+            callback_logs=callback_logs,
+            inboxes=inboxes,
+            session=session,
+            sessions=sessions or ([session] if session is not None else []),
+            commands=commands,
+            outboxes=outboxes,
+            dispatch_attempts=[],
             timelines=timelines,
             diagnostics=diagnostics,
             **workline_projection,
@@ -540,6 +645,18 @@ class TraceQueryService(BaseService[Any, Any]):
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
+    async def _load_commands_by_trace_id(
+        self,
+        db: AsyncSession,
+        trace_id: str,
+        existing: list[DeviceCommand],
+    ) -> list[DeviceCommand]:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand).where(columns.trace_id == trace_id).order_by(columns.created_at.asc())
+        )
+        return _merge_unique_by_id(existing, list(result.scalars().all()))
+
     async def _load_outboxes_for_session(
         self,
         db: AsyncSession,
@@ -549,6 +666,18 @@ class TraceQueryService(BaseService[Any, Any]):
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
             select(SystemOutbox).where(columns.session_id == session.id).order_by(columns.created_at.asc())
+        )
+        return _merge_unique_by_id(existing, list(result.scalars().all()))
+
+    async def _load_outboxes_by_trace_id(
+        self,
+        db: AsyncSession,
+        trace_id: str,
+        existing: list[SystemOutbox],
+    ) -> list[SystemOutbox]:
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(SystemOutbox).where(columns.trace_id == trace_id).order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 

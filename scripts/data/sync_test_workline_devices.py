@@ -23,6 +23,7 @@ from src.app.resource.models import RackKind
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.core.conf import settings
 from src.utils.device_cache import workline_device_cache
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
@@ -37,12 +38,50 @@ from src.workline_plugins.rough_sorter.contract import (
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
 )
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_WORKING_BIN_SCAN,
+    ROLE_SORTING_NG_ARM,
+    ROLE_SORTING_NG_STATION,
+    ROLE_SORTING_SCAN_PLATFORM,
+    ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
+    ROLE_SORTING_WORKSTATION,
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+from src.workline_runtime.run_mode import SANDBOX_ALLOWED_ENVS
 
 TEST_ROUGH_SORTER_LINE_CODE = "WL-ROUGH-SORTER-TEST"
+TEST_SMT_SORTING_INBOUND_LINE_CODE = "WL-SMT-SORTING-INBOUND-TEST"
 DEFAULT_MOCK_ECS_HOST = "mock_ecs"
 DEFAULT_MOCK_ECS_PORT = 8010
 MOCK_ECS_COMMAND_PATH = "/api/v1/device/command"
 MOCK_ECS_STATUS_PATH = "/api/v1/device/status"
+
+
+@dataclass(frozen=True)
+class TestWorklineSeed:
+    """开发环境工作线基础信息种子。"""
+
+    line_code: str
+    line_name: str
+    line_type: LineType
+    zone_name: str
+    plugin_key: str
+    contract_version: str
+    config: dict[str, Any]
+    runtime_config_json: dict[str, Any]
+    run_mode: WorkLineRunMode
+    runtime_status: WorkLineRuntimeStatus
+    diagnostic_profile: dict[str, Any]
+    description: str
+    devices: tuple["TestDeviceSeed", ...]
+    rack_positions: tuple["TestRackPositionSeed", ...] = ()
+    is_active: bool = True
 
 
 @dataclass(frozen=True)
@@ -142,6 +181,160 @@ TEST_ROUGH_SORTER_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
     ),
 )
 
+TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
+    TestDeviceSeed(
+        device_code="SORT-SOURCE-ARM-01",
+        device_name="测试 SMT 分拣入库源端机械臂",
+        device_role=ROLE_SORTING_SOURCE_ARM,
+        role_index=1,
+        sort_order=10,
+        capabilities_json={
+            "supports_command_types": [COMMAND_SOURCE_PICK],
+            "supports_event_types": [],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+    TestDeviceSeed(
+        device_code="SORT-TARGET-ARM-01",
+        device_name="测试 SMT 分拣入库目标机械臂",
+        device_role=ROLE_SORTING_TARGET_ARM,
+        role_index=1,
+        sort_order=20,
+        capabilities_json={
+            "supports_command_types": [COMMAND_TARGET_PLACE],
+            "supports_event_types": [],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+    TestDeviceSeed(
+        device_code="SORT-NG-ARM-01",
+        device_name="测试 SMT 分拣入库 NG 机械臂",
+        device_role=ROLE_SORTING_NG_ARM,
+        role_index=1,
+        sort_order=30,
+        capabilities_json={
+            "supports_command_types": [COMMAND_NG_PLACE],
+            "supports_event_types": [],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+    TestDeviceSeed(
+        device_code="SORT-SCAN-PLATFORM-01",
+        device_name="测试 SMT 分拣入库扫码平台",
+        device_role=ROLE_SORTING_SCAN_PLATFORM,
+        role_index=1,
+        sort_order=40,
+        capabilities_json={
+            "supports_command_types": [],
+            "supports_event_types": [EVENT_WORKING_BIN_SCAN],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+    TestDeviceSeed(
+        device_code="SORT-NG-STATION-01",
+        device_name="测试 SMT 分拣入库 NG 工位",
+        device_role=ROLE_SORTING_NG_STATION,
+        role_index=1,
+        sort_order=50,
+        capabilities_json={
+            "supports_command_types": [],
+            "supports_event_types": [],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+    TestDeviceSeed(
+        device_code="SORT-WORKSTATION-01",
+        device_name="测试 SMT 分拣入库工作站",
+        device_role=ROLE_SORTING_WORKSTATION,
+        role_index=1,
+        sort_order=60,
+        capabilities_json={
+            "supports_command_types": [],
+            "supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED],
+            "supports_ack_response": True,
+            "supports_result_callback": True,
+            "status_path": MOCK_ECS_STATUS_PATH,
+        },
+    ),
+)
+
+TEST_ROUGH_SORTER_SEED = TestWorklineSeed(
+    line_code=TEST_ROUGH_SORTER_LINE_CODE,
+    line_name="测试粗分机作业线",
+    line_type=LineType.AUTO,
+    zone_name="开发库",
+    plugin_key=ROUGH_SORTER_PLUGIN_KEY,
+    contract_version=ROUGH_SORTER_CONTRACT_VERSION,
+    config={"seed_source": "local-dev"},
+    runtime_config_json={
+        "run_mode": WorkLineRunMode.AUTO.value,
+        "sandbox_enabled": False,
+        "device_status_timeout_seconds": 2.0,
+    },
+    run_mode=WorkLineRunMode.AUTO,
+    runtime_status=WorkLineRuntimeStatus.STOPPED,
+    diagnostic_profile={
+        "owner": "WES 开发环境",
+        "seed_source": "local-dev",
+    },
+    description="本地开发环境自动同步的粗分机基础作业线",
+    devices=TEST_ROUGH_SORTER_DEVICES,
+    rack_positions=TEST_ROUGH_SORTER_RACK_POSITIONS,
+)
+
+TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
+    line_code=TEST_SMT_SORTING_INBOUND_LINE_CODE,
+    line_name="测试 SMT 分拣入库作业线",
+    line_type=LineType.AUTO,
+    zone_name="开发库",
+    plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+    contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    config={"seed_source": "local-dev"},
+    runtime_config_json={
+        "run_mode": WorkLineRunMode.SIMULATION.value,
+        "sandbox_enabled": True,
+        "device_status_timeout_seconds": 2.0,
+    },
+    run_mode=WorkLineRunMode.SIMULATION,
+    runtime_status=WorkLineRuntimeStatus.STOPPED,
+    diagnostic_profile={
+        "owner": "WES 开发环境",
+        "seed_source": "local-dev",
+    },
+    description="本地开发环境自动同步的 SMT 分拣入库基础作业线",
+    devices=TEST_SMT_SORTING_INBOUND_DEVICES,
+)
+
+TEST_WORKLINE_SEEDS: tuple[TestWorklineSeed, ...] = (
+    TEST_ROUGH_SORTER_SEED,
+    TEST_SMT_SORTING_INBOUND_SEED,
+)
+
+
+def _assert_debug_seed_allowed() -> None:
+    configured_env = str(settings.APP_ENV).strip().lower()
+    process_env = os.getenv("APP_ENV")
+    checked_envs = [configured_env]
+    if process_env is not None:
+        checked_envs.append(process_env.strip().lower())
+
+    blocked_env = next((app_env for app_env in checked_envs if app_env not in SANDBOX_ALLOWED_ENVS), None)
+    if blocked_env is not None:
+        allowed_envs = ", ".join(sorted(SANDBOX_ALLOWED_ENVS))
+        raise RuntimeError(
+            f"APP_ENV={blocked_env} 不允许同步开发/测试调试 WorkLine/Device 主数据；仅允许: {allowed_envs}"
+        )
+
 
 def _mock_ecs_connection_from_env() -> MockEcsConnection:
     mock_ecs_url = os.getenv("MOCK_ECS_URL")
@@ -204,32 +397,25 @@ async def _get_rack_position_by_code(
     return result.scalar_one_or_none()
 
 
-async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
+async def _upsert_test_workline(db: AsyncSession, seed: TestWorklineSeed) -> tuple[WorkLine, str]:
     values = {
-        "line_code": TEST_ROUGH_SORTER_LINE_CODE,
-        "line_name": "测试粗分机作业线",
-        "line_type": LineType.AUTO,
-        "zone_name": "开发库",
-        "plugin_key": ROUGH_SORTER_PLUGIN_KEY,
-        "contract_version": ROUGH_SORTER_CONTRACT_VERSION,
-        "config": {"seed_source": "local-dev"},
-        "runtime_config_json": {
-            "run_mode": WorkLineRunMode.AUTO.value,
-            "sandbox_enabled": False,
-            "device_status_timeout_seconds": 2.0,
-        },
-        "run_mode": WorkLineRunMode.AUTO,
-        "diagnostic_profile": {
-            "owner": "WES 开发环境",
-            "seed_source": "local-dev",
-        },
-        "description": "本地开发环境自动同步的粗分机基础作业线",
-        "is_active": True,
+        "line_code": seed.line_code,
+        "line_name": seed.line_name,
+        "line_type": seed.line_type,
+        "zone_name": seed.zone_name,
+        "plugin_key": seed.plugin_key,
+        "contract_version": seed.contract_version,
+        "config": seed.config,
+        "runtime_config_json": seed.runtime_config_json,
+        "run_mode": seed.run_mode,
+        "diagnostic_profile": seed.diagnostic_profile,
+        "description": seed.description,
+        "is_active": seed.is_active,
     }
 
-    workline = await _get_workline_by_code(db, TEST_ROUGH_SORTER_LINE_CODE)
+    workline = await _get_workline_by_code(db, seed.line_code)
     if workline is None:
-        workline = WorkLine(**values, runtime_status=WorkLineRuntimeStatus.STOPPED)
+        workline = WorkLine(**values, runtime_status=seed.runtime_status)
         db.add(workline)
         await db.flush()
         return workline, "created"
@@ -239,7 +425,7 @@ async def _upsert_test_workline(db: AsyncSession) -> tuple[WorkLine, str]:
     return workline, "updated" if changed else "unchanged"
 
 
-async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str, str]:
+async def _upsert_test_devices(db: AsyncSession, workline: WorkLine, seed: TestWorklineSeed) -> dict[str, str]:
     workline_id = workline.id
     if workline_id is None:
         raise RuntimeError("测试 WorkLine 缺少主键，无法同步 Device")
@@ -249,18 +435,18 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
 
     mock_ecs_connection = _mock_ecs_connection_from_env()
 
-    for seed in TEST_ROUGH_SORTER_DEVICES:
+    for device_seed in seed.devices:
         synced_values = {
-            "device_code": seed.device_code,
-            "device_name": seed.device_name,
+            "device_code": device_seed.device_code,
+            "device_name": device_seed.device_name,
             "work_line_id": workline_id,
-            "description": "本地开发环境自动同步的粗分机基础设备",
+            "description": f"本地开发环境自动同步的 {seed.line_name} 基础设备",
             "is_active": True,
-            "sort_order": seed.sort_order,
-            "device_role": seed.device_role,
-            "role_index": seed.role_index,
+            "sort_order": device_seed.sort_order,
+            "device_role": device_seed.device_role,
+            "role_index": device_seed.role_index,
             "vendor_type": "SANDBOX",
-            "capabilities_json": seed.capabilities_json,
+            "capabilities_json": device_seed.capabilities_json,
             "max_concurrent_tasks": 1,
             "idempotency_ttl": 3600,
             "diagnostic_profile": {
@@ -277,7 +463,7 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
             "callback_path": MOCK_ECS_COMMAND_PATH,
         }
 
-        device = await _get_device_by_code(db, seed.device_code)
+        device = await _get_device_by_code(db, device_seed.device_code)
         if device is None:
             device = Device(
                 **create_values,
@@ -288,66 +474,66 @@ async def _upsert_test_devices(db: AsyncSession, workline: WorkLine) -> dict[str
             )
             db.add(device)
             await db.flush()
-            states[seed.device_code] = "created"
+            states[device_seed.device_code] = "created"
         else:
             # 防御性保留：已有设备的通信配置可能指向现场联调硬件，不能被默认种子值覆盖。
             changed = _set_attrs(device, synced_values)
             await db.flush()
-            states[seed.device_code] = "updated" if changed else "unchanged"
-        devices_by_code[seed.device_code] = device
+            states[device_seed.device_code] = "updated" if changed else "unchanged"
+        devices_by_code[device_seed.device_code] = device
 
-    for seed in TEST_ROUGH_SORTER_DEVICES:
-        device = devices_by_code[seed.device_code]
+    for device_seed in seed.devices:
+        device = devices_by_code[device_seed.device_code]
         upstream_id = None
-        if seed.upstream_device_code:
-            upstream = devices_by_code[seed.upstream_device_code]
+        if device_seed.upstream_device_code:
+            upstream = devices_by_code[device_seed.upstream_device_code]
             upstream_id = upstream.id
         if device.upstream_device_id != upstream_id:
             device.upstream_device_id = upstream_id
-            if states[seed.device_code] == "unchanged":
-                states[seed.device_code] = "updated"
+            if states[device_seed.device_code] == "unchanged":
+                states[device_seed.device_code] = "updated"
 
     await db.flush()
     workline_device_cache.invalidate(workline_id)
     return states
 
 
-async def _upsert_test_rack_positions(db: AsyncSession, workline: WorkLine) -> dict[str, str]:
+async def _upsert_test_rack_positions(db: AsyncSession, workline: WorkLine, seed: TestWorklineSeed) -> dict[str, str]:
     workline_id = workline.id
     if workline_id is None:
         raise RuntimeError("测试 WorkLine 缺少主键，无法同步货架停靠位")
 
     states: dict[str, str] = {}
-    for seed in TEST_ROUGH_SORTER_RACK_POSITIONS:
+    for position_seed in seed.rack_positions:
         values = {
             "workline_id": workline_id,
-            "workline_code": TEST_ROUGH_SORTER_LINE_CODE,
-            "position_code": seed.position_code,
-            "position_name": seed.position_name,
-            "position_role": seed.position_role,
-            "allowed_rack_kind": seed.allowed_rack_kind,
-            "capacity": seed.capacity,
-            "logic_location_code": seed.logic_location_code,
-            "external_location_code": seed.external_location_code,
-            "device_role": seed.device_role,
-            "priority": seed.priority,
+            "workline_code": seed.line_code,
+            "position_code": position_seed.position_code,
+            "position_name": position_seed.position_name,
+            "position_role": position_seed.position_role,
+            "allowed_rack_kind": position_seed.allowed_rack_kind,
+            "capacity": position_seed.capacity,
+            "logic_location_code": position_seed.logic_location_code,
+            "external_location_code": position_seed.external_location_code,
+            "device_role": position_seed.device_role,
+            "priority": position_seed.priority,
             "enabled": True,
-            "metadata_json": seed.metadata_json,
+            "metadata_json": position_seed.metadata_json,
         }
         position = await _get_rack_position_by_code(
             db,
-            workline_code=TEST_ROUGH_SORTER_LINE_CODE,
-            position_code=seed.position_code,
+            workline_code=seed.line_code,
+            position_code=position_seed.position_code,
         )
         if position is None:
             db.add(WorklineRackPosition(**values))
             await db.flush()
-            states[seed.position_code] = "created"
+            states[position_seed.position_code] = "created"
             continue
 
         changed = _set_attrs(position, values)
         await db.flush()
-        states[seed.position_code] = "updated" if changed else "unchanged"
+        states[position_seed.position_code] = "updated" if changed else "unchanged"
     return states
 
 
@@ -360,11 +546,32 @@ def _summarize(states: list[str]) -> dict[str, int]:
 
 
 async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -> dict[str, Any]:
-    """按粗分机 line_code/device_code 幂等同步本地开发基础信息。"""
+    """按 line_code/device_code 幂等同步本地开发基础信息。"""
 
-    workline, workline_state = await _upsert_test_workline(db)
-    device_states = await _upsert_test_devices(db, workline)
-    rack_position_states = await _upsert_test_rack_positions(db, workline)
+    _assert_debug_seed_allowed()
+
+    worklines_by_code: dict[str, dict[str, Any]] = {}
+    devices_by_workline: dict[str, dict[str, str]] = {}
+    rack_positions_by_workline: dict[str, dict[str, str]] = {}
+    summary_by_workline: dict[str, dict[str, dict[str, int]]] = {}
+
+    for seed in TEST_WORKLINE_SEEDS:
+        workline, workline_state = await _upsert_test_workline(db, seed)
+        device_states = await _upsert_test_devices(db, workline, seed)
+        rack_position_states = await _upsert_test_rack_positions(db, workline, seed)
+        worklines_by_code[seed.line_code] = {
+            "line_code": seed.line_code,
+            "state": workline_state,
+            "id": workline.id,
+        }
+        devices_by_workline[seed.line_code] = device_states
+        rack_positions_by_workline[seed.line_code] = rack_position_states
+        summary_by_workline[seed.line_code] = {
+            "worklines": _summarize([workline_state]),
+            "devices": _summarize(list(device_states.values())),
+            "rack_positions": _summarize(list(rack_position_states.values())),
+        }
+
     if commit:
         await db.commit()
     else:
@@ -372,21 +579,22 @@ async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -
 
     workline_count_result = await db.execute(select(func.count()).select_from(WorkLine))
     device_count_result = await db.execute(select(func.count()).select_from(Device))
+    rough_summary = summary_by_workline[TEST_ROUGH_SORTER_LINE_CODE]
     return {
-        "workline": {
-            "line_code": TEST_ROUGH_SORTER_LINE_CODE,
-            "state": workline_state,
-            "id": workline.id,
-        },
-        "devices": device_states,
-        "rack_positions": rack_position_states,
+        "workline": worklines_by_code[TEST_ROUGH_SORTER_LINE_CODE],
+        "devices": devices_by_workline[TEST_ROUGH_SORTER_LINE_CODE],
+        "rack_positions": rack_positions_by_workline[TEST_ROUGH_SORTER_LINE_CODE],
         "summary": {
-            "worklines": _summarize([workline_state]),
-            "devices": _summarize(list(device_states.values())),
-            "rack_positions": _summarize(list(rack_position_states.values())),
+            "worklines": rough_summary["worklines"],
+            "devices": rough_summary["devices"],
+            "rack_positions": rough_summary["rack_positions"],
             "total_worklines": int(workline_count_result.scalar_one() or 0),
             "total_devices": int(device_count_result.scalar_one() or 0),
         },
+        "worklines_by_code": worklines_by_code,
+        "devices_by_workline": devices_by_workline,
+        "rack_positions_by_workline": rack_positions_by_workline,
+        "summary_by_workline": summary_by_workline,
     }
 
 

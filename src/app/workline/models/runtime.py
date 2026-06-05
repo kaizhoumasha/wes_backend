@@ -342,7 +342,6 @@ class TraceDetailResponse(BaseModel):
     trace: TraceContextResponse
     summary: TraceOverviewSummary
     diagnosis_verdict: DiagnosisVerdictResponse
-    session: TraceSessionItem | None = None
     sessions: list[TraceSessionItem] = Field(default_factory=list)
     callback_logs: list[TraceCallbackLogItem] = Field(default_factory=list)
     inboxes: list[TraceInboxItem] = Field(default_factory=list)
@@ -501,15 +500,51 @@ class RuntimeBlockingReason(BaseModel):
     detail: str | None = None
 
 
+class RuntimeActiveBinRackCellView(BaseModel):
+    bin_cell_index: int | str | None = None
+    bin_cell_code: str | None = None
+    bin_cell_location: str | None = None
+    status: str | None = None
+    capacity_depth_mm: int | float | None = None
+    used_depth_mm: int | float | None = None
+    material_identity_key: str | None = None
+    pkg_code: str | None = None
+    is_reserved: bool | None = None
+
+
+class RuntimeActiveBinRackBinView(BaseModel):
+    rack_slot_code: str | None = None
+    rack_slot_location_code: str | None = None
+    bin_id: str | int | None = None
+    bin_code: str | None = None
+    bin_type: str | None = None
+    bin_orientation_code: str | None = None
+    cells: list[RuntimeActiveBinRackCellView] = Field(default_factory=list)
+
+
+class RuntimeActiveBinRackView(BaseModel):
+    rack_id: str | int | None = None
+    rack_code: str | None = None
+    rack_kind: str | None = None
+    rack_type: str | None = None
+    bins: list[RuntimeActiveBinRackBinView] = Field(default_factory=list)
+
+
+class RuntimeTraceResourceView(BaseModel):
+    active_bin_racks: list[RuntimeActiveBinRackView] = Field(default_factory=list)
+
+
 class RuntimeTracePathResponse(BaseModel):
     workline_id: int | None = None
     session_id: int | None = None
     trace_id: str | None = None
+    diagnosis_verdict: DiagnosisVerdictResponse
+    sessions: list[TraceSessionItem] = Field(default_factory=list)
+    resource_view: RuntimeTraceResourceView = Field(default_factory=RuntimeTraceResourceView)
     devices: list[RuntimeTraceDevicePathNode] = Field(default_factory=list)
     timeline_groups: list[RuntimeTraceTimelineGroup] = Field(default_factory=list)
     current_blocking_device_id: int | None = None
     blocking_reason: RuntimeBlockingReason | None = None
-    evidence: TraceDetailResponse | None = None
 
 
 class RuntimeDeviceSummary(BaseModel):
