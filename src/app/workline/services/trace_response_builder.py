@@ -20,6 +20,7 @@ from src.app.workline.models.runtime import (
     TraceTimelineItem,
 )
 from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
+from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value, optional_enum_str
 
@@ -93,7 +94,7 @@ def _build_trace_summary(result: Any) -> TraceOverviewSummary:
     )
 
 
-def _build_session_item(session: Any) -> TraceSessionItem | None:
+def build_trace_session_item(session: Any, *, include_context_json: bool = True) -> TraceSessionItem | None:
     if session is None:
         return None
 
@@ -138,7 +139,7 @@ def _build_session_item(session: Any) -> TraceSessionItem | None:
         last_request_id=session.last_request_id,
         last_ingress_at=session.last_ingress_at,
         last_inbox_id=session.last_inbox_id,
-        context_json=session.context_json,
+        context_json=session.context_json if include_context_json else {},
     )
 
 
@@ -336,15 +337,14 @@ def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
 
 
 def build_trace_response(result: Any) -> TraceDetailResponse:
-    session = result.session
     sessions = result.sessions
     dispatch_attempts = result.dispatch_attempts
 
     return TraceDetailResponse(
         trace=TraceContextResponse(**result.trace.as_dict()),
         summary=_build_trace_summary(result),
-        session=_build_session_item(session),
-        sessions=[item for item in (_build_session_item(session_item) for session_item in sessions) if item],
+        diagnosis_verdict=diagnosis_verdict_builder.build(result),
+        sessions=[item for item in (build_trace_session_item(session_item) for session_item in sessions) if item],
         callback_logs=[_build_callback_log_item(item) for item in result.callback_logs],
         inboxes=[_build_inbox_item(item) for item in result.inboxes],
         commands=[_build_command_item(item) for item in result.commands],
@@ -356,4 +356,9 @@ def build_trace_response(result: Any) -> TraceDetailResponse:
     )
 
 
-__all__ = ["build_failed_command_evidence", "build_trace_response", "build_trace_timeline_item"]
+__all__ = [
+    "build_failed_command_evidence",
+    "build_trace_response",
+    "build_trace_session_item",
+    "build_trace_timeline_item",
+]

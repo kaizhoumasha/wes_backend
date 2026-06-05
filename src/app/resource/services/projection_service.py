@@ -515,7 +515,13 @@ class ResourceProjectionService:
                 rack_slot_code=rack_slot_code,
             )
             active_bin = await self.rack_bin_mount_repo.get_active_by_bin_code(db, bin_code)
-            if active_slot is not None or active_bin is not None:
+            same_active_slot = active_slot is not None and getattr(active_slot, "bin_code", None) == bin_code
+            same_active_bin = (
+                active_bin is not None
+                and getattr(active_bin, "rack_code", None) == rack_code
+                and getattr(active_bin, "rack_slot_code", None) == rack_slot_code
+            )
+            if (active_slot is not None and not same_active_slot) or (active_bin is not None and not same_active_bin):
                 runtime_hold = await self._create_rack_bin_mount_conflict_hold(
                     db,
                     rack_code=rack_code,
@@ -540,6 +546,13 @@ class ResourceProjectionService:
         for item in normalized_mounts:
             rack_slot_code = item["rack_slot_code"]
             bin_code = item["bin_code"]
+            active_slot = await self.rack_bin_mount_repo.get_active_by_rack_slot(
+                db,
+                rack_code=rack_code,
+                rack_slot_code=rack_slot_code,
+            )
+            if active_slot is not None and getattr(active_slot, "bin_code", None) == bin_code:
+                continue
             _ = await self.rack_bin_mount_repo.create(
                 db,
                 {

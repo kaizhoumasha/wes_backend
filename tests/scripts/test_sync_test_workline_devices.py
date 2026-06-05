@@ -5,13 +5,16 @@ from scripts.data.sync_test_workline_devices import (
     TEST_ROUGH_SORTER_DEVICES,
     TEST_ROUGH_SORTER_LINE_CODE,
     TEST_ROUGH_SORTER_RACK_POSITIONS,
+    TEST_SMT_SORTING_INBOUND_DEVICES,
+    TEST_SMT_SORTING_INBOUND_LINE_CODE,
     sync_test_workline_devices,
 )
-from src.app.device.models import Device, DeviceStatus
+from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.services.workline_service import WorkLineService
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
@@ -25,6 +28,70 @@ from src.workline_plugins.rough_sorter.contract import (
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
 )
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_WORKING_BIN_SCAN,
+    ROLE_SORTING_NG_ARM,
+    ROLE_SORTING_NG_STATION,
+    ROLE_SORTING_SCAN_PLATFORM,
+    ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
+    ROLE_SORTING_WORKSTATION,
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_rejects_prod_before_creating_debug_master_data(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "prod")
+
+    with pytest.raises(RuntimeError, match="APP_ENV=prod"):
+        await sync_test_workline_devices(db_session)
+
+    workline_count = await db_session.scalar(
+        select(func.count())
+        .select_from(WorkLine)
+        .where(WorkLine.line_code.in_([TEST_ROUGH_SORTER_LINE_CODE, TEST_SMT_SORTING_INBOUND_LINE_CODE]))
+    )
+    device_count = await db_session.scalar(
+        select(func.count())
+        .select_from(Device)
+        .where(
+            Device.device_code.in_(
+                [seed.device_code for seed in TEST_ROUGH_SORTER_DEVICES + TEST_SMT_SORTING_INBOUND_DEVICES]
+            )
+        )
+    )
+    assert workline_count == 0
+    assert device_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_rejects_prod_from_settings_even_without_process_env(
+    db_session,
+    monkeypatch,
+) -> None:
+    from scripts.data import sync_test_workline_devices as seed_module
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(seed_module, "settings", type("SettingsStub", (), {"APP_ENV": "prod"})())
+
+    with pytest.raises(RuntimeError, match="APP_ENV=prod"):
+        await sync_test_workline_devices(db_session)
+
+    workline_count = await db_session.scalar(
+        select(func.count())
+        .select_from(WorkLine)
+        .where(WorkLine.line_code.in_([TEST_ROUGH_SORTER_LINE_CODE, TEST_SMT_SORTING_INBOUND_LINE_CODE]))
+    )
+    assert workline_count == 0
 
 
 @pytest.mark.asyncio
@@ -38,6 +105,8 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert result["summary"]["worklines"]["created"] == 1
     assert result["summary"]["devices"]["created"] == len(TEST_ROUGH_SORTER_DEVICES)
     assert result["summary"]["rack_positions"]["created"] == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
+    assert result["summary"]["total_worklines"] == 2
+    assert result["summary"]["total_devices"] == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
 
     workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_ROUGH_SORTER_LINE_CODE))
@@ -48,7 +117,15 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert workline.run_mode == WorkLineRunMode.AUTO
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
 
-    devices = (await db_session.execute(select(Device).order_by(Device.sort_order.asc()))).scalars().all()
+    devices = (
+        (
+            await db_session.execute(
+                select(Device).where(Device.work_line_id == workline.id).order_by(Device.sort_order.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert [device.device_role for device in devices] == [ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM]
     assert {device.device_status for device in devices} == {DeviceStatus.IDLE}
 
@@ -145,8 +222,8 @@ async def test_sync_test_workline_devices_refreshes_existing_seed_rows_without_t
     workline_count = await db_session.scalar(select(func.count()).select_from(WorkLine))
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
     rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
-    assert workline_count == 1
-    assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert workline_count == 2
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
     assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
     assert result["summary"]["worklines"]["updated"] == 1
     assert result["devices"]["RS-INPUT-ARM-01"] == "updated"
@@ -208,7 +285,7 @@ async def test_sync_test_workline_devices_adds_missing_devices_when_seed_data_ex
     added_after_sync = (
         await db_session.execute(select(Device).where(Device.device_code == "RS-OUTPUT-ARM-01"))
     ).scalar_one_or_none()
-    assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
     assert added_after_sync is not None
     assert result["devices"]["RS-OUTPUT-ARM-01"] == "created"
 
@@ -242,7 +319,174 @@ async def test_sync_test_workline_devices_seeds_rough_sorter_when_unrelated_work
     device_count = await db_session.scalar(select(func.count()).select_from(Device))
     rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert seeded_workline is not None
-    assert device_count == len(TEST_ROUGH_SORTER_DEVICES)
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
     assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
     assert result["summary"]["worklines"]["created"] == 1
     assert set(result["devices"].values()) == {"created"}
+    assert result["summary"]["total_worklines"] == 3
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(db_session, monkeypatch) -> None:
+    monkeypatch.delenv("MOCK_ECS_URL", raising=False)
+    monkeypatch.delenv("MOCK_ECS_HOST", raising=False)
+    monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
+
+    result = await sync_test_workline_devices(db_session)
+
+    workline = (
+        await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_SMT_SORTING_INBOUND_LINE_CODE))
+    ).scalar_one()
+    assert workline.line_name == "测试 SMT 分拣入库作业线"
+    assert workline.line_type == LineType.AUTO
+    assert workline.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
+    assert workline.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
+    assert workline.run_mode == WorkLineRunMode.SIMULATION
+    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
+    assert workline.is_active is True
+
+    devices = (
+        (
+            await db_session.execute(
+                select(Device).where(Device.work_line_id == workline.id).order_by(Device.sort_order.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [device.device_code for device in devices] == [
+        "SORT-SOURCE-ARM-01",
+        "SORT-TARGET-ARM-01",
+        "SORT-NG-ARM-01",
+        "SORT-SCAN-PLATFORM-01",
+        "SORT-NG-STATION-01",
+        "SORT-WORKSTATION-01",
+    ]
+    assert [device.device_role for device in devices] == [
+        ROLE_SORTING_SOURCE_ARM,
+        ROLE_SORTING_TARGET_ARM,
+        ROLE_SORTING_NG_ARM,
+        ROLE_SORTING_SCAN_PLATFORM,
+        ROLE_SORTING_NG_STATION,
+        ROLE_SORTING_WORKSTATION,
+    ]
+    capabilities_by_code = {device.device_code: device.capabilities_json for device in devices}
+    assert capabilities_by_code["SORT-SOURCE-ARM-01"]["supports_command_types"] == [COMMAND_SOURCE_PICK]
+    assert capabilities_by_code["SORT-TARGET-ARM-01"]["supports_command_types"] == [COMMAND_TARGET_PLACE]
+    assert capabilities_by_code["SORT-NG-ARM-01"]["supports_command_types"] == [COMMAND_NG_PLACE]
+    assert capabilities_by_code["SORT-SCAN-PLATFORM-01"]["supports_event_types"] == [EVENT_WORKING_BIN_SCAN]
+    assert capabilities_by_code["SORT-NG-STATION-01"]["supports_command_types"] == []
+    assert capabilities_by_code["SORT-NG-STATION-01"]["supports_event_types"] == []
+    assert capabilities_by_code["SORT-WORKSTATION-01"]["supports_event_types"] == [EVENT_SESSION_COMPLETE_REQUESTED]
+    assert {device.host for device in devices} == {"mock_ecs"}
+    assert {device.port for device in devices} == {8010}
+    assert {device.protocol for device in devices} == {DeviceProtocol.HTTP}
+    assert {device.callback_path for device in devices} == {"/api/v1/device/command"}
+    assert {device.timeout for device in devices} == {300000}
+    assert {device.vendor_type for device in devices} == {"SANDBOX"}
+    assert {device.capabilities_json["status_path"] for device in devices} == {"/api/v1/device/status"}
+
+    smt_rack_positions = (
+        (
+            await db_session.execute(
+                select(WorklineRackPosition).where(
+                    WorklineRackPosition.workline_code == TEST_SMT_SORTING_INBOUND_LINE_CODE
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert smt_rack_positions == []
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["created"] == 6
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_smt_configuration_status_passes(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+
+    await sync_test_workline_devices(db_session)
+
+    workline = (
+        await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_SMT_SORTING_INBOUND_LINE_CODE))
+    ).scalar_one()
+    status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
+
+    failed_checks = [check for check in status.checks if check.status == "FAIL"]
+    assert status.can_activate is True
+    assert failed_checks == []
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_is_idempotent_for_rough_and_smt(db_session) -> None:
+    await sync_test_workline_devices(db_session)
+
+    result = await sync_test_workline_devices(db_session)
+
+    workline_count = await db_session.scalar(select(func.count()).select_from(WorkLine))
+    device_count = await db_session.scalar(select(func.count()).select_from(Device))
+    rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
+    assert workline_count == 2
+    assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
+    assert result["summary_by_workline"][TEST_ROUGH_SORTER_LINE_CODE]["worklines"]["unchanged"] == 1
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["worklines"]["unchanged"] == 1
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["unchanged"] == 6
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_preserves_existing_smt_device_runtime_and_connection_state(
+    db_session,
+) -> None:
+    await sync_test_workline_devices(db_session)
+
+    device = (await db_session.execute(select(Device).where(Device.device_code == "SORT-SOURCE-ARM-01"))).scalar_one()
+    device.host = "10.150.94.130"
+    device.port = 18010
+    device.protocol = DeviceProtocol.HTTPS
+    device.callback_path = "/field/device/command"
+    device.device_status = DeviceStatus.ERROR
+    device.current_command_id = 123
+    device.error_code = "FIELD_DEBUG"
+    device.maintenance_mode = True
+    device.capabilities_json = {"supports_command_types": ["OLD"], "status_path": "/old/status"}
+    await db_session.commit()
+
+    result = await sync_test_workline_devices(db_session)
+
+    refreshed = (
+        await db_session.execute(select(Device).where(Device.device_code == "SORT-SOURCE-ARM-01"))
+    ).scalar_one()
+    assert result["devices_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["SORT-SOURCE-ARM-01"] == "updated"
+    assert refreshed.capabilities_json["supports_command_types"] == [COMMAND_SOURCE_PICK]
+    assert refreshed.capabilities_json["status_path"] == "/api/v1/device/status"
+    assert refreshed.host == "10.150.94.130"
+    assert refreshed.port == 18010
+    assert refreshed.protocol == DeviceProtocol.HTTPS
+    assert refreshed.callback_path == "/field/device/command"
+    assert refreshed.device_status == DeviceStatus.ERROR
+    assert refreshed.current_command_id == 123
+    assert refreshed.error_code == "FIELD_DEBUG"
+    assert refreshed.maintenance_mode is True
+
+
+@pytest.mark.asyncio
+async def test_sync_test_workline_devices_returns_rough_top_level_and_grouped_results(db_session) -> None:
+    result = await sync_test_workline_devices(db_session)
+
+    assert result["workline"]["line_code"] == TEST_ROUGH_SORTER_LINE_CODE
+    assert set(result["devices"]) == {seed.device_code for seed in TEST_ROUGH_SORTER_DEVICES}
+    assert set(result["rack_positions"]) == {seed.position_code for seed in TEST_ROUGH_SORTER_RACK_POSITIONS}
+
+    assert set(result["worklines_by_code"]) == {
+        TEST_ROUGH_SORTER_LINE_CODE,
+        TEST_SMT_SORTING_INBOUND_LINE_CODE,
+    }
+    assert set(result["devices_by_workline"][TEST_ROUGH_SORTER_LINE_CODE]) == {
+        seed.device_code for seed in TEST_ROUGH_SORTER_DEVICES
+    }
+    assert set(result["devices_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]) == {
+        seed.device_code for seed in TEST_SMT_SORTING_INBOUND_DEVICES
+    }
+    assert result["rack_positions_by_workline"][TEST_ROUGH_SORTER_LINE_CODE] == result["rack_positions"]
+    assert result["rack_positions_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE] == {}

@@ -20,7 +20,11 @@ from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus
 from src.utils.timezone import timezone
 from src.workline_plugins.rough_sorter.contract import resolve_rough_sorter_business_key
-from src.workline_runtime.session_resolver import SessionResolveError, _resolve_business_key
+from src.workline_runtime.session_resolver import (
+    SessionResolveError,
+    WorklineEntryAdmissionBlocked,
+    _resolve_business_key,
+)
 
 pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
 
@@ -71,6 +75,24 @@ class MockSessionRepository:
             # 按 id 降序，返回最新的
             matching.sort(key=lambda x: x.id if hasattr(x, "id") else 0, reverse=True)
             return matching[0]
+        return None
+
+    async def get_open_entry_blocker_for_workline(
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        business_key: str,
+    ) -> object | None:
+        self.find_calls.append(("entry_blocker", workline_id, business_key))
+        for session in sorted(self.sessions.values(), key=lambda item: getattr(item, "id", 0)):
+            s = session if isinstance(session, dict) else session.__dict__
+            if (
+                s.get("workline_id") == workline_id
+                and s.get("business_key") != business_key
+                and s.get("status") in ["NEW", "RUNNING", "WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"]
+            ):
+                return session
         return None
 
     async def get_by_session_code(
@@ -343,6 +365,9 @@ class TestSessionResolver:
         lock_statement, lock_params = mock_db.execute.await_args_list[0].args
         assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(lock_statement)
         assert lock_params == {"lock_key": "workline-session:7:ORDER_LOCK"}
+        admission_lock_statement, admission_lock_params = mock_db.execute.await_args_list[1].args
+        assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(admission_lock_statement)
+        assert admission_lock_params == {"lock_key": "workline-entry-admission:7"}
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(
@@ -1517,3 +1542,53 @@ class TestSessionResolver:
         assert inbox.workline_id == 1
         assert inbox.session_id == 401
         assert inbox.trace_id == "trace-301"
+
+    @pytest.mark.asyncio
+    async def test_device_event_blocks_new_material_when_workline_has_busy_session(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        blocker = SimpleNamespace(
+            id=501,
+            workline_id=1,
+            business_key="busy-material",
+            status=SessionStatus.WAITING_DEVICE_RESULT,
+        )
+        inbox = make_inbox(
+            kind=InboxKind.DEVICE_EVENT,
+            device_id=1,
+            source_message_id="req-next-material",
+            payload_json={
+                "data": {
+                    "part_no": "PART-NEXT",
+                    "vendor_part_no": "VENDOR-NEXT",
+                    "quantity": "1",
+                    "lot_no": "LOT-NEXT",
+                    "production_date": "20260604",
+                    "item_id": "ITEM-NEXT",
+                }
+            },
+        )
+
+        with patch(
+            "src.workline_runtime.session_resolver._find_entry_admission_blocker_session",
+            new_callable=AsyncMock,
+            return_value=blocker,
+        ) as find_blocker:
+            with pytest.raises(WorklineEntryAdmissionBlocked, match="busy session"):
+                await resolver.resolve_or_create(
+                    db=mock_db,
+                    inbox=inbox,
+                    workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
+                    devices_by_role=make_devices_by_role(),
+                )
+
+        find_blocker.assert_awaited_once()
+        _, kwargs = find_blocker.await_args
+        assert kwargs["workline_id"] == 1
+        assert isinstance(kwargs["business_key"], str)
+        assert kwargs["business_key"]
+        assert kwargs["session_repo"] is mock_session_repo
+        assert len(mock_session_repo.created_sessions) == 0

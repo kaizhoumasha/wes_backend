@@ -679,6 +679,36 @@ async def test_move_forward_success_with_rack_operation_required_stores_resume_a
     assert intents[0].context_patch["rack_operation"]["work_position_code"] == "SINGLE_LAYER_A"
 
 
+def test_rack_tasks_from_actions_marks_move_out_source_position() -> None:
+    payload = {
+        "actions": ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"],
+        "single_layer_rack_code": "RACK-001",
+        "work_position_code": "SINGLE_LAYER_A",
+        "new_rack_kind": "SINGLE_LAYER",
+        "move_out_target_position_role": "SMT_EMPTY_RACK_AREA",
+    }
+
+    tasks = RoughSorterPlugin._rack_tasks_from_actions(payload)
+
+    assert tasks == [
+        {
+            "sequence_no": 1,
+            "task_type": "MOVE_OUT_ACTIVE_RACK",
+            "rack_kind": "SINGLE_LAYER",
+            "rack_code": "RACK-001",
+            "source_position_code": "SINGLE_LAYER_A",
+            "target_position_role": "SMT_EMPTY_RACK_AREA",
+        },
+        {
+            "sequence_no": 2,
+            "task_type": "ALLOCATE_AND_MOVE_RACK",
+            "rack_kind": "SINGLE_LAYER",
+            "target_position_code": "SINGLE_LAYER_A",
+            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+        },
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("callback_type", ["WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"])
 async def test_rack_arrived_external_http_emits_resource_facts_and_stable_retry_event(callback_type: str) -> None:

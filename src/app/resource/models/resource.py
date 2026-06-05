@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from sqlalchemy import JSON, Column, Index, Numeric
+from sqlalchemy import JSON, Column, Index, Numeric, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -656,12 +656,14 @@ class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
             "pkg_code",
             unique=True,
             postgresql_where="ended_at IS NULL AND pkg_code IS NOT NULL",
+            sqlite_where=text("ended_at IS NULL AND pkg_code IS NOT NULL"),
         ),
         Index(
             "ux_resource_bin_material_mounts_active_wms_inventory",
             "wms_inventory_id",
             unique=True,
             postgresql_where="ended_at IS NULL AND wms_inventory_id IS NOT NULL",
+            sqlite_where=text("ended_at IS NULL AND wms_inventory_id IS NOT NULL"),
         ),
         Index("ix_resource_bin_material_mounts_identity_active", "material_identity_key", "ended_at"),
         Index("ix_resource_bin_material_mounts_occupancy_active", "bin_cell_occupancy_id", "ended_at"),
@@ -671,6 +673,7 @@ class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
             "cell_stack_position",
             unique=True,
             postgresql_where="ended_at IS NULL AND bin_cell_occupancy_id IS NOT NULL",
+            sqlite_where=text("ended_at IS NULL AND bin_cell_occupancy_id IS NOT NULL"),
         ),
         Index(
             "ix_resource_bin_material_mounts_cell_stack_active",

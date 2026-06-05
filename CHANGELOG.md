@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.4.6.0] - 2026-06-05
+
+### Added
+
+- 新增 WorkLine trace 统一诊断结论与 trace path 证据契约，聚合诊断 verdict、blocking point、outbox、设备、资源快照和执行路径证据。
+- 新增 SMT 分拣入库真实 mock 驱动沙箱 E2E，覆盖从事件入站、命令派发、WMS 有状态货架池到 trace 证据查询的闭环。
+- 新增有状态 WMS mock 货架池、活动货架快照恢复和 SMT 料格资源视图，支持按真实资源投影诊断执行路径。
+
+### Changed
+
+- Runtime trace、integration debug、inbox batch 和 session 解析流程接入统一诊断构建器，返回更稳定的操作员排障合同。
+- 调试清理、资源投影、货架调度和 rack 操作边界收紧，避免调试数据和资源快照跨测试或跨会话污染。
+- 同步 WorkLine、SMT 和 mock 设计文档，明确 trace path evidence contract 与真实 mock 沙箱验收边界。
+
+### Fixed
+
+- 修复 trace 查询中 session、outbox、资源和设备证据不完整时诊断链路难以定位阻塞点的问题。
+- 修复调试清理和资源投影对 rack/bin 边界处理不一致，可能影响 SMT 沙箱重复执行的问题。
+
 ## [0.4.5.0] - 2026-06-02
 
 ### Added

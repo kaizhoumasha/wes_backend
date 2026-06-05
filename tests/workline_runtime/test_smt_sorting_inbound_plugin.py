@@ -32,6 +32,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+from src.workline_runtime.plugin_sdk import normalize_inbox_input
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
 if TYPE_CHECKING:
@@ -90,6 +91,38 @@ def test_smt_sorting_inbound_plugin_does_not_hard_code_device_codes() -> None:
 
     assert "ARM01" not in source
     assert "ARM02" not in source
+
+
+def test_smt_sorting_inbound_classifier_leaves_success_and_failed_to_generic_classifier() -> None:
+    success_inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="COMMAND_RESULT"),
+        trace_id="trace-success",
+        payload_json={
+            "command_code": "CMD-SUCCESS",
+            "device_code": "SORT-SOURCE-ARM",
+            "task_type": COMMAND_SOURCE_PICK,
+            "result": "SUCCESS",
+            "data": {},
+        },
+    )
+    failed_inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="COMMAND_RESULT"),
+        trace_id="trace-failed",
+        payload_json={
+            "command_code": "CMD-FAILED",
+            "device_code": "SORT-SOURCE-ARM",
+            "task_type": COMMAND_SOURCE_PICK,
+            "result": "FAILED",
+            "error_detail": {"error_code": "ARM_JAM", "error_message": "机械臂卡料"},
+            "data": {},
+        },
+    )
+
+    success = normalize_inbox_input(success_inbox, plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY)
+    failed = normalize_inbox_input(failed_inbox, plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY)
+
+    assert success.result_classification is None
+    assert failed.result_classification == "hardware_failure"
 
 
 def _ctx(session_context: dict[str, Any] | None = None) -> PluginContext:

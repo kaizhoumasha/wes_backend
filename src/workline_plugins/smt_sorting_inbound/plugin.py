@@ -65,15 +65,13 @@ def resolve_sorting_inbound_business_key(payload_json: dict[str, Any]) -> str | 
 
 
 def classify_sorting_inbound_result(payload_json: dict[str, Any]) -> str | None:
-    """读取设备结果字段，后续 flow handler 再解释业务分支。"""
+    """返回插件拥有的业务分类；普通成功/失败交给通用分类器。"""
 
     data = _payload_data(payload_json)
-    return (
-        _non_empty_str(payload_json.get("normalized_result"))
-        or _non_empty_str(payload_json.get("result"))
-        or _non_empty_str(data.get("result"))
-        or _non_empty_str(data.get("status"))
-    )
+    reason_code = _non_empty_str(data.get("reason_code")) or _non_empty_str(payload_json.get("reason_code"))
+    if reason_code == NG_REASON_LOCAL_SORTING_NG:
+        return "business_decision"
+    return None
 
 
 def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:

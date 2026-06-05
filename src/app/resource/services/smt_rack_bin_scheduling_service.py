@@ -742,6 +742,16 @@ class SmtRackBinSchedulingService:
 
         operation_key = self._operation_key(context=context, material=material, active_rack=active_rack)
         work_position_code = self._work_position_code(context)
+        operation_material = dict(material)
+        reel_diameter = self._text_or_none(
+            context.get("reel_diameter") or context.get("reel_size") or context.get("diameter")
+        )
+        reel_thickness = self._text_or_none(context.get("reel_thickness") or context.get("thickness_mm"))
+        if reel_diameter is not None and "reel_diameter" not in operation_material:
+            operation_material["reel_diameter"] = reel_diameter
+        if reel_thickness is not None and "reel_thickness" not in operation_material:
+            operation_material["reel_thickness"] = reel_thickness
+
         payload: dict[str, Any] = {
             "request_type": self.RACK_OPERATION_REQUEST_TYPE,
             "operation_type": self.RACK_OPERATION_TYPE,
@@ -750,7 +760,7 @@ class SmtRackBinSchedulingService:
             "work_position_code": work_position_code,
             "new_rack_kind": self._new_rack_kind(context),
             "move_out_target_position_role": self._move_out_target_position_role(context),
-            "material": dict(material),
+            "material": operation_material,
             "current_rack_snapshot": dict(active_rack or {}),
             "actions": list(self.ALLOCATE_RACK_ACTIONS),
             "reason_code": reason_code,
@@ -803,7 +813,8 @@ class SmtRackBinSchedulingService:
         rack_operation = context.get("rack_operation")
         if not isinstance(rack_operation, Mapping):
             return False
-        status = self._text_or_none(rack_operation.get("status"))
+        rack_operation_data = cast("Mapping[str, Any]", rack_operation)
+        status = self._text_or_none(rack_operation_data.get("status"))
         return status is not None and status.upper() in {"SUCCEEDED", "ARRIVED"}
 
     def _pending_rack_operation_decision(self, context: Mapping[str, Any]) -> SmtRackBinSchedulingDecision | None:
@@ -811,8 +822,9 @@ class SmtRackBinSchedulingService:
         rack_operation = context.get("rack_operation")
         if not isinstance(rack_operation, Mapping):
             return None
-        status = self._text_or_none(rack_operation.get("status"))
-        operation_key = self._text_or_none(rack_operation.get("operation_key"))
+        rack_operation_data = cast("Mapping[str, Any]", rack_operation)
+        status = self._text_or_none(rack_operation_data.get("status"))
+        operation_key = self._text_or_none(rack_operation_data.get("operation_key"))
         if status is None or status.upper() not in self.PENDING_RACK_OPERATION_STATUSES:
             return None
         if waiting_operation_key is not None and operation_key is not None and waiting_operation_key != operation_key:

@@ -157,6 +157,26 @@ def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
     return getattr(trace, "trace_id", None) or ctx.get("trace_id")
 
 
+def _rack_operation_key_from_resource_fact(ctx: Mapping[str, Any], payload_json: Mapping[str, Any]) -> str | None:
+    session = ctx.get("session")
+    context_json = getattr(session, "context_json", None)
+    context = context_json if isinstance(context_json, Mapping) else {}
+    waiting_operation_key = _non_empty_text(context.get("waiting_rack_operation_key"))
+    payload_operation_key = _non_empty_text(payload_json.get("operation_key"))
+    if waiting_operation_key is not None and (
+        payload_operation_key is None or payload_operation_key == waiting_operation_key
+    ):
+        return waiting_operation_key
+
+    rack_operation = context.get("rack_operation")
+    if isinstance(rack_operation, Mapping):
+        context_operation_key = _non_empty_text(rack_operation.get("operation_key"))
+        if payload_operation_key is not None and payload_operation_key != context_operation_key:
+            return None
+        return context_operation_key
+    return None
+
+
 def _non_empty_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -186,11 +206,18 @@ def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str,
     if not isinstance(raw_specs, list) or not raw_specs:
         raise ValueError("RACK_OPERATION_REQUEST intent requires payload.rack_tasks")
 
+    material_context = payload_json.get("material")
     specs: list[dict[str, Any]] = []
     for index, raw_spec in enumerate(raw_specs, start=1):
         if not isinstance(raw_spec, Mapping):
             raise TypeError(f"RACK_OPERATION_REQUEST payload.rack_tasks[{index}] must be a mapping")
-        specs.append(dict(cast("Mapping[str, Any]", raw_spec)))
+        spec = dict(cast("Mapping[str, Any]", raw_spec))
+        if isinstance(material_context, Mapping):
+            request_json = spec.get("request_json")
+            merged_request_json = dict(request_json) if isinstance(request_json, Mapping) else {}
+            merged_request_json.setdefault("material", dict(material_context))
+            spec["request_json"] = merged_request_json
+        specs.append(spec)
     return specs
 
 
@@ -344,6 +371,7 @@ class RuntimeIntentEffectApplier:
             if intent.kind == RuntimeIntentKind.RESOURCE_FACT:
                 result = await self._apply_resource_fact(ctx, intent)
                 if _is_reconciling_result(result):
+                    await self._apply_resource_reconciliation_hold(ctx, result)
                     return
                 continue
 
@@ -855,7 +883,7 @@ class RuntimeIntentEffectApplier:
             service = resource_projection_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        return await service.record_resource_fact(
+        result = await service.record_resource_fact(
             db=ctx_map["db"],
             session=ctx_map["session"],
             workline=ctx_map["workline"],
@@ -863,6 +891,42 @@ class RuntimeIntentEffectApplier:
             payload_json=dict(intent.payload_json),
             idempotency_key=intent.idempotency_key,
             trace_id=_ctx_trace_id(ctx_map),
+        )
+        await self._sync_rack_operation_after_resource_fact(ctx, dict(intent.payload_json))
+        return result
+
+    async def _sync_rack_operation_after_resource_fact(self, ctx: Any, payload_json: dict[str, Any]) -> None:
+        operation_key = _rack_operation_key_from_resource_fact(ctx, payload_json)
+        if operation_key is None:
+            return
+
+        service = self._rack_operation_service
+        if service is None:
+            from src.app.rack.services import rack_operation_service
+
+            service = rack_operation_service
+
+        await service.sync_operation_status(ctx["db"], operation_key=operation_key)
+
+    async def _apply_resource_reconciliation_hold(self, ctx: Any, result: Any) -> None:
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.workline.services import write_back_service as workline_effects
+
+        session = ctx["session"]
+        reason_code = string_value(getattr(result, "reason_code", None)) or "RESOURCE_PROJECTION_RECONCILING"
+        message = string_value(getattr(result, "message", None)) or "资源事实投影进入调和状态，等待人工处理 RuntimeHold"
+
+        workline_effects.workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
+        session.failure_domain = "RESOURCE_RECONCILIATION"
+        session.failure_code = reason_code
+        session.failure_message = message
+        await WorklineSessionRepository().persist_manual_hold(
+            ctx["db"],
+            session_id=resolve_required_pk(session, "session"),
+            occurred_at=ctx["now"],
+            failure_domain=session.failure_domain,
+            failure_code=session.failure_code,
+            failure_message=session.failure_message,
         )
 
     async def _apply_resource_reservation(self, ctx: Any, intent: RuntimeIntent) -> Any:

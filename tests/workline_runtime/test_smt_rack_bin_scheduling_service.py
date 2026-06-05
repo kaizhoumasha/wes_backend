@@ -576,10 +576,12 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
     """满架且无兼容格位时只生成换架 operation 决策。"""
 
     service = SmtRackBinSchedulingService()
+    context = _context(cells=_full_rack_cells(), reel_diameter="15inch")
+    context["reel_thickness"] = "20.0"
 
     decision = service.plan_allocation(
         "SVYU00125TP4LCR02_2",
-        context=_context(cells=_full_rack_cells()),
+        context=context,
     )
 
     assert decision.kind == "RACK_OPERATION_REQUIRED"
@@ -591,7 +593,7 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
     assert payload["request_type"] == "SMT_RACK_OPERATION"
     assert payload["operation_type"] == "REPLACE_CLASSIFIER_WORK_RACK"
     assert payload["operation_key"] == decision.rack_operation_request.operation_key
-    assert payload["material"] == SIX_IN_ONE
+    assert payload["material"] == {**SIX_IN_ONE, "reel_diameter": "15inch", "reel_thickness": "20.0"}
     assert payload["current_rack_snapshot"]["rack_id"] == "RACK-001"
     assert payload["actions"] == ["MOVE_OUT_ACTIVE_RACK", "ALLOCATE_AND_MOVE_RACK"]
     assert payload["trace_id"] == "trace-001"

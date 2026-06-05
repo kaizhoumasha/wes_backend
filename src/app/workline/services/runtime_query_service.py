@@ -42,10 +42,12 @@ from src.app.workline.models.runtime import (
     TraceQueryRequest,
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+from src.app.workline.services.trace_resource_view_builder import build_trace_resource_view
 from src.app.workline.services.trace_response_builder import (
     _blocked_wait_seconds,
     _resource_wait_detail_summary,
-    build_trace_response,
+    build_trace_session_item,
     build_trace_timeline_item,
 )
 from src.core.base_service import BaseService
@@ -1243,7 +1245,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         """聚合 Session 粒度的设备路径视图。"""
         from src.app.workline.services.trace_query_service import trace_query_service
 
-        result = await trace_query_service.by_session_id(db, session_id)
+        result = await trace_query_service.path_by_session_id(db, session_id)
         if result.session is None:
             return None
         devices = await device_repository.get_by_work_line_id(db, result.session.workline_id)
@@ -1253,8 +1255,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         """聚合 Trace ID 粒度的设备路径视图。"""
         from src.app.workline.services.trace_query_service import trace_query_service
 
-        result = await trace_query_service.by_trace_id(db, trace_id)
-        if result.session is None and not result.callback_logs:
+        result = await trace_query_service.path_by_trace_id(db, trace_id)
+        if result.session is None and not _trace_path_has_facts(result):
             return None
         devices = (
             await device_repository.get_by_work_line_id(db, result.session.workline_id)
@@ -1348,7 +1350,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         trace_id = result.trace.trace_id if result.trace else None
 
-        evidence = build_trace_response(result)
         timeline_groups = self._build_trace_timeline_groups(
             result.timelines,
             commands_by_id={cmd.id: cmd for cmd in result.commands if cmd.id is not None},
@@ -1357,16 +1358,26 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_identity_by_code=device_identity_by_code,
             blocking_device_id=blocking_device_id,
         )
+        session_items = [
+            item
+            for item in (
+                build_trace_session_item(session_item, include_context_json=False)
+                for session_item in getattr(result, "sessions", [])
+            )
+            if item is not None
+        ]
 
         return RuntimeTracePathResponse(
             workline_id=session.workline_id if session else None,
             session_id=session.id if session else None,
             trace_id=trace_id,
+            diagnosis_verdict=diagnosis_verdict_builder.build(result),
+            sessions=session_items,
+            resource_view=build_trace_resource_view(result),
             devices=list(devices_map.values()),
             timeline_groups=timeline_groups,
             current_blocking_device_id=blocking_device_id,
             blocking_reason=blocking_reason,
-            evidence=evidence,
         )
 
     def _build_trace_timeline_groups(
@@ -1550,6 +1561,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
             is_current=False,
             is_blocked=False,
         )
+
+
+def _trace_path_has_facts(result: Any) -> bool:
+    return any(
+        getattr(result, attr, None)
+        for attr in (
+            "callback_logs",
+            "sessions",
+            "commands",
+            "outboxes",
+            "inboxes",
+            "timelines",
+            "diagnostics",
+        )
+    )
 
 
 runtime_query_service = RuntimeQueryService()

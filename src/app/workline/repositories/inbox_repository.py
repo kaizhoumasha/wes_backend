@@ -275,6 +275,68 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         result = await db.execute(statement)
         return cast("WorklineInbox | None", result.scalar_one_or_none())
 
+    async def list_pending_entry_admission_cases(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+    ) -> list[WorklineInbox]:
+        if limit <= 0:
+            return []
+
+        columns = cast("Any", WorklineInbox).__table__.c
+        filters = self._pending_entry_admission_filters(
+            columns,
+            workline_id=workline_id,
+            device_id=device_id,
+        )
+        result = await db.execute(
+            select(WorklineInbox).where(*filters).order_by(columns.received_at.asc(), columns.id.asc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def count_pending_entry_admission_cases(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+    ) -> int:
+        columns = cast("Any", WorklineInbox).__table__.c
+        filters = self._pending_entry_admission_filters(
+            columns,
+            workline_id=workline_id,
+            device_id=device_id,
+        )
+        result = await db.execute(select(func.count()).select_from(WorklineInbox).where(*filters))
+        return int(result.scalar_one() or 0)
+
+    def _pending_entry_admission_filters(
+        self,
+        columns: Any,
+        *,
+        workline_id: int | None,
+        device_id: int | None,
+    ) -> list[Any]:
+        filters: list[Any] = [
+            columns.status == InboxStatus.RETRY.value,
+            columns.kind == InboxKind.DEVICE_EVENT.value,
+            columns.session_id.is_(None),
+            columns.error_message.ilike("%Workline entry admission blocked by busy session%"),
+        ]
+        if workline_id is not None:
+            filters.append(
+                or_(
+                    columns.workline_id == workline_id,
+                    columns.error_message.ilike(f"%workline_id={workline_id},%"),
+                )
+            )
+        if device_id is not None:
+            filters.append(columns.device_id == device_id)
+        return filters
+
     async def get_by_kind(
         self,
         db: AsyncSession,
