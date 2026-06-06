@@ -1,5 +1,6 @@
 """WorkLine 插件配置校验测试。"""
 
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -43,6 +44,8 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
+
+workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
 
 
 def make_workline() -> WorkLine:
@@ -99,6 +102,169 @@ def test_workline_service_lists_registered_plugin_options() -> None:
     assert options_by_key[SMT_SORTING_INBOUND_PLUGIN_KEY].default_contract_version == (
         SMT_SORTING_INBOUND_CONTRACT_VERSION
     )
+
+
+def test_workline_service_returns_single_plugin_manifest_summary() -> None:
+    """单插件 manifest 摘要应暴露前端现场态势图所需角色映射。"""
+
+    service = WorkLineService()
+
+    summary = service.get_plugin_manifest_summary(SMT_SORTING_INBOUND_PLUGIN_KEY)
+
+    assert summary is not None
+    assert summary.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
+    assert summary.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
+    assert {req.role for req in summary.required_device_roles} == {
+        ROLE_SORTING_SOURCE_ARM,
+        ROLE_SORTING_SCAN_PLATFORM,
+        ROLE_SORTING_TARGET_ARM,
+        ROLE_SORTING_NG_ARM,
+        ROLE_SORTING_NG_STATION,
+        ROLE_SORTING_WORKSTATION,
+    }
+    assert summary.event_source_roles[EVENT_WORKING_BIN_SCAN] == [ROLE_SORTING_SCAN_PLATFORM]
+    assert summary.event_source_roles[EVENT_SESSION_COMPLETE_REQUESTED] == [ROLE_SORTING_WORKSTATION]
+    assert summary.command_target_roles[COMMAND_SOURCE_PICK] == [ROLE_SORTING_SOURCE_ARM]
+    assert summary.command_target_roles[COMMAND_TARGET_PLACE] == [ROLE_SORTING_TARGET_ARM]
+    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_NG_ARM]
+    assert EVENT_WORKING_BIN_SCAN in summary.supported_events
+    assert COMMAND_TARGET_PLACE in summary.supported_commands
+
+
+def test_workline_service_rejects_manifest_summary_missing_event_source_roles(monkeypatch) -> None:
+    """manifest 摘要字段缺失时，Service 应抛明确 ValueError。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="broken_plugin",
+        contract_version="broken.v1",
+        required_device_roles=(),
+        command_target_roles={},
+        supported_events=frozenset(),
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    with pytest.raises(ValueError, match="event_source_roles"):
+        WorkLineService().get_plugin_manifest_summary("broken_plugin")
+
+
+def test_workline_service_rejects_manifest_summary_missing_supported_events(monkeypatch) -> None:
+    """manifest 摘要字段缺失时，Service 应抛明确 ValueError。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="broken_plugin",
+        contract_version="broken.v1",
+        required_device_roles=(),
+        event_source_roles={},
+        command_target_roles={},
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    with pytest.raises(ValueError, match="supported_events"):
+        WorkLineService().get_plugin_manifest_summary("broken_plugin")
+
+
+def test_workline_service_rejects_manifest_summary_mapping_supported_events(monkeypatch) -> None:
+    """supported_events 不能把 dict keys 当事件列表。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="broken_plugin",
+        contract_version="broken.v1",
+        required_device_roles=(),
+        event_source_roles={},
+        command_target_roles={},
+        supported_events={"EVENT_A": "bad"},
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    with pytest.raises(ValueError, match="supported_events"):
+        WorkLineService().get_plugin_manifest_summary("broken_plugin")
+
+
+def test_workline_service_rejects_mapping_required_role_capabilities(monkeypatch) -> None:
+    """capabilities 不能把 dict keys 当能力列表。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="broken_plugin",
+        contract_version="broken.v1",
+        required_device_roles=(
+            SimpleNamespace(
+                role="SCANNER",
+                min_count=1,
+                max_count=1,
+                capabilities={"cap_a": "bad"},
+            ),
+        ),
+        event_source_roles={},
+        command_target_roles={},
+        supported_events=frozenset(),
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    with pytest.raises(ValueError, match="capabilities"):
+        WorkLineService().get_plugin_manifest_summary("broken_plugin")
+
+
+def test_workline_service_rejects_mapping_event_source_role_values(monkeypatch) -> None:
+    """event_source_roles 不能把 dict keys 当角色列表。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="broken_plugin",
+        contract_version="broken.v1",
+        required_device_roles=(),
+        event_source_roles={"EVENT_A": {"SCANNER": "bad"}},
+        command_target_roles={},
+        supported_events=frozenset(),
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    with pytest.raises(ValueError, match=r"event_source_roles\.EVENT_A"):
+        WorkLineService().get_plugin_manifest_summary("broken_plugin")
+
+
+def test_workline_service_sorts_manifest_required_role_capabilities(monkeypatch) -> None:
+    """capabilities 来自 frozenset，响应中必须稳定排序。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="capability_plugin",
+        contract_version="capability.v1",
+        required_device_roles=(
+            SimpleNamespace(
+                role="SCANNER",
+                min_count=1,
+                max_count=1,
+                capabilities=frozenset({"cap_z", "cap_a", "cap_m", "cap_b", "cap_y"}),
+            ),
+        ),
+        event_source_roles={},
+        command_target_roles={},
+        supported_events=frozenset(),
+        supported_commands=frozenset(),
+    )
+    definition = SimpleNamespace(plugin_key="capability_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    summary = WorkLineService().get_plugin_manifest_summary("capability_plugin")
+
+    assert summary is not None
+    assert summary.required_device_roles[0].capabilities == ["cap_a", "cap_b", "cap_m", "cap_y", "cap_z"]
+
+
+def test_workline_service_returns_none_for_unknown_plugin_manifest_summary() -> None:
+    """未知插件 manifest 摘要应返回 None，交给 API 层转统一 404。"""
+
+    service = WorkLineService()
+
+    assert service.get_plugin_manifest_summary("unknown_plugin") is None
 
 
 def test_workline_service_status_path_defaults_to_standard_endpoint_not_callback_path() -> None:

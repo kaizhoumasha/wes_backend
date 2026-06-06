@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.4.7.0] - 2026-06-06
+
+### Added
+
+- 新增单插件 WorkLine manifest 摘要接口，前端可按 `plugin_key` 获取设备角色、事件来源角色、命令目标角色和支持的事件/命令，用于 runtime scene 现场态势图适配。
+
+### Changed
+
+- 插件选项与 manifest 摘要复用统一的 manifest 字段归一化校验，输出稳定排序并拒绝错误类型，避免前端把异常 manifest 当作有效语义消费。
+
+### Fixed
+
+- manifest 摘要加载失败时返回统一校验错误，未知插件返回统一不存在响应，避免坏插件声明变成内部异常。
+
 ## [0.4.6.0] - 2026-06-05
 
 ### Added
