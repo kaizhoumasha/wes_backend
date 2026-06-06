@@ -52,7 +52,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
     PHASE_WAITING_SCAN,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -227,9 +226,8 @@ async def _persist_workline_with_devices(db_session: AsyncSession, workline: Wor
         _device(
             device_code="SORT-TARGET-ARM",
             role=ROLE_SORTING_TARGET_ARM,
-            supports_command_types=[COMMAND_TARGET_PLACE],
+            supports_command_types=[COMMAND_TARGET_PLACE, COMMAND_NG_PLACE],
         ),
-        _device(device_code="SORT-NG-ARM", role=ROLE_SORTING_NG_ARM, supports_command_types=[COMMAND_NG_PLACE]),
         _device(
             device_code="SORT-SCAN-PLATFORM",
             role=ROLE_SORTING_SCAN_PLATFORM,
@@ -308,7 +306,7 @@ def _ng_place_result() -> WorklineInbox:
         source_system="DEVICE",
         payload_json={
             "command_code": "CMD-NG-PLACE-SMOKE",
-            "device_code": "SORT-NG-ARM",
+            "device_code": "SORT-TARGET-ARM",
             "task_type": COMMAND_NG_PLACE,
             "result": "SUCCESS",
             "data": {},
@@ -843,7 +841,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
     db_session.add(session)
     await db_session.flush()
     inbox.session_id = session.id
-    ng_device = next(device for device in devices if device.device_code == "SORT-NG-ARM")
+    ng_device = next(device for device in devices if device.device_code == "SORT-TARGET-ARM")
     existing_command = DeviceCommand(
         command_code="CMD-SMT-NG-CONFLICT-EXISTING",
         device_id=ng_device.id,
@@ -880,7 +878,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
             },
             "ng_command_payload": {
                 "command_code": "CMD-SMT-NG-CONFLICT",
-                "device_code": "SORT-NG-ARM",
+                "device_code": "SORT-TARGET-ARM",
                 "command_type": COMMAND_NG_PLACE,
                 "result": "SUCCESS",
                 "data": {"ng_location": "NG-01"},

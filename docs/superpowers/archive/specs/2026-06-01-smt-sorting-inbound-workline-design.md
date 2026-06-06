@@ -97,8 +97,7 @@ P0 分两步实施：
 首版角色：
 
 - `SORTING_SOURCE_ARM`：源端机械臂，负责从单层货架源料格取盘到扫码平台。
-- `SORTING_TARGET_ARM`：目标端机械臂，负责从扫码平台放盘到目标箱目标格。
-- `SORTING_NG_ARM`：本地 NG 机械臂角色；若现场与源端机械臂或目标端机械臂为同一物理设备，由 topology 绑定到同一设备。
+- `SORTING_TARGET_ARM`：目标端机械臂，负责从扫码平台放盘到目标箱目标格，也负责从扫码平台放盘到本地 NG 位。
 - `SORTING_SCAN_PLATFORM`：扫码平台。
 - `SORTING_NG_STATION`：本地 NG 位，例如 `SCAN_NG` / `STATION_NG`。
 - `SORTING_WORKSTATION`：目标箱工作位。
@@ -113,10 +112,10 @@ P0 分两步实施：
 | --- | --- |
 | 源料格取盘到扫码平台命令 | `SORTING_SOURCE_ARM` |
 | 扫码平台放盘到目标格命令 | `SORTING_TARGET_ARM` |
-| 扫码平台放盘到本地 NG 位命令 | `SORTING_NG_ARM` |
+| 扫码平台放盘到本地 NG 位命令 | `SORTING_TARGET_ARM` |
 | 源端取盘完成事件或命令结果 | `SORTING_SOURCE_ARM` |
 | 目标端放盘完成事件或命令结果 | `SORTING_TARGET_ARM` |
-| 本地 NG 放盘完成事件或命令结果 | `SORTING_NG_ARM` |
+| 本地 NG 放盘完成事件或命令结果 | `SORTING_TARGET_ARM` |
 | 工作位二次扫码事件 `WORKING_BIN_SCAN` | `SORTING_WORKSTATION` |
 
 具体 `task_type`、事件名和硬件字段可在插件详细合同中命名，但不得跳过角色映射直接写设备编码。
@@ -565,7 +564,7 @@ WES 锁定源料格顶部一盘，向 `SORTING_SOURCE_ARM` 下发从源料格到
 
 ### 13. 本地 NG 分支
 
-当料盘进入 `SOURCE_SNAPSHOT_MISMATCH_TO_NG` 时，WES 向 `SORTING_NG_ARM` 下发从扫码平台到本地 NG 位的搬运动作。
+当料盘进入 `SOURCE_SNAPSHOT_MISMATCH_TO_NG` 时，WES 向 `SORTING_TARGET_ARM` 下发从扫码平台到本地 NG 位的搬运动作。
 
 成功后：
 
@@ -730,7 +729,7 @@ Session 完成必须同时满足：
 
 - 源端机械臂尚未取盘：立即暂停，不再取新盘。
 - 源端机械臂已取盘且料盘已在扫码平台：允许扫码；若扫码一致则分格并由目标端机械臂放入目标箱，若扫码不一致则完成本地 NG，然后暂停。
-- 目标端机械臂或本地 NG 机械臂已执行中：等待命令结果；成功则更新对应投影或 NG evidence，失败则进入异常处理。
+- 目标端机械臂执行目标放料或本地 NG 放料中：等待命令结果；成功则更新对应投影或 NG evidence，失败则进入异常处理。
 - CTU 已背负料箱：只允许安全停靠或完成当前不可中断动作到安全状态，不接受新任务。
 
 暂停期间不允许：
@@ -751,7 +750,7 @@ Session 完成必须同时满足：
 - CTU 背篓为空，或背篓内箱号与 WES 投影一致。
 - 流水线扫码位、工作位、退箱区状态可确认。
 - 扫码平台为空，或平台上料盘有明确 Session 归属。
-- 源端机械臂、目标端机械臂和本地 NG 机械臂无未知结果命令。
+- 源端机械臂和目标端机械臂无未知结果命令。
 - 分拣机没有急停、离线或故障。
 - 当前 primary station 单层货架仍在原 Station，源料格投影可信。
 
@@ -775,7 +774,7 @@ Session 完成必须同时满足：
 - 目标箱实物位置未知。
 - CTU 背篓内容不可信。
 - 扫码平台料盘归属不明确。
-- 源端机械臂、目标端机械臂或本地 NG 机械臂命令结果未知。
+- 源端机械臂或目标端机械臂命令结果未知。
 - 扫码结果与 WES 投影冲突，且无法通过本地 NG 流程安全闭环。
 - 分拣机急停或安全状态未解除。
 
@@ -858,7 +857,7 @@ WMS/RCS 回调应支持：
 - 源端机械臂取盘放到扫码平台完成。
 - 扫码平台扫码完成或失败。
 - 目标端机械臂从扫码平台放到目标格完成。
-- 本地 NG 机械臂从扫码平台放到 NG 位完成。
+- 目标端机械臂从扫码平台放到 NG 位完成。
 - 机械臂失败、急停、离线。
 
 ## 首版系统边界
@@ -927,7 +926,7 @@ P0 门禁是进入实施和合并 P0 两步 PR 的必要条件；不要求完整
 12. `NG_MATERIAL_CONFLICT` 必须落到 RuntimeHold、`RECONCILING` 或 `MANUAL_HOLD`，并阻止 Session 完成，直到冲突解除。
 13. Session 完成必须检查所有在制物料均已本地闭环；NG 后续对账不把 Session 切入 `EXTERNAL_HTTP` 等待。
 14. 设备命令必须通过 WorkLine 角色解析，不得在插件业务逻辑中写死 `ARM01/ARM02` 等设备编码。
-15. 插件合同必须声明命令/事件到 `SORTING_SOURCE_ARM`、`SORTING_TARGET_ARM`、`SORTING_NG_ARM`、`SORTING_WORKSTATION` 等角色的映射。
+15. 插件合同必须声明命令/事件到 `SORTING_SOURCE_ARM`、`SORTING_TARGET_ARM`、`SORTING_WORKSTATION` 等角色的映射。
 16. 分拣业务阶段不得新增通用 `SessionStatus` 枚举；细粒度阶段必须保存在插件 context、资源投影或事件证据中，并能映射到现有通用状态。
 17. P0 测试必须覆盖 active snapshot 查询有界性，防止源格候选或目标格候选循环中出现 N+1 查询。
 
@@ -990,7 +989,7 @@ Plugin PR 必跑：
 - `NgReturnItem` 幂等键：同一 Session/同一命令重复上报返回同一 item；不同来源命中同一 active `material_identity_key` 时进入 `NG_MATERIAL_CONFLICT`。
 - `NG_MATERIAL_CONFLICT` 落点：验证冲突会创建 RuntimeHold 或切入 `RECONCILING`/`MANUAL_HOLD`，并阻止 Session 完成和源格释放。
 - 暂停规则：源端机械臂未取盘、扫码平台已有盘、目标端机械臂执行中、本地 NG 执行中四种分支。
-- 插件合同：命令/事件角色映射覆盖源端机械臂、目标端机械臂、本地 NG 机械臂和工作位二次扫码。
+- 插件合同：命令/事件角色映射覆盖源端机械臂、目标端机械臂、本地 NG 位和工作位二次扫码。
 
 完整流程后续测试方向：
 

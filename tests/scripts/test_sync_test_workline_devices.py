@@ -34,7 +34,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -357,7 +356,6 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     assert [device.device_code for device in devices] == [
         "SORT-SOURCE-ARM-01",
         "SORT-TARGET-ARM-01",
-        "SORT-NG-ARM-01",
         "SORT-SCAN-PLATFORM-01",
         "SORT-NG-STATION-01",
         "SORT-WORKSTATION-01",
@@ -365,15 +363,16 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     assert [device.device_role for device in devices] == [
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
-        ROLE_SORTING_NG_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     ]
     capabilities_by_code = {device.device_code: device.capabilities_json for device in devices}
     assert capabilities_by_code["SORT-SOURCE-ARM-01"]["supports_command_types"] == [COMMAND_SOURCE_PICK]
-    assert capabilities_by_code["SORT-TARGET-ARM-01"]["supports_command_types"] == [COMMAND_TARGET_PLACE]
-    assert capabilities_by_code["SORT-NG-ARM-01"]["supports_command_types"] == [COMMAND_NG_PLACE]
+    assert capabilities_by_code["SORT-TARGET-ARM-01"]["supports_command_types"] == [
+        COMMAND_TARGET_PLACE,
+        COMMAND_NG_PLACE,
+    ]
     assert capabilities_by_code["SORT-SCAN-PLATFORM-01"]["supports_event_types"] == [EVENT_WORKING_BIN_SCAN]
     assert capabilities_by_code["SORT-NG-STATION-01"]["supports_command_types"] == []
     assert capabilities_by_code["SORT-NG-STATION-01"]["supports_event_types"] == []
@@ -398,7 +397,9 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         .all()
     )
     assert smt_rack_positions == []
-    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["created"] == 6
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["created"] == len(
+        TEST_SMT_SORTING_INBOUND_DEVICES
+    )
 
 
 @pytest.mark.asyncio
@@ -431,7 +432,9 @@ async def test_sync_test_workline_devices_is_idempotent_for_rough_and_smt(db_ses
     assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
     assert result["summary_by_workline"][TEST_ROUGH_SORTER_LINE_CODE]["worklines"]["unchanged"] == 1
     assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["worklines"]["unchanged"] == 1
-    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["unchanged"] == 6
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["unchanged"] == len(
+        TEST_SMT_SORTING_INBOUND_DEVICES
+    )
 
 
 @pytest.mark.asyncio

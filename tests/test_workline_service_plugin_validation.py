@@ -35,7 +35,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -118,7 +117,6 @@ def test_workline_service_returns_single_plugin_manifest_summary() -> None:
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_TARGET_ARM,
-        ROLE_SORTING_NG_ARM,
         ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
@@ -126,7 +124,7 @@ def test_workline_service_returns_single_plugin_manifest_summary() -> None:
     assert summary.event_source_roles[EVENT_SESSION_COMPLETE_REQUESTED] == [ROLE_SORTING_WORKSTATION]
     assert summary.command_target_roles[COMMAND_SOURCE_PICK] == [ROLE_SORTING_SOURCE_ARM]
     assert summary.command_target_roles[COMMAND_TARGET_PLACE] == [ROLE_SORTING_TARGET_ARM]
-    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_NG_ARM]
+    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_TARGET_ARM]
     assert EVENT_WORKING_BIN_SCAN in summary.supported_events
     assert COMMAND_TARGET_PLACE in summary.supported_commands
 
@@ -301,7 +299,6 @@ def test_smt_sorting_inbound_plugin_assignment_accepts_required_roles() -> None:
         [
             make_device(1, ROLE_SORTING_SOURCE_ARM),
             make_device(2, ROLE_SORTING_TARGET_ARM),
-            make_device(3, ROLE_SORTING_NG_ARM),
             make_device(4, ROLE_SORTING_SCAN_PLATFORM),
             make_device(5, ROLE_SORTING_NG_STATION),
             make_device(6, ROLE_SORTING_WORKSTATION),
@@ -333,9 +330,8 @@ async def test_smt_sorting_inbound_configuration_status_does_not_require_event_c
         ),
         (
             ROLE_SORTING_TARGET_ARM,
-            {"supports_command_types": [COMMAND_TARGET_PLACE], "supports_event_types": ["ARM_READY"]},
+            {"supports_command_types": [COMMAND_TARGET_PLACE, COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]},
         ),
-        (ROLE_SORTING_NG_ARM, {"supports_command_types": [COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]}),
         (ROLE_SORTING_SCAN_PLATFORM, {"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
         (ROLE_SORTING_NG_STATION, {}),
         (ROLE_SORTING_WORKSTATION, {"supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED]}),
@@ -374,7 +370,6 @@ def test_smt_sorting_inbound_plugin_assignment_rejects_missing_required_role() -
             [
                 make_device(1, ROLE_SORTING_SOURCE_ARM),
                 make_device(2, ROLE_SORTING_TARGET_ARM),
-                make_device(3, ROLE_SORTING_NG_ARM),
                 make_device(5, ROLE_SORTING_NG_STATION),
                 make_device(6, ROLE_SORTING_WORKSTATION),
             ],

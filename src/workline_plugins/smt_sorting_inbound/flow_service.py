@@ -20,7 +20,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_TARGET_ARM,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
@@ -155,7 +154,7 @@ class SmtSortingInboundFlowService:
                     payload=context_patch,
                 ),
                 RuntimeIntent.command(
-                    device_role=ROLE_SORTING_NG_ARM,
+                    device_role=ROLE_SORTING_TARGET_ARM,
                     action=COMMAND_NG_PLACE,
                     payload=self._ng_place_command_payload(context_patch["sorting"]),
                 ),

@@ -11,7 +11,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -34,7 +33,7 @@ if TYPE_CHECKING:
 COMMAND_TARGET_ROLES: dict[str, str] = {
     COMMAND_SOURCE_PICK: ROLE_SORTING_SOURCE_ARM,
     COMMAND_TARGET_PLACE: ROLE_SORTING_TARGET_ARM,
-    COMMAND_NG_PLACE: ROLE_SORTING_NG_ARM,
+    COMMAND_NG_PLACE: ROLE_SORTING_TARGET_ARM,
 }
 
 EVENT_SOURCE_ROLES: dict[str, str] = {
@@ -100,7 +99,6 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         required_device_roles=(
             DeviceRoleRequirement(role=ROLE_SORTING_SOURCE_ARM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_TARGET_ARM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_NG_ARM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_SCAN_PLATFORM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_NG_STATION, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
@@ -144,13 +142,13 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
     @on_command(COMMAND_NG_PLACE, result="SUCCESS")
     async def handle_ng_place_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """NG 机械臂放置成功后，关闭本地 NG 物料。"""
+        """目标机械臂完成 NG 放置后，关闭本地 NG 物料。"""
 
         return await self._flow_service.handle_ng_place_success(ctx, inbox)
 
     @on_command(COMMAND_NG_PLACE, result="FAILED")
     async def handle_ng_place_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """NG 机械臂放置失败后，阻断自动流转。"""
+        """目标机械臂 NG 放置失败后，阻断自动流转。"""
 
         return await self._flow_service.handle_ng_place_failed(ctx, inbox)
 

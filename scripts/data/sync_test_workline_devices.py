@@ -44,7 +44,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -203,21 +202,7 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
         role_index=1,
         sort_order=20,
         capabilities_json={
-            "supports_command_types": [COMMAND_TARGET_PLACE],
-            "supports_event_types": [],
-            "supports_ack_response": True,
-            "supports_result_callback": True,
-            "status_path": MOCK_ECS_STATUS_PATH,
-        },
-    ),
-    TestDeviceSeed(
-        device_code="SORT-NG-ARM-01",
-        device_name="测试 SMT 分拣入库 NG 机械臂",
-        device_role=ROLE_SORTING_NG_ARM,
-        role_index=1,
-        sort_order=30,
-        capabilities_json={
-            "supports_command_types": [COMMAND_NG_PLACE],
+            "supports_command_types": [COMMAND_TARGET_PLACE, COMMAND_NG_PLACE],
             "supports_event_types": [],
             "supports_ack_response": True,
             "supports_result_callback": True,
@@ -229,7 +214,7 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
         device_name="测试 SMT 分拣入库扫码平台",
         device_role=ROLE_SORTING_SCAN_PLATFORM,
         role_index=1,
-        sort_order=40,
+        sort_order=30,
         capabilities_json={
             "supports_command_types": [],
             "supports_event_types": [EVENT_WORKING_BIN_SCAN],
@@ -243,7 +228,7 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
         device_name="测试 SMT 分拣入库 NG 工位",
         device_role=ROLE_SORTING_NG_STATION,
         role_index=1,
-        sort_order=50,
+        sort_order=40,
         capabilities_json={
             "supports_command_types": [],
             "supports_event_types": [],
@@ -257,7 +242,7 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
         device_name="测试 SMT 分拣入库工作站",
         device_role=ROLE_SORTING_WORKSTATION,
         role_index=1,
-        sort_order=60,
+        sort_order=50,
         capabilities_json={
             "supports_command_types": [],
             "supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED],

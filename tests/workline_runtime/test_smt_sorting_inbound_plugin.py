@@ -22,7 +22,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -54,7 +53,6 @@ def test_smt_sorting_inbound_manifest_declares_required_roles() -> None:
     assert {requirement.role for requirement in manifest.required_device_roles} == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
-        ROLE_SORTING_NG_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
@@ -68,7 +66,7 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert manifest.command_target_roles == {
         COMMAND_SOURCE_PICK: (ROLE_SORTING_SOURCE_ARM,),
         COMMAND_TARGET_PLACE: (ROLE_SORTING_TARGET_ARM,),
-        COMMAND_NG_PLACE: (ROLE_SORTING_NG_ARM,),
+        COMMAND_NG_PLACE: (ROLE_SORTING_TARGET_ARM,),
     }
     assert manifest.event_source_roles == {
         EVENT_WORKING_BIN_SCAN: (ROLE_SORTING_SCAN_PLATFORM,),
@@ -245,7 +243,7 @@ def _ng_place_result_inbox(
             kind="COMMAND_RESULT",
             payload_json={
                 "command_code": "CMD-NG-PLACE-001",
-                "device_code": "SORT-NG-ARM",
+                "device_code": "SORT-TARGET-ARM",
                 "task_type": COMMAND_NG_PLACE,
                 "result": result,
                 "data": data or {},
@@ -549,7 +547,7 @@ async def test_working_bin_scan_identity_mismatch_sends_reel_to_local_ng() -> No
     assert intents[0].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
     assert intents[1].reason_code == "LOCAL_SORTING_NG"
     assert intents[2].action == COMMAND_NG_PLACE
-    assert intents[2].device_role == ROLE_SORTING_NG_ARM
+    assert intents[2].device_role == ROLE_SORTING_TARGET_ARM
 
 
 @pytest.mark.asyncio
