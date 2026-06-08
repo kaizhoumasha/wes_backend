@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
     from src.app.workline.models.session import WorklineSession
 
+_SMT_SORTING_TARGET_STATION_CODE = "TARGET_STATION"
+
 
 class StationLeaseReasonCode(StrEnum):
     """Station lease 不可用原因。"""
@@ -240,6 +242,15 @@ class WorklineStationLeaseService:
         active_bin_rack = context.get("active_bin_rack")
         if isinstance(active_bin_rack, dict) and active_bin_rack.get("position_code") == position_code:
             return StationLeaseReasonCode.ACTIVE_DISPATCH_LEASE
+
+        sorting = context.get("sorting")
+        if (
+            position_code == _SMT_SORTING_TARGET_STATION_CODE
+            and isinstance(sorting, dict)
+            and isinstance(sorting.get("pending_target_placement"), dict)
+            and sorting["pending_target_placement"]
+        ):
+            return StationLeaseReasonCode.ACTIVE_SESSION_BOUND
 
         rack_operation = context.get("rack_operation")
         if isinstance(rack_operation, dict) and (

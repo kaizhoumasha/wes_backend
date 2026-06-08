@@ -11,6 +11,8 @@ from src.app.workline.models.session import RuntimeReconciliationState, SessionS
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 
+_SMT_SORTING_TARGET_STATION_CODE = "TARGET_STATION"
+
 
 class WorklineSessionRepository(BaseRepository[WorklineSession]):
     """作业线会话数据访问层"""
@@ -135,6 +137,12 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                     columns.context_json["active_bin_rack"]["position_code"].as_string() == position_code,
                     columns.context_json["rack_operation"]["target_position_code"].as_string() == position_code,
                     columns.context_json["rack_operation"]["work_position_code"].as_string() == position_code,
+                    and_(
+                        position_code == _SMT_SORTING_TARGET_STATION_CODE,
+                        columns.context_json["sorting"]["pending_target_placement"]["target_bin_code"]
+                        .as_string()
+                        .isnot(None),
+                    ),
                 ),
             )
             .order_by(columns.created_at.asc(), columns.id.asc())

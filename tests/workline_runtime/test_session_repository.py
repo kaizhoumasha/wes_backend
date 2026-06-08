@@ -99,6 +99,22 @@ async def test_list_open_station_conflict_candidates_filters_by_station_scope(db
             context_json={"active_bin_rack": {"position_code": "STATION-A"}},
         ),
         WorklineSession(
+            session_code="session-smt-target-pending",
+            workline_id=45,
+            plugin_key="SMT_SORTING_INBOUND",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.WAITING_DEVICE_RESULT,
+            context_json={
+                "sorting": {
+                    "business_phase": "WAITING_TARGET_PLACE",
+                    "pending_target_placement": {
+                        "target_bin_code": "TGT-BIN-01",
+                        "target_cell_code": "B02",
+                    },
+                },
+            },
+        ),
+        WorklineSession(
             session_code="session-other-position",
             workline_id=45,
             plugin_key="test_workline_plugin",
@@ -137,3 +153,11 @@ async def test_list_open_station_conflict_candidates_filters_by_station_scope(db
         "session-rack-operation-bound",
         "session-active-rack-bound",
     ]
+
+    target_candidates = await WorklineSessionRepository().list_open_station_conflict_candidates(
+        db_session,
+        workline_id=45,
+        position_code="TARGET_STATION",
+    )
+
+    assert [candidate.session_code for candidate in target_candidates] == ["session-smt-target-pending"]

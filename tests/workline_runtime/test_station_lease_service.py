@@ -443,6 +443,37 @@ async def test_station_lease_busy_when_open_session_binds_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_station_lease_busy_when_smt_sorting_session_has_pending_target_placement() -> None:
+    harness = build_harness(
+        sessions=[
+            session(
+                context_json={
+                    "sorting": {
+                        "business_phase": "WAITING_TARGET_PLACE",
+                        "pending_target_placement": {
+                            "target_bin_code": "TGT-BIN-01",
+                            "target_cell_code": "B02",
+                        },
+                    }
+                }
+            )
+        ]
+    )
+
+    result = await harness.service.get_station_lease_status(
+        object(),
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        position_code="TARGET_STATION",
+        allow_active_rack_bound=True,
+    )
+
+    assert result.available is False
+    assert result.reason_code == StationLeaseReasonCode.ACTIVE_SESSION_BOUND
+    assert result.active_session_id == 601
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "context_json",
     [
