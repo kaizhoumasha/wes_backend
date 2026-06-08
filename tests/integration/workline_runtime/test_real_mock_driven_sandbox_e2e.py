@@ -28,7 +28,11 @@ from src.app.resource.models import (
     BinCellOccupancyStatus,
     BinMaterialMount,
     BinMaterialMountStatus,
+    RackBinMount,
+    RackBinMountStatus,
     RackKind,
+    RackPlacement,
+    RackPlacementStatus,
     ResourceSourceSystem,
     ResourceStateEvent,
 )
@@ -656,6 +660,22 @@ async def _persist_smt_sorting_fixture(
     )
     db.add(workline)
     await db.flush()
+    db.add(
+        WorklineRackPosition(
+            workline_id=cast("int", workline.id),
+            workline_code=workline.line_code,
+            position_code="TARGET_STATION",
+            position_name=f"{prefix} 目标单层货架工位",
+            position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK,
+            allowed_rack_kind=RackKind.SINGLE_LAYER,
+            capacity=1,
+            logic_location_code=f"{workline.line_code}:TARGET_STATION",
+            external_location_code="TARGET_STATION",
+            device_role=ROLE_SORTING_TARGET_ARM,
+            priority=10,
+            enabled=True,
+        )
+    )
     source = Device(
         device_code=f"{prefix}_SORT_SOURCE",
         device_name=f"{prefix} 源端机械臂",
@@ -808,10 +828,12 @@ async def test_smt_sorting_inbound_real_resource_projection_flow(
                     "context_schema_version": 1,
                     "stations": {"scan_platform": "EMPTY"},
                     "active_target_bin": {
+                        "rack_code": f"{prefix}_TGT_RACK",
                         "snapshot_version": "snap-real-resource",
                         "cells": [
                             {
                                 "bin_code": f"{prefix}_TGT_BIN",
+                                "rack_slot_code": "A",
                                 "bin_cell_index": "B02",
                                 "bin_cell_code": "B02",
                                 "status": "EMPTY",
@@ -825,6 +847,38 @@ async def test_smt_sorting_inbound_real_resource_projection_flow(
             started_at=timezone.now_for_db(),
         )
         db.add(session)
+        db.add(
+            RackPlacement(
+                rack_code=f"{prefix}_TGT_RACK",
+                rack_kind=RackKind.SINGLE_LAYER,
+                location_code=f"{workline.line_code}:TARGET_STATION",
+                workline_id=cast("int", workline.id),
+                workline_code=workline.line_code,
+                position_code="TARGET_STATION",
+                position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK.value,
+                logic_location_code=f"{workline.line_code}:TARGET_STATION",
+                external_location_code="TARGET_STATION",
+                placement_status=RackPlacementStatus.ARRIVED,
+                source_system=ResourceSourceSystem.WMS,
+                source_event_id=f"{trace_id}:seed-target-rack-placement",
+                trace_id=trace_id,
+                session_id="seed",
+                started_at=timezone.now_for_db(),
+            )
+        )
+        db.add(
+            RackBinMount(
+                rack_code=f"{prefix}_TGT_RACK",
+                rack_slot_code="A",
+                bin_code=f"{prefix}_TGT_BIN",
+                mount_status=RackBinMountStatus.MOUNTED,
+                source_system=ResourceSourceSystem.WMS,
+                source_event_id=f"{trace_id}:seed-target-bin-mount",
+                trace_id=trace_id,
+                session_id="seed",
+                started_at=timezone.now_for_db(),
+            )
+        )
         source_occupancy = BinCellOccupancy(
             bin_code=f"{prefix}_SRC_BIN",
             bin_cell_index="A01",

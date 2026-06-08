@@ -199,7 +199,11 @@ class WorklineStationLeaseService:
 
         sessions = await self._list_open_sessions(db, workline_id=workline_id)
         for session in sessions:
-            reason_code = self._session_station_lease_reason(session, position_code=position_code)
+            reason_code = self._session_station_lease_reason(
+                session,
+                position_code=position_code,
+                allow_active_operation_key=allow_active_operation_key,
+            )
             if reason_code is not None:
                 return StationLeaseResult(
                     workline_code=workline_code,
@@ -229,6 +233,7 @@ class WorklineStationLeaseService:
         session: WorklineSession,
         *,
         position_code: str,
+        allow_active_operation_key: str | None = None,
     ) -> StationLeaseReasonCode | None:
         context = session.context_json if isinstance(session.context_json, dict) else {}
 
@@ -248,6 +253,11 @@ class WorklineStationLeaseService:
             rack_operation.get("target_position_code") == position_code
             or rack_operation.get("work_position_code") == position_code
         ):
+            operation_key = coerce_optional_str(rack_operation.get("operation_key")) or coerce_optional_str(
+                context.get("waiting_rack_operation_key")
+            )
+            if allow_active_operation_key is not None and operation_key == allow_active_operation_key:
+                return None
             return StationLeaseReasonCode.ACTIVE_DISPATCH_LEASE
 
         return None

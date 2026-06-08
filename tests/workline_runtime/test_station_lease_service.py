@@ -449,6 +449,41 @@ async def test_station_lease_busy_when_open_session_waits_dispatch_to_position(
 
 
 @pytest.mark.asyncio
+async def test_claim_station_dispatch_lease_allows_same_operation_session_wait() -> None:
+    harness = build_harness(
+        sessions=[
+            session(
+                context_json={
+                    "waiting_rack_operation_key": "op-1",
+                    "rack_operation": {"operation_key": "op-1", "work_position_code": "STATION-A"},
+                }
+            )
+        ]
+    )
+
+    created = await harness.service.claim_station_dispatch_lease(
+        harness.db,
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        position_code="STATION-A",
+        envelope=DispatchEnvelope(
+            dispatch_key="dispatch-1",
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS",
+            operation_domain="RACK",
+            operation_key="op-1",
+            workline_id=1001,
+            payload_json={"position_code": "STATION-A"},
+        ),
+        allow_active_operation_key="op-1",
+    )
+
+    assert created is not None
+    assert created.dispatch_key == "dispatch-1"
+
+
+@pytest.mark.asyncio
 async def test_station_lease_checks_open_session_conflicts_beyond_first_page() -> None:
     sessions = [session(context_json={}, session_id=index) for index in range(1, 52)]
     sessions.append(session(context_json={"station": {"position_code": "STATION-A"}}, session_id=652))

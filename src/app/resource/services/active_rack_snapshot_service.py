@@ -488,12 +488,17 @@ class SmtActiveRackSnapshotService:
         # 结构模板可能来自旧 session；没有 active occupancy 时必须去掉旧物料派生状态。
         # 但 LOCKED/DISABLED/EXCEPTION 表示格位不可调度，不能因没有物料占用而清成空格。
         status = _cleared_cell_status(cell.get("status"))
+        capacity_depth_mm = cell.get("capacity_depth_mm")
         for field in DERIVED_CELL_OCCUPANCY_FIELDS:
             cell.pop(field, None)
         cell["status"] = status
         cell["bin_code"] = bin_code
         cell["bin_id"] = bin_code
         cell["bin_cell_index"] = cell_index
+        if capacity_depth_mm is not None:
+            cell["capacity_depth_mm"] = capacity_depth_mm
+            cell["used_depth_mm"] = "0"
+            cell["remaining_depth_mm"] = capacity_depth_mm
 
     def _overlay_active_reservations(self, cells: Sequence[dict[str, Any]], reservations: Sequence[Any]) -> None:
         reservations_by_cell: dict[tuple[str, str], Any] = {}

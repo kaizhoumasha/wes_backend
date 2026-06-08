@@ -553,6 +553,7 @@ class SmtSortingInboundFlowService:
         if provider is not None:
             snapshot = provider.active_bin_rack(
                 context={
+                    "active_bin_rack": _dict_copy(sorting.get("active_target_bin")),
                     "active_target_bin_code": sorting.get("active_target_bin_code"),
                     "current_material": _dict_copy(sorting.get("current_material")),
                     "station": {"position_code": _TARGET_STATION_CODE},

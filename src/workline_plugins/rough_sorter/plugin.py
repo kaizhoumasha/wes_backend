@@ -279,6 +279,11 @@ class RoughSorterPlugin(WorklinePlugin):
             "config": dict(ctx.config),
             "trace_id": _non_empty_str(getattr(ctx, "trace_id", None)),
         }
+        boundary = next(iter(self.manifest.single_layer_boundaries), None)
+        if boundary is not None:
+            context.setdefault("work_position_code", boundary.position_code)
+            context.setdefault("target_position_code", boundary.position_code)
+            context.setdefault("rack_kind", boundary.rack_kind)
         if rough_context.active_bin_rack is not None:
             context["active_bin_rack"] = rough_context.active_bin_rack
         for measurement_key in ("reel_diameter", "reel_thickness"):

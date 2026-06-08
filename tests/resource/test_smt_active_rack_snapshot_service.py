@@ -914,6 +914,8 @@ async def test_get_active_bin_rack_clears_template_cell_without_active_occupancy
     cell_d = next(cell for cell in snapshot["cells"] if cell["bin_id"] == "BIN-ACTIVE-D")
     assert cell_d["status"] == "EMPTY"
     assert cell_d["capacity_depth_mm"] == 60.0
+    assert cell_d["used_depth_mm"] == "0"
+    assert cell_d["remaining_depth_mm"] == 60.0
     for stale_key in (
         "DateCode",
         "LotCode",
@@ -921,8 +923,6 @@ async def test_get_active_bin_rack_clears_template_cell_without_active_occupancy
         "HHPN",
         "Qty",
         "reel_count",
-        "used_depth_mm",
-        "remaining_depth_mm",
         "material_identity_key",
         "reels",
         "reel_diameter",
